@@ -1,0 +1,1 @@
+This python library provides high level access to a biomedical literature database running in postgres. It includes access to the pgvector extension. Authentication to the postgres database happens through .env
