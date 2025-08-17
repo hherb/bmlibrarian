@@ -55,3 +55,5 @@ bmlibrarian/
 - The project focuses on biomedical literature database access
 - Uses modern Python packaging standards with pyproject.toml
 - Designed to work with PostgreSQL's vector extension for advanced search capabilities
+- make sure you wil never ever modify or drpop the production database "knowledgebase". If we try migration and want to create a new database, it should e called "bmlibrartian_dev"
+- for every new module, write appropriate unit tests in the standard python way as well as documentation suitable for both prgrammers joining the project as well as for end users in the diretories doc/users and doc/developers

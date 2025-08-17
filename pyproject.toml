@@ -1,9 +1,43 @@
 [project]
 name = "bmlibrarian"
 version = "0.1.0"
-description = "Add your description here"
+description = "Biomedical Literature Librarian - A Python library for accessing biomedical literature databases"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "psycopg>=3.2.9",
+    "psycopg[binary]>=3.2.9",
+]
+
+[project.scripts]
+bmlibrarian = "bmlibrarian.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0",
+    "pytest-mock>=3.10",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+    "--cov=src/bmlibrarian",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80"
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests"
 ]
