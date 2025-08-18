@@ -7,6 +7,7 @@ from datetime import date
 
 import psycopg
 from psycopg import sql
+from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 
@@ -117,7 +118,7 @@ def find_abstracts(
     to_date: Optional[date] = None
 ) -> Generator[Dict, None, None]:
     """
-    Find document abstracts using PostgreSQL text search with optional date filtering.
+    Find documents using PostgreSQL text search with optional date and source filtering.
     
     Args:
         ts_query_str: Text search query string
@@ -133,7 +134,7 @@ def find_abstracts(
         Dict containing document information with keys:
         - id: Document ID
         - title: Document title
-        - abstract: Document abstract
+        - abstract: Document abstract (may be None/empty)
         - authors: List of authors
         - publication: Publication name
         - publication_date: Publication date
@@ -160,10 +161,12 @@ def find_abstracts(
     db_manager = get_db_manager()
     
     # Build source ID filter using cached source IDs (much faster than JOINs)
+    # Only filter by source if not all sources are enabled
     source_ids = []
     source_name_map = {}
+    all_sources_enabled = use_pubmed and use_medrxiv and use_others
     
-    if db_manager._source_ids:
+    if not all_sources_enabled and db_manager._source_ids:
         if use_pubmed and 'pubmed' in db_manager._source_ids:
             pubmed_id = db_manager._source_ids['pubmed']
             source_ids.append(pubmed_id)
@@ -180,10 +183,24 @@ def find_abstracts(
                 source_ids.extend(others_ids)
                 for other_id in others_ids:
                     source_name_map[other_id] = 'others'
+        
+        # If no sources selected, return empty
+        if not source_ids:
+            return
     
-    # If no sources selected, return empty
-    if not source_ids:
-        return
+    # Build source name map for all sources when no filtering is applied
+    if all_sources_enabled and db_manager._source_ids:
+        if 'pubmed' in db_manager._source_ids:
+            pubmed_id = db_manager._source_ids['pubmed']
+            source_name_map[pubmed_id] = 'pubmed'
+        if 'medrxiv' in db_manager._source_ids:
+            medrxiv_id = db_manager._source_ids['medrxiv']
+            source_name_map[medrxiv_id] = 'medrxiv'
+        if 'others' in db_manager._source_ids:
+            others_ids = db_manager._source_ids['others']
+            if isinstance(others_ids, list):
+                for other_id in others_ids:
+                    source_name_map[other_id] = 'others'
     
     # Choose the appropriate tsquery function based on plain parameter
     if plain:
@@ -208,30 +225,22 @@ def find_abstracts(
     if date_conditions:
         date_filter = "AND " + " AND ".join(date_conditions)
     
-    # Build optimized query without JOIN
-    source_id_placeholders = ','.join(['%s'] * len(source_ids))
+    # Build optimized query
+    # Only add source filter if not all sources are enabled
+    if all_sources_enabled:
+        source_filter = ""
+        source_id_placeholders = ""
+    else:
+        source_id_placeholders = ','.join(['%s'] * len(source_ids))
+        source_filter = f"AND d.source_id IN ({source_id_placeholders})"
+    
     base_query = f"""
-    SELECT 
-        d.id,
-        d.title,
-        d.abstract,
-        d.authors,
-        d.publication,
-        d.publication_date,
-        d.doi,
-        d.url,
-        d.source_id,
-        d.keywords,
-        d.mesh_terms,
-        d.augmented_keywords,
-        d.all_keywords
+    SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
     FROM document d
     WHERE d.search_vector @@ {tsquery_func}('english', %s)
-    AND d.source_id IN ({source_id_placeholders})
-    AND d.abstract IS NOT NULL
-    AND d.abstract != ''
+    {source_filter}
     {date_filter}
-    ORDER BY ts_rank(d.search_vector, {tsquery_func}('english', %s)) DESC
+    ORDER BY rank_score DESC
     """
     
     # Add limit if specified
@@ -241,10 +250,13 @@ def find_abstracts(
         query = base_query
     
     # Prepare query parameters
-    query_params = [ts_query_str] + source_ids + date_params + [ts_query_str]
+    if all_sources_enabled:
+        query_params = [ts_query_str, ts_query_str] + date_params
+    else:
+        query_params = [ts_query_str, ts_query_str] + source_ids + date_params
     
     with db_manager.get_connection() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             # Execute the query with parameters
             cur.execute(query, tuple(query_params))
             
@@ -253,25 +265,16 @@ def find_abstracts(
                 if row is None:
                     break
                 
-                # Convert row to dictionary
-                source_id = row[8]
-                doc = {
-                    'id': row[0],
-                    'title': row[1],
-                    'abstract': row[2],
-                    'authors': row[3] or [],
-                    'publication': row[4],
-                    'publication_date': row[5],
-                    'doi': row[6],
-                    'url': row[7],
-                    'source_name': source_name_map.get(source_id, 'unknown'),
-                    'keywords': row[9] or [],
-                    'mesh_terms': row[10] or [],
-                    'augmented_keywords': row[11] or [],
-                    'all_keywords': row[12] or []
-                }
+                # Add source name mapping to the dictionary row
+                source_id = row['source_id']
+                row['source_name'] = source_name_map.get(source_id, 'unknown')
                 
-                yield doc
+                # Ensure list fields are not None
+                for field in ['authors', 'keywords', 'mesh_terms', 'augmented_keywords', 'all_keywords']:
+                    if row.get(field) is None:
+                        row[field] = []
+                
+                yield dict(row)
 
 
 def close_database():
