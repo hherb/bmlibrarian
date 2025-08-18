@@ -2,11 +2,10 @@
 
 import os
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, List, Union
+from typing import Dict, Generator, Optional, List, Union, cast, LiteralString
 from datetime import date
 
 import psycopg
-from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
@@ -145,7 +144,8 @@ def find_abstracts(
     plain: bool = True,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    batch_size: int = 50
+    batch_size: int = 50,
+    use_ranking: bool = False
 ) -> Generator[Dict, None, None]:
     """
     Find documents using PostgreSQL text search with optional date and source filtering.
@@ -160,6 +160,7 @@ def find_abstracts(
         from_date: Only include documents published on or after this date (inclusive)
         to_date: Only include documents published on or before this date (inclusive)
         batch_size: Number of rows to fetch in each database round trip (default: 50)
+        use_ranking: If True, calculate and order by relevance ranking (default: False for speed)
         
     Yields:
         Dict containing document information with keys:
@@ -246,14 +247,24 @@ def find_abstracts(
         source_id_placeholders = ','.join(['%s'] * len(source_ids))
         source_filter = f"AND d.source_id IN ({source_id_placeholders})"
     
-    base_query = f"""
-    SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
-    FROM document d
-    WHERE d.search_vector @@ {tsquery_func}('english', %s)
-    {source_filter}
-    {date_filter}
-    ORDER BY rank_score DESC
-    """
+    # Build query with optional ranking
+    if use_ranking:
+        base_query = f"""
+        SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
+        FROM document d
+        WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        {source_filter}
+        {date_filter}
+        ORDER BY rank_score DESC
+        """
+    else:
+        base_query = f"""
+        SELECT d.*
+        FROM document d
+        WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        {source_filter}
+        {date_filter}
+        """
     
     # Add limit if specified
     if max_rows > 0:
@@ -261,11 +272,19 @@ def find_abstracts(
     else:
         query = base_query
     
-    # Prepare query parameters
-    if all_sources_enabled:
-        query_params = [ts_query_str, ts_query_str] + date_params
+    # Prepare query parameters based on ranking and filtering
+    if use_ranking:
+        # Ranking queries need tsquery twice (SELECT and WHERE)
+        if all_sources_enabled:
+            query_params = [ts_query_str, ts_query_str] + date_params
+        else:
+            query_params = [ts_query_str, ts_query_str] + source_ids + date_params
     else:
-        query_params = [ts_query_str, ts_query_str] + source_ids + date_params
+        # Non-ranking queries need tsquery only once (WHERE)
+        if all_sources_enabled:
+            query_params = [ts_query_str] + date_params
+        else:
+            query_params = [ts_query_str] + source_ids + date_params
     
     with db_manager.get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -273,7 +292,7 @@ def find_abstracts(
             cur.arraysize = batch_size
             
             # Execute the query with parameters
-            cur.execute(query, tuple(query_params))
+            cur.execute(cast(LiteralString, query), tuple(query_params))
             
             while True:
                 # Fetch a batch of rows
