@@ -5,7 +5,9 @@ description = "Biomedical Literature Librarian - A Python library for accessing 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
+    "python-dotenv>=1.1.1",
 ]
 
 [project.scripts]
