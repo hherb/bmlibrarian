@@ -1,19 +1,31 @@
-# Agent Module Developer Documentation
+# QueryAgent Module - Developer Documentation
 
 ## Overview
 
-The `agent.py` module provides intelligent query conversion capabilities for the bmlibrarian system. It uses the Ollama library to connect to local Large Language Models (LLMs) for converting natural language questions into PostgreSQL `to_tsquery` format, optimized for biomedical literature searches.
+The `agent.py` module provides an intelligent interface for converting natural language questions into PostgreSQL to_tsquery format and searching biomedical literature databases. This module integrates Large Language Model (LLM) capabilities with database search functionality to create a seamless research experience.
 
 ## Architecture
 
-### QueryAgent Class
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   User Input    │───▶│   QueryAgent    │───▶│   Database      │
+│ Natural Language│    │                 │    │   Results       │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                              │
+                              ▼
+                       ┌─────────────────┐
+                       │   Ollama LLM    │
+                       │   (Local AI)    │
+                       └─────────────────┘
+```
 
-The core component is the `QueryAgent` class which encapsulates:
+### Core Components
 
-- **LLM Connection**: Manages connection to Ollama server
-- **Prompt Engineering**: Specialized prompts for biomedical keyword extraction
-- **Query Validation**: Basic validation of generated `to_tsquery` strings
-- **Error Handling**: Robust error handling for network and LLM failures
+1. **QueryAgent Class**: Main interface for query conversion and search
+2. **LLM Integration**: Uses Ollama for local AI processing
+3. **Database Integration**: Connects with BMLibrarian database module
+4. **Callback System**: Provides hooks for UI updates and monitoring
+5. **Human-in-the-Loop**: Allows manual query review and modification
 
 ### Dependencies
 
@@ -21,39 +33,68 @@ The core component is the `QueryAgent` class which encapsulates:
 - `logging`: For comprehensive logging
 - Standard library modules
 
-## API Reference
+## Class Reference
 
-### QueryAgent.__init__(model, host)
+### QueryAgent
 
-Initialize a new QueryAgent instance.
-
-**Parameters:**
-- `model` (str, optional): Ollama model name (default: "llama3.2")
-- `host` (str, optional): Ollama server URL (default: "http://localhost:11434")
-
-**Example:**
 ```python
-agent = QueryAgent(model="mistral", host="http://localhost:11434")
+class QueryAgent:
+    def __init__(self, model: str = "medgemma4B_it_q8:latest", host: str = "http://localhost:11434"):
+        """
+        Initialize the QueryAgent.
+        
+        Args:
+            model: The name of the Ollama model to use
+            host: The Ollama server host URL
+        """
 ```
 
-### QueryAgent.convert_question(question)
+#### Key Methods
 
-Convert natural language question to PostgreSQL `to_tsquery` format.
+##### convert_question(question: str) -> str
+Converts natural language to PostgreSQL to_tsquery format.
 
 **Parameters:**
-- `question` (str): Natural language question about biomedical topics
+- `question` (str): Natural language question
 
 **Returns:**
-- `str`: PostgreSQL `to_tsquery` compatible string
+- `str`: PostgreSQL to_tsquery compatible string
 
 **Raises:**
-- `ValueError`: If question is empty or invalid
-- `ConnectionError`: If unable to connect to Ollama server
+- `ValueError`: If question is empty
+- `ConnectionError`: If unable to connect to Ollama
 
 **Example:**
 ```python
-query = agent.convert_question("What are the effects of aspirin on cardiovascular disease?")
-# Returns: "aspirin & (cardiovascular | cardiac | heart) & (disease | disorder | condition)"
+agent = QueryAgent()
+query = agent.convert_question("Effects of aspirin on heart disease")
+# Returns: "aspirin & (heart | cardiac | cardiovascular) & (disease | disorder)"
+```
+
+##### find_abstracts(...) -> Generator[Dict, None, None]
+Full-featured search combining query conversion with database search.
+
+**Parameters:**
+- `question` (str): Natural language question
+- `max_rows` (int): Maximum results to return (default: 100)
+- `use_pubmed` (bool): Include PubMed sources (default: True)
+- `use_medrxiv` (bool): Include medRxiv sources (default: True)
+- `use_others` (bool): Include other sources (default: True)
+- `from_date` (Optional[date]): Earliest publication date
+- `to_date` (Optional[date]): Latest publication date
+- `batch_size` (int): Database fetch batch size (default: 50)
+- `use_ranking` (bool): Enable relevance ranking (default: False)
+- `human_in_the_loop` (bool): Enable human query review (default: False)
+- `callback` (Optional[Callable]): Progress callback function
+- `human_query_modifier` (Optional[Callable]): Query modification function
+
+**Returns:**
+- `Generator[Dict, None, None]`: Stream of document dictionaries
+
+**Example:**
+```python
+for doc in agent.find_abstracts("COVID vaccine effectiveness", max_rows=10):
+    print(f"{doc['title']} - {doc['publication_date']}")
 ```
 
 ### QueryAgent.test_connection()
@@ -120,22 +161,44 @@ The `_validate_tsquery()` method performs basic validation:
 - Invalid `to_tsquery` format detection
 - Warning logs for suspicious queries
 
-## Integration Guidelines
+## Integration Points
 
-### Database Integration
+### Database Module Integration
+
+The QueryAgent integrates with the `bmlibrarian.database` module:
+
 ```python
-from bmlibrarian.agent import QueryAgent
-from bmlibrarian.database import DatabaseManager
+from .database import find_abstracts
 
-agent = QueryAgent()
-db = DatabaseManager()
+# In find_abstracts method:
+yield from find_abstracts(
+    ts_query_str=ts_query_str,
+    max_rows=max_rows,
+    # ... other parameters
+    plain=False  # Important: Use to_tsquery format, not plain text
+)
+```
 
-# Convert question to query
-question = "Effects of metformin on diabetes"
-tsquery = agent.convert_question(question)
+### Ollama Integration
 
-# Use in database search
-results = db.search_abstracts(tsquery)
+The agent uses Ollama for local LLM processing:
+
+```python
+import ollama
+
+self.client = ollama.Client(host=host)
+response = self.client.chat(
+    model=self.model,
+    messages=[
+        {'role': 'system', 'content': self.system_prompt},
+        {'role': 'user', 'content': question}
+    ],
+    options={
+        'temperature': 0.1,  # Low temperature for consistent results
+        'top_p': 0.9,
+        'num_predict': 100   # Limit response length
+    }
+)
 ```
 
 ### Error Handling in Applications

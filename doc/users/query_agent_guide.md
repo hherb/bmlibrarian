@@ -2,11 +2,15 @@
 
 ## Overview
 
-The Query Agent is an intelligent assistant that helps you search biomedical literature more effectively. It converts your natural language questions into optimized database queries, making it easier to find relevant research papers and abstracts.
+The BMLibrarian Query Agent is an intelligent assistant that helps you search biomedical literature using natural language. It combines AI-powered query conversion with direct database search capabilities, allowing you to find relevant research papers and abstracts by simply asking questions in plain English.
 
 ## What is the Query Agent?
 
-The Query Agent uses artificial intelligence to understand your questions about biomedical topics and translate them into database search terms. Instead of having to know exactly which keywords to use, you can ask questions in plain English.
+The Query Agent uses artificial intelligence to understand your questions about biomedical topics and automatically:
+1. Converts your natural language questions into optimized database queries
+2. Searches the biomedical literature database
+3. Returns formatted results with abstracts, authors, and publication details
+4. Provides options for human review and real-time progress updates
 
 ### Examples
 
@@ -46,10 +50,13 @@ if agent.test_connection():
 else:
     print("Please check your Ollama setup")
 
-# Convert a question
+# Search for papers using natural language
 question = "What treatments are effective for Alzheimer's disease?"
-search_query = agent.convert_question(question)
-print(f"Search query: {search_query}")
+for doc in agent.find_abstracts(question, max_rows=10):
+    print(f"Title: {doc['title']}")
+    print(f"Authors: {', '.join(doc['authors'][:3])}")
+    print(f"Date: {doc['publication_date']}")
+    print()
 ```
 
 ## How to Ask Good Questions
@@ -160,22 +167,51 @@ agent = QueryAgent(
 )
 ```
 
-### Integration with Database Searches
+### Advanced Search Features
 
+#### Search with Filters
 ```python
-from bmlibrarian.agent import QueryAgent
-from bmlibrarian.database import DatabaseManager
+from datetime import date
 
-# Setup
-agent = QueryAgent()
-db = DatabaseManager()
+# Search with date and source filters
+results = list(agent.find_abstracts(
+    question="COVID-19 vaccine effectiveness",
+    max_rows=20,
+    use_pubmed=True,      # Include PubMed papers
+    use_medrxiv=False,    # Exclude medRxiv preprints
+    from_date=date(2020, 1, 1),  # Papers from 2020 onwards
+    use_ranking=True      # Sort by relevance
+))
+```
 
-# Convert question and search
-question = "Treatment options for rheumatoid arthritis"
-search_terms = agent.convert_question(question)
-results = db.search_abstracts(search_terms)
+#### Human-in-the-Loop Review
+```python
+def review_query(generated_query):
+    print(f"Generated query: {generated_query}")
+    modified = input("Enter modified query (or press Enter to keep): ").strip()
+    return modified if modified else generated_query
 
-print(f"Found {len(results)} relevant papers")
+# Search with human review
+results = list(agent.find_abstracts(
+    question="Alzheimer's disease biomarkers",
+    human_in_the_loop=True,
+    human_query_modifier=review_query
+))
+```
+
+#### Progress Callbacks
+```python
+def progress_callback(step, data):
+    if step == "query_generated":
+        print(f"🔍 Generated: {data}")
+    elif step == "search_started":
+        print("🔎 Searching...")
+
+# Search with progress updates
+results = list(agent.find_abstracts(
+    question="cancer immunotherapy",
+    callback=progress_callback
+))
 ```
 
 ## Tips for Better Results

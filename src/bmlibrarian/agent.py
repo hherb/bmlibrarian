@@ -8,6 +8,10 @@ literature databases.
 
 import logging
 import ollama
+from typing import Generator, Dict, Optional, Callable
+from datetime import date
+
+from .database import find_abstracts
 
 
 logger = logging.getLogger(__name__)
@@ -123,8 +127,8 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         """
         Clean up and properly quote phrases in the query string.
         
-        Detects multi-word phrases (words separated by spaces), escapes single quotes,
-        and wraps phrases in single quotes for PostgreSQL to_tsquery compatibility.
+        Removes surrounding quotes, escapes single quotes in phrases,
+        and wraps multi-word phrases in single quotes for PostgreSQL to_tsquery compatibility.
         
         Args:
             query: The query string to clean
@@ -134,7 +138,12 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         """
         import re
         
-        # First, escape all single quotes by doubling them
+        # Remove any surrounding quotes that the LLM might have added
+        query = query.strip()
+        if (query.startswith('"') and query.endswith('"')) or (query.startswith("'") and query.endswith("'")):
+            query = query[1:-1]
+        
+        # Escape all single quotes by doubling them
         query = query.replace("'", "''")
         
         # Find multi-word phrases - sequences of two or more words separated by spaces
@@ -216,3 +225,137 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         except Exception as e:
             logger.error(f"Failed to get available models: {e}")
             raise ConnectionError(f"Failed to connect to Ollama: {e}")
+    
+    def find_abstracts(
+        self,
+        question: str,
+        max_rows: int = 100,
+        use_pubmed: bool = True,
+        use_medrxiv: bool = True,
+        use_others: bool = True,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+        batch_size: int = 50,
+        use_ranking: bool = False,
+        human_in_the_loop: bool = False,
+        callback: Optional[Callable[[str, str], None]] = None,
+        human_query_modifier: Optional[Callable[[str], str]] = None
+    ) -> Generator[Dict, None, None]:
+        """
+        Find biomedical abstracts using natural language questions.
+        
+        Converts a human language question to a PostgreSQL to_tsquery format,
+        then searches the database for matching abstracts.
+        
+        Args:
+            question: Natural language question (e.g., "What are the effects of aspirin on heart disease?")
+            max_rows: Maximum number of rows to return (0 = no limit)
+            use_pubmed: Include PubMed sources
+            use_medrxiv: Include medRxiv sources  
+            use_others: Include other sources
+            from_date: Only include documents published on or after this date (inclusive)
+            to_date: Only include documents published on or before this date (inclusive)
+            batch_size: Number of rows to fetch in each database round trip
+            use_ranking: If True, calculate and order by relevance ranking
+            human_in_the_loop: If True, allow human to modify the generated query
+            callback: Optional callback function called with (step, data) for UI updates
+            human_query_modifier: Optional function to modify query when human_in_the_loop=True
+            
+        Yields:
+            Dict containing document information (same format as database.find_abstracts)
+            
+        Examples:
+            Simple search:
+            >>> agent = QueryAgent()
+            >>> for doc in agent.find_abstracts("COVID vaccine effectiveness"):
+            ...     print(f"{doc['title']} - {doc['publication_date']}")
+            
+            With human-in-the-loop:
+            >>> def modify_query(query):
+            ...     return input(f"Modify query '{query}': ") or query
+            >>> 
+            >>> for doc in agent.find_abstracts("diabetes", human_in_the_loop=True, 
+            ...                                human_query_modifier=modify_query):
+            ...     print(doc['title'])
+            
+            With UI callbacks:
+            >>> def ui_callback(step, data):
+            ...     if step == "query_generated":
+            ...         print(f"Generated query: {data}")
+            ...     elif step == "search_started":
+            ...         print(f"Searching with: {data}")
+            >>> 
+            >>> for doc in agent.find_abstracts("heart disease", callback=ui_callback):
+            ...     print(doc['title'])
+        """
+        if not question or not question.strip():
+            raise ValueError("Question cannot be empty")
+        
+        # Step 1: Convert natural language question to ts_query
+        try:
+            if callback:
+                callback("conversion_started", question)
+            
+            ts_query_str = self.convert_question(question)
+            
+            if callback:
+                callback("query_generated", ts_query_str)
+            
+            logger.info(f"Generated ts_query: {ts_query_str}")
+            
+        except Exception as e:
+            if callback:
+                callback("conversion_failed", str(e))
+            raise
+        
+        # Step 2: Human-in-the-loop query modification
+        if human_in_the_loop and human_query_modifier:
+            try:
+                if callback:
+                    callback("human_review_started", ts_query_str)
+                
+                modified_query = human_query_modifier(ts_query_str)
+                
+                if modified_query and modified_query.strip() != ts_query_str:
+                    ts_query_str = modified_query.strip()
+                    logger.info(f"Human modified query to: {ts_query_str}")
+                    
+                    if callback:
+                        callback("query_modified", ts_query_str)
+                else:
+                    if callback:
+                        callback("query_unchanged", ts_query_str)
+                        
+            except Exception as e:
+                logger.warning(f"Human query modification failed: {e}")
+                if callback:
+                    callback("human_review_failed", str(e))
+                # Continue with original query
+        
+        # Step 3: Search database with the final query
+        try:
+            if callback:
+                callback("search_started", ts_query_str)
+            
+            # Call the database find_abstracts function with plain=False since we generated to_tsquery format
+            yield from find_abstracts(
+                ts_query_str=ts_query_str,
+                max_rows=max_rows,
+                use_pubmed=use_pubmed,
+                use_medrxiv=use_medrxiv,
+                use_others=use_others,
+                plain=False,  # We generated to_tsquery format, not plain text
+                from_date=from_date,
+                to_date=to_date,
+                batch_size=batch_size,
+                use_ranking=use_ranking
+            )
+            
+            if callback:
+                callback("search_completed", ts_query_str)
+                
+        except Exception as e:
+            if callback:
+                callback("search_failed", str(e))
+            logger.error(f"Database search failed: {e}")
+            raise
