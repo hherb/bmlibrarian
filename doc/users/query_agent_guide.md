@@ -39,7 +39,7 @@ The Query Agent uses artificial intelligence to understand your questions about 
 ### Basic Usage
 
 ```python
-from bmlibrarian.agent import QueryAgent
+from bmlibrarian.agents import QueryAgent
 
 # Create an agent
 agent = QueryAgent()

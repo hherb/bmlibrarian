@@ -4,7 +4,7 @@ Demo script showing how to use the QueryAgent for converting biomedical question
 into PostgreSQL to_tsquery format.
 """
 
-from bmlibrarian.agent import QueryAgent
+from bmlibrarian.agents import QueryAgent
 
 
 def main():

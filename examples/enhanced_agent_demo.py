@@ -26,7 +26,7 @@ from typing import Dict, List
 # Add the src directory to Python path
 sys.path.insert(0, '../src')
 
-from bmlibrarian.agent import QueryAgent
+from bmlibrarian.agents import QueryAgent
 
 
 def print_separator(title: str = ""):

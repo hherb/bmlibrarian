@@ -4,7 +4,9 @@
       "Bash(mkdir:*)",
       "Bash(mv:*)",
       "Bash(grep:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(python test_json_fixes.py:*)"
     ],
     "deny": [],
     "ask": []

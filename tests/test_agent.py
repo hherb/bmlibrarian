@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 import ollama
 
-from bmlibrarian.agent import QueryAgent
+from bmlibrarian.agents import QueryAgent
 
 
 class TestQueryAgent:
@@ -35,7 +35,7 @@ class TestQueryAgent:
         with pytest.raises(ValueError, match="Question cannot be empty"):
             agent.convert_question("   ")
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_convert_question_success(self, mock_client_class):
         """Test successful question conversion."""
         # Setup mock
@@ -62,7 +62,7 @@ class TestQueryAgent:
         assert call_args[1]['messages'][1]['content'] == "How does diabetes affect kidney function?"
         assert call_args[1]['options']['temperature'] == 0.1
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_convert_question_ollama_error(self, mock_client_class):
         """Test convert_question handles Ollama errors."""
         mock_client = Mock()
@@ -74,7 +74,7 @@ class TestQueryAgent:
         with pytest.raises(ConnectionError, match="Failed to get response from Ollama"):
             agent.convert_question("test question")
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_convert_question_unexpected_error(self, mock_client_class):
         """Test convert_question handles unexpected errors."""
         mock_client = Mock()
@@ -118,7 +118,7 @@ class TestQueryAgent:
         for query in invalid_queries:
             assert not agent._validate_tsquery(query), f"Query should be invalid: {query}"
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_test_connection_success(self, mock_client_class):
         """Test successful connection test."""
         mock_client = Mock()
@@ -140,7 +140,7 @@ class TestQueryAgent:
         assert result is True
         mock_client.list.assert_called_once()
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_test_connection_model_not_found(self, mock_client_class):
         """Test connection test when model is not available."""
         mock_client = Mock()
@@ -160,7 +160,7 @@ class TestQueryAgent:
         
         assert result is False
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_test_connection_error(self, mock_client_class):
         """Test connection test handles errors."""
         mock_client = Mock()
@@ -172,7 +172,7 @@ class TestQueryAgent:
         
         assert result is False
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_get_available_models_success(self, mock_client_class):
         """Test successful retrieval of available models."""
         mock_client = Mock()
@@ -196,7 +196,7 @@ class TestQueryAgent:
         assert result == expected
         mock_client.list.assert_called_once()
     
-    @patch('bmlibrarian.agent.ollama.Client')
+    @patch('bmlibrarian.agents.base.ollama.Client')
     def test_get_available_models_error(self, mock_client_class):
         """Test get_available_models handles errors."""
         mock_client = Mock()
