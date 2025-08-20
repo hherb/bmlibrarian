@@ -7,12 +7,16 @@ Provides common functionality for all AI agents including:
 - Callback system for progress updates
 - Error handling patterns
 - Connection testing utilities
+- Queue integration for large-scale processing
 """
 
 import logging
 import ollama
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, TYPE_CHECKING
 from abc import ABC, abstractmethod
+
+if TYPE_CHECKING:
+    from .orchestrator import AgentOrchestrator
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +36,8 @@ class BaseAgent(ABC):
         host: str = "http://localhost:11434",
         temperature: float = 0.1,
         top_p: float = 0.9,
-        callback: Optional[Callable[[str, str], None]] = None
+        callback: Optional[Callable[[str, str], None]] = None,
+        orchestrator: Optional["AgentOrchestrator"] = None
     ):
         """
         Initialize the base agent.
@@ -43,6 +48,7 @@ class BaseAgent(ABC):
             temperature: Model temperature for response randomness (0.0-1.0)
             top_p: Model top-p sampling parameter (0.0-1.0)
             callback: Optional callback function called with (step, data) for progress updates
+            orchestrator: Optional orchestrator for queue-based processing
         """
         self.model = model
         self.host = host
@@ -50,6 +56,7 @@ class BaseAgent(ABC):
         self.top_p = top_p
         self.callback = callback
         self.client = ollama.Client(host=host)
+        self.orchestrator = orchestrator
     
     def _call_callback(self, step: str, data: str) -> None:
         """
@@ -178,6 +185,75 @@ class BaseAgent(ABC):
             callback: New callback function or None to disable callbacks
         """
         self.callback = callback
+    
+    def set_orchestrator(self, orchestrator: Optional["AgentOrchestrator"]) -> None:
+        """
+        Set or update the orchestrator for queue-based processing.
+        
+        Args:
+            orchestrator: Orchestrator instance or None to disable queue processing
+        """
+        self.orchestrator = orchestrator
+    
+    def submit_task(self,
+                   method_name: str,
+                   data: Dict[str, Any],
+                   target_agent: Optional[str] = None,
+                   priority: Optional[Any] = None) -> Optional[str]:
+        """
+        Submit a task to the orchestrator queue.
+        
+        Args:
+            method_name: Method to call on the target agent
+            data: Task data/parameters
+            target_agent: Target agent type (defaults to self)
+            priority: Task priority (uses orchestrator default if None)
+            
+        Returns:
+            Task ID if orchestrator is available, None otherwise
+        """
+        if not self.orchestrator:
+            return None
+        
+        from .queue_manager import TaskPriority
+        
+        return self.orchestrator.submit_task(
+            target_agent=target_agent or self.get_agent_type(),
+            method_name=method_name,
+            data=data,
+            source_agent=self.get_agent_type(),
+            priority=priority or TaskPriority.NORMAL
+        )
+    
+    def submit_batch_tasks(self,
+                          method_name: str,
+                          data_list: list[Dict[str, Any]],
+                          target_agent: Optional[str] = None,
+                          priority: Optional[Any] = None) -> Optional[list[str]]:
+        """
+        Submit multiple tasks to the orchestrator queue.
+        
+        Args:
+            method_name: Method to call on the target agent
+            data_list: List of task data dictionaries
+            target_agent: Target agent type (defaults to self)
+            priority: Task priority (uses orchestrator default if None)
+            
+        Returns:
+            List of task IDs if orchestrator is available, None otherwise
+        """
+        if not self.orchestrator:
+            return None
+        
+        from .queue_manager import TaskPriority
+        
+        return self.orchestrator.submit_batch_tasks(
+            target_agent=target_agent or self.get_agent_type(),
+            method_name=method_name,
+            data_list=data_list,
+            source_agent=self.get_agent_type(),
+            priority=priority or TaskPriority.NORMAL
+        )
     
     @abstractmethod
     def get_agent_type(self) -> str:

@@ -7,11 +7,14 @@ to_tsquery format optimized for biomedical literature searches.
 
 import re
 import logging
-from typing import Generator, Dict, Optional, Callable
+from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING
 from datetime import date
 
 from .base import BaseAgent
 from ..database import find_abstracts
+
+if TYPE_CHECKING:
+    from .orchestrator import AgentOrchestrator
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +34,8 @@ class QueryAgent(BaseAgent):
         host: str = "http://localhost:11434",
         temperature: float = 0.1,
         top_p: float = 0.9,
-        callback: Optional[Callable[[str, str], None]] = None
+        callback: Optional[Callable[[str, str], None]] = None,
+        orchestrator: Optional["AgentOrchestrator"] = None
     ):
         """
         Initialize the QueryAgent.
@@ -42,8 +46,9 @@ class QueryAgent(BaseAgent):
             temperature: Model temperature for response consistency (default: 0.1)
             top_p: Model top-p sampling parameter (default: 0.9)
             callback: Optional callback function for progress updates
+            orchestrator: Optional orchestrator for queue-based processing
         """
-        super().__init__(model, host, temperature, top_p, callback)
+        super().__init__(model, host, temperature, top_p, callback, orchestrator)
         
         # System prompt for biomedical query conversion
         self.system_prompt = """You are a biomedical literature search expert. Your task is to convert natural language questions into PostgreSQL to_tsquery format for searching biomedical publication abstracts.

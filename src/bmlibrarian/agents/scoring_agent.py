@@ -7,9 +7,10 @@ providing numerical scores and reasoning for document relevance assessment.
 
 import json
 import logging
-from typing import Dict, Optional, Callable, TypedDict
+from typing import Dict, Optional, Callable, TypedDict, List, Tuple, Iterator
 
 from .base import BaseAgent
+from .queue_manager import TaskPriority
 
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class DocumentScoringAgent(BaseAgent):
         host: str = "http://localhost:11434",
         temperature: float = 0.1,
         top_p: float = 0.9,
-        callback: Optional[Callable[[str, str], None]] = None
+        callback: Optional[Callable[[str, str], None]] = None,
+        orchestrator: Optional["AgentOrchestrator"] = None
     ):
         """
         Initialize the DocumentScoringAgent.
@@ -46,8 +48,9 @@ class DocumentScoringAgent(BaseAgent):
             temperature: Model temperature for consistent scoring (default: 0.1)
             top_p: Model top-p sampling parameter (default: 0.9)
             callback: Optional callback function for progress updates
+            orchestrator: Optional orchestrator for queue-based processing
         """
-        super().__init__(model, host, temperature, top_p, callback)
+        super().__init__(model, host, temperature, top_p, callback, orchestrator)
         
         # System prompt for document relevance scoring
         self.system_prompt = """You are a biomedical literature expert evaluating document relevance. Your task is to score how well a document answers or relates to a user's question.
@@ -427,6 +430,175 @@ Please evaluate how well this document addresses the user's question and provide
         self._call_callback(
             "top_documents_selected", 
             f"Selected {len(top_results)} documents with scores >= {min_score}"
+        )
+        
+        return top_results
+    
+    # Queue-aware methods for large-scale processing
+    
+    def submit_scoring_tasks(self,
+                           user_question: str,
+                           documents: List[Dict],
+                           priority: TaskPriority = TaskPriority.NORMAL) -> Optional[List[str]]:
+        """
+        Submit document scoring tasks to the orchestrator queue.
+        
+        Args:
+            user_question: The user's question for relevance evaluation
+            documents: List of documents to score
+            priority: Task priority level
+            
+        Returns:
+            List of task IDs if orchestrator is available, None otherwise
+        """
+        if not self.orchestrator:
+            logger.warning("No orchestrator configured - cannot submit tasks to queue")
+            return None
+        
+        # Prepare task data for each document
+        task_data_list = []
+        for doc in documents:
+            task_data = {
+                "user_question": user_question,
+                "document": doc
+            }
+            task_data_list.append(task_data)
+        
+        task_ids = self.submit_batch_tasks(
+            method_name="evaluate_document_from_queue",
+            data_list=task_data_list,
+            priority=priority
+        )
+        
+        if task_ids:
+            self._call_callback("scoring_tasks_queued", 
+                              f"Queued {len(task_ids)} scoring tasks with priority {priority.name}")
+        
+        return task_ids
+    
+    def evaluate_document_from_queue(self, user_question: str, document: Dict) -> ScoringResult:
+        """
+        Queue-compatible wrapper for evaluate_document.
+        
+        This method is called by the orchestrator when processing queued tasks.
+        
+        Args:
+            user_question: The user's question for relevance evaluation  
+            document: Document to evaluate
+            
+        Returns:
+            ScoringResult with score and reasoning
+        """
+        return self.evaluate_document(user_question, document)
+    
+    def process_scoring_queue(self,
+                            user_question: str,
+                            documents: List[Dict],
+                            progress_callback: Optional[Callable[[int, int], None]] = None,
+                            batch_size: int = 50) -> Iterator[Tuple[Dict, ScoringResult]]:
+        """
+        Process document scoring using the queue system with memory efficiency.
+        
+        Args:
+            user_question: The user's question for relevance evaluation
+            documents: List of documents to score  
+            progress_callback: Optional callback for progress updates (completed, total)
+            batch_size: Number of documents to process per batch
+            
+        Yields:
+            Tuples of (document, scoring_result) as they are completed
+        """
+        if not self.orchestrator:
+            # Fallback to direct processing if no orchestrator
+            logger.info("No orchestrator - falling back to direct processing")
+            for i, doc in enumerate(documents):
+                result = self.evaluate_document(user_question, doc)
+                if progress_callback:
+                    progress_callback(i + 1, len(documents))
+                yield (doc, result)
+            return
+        
+        total_docs = len(documents)
+        processed = 0
+        
+        # Process in batches to manage memory
+        for i in range(0, total_docs, batch_size):
+            batch = documents[i:i + batch_size]
+            
+            # Submit batch to queue
+            task_ids = self.submit_scoring_tasks(user_question, batch)
+            if not task_ids:
+                logger.error("Failed to submit batch to queue")
+                continue
+            
+            # Wait for batch completion and yield results
+            completed_tasks = self.orchestrator.wait_for_completion(task_ids)
+            
+            for task_id, task in completed_tasks.items():
+                if task.status.value == "completed" and task.result:
+                    # Find corresponding document
+                    task_idx = task_ids.index(task_id)
+                    doc = batch[task_idx]
+                    
+                    # Convert result back to ScoringResult
+                    scoring_result: ScoringResult = {
+                        'score': task.result.get('score', 0),
+                        'reasoning': task.result.get('reasoning', 'Unknown result format')
+                    }
+                    
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total_docs)
+                    
+                    yield (doc, scoring_result)
+                else:
+                    # Handle failed task
+                    logger.warning(f"Task {task_id} failed: {task.error_message}")
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(processed, total_docs)
+    
+    def get_top_documents_queued(self,
+                               user_question: str, 
+                               documents: List[Dict],
+                               top_k: int = 10,
+                               min_score: int = 2,
+                               progress_callback: Optional[Callable[[int, int], None]] = None) -> List[Tuple[Dict, ScoringResult]]:
+        """
+        Get top documents using queue processing for memory efficiency.
+        
+        Args:
+            user_question: The user's question for relevance evaluation
+            documents: List of documents to evaluate
+            top_k: Number of top documents to return
+            min_score: Minimum score threshold
+            progress_callback: Optional progress callback (completed, total)
+            
+        Returns:
+            List of (document, scoring_result) tuples sorted by score
+        """
+        # Process all documents through queue
+        all_results = []
+        for doc, result in self.process_scoring_queue(user_question, documents, progress_callback):
+            all_results.append((doc, result))
+        
+        # Filter and sort results
+        filtered_results = [
+            (doc, result) for doc, result in all_results
+            if result['score'] >= min_score
+        ]
+        
+        sorted_results = sorted(
+            filtered_results,
+            key=lambda x: x[1]['score'],
+            reverse=True
+        )
+        
+        top_results = sorted_results[:top_k]
+        
+        self._call_callback(
+            "queued_top_documents_selected",
+            f"Selected {len(top_results)} documents with scores >= {min_score} from {len(documents)} via queue"
         )
         
         return top_results
