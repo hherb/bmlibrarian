@@ -8,6 +8,7 @@ Available Agents:
 - QueryAgent: Natural language to PostgreSQL query conversion
 - DocumentScoringAgent: Document relevance scoring for user questions
 - CitationFinderAgent: Extracts relevant passages and citations from scored documents
+- ReportingAgent: Synthesizes citations into medical publication-style reports
 
 Queue System:
 - QueueManager: SQLite-based task queuing for memory-efficient processing
@@ -20,6 +21,7 @@ from .base import BaseAgent
 from .query_agent import QueryAgent
 from .scoring_agent import DocumentScoringAgent, ScoringResult
 from .citation_agent import CitationFinderAgent, Citation
+from .reporting_agent import ReportingAgent, Reference, Report
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 
@@ -30,6 +32,9 @@ __all__ = [
     "ScoringResult",
     "CitationFinderAgent",
     "Citation",
+    "ReportingAgent",
+    "Reference", 
+    "Report",
     "QueueManager", 
     "TaskStatus", 
     "TaskPriority",
