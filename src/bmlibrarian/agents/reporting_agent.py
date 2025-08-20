@@ -36,7 +36,16 @@ class Reference:
             author_str = ", ".join(self.authors[:6]) + ", et al."
         
         # Format publication year
-        year = self.publication_date.split('-')[0] if '-' in self.publication_date else self.publication_date
+        # Handle both string and datetime.date objects
+        if hasattr(self.publication_date, 'year'):
+            # It's a datetime.date object
+            year = str(self.publication_date.year)
+        elif isinstance(self.publication_date, str):
+            # It's a string - extract year
+            year = self.publication_date.split('-')[0] if '-' in self.publication_date else self.publication_date
+        else:
+            # Fallback to string representation
+            year = str(self.publication_date)
         
         # Basic Vancouver format
         formatted = f"{author_str}. {self.title}. {year}"
@@ -171,7 +180,7 @@ class ReportingAgent(BaseAgent):
     def synthesize_report(self, user_question: str, citations: List[Citation],
                          min_citations: int = 2) -> Optional[Report]:
         """
-        Synthesize citations into a cohesive medical publication-style report.
+        Synthesize citations into a cohesive medical publication-style report using iterative processing.
         
         Args:
             user_question: Original research question
@@ -184,59 +193,219 @@ class ReportingAgent(BaseAgent):
         if len(citations) < min_citations:
             logger.warning(f"Insufficient citations ({len(citations)}) for report generation")
             return None
-        
+
         if not self.test_connection():
             logger.error("Cannot connect to Ollama - report synthesis unavailable")
             return None
-        
+
         try:
             # Create references and mapping
             references = self.create_references(citations)
             doc_to_ref = self.map_citations_to_references(citations, references)
             
-            # Build prompt for synthesis
-            citations_text = "\n\n".join([
-                f"Citation {doc_to_ref.get(c.document_id, '?')}: {c.passage}\n"
-                f"Source: {c.document_title}\n"
-                f"Summary: {c.summary}\n"
-                f"Relevance: {c.relevance_score:.2f}"
-                for c in citations
-            ])
+            # Process citations iteratively to build the report
+            synthesized_content = self.iterative_synthesis(user_question, citations, doc_to_ref)
             
-            prompt = f"""You are a medical writing expert tasked with synthesizing research citations into a cohesive, evidence-based answer in the style of a peer-reviewed medical publication.
+            if not synthesized_content:
+                logger.error("Failed to synthesize content from citations")
+                return None
+            
+            # Generate methodology note
+            methodology_note = f"Evidence synthesis based on {len(citations)} citations from {len(references)} documents using iterative processing to ensure comprehensive coverage while avoiding context limits."
+            
+            # Assess evidence strength
+            evidence_strength = self.assess_evidence_strength(citations)
+            
+            # Create report
+            report = Report(
+                user_question=user_question,
+                synthesized_answer=synthesized_content,
+                references=references,
+                evidence_strength=evidence_strength,
+                methodology_note=methodology_note,
+                created_at=datetime.now(timezone.utc),
+                citation_count=len(citations),
+                unique_documents=len(references)
+            )
+            
+            logger.info(f"Successfully synthesized report with {len(citations)} citations from {len(references)} documents")
+            return report
+            
+        except Exception as e:
+            logger.error(f"Error synthesizing report: {e}")
+            return None
+    
+    def iterative_synthesis(self, user_question: str, citations: List[Citation], 
+                          doc_to_ref: Dict[str, int]) -> Optional[str]:
+        """
+        Iteratively process citations to build a cohesive report.
+        
+        Process one citation at a time, checking if it adds new information
+        or should be combined with existing content.
+        """
+        import requests
+        
+        # Start with empty content
+        current_content = ""
+        processed_citations = []
+        
+        # Sort citations by relevance score (highest first)
+        sorted_citations = sorted(citations, key=lambda c: c.relevance_score, reverse=True)
+        
+        for i, citation in enumerate(sorted_citations):
+            ref_number = doc_to_ref.get(citation.document_id, '?')
+            
+            logger.info(f"Processing citation {i+1}/{len(citations)}: {citation.document_title[:50]}...")
+            
+            # Create prompt for this specific citation
+            if not current_content:
+                # First citation - create initial content
+                prompt = f"""You are a medical writing expert. Create the opening statement for a medical research report.
 
 Research Question: "{user_question}"
 
-Available Citations:
-{citations_text}
+Citation to process:
+Passage: "{citation.passage}"
+Summary: {citation.summary}
+Reference: [{ref_number}]
 
 Your task:
-1. Write a comprehensive, evidence-based answer that synthesizes information from the citations
-2. Use formal medical writing style appropriate for peer-reviewed publications
-3. Include in-text citations using numbered references [1], [2], etc.
-4. Ensure all claims are supported by the provided citations
-5. Be objective and present limitations where evidence is incomplete
-6. Structure the response with clear paragraphs and logical flow
-
-Guidelines:
-- Start with a clear statement addressing the research question
-- Present evidence in a logical sequence
-- Use medical terminology appropriately
-- Include numbered citations [1], [2] etc. after relevant statements
-- Conclude with a summary of findings and their implications
-- Mention any limitations of the available evidence
+1. Write 1-2 sentences that directly address the research question using this citation
+2. Use formal medical writing style
+3. Include the reference number [{ref_number}] after relevant statements
+4. Start with a clear topic sentence
 
 Response format (JSON):
 {{
-    "synthesized_answer": "Your comprehensive, well-structured answer with numbered citations",
-    "methodology_note": "Brief note about the synthesis methodology and any limitations"
+    "content": "Your medical writing with reference [{ref_number}]",
+    "addresses_question": "Brief note on how this addresses the research question"
 }}
 
-Write in the formal, objective style of medical literature. Ensure every major claim is supported by appropriate citations."""
+Write concisely and professionally."""
+            else:
+                # Subsequent citations - check if new information
+                prompt = f"""You are a medical writing expert. You have existing content for a medical research report and need to decide how to incorporate a new citation.
+
+Research Question: "{user_question}"
+
+Current content:
+{current_content}
+
+New citation to process:
+Passage: "{citation.passage}"
+Summary: {citation.summary}
+Reference: [{ref_number}]
+
+Your task:
+1. Determine if this citation adds NEW information not already covered
+2. If NEW: Write 1-2 additional sentences with reference [{ref_number}]
+3. If SUPPORTING existing point: Add reference [{ref_number}] to existing sentence
+4. Maintain formal medical writing style
+
+Response format (JSON):
+{{
+    "action": "add_new" or "add_reference",
+    "content": "New sentence(s) with [{ref_number}] OR updated existing content with added [{ref_number}]",
+    "reasoning": "Brief explanation of decision"
+}}
+
+Be concise and avoid redundancy."""
             
-            # Make request to Ollama
-            import requests
-            
+            try:
+                response = requests.post(
+                    f"{self.host}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": self.temperature,
+                            "top_p": self.top_p
+                        }
+                    },
+                    timeout=60  # Short timeout for individual citations
+                )
+                
+                if response.status_code != 200:
+                    logger.warning(f"Failed to process citation {i+1}: HTTP {response.status_code}")
+                    continue
+                
+                result = response.json()
+                llm_response = result.get('response', '').strip()
+                
+                if not llm_response:
+                    logger.warning(f"Empty response for citation {i+1}")
+                    continue
+                
+                # Parse JSON response
+                try:
+                    citation_data = json.loads(llm_response)
+                except json.JSONDecodeError:
+                    # Try to extract JSON from response
+                    import re
+                    json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+                    if json_match:
+                        citation_data = json.loads(json_match.group())
+                    else:
+                        logger.warning(f"Could not parse JSON for citation {i+1}: {llm_response}")
+                        continue
+                
+                # Process the result
+                if not current_content:
+                    # First citation
+                    current_content = citation_data.get('content', '')
+                else:
+                    # Subsequent citation
+                    action = citation_data.get('action', 'add_new')
+                    new_content = citation_data.get('content', '')
+                    
+                    if action == 'add_new' and new_content:
+                        # Add new content
+                        current_content += " " + new_content
+                    elif action == 'add_reference' and new_content:
+                        # Replace current content with updated version
+                        current_content = new_content
+                
+                processed_citations.append(citation)
+                
+            except Exception as e:
+                logger.warning(f"Error processing citation {i+1}: {e}")
+                continue
+        
+        if not current_content:
+            logger.error("No content generated from citations")
+            return None
+        
+        # Final step: Reformat into cohesive report
+        final_content = self.final_formatting(user_question, current_content)
+        return final_content or current_content
+    
+    def final_formatting(self, user_question: str, content: str) -> Optional[str]:
+        """Final formatting pass to ensure cohesive medical writing."""
+        import requests
+        
+        prompt = f"""You are a medical writing expert. Review and reformat the following content into a cohesive medical publication-style paragraph.
+
+Research Question: "{user_question}"
+
+Current content:
+{content}
+
+Your task:
+1. Ensure smooth transitions between sentences
+2. Maintain formal medical writing style
+3. Preserve all reference numbers exactly as they appear
+4. Create a logical flow of information
+5. Add a concluding statement if appropriate
+
+Response format (JSON):
+{{
+    "formatted_content": "Your polished, cohesive medical writing with all references preserved"
+}}
+
+Do not add or remove any reference numbers. Only improve readability and flow."""
+        
+        try:
             response = requests.post(
                 f"{self.host}/api/generate",
                 json={
@@ -252,49 +421,32 @@ Write in the formal, objective style of medical literature. Ensure every major c
             )
             
             if response.status_code != 200:
-                logger.error(f"Ollama request failed: {response.status_code}")
+                logger.warning("Failed final formatting, using unformatted content")
                 return None
             
             result = response.json()
             llm_response = result.get('response', '').strip()
             
             if not llm_response:
-                logger.warning("Empty response from model for report synthesis")
                 return None
             
             # Parse JSON response
             try:
-                synthesis_data = json.loads(llm_response)
+                format_data = json.loads(llm_response)
+                return format_data.get('formatted_content')
             except json.JSONDecodeError:
-                # Try to extract JSON from response if wrapped in text
+                # Try to extract JSON
                 import re
                 json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
                 if json_match:
-                    synthesis_data = json.loads(json_match.group())
+                    format_data = json.loads(json_match.group())
+                    return format_data.get('formatted_content')
                 else:
-                    logger.error(f"Could not parse JSON from synthesis response: {llm_response}")
+                    logger.warning("Could not parse final formatting response")
                     return None
-            
-            # Assess evidence strength
-            evidence_strength = self.assess_evidence_strength(citations)
-            
-            # Create report
-            report = Report(
-                user_question=user_question,
-                synthesized_answer=synthesis_data['synthesized_answer'],
-                references=references,
-                evidence_strength=evidence_strength,
-                methodology_note=synthesis_data.get('methodology_note', ''),
-                created_at=datetime.now(timezone.utc),
-                citation_count=len(citations),
-                unique_documents=len(references)
-            )
-            
-            logger.info(f"Successfully synthesized report with {len(citations)} citations from {len(references)} documents")
-            return report
-            
+        
         except Exception as e:
-            logger.error(f"Error synthesizing report: {e}")
+            logger.warning(f"Error in final formatting: {e}")
             return None
     
     def format_report_output(self, report: Report) -> str:
