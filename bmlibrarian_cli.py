@@ -174,37 +174,177 @@ class MedicalResearchCLI:
             print("Let's try again...")
     
     def search_documents_with_review(self, question: str) -> List[Dict[str, Any]]:
-        """Use QueryAgent to search documents and allow user review."""
+        """Use QueryAgent to search documents with human-in-the-loop query editing."""
         print("\n" + "=" * 60)
-        print("Step 2: Document Search")
+        print("Step 2: Database Query Generation & Search")
         print("=" * 60)
         
         try:
-            print(f"\n🔍 Searching for: \"{question}\"")
-            print("⏳ Processing...")
+            # Step 2a: Generate initial to_tsquery string
+            print(f"\n🔍 Generating database query for: \"{question}\"")
+            print("⏳ Converting natural language to PostgreSQL to_tsquery format...")
             
-            # Use QueryAgent's find_abstracts method directly
+            initial_query = self.query_agent.convert_question(question)
+            
+            if not initial_query:
+                print("❌ Failed to generate database query.")
+                return []
+            
+            # Step 2b: Show generated query and allow editing
+            current_query = initial_query
+            
+            while True:
+                print(f"\n📋 Generated PostgreSQL Query:")
+                print("=" * 50)
+                print(f"to_tsquery: {current_query}")
+                print("=" * 50)
+                
+                print(f"\nQuery explanation:")
+                print("• '&' means AND (all terms must appear)")
+                print("• '|' means OR (any of these terms can appear)")
+                print("• Parentheses group related terms")
+                print("• Multi-word phrases are kept together")
+                
+                print(f"\nOptions:")
+                print("1. Use this query for search")
+                print("2. Edit the query manually")
+                print("3. Regenerate query with different approach")
+                print("4. Go back to change research question")
+                
+                choice = input("Choose option (1-4): ").strip()
+                
+                if choice == '1':
+                    # Proceed with current query
+                    self.current_query = current_query
+                    break
+                    
+                elif choice == '2':
+                    # Manual editing
+                    print(f"\n✏️  Manual Query Editing:")
+                    print("Current query:", current_query)
+                    print("\nTips for editing:")
+                    print("• Use & for AND, | for OR")
+                    print("• Use parentheses to group terms")
+                    print("• Keep medical terminology")
+                    print("• Example: (diabetes | diabetic) & (treatment | therapy)")
+                    
+                    new_query = input("\nEnter your edited query: ").strip()
+                    
+                    if new_query:
+                        # Basic validation
+                        if self._validate_tsquery(new_query):
+                            current_query = new_query
+                            print("✅ Query updated successfully")
+                        else:
+                            print("⚠️  Warning: Query format may be invalid, but proceeding...")
+                            current_query = new_query
+                    else:
+                        print("❌ No changes made - keeping original query")
+                    continue
+                    
+                elif choice == '3':
+                    # Regenerate with different approach
+                    print(f"\n🔄 Regenerating query...")
+                    print("Trying different keyword extraction approach...")
+                    
+                    # You could implement different generation strategies here
+                    # For now, we'll just regenerate with the same method
+                    regenerated_query = self.query_agent.convert_question(question)
+                    
+                    if regenerated_query and regenerated_query != current_query:
+                        current_query = regenerated_query
+                        print("✅ New query generated")
+                    else:
+                        print("⚠️  Generated same query - no change")
+                    continue
+                    
+                elif choice == '4':
+                    # Go back to question entry
+                    return []
+                    
+                else:
+                    print("❌ Invalid option. Please choose 1-4.")
+                    continue
+            
+            # Step 2c: Execute the search with the final query
+            print(f"\n🔍 Executing search with query: {current_query}")
+            print("⏳ Searching database...")
+            
+            # Use the raw database search with the validated query
+            from bmlibrarian.database import find_abstracts
+            
             documents = []
-            for doc in self.query_agent.find_abstracts(
-                question=question,
+            results_generator = find_abstracts(
+                current_query,
                 max_rows=self.max_search_results,
-                use_ranking=True
-            ):
+                plain=False  # Use to_tsquery format
+            )
+            
+            for doc in results_generator:
                 documents.append(doc)
             
             if not documents:
-                print("❌ No documents found.")
-                return []
+                print("❌ No documents found with this query.")
+                print("\nSuggestions:")
+                print("• Try broader search terms")
+                print("• Use fewer AND (&) operators")
+                print("• Add more OR (|) alternatives")
+                print("• Check spelling of medical terms")
+                
+                retry = input("\nWould you like to modify the query and try again? (y/n): ").strip().lower()
+                if retry in ['y', 'yes']:
+                    return self.search_documents_with_review(question)
+                else:
+                    return []
             
             print(f"\n✅ Found {len(documents)} documents")
             return documents
             
         except Exception as e:
-            print(f"❌ Error in document search: {e}")
+            print(f"❌ Error in query generation/search: {e}")
+            print("\nPossible issues:")
+            print("• Database connection problem")
+            print("• Invalid query syntax")
+            print("• Ollama service unavailable")
+            
             return []
+    
+    def _validate_tsquery(self, query: str) -> bool:
+        """Basic validation of to_tsquery format."""
+        try:
+            # Simple validation checks
+            if not query.strip():
+                return False
+            
+            # Check for balanced parentheses
+            if query.count('(') != query.count(')'):
+                return False
+            
+            # Check for valid operators (basic check)
+            invalid_patterns = ['&&', '||', '&|', '|&', '& &', '| |']
+            for pattern in invalid_patterns:
+                if pattern in query:
+                    return False
+            
+            # Check for empty parentheses
+            if '()' in query:
+                return False
+            
+            # Check for operators at start/end
+            stripped = query.strip()
+            if stripped.startswith(('&', '|')) or stripped.endswith(('&', '|')):
+                return False
+            
+            return True
+        except:
+            return False
     
     def display_documents(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Display documents to user and get confirmation to proceed."""
+        print("\n" + "=" * 60)
+        print("Step 3: Document Review")
+        print("=" * 60)
+        
         if not documents:
             return documents
         
@@ -954,8 +1094,8 @@ class MedicalResearchCLI:
         print("This CLI provides an interactive workflow for evidence-based medical research:")
         print()
         print("1. **Research Question:** Enter your medical research question")
-        print("2. **Query Generation:** AI generates database query with human editing")
-        print("3. **Document Search:** Execute search and review results")
+        print("2. **Query Generation:** AI generates PostgreSQL to_tsquery with human editing")
+        print("3. **Document Search:** Execute database search and review results")
         print("4. **Relevance Scoring:** AI scores documents (1-5) for relevance")
         print("5. **Citation Extraction:** Extract relevant passages from high-scoring documents")
         print("6. **Report Generation:** Create medical publication-style report")

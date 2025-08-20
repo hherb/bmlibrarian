@@ -9,6 +9,7 @@ Available Agents:
 - DocumentScoringAgent: Document relevance scoring for user questions
 - CitationFinderAgent: Extracts relevant passages and citations from scored documents
 - ReportingAgent: Synthesizes citations into medical publication-style reports
+- CounterfactualAgent: Analyzes documents to generate research questions for finding contradictory evidence
 
 Queue System:
 - QueueManager: SQLite-based task queuing for memory-efficient processing
@@ -22,6 +23,7 @@ from .query_agent import QueryAgent
 from .scoring_agent import DocumentScoringAgent, ScoringResult
 from .citation_agent import CitationFinderAgent, Citation
 from .reporting_agent import ReportingAgent, Reference, Report
+from .counterfactual_agent import CounterfactualAgent, CounterfactualQuestion, CounterfactualAnalysis
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 
@@ -35,6 +37,9 @@ __all__ = [
     "ReportingAgent",
     "Reference", 
     "Report",
+    "CounterfactualAgent",
+    "CounterfactualQuestion",
+    "CounterfactualAnalysis",
     "QueueManager", 
     "TaskStatus", 
     "TaskPriority",

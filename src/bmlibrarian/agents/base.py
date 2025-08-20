@@ -37,7 +37,8 @@ class BaseAgent(ABC):
         temperature: float = 0.1,
         top_p: float = 0.9,
         callback: Optional[Callable[[str, str], None]] = None,
-        orchestrator: Optional["AgentOrchestrator"] = None
+        orchestrator: Optional["AgentOrchestrator"] = None,
+        show_model_info: bool = True
     ):
         """
         Initialize the base agent.
@@ -49,6 +50,7 @@ class BaseAgent(ABC):
             top_p: Model top-p sampling parameter (0.0-1.0)
             callback: Optional callback function called with (step, data) for progress updates
             orchestrator: Optional orchestrator for queue-based processing
+            show_model_info: Whether to display model information on initialization
         """
         self.model = model
         self.host = host
@@ -57,6 +59,15 @@ class BaseAgent(ABC):
         self.callback = callback
         self.client = ollama.Client(host=host)
         self.orchestrator = orchestrator
+        
+        # Display model information if requested
+        if show_model_info:
+            self._display_model_info()
+    
+    def _display_model_info(self) -> None:
+        """Display model information to terminal."""
+        agent_type = self.get_agent_type() if hasattr(self, 'get_agent_type') else "Agent"
+        print(f"🤖 {agent_type} initialized with model: {self.model}")
     
     def _call_callback(self, step: str, data: str) -> None:
         """

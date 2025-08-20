@@ -7,7 +7,7 @@ reference formatting in the style of peer-reviewed medical publications.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -81,12 +81,29 @@ class ReportingAgent(BaseAgent):
     with proper reference formatting and medical publication style.
     """
     
-    def __init__(self, orchestrator=None, ollama_url: str = "http://localhost:11434", 
-                 model: str = "gpt-oss:20b"):
-        super().__init__(model=model, host=ollama_url, orchestrator=orchestrator)
+    def __init__(self,
+                 model: str = "gpt-oss:20b",
+                 host: str = "http://localhost:11434",
+                 temperature: float = 0.3,
+                 top_p: float = 0.9,
+                 callback: Optional[Callable[[str, str], None]] = None,
+                 orchestrator=None,
+                 show_model_info: bool = True):
+        """
+        Initialize the ReportingAgent.
+        
+        Args:
+            model: The name of the Ollama model to use (default: gpt-oss:20b)
+            host: The Ollama server host URL (default: http://localhost:11434)
+            temperature: Model temperature for natural writing (default: 0.3)
+            top_p: Model top-p sampling parameter (default: 0.9)
+            callback: Optional callback function for progress updates
+            orchestrator: Optional orchestrator for queue-based processing
+            show_model_info: Whether to display model information on initialization
+        """
+        super().__init__(model=model, host=host, temperature=temperature, top_p=top_p,
+                        callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "reporting_agent"
-        # Higher temperature for more natural writing
-        self.temperature = 0.3
     
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""

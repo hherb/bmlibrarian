@@ -1,0 +1,59 @@
+{
+  "_comment": "BMLibrarian Configuration File - Edit this file to customize models and settings",
+  "_model_options": {
+    "fast": "medgemma4B_it_q8:latest",
+    "medical": "medgemma-27b-text-it-Q8_0:latest",
+    "complex": "gpt-oss:20b",
+    "note": "You can use any model available in your Ollama installation"
+  },
+  "models": {
+    "counterfactual_agent": "medgemma-27b-text-it-Q8_0:latest",
+    "query_agent": "medgemma4B_it_q8:latest",
+    "scoring_agent": "medgemma4B_it_q8:latest",
+    "citation_agent": "medgemma-27b-text-it-Q8_0:latest",
+    "reporting_agent": "gpt-oss:20b",
+    "fast_model": "medgemma4B_it_q8:latest",
+    "complex_model": "gpt-oss:20b",
+    "medical_model": "medgemma-27b-text-it-Q8_0:latest"
+  },
+  "ollama": {
+    "host": "http://localhost:11434",
+    "timeout": 120,
+    "max_retries": 3
+  },
+  "agents": {
+    "counterfactual": {
+      "temperature": 0.2,
+      "top_p": 0.9,
+      "max_tokens": 4000,
+      "retry_attempts": 3
+    },
+    "scoring": {
+      "temperature": 0.1,
+      "top_p": 0.9,
+      "max_tokens": 1000,
+      "min_relevance_score": 3
+    },
+    "query": {
+      "temperature": 0.1,
+      "top_p": 0.9,
+      "max_tokens": 1000
+    },
+    "citation": {
+      "temperature": 0.2,
+      "top_p": 0.9,
+      "max_tokens": 1000,
+      "min_relevance": 0.7
+    },
+    "reporting": {
+      "temperature": 0.1,
+      "top_p": 0.9,
+      "max_tokens": 3000
+    }
+  },
+  "database": {
+    "max_results_per_query": 10,
+    "batch_size": 50,
+    "use_ranking": false
+  }
+}

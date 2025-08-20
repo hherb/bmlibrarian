@@ -37,7 +37,8 @@ class DocumentScoringAgent(BaseAgent):
         temperature: float = 0.1,
         top_p: float = 0.9,
         callback: Optional[Callable[[str, str], None]] = None,
-        orchestrator: Optional["AgentOrchestrator"] = None
+        orchestrator: Optional["AgentOrchestrator"] = None,
+        show_model_info: bool = True
     ):
         """
         Initialize the DocumentScoringAgent.
@@ -49,8 +50,9 @@ class DocumentScoringAgent(BaseAgent):
             top_p: Model top-p sampling parameter (default: 0.9)
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
+            show_model_info: Whether to display model information on initialization
         """
-        super().__init__(model, host, temperature, top_p, callback, orchestrator)
+        super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
         
         # System prompt for document relevance scoring
         self.system_prompt = """You are a biomedical literature expert evaluating document relevance. Your task is to score how well a document answers or relates to a user's question.
@@ -78,10 +80,12 @@ Return ONLY a valid JSON object with this exact structure. Do not include any te
 }
 
 IMPORTANT: 
+- Return RAW JSON only - no markdown code blocks (```json) or backticks
 - Ensure the JSON is complete and properly closed
 - Keep reasoning under 200 characters to avoid truncation
 - Use only double quotes for JSON strings
 - Do not include trailing commas
+- Do not wrap the JSON in any formatting
 
 Example Response:
 {
@@ -258,6 +262,12 @@ Please evaluate how well this document addresses the user's question and provide
             json.JSONDecodeError: If JSON cannot be parsed
         """
         response = response.strip()
+        
+        # Remove markdown code block wrapper if present
+        if response.startswith('```json') and response.endswith('```'):
+            response = response[7:-3].strip()  # Remove ```json and ```
+        elif response.startswith('```') and response.endswith('```'):
+            response = response[3:-3].strip()   # Remove ``` and ```
         
         # Try parsing as-is first
         try:

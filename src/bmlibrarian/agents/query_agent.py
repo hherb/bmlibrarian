@@ -35,7 +35,8 @@ class QueryAgent(BaseAgent):
         temperature: float = 0.1,
         top_p: float = 0.9,
         callback: Optional[Callable[[str, str], None]] = None,
-        orchestrator: Optional["AgentOrchestrator"] = None
+        orchestrator: Optional["AgentOrchestrator"] = None,
+        show_model_info: bool = True
     ):
         """
         Initialize the QueryAgent.
@@ -47,8 +48,9 @@ class QueryAgent(BaseAgent):
             top_p: Model top-p sampling parameter (default: 0.9)
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
+            show_model_info: Whether to display model information on initialization
         """
-        super().__init__(model, host, temperature, top_p, callback, orchestrator)
+        super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
         
         # System prompt for biomedical query conversion
         self.system_prompt = """You are a biomedical literature search expert. Your task is to convert natural language questions into PostgreSQL to_tsquery format for searching biomedical publication abstracts.
@@ -113,10 +115,14 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
                 num_predict=100
             )
             
-            # Clean up quotation marks and validate
+            # Clean up quotation marks, remove duplicates, and validate
             logger.debug(f"Raw LLM response: {repr(query)}")
             query = self._clean_quotes(query)
             logger.debug(f"After cleaning quotes: {repr(query)}")
+            query = self._remove_duplicates(query)
+            logger.debug(f"After removing duplicates: {repr(query)}")
+            query = self._fix_malformed_syntax(query)
+            logger.debug(f"After syntax fixes: {repr(query)}")
             
             if not self._validate_tsquery(query):
                 logger.warning(f"Generated query may be invalid: {query}")
@@ -184,6 +190,99 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         query = re.sub(pattern, quote_phrase, query)
 
         return query
+    
+    def _remove_duplicates(self, query: str) -> str:
+        """
+        Remove duplicate terms from OR groups in the query.
+        
+        Args:
+            query: The query string to deduplicate
+            
+        Returns:
+            Query with duplicate terms removed
+        """
+        import re as re_module
+        
+        def deduplicate_or_group(match):
+            """Process a parenthesized OR group and remove duplicates."""
+            group_content = match.group(1)  # Content inside parentheses
+            
+            # Split on | to get individual terms
+            terms = [term.strip() for term in group_content.split('|')]
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_terms = []
+            for term in terms:
+                # Normalize for comparison (handle quotes and case)
+                normalized = term.lower().strip('\'"')
+                if normalized not in seen and term.strip():
+                    seen.add(normalized)
+                    unique_terms.append(term)
+            
+            # Rejoin with |
+            if len(unique_terms) > 1:
+                return f"({' | '.join(unique_terms)})"
+            elif len(unique_terms) == 1:
+                return unique_terms[0]
+            else:
+                return ""
+        
+        # Find and deduplicate OR groups: (term1 | term2 | term1 | term3)
+        pattern = r'\(([^()]+)\)'
+        query = re_module.sub(pattern, deduplicate_or_group, query)
+        
+        # Clean up any double spaces or operators
+        query = re_module.sub(r'\s+', ' ', query)
+        query = re_module.sub(r'\s*\|\s*', ' | ', query)
+        query = re_module.sub(r'\s*&\s*', ' & ', query)
+        
+        return query.strip()
+    
+    def _fix_malformed_syntax(self, query: str) -> str:
+        """
+        Fix common syntax issues in generated queries.
+        
+        Args:
+            query: The query string to fix
+            
+        Returns:
+            Query with syntax issues fixed
+        """
+        import re as re_module
+        
+        # Remove single quotes around individual terms (PostgreSQL to_tsquery doesn't need them)
+        # But keep quotes around multi-word phrases
+        def fix_quotes(match):
+            content = match.group(1)
+            # If it's a single word, remove quotes
+            if not ' ' in content.strip():
+                return content
+            # If it's multiple words, keep the quotes but ensure proper escaping
+            return f"'{content}'"
+        
+        # Fix single-quoted terms: 'word' -> word, but keep 'multi word' -> 'multi word'
+        query = re_module.sub(r"'([^']*)'", fix_quotes, query)
+        
+        # Remove any remaining malformed quote patterns
+        query = re_module.sub(r"''([^']*)''", r"'\1'", query)  # Double quotes to single
+        
+        # Fix operators with spaces
+        query = re_module.sub(r'\s*&\s*', ' & ', query)
+        query = re_module.sub(r'\s*\|\s*', ' | ', query)
+        
+        # Remove trailing/leading operators
+        query = re_module.sub(r'^[\s&|]+', '', query)
+        query = re_module.sub(r'[\s&|]+$', '', query)
+        
+        # Fix empty parentheses or single terms in parentheses
+        query = re_module.sub(r'\(\s*\)', '', query)
+        query = re_module.sub(r'\(\s*([^|&()]+)\s*\)', r'\1', query)
+        
+        # Clean up multiple spaces
+        query = re_module.sub(r'\s+', ' ', query)
+        
+        return query.strip()
     
     def _validate_tsquery(self, query: str) -> bool:
         """
