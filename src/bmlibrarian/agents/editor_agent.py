@@ -107,6 +107,16 @@ Guidelines for balanced reporting:
 - Use tables and structured formatting for complex data
 - Maintain academic tone while being accessible
 
+CRITICAL TRUTHFULNESS REQUIREMENTS:
+- NEVER fabricate methodology details, databases, or review processes
+- ONLY describe the actual data sources provided (PubMed and medRxiv articles)
+- NEVER claim systematic review methodology unless explicitly performed
+- NEVER invent reviewer counts, search strategies, or inclusion criteria
+- NEVER reference databases not used (e.g., Embase, Cochrane CENTRAL)
+- Base methodology section ONLY on the actual process: AI-powered literature search and synthesis
+- Acknowledge the automated nature of the evidence collection and analysis process
+- Do NOT claim manual data extraction, independent reviewers, or consensus processes that did not occur
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax (##, ###, *, **, etc.)
 - Create tables using markdown table format
@@ -121,7 +131,7 @@ Return ONLY a valid JSON object with this exact structure:
 {
     "title": "Descriptive title for the research question",
     "executive_summary": "3-4 paragraph summary of key findings and conclusions",
-    "methodology_section": "Description of search strategy, inclusion criteria, and analysis methods",
+    "methodology_section": "Truthful description of the AI-powered literature search using PubMed and medRxiv data sources - do NOT fabricate systematic review processes",
     "findings_section": "Detailed presentation of supporting evidence with subheadings",
     "contradictory_evidence_section": "Balanced presentation of conflicting or limiting evidence (null if none)",
     "limitations_section": "Discussion of study limitations, biases, and methodological concerns", 
@@ -201,7 +211,9 @@ CONTRADICTORY EVIDENCE:
 CONFIDENCE ANALYSIS:
 {content_package['confidence_analysis']}
 
-Create a balanced, academically rigorous report that presents both supporting evidence and contradictory findings. Use proper markdown formatting, include evidence quality tables where appropriate, and provide transparent confidence assessments."""
+Create a balanced, academically rigorous report that presents both supporting evidence and contradictory findings. Use proper markdown formatting, include evidence quality tables where appropriate, and provide transparent confidence assessments.
+
+IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe the AI-powered literature search and synthesis process used. Only reference PubMed and medRxiv as data sources. Do NOT fabricate systematic review processes, independent reviewers, search dates, inclusion/exclusion criteria, or analysis methods that were not actually performed. Be truthful about the automated nature of the evidence collection and analysis."""
                     }
                 ]
                 

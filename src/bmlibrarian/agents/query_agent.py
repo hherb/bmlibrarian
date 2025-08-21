@@ -251,6 +251,11 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         """
         import re as re_module
         
+        # Remove invalid wildcard characters around quoted phrases
+        query = re_module.sub(r'\*\s*\'([^\']*)\'\s*\*', r"'\1'", query)  # *'phrase'* -> 'phrase'
+        query = re_module.sub(r'\*\s*\'([^\']*)', r"'\1'", query)  # *'phrase -> 'phrase'
+        query = re_module.sub(r'([^\']*)\'\s*\*', r"\1'", query)  # phrase'* -> phrase'
+        
         # Remove single quotes around individual terms (PostgreSQL to_tsquery doesn't need them)
         # But keep quotes around multi-word phrases
         def fix_quotes(match):
