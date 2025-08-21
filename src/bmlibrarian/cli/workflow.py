@@ -12,6 +12,10 @@ from bmlibrarian.agents import (
     ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator, 
     Citation, Report, CounterfactualAnalysis, EditedReport
 )
+from .workflow_steps import (
+    WorkflowStep, StepResult, WorkflowDefinition, WorkflowExecutor,
+    create_default_research_workflow
+)
 
 # Get logger for workflow operations
 logger = logging.getLogger('bmlibrarian.workflow')
@@ -34,6 +38,10 @@ class WorkflowOrchestrator:
         self.reporting_agent: Optional[ReportingAgent] = None
         self.counterfactual_agent: Optional[CounterfactualAgent] = None
         self.editor_agent: Optional[EditorAgent] = None
+        
+        # Workflow execution system
+        self.workflow_definition: Optional[WorkflowDefinition] = None
+        self.workflow_executor: Optional[WorkflowExecutor] = None
         
         # Workflow state
         self.current_question: Optional[str] = None
@@ -128,7 +136,7 @@ class WorkflowOrchestrator:
         return True
     
     def run_complete_workflow(self, auto_question: str = None) -> bool:
-        """Execute the complete research workflow with user interaction."""
+        """Execute the complete research workflow using the new step-based system."""
         workflow_start_time = time.time()
         workflow_id = f"workflow_{int(workflow_start_time)}"
         
@@ -148,215 +156,68 @@ class WorkflowOrchestrator:
         }})
         
         try:
-            # Setup
+            # Setup agents and workflow
             setup_start = time.time()
             if not self.setup_agents():
                 logger.error("Agent setup failed")
                 self.ui.show_error_message("Cannot proceed without proper agent setup.")
                 return False
             
-            logger.info(f"Agents setup completed in {(time.time() - setup_start)*1000:.2f}ms")
+            # Initialize workflow system
+            self.workflow_definition = create_default_research_workflow()
+            self.workflow_executor = WorkflowExecutor(self.workflow_definition)
+            
+            # Add auto question to context if provided
+            if auto_question:
+                self.workflow_executor.add_context('auto_question', auto_question)
+                self.workflow_executor.add_context('auto_mode', self.config.auto_mode)
+            
+            logger.info(f"Agents and workflow setup completed in {(time.time() - setup_start)*1000:.2f}ms")
             
             # Start orchestrator
             self.orchestrator.start_processing()
             
-            # Step 1: Get research question
-            step1_start = time.time()
-            logger.info("Step 1: Getting research question", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 1,
-                'step_name': 'get_research_question',
-                'timestamp': step1_start
-            }})
+            # Execute workflow steps
+            current_step = self.workflow_definition.steps[0]  # Start with first step
             
-            if self.config.auto_mode and auto_question:
-                question = auto_question
-                print(f"\n🔬 Auto-mode research question: {question}")
-                logger.info(f"Using auto-mode question: {question}")
-            else:
-                question = self.ui.get_research_question()
-                if not question:
-                    if self.config.auto_mode:
-                        logger.error("Auto mode requires a research question")
-                        self.ui.show_error_message("Auto mode requires a research question to be provided.")
-                    else:
-                        logger.info("User cancelled question input")
-                    return False
-                logger.info(f"User provided question: {question}")
-            
-            self.current_question = question
-            step1_time = (time.time() - step1_start) * 1000
-            logger.info(f"Step 1 completed in {step1_time:.2f}ms")
-            
-            # Step 2: Search documents using QueryAgent
-            step2_start = time.time()
-            logger.info("Step 2: Document search", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 2,
-                'step_name': 'document_search',
-                'timestamp': step2_start
-            }})
-            
-            documents = self._execute_document_search(question)
-            if not documents:
-                logger.error("No documents found in search")
-                self.ui.show_error_message("Cannot proceed without documents.")
-                return False
-            
-            step2_time = (time.time() - step2_start) * 1000
-            logger.info(f"Step 2 completed: {len(documents)} documents found in {step2_time:.2f}ms")
-            
-            # Step 3: Display and review documents
-            step3_start = time.time()
-            logger.info("Step 3: Document review", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 3,
-                'step_name': 'document_review',
-                'document_count': len(documents),
-                'timestamp': step3_start
-            }})
-            
-            documents = self._process_search_results(documents)
-            if not documents:
-                logger.error("Document review cancelled or failed")
-                return False
-            
-            self.search_results = documents
-            step3_time = (time.time() - step3_start) * 1000
-            logger.info(f"Step 3 completed: {len(documents)} documents approved in {step3_time:.2f}ms")
-            
-            # Step 4: Score documents using DocumentScoringAgent
-            step4_start = time.time()
-            logger.info("Step 4: Document scoring", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 4,
-                'step_name': 'document_scoring',
-                'document_count': len(documents),
-                'timestamp': step4_start
-            }})
-            
-            scored_docs = self._execute_document_scoring(question, documents)
-            if not scored_docs:
-                logger.error("Document scoring failed")
-                self.ui.show_error_message("Cannot proceed without scored documents.")
-                return False
-            
-            self.scored_documents = scored_docs
-            step4_time = (time.time() - step4_start) * 1000
-            logger.info(f"Step 4 completed: {len(scored_docs)} documents scored in {step4_time:.2f}ms")
-            
-            # Step 5: Extract citations using CitationFinderAgent
-            step5_start = time.time()
-            logger.info("Step 5: Citation extraction", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 5,
-                'step_name': 'citation_extraction',
-                'scored_document_count': len(scored_docs),
-                'timestamp': step5_start
-            }})
-            
-            citations = self._execute_citation_extraction(question, scored_docs)
-            if not citations:
-                logger.error("Citation extraction failed")
-                self.ui.show_error_message("Cannot proceed without citations.")
-                return False
-            
-            self.extracted_citations = citations
-            step5_time = (time.time() - step5_start) * 1000
-            logger.info(f"Step 5 completed: {len(citations)} citations extracted in {step5_time:.2f}ms")
-            
-            # Step 6: Generate report using ReportingAgent
-            step6_start = time.time()
-            logger.info("Step 6: Report generation", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 6,
-                'step_name': 'report_generation',
-                'citation_count': len(citations),
-                'timestamp': step6_start
-            }})
-            
-            report = self._execute_report_generation(question, citations)
-            if not report:
-                logger.error("Report generation failed")
-                self.ui.show_error_message("Report generation failed.")
-                return False
-            
-            self.final_report = report
-            step6_time = (time.time() - step6_start) * 1000
-            logger.info(f"Step 6 completed: Report generated in {step6_time:.2f}ms")
-            
-            # Step 7: Optional counterfactual analysis
-            step7_start = time.time()
-            logger.info("Step 7: Counterfactual analysis", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 7,
-                'step_name': 'counterfactual_analysis',
-                'timestamp': step7_start
-            }})
-            
-            counterfactual_analysis = self._execute_counterfactual_analysis(report)
-            if counterfactual_analysis:
-                self.counterfactual_analysis = counterfactual_analysis
-                logger.info(f"Counterfactual analysis completed: {len(counterfactual_analysis.counterfactual_questions)} questions generated")
-            else:
-                logger.info("Counterfactual analysis skipped or failed")
-            
-            step7_time = (time.time() - step7_start) * 1000
-            logger.info(f"Step 7 completed in {step7_time:.2f}ms")
-            
-            # Step 8: Comprehensive report generation using EditorAgent
-            step8_start = time.time()
-            logger.info("Step 8: Comprehensive report editing", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 8,
-                'step_name': 'comprehensive_report_editing',
-                'timestamp': step8_start
-            }})
-            
-            comprehensive_report = self._execute_comprehensive_report_editing(
-                report, question, citations, counterfactual_analysis
-            )
-            if comprehensive_report:
-                self.comprehensive_report = comprehensive_report
-                logger.info(f"Comprehensive report generated: {comprehensive_report.word_count} words")
-            else:
-                logger.info("Comprehensive report editing failed, using original report")
-            
-            step8_time = (time.time() - step8_start) * 1000
-            logger.info(f"Step 8 completed in {step8_time:.2f}ms")
-            
-            # Step 9: Save report (optional)
-            step9_start = time.time()
-            logger.info("Step 9: Report saving", extra={'structured_data': {
-                'event_type': 'workflow_step',
-                'workflow_id': workflow_id,
-                'step_number': 9,
-                'step_name': 'report_saving',
-                'timestamp': step9_start
-            }})
-            
-            if self.ui.get_save_report_choice():
-                # Use comprehensive report if available, otherwise use original report
-                report_to_save = comprehensive_report if comprehensive_report else report
-                filename = self.formatter.save_comprehensive_report_to_file(
-                    report_to_save, question, self.counterfactual_analysis, self.contradictory_evidence
+            while current_step:
+                execution = self.workflow_executor.execute_step(
+                    current_step, 
+                    self._handle_workflow_step
                 )
-                logger.info(f"Report saved to file: {filename}")
-            else:
-                logger.info("Report saving skipped")
+                self.workflow_executor.execution_history.append(execution)
+                
+                # Handle step result
+                if execution.result == StepResult.FAILURE:
+                    logger.error(f"Workflow failed at step: {current_step.display_name}")
+                    self.ui.show_error_message(f"Workflow failed at: {current_step.display_name}")
+                    return False
+                
+                elif execution.result == StepResult.USER_CANCELLED:
+                    logger.info(f"Workflow cancelled by user at step: {current_step.display_name}")
+                    return False
+                
+                elif execution.result == StepResult.REPEAT:
+                    # Repeat the current step
+                    continue
+                
+                elif execution.result == StepResult.BRANCH:
+                    # Get branched step from context
+                    branched_step = self.workflow_executor.get_context('branch_to_step')
+                    if branched_step:
+                        current_step = branched_step
+                        # Clear the branch context so it doesn't repeat
+                        self.workflow_executor.context.pop('branch_to_step', None)
+                        continue
+                
+                # Move to next step
+                current_step = self.workflow_definition.get_next_step(
+                    current_step, 
+                    self.workflow_executor.context
+                )
             
-            step9_time = (time.time() - step9_start) * 1000
-            logger.info(f"Step 9 completed in {step9_time:.2f}ms")
             
-            # Final summary
+            # Final summary and completion
             total_workflow_time = (time.time() - workflow_start_time) * 1000
             
             logger.info("Workflow completed successfully", extra={'structured_data': {
@@ -365,20 +226,23 @@ class WorkflowOrchestrator:
                 'success': True,
                 'total_time_ms': total_workflow_time,
                 'final_summary': {
-                    'question': question,
-                    'documents_found': len(documents),
-                    'documents_scored': len(scored_docs),
-                    'citations_extracted': len(citations),
-                    'evidence_strength': report.evidence_strength,
-                    'counterfactual_questions': len(counterfactual_analysis.counterfactual_questions) if counterfactual_analysis else 0
+                    'question': self.current_question,
+                    'documents_found': len(self.search_results),
+                    'documents_scored': len(self.scored_documents),
+                    'citations_extracted': len(self.extracted_citations),
+                    'evidence_strength': self.final_report.evidence_strength if self.final_report else None,
+                    'counterfactual_questions': len(self.counterfactual_analysis.counterfactual_questions) if self.counterfactual_analysis else 0,
+                    'steps_executed': len(self.workflow_executor.execution_history)
                 },
                 'timestamp': time.time()
             }})
             
-            self.ui.show_workflow_summary(
-                question, len(documents), len(scored_docs), 
-                len(citations), report.evidence_strength, self.counterfactual_analysis
-            )
+            # Show workflow summary if we have completed the core workflow
+            if self.current_question and self.final_report:
+                self.ui.show_workflow_summary(
+                    self.current_question, len(self.search_results), len(self.scored_documents), 
+                    len(self.extracted_citations), self.final_report.evidence_strength, self.counterfactual_analysis
+                )
             
             return True
             
@@ -419,30 +283,319 @@ class WorkflowOrchestrator:
                 logger.debug(f"Stopping orchestrator for workflow {workflow_id}")
                 self.orchestrator.stop_processing()
     
+    def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> StepResult:
+        """Handle execution of a workflow step."""
+        try:
+            if step == WorkflowStep.COLLECT_RESEARCH_QUESTION:
+                return self._handle_collect_research_question(context)
+            
+            elif step == WorkflowStep.GENERATE_AND_EDIT_QUERY:
+                return self._handle_generate_and_edit_query(context)
+            
+            elif step == WorkflowStep.SEARCH_DOCUMENTS:
+                return self._handle_search_documents(context)
+            
+            elif step == WorkflowStep.REVIEW_SEARCH_RESULTS:
+                return self._handle_review_search_results(context)
+            
+            elif step == WorkflowStep.SCORE_DOCUMENTS:
+                return self._handle_score_documents(context)
+            
+            elif step == WorkflowStep.EXTRACT_CITATIONS:
+                return self._handle_extract_citations(context)
+            
+            elif step == WorkflowStep.GENERATE_REPORT:
+                return self._handle_generate_report(context)
+            
+            elif step == WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS:
+                return self._handle_counterfactual_analysis(context)
+            
+            elif step == WorkflowStep.SEARCH_CONTRADICTORY_EVIDENCE:
+                return self._handle_search_contradictory_evidence(context)
+            
+            elif step == WorkflowStep.EDIT_COMPREHENSIVE_REPORT:
+                return self._handle_edit_comprehensive_report(context)
+            
+            elif step == WorkflowStep.EXPORT_REPORT:
+                return self._handle_export_report(context)
+            
+            elif step == WorkflowStep.REFINE_QUERY:
+                return self._handle_refine_query(context)
+            
+            elif step == WorkflowStep.ADJUST_SCORING_THRESHOLDS:
+                return self._handle_adjust_scoring_thresholds(context)
+            
+            elif step == WorkflowStep.REQUEST_MORE_CITATIONS:
+                return self._handle_request_more_citations(context)
+            
+            elif step == WorkflowStep.REVIEW_AND_REVISE_REPORT:
+                return self._handle_review_and_revise_report(context)
+            
+            else:
+                logger.error(f"Unknown workflow step: {step}")
+                return StepResult.FAILURE
+                
+        except Exception as e:
+            logger.error(f"Error executing step {step}: {e}")
+            return StepResult.FAILURE
+    
+    def _handle_collect_research_question(self, context: Dict[str, Any]) -> StepResult:
+        """Handle collecting the research question."""
+        auto_question = context.get('auto_question')
+        auto_mode = context.get('auto_mode', False)
+        
+        if auto_mode and auto_question:
+            question = auto_question
+            print(f"\n🔬 Auto-mode research question: {question}")
+            logger.info(f"Using auto-mode question: {question}")
+        else:
+            question = self.ui.get_research_question()
+            if not question:
+                if auto_mode:
+                    logger.error("Auto mode requires a research question")
+                    self.ui.show_error_message("Auto mode requires a research question to be provided.")
+                else:
+                    logger.info("User cancelled question input")
+                return StepResult.USER_CANCELLED
+            logger.info(f"User provided question: {question}")
+        
+        self.current_question = question
+        context['research_question'] = question
+        return StepResult.SUCCESS
+    
+    def _handle_generate_and_edit_query(self, context: Dict[str, Any]) -> StepResult:
+        """Handle query generation and editing."""
+        question = context.get('research_question')
+        if not question:
+            return StepResult.FAILURE
+        
+        # For now, the query generation is handled within the search process
+        # This step serves as a placeholder for future query editing UI
+        logger.info(f"Query generation step for question: {question}")
+        return StepResult.SUCCESS
+    
+    def _handle_search_documents(self, context: Dict[str, Any]) -> StepResult:
+        """Handle document search."""
+        question = context.get('research_question')
+        if not question:
+            return StepResult.FAILURE
+        
+        documents = self._execute_document_search(question)
+        if not documents:
+            logger.error("No documents found in search")
+            self.ui.show_error_message("Cannot proceed without documents.")
+            context['no_documents_found'] = True
+            
+            # In auto mode, we can't refine the query, so we fail the workflow
+            if self.config.auto_mode:
+                logger.error("Auto mode: No documents found and cannot refine query")
+                self.ui.show_error_message("Auto mode failed: No documents found for the research question.")
+                self.ui.show_info_message("Suggestions for better results:")
+                self.ui.show_info_message("• Try more general terms in your research question")
+                self.ui.show_info_message("• Use different medical terminology or synonyms")
+                self.ui.show_info_message("• Check for spelling errors in medical terms")
+                self.ui.show_info_message("• Run in interactive mode to refine the query")
+                return StepResult.FAILURE
+            else:
+                # In interactive mode, branch to query refinement
+                context['branch_to_step'] = WorkflowStep.REFINE_QUERY
+                return StepResult.BRANCH
+        
+        self.search_results = documents
+        context['documents'] = documents
+        return StepResult.SUCCESS
+    
+    def _handle_review_search_results(self, context: Dict[str, Any]) -> StepResult:
+        """Handle search results review."""
+        documents = context.get('documents', self.search_results)
+        
+        reviewed_documents = self._process_search_results(documents)
+        if not reviewed_documents:
+            logger.error("Document review cancelled or failed")
+            context['user_wants_different_search'] = True
+            
+            # In auto mode, we can't refine the query, so we fail the workflow
+            if self.config.auto_mode:
+                logger.error("Auto mode: Document review failed and cannot refine query")
+                self.ui.show_error_message("Auto mode failed: Document review was unsuccessful.")
+                self.ui.show_info_message("Run in interactive mode to review and refine search results.")
+                return StepResult.FAILURE
+            else:
+                # In interactive mode, branch to query refinement
+                context['branch_to_step'] = WorkflowStep.REFINE_QUERY
+                return StepResult.BRANCH
+        
+        self.search_results = reviewed_documents
+        context['documents'] = reviewed_documents
+        return StepResult.SUCCESS
+    
+    def _handle_score_documents(self, context: Dict[str, Any]) -> StepResult:
+        """Handle document scoring."""
+        question = context.get('research_question')
+        documents = context.get('documents', self.search_results)
+        
+        scored_docs = self._execute_document_scoring(question, documents)
+        if not scored_docs:
+            logger.error("Document scoring failed")
+            self.ui.show_error_message("Cannot proceed without scored documents.")
+            return StepResult.FAILURE
+        
+        self.scored_documents = scored_docs
+        context['scored_documents'] = scored_docs
+        return StepResult.SUCCESS
+    
+    def _handle_extract_citations(self, context: Dict[str, Any]) -> StepResult:
+        """Handle citation extraction."""
+        question = context.get('research_question')
+        scored_docs = context.get('scored_documents', self.scored_documents)
+        
+        citations = self._execute_citation_extraction(question, scored_docs)
+        if not citations:
+            logger.error("Citation extraction failed")
+            self.ui.show_error_message("Cannot proceed without citations.")
+            context['insufficient_citations'] = True
+            return StepResult.BRANCH  # This will trigger threshold adjustment
+        
+        self.extracted_citations = citations
+        context['citations'] = citations
+        return StepResult.SUCCESS
+    
+    def _handle_generate_report(self, context: Dict[str, Any]) -> StepResult:
+        """Handle report generation."""
+        question = context.get('research_question')
+        citations = context.get('citations', self.extracted_citations)
+        
+        report = self._execute_report_generation(question, citations)
+        if not report:
+            logger.error("Report generation failed")
+            self.ui.show_error_message("Report generation failed.")
+            context['insufficient_evidence_for_report'] = True
+            return StepResult.BRANCH  # This will trigger more citation requests
+        
+        self.final_report = report
+        context['report'] = report
+        return StepResult.SUCCESS
+    
+    def _handle_counterfactual_analysis(self, context: Dict[str, Any]) -> StepResult:
+        """Handle counterfactual analysis."""
+        report = context.get('report', self.final_report)
+        
+        counterfactual_analysis = self._execute_counterfactual_analysis(report)
+        if counterfactual_analysis:
+            self.counterfactual_analysis = counterfactual_analysis
+            context['counterfactual_analysis'] = counterfactual_analysis
+            logger.info(f"Counterfactual analysis completed: {len(counterfactual_analysis.counterfactual_questions)} questions generated")
+        else:
+            logger.info("Counterfactual analysis skipped or failed")
+        
+        return StepResult.SUCCESS  # This step can fail but workflow continues
+    
+    def _handle_search_contradictory_evidence(self, context: Dict[str, Any]) -> StepResult:
+        """Handle searching for contradictory evidence."""
+        # This is handled within the counterfactual analysis method
+        return StepResult.SUCCESS
+    
+    def _handle_edit_comprehensive_report(self, context: Dict[str, Any]) -> StepResult:
+        """Handle comprehensive report editing."""
+        report = context.get('report', self.final_report)
+        question = context.get('research_question')
+        citations = context.get('citations', self.extracted_citations)
+        counterfactual_analysis = context.get('counterfactual_analysis', self.counterfactual_analysis)
+        
+        comprehensive_report = self._execute_comprehensive_report_editing(
+            report, question, citations, counterfactual_analysis
+        )
+        if comprehensive_report:
+            self.comprehensive_report = comprehensive_report
+            context['comprehensive_report'] = comprehensive_report
+            logger.info(f"Comprehensive report generated: {comprehensive_report.word_count} words")
+        else:
+            logger.info("Comprehensive report editing failed, using original report")
+        
+        return StepResult.SUCCESS
+    
+    def _handle_export_report(self, context: Dict[str, Any]) -> StepResult:
+        """Handle report export."""
+        if self.ui.get_save_report_choice():
+            comprehensive_report = context.get('comprehensive_report', self.comprehensive_report)
+            report = context.get('report', self.final_report)
+            question = context.get('research_question')
+            
+            # Use comprehensive report if available, otherwise use original report
+            report_to_save = comprehensive_report if comprehensive_report else report
+            filename = self.formatter.save_comprehensive_report_to_file(
+                report_to_save, question, self.counterfactual_analysis, self.contradictory_evidence
+            )
+            logger.info(f"Report saved to file: {filename}")
+        else:
+            logger.info("Report saving skipped")
+        
+        return StepResult.SUCCESS
+    
+    def _handle_refine_query(self, context: Dict[str, Any]) -> StepResult:
+        """Handle query refinement."""
+        question = context.get('research_question')
+        if not question:
+            return StepResult.FAILURE
+            
+        # For now, just try the search again or ask for user input to refine
+        logger.info("Query refinement step - asking user to refine the question")
+        
+        if self.config.auto_mode:
+            # In auto mode, we can't refine, so fail
+            logger.error("Auto mode: cannot refine query, failing")
+            return StepResult.FAILURE
+        else:
+            # Ask user for a refined question
+            self.ui.show_info_message("Please refine your research question to get better search results:")
+            refined_question = self.ui.get_research_question()
+            if refined_question:
+                self.current_question = refined_question
+                context['research_question'] = refined_question
+                context['branch_to_step'] = WorkflowStep.SEARCH_DOCUMENTS
+                logger.info(f"Query refined to: {refined_question}")
+                return StepResult.BRANCH
+            else:
+                logger.info("User cancelled query refinement")
+                return StepResult.USER_CANCELLED
+    
+    def _handle_adjust_scoring_thresholds(self, context: Dict[str, Any]) -> StepResult:
+        """Handle scoring threshold adjustment."""
+        # This would be implemented to allow threshold adjustments
+        logger.info("Scoring threshold adjustment step - not yet implemented") 
+        context['branch_to_step'] = WorkflowStep.EXTRACT_CITATIONS
+        return StepResult.BRANCH
+    
+    def _handle_request_more_citations(self, context: Dict[str, Any]) -> StepResult:
+        """Handle requests for more citations."""
+        # This would be implemented to request more citations
+        logger.info("More citations request step - not yet implemented")
+        context['branch_to_step'] = WorkflowStep.EXTRACT_CITATIONS
+        return StepResult.BRANCH
+    
+    def _handle_review_and_revise_report(self, context: Dict[str, Any]) -> StepResult:
+        """Handle report review and revision."""
+        # This would be implemented for iterative report improvement
+        logger.info("Report review and revision step - not yet implemented")
+        return StepResult.SUCCESS
+    
     def _execute_document_search(self, question: str) -> List[Dict[str, Any]]:
         """Execute document search with query processing."""
-        while True:
-            documents = self.query_processor.search_documents_with_review(question)
-            
-            if documents:
-                return documents
+        logger.info(f"Executing document search for: {question}")
+        
+        documents = self.query_processor.search_documents_with_review(question)
+        
+        if documents:
+            logger.info(f"Document search successful: {len(documents)} documents found")
+            return documents
+        else:
+            logger.warning(f"No documents found for question: {question}")
+            if self.config.auto_mode:
+                self.ui.show_error_message(f"No documents found for question: {question}")
             else:
-                if self.config.auto_mode:
-                    self.ui.show_error_message(f"No documents found for question: {question}")
-                    return []
-                
-                # Give user option to try again or quit
-                retry = input("\nWould you like to try a different question? (y/n): ").strip().lower()
-                if retry not in ['y', 'yes']:
-                    return []
-                
-                # Get new question
-                new_question = self.ui.get_research_question()
-                if not new_question:
-                    return []
-                
-                question = new_question
-                self.current_question = question
+                self.ui.show_warning_message(f"No documents found for question: {question}")
+                self.ui.show_info_message("You can refine your search by going back to query refinement.")
+            return []
     
     def _process_search_results(self, documents: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
         """Process search results with user interaction."""
@@ -450,28 +603,21 @@ class WorkflowOrchestrator:
         
         doc_processor = DocumentProcessor(self.config, self.ui)
         
-        while True:
-            result = doc_processor.process_search_results(documents)
-            
-            if result is None:
-                if self.config.auto_mode:
-                    # In auto mode, just return the documents without user retry
-                    return documents
-                
-                # User wants to search again
-                new_question = self.ui.get_research_question()
-                if not new_question:
-                    return None
-                
-                self.current_question = new_question
-                new_documents = self._execute_document_search(new_question)
-                if new_documents:
-                    documents = new_documents
-                    continue
-                else:
-                    return None
+        logger.info(f"Processing search results: {len(documents)} documents")
+        result = doc_processor.process_search_results(documents)
+        
+        if result is None:
+            if self.config.auto_mode:
+                # In auto mode, just return the documents without user retry
+                logger.info("Auto mode: proceeding with all documents")
+                return documents
             else:
-                return result
+                # In the new step-based system, we'll handle retry via step branching
+                logger.info("User wants to search again - will trigger query refinement step")
+                return None
+        else:
+            logger.info(f"Search results processed: {len(result)} documents approved")
+            return result
     
     def _execute_document_scoring(self, question: str, documents: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
         """Execute document scoring with user review."""

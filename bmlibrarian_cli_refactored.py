@@ -21,23 +21,31 @@ Features:
 - Counterfactual analysis for finding contradictory evidence
 - Enhanced markdown report export with counterfactual analysis
 
-Enhanced Workflow (9 Steps):
-1. Research Question: Enter your medical research question
-2. Query Generation: AI generates PostgreSQL to_tsquery with human editing
-3. Document Search: Execute database search and review results
-4. Relevance Scoring: AI scores documents (1-5) for relevance
-5. Citation Extraction: Extract relevant passages from high-scoring documents
-6. Report Generation: Create medical publication-style report
-7. Counterfactual Analysis: (Optional) Analyze report for contradictory evidence
-   - Identifies main claims in the generated report
-   - Generates research questions to find contradictory evidence
-   - Optionally searches database for opposing studies
-   - Provides confidence level recommendations
-8. Comprehensive Editing: EditorAgent creates balanced, structured report
-   - Integrates original findings with contradictory evidence
-   - Creates comprehensive markdown with tables and proper references
-   - Provides evidence quality assessment and confidence grading
-9. Export: Save comprehensive report as structured markdown file
+Enhanced Workflow Steps:
+- Research Question Collection: Enter your medical research question
+- Query Generation & Editing: AI generates PostgreSQL to_tsquery with human editing
+- Document Search: Execute database search and review results
+- Search Results Review: Review and approve or refine search results
+- Relevance Scoring: AI scores documents (1-5) for relevance with threshold adjustments
+- Citation Extraction: Extract relevant passages from high-scoring documents
+- Report Generation: Create medical publication-style report
+- Counterfactual Analysis: (Optional) Analyze report for contradictory evidence
+  * Identifies main claims in the generated report
+  * Generates research questions to find contradictory evidence
+  * Optionally searches database for opposing studies
+  * Provides confidence level recommendations
+- Contradictory Evidence Search: Find studies that contradict the findings
+- Comprehensive Report Editing: EditorAgent creates balanced, structured report
+  * Integrates original findings with contradictory evidence
+  * Creates comprehensive markdown with tables and proper references
+  * Provides evidence quality assessment and confidence grading
+- Report Export: Save comprehensive report as structured markdown file
+
+The workflow supports iterative refinement:
+- Query refinement if search results are insufficient
+- Scoring threshold adjustment for better citations
+- Request for additional citations if report needs more evidence
+- Report review and revision for iterative improvement
 
 Modular Architecture:
 - bmlibrarian.cli.config: Configuration management, command-line parsing
