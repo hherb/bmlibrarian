@@ -50,10 +50,11 @@ Since this project uses `uv` for package management:
 
 ## Architecture
 
-BMLibrarian uses a sophisticated multi-agent architecture with the following key components:
+BMLibrarian uses a sophisticated multi-agent architecture with enum-based workflow orchestration:
 
 ### Core Components
 - **Multi-Agent System**: Specialized AI agents for different literature analysis tasks
+- **Enum-Based Workflow**: Flexible step orchestration with meaningful names and repeatable steps
 - **Task Queue Orchestration**: SQLite-based queue system for memory-efficient processing
 - **Database Backend**: PostgreSQL with pgvector extension for semantic search
 - **Local LLM Integration**: Ollama service for privacy-preserving AI inference
@@ -64,19 +65,36 @@ BMLibrarian uses a sophisticated multi-agent architecture with the following key
 3. **CitationFinderAgent**: Extracts relevant passages from high-scoring documents
 4. **ReportingAgent**: Synthesizes citations into medical publication-style reports
 5. **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
+6. **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
 
-### Processing Pipeline
+### Workflow Orchestration System
+The new enum-based workflow system (`workflow_steps.py`) provides:
+- **WorkflowStep Enum**: Meaningful step names instead of brittle numbering
+- **Repeatable Steps**: Query refinement, threshold adjustment, citation requests
+- **Branching Logic**: Conditional step execution and error recovery
+- **Context Management**: State preservation across step executions
+- **Auto Mode Support**: Graceful handling of non-interactive execution
+
+### Workflow Steps
 ```
-User Query → QueryAgent → Document Retrieval → DocumentScoringAgent → 
-CitationFinderAgent → ReportingAgent → Final Evidence-Based Report
-↓ (Optional)
-CounterfactualAgent → Contradictory Evidence Research Questions → 
-Enhanced Report with Confidence Assessment
+COLLECT_RESEARCH_QUESTION → GENERATE_AND_EDIT_QUERY → SEARCH_DOCUMENTS → 
+REVIEW_SEARCH_RESULTS → SCORE_DOCUMENTS → EXTRACT_CITATIONS → 
+GENERATE_REPORT → PERFORM_COUNTERFACTUAL_ANALYSIS → 
+SEARCH_CONTRADICTORY_EVIDENCE → EDIT_COMPREHENSIVE_REPORT → 
+REVIEW_AND_REVISE_REPORT → EXPORT_REPORT
 ```
+
+### Iterative Capabilities
+- **Query Refinement**: When search results are insufficient
+- **Threshold Adjustment**: For better citation extraction
+- **Citation Requests**: Agents can request more evidence during report generation
+- **Report Revision**: Iterative improvement of generated reports
+- **Evidence Enhancement**: Counterfactual analysis for finding contradictory studies
 
 ### Queue System
 - **QueueManager**: SQLite-based persistent task queuing
 - **AgentOrchestrator**: Coordinates multi-agent workflows
+- **WorkflowExecutor**: Manages step execution with context tracking
 - **Task Priorities**: HIGH, NORMAL, LOW priority levels
 - **Batch Processing**: Memory-efficient handling of large document sets
 
@@ -93,6 +111,7 @@ bmlibrarian/
 │   │   ├── citation_agent.py  # Citation extraction from documents
 │   │   ├── reporting_agent.py # Report synthesis and formatting
 │   │   ├── counterfactual_agent.py # Counterfactual analysis for contradictory evidence
+│   │   ├── editor_agent.py    # Comprehensive report editing and integration
 │   │   ├── queue_manager.py   # SQLite-based task queue system
 │   │   └── orchestrator.py    # Multi-agent workflow coordination
 │   └── cli/                   # Modular CLI architecture
@@ -101,7 +120,8 @@ bmlibrarian/
 │       ├── ui.py              # User interface components
 │       ├── query_processing.py # Query editing and search
 │       ├── formatting.py      # Report formatting and export
-│       └── workflow.py        # Workflow orchestration
+│       ├── workflow.py        # Workflow orchestration
+│       └── workflow_steps.py  # Enum-based workflow step definitions
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
@@ -141,10 +161,12 @@ bmlibrarian/
 
 ### Development Principles
 - **Modern Python Standards**: Uses pyproject.toml, type hints, and Python >=3.12
+- **Enum-Based Architecture**: Flexible workflow orchestration with meaningful step names
 - **Comprehensive Testing**: Unit tests for all agents with >95% coverage
 - **Documentation First**: Both developer and user documentation for all features
 - **AI-Powered**: Local LLM integration via Ollama for privacy-preserving processing
 - **Scalable Architecture**: Queue-based processing for memory-efficient large-scale operations
+- **Iterative Workflows**: Support for repeatable steps and agent-driven refinement
 
 ### Database Safety
 - **CRITICAL**: Never modify or drop the production database "knowledgebase"
@@ -162,9 +184,18 @@ bmlibrarian/
 ### Agent Development Guidelines
 - **BaseAgent Pattern**: All agents inherit from BaseAgent with standardized interfaces
 - **Queue Integration**: New agents should support queue-based processing
+- **Workflow Integration**: Agents should work with enum-based workflow system
 - **Connection Testing**: All agents must implement connection testing methods
 - **Progress Tracking**: Support progress callbacks for long-running operations
 - **Document ID Integrity**: Always use real database IDs, never mock/fabricated references
+- **Step Handler Methods**: Implement appropriate workflow step handlers for agent actions
+
+### Workflow Development Guidelines
+- **WorkflowStep Enum**: Use meaningful names for new workflow steps
+- **Repeatable Steps**: Mark steps as repeatable when they support iteration
+- **Branching Logic**: Implement conditional execution and error recovery
+- **Context Management**: Preserve state across step executions
+- **Auto Mode Support**: Ensure steps work in non-interactive mode
 
 ## Usage Examples
 
@@ -192,11 +223,14 @@ uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
 ```
 
 The modular CLI provides enhanced human-in-the-loop interaction:
+- **Enum-Based Workflow**: Flexible step orchestration with meaningful names
+- **Iterative Capabilities**: Repeatable steps for query refinement and threshold adjustment
 - **Modular Architecture**: Cleaner separation of concerns for maintainability
 - **Enhanced Workflow**: Optional counterfactual analysis for finding contradictory evidence
+- **Agent-Driven Refinement**: Agents can request more citations or evidence during processing
 - **Improved UI**: Better user experience with clearer navigation
 - **Comprehensive Export**: Reports include counterfactual analysis when performed
-- **All Legacy Features**: Query editing, search review, threshold adjustment, citation review
+- **Auto Mode Support**: Graceful handling of non-interactive execution
 
 ### Legacy CLI Application
 
@@ -207,8 +241,55 @@ For compatibility, the original monolithic CLI is still available:
 uv run python bmlibrarian_cli.py
 ```
 
-### Basic Multi-Agent Workflow
+### Enum-Based Workflow System
 ```python
+from bmlibrarian.agents import (
+    QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
+    ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator
+)
+from bmlibrarian.cli.workflow_steps import (
+    WorkflowStep, WorkflowDefinition, WorkflowExecutor, 
+    create_default_research_workflow, StepResult
+)
+
+# Initialize workflow system
+workflow_definition = create_default_research_workflow()
+workflow_executor = WorkflowExecutor(workflow_definition)
+
+# Initialize orchestrator and agents
+orchestrator = AgentOrchestrator(max_workers=4)
+query_agent = QueryAgent(orchestrator=orchestrator)
+scoring_agent = DocumentScoringAgent(orchestrator=orchestrator)
+citation_agent = CitationFinderAgent(orchestrator=orchestrator)
+reporting_agent = ReportingAgent(orchestrator=orchestrator)
+counterfactual_agent = CounterfactualAgent(orchestrator=orchestrator)
+editor_agent = EditorAgent(orchestrator=orchestrator)
+
+# Set up workflow context
+user_question = "What are the cardiovascular benefits of exercise?"
+workflow_executor.add_context('research_question', user_question)
+
+# Execute workflow steps
+current_step = workflow_definition.steps[0]
+while current_step:
+    execution = workflow_executor.execute_step(current_step, step_handler)
+    workflow_executor.execution_history.append(execution)
+    
+    if execution.result == StepResult.SUCCESS:
+        current_step = workflow_definition.get_next_step(current_step, workflow_executor.context)
+    elif execution.result == StepResult.BRANCH:
+        current_step = workflow_executor.get_context('branch_to_step')
+    else:
+        break
+
+# Get final results from context
+final_report = workflow_executor.get_context('comprehensive_report')
+counterfactual_analysis = workflow_executor.get_context('counterfactual_analysis')
+```
+
+### Basic Multi-Agent Workflow (Legacy)
+```python
+# For direct agent usage without workflow orchestration
 from bmlibrarian.agents import (
     QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
     ReportingAgent, CounterfactualAgent, AgentOrchestrator
@@ -222,66 +303,30 @@ citation_agent = CitationFinderAgent(orchestrator=orchestrator)
 reporting_agent = ReportingAgent(orchestrator=orchestrator)
 counterfactual_agent = CounterfactualAgent(orchestrator=orchestrator)
 
-# Complete research workflow
+# Manual workflow execution
 user_question = "What are the cardiovascular benefits of exercise?"
-
-# 1. Query processing and document retrieval
 documents = query_agent.search_documents(user_question)
-
-# 2. Score documents for relevance
-scored_docs = []
-for doc in documents:
-    score = scoring_agent.evaluate_document(user_question, doc)
-    if score:
-        scored_docs.append((doc, score))
-
-# 3. Extract citations from high-scoring documents
+scored_docs = [(doc, scoring_agent.evaluate_document(user_question, doc)) 
+               for doc in documents if scoring_agent.evaluate_document(user_question, doc)]
 citations = citation_agent.process_scored_documents_for_citations(
-    user_question=user_question,
-    scored_documents=scored_docs,
-    score_threshold=2.5
-)
-
-# 4. Generate medical publication-style report
+    user_question=user_question, scored_documents=scored_docs, score_threshold=2.5)
 report = reporting_agent.generate_citation_based_report(
-    user_question=user_question,
-    citations=citations,
-    format_output=True
-)
-
-# 5. Optional: Perform counterfactual analysis
-formatted_report = reporting_agent.format_report_output(report)
-counterfactual_analysis = counterfactual_agent.analyze_document(
-    document_content=formatted_report,
-    document_title=f"Research Report: {user_question}"
-)
-
-if counterfactual_analysis:
-    print(f"Counterfactual Analysis:")
-    print(f"- Confidence Level: {counterfactual_analysis.confidence_level}")
-    print(f"- Main Claims: {len(counterfactual_analysis.main_claims)}")
-    print(f"- Research Questions: {len(counterfactual_analysis.counterfactual_questions)}")
-    
-    # Optionally search for contradictory evidence
-    contradictory_results = counterfactual_agent.find_contradictory_literature(
-        document_content=formatted_report,
-        document_title=f"Research Report: {user_question}",
-        query_agent=query_agent,
-        scoring_agent=scoring_agent,
-        citation_agent=citation_agent
-    )
-
-print(report)
+    user_question=user_question, citations=citations, format_output=True)
 ```
 
 ### Key Features Demonstrated
+- **Enum-Based Workflow**: Flexible step orchestration with meaningful names
+- **Iterative Processing**: Repeatable steps for query refinement and evidence enhancement
 - **Natural Language Processing**: Convert questions to database queries
 - **Relevance Assessment**: AI-powered document scoring (1-5 scale)
 - **Citation Extraction**: Extract specific passages that answer questions
 - **Evidence Synthesis**: Generate professional medical reports with proper references
 - **Counterfactual Analysis**: Generate research questions to find contradictory evidence
+- **Comprehensive Editing**: Balanced report integration with all evidence types
 - **Quality Control**: Document verification and evidence strength assessment
 - **Confidence Assessment**: Evaluate evidence reliability with contradictory evidence search
+- **Agent-Driven Refinement**: Agents can request more citations during report generation
+- **Auto Mode Support**: Non-interactive execution with graceful error handling
 - **Scalable Processing**: Queue-based batch processing for large datasets
 
 ## Important Instructions and Reminders
@@ -294,8 +339,11 @@ print(report)
 6. **Ensure document ID verification** to prevent citation hallucination
 7. **Support queue-based processing** for scalability
 8. **Include progress tracking** for long-running operations
-9. **Use modular CLI architecture** for new CLI features (bmlibrarian_cli_refactored.py)
-10. **Include counterfactual analysis** capabilities where appropriate for evidence validation
+9. **Use enum-based workflow system** for new workflow steps (workflow_steps.py)
+10. **Use modular CLI architecture** for new CLI features (bmlibrarian_cli_refactored.py)
+11. **Include counterfactual analysis** capabilities where appropriate for evidence validation
+12. **Implement workflow step handlers** for agent integration with orchestration system
+13. **Support auto mode execution** with graceful fallbacks for interactive features
 
 ### Testing and Quality Assurance:
 - Run full test suite: `uv run python -m pytest tests/`
