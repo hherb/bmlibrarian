@@ -11,5 +11,7 @@ wheels/
 
 #environment variables 
 .env
-bmlibrarian_report_ONSD_cutoff_for_raised_ICP_20250820_164804.md
-bmlibrarian_report_optimal_management_of_a_young_20250820_171823.md
+
+#generated files
+bmlibrarian_report*
+*.log

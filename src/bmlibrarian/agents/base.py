@@ -11,6 +11,7 @@ Provides common functionality for all AI agents including:
 """
 
 import logging
+import time
 import ollama
 from typing import Optional, Callable, Dict, Any, TYPE_CHECKING
 from abc import ABC, abstractmethod
@@ -122,6 +123,20 @@ class BaseAgent(ABC):
             ConnectionError: If unable to connect to Ollama
             ValueError: If the response is invalid
         """
+        start_time = time.time()
+        agent_logger = logging.getLogger('bmlibrarian.agents')
+        
+        # Log the request
+        agent_logger.info(f"Ollama request to {self.model}", extra={'structured_data': {
+            'event_type': 'agent_ollama_request',
+            'agent_type': self.get_agent_type(),
+            'model': self.model,
+            'message_count': len(messages),
+            'has_system_prompt': system_prompt is not None,
+            'options': self._get_ollama_options(**ollama_options),
+            'timestamp': start_time
+        }})
+        
         try:
             # Prepend system message if provided
             if system_prompt:
@@ -139,14 +154,44 @@ class BaseAgent(ABC):
             content = response['message']['content']
             if not content or not content.strip():
                 raise ValueError("Empty response from model")
-                
+            
+            # Log successful response
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.info(f"Ollama response received in {response_time:.2f}ms", extra={'structured_data': {
+                'event_type': 'agent_ollama_response',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'response_length': len(content),
+                'response_time_ms': response_time,
+                'response_content': content[:500] + '...' if len(content) > 500 else content,  # First 500 chars for debugging
+                'timestamp': time.time()
+            }})
+            
             return content.strip()
             
         except ollama.ResponseError as e:
-            logger.error(f"Ollama response error: {e}")
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Ollama response error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'error_type': 'ResponseError',
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
             raise ConnectionError(f"Failed to get response from Ollama: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error in Ollama request: {e}")
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Unexpected error in Ollama request after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
             raise
     
     def test_connection(self) -> bool:

@@ -1,6 +1,8 @@
 """Database access layer for BMLibrarian with connection pooling."""
 
 import os
+import time
+import logging
 from contextlib import contextmanager
 from typing import Dict, Generator, Optional, List, Union, cast, LiteralString
 from datetime import date
@@ -12,6 +14,9 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Get logger for database operations
+logger = logging.getLogger('bmlibrarian.database')
 
 
 class DatabaseManager:
@@ -190,12 +195,36 @@ def find_abstracts(
         >>> for doc in find_abstracts("covid", from_date=date(2020, 1, 1), to_date=date(2021, 12, 31)):
         ...     print(f"{doc['title']} - {doc['publication_date']}")
     """
+    # Log query start
+    start_time = time.time()
+    logger.info(f"Starting document search: query='{ts_query_str[:100]}...', max_rows={max_rows}")
+    
     db_manager = get_db_manager()
     
     # Build source ID filter using cached source IDs (much faster than JOINs)
     # Only filter by source if not all sources are enabled
     source_ids = []
     all_sources_enabled = use_pubmed and use_medrxiv and use_others
+    
+    # Log search parameters
+    search_params = {
+        'ts_query_str': ts_query_str,
+        'max_rows': max_rows,
+        'use_pubmed': use_pubmed,
+        'use_medrxiv': use_medrxiv,
+        'use_others': use_others,
+        'plain': plain,
+        'from_date': from_date.isoformat() if from_date else None,
+        'to_date': to_date.isoformat() if to_date else None,
+        'batch_size': batch_size,
+        'use_ranking': use_ranking
+    }
+    
+    logger.debug(f"Search parameters", extra={'structured_data': {
+        'event_type': 'database_search_params',
+        'parameters': search_params,
+        'timestamp': time.time()
+    }})
     
     if not all_sources_enabled and DatabaseManager._source_ids:
         if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
@@ -286,19 +315,39 @@ def find_abstracts(
         else:
             query_params = [ts_query_str] + source_ids + date_params
     
+    # Log the final query and parameters
+    logger.info(f"Executing database query", extra={'structured_data': {
+        'event_type': 'database_query_execution',
+        'query': query,
+        'parameter_count': len(query_params),
+        'query_type': 'document_search',
+        'timestamp': time.time()
+    }})
+    
+    all_results = []
+    total_rows = 0
+    
     with db_manager.get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             # Set cursor arraysize for efficient batching
             cur.arraysize = batch_size
             
             # Execute the query with parameters
+            query_start = time.time()
             cur.execute(cast(LiteralString, query), tuple(query_params))
+            query_execution_time = (time.time() - query_start) * 1000  # Convert to milliseconds
+            
+            logger.info(f"Query executed in {query_execution_time:.2f}ms")
             
             while True:
                 # Fetch a batch of rows
+                batch_start = time.time()
                 rows = cur.fetchmany(batch_size)
                 if not rows:
                     break
+                
+                batch_time = (time.time() - batch_start) * 1000
+                logger.debug(f"Fetched batch of {len(rows)} rows in {batch_time:.2f}ms")
                 
                 for row in rows:
                     # Add source name mapping using cached mappings
@@ -310,7 +359,27 @@ def find_abstracts(
                         if row.get(field) is None:
                             row[field] = []
                     
-                    yield dict(row)
+                    row_dict = dict(row)
+                    all_results.append(row_dict)  # Store for logging
+                    total_rows += 1
+                    
+                    yield row_dict
+    
+    # Log complete results and performance metrics
+    total_time = (time.time() - start_time) * 1000
+    
+    logger.info(f"Document search completed: {total_rows} documents in {total_time:.2f}ms")
+    
+    # Log detailed results for full observability
+    logger.debug("Complete search results", extra={'structured_data': {
+        'event_type': 'database_search_results',
+        'query': ts_query_str,
+        'total_results': total_rows,
+        'execution_time_ms': total_time,
+        'query_execution_time_ms': query_execution_time,
+        'results': all_results,  # Full result set for observability
+        'timestamp': time.time()
+    }})
 
 
 def close_database():

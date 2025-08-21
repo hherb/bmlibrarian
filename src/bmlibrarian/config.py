@@ -21,6 +21,7 @@ DEFAULT_CONFIG = {
         "scoring_agent": "medgemma-27b-text-it-Q8_0:latest",
         "citation_agent": "medgemma-27b-text-it-Q8_0:latest",
         "reporting_agent": "gpt-oss:20b",  # Keep larger model for complex report generation
+        "editor_agent": "gpt-oss:20b",     # Use larger model for comprehensive editing
         
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -60,6 +61,12 @@ DEFAULT_CONFIG = {
             "temperature": 0.1,
             "top_p": 0.9,
             "max_tokens": 3000
+        },
+        "editor": {
+            "temperature": 0.1,
+            "top_p": 0.8,
+            "max_tokens": 6000,
+            "comprehensive_format": True
         }
     },
     "database": {

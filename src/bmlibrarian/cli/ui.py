@@ -34,6 +34,10 @@ class UserInterface:
     
     def get_research_question(self) -> Optional[str]:
         """Get research question from user with validation."""
+        if self.config.auto_mode:
+            # In auto mode, we need a default research question or should be provided externally
+            return None
+        
         print("\n" + "=" * 60)
         print("Step 1: Research Question")
         print("=" * 60)
@@ -66,6 +70,10 @@ class UserInterface:
     
     def display_query_review(self, question: str, current_query: str) -> str:
         """Display generated query and get user choice for editing."""
+        if self.config.auto_mode:
+            print(f"\n📋 Generated PostgreSQL Query: {current_query}")
+            return "1"  # Auto-accept the query
+        
         print(f"\n📋 Generated PostgreSQL Query:")
         print("=" * 50)
         print(f"to_tsquery: {current_query}")
@@ -100,6 +108,10 @@ class UserInterface:
     
     def display_search_results(self, documents: List[Dict[str, Any]]) -> str:
         """Display search results and get user choice."""
+        if self.config.auto_mode:
+            print(f"\n📄 Found {len(documents)} documents - auto-proceeding...")
+            return "1"  # Auto-proceed
+        
         print("\n" + "=" * 60)
         print("Step 3: Document Review")
         print("=" * 60)
@@ -180,6 +192,11 @@ class UserInterface:
     def display_document_scores(self, scored_docs: List[Tuple[Dict[str, Any], Dict[str, Any]]], 
                                score_threshold: float) -> str:
         """Display document scores and get user choice."""
+        if self.config.auto_mode:
+            high_scoring = len([doc for doc, score in scored_docs if score.get('score', 0) > score_threshold])
+            print(f"\n📊 Scored {len(scored_docs)} documents, {high_scoring} above threshold {score_threshold} - auto-proceeding...")
+            return "1"  # Auto-proceed
+        
         print("\n" + "=" * 60)
         print("Step 4: Document Relevance Scoring")
         print("=" * 60)
@@ -276,6 +293,11 @@ class UserInterface:
     def display_citations(self, citations: List[Citation], score_threshold: float, 
                          min_relevance: float) -> str:
         """Display extracted citations and get user choice."""
+        if self.config.auto_mode:
+            stats = self._calculate_citation_stats(citations)
+            print(f"\n📝 Extracted {len(citations)} citations (avg relevance: {stats['average_relevance']:.3f}) - auto-proceeding...")
+            return "1"  # Auto-proceed
+        
         print("\n" + "=" * 60)
         print("Step 5: Citation Extraction")
         print("=" * 60)
@@ -352,6 +374,11 @@ class UserInterface:
     
     def handle_large_citation_set(self, citation_count: int) -> str:
         """Handle large citation sets with user options."""
+        if self.config.auto_mode:
+            # In auto mode, automatically use top citations by relevance for performance
+            print(f"\n⚠️  Auto-mode: {citation_count} citations detected. Using top 15 citations by relevance for optimal performance.")
+            return "2"  # Use only the top citations by relevance
+        
         print(f"\n⚠️  You have {citation_count} citations. Large citation sets may:")
         print("• Take a long time to process (5-10 minutes)")
         print("• Cause timeouts with the AI model")
@@ -387,8 +414,79 @@ class UserInterface:
         print(formatted_report)
         print("=" * 80)
     
+    def display_comprehensive_report(self, comprehensive_report, editor_agent=None) -> None:
+        """Display the comprehensive edited report."""
+        print("\n" + "=" * 60)
+        print("Step 8: Comprehensive Report Generation")
+        print("=" * 60)
+        
+        print(f"\n✅ Comprehensive report generated successfully!")
+        print(f"   Evidence Confidence: {comprehensive_report.confidence_assessment}")
+        print(f"   Word Count: {comprehensive_report.word_count}")
+        print(f"   References: {len(comprehensive_report.references)}")
+        
+        if comprehensive_report.contradictory_evidence_section:
+            print(f"   Includes contradictory evidence analysis")
+        
+        # Format the report using the agent instance or create a basic format
+        if editor_agent:
+            formatted_report = editor_agent.format_comprehensive_markdown(comprehensive_report)
+        else:
+            formatted_report = self._format_basic_comprehensive_report(comprehensive_report)
+        
+        print("\n" + "=" * 80)
+        print("COMPREHENSIVE RESEARCH REPORT")
+        print("=" * 80)
+        print(formatted_report[:2000])  # Show first 2000 characters
+        if len(formatted_report) > 2000:
+            print("\n[... Report truncated for display. Full report will be saved to file ...]\n")
+        print("=" * 80)
+    
+    def _format_basic_comprehensive_report(self, comprehensive_report) -> str:
+        """Format a basic comprehensive report when no editor agent is available."""
+        lines = []
+        
+        # Title and metadata
+        lines.append(f"# {comprehensive_report.title}")
+        lines.append("")
+        lines.append(f"**Evidence Confidence:** {comprehensive_report.confidence_assessment}")
+        lines.append(f"**Word Count:** {comprehensive_report.word_count}")
+        lines.append("")
+        
+        # Executive Summary
+        lines.append("## Executive Summary")
+        lines.append(comprehensive_report.executive_summary)
+        lines.append("")
+        
+        # Main sections
+        if comprehensive_report.findings_section:
+            lines.append("## Findings")
+            lines.append(comprehensive_report.findings_section)
+            lines.append("")
+        
+        if comprehensive_report.contradictory_evidence_section:
+            lines.append("## Contradictory Evidence")
+            lines.append(comprehensive_report.contradictory_evidence_section)
+            lines.append("")
+        
+        if comprehensive_report.limitations_section:
+            lines.append("## Limitations")
+            lines.append(comprehensive_report.limitations_section)
+            lines.append("")
+        
+        if comprehensive_report.conclusions_section:
+            lines.append("## Conclusions")
+            lines.append(comprehensive_report.conclusions_section)
+            lines.append("")
+        
+        return "\n".join(lines)
+    
     def get_save_report_choice(self) -> bool:
         """Get user choice for saving report."""
+        if self.config.auto_mode:
+            print("\n💾 Auto-mode: Saving report as markdown file...")
+            return True  # Auto-save report
+        
         while True:
             save_choice = input("\n💾 Save report as markdown file? (y/n): ").strip().lower()
             if save_choice in ['y', 'yes']:
@@ -407,6 +505,10 @@ class UserInterface:
         question_slug = "_".join(question_slug.split()[:5])  # First 5 words
         
         default_filename = f"bmlibrarian_report_{question_slug}_{timestamp}.md"
+        
+        if self.config.auto_mode:
+            print(f"\n💾 Auto-generated filename: {default_filename}")
+            return default_filename
         
         print(f"\n💾 Save report as markdown file:")
         filename = input(f"Filename (default: {default_filename}): ").strip()
@@ -445,6 +547,10 @@ class UserInterface:
     
     def get_counterfactual_analysis_choice(self) -> bool:
         """Ask user if they want to perform counterfactual analysis."""
+        if self.config.auto_mode:
+            print("\n🔍 Auto-mode: Performing counterfactual analysis...")
+            return True  # Auto-perform counterfactual analysis
+        
         while True:
             choice = input("\n🔍 Perform counterfactual analysis to find contradictory evidence? (y/n): ").strip().lower()
             if choice in ['y', 'yes']:
@@ -499,6 +605,10 @@ class UserInterface:
     
     def get_contradictory_evidence_search_choice(self) -> bool:
         """Ask user if they want to search for contradictory evidence."""
+        if self.config.auto_mode:
+            print("\n🔍 Auto-mode: Searching for contradictory evidence...")
+            return True  # Auto-search for contradictory evidence
+        
         while True:
             choice = input("\n🔍 Search database for contradictory evidence? (y/n): ").strip().lower()
             if choice in ['y', 'yes']:
@@ -515,13 +625,13 @@ class UserInterface:
         print("Contradictory Evidence Search Results")
         print("=" * 60)
         
-        if contradictory_results['contradictory_evidence']:
-            self.show_success_message(f"Found {len(contradictory_results['contradictory_evidence'])} contradictory documents")
+        if contradictory_results.get('contradictory_evidence'):
+            self.show_success_message(f"Found {len(contradictory_results.get('contradictory_evidence', []))} contradictory documents")
             
             # Display top contradictory evidence
             print("\n📄 Top Contradictory Evidence:")
             sorted_evidence = sorted(
-                contradictory_results['contradictory_evidence'], 
+                contradictory_results.get('contradictory_evidence', []), 
                 key=lambda x: x['score'], 
                 reverse=True
             )
@@ -534,11 +644,11 @@ class UserInterface:
                 print(f"   Target Claim: {evidence['query_info']['target_claim']}")
                 print(f"   Reasoning: {evidence['reasoning']}")
             
-            if contradictory_results['contradictory_citations']:
-                self.show_success_message(f"Extracted {len(contradictory_results['contradictory_citations'])} contradictory citations")
+            if contradictory_results.get('contradictory_citations'):
+                self.show_success_message(f"Extracted {len(contradictory_results.get('contradictory_citations', []))} contradictory citations")
                 
                 # Display key contradictory citations
-                for i, cit_info in enumerate(contradictory_results['contradictory_citations'][:2], 1):
+                for i, cit_info in enumerate(contradictory_results.get('contradictory_citations', [])[:2], 1):
                     citation = cit_info['citation']
                     print(f"\n{i}. Citation:")
                     print(f"   Document: {citation.document_title}")
@@ -547,9 +657,9 @@ class UserInterface:
                     print(f"   Contradicts: {cit_info['original_claim']}")
             
             # Update analysis summary
-            summary = contradictory_results['summary']
-            if summary['contradictory_citations_extracted'] > 0:
-                print(f"\n⚠️  RECOMMENDATION: Consider revising confidence level to {summary['revised_confidence']}")
+            summary = contradictory_results.get('summary', {})
+            if summary.get('contradictory_citations_extracted', 0) > 0:
+                print(f"\n⚠️  RECOMMENDATION: Consider revising confidence level to {summary.get('revised_confidence', 'MEDIUM')}")
                 print("   Contradictory evidence was found that may challenge some claims.")
             else:
                 self.show_success_message("No strong contradictory evidence found.")

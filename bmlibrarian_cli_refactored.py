@@ -21,7 +21,7 @@ Features:
 - Counterfactual analysis for finding contradictory evidence
 - Enhanced markdown report export with counterfactual analysis
 
-Enhanced Workflow (8 Steps):
+Enhanced Workflow (9 Steps):
 1. Research Question: Enter your medical research question
 2. Query Generation: AI generates PostgreSQL to_tsquery with human editing
 3. Document Search: Execute database search and review results
@@ -33,7 +33,11 @@ Enhanced Workflow (8 Steps):
    - Generates research questions to find contradictory evidence
    - Optionally searches database for opposing studies
    - Provides confidence level recommendations
-8. Export: Save report as markdown file with optional counterfactual analysis
+8. Comprehensive Editing: EditorAgent creates balanced, structured report
+   - Integrates original findings with contradictory evidence
+   - Creates comprehensive markdown with tables and proper references
+   - Provides evidence quality assessment and confidence grading
+9. Export: Save comprehensive report as structured markdown file
 
 Modular Architecture:
 - bmlibrarian.cli.config: Configuration management, command-line parsing
@@ -48,9 +52,10 @@ Agent Integration:
 - CitationFinderAgent: Extracts relevant passages from high-scoring documents
 - ReportingAgent: Synthesizes citations into medical publication-style reports
 - CounterfactualAgent: Analyzes reports to generate contradictory evidence questions
+- EditorAgent: Creates balanced, comprehensive reports combining original findings with contradictory evidence
 
 Usage:
-    python bmlibrarian_cli_refactored.py [options]
+    python bmlibrarian_cli_refactored.py [options] [question]
     
     Options:
     --max-results N      Maximum search results (default: 100)
@@ -58,6 +63,15 @@ Usage:
     --score-threshold S  Document score threshold (default: 2.5)
     --min-relevance R    Minimum citation relevance (default: 0.7)
     --quick             Quick testing mode (reduced limits)
+    --auto              Automatic mode: run full workflow without interaction
+    --verbose           Enable verbose output for debugging
+    
+    Auto Mode:
+    python bmlibrarian_cli_refactored.py --auto "What are the benefits of exercise?"
+    
+    Runs the complete 9-step workflow including counterfactual analysis and comprehensive
+    editing automatically without any user interaction. Saves the final comprehensive
+    report as a structured markdown file.
 
 Requirements:
 - PostgreSQL database with biomedical literature and pgvector extension
@@ -81,14 +95,20 @@ from bmlibrarian.cli.config import (
     parse_command_line_args, create_config_from_args, 
     show_config_summary, ConfigurationManager
 )
+from bmlibrarian.cli.logging_config import setup_logging
 
 
 class MedicalResearchCLI:
     """Main CLI application class using modular architecture."""
     
-    def __init__(self, config: CLIConfig):
+    def __init__(self, config: CLIConfig, workflow_logger=None):
         """Initialize CLI with configuration."""
         self.config = config
+        self.workflow_logger = workflow_logger
+        
+        # Log configuration
+        if workflow_logger:
+            workflow_logger.log_configuration(config.__dict__)
         
         # Initialize modules
         self.ui = UserInterface(config)
@@ -118,13 +138,47 @@ class MedicalResearchCLI:
             self.config.verbose
         )
     
-    def run(self) -> None:
+    def run(self, auto_question: str = None) -> None:
         """Run the main CLI application."""
         try:
-            self.show_main_menu()
+            if self.config.auto_mode:
+                # Run automatic workflow
+                if not auto_question:
+                    if self.workflow_logger:
+                        self.workflow_logger.log_error("auto_mode_error", "Auto mode requires a research question")
+                    self.ui.show_error_message("--auto mode requires a research question.")
+                    sys.exit(1)
+                
+                if self.workflow_logger:
+                    self.workflow_logger.log_user_interaction("auto_mode_start", f"Auto question: {auto_question}", auto_mode=True)
+                
+                self.ui.show_info_message(f"Running auto mode with question: {auto_question}")
+                success = self.workflow.run_complete_workflow(auto_question)
+                
+                if success:
+                    if self.workflow_logger:
+                        self.workflow_logger.log_session_end(True, {"mode": "auto", "question": auto_question})
+                    self.ui.show_success_message("Auto workflow completed successfully!")
+                    sys.exit(0)
+                else:
+                    if self.workflow_logger:
+                        self.workflow_logger.log_session_end(False, {"mode": "auto", "question": auto_question})
+                    self.ui.show_error_message("Auto workflow failed.")
+                    sys.exit(1)
+            else:
+                if self.workflow_logger:
+                    self.workflow_logger.log_user_interaction("interactive_mode_start", "Starting interactive menu", auto_mode=False)
+                self.show_main_menu()
+                
         except KeyboardInterrupt:
+            if self.workflow_logger:
+                self.workflow_logger.log_session_end(False, {"interrupted_by": "user"})
             self.ui.show_info_message("Exiting BMLibrarian CLI...")
         except Exception as e:
+            if self.workflow_logger:
+                self.workflow_logger.log_error("cli_fatal_error", str(e), exception=e)
+                self.workflow_logger.log_session_end(False, {"error_type": type(e).__name__, "error_message": str(e)})
+            
             self.ui.show_error_message(f"Fatal error: {e}")
             if self.config.verbose:
                 import traceback
@@ -194,20 +248,45 @@ class MedicalResearchCLI:
 
 def main():
     """Main entry point for the CLI application."""
+    workflow_logger = None
+    
     try:
+        # Setup logging with timestamped files
+        workflow_logger = setup_logging()
+        print(f"📝 Logging to: {workflow_logger.log_file_path}")
+        
         # Parse command line arguments
         args = parse_command_line_args()
+        
+        # Log command line arguments
+        workflow_logger.logger.info(f"CLI started with args: {vars(args)}")
+        
+        # Validate auto mode requirements
+        if args.auto and not args.question:
+            error_msg = "Auto mode requires a research question as an argument."
+            workflow_logger.log_error("argument_validation", error_msg, {
+                'auto_mode': True,
+                'question_provided': False
+            })
+            print("❌ Error: --auto mode requires a research question as an argument.")
+            print("Usage: python bmlibrarian_cli_refactored.py --auto 'What are the benefits of exercise?'")
+            sys.exit(1)
         
         # Create configuration from arguments
         config = create_config_from_args(args)
         
         # Create and run CLI
-        cli = MedicalResearchCLI(config)
-        cli.run()
+        cli = MedicalResearchCLI(config, workflow_logger)
+        cli.run(auto_question=args.question)
         
     except KeyboardInterrupt:
+        if workflow_logger:
+            workflow_logger.log_session_end(False, {"interrupted_by": "keyboard_interrupt"})
         print(f"\n\n👋 Exiting BMLibrarian CLI...")
     except Exception as e:
+        if workflow_logger:
+            workflow_logger.log_error("main_fatal_error", str(e), exception=e)
+            workflow_logger.log_session_end(False, {"error_type": type(e).__name__, "error_message": str(e)})
         print(f"\n❌ Fatal error: {e}")
         import traceback
         traceback.print_exc()

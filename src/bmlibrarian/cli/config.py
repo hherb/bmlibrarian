@@ -30,6 +30,9 @@ class CLIConfig:
     show_progress: bool = True
     verbose: bool = False
     
+    # Automation settings
+    auto_mode: bool = False
+    
     def __post_init__(self):
         """Validate configuration after initialization."""
         self.validate()
@@ -144,6 +147,18 @@ Examples:
         help='Enable verbose output for debugging'
     )
     
+    parser.add_argument(
+        '--auto',
+        action='store_true',
+        help='Automatic mode: run full workflow including counterfactual analysis without user interaction'
+    )
+    
+    parser.add_argument(
+        'question',
+        nargs='?',
+        help='Research question (required for --auto mode)'
+    )
+    
     return parser.parse_args()
 
 
@@ -156,7 +171,8 @@ def create_config_from_args(args: argparse.Namespace) -> CLIConfig:
         default_min_relevance=args.min_relevance,
         max_documents_display=args.display_limit,
         max_workers=args.workers,
-        verbose=args.verbose
+        verbose=args.verbose,
+        auto_mode=args.auto
     )
     
     if args.quick:
