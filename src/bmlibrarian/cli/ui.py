@@ -5,7 +5,7 @@ Handles all user interaction, display functions, and input validation for the CL
 """
 
 from typing import List, Dict, Any, Tuple, Optional
-from bmlibrarian.agents import Citation, Report
+from bmlibrarian.agents import Citation, Report, CounterfactualAnalysis
 
 
 class UserInterface:
@@ -431,7 +431,7 @@ class UserInterface:
         print("-" * 50)
     
     def show_workflow_summary(self, question: str, documents_count: int, scored_count: int, 
-                            citations_count: int, evidence_strength: str) -> None:
+                            citations_count: int, evidence_strength: str, counterfactual_analysis: Optional[CounterfactualAnalysis] = None) -> None:
         """Show final workflow summary."""
         print(f"\n🎉 Research workflow completed successfully!")
         print(f"   Question: {question[:60]}...")
@@ -439,6 +439,124 @@ class UserInterface:
         print(f"   Documents scored: {scored_count}")
         print(f"   Citations extracted: {citations_count}")
         print(f"   Evidence strength: {evidence_strength}")
+        if counterfactual_analysis:
+            print(f"   Counterfactual analysis: {len(counterfactual_analysis.counterfactual_questions)} questions generated")
+            print(f"   Original confidence: {counterfactual_analysis.confidence_level}")
+    
+    def get_counterfactual_analysis_choice(self) -> bool:
+        """Ask user if they want to perform counterfactual analysis."""
+        while True:
+            choice = input("\n🔍 Perform counterfactual analysis to find contradictory evidence? (y/n): ").strip().lower()
+            if choice in ['y', 'yes']:
+                return True
+            elif choice in ['n', 'no']:
+                self.show_info_message("Skipping counterfactual analysis.")
+                return False
+            else:
+                print("Please enter 'y' or 'n'.")
+    
+    def display_counterfactual_analysis(self, analysis: CounterfactualAnalysis) -> None:
+        """Display results of counterfactual analysis."""
+        self.show_step_header(7, "Counterfactual Analysis Results")
+        
+        self.show_success_message("Counterfactual analysis completed!")
+        print(f"   Confidence in original claims: {analysis.confidence_level}")
+        print(f"   Main claims identified: {len(analysis.main_claims)}")
+        print(f"   Research questions generated: {len(analysis.counterfactual_questions)}")
+        
+        # Display main claims
+        print("\n📋 Main Claims Identified:")
+        for i, claim in enumerate(analysis.main_claims, 1):
+            print(f"   {i}. {claim}")
+        
+        # Display counterfactual questions by priority
+        high_priority = [q for q in analysis.counterfactual_questions if q.priority == "HIGH"]
+        medium_priority = [q for q in analysis.counterfactual_questions if q.priority == "MEDIUM"]
+        low_priority = [q for q in analysis.counterfactual_questions if q.priority == "LOW"]
+        
+        if high_priority:
+            print(f"\n🔴 HIGH PRIORITY Research Questions ({len(high_priority)}):")
+            for i, question in enumerate(high_priority, 1):
+                print(f"   {i}. {question.question}")
+                print(f"      Target: {question.target_claim}")
+                print(f"      Keywords: {', '.join(question.search_keywords)}")
+                print()
+        
+        if medium_priority:
+            print(f"\n🟡 MEDIUM PRIORITY Research Questions ({len(medium_priority)}):")
+            for i, question in enumerate(medium_priority, 1):
+                print(f"   {i}. {question.question}")
+                print()
+        
+        if low_priority:
+            print(f"\n🟢 LOW PRIORITY Research Questions ({len(low_priority)}):")
+            for i, question in enumerate(low_priority, 1):
+                print(f"   {i}. {question.question}")
+                print()
+        
+        print(f"\n📊 Overall Assessment:")
+        print(f"   {analysis.overall_assessment}")
+    
+    def get_contradictory_evidence_search_choice(self) -> bool:
+        """Ask user if they want to search for contradictory evidence."""
+        while True:
+            choice = input("\n🔍 Search database for contradictory evidence? (y/n): ").strip().lower()
+            if choice in ['y', 'yes']:
+                return True
+            elif choice in ['n', 'no']:
+                self.show_info_message("Skipping contradictory evidence search.")
+                return False
+            else:
+                print("Please enter 'y' or 'n'.")
+    
+    def display_contradictory_evidence_results(self, contradictory_results: Dict[str, Any]) -> None:
+        """Display results of contradictory evidence search."""
+        print("\n" + "=" * 60)
+        print("Contradictory Evidence Search Results")
+        print("=" * 60)
+        
+        if contradictory_results['contradictory_evidence']:
+            self.show_success_message(f"Found {len(contradictory_results['contradictory_evidence'])} contradictory documents")
+            
+            # Display top contradictory evidence
+            print("\n📄 Top Contradictory Evidence:")
+            sorted_evidence = sorted(
+                contradictory_results['contradictory_evidence'], 
+                key=lambda x: x['score'], 
+                reverse=True
+            )
+            
+            for i, evidence in enumerate(sorted_evidence[:3], 1):
+                doc = evidence['document']
+                print(f"\n{i}. Score: {evidence['score']}/5")
+                print(f"   Title: {doc.get('title', 'No title')}")
+                print(f"   Authors: {', '.join(doc.get('authors', [])[:3])}")
+                print(f"   Target Claim: {evidence['query_info']['target_claim']}")
+                print(f"   Reasoning: {evidence['reasoning']}")
+            
+            if contradictory_results['contradictory_citations']:
+                self.show_success_message(f"Extracted {len(contradictory_results['contradictory_citations'])} contradictory citations")
+                
+                # Display key contradictory citations
+                for i, cit_info in enumerate(contradictory_results['contradictory_citations'][:2], 1):
+                    citation = cit_info['citation']
+                    print(f"\n{i}. Citation:")
+                    print(f"   Document: {citation.document_title}")
+                    print(f"   Relevance: {citation.relevance_score:.3f}")
+                    print(f"   Passage: \"{citation.passage[:150]}...\"")
+                    print(f"   Contradicts: {cit_info['original_claim']}")
+            
+            # Update analysis summary
+            summary = contradictory_results['summary']
+            if summary['contradictory_citations_extracted'] > 0:
+                print(f"\n⚠️  RECOMMENDATION: Consider revising confidence level to {summary['revised_confidence']}")
+                print("   Contradictory evidence was found that may challenge some claims.")
+            else:
+                self.show_success_message("No strong contradictory evidence found.")
+                print("   Original report confidence level appears justified.")
+        else:
+            self.show_success_message("No contradictory evidence found in the database.")
+            print("   This supports the confidence in the original report.")
     
     def show_documentation(self) -> None:
         """Show basic documentation and help."""
@@ -453,7 +571,8 @@ class UserInterface:
         print("4. **Relevance Scoring:** AI scores documents (1-5) for relevance")
         print("5. **Citation Extraction:** Extract relevant passages from high-scoring documents")
         print("6. **Report Generation:** Create medical publication-style report")
-        print("7. **Export:** Save report as markdown file")
+        print("7. **Counterfactual Analysis:** (Optional) Analyze report for contradictory evidence")
+        print("8. **Export:** Save report as markdown file")
         print()
         print("**Requirements:**")
         print("• PostgreSQL database with biomedical literature")

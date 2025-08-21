@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from bmlibrarian.agents import Report, Citation
+from bmlibrarian.agents import Report, Citation, CounterfactualAnalysis
 
 
 class ReportFormatter:
@@ -18,7 +18,7 @@ class ReportFormatter:
         self.config = config
         self.ui = ui
     
-    def format_report_as_markdown(self, report: Report) -> str:
+    def format_report_as_markdown(self, report: Report, counterfactual_analysis: Optional[CounterfactualAnalysis] = None) -> str:
         """Format report as markdown with proper structure."""
         lines = []
         
@@ -65,6 +65,10 @@ class ReportFormatter:
             lines.append(report.methodology_note)
             lines.append("")
         
+        # Add counterfactual analysis section if available
+        if counterfactual_analysis:
+            lines.extend(self._get_counterfactual_analysis_section(counterfactual_analysis))
+        
         # Technical details
         lines.extend(self._get_technical_details_section())
         
@@ -95,14 +99,76 @@ class ReportFormatter:
         
         return lines
     
-    def save_report_to_file(self, report: Report, question: str) -> bool:
+    def _get_counterfactual_analysis_section(self, analysis: CounterfactualAnalysis) -> List[str]:
+        """Get counterfactual analysis section for the report."""
+        lines = []
+        
+        lines.append("## Counterfactual Analysis")
+        lines.append("")
+        lines.append(f"**Original Confidence Level:** {analysis.confidence_level}")
+        lines.append("")
+        lines.append("### Main Claims Analyzed")
+        lines.append("")
+        for i, claim in enumerate(analysis.main_claims, 1):
+            lines.append(f"{i}. {claim}")
+        lines.append("")
+        
+        lines.append("### Research Questions for Contradictory Evidence")
+        lines.append("")
+        
+        # Group questions by priority
+        high_priority = [q for q in analysis.counterfactual_questions if q.priority == "HIGH"]
+        medium_priority = [q for q in analysis.counterfactual_questions if q.priority == "MEDIUM"]
+        low_priority = [q for q in analysis.counterfactual_questions if q.priority == "LOW"]
+        
+        if high_priority:
+            lines.append("#### High Priority Questions")
+            lines.append("")
+            for i, question in enumerate(high_priority, 1):
+                lines.append(f"**Question {i}:** {question.question}")
+                lines.append("")
+                lines.append(f"*Target Claim:* {question.target_claim}")
+                lines.append("")
+                lines.append(f"*Reasoning:* {question.reasoning}")
+                lines.append("")
+                lines.append(f"*Search Keywords:* {', '.join(question.search_keywords)}")
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+        
+        if medium_priority:
+            lines.append("#### Medium Priority Questions")
+            lines.append("")
+            for i, question in enumerate(medium_priority, 1):
+                lines.append(f"**Question {i}:** {question.question}")
+                lines.append("")
+                lines.append(f"*Target Claim:* {question.target_claim}")
+                lines.append("")
+                lines.append(f"*Search Keywords:* {', '.join(question.search_keywords)}")
+                lines.append("")
+        
+        if low_priority:
+            lines.append("#### Low Priority Questions")
+            lines.append("")
+            for i, question in enumerate(low_priority, 1):
+                lines.append(f"**Question {i}:** {question.question}")
+                lines.append("")
+        
+        lines.append("### Overall Assessment")
+        lines.append("")
+        lines.append(analysis.overall_assessment)
+        lines.append("")
+        
+        return lines
+    
+    def save_report_to_file(self, report: Report, question: str, counterfactual_analysis: Optional[CounterfactualAnalysis] = None) -> bool:
         """Save the generated report as a markdown file with user interaction."""
         try:
             # Get filename from user
             filename = self.ui.get_report_filename(question)
             
             # Convert report to markdown format
-            markdown_content = self.format_report_as_markdown(report)
+            markdown_content = self.format_report_as_markdown(report, counterfactual_analysis)
             
             # Save file
             with open(filename, 'w', encoding='utf-8') as f:

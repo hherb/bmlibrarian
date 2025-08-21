@@ -7,7 +7,8 @@ Handles the main research workflow coordination, agent setup, and state manageme
 from typing import List, Dict, Any, Tuple, Optional
 from bmlibrarian.agents import (
     QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
-    ReportingAgent, AgentOrchestrator, Citation, Report
+    ReportingAgent, CounterfactualAgent, AgentOrchestrator, 
+    Citation, Report, CounterfactualAnalysis
 )
 
 
@@ -26,6 +27,7 @@ class WorkflowOrchestrator:
         self.scoring_agent: Optional[DocumentScoringAgent] = None
         self.citation_agent: Optional[CitationFinderAgent] = None
         self.reporting_agent: Optional[ReportingAgent] = None
+        self.counterfactual_agent: Optional[CounterfactualAgent] = None
         
         # Workflow state
         self.current_question: Optional[str] = None
@@ -34,6 +36,7 @@ class WorkflowOrchestrator:
         self.scored_documents: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
         self.extracted_citations: List[Citation] = []
         self.final_report: Optional[Report] = None
+        self.counterfactual_analysis: Optional[CounterfactualAnalysis] = None
     
     def setup_agents(self) -> bool:
         """Initialize and test all agents."""
@@ -51,12 +54,14 @@ class WorkflowOrchestrator:
             self.scoring_agent = DocumentScoringAgent(orchestrator=self.orchestrator)
             self.citation_agent = CitationFinderAgent(orchestrator=self.orchestrator)
             self.reporting_agent = ReportingAgent(orchestrator=self.orchestrator)
+            self.counterfactual_agent = CounterfactualAgent(orchestrator=self.orchestrator)
             
             # Register agents
             self.orchestrator.register_agent("query_agent", self.query_agent)
             self.orchestrator.register_agent("document_scoring_agent", self.scoring_agent)
             self.orchestrator.register_agent("citation_finder_agent", self.citation_agent)
             self.orchestrator.register_agent("reporting_agent", self.reporting_agent)
+            self.orchestrator.register_agent("counterfactual_agent", self.counterfactual_agent)
             
             # Set query agent in processor
             self.query_processor.set_query_agent(self.query_agent)
@@ -92,8 +97,12 @@ class WorkflowOrchestrator:
         status_reporting = "✅ Connected" if reporting_connected else "❌ Failed"
         print(f"   Reporting Agent (Ollama): {status_reporting}")
         
+        counterfactual_connected = self.counterfactual_agent.test_connection()
+        status_counterfactual = "✅ Connected" if counterfactual_connected else "❌ Failed"
+        print(f"   Counterfactual Agent (Ollama): {status_counterfactual}")
+        
         # Check if all critical services are available
-        if not (db_connected and scoring_connected and citation_connected and reporting_connected):
+        if not (db_connected and scoring_connected and citation_connected and reporting_connected and counterfactual_connected):
             self.ui.show_warning_message("Some AI services are unavailable. Please ensure:")
             print("   - Ollama is running: ollama serve")
             print("   - Required models are installed:")
@@ -159,14 +168,19 @@ class WorkflowOrchestrator:
             
             self.final_report = report
             
-            # Step 7: Save report (optional)
+            # Step 7: Optional counterfactual analysis
+            counterfactual_analysis = self._execute_counterfactual_analysis(report)
+            if counterfactual_analysis:
+                self.counterfactual_analysis = counterfactual_analysis
+            
+            # Step 8: Save report (optional)
             if self.ui.get_save_report_choice():
-                self.formatter.save_report_to_file(report, question)
+                self.formatter.save_report_to_file(report, question, self.counterfactual_analysis)
             
             # Final summary
             self.ui.show_workflow_summary(
                 question, len(documents), len(scored_docs), 
-                len(citations), report.evidence_strength
+                len(citations), report.evidence_strength, self.counterfactual_analysis
             )
             
             return True
@@ -434,6 +448,68 @@ class WorkflowOrchestrator:
             print("• Ensure sufficient memory and processing power")
             return None
     
+    def _execute_counterfactual_analysis(self, report: Report) -> Optional[CounterfactualAnalysis]:
+        """Execute counterfactual analysis on the generated report."""
+        try:
+            # Ask user if they want counterfactual analysis
+            if not self.ui.get_counterfactual_analysis_choice():
+                return None
+            
+            self.ui.show_progress_message("Analyzing report for potential contradictory evidence...")
+            print("   This will identify claims and generate research questions")
+            print("   to find evidence that might contradict the report's conclusions.")
+            self.ui.show_info_message("Performing counterfactual analysis...")
+            
+            # Format the report content for analysis
+            formatted_report = self.reporting_agent.format_report_output(report)
+            
+            # Perform counterfactual analysis
+            analysis = self.counterfactual_agent.analyze_document(
+                document_content=formatted_report,
+                document_title=f"Research Report: {self.current_question[:50]}..."
+            )
+            
+            if not analysis:
+                self.ui.show_error_message("Failed to perform counterfactual analysis.")
+                return None
+            
+            # Display results
+            self.ui.display_counterfactual_analysis(analysis)
+            
+            # Ask if user wants to search for contradictory evidence
+            if self.ui.get_contradictory_evidence_search_choice():
+                self._search_contradictory_evidence(analysis, formatted_report)
+            
+            return analysis
+            
+        except Exception as e:
+            self.ui.show_error_message(f"Error in counterfactual analysis: {e}")
+            return None
+    
+    def _search_contradictory_evidence(self, analysis: CounterfactualAnalysis, formatted_report: str):
+        """Search for contradictory evidence based on counterfactual analysis."""
+        try:
+            self.ui.show_progress_message("Searching for contradictory evidence...")
+            print("   Using high-priority questions to find opposing studies")
+            self.ui.show_info_message("This may take several minutes...")
+            
+            # Use the complete counterfactual workflow
+            contradictory_results = self.counterfactual_agent.find_contradictory_literature(
+                document_content=formatted_report,
+                document_title=f"Research Report: {self.current_question[:50]}...",
+                max_results_per_query=5,
+                min_relevance_score=3,
+                query_agent=self.query_agent,
+                scoring_agent=self.scoring_agent,
+                citation_agent=self.citation_agent
+            )
+            
+            # Display results
+            self.ui.display_contradictory_evidence_results(contradictory_results)
+                
+        except Exception as e:
+            self.ui.show_error_message(f"Error searching for contradictory evidence: {e}")
+    
     def get_workflow_state(self) -> Dict[str, Any]:
         """Get current workflow state for potential resumption."""
         return {
@@ -443,6 +519,7 @@ class WorkflowOrchestrator:
             'scored_documents_count': len(self.scored_documents),
             'extracted_citations_count': len(self.extracted_citations),
             'has_final_report': self.final_report is not None,
+            'has_counterfactual_analysis': self.counterfactual_analysis is not None,
             'config': {
                 'score_threshold': self.config.default_score_threshold,
                 'min_relevance': self.config.default_min_relevance,
@@ -458,3 +535,4 @@ class WorkflowOrchestrator:
         self.scored_documents = []
         self.extracted_citations = []
         self.final_report = None
+        self.counterfactual_analysis = None

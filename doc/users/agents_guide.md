@@ -24,6 +24,35 @@ Evaluates how well documents answer your questions.
 - Helps you focus on the most relevant papers
 - Works with any documents from your search results
 
+### CitationFinderAgent - Evidence Extraction
+Extracts relevant passages from documents that answer your questions.
+
+**What it does:**
+- Finds specific passages that address your research question
+- Extracts precise citations with relevance scoring
+- Summarizes the key findings from each passage
+- Creates proper academic citations for references
+
+### ReportingAgent - Report Synthesis
+Synthesizes extracted citations into professional medical reports.
+
+**What it does:**
+- Combines multiple citations into coherent reports
+- Writes in medical publication style
+- Provides evidence strength assessments
+- Generates Vancouver-style references
+- Creates methodology notes
+
+### CounterfactualAgent - Critical Analysis **NEW**
+Analyzes reports to identify potential contradictory evidence and research gaps.
+
+**What it does:**
+- Identifies main claims in generated reports
+- Generates research questions to find contradictory evidence
+- Prioritizes questions by importance (High/Medium/Low)
+- Optionally searches for studies that contradict findings
+- Provides confidence assessments and recommendations
+
 ## Getting Started
 
 ### Installation and Setup

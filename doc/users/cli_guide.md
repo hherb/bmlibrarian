@@ -6,16 +6,27 @@ This guide explains how to use the BMLibrarian Command Line Interface (CLI) for 
 
 The BMLibrarian CLI is an interactive command-line application that guides you through the complete process of evidence-based medical literature research. It provides human-in-the-loop interaction at every step, ensuring you maintain control while leveraging AI-powered analysis.
 
+**Two CLI Versions Available:**
+- **bmlibrarian_cli_refactored.py** - **RECOMMENDED** - Modular architecture with enhanced features and counterfactual analysis
+- **bmlibrarian_cli.py** - Legacy version maintained for compatibility
+
 ## Features
 
-- 🔍 **Interactive Research Workflow**: Step-by-step guidance through literature research
+### Enhanced Features (Refactored CLI)
+- 🔍 **Interactive Research Workflow**: Enhanced 8-step guidance through literature research
 - 🤖 **AI-Assisted Query Generation**: Generate and edit database queries with AI help
 - 📊 **Real-time Document Scoring**: AI evaluates document relevance with human review
 - 📝 **Citation Extraction**: Extract relevant passages from high-scoring documents
 - 📄 **Professional Reports**: Generate medical publication-style reports
-- 💾 **Markdown Export**: Save reports as properly formatted markdown files
+- 🧠 **Counterfactual Analysis**: Optional analysis to find contradictory evidence
+- 💾 **Enhanced Markdown Export**: Save reports with optional counterfactual analysis
 - ⚙️ **Configurable Thresholds**: Adjust scoring and relevance parameters
 - 🔄 **Iterative Refinement**: Go back and adjust parameters at any step
+- 🏗️ **Modular Architecture**: Cleaner, more maintainable codebase
+
+### Legacy Features (Original CLI)
+- All core workflow features without counterfactual analysis
+- Compatible with existing workflows and scripts
 
 ## Quick Start
 
@@ -29,24 +40,48 @@ Ensure you have:
 
 ### 2. Launch the CLI
 
+**Recommended (Refactored CLI):**
+```bash
+# Simple launch
+uv run python bmlibrarian_cli_refactored.py
+
+# With options
+uv run python bmlibrarian_cli_refactored.py --quick
+uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
+```
+
+**Legacy CLI:**
 ```bash
 # Simple launch
 uv run python bmlibrarian_cli.py
-
-# Or use the launcher script (with system checks)
-./run_cli.sh
 ```
 
-### 3. Follow the Interactive Workflow
+### 3. Follow the Enhanced Interactive Workflow
 
-The CLI will guide you through 7 steps:
+The refactored CLI guides you through 8 steps:
 1. **Research Question** - Enter your medical question
 2. **Query Generation** - AI generates database query (with editing)
 3. **Document Search** - Execute search and review results
 4. **Relevance Scoring** - AI scores documents for relevance
 5. **Citation Extraction** - Extract relevant passages
 6. **Report Generation** - Create professional report
-7. **Export** - Save as markdown file
+7. **Counterfactual Analysis** - **NEW** Optional analysis for contradictory evidence
+8. **Export** - Save as enhanced markdown file
+
+### 4. Command Line Options
+
+The refactored CLI supports additional configuration options:
+
+```bash
+# Quick testing mode (reduced limits for faster execution)
+uv run python bmlibrarian_cli_refactored.py --quick
+
+# Custom limits
+uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
+
+# Adjust thresholds
+uv run python bmlibrarian_cli_refactored.py --score-threshold 3.0 --min-relevance 0.8
+```
 
 ## Detailed Workflow
 
@@ -217,18 +252,62 @@ Unique references: [Number]
 Evidence strength: [Assessment]
 ```
 
-### Step 7: Export Report
+### Step 7: Counterfactual Analysis (Optional - Refactored CLI Only)
 
-Save your report as a markdown file for further use.
+**NEW in Refactored CLI:** Analyze your report to identify potential contradictory evidence.
 
-**Features:**
+The counterfactual analysis helps validate your research findings by:
+- **Identifying Main Claims:** Extracts key assertions from your report
+- **Generating Research Questions:** Creates targeted questions to find contradictory evidence
+- **Prioritizing Questions:** Ranks questions by importance (High/Medium/Low priority)
+- **Database Search:** Optionally searches for studies that might contradict your findings
+
+**What You'll See:**
+```
+🔍 Perform counterfactual analysis to find contradictory evidence? (y/n): y
+
+✅ Counterfactual analysis completed!
+   Confidence in original claims: MEDIUM
+   Main claims identified: 3
+   Research questions generated: 5
+
+📋 Main Claims Identified:
+   1. Mediterranean diet improves cognitive function in elderly populations
+   2. Exercise prevents cardiovascular disease
+   3. Regular physical activity reduces mortality risk
+
+🔴 HIGH PRIORITY Research Questions (2):
+   1. Are there studies showing Mediterranean diet has no cognitive benefits?
+      Target: Mediterranean diet improves cognitive function
+      Keywords: Mediterranean diet, cognitive decline, no effect
+
+🔍 Search database for contradictory evidence? (y/n): y
+```
+
+**Benefits:**
+- **Evidence Validation:** Identify potential weaknesses in your findings
+- **Research Integrity:** Follow best practices for critical analysis
+- **Confidence Assessment:** Get recommendations for evidence strength
+- **Comprehensive Review:** Consider both supporting and opposing evidence
+
+### Step 8: Export Report
+
+Save your enhanced report as a markdown file for further use.
+
+**Enhanced Features (Refactored CLI):**
+- **Counterfactual Analysis Section:** Includes all generated research questions and assessments
+- **Priority-Grouped Questions:** High/Medium/Low priority questions for contradictory evidence
+- **Confidence Assessment:** Original confidence level and recommendations
 - Automatic filename generation based on question and timestamp
 - Custom filename option
 - Proper markdown formatting with headers and lists
 - Technical details about methodology
 - Metadata about the research process
 
-**File Structure:**
+**Legacy Features (Original CLI):**
+- All export features without counterfactual analysis section
+
+**Enhanced File Structure (with Counterfactual Analysis):**
 ```markdown
 # Medical Literature Research Report
 
@@ -250,6 +329,25 @@ Save your report as a markdown file for further use.
 ## References
 1. [Vancouver-style references]
 ...
+
+## Counterfactual Analysis
+**Original Confidence Level:** MEDIUM
+
+### Main Claims Analyzed
+1. Regular exercise reduces cardiovascular disease risk
+2. Physical activity improves heart function
+3. Exercise training decreases mortality
+
+### Research Questions for Contradictory Evidence
+
+#### High Priority Questions
+**Question 1:** Are there studies showing exercise has no cardiovascular benefits?
+*Target Claim:* Regular exercise reduces cardiovascular disease risk
+*Reasoning:* Critical to validate the primary claim
+*Search Keywords:* exercise, cardiovascular, no effect, ineffective
+
+### Overall Assessment
+Report claims are generally well-supported but should be verified...
 
 ## Methodology
 [Analysis approach]

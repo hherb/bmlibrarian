@@ -37,7 +37,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from bmlibrarian.agents import (
     QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
-    ReportingAgent, AgentOrchestrator, Citation, Report
+    ReportingAgent, CounterfactualAgent, AgentOrchestrator, 
+    Citation, Report, CounterfactualAnalysis
 )
 
 
@@ -54,6 +55,7 @@ class MedicalResearchCLI:
         self.scoring_agent = None
         self.citation_agent = None
         self.reporting_agent = None
+        self.counterfactual_agent = None
         
         # Session state
         self.current_question = None
@@ -98,12 +100,14 @@ class MedicalResearchCLI:
             self.scoring_agent = DocumentScoringAgent(orchestrator=self.orchestrator)
             self.citation_agent = CitationFinderAgent(orchestrator=self.orchestrator)
             self.reporting_agent = ReportingAgent(orchestrator=self.orchestrator)
+            self.counterfactual_agent = CounterfactualAgent(orchestrator=self.orchestrator)
             
             # Register agents
             self.orchestrator.register_agent("query_agent", self.query_agent)
             self.orchestrator.register_agent("document_scoring_agent", self.scoring_agent)
             self.orchestrator.register_agent("citation_finder_agent", self.citation_agent)
             self.orchestrator.register_agent("reporting_agent", self.reporting_agent)
+            self.orchestrator.register_agent("counterfactual_agent", self.counterfactual_agent)
             
             print("   ✅ Agents initialized")
             
@@ -124,8 +128,11 @@ class MedicalResearchCLI:
             reporting_connected = self.reporting_agent.test_connection()
             print(f"   Reporting Agent (Ollama): {'✅ Connected' if reporting_connected else '❌ Failed'}")
             
+            counterfactual_connected = self.counterfactual_agent.test_connection()
+            print(f"   Counterfactual Agent (Ollama): {'✅ Connected' if counterfactual_connected else '❌ Failed'}")
+            
             # Check if all critical services are available
-            if not (scoring_connected and citation_connected and reporting_connected):
+            if not (scoring_connected and citation_connected and reporting_connected and counterfactual_connected):
                 print("\n⚠️  Some AI services are unavailable. Please ensure:")
                 print("   - Ollama is running: ollama serve")
                 print("   - Required models are installed:")
@@ -785,10 +792,10 @@ class MedicalResearchCLI:
             print("• Ensure sufficient memory and processing power")
             return None
     
-    def save_report_as_markdown(self, report: Report) -> bool:
+    def save_report_as_markdown(self, report: Report, counterfactual_analysis: Optional[CounterfactualAnalysis] = None) -> bool:
         """Save the generated report as a markdown file."""
         print("\n" + "=" * 60)
-        print("Step 7: Save Report")
+        print("Step 8: Save Report")
         print("=" * 60)
         
         try:
@@ -809,7 +816,7 @@ class MedicalResearchCLI:
                 filename += '.md'
             
             # Convert report to markdown format
-            markdown_content = self.format_report_as_markdown(report)
+            markdown_content = self.format_report_as_markdown(report, counterfactual_analysis)
             
             # Save file
             with open(filename, 'w', encoding='utf-8') as f:
@@ -830,7 +837,7 @@ class MedicalResearchCLI:
             print(f"❌ Error saving report: {e}")
             return False
     
-    def format_report_as_markdown(self, report: Report) -> str:
+    def format_report_as_markdown(self, report: Report, counterfactual_analysis: Optional[CounterfactualAnalysis] = None) -> str:
         """Format report as markdown with proper structure."""
         lines = []
         
@@ -897,7 +904,218 @@ class MedicalResearchCLI:
         lines.append("- Evidence strength assessment based on citation quality and quantity")
         lines.append("- Human-in-the-loop validation at each processing step")
         
+        # Add counterfactual analysis section if available
+        if counterfactual_analysis:
+            lines.append("")
+            lines.append("## Counterfactual Analysis")
+            lines.append("")
+            lines.append(f"**Original Confidence Level:** {counterfactual_analysis.confidence_level}")
+            lines.append("")
+            lines.append("### Main Claims Analyzed")
+            lines.append("")
+            for i, claim in enumerate(counterfactual_analysis.main_claims, 1):
+                lines.append(f"{i}. {claim}")
+            lines.append("")
+            
+            lines.append("### Research Questions for Contradictory Evidence")
+            lines.append("")
+            
+            # Group questions by priority
+            high_priority = [q for q in counterfactual_analysis.counterfactual_questions if q.priority == "HIGH"]
+            medium_priority = [q for q in counterfactual_analysis.counterfactual_questions if q.priority == "MEDIUM"]
+            low_priority = [q for q in counterfactual_analysis.counterfactual_questions if q.priority == "LOW"]
+            
+            if high_priority:
+                lines.append("#### High Priority Questions")
+                lines.append("")
+                for i, question in enumerate(high_priority, 1):
+                    lines.append(f"**Question {i}:** {question.question}")
+                    lines.append("")
+                    lines.append(f"*Target Claim:* {question.target_claim}")
+                    lines.append("")
+                    lines.append(f"*Reasoning:* {question.reasoning}")
+                    lines.append("")
+                    lines.append(f"*Search Keywords:* {', '.join(question.search_keywords)}")
+                    lines.append("")
+                    lines.append("---")
+                    lines.append("")
+            
+            if medium_priority:
+                lines.append("#### Medium Priority Questions")
+                lines.append("")
+                for i, question in enumerate(medium_priority, 1):
+                    lines.append(f"**Question {i}:** {question.question}")
+                    lines.append("")
+                    lines.append(f"*Target Claim:* {question.target_claim}")
+                    lines.append("")
+                    lines.append(f"*Search Keywords:* {', '.join(question.search_keywords)}")
+                    lines.append("")
+            
+            if low_priority:
+                lines.append("#### Low Priority Questions")
+                lines.append("")
+                for i, question in enumerate(low_priority, 1):
+                    lines.append(f"**Question {i}:** {question.question}")
+                    lines.append("")
+            
+            lines.append("### Overall Assessment")
+            lines.append("")
+            lines.append(counterfactual_analysis.overall_assessment)
+            lines.append("")
+        
         return "\n".join(lines)
+    
+    def perform_counterfactual_analysis(self, report: Report) -> Optional[CounterfactualAnalysis]:
+        """Perform counterfactual analysis on the generated report."""
+        print("\n" + "=" * 60)
+        print("Step 7: Counterfactual Analysis")
+        print("=" * 60)
+        
+        try:
+            print(f"\n🔍 Analyzing report for potential contradictory evidence...")
+            print("   This will identify claims and generate research questions")
+            print("   to find evidence that might contradict the report's conclusions.")
+            print("\n⏳ Performing counterfactual analysis...")
+            
+            # Format the report content for analysis
+            formatted_report = self.reporting_agent.format_report_output(report)
+            
+            # Perform counterfactual analysis
+            analysis = self.counterfactual_agent.analyze_document(
+                document_content=formatted_report,
+                document_title=f"Research Report: {self.current_question[:50]}..."
+            )
+            
+            if not analysis:
+                print("❌ Failed to perform counterfactual analysis.")
+                return None
+            
+            print(f"\n✅ Counterfactual analysis completed!")
+            print(f"   Confidence in original claims: {analysis.confidence_level}")
+            print(f"   Main claims identified: {len(analysis.main_claims)}")
+            print(f"   Research questions generated: {len(analysis.counterfactual_questions)}")
+            
+            # Display main claims
+            print("\n📋 Main Claims Identified:")
+            for i, claim in enumerate(analysis.main_claims, 1):
+                print(f"   {i}. {claim}")
+            
+            # Display counterfactual questions by priority
+            high_priority = [q for q in analysis.counterfactual_questions if q.priority == "HIGH"]
+            medium_priority = [q for q in analysis.counterfactual_questions if q.priority == "MEDIUM"]
+            low_priority = [q for q in analysis.counterfactual_questions if q.priority == "LOW"]
+            
+            if high_priority:
+                print(f"\n🔴 HIGH PRIORITY Research Questions ({len(high_priority)}):")
+                for i, question in enumerate(high_priority, 1):
+                    print(f"   {i}. {question.question}")
+                    print(f"      Target: {question.target_claim}")
+                    print(f"      Keywords: {', '.join(question.search_keywords)}")
+                    print()
+            
+            if medium_priority:
+                print(f"\n🟡 MEDIUM PRIORITY Research Questions ({len(medium_priority)}):")
+                for i, question in enumerate(medium_priority, 1):
+                    print(f"   {i}. {question.question}")
+                    print()
+            
+            if low_priority:
+                print(f"\n🟢 LOW PRIORITY Research Questions ({len(low_priority)}):")
+                for i, question in enumerate(low_priority, 1):
+                    print(f"   {i}. {question.question}")
+                    print()
+            
+            print(f"\n📊 Overall Assessment:")
+            print(f"   {analysis.overall_assessment}")
+            
+            # Ask if user wants to search for contradictory evidence
+            while True:
+                search_choice = input("\n🔍 Search database for contradictory evidence? (y/n): ").strip().lower()
+                if search_choice in ['y', 'yes']:
+                    self.search_contradictory_evidence(analysis)
+                    break
+                elif search_choice in ['n', 'no']:
+                    print("Skipping contradictory evidence search.")
+                    break
+                else:
+                    print("Please enter 'y' or 'n'.")
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"❌ Error in counterfactual analysis: {e}")
+            return None
+    
+    def search_contradictory_evidence(self, analysis: CounterfactualAnalysis):
+        """Search for contradictory evidence based on counterfactual analysis."""
+        print("\n" + "=" * 60)
+        print("Contradictory Evidence Search")
+        print("=" * 60)
+        
+        try:
+            print(f"\n🔍 Searching for contradictory evidence...")
+            print("   Using high-priority questions to find opposing studies")
+            print("\n⏳ This may take several minutes...")
+            
+            # Get formatted report content for the search
+            formatted_report = self.reporting_agent.format_report_output(self.final_report)
+            
+            # Use the complete counterfactual workflow
+            contradictory_results = self.counterfactual_agent.find_contradictory_literature(
+                document_content=formatted_report,
+                document_title=f"Research Report: {self.current_question[:50]}...",
+                max_results_per_query=5,
+                min_relevance_score=3,
+                query_agent=self.query_agent,
+                scoring_agent=self.scoring_agent,
+                citation_agent=self.citation_agent
+            )
+            
+            if contradictory_results['contradictory_evidence']:
+                print(f"\n✅ Found {len(contradictory_results['contradictory_evidence'])} contradictory documents")
+                
+                # Display top contradictory evidence
+                print("\n📄 Top Contradictory Evidence:")
+                sorted_evidence = sorted(
+                    contradictory_results['contradictory_evidence'], 
+                    key=lambda x: x['score'], 
+                    reverse=True
+                )
+                
+                for i, evidence in enumerate(sorted_evidence[:3], 1):
+                    doc = evidence['document']
+                    print(f"\n{i}. Score: {evidence['score']}/5")
+                    print(f"   Title: {doc.get('title', 'No title')}")
+                    print(f"   Authors: {', '.join(doc.get('authors', [])[:3])}")
+                    print(f"   Target Claim: {evidence['query_info']['target_claim']}")
+                    print(f"   Reasoning: {evidence['reasoning']}")
+                
+                if contradictory_results['contradictory_citations']:
+                    print(f"\n📝 Extracted {len(contradictory_results['contradictory_citations'])} contradictory citations")
+                    
+                    # Display key contradictory citations
+                    for i, cit_info in enumerate(contradictory_results['contradictory_citations'][:2], 1):
+                        citation = cit_info['citation']
+                        print(f"\n{i}. Citation:")
+                        print(f"   Document: {citation.document_title}")
+                        print(f"   Relevance: {citation.relevance_score:.3f}")
+                        print(f"   Passage: \"{citation.passage[:150]}...\"")
+                        print(f"   Contradicts: {cit_info['original_claim']}")
+                
+                # Update analysis summary
+                summary = contradictory_results['summary']
+                if summary['contradictory_citations_extracted'] > 0:
+                    print(f"\n⚠️  RECOMMENDATION: Consider revising confidence level to {summary['revised_confidence']}")
+                    print("   Contradictory evidence was found that may challenge some claims.")
+                else:
+                    print(f"\n✅ No strong contradictory evidence found.")
+                    print("   Original report confidence level appears justified.")
+            else:
+                print(f"\n✅ No contradictory evidence found in the database.")
+                print("   This supports the confidence in the original report.")
+                
+        except Exception as e:
+            print(f"❌ Error searching for contradictory evidence: {e}")
     
     def run_complete_workflow(self):
         """Execute the complete research workflow with user interaction."""
@@ -942,11 +1160,24 @@ class MedicalResearchCLI:
                 print("❌ Report generation failed.")
                 return
             
-            # Step 7: Save report
+            # Step 7: Optional counterfactual analysis
+            counterfactual_analysis = None
+            while True:
+                counter_choice = input("\n🔍 Perform counterfactual analysis to find contradictory evidence? (y/n): ").strip().lower()
+                if counter_choice in ['y', 'yes']:
+                    counterfactual_analysis = self.perform_counterfactual_analysis(report)
+                    break
+                elif counter_choice in ['n', 'no']:
+                    print("Skipping counterfactual analysis.")
+                    break
+                else:
+                    print("Please enter 'y' or 'n'.")
+            
+            # Step 8: Save report
             while True:
                 save_choice = input("\n💾 Save report as markdown file? (y/n): ").strip().lower()
                 if save_choice in ['y', 'yes']:
-                    self.save_report_as_markdown(report)
+                    self.save_report_as_markdown(report, counterfactual_analysis)
                     break
                 elif save_choice in ['n', 'no']:
                     print("Report not saved.")
@@ -961,6 +1192,9 @@ class MedicalResearchCLI:
             print(f"   Documents scored: {len(scored_docs)}")
             print(f"   Citations extracted: {len(citations)}")
             print(f"   Evidence strength: {report.evidence_strength}")
+            if counterfactual_analysis:
+                print(f"   Counterfactual analysis: {len(counterfactual_analysis.counterfactual_questions)} questions generated")
+                print(f"   Original confidence: {counterfactual_analysis.confidence_level}")
             
         except KeyboardInterrupt:
             print(f"\n\n⏹️  Workflow interrupted by user.")
@@ -1099,7 +1333,8 @@ class MedicalResearchCLI:
         print("4. **Relevance Scoring:** AI scores documents (1-5) for relevance")
         print("5. **Citation Extraction:** Extract relevant passages from high-scoring documents")
         print("6. **Report Generation:** Create medical publication-style report")
-        print("7. **Export:** Save report as markdown file")
+        print("7. **Counterfactual Analysis:** (Optional) Analyze report for contradictory evidence")
+        print("8. **Export:** Save report as markdown file")
         print()
         print("**Requirements:**")
         print("• PostgreSQL database with biomedical literature")

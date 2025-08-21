@@ -18,14 +18,51 @@ Features:
 - Document relevance scoring with user review
 - Citation extraction from high-scoring documents
 - Medical publication-style report generation
-- Markdown report export with proper formatting
+- Counterfactual analysis for finding contradictory evidence
+- Enhanced markdown report export with counterfactual analysis
+
+Enhanced Workflow (8 Steps):
+1. Research Question: Enter your medical research question
+2. Query Generation: AI generates PostgreSQL to_tsquery with human editing
+3. Document Search: Execute database search and review results
+4. Relevance Scoring: AI scores documents (1-5) for relevance
+5. Citation Extraction: Extract relevant passages from high-scoring documents
+6. Report Generation: Create medical publication-style report
+7. Counterfactual Analysis: (Optional) Analyze report for contradictory evidence
+   - Identifies main claims in the generated report
+   - Generates research questions to find contradictory evidence
+   - Optionally searches database for opposing studies
+   - Provides confidence level recommendations
+8. Export: Save report as markdown file with optional counterfactual analysis
+
+Modular Architecture:
+- bmlibrarian.cli.config: Configuration management, command-line parsing
+- bmlibrarian.cli.ui: User interface, display functions, user interaction
+- bmlibrarian.cli.query_processing: Query editing, database search coordination
+- bmlibrarian.cli.formatting: Report formatting, markdown generation, file export
+- bmlibrarian.cli.workflow: Multi-agent workflow orchestration, state management
+
+Agent Integration:
+- QueryAgent: Natural language to PostgreSQL query conversion
+- DocumentScoringAgent: Document relevance scoring for user questions
+- CitationFinderAgent: Extracts relevant passages from high-scoring documents
+- ReportingAgent: Synthesizes citations into medical publication-style reports
+- CounterfactualAgent: Analyzes reports to generate contradictory evidence questions
 
 Usage:
-    python bmlibrarian_cli_refactored.py
+    python bmlibrarian_cli_refactored.py [options]
+    
+    Options:
+    --max-results N      Maximum search results (default: 100)
+    --timeout M          Timeout in minutes (default: 5.0)
+    --score-threshold S  Document score threshold (default: 2.5)
+    --min-relevance R    Minimum citation relevance (default: 0.7)
+    --quick             Quick testing mode (reduced limits)
 
 Requirements:
-- PostgreSQL database with biomedical literature
-- Ollama service running locally
+- PostgreSQL database with biomedical literature and pgvector extension
+- Ollama service running locally (http://localhost:11434)
+- Required models: gpt-oss:20b, medgemma4B_it_q8:latest
 - BMLibrarian agents properly configured
 """
 

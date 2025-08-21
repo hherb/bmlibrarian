@@ -9,8 +9,10 @@ The BMLibrarian agents module provides a modular, extensible architecture for AI
 ### 1. Separation of Concerns
 Each agent has a single, well-defined responsibility:
 - **QueryAgent**: Natural language to PostgreSQL query conversion
-- **DocumentScoringAgent**: Document relevance assessment
-- **Future agents**: Research summarization, citation analysis, etc.
+- **DocumentScoringAgent**: Document relevance assessment (1-5 scale)
+- **CitationFinderAgent**: Extracts relevant passages and citations from documents
+- **ReportingAgent**: Synthesizes citations into medical publication-style reports
+- **CounterfactualAgent**: Analyzes documents to generate contradictory evidence questions
 
 ### 2. Common Foundation
 All agents inherit from `BaseAgent` which provides:
@@ -33,16 +35,34 @@ src/bmlibrarian/agents/
 ├── __init__.py              # Public API exports
 ├── base.py                  # BaseAgent abstract class
 ├── query_agent.py           # Natural language query conversion
-└── scoring_agent.py         # Document relevance scoring
+├── scoring_agent.py         # Document relevance scoring
+├── citation_agent.py        # Citation extraction from documents
+├── reporting_agent.py       # Report synthesis and formatting
+├── counterfactual_agent.py  # Counterfactual analysis for contradictory evidence
+├── queue_manager.py         # SQLite-based task queue system
+└── orchestrator.py          # Multi-agent workflow coordination
+
+src/bmlibrarian/cli/         # Modular CLI architecture
+├── __init__.py              # CLI module exports
+├── config.py                # Configuration management
+├── ui.py                    # User interface components
+├── query_processing.py      # Query editing and search
+├── formatting.py            # Report formatting and export
+└── workflow.py              # Workflow orchestration
 
 tests/
 ├── test_agents.py           # Comprehensive unit tests
-└── test_agent.py            # Legacy QueryAgent tests
+├── test_query_agent.py      # Query processing tests
+├── test_scoring_agent.py    # Document scoring tests
+├── test_citation_agent.py   # Citation extraction tests
+├── test_reporting_agent.py  # Report generation tests
+└── test_counterfactual_agent.py # Counterfactual analysis tests
 
 examples/
-├── agents_demo.py           # Modern architecture demo
-├── enhanced_agent_demo.py   # QueryAgent demo
-└── agent_demo.py            # Simple QueryAgent demo
+├── agent_demo.py            # Multi-agent workflow demo
+├── citation_demo.py         # Citation extraction demo
+├── reporting_demo.py        # Report generation demo
+└── counterfactual_demo.py   # Counterfactual analysis demo
 
 doc/
 ├── developers/
@@ -136,6 +156,63 @@ class ScoringResult(TypedDict):
     reasoning: str  # Explanation for the score
 ```
 
+### CitationFinderAgent
+
+**Purpose**: Extract relevant passages and citations from documents that answer research questions
+
+**Key Methods**:
+- `extract_citation(question: str, document: Dict) -> Citation`: Extract single citation
+- `process_scored_documents_for_citations(...)`: Batch processing with progress tracking
+- `_assess_passage_relevance(...)`: Evaluate passage relevance with scoring
+
+**Citation Structure**:
+- Document metadata (title, authors, publication date)
+- Specific passage text that answers the question
+- Relevance score for the extracted passage
+- Reasoning for why the passage is relevant
+
+### ReportingAgent
+
+**Purpose**: Synthesize multiple citations into cohesive medical publication-style reports
+
+**Key Methods**:
+- `synthesize_report(question: str, citations: List[Citation]) -> Report`: Generate full report
+- `generate_citation_based_report(...)`: Create formatted report with references
+- `format_report_output(report: Report) -> str`: Format for display or export
+
+**Report Features**:
+- Professional medical writing style
+- Evidence strength assessment (Strong/Moderate/Limited/Insufficient)
+- Vancouver-style reference formatting
+- Methodology notes and quality controls
+- Structured markdown output
+
+### CounterfactualAgent
+
+**Purpose**: Analyze documents and reports to generate research questions for finding contradictory evidence
+
+**Key Methods**:
+- `analyze_document(content: str, title: str) -> CounterfactualAnalysis`: Identify claims and generate questions
+- `find_contradictory_literature(...)`: Search for studies that contradict findings
+- `_prioritize_questions(...)`: Rank questions by importance (High/Medium/Low)
+
+**Analysis Features**:
+- Identifies main claims in documents/reports
+- Generates targeted research questions to find contradictory evidence
+- Prioritizes questions by potential impact on conclusions
+- Optionally searches database for opposing studies
+- Provides confidence level recommendations
+
+**Response Structure**:
+```python
+class CounterfactualAnalysis(TypedDict):
+    document_title: str
+    main_claims: List[str]
+    counterfactual_questions: List[CounterfactualQuestion]
+    overall_assessment: str
+    confidence_level: str
+```
+
 ## Integration Patterns
 
 ### Database Integration
@@ -154,21 +231,55 @@ for doc in query_agent.find_abstracts("COVID vaccines"):
 
 ### Combined Workflows
 
-Agents can be composed for complex workflows:
+Agents can be composed for complete research workflows:
 
 ```python
-# Intelligent search with relevance scoring
+# Complete research workflow with all agents
+from bmlibrarian.agents import (
+    QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
+    ReportingAgent, CounterfactualAgent
+)
+
 query_agent = QueryAgent()
 scoring_agent = DocumentScoringAgent()
+citation_agent = CitationFinderAgent()
+reporting_agent = ReportingAgent()
+counterfactual_agent = CounterfactualAgent()
+
+question = "What are the cardiovascular benefits of exercise?"
 
 # 1. Search for documents
-documents = list(query_agent.find_abstracts("diabetes treatment"))
+documents = list(query_agent.find_abstracts(question))
 
 # 2. Score documents for relevance
-scored_docs = scoring_agent.batch_evaluate_documents("diabetes treatment", documents)
+scored_docs = scoring_agent.batch_evaluate_documents(question, documents)
 
-# 3. Get top-ranked results
-top_docs = scoring_agent.get_top_documents("diabetes treatment", documents, top_k=10)
+# 3. Extract citations from high-scoring documents
+high_scoring = [(doc, result) for doc, result in scored_docs if result['score'] > 3]
+citations = citation_agent.process_scored_documents_for_citations(
+    user_question=question,
+    scored_documents=high_scoring
+)
+
+# 4. Generate comprehensive report
+report = reporting_agent.synthesize_report(question, citations)
+
+# 5. Optional: Analyze for contradictory evidence
+formatted_report = reporting_agent.format_report_output(report)
+counterfactual_analysis = counterfactual_agent.analyze_document(
+    document_content=formatted_report,
+    document_title=f"Research Report: {question}"
+)
+
+# 6. Optionally search for contradictory studies
+if counterfactual_analysis:
+    contradictory_results = counterfactual_agent.find_contradictory_literature(
+        document_content=formatted_report,
+        document_title=f"Research Report: {question}",
+        query_agent=query_agent,
+        scoring_agent=scoring_agent,
+        citation_agent=citation_agent
+    )
 ```
 
 ### Callback Integration
@@ -212,8 +323,11 @@ uv run pytest tests/test_agents.py
 uv run pytest tests/test_agents.py --cov=bmlibrarian.agents
 
 # Run specific test classes
-uv run pytest tests/test_agents.py::TestQueryAgent
-uv run pytest tests/test_agents.py::TestDocumentScoringAgent
+uv run pytest tests/test_query_agent.py::TestQueryAgent
+uv run pytest tests/test_scoring_agent.py::TestDocumentScoringAgent
+uv run pytest tests/test_citation_agent.py::TestCitationFinderAgent
+uv run pytest tests/test_reporting_agent.py::TestReportingAgent
+uv run pytest tests/test_counterfactual_agent.py::TestCounterfactualAgent
 ```
 
 ## Import Structure
