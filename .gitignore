@@ -16,3 +16,4 @@ wheels/
 bmlibrarian_report*
 *.log
 .DS_Store
+*.zip

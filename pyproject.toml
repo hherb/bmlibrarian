@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "ollama>=0.2.1",
     "requests>=2.31.0",
+    "psycopg-binary>=3.2.9",
 ]
 
 [project.scripts]

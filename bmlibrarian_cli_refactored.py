@@ -100,7 +100,7 @@ from bmlibrarian.cli import (
     ReportFormatter, WorkflowOrchestrator
 )
 from bmlibrarian.cli.config import (
-    parse_command_line_args, create_config_from_args, 
+    parse_command_line_args, create_config_from_args, create_config_with_models,
     show_config_summary, ConfigurationManager
 )
 from bmlibrarian.cli.logging_config import setup_logging
@@ -280,8 +280,8 @@ def main():
             print("Usage: python bmlibrarian_cli_refactored.py --auto 'What are the benefits of exercise?'")
             sys.exit(1)
         
-        # Create configuration from arguments
-        config = create_config_from_args(args)
+        # Create configuration from arguments and load model configuration
+        config = create_config_with_models(args)
         
         # Create and run CLI
         cli = MedicalResearchCLI(config, workflow_logger)

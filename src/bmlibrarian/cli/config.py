@@ -5,8 +5,11 @@ Handles CLI configuration, command-line argument parsing, and settings validatio
 """
 
 import argparse
+import json
+import os
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Dict, Any
 
 
 @dataclass
@@ -32,6 +35,9 @@ class CLIConfig:
     
     # Automation settings
     auto_mode: bool = False
+    
+    # Model configuration
+    model_config: Optional[Dict[str, Any]] = None
     
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -324,3 +330,65 @@ class ConfigurationManager:
         self.config.max_documents_display = default_config.max_documents_display
         self.config.max_workers = default_config.max_workers
         print("✅ All settings reset to defaults")
+
+
+def load_bmlibrarian_config(config_path: str = None) -> Dict[str, Any]:
+    """
+    Load BMLibrarian configuration from JSON file.
+    
+    Args:
+        config_path: Path to config file. If None, searches for bmlibrarian_config.json
+                    in current directory and parent directories.
+    
+    Returns:
+        Configuration dictionary
+    """
+    if config_path is None:
+        # Search for config file in current and parent directories
+        search_paths = [
+            Path.cwd() / "bmlibrarian_config.json",
+            Path.cwd().parent / "bmlibrarian_config.json",
+            Path(__file__).parent.parent.parent.parent / "bmlibrarian_config.json"
+        ]
+        
+        config_path = None
+        for path in search_paths:
+            if path.exists():
+                config_path = str(path)
+                break
+        
+        if config_path is None:
+            print("⚠️  Warning: bmlibrarian_config.json not found, using default settings")
+            return {}
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        print(f"✅ Loaded configuration from {config_path}")
+        return config
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to load config from {config_path}: {e}")
+        return {}
+
+
+def create_config_with_models(args: argparse.Namespace, config_path: str = None) -> CLIConfig:
+    """
+    Create a CLIConfig instance with model configuration loaded from JSON.
+    
+    Args:
+        args: Parsed command line arguments
+        config_path: Optional path to configuration file
+        
+    Returns:
+        CLIConfig instance with model configuration
+    """
+    # Load JSON configuration
+    model_config = load_bmlibrarian_config(config_path)
+    
+    # Create base config from args
+    config = create_config_from_args(args)
+    
+    # Add model configuration
+    config.model_config = model_config
+    
+    return config

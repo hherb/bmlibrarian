@@ -31,6 +31,52 @@ class WorkflowAgentManager:
         self.counterfactual_agent: Optional[CounterfactualAgent] = None
         self.editor_agent: Optional[EditorAgent] = None
     
+    def _get_agent_kwargs(self) -> dict:
+        """Extract agent configuration from model config."""
+        if not self.config.model_config:
+            return {}
+        
+        agent_kwargs = {}
+        models = self.config.model_config.get('models', {})
+        ollama_config = self.config.model_config.get('ollama', {})
+        agent_configs = self.config.model_config.get('agents', {})
+        
+        # Helper function to create agent config
+        def create_agent_config(agent_name: str, model_key: str) -> dict:
+            config = {}
+            
+            # Add model name if specified
+            if model_key in models:
+                config['model'] = models[model_key]
+            
+            # Add Ollama host setting (all agents support this)
+            if ollama_config:
+                config['host'] = ollama_config.get('host', 'http://localhost:11434')
+            
+            # Add agent-specific settings (temperature, top_p are supported by all agents)
+            if agent_name in agent_configs:
+                agent_config = agent_configs[agent_name]
+                config.update({
+                    'temperature': agent_config.get('temperature', 0.2),
+                    'top_p': agent_config.get('top_p', 0.9)
+                })
+                
+                # Add any other agent-specific parameters that are valid for the specific agent
+                # Note: timeout, max_retries, max_tokens are not universally supported
+                # so we skip them to avoid parameter errors
+            
+            return config
+        
+        # Configure each agent
+        agent_kwargs['query_agent'] = create_agent_config('query', 'query_agent')
+        agent_kwargs['scoring_agent'] = create_agent_config('scoring', 'scoring_agent')
+        agent_kwargs['citation_agent'] = create_agent_config('citation', 'citation_agent')
+        agent_kwargs['reporting_agent'] = create_agent_config('reporting', 'reporting_agent')
+        agent_kwargs['counterfactual_agent'] = create_agent_config('counterfactual', 'counterfactual_agent')
+        agent_kwargs['editor_agent'] = create_agent_config('reporting', 'reporting_agent')  # EditorAgent typically uses same config as ReportingAgent
+        
+        return agent_kwargs
+    
     def setup_agents(self) -> bool:
         """Initialize and test all agents."""
         try:
@@ -42,13 +88,15 @@ class WorkflowAgentManager:
                 polling_interval=self.config.polling_interval
             )
             
-            # Initialize agents
-            self.query_agent = QueryAgent(orchestrator=self.orchestrator)
-            self.scoring_agent = DocumentScoringAgent(orchestrator=self.orchestrator)
-            self.citation_agent = CitationFinderAgent(orchestrator=self.orchestrator)
-            self.reporting_agent = ReportingAgent(orchestrator=self.orchestrator)
-            self.counterfactual_agent = CounterfactualAgent(orchestrator=self.orchestrator)
-            self.editor_agent = EditorAgent(orchestrator=self.orchestrator)
+            # Initialize agents with model configuration
+            agent_kwargs = self._get_agent_kwargs()
+            
+            self.query_agent = QueryAgent(orchestrator=self.orchestrator, **agent_kwargs.get('query_agent', {}))
+            self.scoring_agent = DocumentScoringAgent(orchestrator=self.orchestrator, **agent_kwargs.get('scoring_agent', {}))
+            self.citation_agent = CitationFinderAgent(orchestrator=self.orchestrator, **agent_kwargs.get('citation_agent', {}))
+            self.reporting_agent = ReportingAgent(orchestrator=self.orchestrator, **agent_kwargs.get('reporting_agent', {}))
+            self.counterfactual_agent = CounterfactualAgent(orchestrator=self.orchestrator, **agent_kwargs.get('counterfactual_agent', {}))
+            self.editor_agent = EditorAgent(orchestrator=self.orchestrator, **agent_kwargs.get('editor_agent', {}))
             
             # Register agents
             self.orchestrator.register_agent("query_agent", self.query_agent)

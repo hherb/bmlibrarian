@@ -32,6 +32,7 @@ source = { editable = "." }
 dependencies = [
     { name = "ollama" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg-binary" },
     { name = "psycopg-pool" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -48,6 +49,7 @@ dev = [
 requires-dist = [
     { name = "ollama", specifier = ">=0.2.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.9" },
+    { name = "psycopg-binary", specifier = ">=3.2.9" },
     { name = "psycopg-pool", specifier = ">=3.1.0" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "requests", specifier = ">=2.31.0" },
