@@ -136,13 +136,6 @@ Return ONLY a valid JSON object with this exact structure:
     "contradictory_evidence_section": "Balanced presentation of conflicting or limiting evidence (null if none)",
     "limitations_section": "Discussion of study limitations, biases, and methodological concerns", 
     "conclusions_section": "Balanced conclusions with confidence levels and recommendations",
-    "references": [
-        {
-            "number": "1",
-            "citation": "Author(s). Title. Journal. Year;Volume(Issue):Pages.",
-            "pmid": "PMID if available"
-        }
-    ],
     "evidence_quality_table": "Markdown table showing evidence quality assessment (null if not applicable)",
     "confidence_assessment": "HIGH|MODERATE|LIMITED - overall confidence in conclusions",
     "word_count": 0
@@ -268,7 +261,7 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
                         contradictory_evidence_section=result_data.get('contradictory_evidence_section'),
                         limitations_section=result_data['limitations_section'],
                         conclusions_section=result_data['conclusions_section'],
-                        references=result_data.get('references', []),
+                        references=original_report.references if hasattr(original_report, 'references') else [],
                         evidence_quality_table=result_data.get('evidence_quality_table'),
                         confidence_assessment=result_data['confidence_assessment'].upper(),
                         word_count=word_count
@@ -384,6 +377,98 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
                 total_words += len(words)
         return total_words
     
+    def format_comprehensive_markdown_template(
+        self, 
+        edited_report: EditedReport, 
+        methodology_metadata: Optional[Any] = None
+    ) -> str:
+        """
+        Format comprehensive report using template approach.
+        LLM generates synthesis content, programmatic sections for facts.
+        
+        Args:
+            edited_report: The edited report from LLM
+            methodology_metadata: Optional methodology metadata for programmatic generation
+            
+        Returns:
+            Formatted markdown string with programmatic references and methodology
+        """
+        lines = []
+        
+        # Title and header
+        lines.append(f"# {edited_report.title}")
+        lines.append("")
+        lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"**Evidence Confidence:** {edited_report.confidence_assessment}")
+        lines.append(f"**Word Count:** {edited_report.word_count}")
+        lines.append("")
+        
+        # Executive Summary (from LLM)
+        lines.append("## Executive Summary")
+        lines.append(edited_report.executive_summary)
+        lines.append("")
+        
+        # Programmatically generated methodology section
+        if methodology_metadata:
+            from .reporting_agent import ReportingAgent
+            reporting_agent = ReportingAgent(show_model_info=False)
+            methodology_section = reporting_agent.generate_detailed_methodology(methodology_metadata)
+            lines.append("## Methodology")
+            lines.append(methodology_section)
+        else:
+            # Fallback to LLM-generated methodology if no metadata available
+            lines.append("## Methodology")
+            lines.append(edited_report.methodology_section)
+        lines.append("")
+        
+        # Evidence Quality Assessment (from LLM if available)
+        if edited_report.evidence_quality_table:
+            lines.append("## Evidence Quality Assessment")
+            lines.append(edited_report.evidence_quality_table)
+            lines.append("")
+        
+        # Findings (from LLM)
+        lines.append("## Findings")
+        lines.append(edited_report.findings_section)
+        lines.append("")
+        
+        # Contradictory Evidence (from LLM if available)
+        if edited_report.contradictory_evidence_section:
+            lines.append("## Contradictory Evidence")
+            lines.append(edited_report.contradictory_evidence_section)
+            lines.append("")
+        
+        # Limitations (from LLM)
+        lines.append("## Limitations")
+        lines.append(edited_report.limitations_section)
+        lines.append("")
+        
+        # Conclusions (from LLM)
+        lines.append("## Conclusions")
+        lines.append(edited_report.conclusions_section)
+        lines.append("")
+        
+        # Programmatically generated references section (NEVER touched by LLM)
+        if edited_report.references:
+            lines.append("## References")
+            for ref in edited_report.references:
+                # Use proper Vancouver-style formatting for Reference objects
+                if hasattr(ref, 'format_vancouver_style'):
+                    formatted_ref = ref.format_vancouver_style()
+                    lines.append(f"{ref.number}. {formatted_ref}")
+                else:
+                    # Fallback for dictionary format (shouldn't happen with our fix)
+                    lines.append(f"{ref.get('number', 'N/A')}. {ref.get('citation', 'Citation not available')}")
+                    if ref.get('pmid'):
+                        lines.append(f"   PMID: {ref['pmid']}")
+            lines.append("")
+        
+        # Footer
+        lines.append("---")
+        lines.append("*Report generated by BMLibrarian Editor Agent*")
+        
+        return "\n".join(lines)
+
     def format_comprehensive_markdown(self, edited_report: EditedReport) -> str:
         """
         Format the edited report as comprehensive markdown.
@@ -447,9 +532,15 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
         if edited_report.references:
             lines.append("## References")
             for ref in edited_report.references:
-                lines.append(f"[{ref.get('number', 'N/A')}] {ref.get('citation', 'Citation not available')}")
-                if ref.get('pmid'):
-                    lines.append(f"   PMID: {ref['pmid']}")
+                # Use proper Vancouver-style formatting for Reference objects
+                if hasattr(ref, 'format_vancouver_style'):
+                    formatted_ref = ref.format_vancouver_style()
+                    lines.append(f"[{ref.number}] {formatted_ref}")
+                else:
+                    # Fallback for dictionary format (shouldn't happen with our fix)
+                    lines.append(f"[{ref.get('number', 'N/A')}] {ref.get('citation', 'Citation not available')}")
+                    if ref.get('pmid'):
+                        lines.append(f"   PMID: {ref['pmid']}")
                 lines.append("")
         
         # Footer

@@ -176,6 +176,7 @@ def find_abstracts(
         - publication: Publication name
         - publication_date: Publication date
         - doi: DOI if available
+        - pmid: PubMed ID (extracted from external_id)
         - url: Document URL
         - source_name: Source name
         - keywords: Document keywords
@@ -353,6 +354,22 @@ def find_abstracts(
                     # Add source name mapping using cached mappings
                     source_id = row['source_id']
                     row['source_name'] = DatabaseManager._source_id_cache.get(source_id, 'unknown') if DatabaseManager._source_id_cache else 'unknown'
+                    
+                    # Extract PMID from external_id if available
+                    external_id = row.get('external_id', '')
+                    pmid = None
+                    if external_id and external_id.isdigit():
+                        # Simple case: external_id is just a PMID number
+                        pmid = external_id
+                    elif external_id and 'pmid:' in external_id.lower():
+                        # Handle cases like "PMID:12345678" or "pmid:12345678"
+                        import re
+                        pmid_match = re.search(r'pmid:(\d+)', external_id.lower())
+                        if pmid_match:
+                            pmid = pmid_match.group(1)
+                    
+                    # Add PMID to the row data
+                    row['pmid'] = pmid
                     
                     # Ensure list fields are not None
                     for field in ['authors', 'keywords', 'mesh_terms', 'augmented_keywords', 'all_keywords']:

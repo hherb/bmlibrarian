@@ -28,6 +28,8 @@ class Citation:
     authors: List[str]
     publication_date: str
     pmid: Optional[str] = None
+    doi: Optional[str] = None
+    publication: Optional[str] = None
     created_at: Optional[datetime] = None
     
     def __post_init__(self):
@@ -198,7 +200,9 @@ Respond only with valid JSON."""
                 document_title=title,
                 authors=document.get('authors', []),
                 publication_date=document.get('publication_date', 'Unknown'),
-                pmid=document.get('pmid')
+                pmid=document.get('pmid'),
+                doi=document.get('doi'),
+                publication=document.get('publication')
             )
             
             return citation
@@ -342,6 +346,8 @@ Respond only with valid JSON."""
                 'authors': citation.authors,
                 'publication_date': citation.publication_date,
                 'pmid': citation.pmid,
+                'doi': citation.doi,
+                'publication': citation.publication,
                 'created_at': citation.created_at.isoformat(),
                 'has_citation': True
             }
@@ -420,6 +426,8 @@ Respond only with valid JSON."""
                             authors=result_data['authors'],
                             publication_date=result_data['publication_date'],
                             pmid=result_data.get('pmid'),
+                            doi=result_data.get('doi'),
+                            publication=result_data.get('publication'),
                             created_at=datetime.fromisoformat(result_data['created_at'])
                         )
                 

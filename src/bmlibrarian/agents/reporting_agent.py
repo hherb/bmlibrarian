@@ -18,6 +18,36 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class MethodologyMetadata:
+    """Metadata about the research methodology and workflow."""
+    # Original query information
+    human_question: str
+    generated_query: str
+    
+    # Initial search results
+    total_documents_found: int
+    
+    # Document scoring information
+    scoring_threshold: float
+    documents_by_score: Dict[int, int]  # score -> count mapping
+    documents_above_threshold: int
+    
+    # Citation extraction details
+    documents_processed_for_citations: int
+    citation_extraction_threshold: float
+    
+    # Counterfactual analysis (optional)
+    counterfactual_performed: bool = False
+    counterfactual_queries_generated: int = 0
+    counterfactual_documents_found: int = 0
+    counterfactual_citations_extracted: int = 0
+    
+    # Processing details
+    iterative_processing_used: bool = True
+    context_window_management: bool = True
+
+
+@dataclass
 class Reference:
     """Represents a formatted reference for a report."""
     number: int
@@ -26,6 +56,8 @@ class Reference:
     publication_date: str
     document_id: str
     pmid: Optional[str] = None
+    doi: Optional[str] = None
+    publication: Optional[str] = None
     
     def format_vancouver_style(self) -> str:
         """Format reference in Vancouver style for medical publications."""
@@ -47,11 +79,25 @@ class Reference:
             # Fallback to string representation
             year = str(self.publication_date)
         
-        # Basic Vancouver format
-        formatted = f"{author_str}. {self.title}. {year}"
+        # Start with author and title
+        formatted = f"{author_str}. {self.title}."
         
+        # Add journal/publication if available
+        if self.publication and self.publication.strip() and self.publication.lower() != 'unknown':
+            formatted += f" {self.publication}."
+        
+        # Add year
+        formatted += f" {year}."
+        
+        # Add identifiers
+        identifiers = []
         if self.pmid:
-            formatted += f"; PMID: {self.pmid}"
+            identifiers.append(f"PMID: {self.pmid}")
+        if self.doi:
+            identifiers.append(f"DOI: {self.doi}")
+        
+        if identifiers:
+            formatted += f" {'; '.join(identifiers)}."
         
         return formatted
 
@@ -67,6 +113,7 @@ class Report:
     created_at: datetime
     citation_count: int
     unique_documents: int
+    methodology_metadata: Optional[MethodologyMetadata] = None
     
     def __post_init__(self):
         if not isinstance(self.created_at, datetime):
@@ -142,7 +189,9 @@ class ReportingAgent(BaseAgent):
                     title=citation.document_title,
                     publication_date=citation.publication_date,
                     document_id=citation.document_id,
-                    pmid=citation.pmid
+                    pmid=citation.pmid,
+                    doi=getattr(citation, 'doi', None),
+                    publication=getattr(citation, 'publication', None)
                 )
                 references.append(reference)
                 seen_docs.add(citation.document_id)
@@ -166,6 +215,60 @@ class ReportingAgent(BaseAgent):
         for ref in references:
             doc_to_ref[ref.document_id] = ref.number
         return doc_to_ref
+    
+    def generate_detailed_methodology(self, metadata: MethodologyMetadata) -> str:
+        """
+        Generate a detailed methodology section based on workflow metadata.
+        
+        Args:
+            metadata: MethodologyMetadata containing workflow details
+            
+        Returns:
+            Formatted methodology section string
+        """
+        sections = []
+        
+        # Query Generation Section
+        sections.append("**Search Strategy:**")
+        sections.append(f"The research question '{metadata.human_question}' was converted into a database query: '{metadata.generated_query}'. ")
+        sections.append(f"This query identified {metadata.total_documents_found:,} potentially relevant documents from the biomedical literature database.")
+        sections.append("")
+        
+        # Document Scoring Section
+        sections.append("**Document Relevance Assessment:**")
+        sections.append(f"All {metadata.total_documents_found:,} documents were scored for relevance using AI-powered assessment with a threshold of {metadata.scoring_threshold}. ")
+        
+        # Score distribution
+        if metadata.documents_by_score:
+            score_dist = []
+            for score in sorted(metadata.documents_by_score.keys(), reverse=True):
+                count = metadata.documents_by_score[score]
+                score_dist.append(f"score {score}: {count} documents")
+            sections.append(f"Score distribution: {'; '.join(score_dist)}. ")
+        
+        sections.append(f"{metadata.documents_above_threshold} documents exceeded the relevance threshold and were selected for citation extraction.")
+        sections.append("")
+        
+        # Citation Extraction Section
+        sections.append("**Citation Extraction:**")
+        sections.append(f"{metadata.documents_processed_for_citations} high-scoring documents were processed for citation extraction using a relevance threshold of {metadata.citation_extraction_threshold}. ")
+        
+        if metadata.iterative_processing_used:
+            sections.append("Iterative processing was employed to ensure comprehensive coverage while managing context window limitations. ")
+        
+        if metadata.context_window_management:
+            sections.append("Context window management techniques were used to handle large document sets efficiently.")
+        
+        sections.append("")
+        
+        # Counterfactual Analysis Section (if performed)
+        if metadata.counterfactual_performed:
+            sections.append("**Counterfactual Analysis:**")
+            sections.append(f"To assess evidence completeness, {metadata.counterfactual_queries_generated} counterfactual research questions were generated to search for contradictory evidence. ")
+            sections.append(f"This identified {metadata.counterfactual_documents_found} additional documents, yielding {metadata.counterfactual_citations_extracted} citations that provided alternative perspectives or contradictory findings.")
+            sections.append("")
+        
+        return "\n".join(sections).strip()
     
     def assess_evidence_strength(self, citations: List[Citation]) -> str:
         """
@@ -195,7 +298,7 @@ class ReportingAgent(BaseAgent):
             return "Insufficient"
     
     def synthesize_report(self, user_question: str, citations: List[Citation],
-                         min_citations: int = 2) -> Optional[Report]:
+                         min_citations: int = 2, methodology_metadata: Optional[MethodologyMetadata] = None) -> Optional[Report]:
         """
         Synthesize citations into a cohesive medical publication-style report using iterative processing.
         
@@ -203,6 +306,7 @@ class ReportingAgent(BaseAgent):
             user_question: Original research question
             citations: List of extracted citations
             min_citations: Minimum citations required for report generation
+            methodology_metadata: Optional metadata about the research workflow
             
         Returns:
             Synthesized report or None if insufficient evidence
@@ -228,7 +332,11 @@ class ReportingAgent(BaseAgent):
                 return None
             
             # Generate methodology note
-            methodology_note = f"Evidence synthesis based on {len(citations)} citations from {len(references)} documents using iterative processing to ensure comprehensive coverage while avoiding context limits."
+            if methodology_metadata:
+                methodology_note = self.generate_detailed_methodology(methodology_metadata)
+            else:
+                # Fallback to simple methodology note
+                methodology_note = f"Evidence synthesis based on {len(citations)} citations from {len(references)} documents using iterative processing to ensure comprehensive coverage while avoiding context limits."
             
             # Assess evidence strength
             evidence_strength = self.assess_evidence_strength(citations)
@@ -242,7 +350,8 @@ class ReportingAgent(BaseAgent):
                 methodology_note=methodology_note,
                 created_at=datetime.now(timezone.utc),
                 citation_count=len(citations),
-                unique_documents=len(references)
+                unique_documents=len(references),
+                methodology_metadata=methodology_metadata
             )
             
             logger.info(f"Successfully synthesized report with {len(citations)} citations from {len(references)} documents")
@@ -466,6 +575,56 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
             logger.warning(f"Error in final formatting: {e}")
             return None
     
+    def format_report_output_template(self, report: Report) -> str:
+        """
+        Format report using template approach - LLM content + programmatic sections.
+        
+        Args:
+            report: Report to format
+            
+        Returns:
+            Formatted report string with programmatic references and methodology
+        """
+        output = []
+        
+        # Header
+        output.append(f"# {report.user_question}")
+        output.append("")
+        output.append(f"**Evidence Strength:** {report.evidence_strength}")
+        output.append("")
+        
+        # Main synthesized answer (this comes from LLM)
+        output.append("## Key Findings")
+        output.append(report.synthesized_answer)
+        output.append("")
+        
+        # Programmatically generated methodology section
+        if report.methodology_metadata:
+            methodology_section = self.generate_detailed_methodology(report.methodology_metadata)
+            output.append("## Methodology")
+            output.append(methodology_section)
+            output.append("")
+        elif report.methodology_note:
+            output.append("## Methodology")
+            output.append(report.methodology_note)
+            output.append("")
+        
+        # Programmatically generated references section (never touched by LLM)
+        output.append("## References")
+        for ref in report.references:
+            formatted_ref = ref.format_vancouver_style()
+            output.append(f"{ref.number}. {formatted_ref}")
+        output.append("")
+        
+        # Report metadata
+        output.append("## Report Information")
+        output.append(f"- **Generated:** {report.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        output.append(f"- **Citations analyzed:** {report.citation_count}")
+        output.append(f"- **Unique references:** {report.unique_documents}")
+        output.append(f"- **Evidence strength:** {report.evidence_strength}")
+        
+        return "\n".join(output)
+
     def format_report_output(self, report: Report) -> str:
         """
         Format report for display with proper reference list.
@@ -520,7 +679,7 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
         return "\n".join(output)
     
     def generate_citation_based_report(self, user_question: str, citations: List[Citation],
-                                     format_output: bool = True) -> Optional[str]:
+                                     format_output: bool = True, methodology_metadata: Optional[MethodologyMetadata] = None) -> Optional[str]:
         """
         Complete workflow: synthesize citations and format for output.
         
@@ -528,11 +687,12 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
             user_question: Research question
             citations: List of citations to synthesize
             format_output: Whether to format for display
+            methodology_metadata: Optional metadata about the research workflow
             
         Returns:
             Formatted report string or None if synthesis failed
         """
-        report = self.synthesize_report(user_question, citations)
+        report = self.synthesize_report(user_question, citations, methodology_metadata=methodology_metadata)
         
         if not report:
             return None

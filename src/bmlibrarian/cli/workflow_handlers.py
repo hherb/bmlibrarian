@@ -264,8 +264,13 @@ class WorkflowStepHandlers:
             
             # Use comprehensive report if available, otherwise use original report
             report_to_save = comprehensive_report if comprehensive_report else report
+            
+            # Generate methodology metadata for template-based formatting
+            methodology_metadata = self.state_manager.generate_methodology_metadata()
+            
             filename = formatter.save_comprehensive_report_to_file(
-                report_to_save, question, self.state_manager.counterfactual_analysis, self.state_manager.contradictory_evidence
+                report_to_save, question, self.state_manager.counterfactual_analysis, 
+                self.state_manager.contradictory_evidence, methodology_metadata=methodology_metadata
             )
             logger.info(f"Report saved to file: {filename}")
         else:

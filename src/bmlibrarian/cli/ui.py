@@ -414,7 +414,7 @@ class UserInterface:
         print(formatted_report)
         print("=" * 80)
     
-    def display_comprehensive_report(self, comprehensive_report, editor_agent=None) -> None:
+    def display_comprehensive_report(self, comprehensive_report, editor_agent=None, methodology_metadata=None) -> None:
         """Display the comprehensive edited report."""
         print("\n" + "=" * 60)
         print("Step 8: Comprehensive Report Generation")
@@ -430,7 +430,11 @@ class UserInterface:
         
         # Format the report using the agent instance or create a basic format
         if editor_agent:
-            formatted_report = editor_agent.format_comprehensive_markdown(comprehensive_report)
+            # Use template-based formatting to ensure programmatic references and methodology
+            formatted_report = editor_agent.format_comprehensive_markdown_template(
+                comprehensive_report, 
+                methodology_metadata=methodology_metadata
+            )
         else:
             formatted_report = self._format_basic_comprehensive_report(comprehensive_report)
         

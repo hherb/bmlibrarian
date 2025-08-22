@@ -189,7 +189,8 @@ class ReportFormatter:
         report, 
         question: str, 
         counterfactual_analysis: Optional[CounterfactualAnalysis] = None,
-        contradictory_evidence: Optional[Dict[str, Any]] = None
+        contradictory_evidence: Optional[Dict[str, Any]] = None,
+        methodology_metadata: Optional[Any] = None
     ) -> bool:
         """Save comprehensive edited report or fallback to original report format."""
         try:
@@ -198,14 +199,17 @@ class ReportFormatter:
             
             # Handle different report types
             if isinstance(report, EditedReport):
-                # Use the editor agent's comprehensive markdown formatting
+                # Use the editor agent's template-based formatting for programmatic references and methodology
                 from bmlibrarian.agents import EditorAgent
                 editor_agent = EditorAgent()
-                markdown_content = editor_agent.format_comprehensive_markdown(report)
+                markdown_content = editor_agent.format_comprehensive_markdown_template(
+                    report, 
+                    methodology_metadata=methodology_metadata
+                )
             else:
                 # Fallback to original report format with enhanced content
                 markdown_content = self.format_enhanced_report_as_markdown(
-                    report, counterfactual_analysis, contradictory_evidence
+                    report, counterfactual_analysis, contradictory_evidence, methodology_metadata
                 )
             
             # Save file
@@ -226,7 +230,8 @@ class ReportFormatter:
         self, 
         report: Report, 
         counterfactual_analysis: Optional[CounterfactualAnalysis] = None,
-        contradictory_evidence: Optional[Dict[str, Any]] = None
+        contradictory_evidence: Optional[Dict[str, Any]] = None,
+        methodology_metadata: Optional[Any] = None
     ) -> str:
         """Format enhanced report with counterfactual analysis and contradictory evidence."""
         lines = []
@@ -313,19 +318,36 @@ class ReportFormatter:
         
         lines.append("")
         
-        # References (existing)
+        # References (programmatically formatted - NEVER let LLM generate these)
         if report.references:
             lines.append("## References")
             lines.append("")
             
             for ref in report.references:
-                lines.append(f"[{ref.number}] {ref.title}")
-                lines.append(f"   Authors: {', '.join(ref.authors)}")
-                lines.append(f"   Date: {ref.publication_date}")
+                # Use proper Vancouver-style formatting with real DOI/PMID data
+                if hasattr(ref, 'format_vancouver_style'):
+                    formatted_ref = ref.format_vancouver_style()
+                    lines.append(f"[{ref.number}] {formatted_ref}")
+                else:
+                    # Fallback to basic format if vancouver method not available
+                    lines.append(f"[{ref.number}] {ref.title}")
+                    lines.append(f"   Authors: {', '.join(ref.authors)}")
+                    lines.append(f"   Date: {ref.publication_date}")
                 lines.append("")
         
-        # Methodology section (enhanced)
-        lines.extend(self._generate_enhanced_methodology_section())
+        # Methodology section - use programmatic metadata if available, otherwise fallback to enhanced
+        if methodology_metadata:
+            lines.append("## Methodology")
+            lines.append("")
+            # Use the same detailed methodology generation as our template system
+            from ..agents.reporting_agent import ReportingAgent
+            reporting_agent = ReportingAgent(show_model_info=False)
+            methodology_section = reporting_agent.generate_detailed_methodology(methodology_metadata)
+            lines.append(methodology_section)
+            lines.append("")
+        else:
+            # Fallback to enhanced methodology 
+            lines.extend(self._generate_enhanced_methodology_section())
         
         # Appendix with counterfactual questions (if available)
         if counterfactual_analysis and counterfactual_analysis.counterfactual_questions:

@@ -27,6 +27,11 @@ class WorkflowExecutionManager:
         
         documents = self.query_processor.search_documents_with_review(question)
         
+        # Transfer the generated query to state manager for methodology tracking
+        current_query = self.query_processor.get_current_query()
+        if current_query:
+            self.state_manager.update_query(current_query)
+        
         if documents:
             logger.info(f"Document search successful: {len(documents)} documents found")
             return documents
@@ -95,6 +100,17 @@ class WorkflowExecutionManager:
                 
                 if choice == '1':
                     # Proceed with current threshold
+                    # Track score distribution for methodology
+                    score_distribution = {}
+                    for doc, score_result in scored_docs:
+                        score = int(score_result.get('score', 0))
+                        score_distribution[score] = score_distribution.get(score, 0) + 1
+                    
+                    self.state_manager.update_scoring_details(
+                        threshold=self.config.default_score_threshold,
+                        documents_by_score=score_distribution
+                    )
+                    
                     return scored_docs
                 
                 elif choice == '2':
@@ -239,10 +255,14 @@ class WorkflowExecutionManager:
             # Adjust minimum citations based on available citations
             min_citations = min(2, len(citations)) if len(citations) > 0 else 1
             
+            # Generate methodology metadata from workflow state
+            methodology_metadata = self.state_manager.generate_methodology_metadata()
+            
             report = self.agent_manager.reporting_agent.synthesize_report(
                 user_question=question,
                 citations=citations,
-                min_citations=min_citations
+                min_citations=min_citations,
+                methodology_metadata=methodology_metadata
             )
             
             if not report:
@@ -338,6 +358,11 @@ class WorkflowExecutionManager:
                     'summary': {}
                 }
             
+            # Track counterfactual metrics for methodology
+            documents_found = len(contradictory_results.get('contradictory_evidence', []))
+            citations_extracted = len(contradictory_results.get('contradictory_citations', []))
+            self.state_manager.update_counterfactual_metrics(documents_found, citations_extracted)
+            
             # Display results
             self.ui.display_contradictory_evidence_results(contradictory_results)
             
@@ -373,8 +398,15 @@ class WorkflowExecutionManager:
                 self.ui.show_error_message("Failed to generate comprehensive report.")
                 return None
             
-            # Display the comprehensive report
-            self.ui.display_comprehensive_report(comprehensive_report, self.agent_manager.editor_agent)
+            # Generate methodology metadata for template-based formatting
+            methodology_metadata = self.state_manager.generate_methodology_metadata()
+            
+            # Display the comprehensive report with methodology metadata
+            self.ui.display_comprehensive_report(
+                comprehensive_report, 
+                self.agent_manager.editor_agent, 
+                methodology_metadata=methodology_metadata
+            )
             
             return comprehensive_report
             
