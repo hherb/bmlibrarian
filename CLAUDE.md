@@ -16,6 +16,7 @@ The project includes both a monolithic CLI (`bmlibrarian_cli.py`) and a modern r
 - **Main dependencies**: 
   - psycopg >=3.2.9 for PostgreSQL connectivity
   - requests >=2.31.0 for HTTP communication with Ollama
+  - flet >=0.24.1 for GUI configuration interface
 - **Package manager**: Uses `uv` for dependency management (uv.lock present)
 
 ## Configuration
@@ -42,6 +43,8 @@ Since this project uses `uv` for package management:
 - **CLI Applications**: 
   - `uv run python bmlibrarian_cli_refactored.py` - **PREFERRED** Modular CLI with counterfactual analysis
   - `uv run python bmlibrarian_cli.py` - Legacy monolithic CLI (maintained for compatibility)
+- **Configuration GUI**: 
+  - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
 - **Demonstrations**: 
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
@@ -122,6 +125,13 @@ bmlibrarian/
 │       ├── formatting.py      # Report formatting and export
 │       ├── workflow.py        # Workflow orchestration
 │       └── workflow_steps.py  # Enum-based workflow step definitions
+│   └── gui/                   # Graphical user interface for configuration
+│       ├── __init__.py        # GUI module exports
+│       ├── config_app.py      # Main GUI application using Flet
+│       └── tabs/              # Individual configuration tab components
+│           ├── __init__.py
+│           ├── general_tab.py # General settings tab
+│           └── agent_tab.py   # Agent-specific configuration tabs
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
@@ -146,6 +156,7 @@ bmlibrarian/
 │       └── counterfactual_system.md
 ├── bmlibrarian_cli_refactored.py # **PREFERRED** Modular CLI application
 ├── bmlibrarian_cli.py         # Legacy monolithic CLI application
+├── bmlibrarian_config_gui.py  # **NEW** Graphical configuration interface
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
 ├── .env                       # Environment configuration
@@ -231,6 +242,40 @@ The modular CLI provides enhanced human-in-the-loop interaction:
 - **Improved UI**: Better user experience with clearer navigation
 - **Comprehensive Export**: Reports include counterfactual analysis when performed
 - **Auto Mode Support**: Graceful handling of non-interactive execution
+
+### Configuration GUI Application
+
+BMLibrarian includes a modern graphical configuration interface built with Flet:
+
+```bash
+# Start the desktop configuration GUI (default)
+uv run python bmlibrarian_config_gui.py
+
+# GUI Features:
+# - Native desktop application with tabbed interface
+# - Separate configuration tabs for each agent
+# - Model selection with live refresh from Ollama server
+# - Parameter adjustment with sliders and input fields
+# - Configuration save/load functionality
+# - Connection testing to verify Ollama availability
+# - Reset to defaults option
+# - Cross-platform compatibility (desktop or web modes)
+
+# Command line options:
+uv run python bmlibrarian_config_gui.py --view web          # Launch in web browser
+uv run python bmlibrarian_config_gui.py --view web --port 8080  # Web with custom port
+uv run python bmlibrarian_config_gui.py --debug            # Enable debug mode
+```
+
+The GUI provides:
+- **Native Desktop App**: Cross-platform desktop application (default mode)
+- **Agent Configuration**: Individual tabs for Query, Scoring, Citation, Reporting, Counterfactual, and Editor agents
+- **Model Management**: Dropdown selection with live model refresh from Ollama
+- **Parameter Tuning**: Interactive sliders for temperature, top-p, and agent-specific settings
+- **General Settings**: Ollama server configuration, database settings, and CLI defaults
+- **File Operations**: Save/load configuration files with JSON format
+- **Connection Testing**: Verify Ollama server connectivity and list available models
+- **Dual Mode**: Can run as desktop app or web interface
 
 ### Legacy CLI Application
 

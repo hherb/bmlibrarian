@@ -11,6 +11,7 @@ dependencies = [
     "ollama>=0.2.1",
     "requests>=2.31.0",
     "psycopg-binary>=3.2.9",
+    "flet>=0.24.1",
 ]
 
 [project.scripts]
