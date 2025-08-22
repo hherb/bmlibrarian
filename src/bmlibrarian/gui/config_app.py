@@ -27,9 +27,10 @@ class BMLibrarianConfigApp:
         self.page = page
         page.title = "BMLibrarian Configuration"
         page.window.width = 1000
-        page.window.height = 700
+        page.window.height = 750
         page.window.min_width = 800
-        page.window.min_height = 600
+        page.window.min_height = 650
+        page.window.resizable = True
         page.theme_mode = ft.ThemeMode.LIGHT
         
         # Create tabs
@@ -43,13 +44,15 @@ class BMLibrarianConfigApp:
             expand=True
         )
         
-        # Create action buttons
+        # Create action buttons with more prominent styling
         action_buttons = ft.Row(
             [
                 ft.ElevatedButton(
                     "Load Configuration",
                     icon=ft.Icons.FOLDER_OPEN,
-                    on_click=self._load_config
+                    on_click=self._load_config,
+                    height=40,
+                    width=180
                 ),
                 ft.ElevatedButton(
                     "Save Configuration",
@@ -58,7 +61,9 @@ class BMLibrarianConfigApp:
                     style=ft.ButtonStyle(
                         bgcolor=ft.Colors.GREEN_600,
                         color=ft.Colors.WHITE
-                    )
+                    ),
+                    height=40,
+                    width=180
                 ),
                 ft.ElevatedButton(
                     "Reset to Defaults",
@@ -67,7 +72,9 @@ class BMLibrarianConfigApp:
                     style=ft.ButtonStyle(
                         bgcolor=ft.Colors.ORANGE_600,
                         color=ft.Colors.WHITE
-                    )
+                    ),
+                    height=40,
+                    width=180
                 ),
                 ft.ElevatedButton(
                     "Test Connection",
@@ -76,16 +83,20 @@ class BMLibrarianConfigApp:
                     style=ft.ButtonStyle(
                         bgcolor=ft.Colors.BLUE_600,
                         color=ft.Colors.WHITE
-                    )
+                    ),
+                    height=40,
+                    width=180
                 )
             ],
             alignment=ft.MainAxisAlignment.CENTER,
-            spacing=10
+            spacing=15,
+            wrap=True  # Allow wrapping if window is narrow
         )
         
-        # Create main layout
+        # Create main layout - simple structure without expand conflicts
         page.add(
             ft.Column([
+                # Header
                 ft.Container(
                     ft.Text(
                         "BMLibrarian Configuration",
@@ -95,13 +106,25 @@ class BMLibrarianConfigApp:
                     ),
                     margin=ft.margin.only(bottom=20)
                 ),
-                ft.Container(main_tabs, expand=True),
+                # Main tabs with fixed height
+                ft.Container(
+                    main_tabs,
+                    height=450,  # Fixed height to prevent infinite expansion
+                    width=None   # Let width be automatic
+                ),
+                # Action buttons - make them clearly visible
                 ft.Container(
                     action_buttons,
                     margin=ft.margin.only(top=20),
-                    padding=ft.padding.all(10)
+                    padding=ft.padding.all(15),
+                    bgcolor=ft.Colors.GREY_100,  # Light background to make buttons stand out
+                    border_radius=10,
+                    width=None  # Full width
                 )
-            ])
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO  # Allow page scrolling if needed
+            )
         )
         
     def _create_tabs(self):

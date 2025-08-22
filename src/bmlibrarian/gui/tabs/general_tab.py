@@ -28,15 +28,21 @@ class GeneralSettingsTab:
         # CLI Settings Section
         cli_section = self._build_cli_section()
         
+        # Create scrollable content
+        content = ft.Column([
+            ollama_section,
+            ft.Divider(height=20),
+            database_section,
+            ft.Divider(height=20),
+            cli_section,
+            ft.Container(height=50)  # Bottom padding
+        ], 
+        spacing=10
+        )
+        
         return ft.Container(
-            ft.Column([
-                ollama_section,
-                ft.Divider(),
-                database_section,
-                ft.Divider(),
-                cli_section
-            ], scroll=ft.ScrollMode.AUTO),
-            padding=ft.padding.all(20)
+            content=ft.ListView([content], spacing=0, padding=ft.padding.all(20)),
+            expand=True
         )
     
     def _build_ollama_section(self) -> ft.Container:

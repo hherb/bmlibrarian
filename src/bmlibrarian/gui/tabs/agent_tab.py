@@ -34,15 +34,21 @@ class AgentConfigTab:
         # Advanced Settings Section
         advanced_section = self._build_advanced_section()
         
+        # Create scrollable content
+        content = ft.Column([
+            model_section,
+            ft.Divider(height=20),
+            params_section,
+            ft.Divider(height=20),
+            advanced_section,
+            ft.Container(height=50)  # Bottom padding
+        ], 
+        spacing=10
+        )
+        
         return ft.Container(
-            ft.Column([
-                model_section,
-                ft.Divider(),
-                params_section,
-                ft.Divider(),
-                advanced_section
-            ], scroll=ft.ScrollMode.AUTO),
-            padding=ft.padding.all(20)
+            content=ft.ListView([content], spacing=0, padding=ft.padding.all(20)),
+            expand=True
         )
     
     def _build_model_section(self) -> ft.Container:
