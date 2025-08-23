@@ -95,52 +95,52 @@ class CounterfactualAgent(BaseAgent):
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
         
         # System prompt for counterfactual analysis
-        self.system_prompt = """You are a critical thinking expert specializing in biomedical research methodology. Your role is to analyze documents and identify potential weaknesses, biases, or areas where contradictory evidence might exist.
+        self.system_prompt = """You are a medical research expert specializing in identifying specific factual claims that can be systematically challenged through literature search.
 
 Your task is to:
-1. Identify the main claims, conclusions, and assertions in the provided document
-2. For each significant claim, formulate research questions designed to find contradictory evidence
-3. Provide reasoning for why each question is important for validating the claim
-4. Suggest specific search keywords that would help find contradictory studies
-5. Prioritize questions based on the importance and potential impact of the claims
+1. Extract SPECIFIC, CONCRETE factual statements from the document (not general themes)
+2. For each factual statement, generate DIRECT counterfactual questions that would contradict it
+3. Create search-ready questions that can be converted to database queries
 
-Guidelines for generating counterfactual questions:
-- Focus on methodological limitations that might invalidate conclusions
-- Consider alternative explanations or confounding factors
-- Look for population-specific findings that might not generalize
-- Identify temporal or contextual limitations
-- Consider dose-response relationships and threshold effects
-- Question causal relationships vs. correlations
-- Consider publication bias and study selection bias
+Guidelines for counterfactual question generation:
+- Extract specific claims like "Drug X is first-line treatment for Disease Y" → "What are alternative first-line treatments for Disease Y?"
+- Convert dosage claims like "10mg daily is optimal" → "What are the reported adverse effects of 10mg daily dosing?"
+- Challenge effectiveness claims like "Treatment reduces risk by 30%" → "Studies showing Treatment ineffectiveness or increased risk"
+- Question population claims like "Effective in elderly" → "Treatment effectiveness in different age groups"
 
-IMPORTANT: For search_keywords, provide only SHORT, SPECIFIC terms (1-3 words each):
-- Use medical/scientific terminology
-- Include synonyms and alternative terms
-- Avoid long phrases or complete sentences
-- Examples: "Mediterranean diet", "cognitive decline", "RCT", "meta-analysis", "APOE4", "elderly"
-- NOT: "studies showing Mediterranean diet effects on cognition in older adults"
+IMPORTANT: Generate DIRECT, SPECIFIC questions that can be searched:
+✓ GOOD: "What are the first-line antibiotics for melioidosis treatment?"
+✓ GOOD: "Ceftazidime treatment failure in melioidosis cases"  
+✓ GOOD: "Alternative treatments when ceftazidime fails in melioidosis"
+✗ BAD: "Are there methodological limitations in the studies?"
+✗ BAD: "Could there be confounding factors affecting the results?"
+
+For search_keywords, provide concrete medical terms:
+- Use specific drug names, diseases, treatments
+- Include failure/adverse/alternative terms when appropriate
+- Examples: "ceftazidime", "melioidosis", "treatment failure", "first-line", "antibiotic resistance"
 
 Response Format:
 Return ONLY a valid JSON object with this exact structure:
 
 {
     "main_claims": [
-        "Clear, concise statement of each major claim or conclusion"
+        "Specific factual claim from the document (e.g., 'Ceftazidime is first-line treatment for melioidosis')"
     ],
     "counterfactual_questions": [
         {
-            "question": "Specific research question designed to find contradictory evidence",
-            "reasoning": "Why this question is important for validating the claim",
-            "target_claim": "Which specific claim this question targets",
-            "search_keywords": ["keyword1", "keyword2", "keyword3"],
+            "question": "Direct searchable question to find contradictory evidence (e.g., 'What are alternative first-line treatments for melioidosis?')",
+            "reasoning": "What this would prove if contradictory evidence is found",
+            "target_claim": "The exact claim this question challenges",
+            "search_keywords": ["specific", "medical", "terms"],
             "priority": "HIGH|MEDIUM|LOW"
         }
     ],
-    "overall_assessment": "Brief assessment of the document's evidence quality and potential vulnerabilities",
-    "confidence_level": "HIGH|MEDIUM|LOW - confidence in the document's claims based on potential for contradictory evidence"
+    "overall_assessment": "Brief assessment of how testable these claims are",
+    "confidence_level": "HIGH|MEDIUM|LOW - how much contradictory evidence might exist"
 }
 
-Be thorough but concise. Focus on the most impactful potential contradictions."""
+Focus on concrete, searchable questions that would directly contradict specific claims."""
 
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
@@ -429,11 +429,11 @@ SUPPORTING CITATIONS:
 
     def generate_research_queries_with_agent(self, questions: List[CounterfactualQuestion], query_agent=None) -> List[Dict[str, str]]:
         """
-        Generate database-ready research queries using the QueryAgent for better formatting.
+        Generate database-ready research queries by directly using the QueryAgent on counterfactual questions.
         
         Args:
             questions: List of CounterfactualQuestion objects
-            query_agent: Optional QueryAgent instance for proper query formatting
+            query_agent: QueryAgent instance for proper query formatting
             
         Returns:
             List of dictionaries with 'question', 'query', and 'metadata'
@@ -447,16 +447,9 @@ SUPPORTING CITATIONS:
         
         for question in questions:
             try:
-                # Format the question for the QueryAgent to process
-                # Focus on finding contradictory or negative evidence
-                # Use simple, direct language that the QueryAgent can handle well
-                formatted_question = f"negative effects limitations {question.target_claim.lower()}"
-                
-                # Use QueryAgent to generate proper to_tsquery format
-                db_query = query_agent.convert_question(formatted_question)
-                
-                # Clean the query to ensure proper PostgreSQL to_tsquery syntax
-                db_query = self._clean_tsquery(db_query)
+                # Use the counterfactual question directly with the QueryAgent
+                # The questions are now designed to be search-ready
+                db_query = query_agent.convert_question(question.question)
                 
                 research_queries.append({
                     'question': question.question,
@@ -467,30 +460,15 @@ SUPPORTING CITATIONS:
                     'reasoning': question.reasoning
                 })
                 
+                logger.debug(f"Generated query for '{question.question[:50]}...': {db_query}")
+                
             except Exception as e:
-                logger.warning(f"Failed to generate query for question '{question.question}': {e}")
-                # Fallback to manual formatting with proper quoting
-                formatted_keywords = []
-                for keyword in question.search_keywords:
-                    if ' ' in keyword.strip():
-                        # Multi-word phrase - quote it
-                        clean_keyword = keyword.strip().replace("'", "''")
-                        formatted_keywords.append(f"'{clean_keyword}'")
-                    else:
-                        formatted_keywords.append(keyword.strip())
-                
-                keywords_query = " | ".join(formatted_keywords)
-                fallback_query = f"({keywords_query}) & (ineffective | adverse | negative | limitation)"
-                
-                research_queries.append({
-                    'question': question.question,
-                    'db_query': fallback_query,
-                    'target_claim': question.target_claim,
-                    'search_keywords': question.search_keywords,
-                    'priority': question.priority,
-                    'reasoning': question.reasoning
-                })
+                logger.warning(f"QueryAgent failed for question '{question.question}': {e}")
+                logger.info(f"Skipping question that couldn't be converted to database query")
+                # Skip questions that can't be converted rather than using poor fallbacks
+                continue
         
+        logger.info(f"Successfully generated {len(research_queries)} database queries from {len(questions)} counterfactual questions")
         return research_queries
     
     def generate_research_protocol(self, analysis: CounterfactualAnalysis) -> str:
@@ -671,7 +649,7 @@ Confidence in Original Claims: {analysis.confidence_level}
                 query_info = evidence['query_info']
                 
                 citation = citation_agent.extract_citation_from_document(
-                    query_info['question'], doc, min_relevance=0.6
+                    query_info['question'], doc, min_relevance=0.4
                 )
                 
                 if citation:
@@ -695,9 +673,9 @@ Confidence in Original Claims: {analysis.confidence_level}
             'high_priority_questions': len(high_priority_questions),
             'database_searches': len(research_queries),
             'contradictory_documents_found': len(all_contradictory_evidence),
-            'contradictory_citations_extracted': len(result['contradictory_citations']),
+            'contradictory_citations_extracted': len(result.get('contradictory_citations', [])),
             'database_available': True,
-            'revised_confidence': 'MEDIUM-LOW' if result['contradictory_citations'] else analysis.confidence_level
+            'revised_confidence': 'MEDIUM-LOW' if result.get('contradictory_citations') else analysis.confidence_level
         }
         
         return result

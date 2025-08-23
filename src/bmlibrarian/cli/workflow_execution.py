@@ -337,8 +337,8 @@ class WorkflowExecutionManager:
             contradictory_results = self.agent_manager.counterfactual_agent.find_contradictory_literature(
                 document_content=formatted_report,
                 document_title=f"Research Report: {self.state_manager.current_question[:50]}...",
-                max_results_per_query=5,
-                min_relevance_score=3,
+                max_results_per_query=25,
+                min_relevance_score=2,
                 query_agent=self.agent_manager.query_agent,
                 scoring_agent=self.agent_manager.scoring_agent,
                 citation_agent=self.agent_manager.citation_agent
