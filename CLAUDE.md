@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BMLibrarian is a comprehensive Python library providing AI-powered access to biomedical literature databases. It features a multi-agent architecture with specialized agents for query processing, document scoring, citation extraction, report generation, and counterfactual analysis, all coordinated through an advanced task queue orchestration system.
 
-The project includes both a monolithic CLI (`bmlibrarian_cli.py`) and a modern refactored modular CLI (`bmlibrarian_cli_refactored.py`) that provides better maintainability and extensibility.
+The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides full multi-agent workflow capabilities with enhanced maintainability and extensibility.
 
 ## Dependencies and Environment
 
@@ -45,10 +45,11 @@ Since this project uses `uv` for package management:
 - `uv run python -m [module]` - Run Python modules in the virtual environment
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
 - **CLI Applications**: 
-  - `uv run python bmlibrarian_cli_refactored.py` - **PREFERRED** Modular CLI with counterfactual analysis
-  - `uv run python bmlibrarian_cli.py` - Legacy monolithic CLI (maintained for compatibility)
+  - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
 - **Configuration GUI**: 
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
+- **Laboratory Tools**:
+  - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
@@ -136,6 +137,9 @@ bmlibrarian/
 │           ├── __init__.py
 │           ├── general_tab.py # General settings tab
 │           └── agent_tab.py   # Agent-specific configuration tabs
+│   └── lab/                   # Experimental tools and interfaces
+│       ├── __init__.py        # Lab module exports
+│       └── query_lab.py       # QueryAgent experimental GUI
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
@@ -158,9 +162,9 @@ bmlibrarian/
 │       ├── citation_system.md
 │       ├── reporting_system.md
 │       └── counterfactual_system.md
-├── bmlibrarian_cli_refactored.py # **PREFERRED** Modular CLI application
-├── bmlibrarian_cli.py         # Legacy monolithic CLI application
-├── bmlibrarian_config_gui.py  # **NEW** Graphical configuration interface
+├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
+├── bmlibrarian_config_gui.py  # Graphical configuration interface
+├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
 ├── .env                       # Environment configuration
@@ -214,15 +218,15 @@ bmlibrarian/
 
 ## Usage Examples
 
-### Interactive CLI Application (Preferred)
+### Interactive CLI Application
 
-The recommended way to use BMLibrarian is through the refactored modular CLI:
+The main way to use BMLibrarian is through the interactive CLI:
 
 ```bash
-# Start the modular interactive medical research CLI
-uv run python bmlibrarian_cli_refactored.py
+# Start the interactive medical research CLI
+uv run python bmlibrarian_cli.py
 
-# Enhanced workflow with 8 steps:
+# Enhanced workflow with comprehensive steps:
 # 1. Research question entry
 # 2. Query generation and editing
 # 3. Database search and review
@@ -233,11 +237,12 @@ uv run python bmlibrarian_cli_refactored.py
 # 8. Enhanced markdown export
 
 # Command line options:
-uv run python bmlibrarian_cli_refactored.py --quick  # Quick testing mode
-uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
+uv run python bmlibrarian_cli.py --quick  # Quick testing mode
+uv run python bmlibrarian_cli.py --max-results 50 --timeout 10
+uv run python bmlibrarian_cli.py --auto "research question"  # Automated mode
 ```
 
-The modular CLI provides enhanced human-in-the-loop interaction:
+The CLI provides enhanced human-in-the-loop interaction:
 - **Enum-Based Workflow**: Flexible step orchestration with meaningful names
 - **Iterative Capabilities**: Repeatable steps for query refinement and threshold adjustment
 - **Modular Architecture**: Cleaner separation of concerns for maintainability
@@ -280,15 +285,6 @@ The GUI provides:
 - **File Operations**: Save/load configuration files with JSON format
 - **Connection Testing**: Verify Ollama server connectivity and list available models
 - **Dual Mode**: Can run as desktop app or web interface
-
-### Legacy CLI Application
-
-For compatibility, the original monolithic CLI is still available:
-
-```bash
-# Start the legacy interactive medical research CLI
-uv run python bmlibrarian_cli.py
-```
 
 ### Enum-Based Workflow System
 ```python
