@@ -55,17 +55,12 @@ class AgentConfigTab:
         """Build model selection section."""
         current_model = self.app.config.get_model(self.agent_key)
         
-        # Get available models (predefined list for now)
-        available_models = [
-            "medgemma4B_it_q8:latest",
-            "medgemma-27b-text-it-Q8_0:latest", 
-            "gpt-oss:20b",
-            "llama3.1:8b",
-            "llama3.1:70b",
-            "mistral:7b",
-            "gemma2:9b",
-            "phi3:mini"
-        ]
+        # Get available models from Ollama
+        available_models = self._get_available_models()
+        
+        # Ensure current model is in the list even if not currently available
+        if current_model and current_model not in available_models:
+            available_models.insert(0, current_model)
         
         # Model dropdown
         self.controls['model'] = ft.Dropdown(
@@ -83,6 +78,13 @@ class AgentConfigTab:
             on_click=self._refresh_models
         )
         
+        # Add status text for loading indication
+        self.controls['model_status'] = ft.Text(
+            f"Loaded {len(available_models)} models from Ollama",
+            size=12,
+            color=ft.Colors.GREY_600
+        )
+        
         return ft.Container(
             ft.Column([
                 ft.Text(f"{self.display_name} - Model Selection", 
@@ -90,7 +92,8 @@ class AgentConfigTab:
                 ft.Row([
                     self.controls['model'],
                     refresh_btn
-                ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                self.controls['model_status']
             ]),
             margin=ft.margin.only(bottom=20)
         )
@@ -224,54 +227,115 @@ class AgentConfigTab:
             margin=ft.margin.only(bottom=20)
         )
     
-    def _refresh_models(self, e):
-        """Refresh available models from Ollama."""
+    def _get_available_models(self):
+        """Get list of available models from Ollama."""
         try:
-            from ...agents.base import BaseAgent
             import ollama
             
-            # Create temporary client to get models
+            # Create client to get models
             client = ollama.Client(host=self.app.config.get_ollama_config()['host'])
             models_response = client.list()
             available_models = [model.model for model in models_response.models]
             
+            return sorted(available_models)
+            
+        except Exception as ex:
+            print(f"Warning: Could not fetch Ollama models: {ex}")
+            # Return fallback list if Ollama is not available
+            return [
+                "medgemma4B_it_q8:latest",
+                "medgemma-27b-text-it-Q8_0:latest", 
+                "gpt-oss:20b"
+            ]
+    
+    def _refresh_models(self, e):
+        """Refresh available models from Ollama."""
+        # Update status to show loading
+        if 'model_status' in self.controls:
+            self.controls['model_status'].value = "Refreshing models from Ollama..."
+            self.controls['model_status'].color = ft.Colors.BLUE_600
+            self.app.page.update()
+        
+        try:
+            # Get fresh model list
+            available_models = self._get_available_models()
+            
+            # Preserve current selection
+            current_selection = self.controls['model'].value
+            
             # Update dropdown options
             self.controls['model'].options = [
-                ft.dropdown.Option(model) for model in sorted(available_models)
+                ft.dropdown.Option(model) for model in available_models
             ]
+            
+            # Restore selection if still available
+            if current_selection and current_selection in available_models:
+                self.controls['model'].value = current_selection
+            elif available_models:
+                self.controls['model'].value = available_models[0]
+            
+            # Update status with success
+            if 'model_status' in self.controls:
+                self.controls['model_status'].value = f"✅ Loaded {len(available_models)} models from Ollama"
+                self.controls['model_status'].color = ft.Colors.GREEN_600
             
             self.app.page.update()
             self.app._show_success_dialog(f"Refreshed models. Found {len(available_models)} models.")
             
         except Exception as ex:
+            # Update status with error
+            if 'model_status' in self.controls:
+                self.controls['model_status'].value = f"❌ Failed to load models: {str(ex)}"
+                self.controls['model_status'].color = ft.Colors.RED_600
+                self.app.page.update()
+            
             self.app._show_error_dialog(f"Failed to refresh models: {str(ex)}")
     
     def update_config(self):
         """Update configuration from UI controls."""
-        # Update model
-        self.app.config.set(f'models.{self.agent_key}', self.controls['model'].value)
-        
-        # Update parameters
-        self.app.config.set(f'agents.{self.agent_type}.temperature', self.controls['temperature'].value)
-        self.app.config.set(f'agents.{self.agent_type}.top_p', self.controls['top_p'].value)
-        self.app.config.set(f'agents.{self.agent_type}.max_tokens', int(self.controls['max_tokens'].value))
-        
-        # Update agent-specific settings
-        if self.agent_type == 'scoring' and 'min_relevance_score' in self.controls:
-            self.app.config.set(f'agents.{self.agent_type}.min_relevance_score', 
-                               int(self.controls['min_relevance_score'].value))
+        print(f"🔧 Updating {self.agent_key} settings from UI...")  # Debug
+        try:
+            # Update model
+            model = self.controls['model'].value
+            self.app.config.set(f'models.{self.agent_key}', model)
+            print(f"  Model: {model}")
             
-        elif self.agent_type == 'citation' and 'min_relevance' in self.controls:
-            self.app.config.set(f'agents.{self.agent_type}.min_relevance', 
-                               self.controls['min_relevance'].value)
+            # Update parameters
+            temp = self.controls['temperature'].value
+            top_p = self.controls['top_p'].value
+            max_tokens = int(self.controls['max_tokens'].value)
             
-        elif self.agent_type == 'editor' and 'comprehensive_format' in self.controls:
-            self.app.config.set(f'agents.{self.agent_type}.comprehensive_format', 
-                               self.controls['comprehensive_format'].value)
+            self.app.config.set(f'agents.{self.agent_type}.temperature', temp)
+            self.app.config.set(f'agents.{self.agent_type}.top_p', top_p)
+            self.app.config.set(f'agents.{self.agent_type}.max_tokens', max_tokens)
             
-        elif self.agent_type == 'counterfactual' and 'retry_attempts' in self.controls:
-            self.app.config.set(f'agents.{self.agent_type}.retry_attempts', 
-                               int(self.controls['retry_attempts'].value))
+            print(f"  Params: temp={temp}, top_p={top_p}, max_tokens={max_tokens}")
+            
+            # Update agent-specific settings
+            if self.agent_type == 'scoring' and 'min_relevance_score' in self.controls:
+                score = int(self.controls['min_relevance_score'].value)
+                self.app.config.set(f'agents.{self.agent_type}.min_relevance_score', score)
+                print(f"  Min relevance score: {score}")
+                
+            elif self.agent_type == 'citation' and 'min_relevance' in self.controls:
+                relevance = self.controls['min_relevance'].value
+                self.app.config.set(f'agents.{self.agent_type}.min_relevance', relevance)
+                print(f"  Min relevance: {relevance}")
+                
+            elif self.agent_type == 'editor' and 'comprehensive_format' in self.controls:
+                format_flag = self.controls['comprehensive_format'].value
+                self.app.config.set(f'agents.{self.agent_type}.comprehensive_format', format_flag)
+                print(f"  Comprehensive format: {format_flag}")
+                
+            elif self.agent_type == 'counterfactual' and 'retry_attempts' in self.controls:
+                retries = int(self.controls['retry_attempts'].value)
+                self.app.config.set(f'agents.{self.agent_type}.retry_attempts', retries)
+                print(f"  Retry attempts: {retries}")
+                
+            print(f"✅ {self.agent_key} settings updated")
+            
+        except Exception as ex:
+            print(f"❌ Error updating {self.agent_key} settings: {ex}")
     
     def refresh(self):
         """Refresh tab with current configuration."""

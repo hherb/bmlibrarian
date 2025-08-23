@@ -344,9 +344,10 @@ def load_bmlibrarian_config(config_path: str = None) -> Dict[str, Any]:
         Configuration dictionary
     """
     if config_path is None:
-        # Search for config file in current and parent directories
+        # Search for config file in standard locations
         search_paths = [
-            Path.cwd() / "bmlibrarian_config.json",
+            Path.home() / ".bmlibrarian" / "config.json",  # Primary location
+            Path.cwd() / "bmlibrarian_config.json",  # Legacy location
             Path.cwd().parent / "bmlibrarian_config.json",
             Path(__file__).parent.parent.parent.parent / "bmlibrarian_config.json"
         ]

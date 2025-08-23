@@ -21,6 +21,10 @@ The project includes both a monolithic CLI (`bmlibrarian_cli.py`) and a modern r
 
 ## Configuration
 
+- **Configuration file locations** (OS agnostic):
+  - **Primary**: `~/.bmlibrarian/config.json` (recommended)
+  - **Legacy fallback**: `bmlibrarian_config.json` in current directory
+  - **GUI default**: Always saves to `~/.bmlibrarian/config.json`
 - Environment variables are configured in `.env` file
 - **Database connection parameters:**
   - `POSTGRES_DB`: Database name (default: "knowledgebase")  

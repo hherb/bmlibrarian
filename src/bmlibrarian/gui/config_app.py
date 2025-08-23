@@ -21,6 +21,7 @@ class BMLibrarianConfigApp:
         self.config = get_config()
         self.page: Optional[ft.Page] = None
         self.tabs: Dict[str, Any] = {}
+        self.tab_objects: Dict[str, Any] = {}  # Store actual tab objects for updates
         
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -45,8 +46,28 @@ class BMLibrarianConfigApp:
         )
         
         # Create action buttons with more prominent styling
-        action_buttons = ft.Row(
-            [
+        action_buttons = ft.Column([
+            # First row - main actions
+            ft.Row([
+                ft.ElevatedButton(
+                    "Save to ~/.bmlibrarian",
+                    icon=ft.Icons.SAVE,
+                    on_click=self._save_to_default,
+                    style=ft.ButtonStyle(
+                        bgcolor=ft.Colors.GREEN_600,
+                        color=ft.Colors.WHITE
+                    ),
+                    height=40,
+                    width=200,
+                    tooltip="Save to default config location"
+                ),
+                ft.ElevatedButton(
+                    "Save As...",
+                    icon=ft.Icons.SAVE_AS,
+                    on_click=self._save_config,
+                    height=40,
+                    width=140
+                ),
                 ft.ElevatedButton(
                     "Load Configuration",
                     icon=ft.Icons.FOLDER_OPEN,
@@ -54,17 +75,9 @@ class BMLibrarianConfigApp:
                     height=40,
                     width=180
                 ),
-                ft.ElevatedButton(
-                    "Save Configuration",
-                    icon=ft.Icons.SAVE,
-                    on_click=self._save_config,
-                    style=ft.ButtonStyle(
-                        bgcolor=ft.Colors.GREEN_600,
-                        color=ft.Colors.WHITE
-                    ),
-                    height=40,
-                    width=180
-                ),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            # Second row - utility actions  
+            ft.Row([
                 ft.ElevatedButton(
                     "Reset to Defaults",
                     icon=ft.Icons.REFRESH,
@@ -73,8 +86,8 @@ class BMLibrarianConfigApp:
                         bgcolor=ft.Colors.ORANGE_600,
                         color=ft.Colors.WHITE
                     ),
-                    height=40,
-                    width=180
+                    height=35,
+                    width=160
                 ),
                 ft.ElevatedButton(
                     "Test Connection",
@@ -84,14 +97,11 @@ class BMLibrarianConfigApp:
                         bgcolor=ft.Colors.BLUE_600,
                         color=ft.Colors.WHITE
                     ),
-                    height=40,
-                    width=180
+                    height=35,
+                    width=160
                 )
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=15,
-            wrap=True  # Allow wrapping if window is narrow
-        )
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
+        ], spacing=5)
         
         # Create main layout - simple structure without expand conflicts
         page.add(
@@ -119,7 +129,8 @@ class BMLibrarianConfigApp:
                     padding=ft.padding.all(15),
                     bgcolor=ft.Colors.GREY_100,  # Light background to make buttons stand out
                     border_radius=10,
-                    width=None  # Full width
+                    width=None,  # Full width
+                    height=120  # Accommodate two rows of buttons
                 )
             ],
             spacing=10,
@@ -131,6 +142,7 @@ class BMLibrarianConfigApp:
         """Create all configuration tabs."""
         # General Settings Tab
         general_tab = GeneralSettingsTab(self)
+        self.tab_objects['general'] = general_tab  # Store reference
         self.tabs['general'] = ft.Tab(
             text="General Settings",
             icon=ft.Icons.SETTINGS,
@@ -149,6 +161,7 @@ class BMLibrarianConfigApp:
         
         for agent_key, (display_name, icon) in agent_types.items():
             agent_tab = AgentConfigTab(self, agent_key, display_name)
+            self.tab_objects[agent_key] = agent_tab  # Store reference
             self.tabs[agent_key] = ft.Tab(
                 text=display_name,
                 icon=icon,
@@ -190,18 +203,38 @@ class BMLibrarianConfigApp:
         def file_picker_result(result: ft.FilePickerResultEvent):
             if result.path:
                 try:
+                    print(f"💾 Starting save process to: {result.path}")  # Debug
+                    
+                    # Show current config state before update
+                    print(f"📊 Config before update: {len(str(self.config._config))} chars")
+                    
                     # Update config from UI before saving
                     self._update_config_from_ui()
+                    
+                    # Show config state after update
+                    print(f"📊 Config after update: {len(str(self.config._config))} chars")
                     
                     # Save configuration
                     file_path = result.path
                     if not file_path.endswith('.json'):
                         file_path += '.json'
                     
+                    print(f"💾 Saving config to: {file_path}")  # Debug
+                    print(f"💾 Config content preview: {str(self.config._config)[:200]}...")  # Debug
                     self.config.save_config(file_path)
-                    self._show_success_dialog(f"Configuration saved to {file_path}")
+                    
+                    # Verify the file was created
+                    import os
+                    if os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path)
+                        print(f"✅ File saved successfully: {file_size} bytes")  # Debug
+                        self._show_success_dialog(f"✅ Configuration saved to {file_path}\nFile size: {file_size} bytes")
+                    else:
+                        print("❌ File was not created")  # Debug
+                        self._show_error_dialog("❌ Configuration file was not created")
                     
                 except Exception as ex:
+                    print(f"❌ Save error: {ex}")  # Debug
                     self._show_error_dialog(f"Failed to save configuration: {str(ex)}")
         
         file_picker = ft.FilePicker(on_result=file_picker_result)
@@ -210,10 +243,39 @@ class BMLibrarianConfigApp:
         
         file_picker.save_file(
             dialog_title="Save Configuration File",
-            file_name="bmlibrarian_config.json",
+            file_name="config.json",
             file_type=ft.FilePickerFileType.CUSTOM,
             allowed_extensions=["json"]
         )
+    
+    def _save_to_default(self, e):
+        """Save configuration to default location ~/.bmlibrarian/config.json"""
+        try:
+            import os
+            
+            print("💾 Saving to default location...")  # Debug
+            
+            # Update config from UI before saving
+            self._update_config_from_ui()
+            
+            # Save to default location (None means use default)
+            self.config.save_config(None)
+            
+            # Get the actual path that was used
+            default_path = os.path.expanduser("~/.bmlibrarian/config.json")
+            
+            # Verify the file was created
+            if os.path.exists(default_path):
+                file_size = os.path.getsize(default_path)
+                print(f"✅ File saved successfully: {file_size} bytes")  # Debug
+                self._show_success_dialog(f"✅ Configuration saved to default location!\n\n{default_path}\nFile size: {file_size} bytes")
+            else:
+                print("❌ File was not created at default location")  # Debug
+                self._show_error_dialog("❌ Configuration file was not created at default location")
+                
+        except Exception as ex:
+            print(f"❌ Save to default error: {ex}")  # Debug
+            self._show_error_dialog(f"Failed to save configuration to default location: {str(ex)}")
     
     def _reset_defaults(self, e):
         """Reset configuration to defaults."""
@@ -233,36 +295,48 @@ class BMLibrarianConfigApp:
     def _test_connection(self, e):
         """Test connection to Ollama server."""
         try:
-            from ..agents.base import BaseAgent
+            import ollama
             
-            # Create a temporary agent to test connection
-            test_agent = BaseAgent.__new__(BaseAgent)
-            test_agent.model = self.config.get_model('query_agent')
-            test_agent.host = self.config.get_ollama_config()['host']
-            test_agent.client = __import__('ollama').Client(host=test_agent.host)
+            # Create client to test connection
+            host = self.config.get_ollama_config()['host']
+            client = ollama.Client(host=host)
             
-            if test_agent.test_connection():
-                models = test_agent.get_available_models()
-                self._show_success_dialog(f"Connection successful!\nAvailable models: {', '.join(models[:5])}{'...' if len(models) > 5 else ''}")
+            # Get available models
+            models_response = client.list()
+            models = [model.model for model in models_response.models]
+            
+            if models:
+                model_list = '\n'.join(models[:10])  # Show first 10 models
+                if len(models) > 10:
+                    model_list += f"\n... and {len(models) - 10} more models"
+                
+                self._show_success_dialog(f"✅ Connection successful to {host}\n\nFound {len(models)} models:\n{model_list}")
             else:
-                self._show_error_dialog("Connection test failed. Please check your Ollama server.")
+                self._show_success_dialog(f"✅ Connected to {host}\nBut no models are installed.")
                 
         except Exception as ex:
-            self._show_error_dialog(f"Connection test failed: {str(ex)}")
+            self._show_error_dialog(f"❌ Connection test failed: {str(ex)}\n\nPlease check:\n• Ollama server is running\n• Host URL is correct\n• Network connectivity")
     
     def _update_config_from_ui(self):
         """Update configuration from all UI components."""
-        # Update general settings
-        general_tab = next((tab for tab_key, tab in self.tabs.items() if tab_key == 'general'), None)
-        if hasattr(general_tab, 'content') and hasattr(general_tab.content.content, 'update_config'):
-            general_tab.content.content.update_config()
-        
-        # Update agent tabs
-        agent_types = ['query_agent', 'scoring_agent', 'citation_agent', 'reporting_agent', 'counterfactual_agent', 'editor_agent']
-        for agent_key in agent_types:
-            agent_tab = self.tabs.get(agent_key)
-            if agent_tab and hasattr(agent_tab, 'content') and hasattr(agent_tab.content.content, 'update_config'):
-                agent_tab.content.content.update_config()
+        try:
+            # Update general settings
+            general_tab = self.tab_objects.get('general')
+            if general_tab and hasattr(general_tab, 'update_config'):
+                general_tab.update_config()
+            
+            # Update agent tabs
+            agent_types = ['query_agent', 'scoring_agent', 'citation_agent', 'reporting_agent', 'counterfactual_agent', 'editor_agent']
+            for agent_key in agent_types:
+                agent_tab = self.tab_objects.get(agent_key)
+                if agent_tab and hasattr(agent_tab, 'update_config'):
+                    agent_tab.update_config()
+                    
+            print("✅ Configuration updated from UI")  # Debug output
+                    
+        except Exception as ex:
+            print(f"❌ Error updating config from UI: {ex}")  # Debug output
+            self._show_error_dialog(f"Failed to update configuration from UI: {str(ex)}")
     
     def _refresh_all_tabs(self):
         """Refresh all tabs with current configuration."""

@@ -205,15 +205,33 @@ class GeneralSettingsTab:
     
     def update_config(self):
         """Update configuration from UI controls."""
-        # Update Ollama settings
-        self.app.config.set('ollama.host', self.controls['ollama_host'].value)
-        self.app.config.set('ollama.timeout', int(self.controls['ollama_timeout'].value))
-        self.app.config.set('ollama.max_retries', int(self.controls['ollama_retries'].value))
-        
-        # Update Database settings
-        self.app.config.set('database.max_results_per_query', int(self.controls['max_results'].value))
-        self.app.config.set('database.batch_size', int(self.controls['batch_size'].value))
-        self.app.config.set('database.use_ranking', self.controls['use_ranking'].value)
+        print("🔧 Updating general settings from UI...")  # Debug
+        try:
+            # Update Ollama settings
+            host = self.controls['ollama_host'].value
+            timeout = int(self.controls['ollama_timeout'].value)
+            retries = int(self.controls['ollama_retries'].value)
+            
+            self.app.config.set('ollama.host', host)
+            self.app.config.set('ollama.timeout', timeout)
+            self.app.config.set('ollama.max_retries', retries)
+            
+            print(f"  Ollama: {host}, timeout: {timeout}s, retries: {retries}")
+            
+            # Update Database settings
+            max_results = int(self.controls['max_results'].value)
+            batch_size = int(self.controls['batch_size'].value)
+            use_ranking = self.controls['use_ranking'].value
+            
+            self.app.config.set('database.max_results_per_query', max_results)
+            self.app.config.set('database.batch_size', batch_size)
+            self.app.config.set('database.use_ranking', use_ranking)
+            
+            print(f"  Database: max_results={max_results}, batch_size={batch_size}, ranking={use_ranking}")
+            print("✅ General settings updated")
+            
+        except Exception as ex:
+            print(f"❌ Error updating general settings: {ex}")
     
     def refresh(self):
         """Refresh tab with current configuration."""

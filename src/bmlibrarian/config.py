@@ -96,9 +96,9 @@ class BMLibrarianConfig:
         
         # 1. Load from config file if it exists
         config_paths = [
-            os.path.join(os.getcwd(), "bmlibrarian_config.json"),
-            os.path.expanduser("~/.bmlibrarian/config.json"),
-            os.path.join(os.path.dirname(__file__), "..", "..", "bmlibrarian_config.json")
+            os.path.expanduser("~/.bmlibrarian/config.json"),  # Primary location
+            os.path.join(os.getcwd(), "bmlibrarian_config.json"),  # Fallback for current directory
+            os.path.join(os.path.dirname(__file__), "..", "..", "bmlibrarian_config.json")  # Project root fallback
         ]
         
         for config_path in config_paths:
@@ -221,6 +221,7 @@ class BMLibrarianConfig:
             key_path: Path to the configuration key (e.g., "models.query_agent")
             value: Value to set
         """
+        print(f"🔧 Setting config: {key_path} = {value}")  # Debug
         keys = key_path.split('.')
         current = self._config
         
@@ -231,25 +232,33 @@ class BMLibrarianConfig:
             current = current[key]
         
         # Set the final value
+        old_value = current.get(keys[-1], "<not set>")
         current[keys[-1]] = value
+        print(f"  Changed from: {old_value} → {value}")  # Debug
     
     def save_config(self, file_path: Optional[str] = None):
         """
         Save current configuration to a file.
         
         Args:
-            file_path: Path to save the config file. If None, saves to default location.
+            file_path: Path to save the config file. If None, saves to ~/.bmlibrarian/config.json
         """
         if file_path is None:
-            file_path = os.path.join(os.getcwd(), "bmlibrarian_config.json")
+            file_path = os.path.expanduser("~/.bmlibrarian/config.json")
         
         try:
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            # Ensure the directory exists (OS agnostic)
+            config_dir = os.path.dirname(file_path)
+            os.makedirs(config_dir, exist_ok=True)
+            
             with open(file_path, 'w') as f:
                 json.dump(self._config, f, indent=2)
             logger.info(f"Configuration saved to: {file_path}")
+            print(f"📁 Configuration saved to: {file_path}")  # Debug output
         except IOError as e:
             logger.error(f"Failed to save configuration: {e}")
+            print(f"❌ Failed to save configuration: {e}")  # Debug output
+            raise
     
     def create_sample_config(self, file_path: Optional[str] = None):
         """
