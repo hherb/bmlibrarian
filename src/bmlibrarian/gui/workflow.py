@@ -11,26 +11,81 @@ from ..agents import (
     QueryAgent, DocumentScoringAgent, CitationFinderAgent,
     ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator
 )
+from ..config import get_config, get_model, get_agent_config
+
+
+def filter_agent_config(agent_config: Dict[str, Any], allowed_params: set) -> Dict[str, Any]:
+    """Filter agent configuration to only include allowed parameters."""
+    return {k: v for k, v in agent_config.items() if k in allowed_params}
 
 
 def initialize_agents_in_main_thread():
     """Initialize BMLibrarian agents in the main thread to avoid signal issues."""
     try:
-        print("🔧 Initializing BMLibrarian agents...")
+        print("🔧 Initializing BMLibrarian agents with config.json settings...")
+        
+        # Get configuration
+        config = get_config()
+        ollama_config = config.get_ollama_config()
         
         # Create orchestrator
         orchestrator = AgentOrchestrator(max_workers=2)
         
-        # Create agents
+        # Define allowed parameters for each agent type
+        allowed_params = {
+            'query': {'temperature', 'top_p', 'callback', 'show_model_info'},
+            'scoring': {'temperature', 'top_p', 'callback', 'show_model_info'},
+            'citation': {'temperature', 'top_p', 'callback', 'show_model_info'},
+            'reporting': {'temperature', 'top_p', 'callback', 'show_model_info'},
+            'counterfactual': {'temperature', 'top_p', 'callback', 'show_model_info'},
+            'editor': {'temperature', 'top_p', 'callback', 'show_model_info'}
+        }
+        
+        # Create agents with properly filtered configuration
         agents = {
-            'query_agent': QueryAgent(orchestrator=orchestrator),
-            'scoring_agent': DocumentScoringAgent(orchestrator=orchestrator),
-            'citation_agent': CitationFinderAgent(orchestrator=orchestrator),
-            'reporting_agent': ReportingAgent(orchestrator=orchestrator),
-            'counterfactual_agent': CounterfactualAgent(orchestrator=orchestrator),
-            'editor_agent': EditorAgent(orchestrator=orchestrator),
+            'query_agent': QueryAgent(
+                model=get_model('query_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('query'), allowed_params['query'])
+            ),
+            'scoring_agent': DocumentScoringAgent(
+                model=get_model('scoring_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('scoring'), allowed_params['scoring'])
+            ),
+            'citation_agent': CitationFinderAgent(
+                model=get_model('citation_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('citation'), allowed_params['citation'])
+            ),
+            'reporting_agent': ReportingAgent(
+                model=get_model('reporting_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('reporting'), allowed_params['reporting'])
+            ),
+            'counterfactual_agent': CounterfactualAgent(
+                model=get_model('counterfactual_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('counterfactual'), allowed_params['counterfactual'])
+            ),
+            'editor_agent': EditorAgent(
+                model=get_model('editor_agent'),
+                host=ollama_config.get('host', 'http://localhost:11434'),
+                orchestrator=orchestrator,
+                **filter_agent_config(get_agent_config('editor'), allowed_params['editor'])
+            ),
             'orchestrator': orchestrator
         }
+        
+        # Print which models are being used
+        for agent_name, agent in agents.items():
+            if hasattr(agent, 'model') and agent_name != 'orchestrator':
+                print(f"🤖 {agent_name} using model: {agent.model}")
         
         print("✅ Agents initialized successfully in main thread")
         return agents
