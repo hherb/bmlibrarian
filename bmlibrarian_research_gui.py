@@ -68,19 +68,24 @@ def main():
     app = ResearchGUI(agents=agents)
     
     # Set configuration options
+    app.config_overrides = getattr(app, 'config_overrides', {})
+    
+    # Basic configuration
     if args.max_results:
-        app.config_overrides = {'max_results': args.max_results}
+        app.config_overrides['max_results'] = args.max_results
+    
+    # Only apply limits in quick mode - otherwise process ALL documents
+    if args.quick:
+        app.config_overrides['max_documents_to_score'] = 20  # Quick mode: limit docs
+        app.config_overrides['max_documents_for_citations'] = 15
+        app.config_overrides['quick_mode'] = True
+    # In normal mode, process ALL documents (no artificial limits)
+        
     if args.timeout:
-        app.config_overrides = getattr(app, 'config_overrides', {})
         app.config_overrides['timeout'] = args.timeout
     if args.score_threshold:
-        app.config_overrides = getattr(app, 'config_overrides', {})
         app.config_overrides['score_threshold'] = args.score_threshold
-    if args.quick:
-        app.config_overrides = getattr(app, 'config_overrides', {})
-        app.config_overrides['quick_mode'] = True
     if args.verbose:
-        app.config_overrides = getattr(app, 'config_overrides', {})
         app.config_overrides['verbose'] = True
     
     # Set auto question if provided

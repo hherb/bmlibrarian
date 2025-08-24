@@ -46,7 +46,8 @@ Since this project uses `uv` for package management:
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
 - **CLI Applications**: 
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
-- **Configuration GUI**: 
+- **GUI Applications**: 
+  - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
@@ -130,10 +131,14 @@ bmlibrarian/
 │       ├── formatting.py      # Report formatting and export
 │       ├── workflow.py        # Workflow orchestration
 │       └── workflow_steps.py  # Enum-based workflow step definitions
-│   └── gui/                   # Graphical user interface for configuration
+│   └── gui/                   # Graphical user interfaces using Flet
 │       ├── __init__.py        # GUI module exports
-│       ├── config_app.py      # Main GUI application using Flet
-│       └── tabs/              # Individual configuration tab components
+│       ├── config_app.py      # Configuration GUI application
+│       ├── research_app.py    # Main research GUI application (457 lines)
+│       ├── components.py      # Reusable UI components (StepCard, etc.)
+│       ├── dialogs.py         # Dialog management and interactions
+│       ├── workflow.py        # Real agent orchestration and execution
+│       └── tabs/              # Configuration GUI tab components
 │           ├── __init__.py
 │           ├── general_tab.py # General settings tab
 │           └── agent_tab.py   # Agent-specific configuration tabs
@@ -163,6 +168,7 @@ bmlibrarian/
 │       ├── reporting_system.md
 │       └── counterfactual_system.md
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
+├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
@@ -202,12 +208,15 @@ bmlibrarian/
 
 ### Agent Development Guidelines
 - **BaseAgent Pattern**: All agents inherit from BaseAgent with standardized interfaces
+- **Configuration Integration**: Agents must use `get_model()` and `get_agent_config()` from config system
+- **Parameter Filtering**: Filter agent config to only include supported parameters (temperature, top_p, etc.)
 - **Queue Integration**: New agents should support queue-based processing
 - **Workflow Integration**: Agents should work with enum-based workflow system
 - **Connection Testing**: All agents must implement connection testing methods
 - **Progress Tracking**: Support progress callbacks for long-running operations
 - **Document ID Integrity**: Always use real database IDs, never mock/fabricated references
 - **Step Handler Methods**: Implement appropriate workflow step handlers for agent actions
+- **No Artificial Limits**: Process ALL documents unless explicitly configured otherwise
 
 ### Workflow Development Guidelines
 - **WorkflowStep Enum**: Use meaningful names for new workflow steps
@@ -251,6 +260,44 @@ The CLI provides enhanced human-in-the-loop interaction:
 - **Improved UI**: Better user experience with clearer navigation
 - **Comprehensive Export**: Reports include counterfactual analysis when performed
 - **Auto Mode Support**: Graceful handling of non-interactive execution
+
+### Research GUI Application
+
+BMLibrarian includes a comprehensive desktop research application built with Flet:
+
+```bash
+# Start the research GUI application (default desktop mode)
+uv run python bmlibrarian_research_gui.py
+
+# Research GUI Features:
+# - Multi-line text input for medical research questions
+# - Interactive/automated workflow toggle
+# - Visual workflow progress with collapsible step cards
+# - Real-time agent execution with proper model configuration
+# - Formatted markdown report preview with scrolling
+# - Direct file save functionality (avoids macOS FilePicker bugs)
+# - Space-efficient layout with optimized screen usage
+# - Full integration with BMLibrarian's multi-agent system
+
+# Command line options:
+uv run python bmlibrarian_research_gui.py --auto "research question"  # Automated execution
+uv run python bmlibrarian_research_gui.py --quick                    # Quick mode with limits
+uv run python bmlibrarian_research_gui.py --max-results 100          # Custom search limits
+uv run python bmlibrarian_research_gui.py --score-threshold 3.0      # Custom relevance threshold
+```
+
+The Research GUI provides:
+- **Desktop Application**: Native cross-platform desktop interface
+- **Visual Workflow**: Collapsible cards showing real-time progress through 11 workflow steps
+- **Agent Integration**: Uses configured models from `~/.bmlibrarian/config.json` 
+- **Document Processing**: Scores ALL found documents by default (no artificial limits)
+- **Citation Extraction**: Processes ALL documents above relevance threshold
+- **Report Generation**: Full markdown rendering with GitHub-style formatting
+- **Save Functionality**: Direct file path input dialog (macOS-compatible)
+- **Preview System**: Full-screen overlay with scrollable markdown display
+- **Space Optimization**: Controls positioned efficiently, collapsible workflow section
+- **Configuration Support**: Respects agent models, parameters, and thresholds from config
+- **Performance Modes**: Normal (all documents) vs Quick (limited for speed)
 
 ### Configuration GUI Application
 
@@ -377,25 +424,31 @@ report = reporting_agent.generate_citation_based_report(
 ## Important Instructions and Reminders
 ### When developing new agents or features:
 1. **Always inherit from BaseAgent** for consistent interfaces
-2. **Implement comprehensive testing** with realistic test data
-3. **Create both user and developer documentation** for all new features
-4. **Use only approved LLM models** specified in configuration
-5. **Never create or modify production database** without explicit permission
-6. **Ensure document ID verification** to prevent citation hallucination
-7. **Support queue-based processing** for scalability
-8. **Include progress tracking** for long-running operations
-9. **Use enum-based workflow system** for new workflow steps (workflow_steps.py)
-10. **Use modular CLI architecture** for new CLI features (bmlibrarian_cli_refactored.py)
-11. **Include counterfactual analysis** capabilities where appropriate for evidence validation
-12. **Implement workflow step handlers** for agent integration with orchestration system
-13. **Support auto mode execution** with graceful fallbacks for interactive features
+2. **Use configuration system**: Load models via `get_model()` and settings via `get_agent_config()`
+3. **Filter configuration parameters**: Only pass supported parameters to agent constructors
+4. **Process ALL documents by default**: No artificial limits unless explicitly configured
+5. **Implement comprehensive testing** with realistic test data
+6. **Create both user and developer documentation** for all new features
+7. **Never create or modify production database** without explicit permission
+8. **Ensure document ID verification** to prevent citation hallucination
+9. **Support queue-based processing** for scalability
+10. **Include progress tracking** for long-running operations
+11. **Use enum-based workflow system** for new workflow steps (workflow_steps.py)
+12. **Use modular GUI architecture** for new GUI features (see src/bmlibrarian/gui/)
+13. **Include counterfactual analysis** capabilities where appropriate for evidence validation
+14. **Implement workflow step handlers** for agent integration with orchestration system
+15. **Support auto mode execution** with graceful fallbacks for interactive features
 
 ### Testing and Quality Assurance:
 - Run full test suite: `uv run python -m pytest tests/`
-- Test preferred CLI: `uv run python bmlibrarian_cli_refactored.py --quick`
+- Test CLI: `uv run python bmlibrarian_cli.py --quick`
+- Test Research GUI: `uv run python bmlibrarian_research_gui.py --auto "test question" --quick`
+- Test Configuration GUI: `uv run python bmlibrarian_config_gui.py`
 - Test agent demos: `uv run python examples/agent_demo.py`
 - Test counterfactual analysis: `uv run python examples/counterfactual_demo.py`
 - Verify Ollama connection before LLM operations
 - Validate all citations reference real database documents
 - Check evidence strength assessments are appropriate
 - Verify counterfactual analysis generates meaningful research questions
+- Ensure agents use configured models from config.json
+- Test document processing without artificial limits
