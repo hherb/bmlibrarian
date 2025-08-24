@@ -583,12 +583,13 @@ class ResearchGUI:
                             )
                         ]),
                         ft.Container(
-                            content=ft.Markdown(
-                                value=self.final_report[:8000] + ("..." if len(self.final_report) > 8000 else ""),
-                                selectable=True,
-                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                                expand=True
-                            ),
+                            content=ft.Column([
+                                ft.Markdown(
+                                    value=self.final_report[:8000] + ("..." if len(self.final_report) > 8000 else ""),
+                                    selectable=True,
+                                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
+                                )
+                            ], scroll=ft.ScrollMode.ALWAYS, expand=True),
                             expand=True,
                             bgcolor=ft.Colors.GREY_50,
                             border_radius=5,
