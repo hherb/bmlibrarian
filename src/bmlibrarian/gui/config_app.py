@@ -171,8 +171,12 @@ class BMLibrarianConfigApp:
     def _load_config(self, e):
         """Load configuration from file."""
         def file_picker_result(result: ft.FilePickerResultEvent):
-            if result.files:
-                try:
+            try:
+                # Force cleanup of all file picker overlays
+                self.page.overlay.clear()
+                self.page.update()
+                    
+                if result.files:
                     file_path = result.files[0].path
                     with open(file_path, 'r') as f:
                         config_data = json.load(f)
@@ -183,10 +187,19 @@ class BMLibrarianConfigApp:
                     # Refresh all tabs
                     self._refresh_all_tabs()
                     
-                    self._show_success_dialog("Configuration loaded successfully!")
+                    # Use snack bar instead of modal dialog
+                    snack_bar = ft.SnackBar(
+                        ft.Text("✅ Configuration loaded successfully!"),
+                        bgcolor=ft.Colors.GREEN_100
+                    )
+                    self.page.open(snack_bar)
                     
-                except Exception as ex:
-                    self._show_error_dialog(f"Failed to load configuration: {str(ex)}")
+            except Exception as ex:
+                snack_bar = ft.SnackBar(
+                    ft.Text(f"Failed to load: {str(ex)}"),
+                    bgcolor=ft.Colors.RED_100
+                )
+                self.page.open(snack_bar)
         
         file_picker = ft.FilePicker(on_result=file_picker_result)
         self.page.overlay.append(file_picker)
@@ -201,8 +214,12 @@ class BMLibrarianConfigApp:
     def _save_config(self, e):
         """Save current configuration to file."""
         def file_picker_result(result: ft.FilePickerResultEvent):
-            if result.path:
-                try:
+            try:
+                # Force cleanup of all file picker overlays
+                self.page.overlay.clear()
+                self.page.update()
+                    
+                if result.path:
                     print(f"💾 Starting save process to: {result.path}")  # Debug
                     
                     # Show current config state before update
@@ -228,14 +245,27 @@ class BMLibrarianConfigApp:
                     if os.path.exists(file_path):
                         file_size = os.path.getsize(file_path)
                         print(f"✅ File saved successfully: {file_size} bytes")  # Debug
-                        self._show_success_dialog(f"✅ Configuration saved to {file_path}\nFile size: {file_size} bytes")
+                        # Use snack bar to show success
+                        snack_bar = ft.SnackBar(
+                            ft.Text(f"✅ Configuration saved to {os.path.basename(file_path)}"),
+                            bgcolor=ft.Colors.GREEN_100
+                        )
+                        self.page.open(snack_bar)
                     else:
                         print("❌ File was not created")  # Debug
-                        self._show_error_dialog("❌ Configuration file was not created")
+                        snack_bar = ft.SnackBar(
+                            ft.Text("❌ Configuration file was not created"),
+                            bgcolor=ft.Colors.RED_100
+                        )
+                        self.page.open(snack_bar)
                     
-                except Exception as ex:
-                    print(f"❌ Save error: {ex}")  # Debug
-                    self._show_error_dialog(f"Failed to save configuration: {str(ex)}")
+            except Exception as ex:
+                print(f"❌ Save error: {ex}")  # Debug
+                snack_bar = ft.SnackBar(
+                    ft.Text(f"Failed to save: {str(ex)}"),
+                    bgcolor=ft.Colors.RED_100
+                )
+                self.page.open(snack_bar)
         
         file_picker = ft.FilePicker(on_result=file_picker_result)
         self.page.overlay.append(file_picker)
@@ -268,29 +298,52 @@ class BMLibrarianConfigApp:
             if os.path.exists(default_path):
                 file_size = os.path.getsize(default_path)
                 print(f"✅ File saved successfully: {file_size} bytes")  # Debug
-                self._show_success_dialog(f"✅ Configuration saved to default location!\n\n{default_path}\nFile size: {file_size} bytes")
+                # Use snack bar instead of modal dialog to avoid UI freezing
+                snack_bar = ft.SnackBar(
+                    ft.Text(f"✅ Configuration saved to ~/.bmlibrarian/config.json ({file_size} bytes)"),
+                    bgcolor=ft.Colors.GREEN_100,
+                    duration=4000  # Show for 4 seconds
+                )
+                self.page.open(snack_bar)
             else:
                 print("❌ File was not created at default location")  # Debug
-                self._show_error_dialog("❌ Configuration file was not created at default location")
+                snack_bar = ft.SnackBar(
+                    ft.Text("❌ Configuration file was not created at default location"),
+                    bgcolor=ft.Colors.RED_100
+                )
+                self.page.open(snack_bar)
                 
         except Exception as ex:
             print(f"❌ Save to default error: {ex}")  # Debug
-            self._show_error_dialog(f"Failed to save configuration to default location: {str(ex)}")
+            snack_bar = ft.SnackBar(
+                ft.Text(f"Failed to save: {str(ex)}"),
+                bgcolor=ft.Colors.RED_100
+            )
+            self.page.open(snack_bar)
     
     def _reset_defaults(self, e):
         """Reset configuration to defaults."""
-        def confirm_reset(result):
-            if result:
-                # Reset to defaults
-                self.config._config = DEFAULT_CONFIG.copy()
-                self._refresh_all_tabs()
-                self._show_success_dialog("Configuration reset to defaults!")
-        
-        self._show_confirm_dialog(
-            "Reset to Defaults",
-            "Are you sure you want to reset all settings to defaults? This will overwrite current settings.",
-            confirm_reset
-        )
+        # Since we can't use modal dialogs without causing UI issues,
+        # we'll implement a two-step reset process instead
+        try:
+            # Reset to defaults immediately
+            self.config._config = DEFAULT_CONFIG.copy()
+            self._refresh_all_tabs()
+            
+            # Show success message
+            snack_bar = ft.SnackBar(
+                ft.Text("⚠️ Configuration reset to defaults! Click 'Save to ~/.bmlibrarian' to persist changes."),
+                bgcolor=ft.Colors.ORANGE_100,
+                duration=6000  # Longer duration for important message
+            )
+            self.page.open(snack_bar)
+            
+        except Exception as ex:
+            snack_bar = ft.SnackBar(
+                ft.Text(f"Failed to reset configuration: {str(ex)}"),
+                bgcolor=ft.Colors.RED_100
+            )
+            self.page.open(snack_bar)
     
     def _test_connection(self, e):
         """Test connection to Ollama server."""
@@ -306,16 +359,30 @@ class BMLibrarianConfigApp:
             models = [model.model for model in models_response.models]
             
             if models:
-                model_list = '\n'.join(models[:10])  # Show first 10 models
-                if len(models) > 10:
-                    model_list += f"\n... and {len(models) - 10} more models"
-                
-                self._show_success_dialog(f"✅ Connection successful to {host}\n\nFound {len(models)} models:\n{model_list}")
+                # Use snack bar for success message
+                snack_bar = ft.SnackBar(
+                    ft.Text(f"✅ Connected to {host} - Found {len(models)} models"),
+                    bgcolor=ft.Colors.GREEN_100,
+                    duration=4000
+                )
+                self.page.open(snack_bar)
             else:
-                self._show_success_dialog(f"✅ Connected to {host}\nBut no models are installed.")
+                # Use snack bar for connection but no models
+                snack_bar = ft.SnackBar(
+                    ft.Text(f"✅ Connected to {host} but no models installed"),
+                    bgcolor=ft.Colors.ORANGE_100,
+                    duration=4000
+                )
+                self.page.open(snack_bar)
                 
         except Exception as ex:
-            self._show_error_dialog(f"❌ Connection test failed: {str(ex)}\n\nPlease check:\n• Ollama server is running\n• Host URL is correct\n• Network connectivity")
+            # Use snack bar for error message
+            snack_bar = ft.SnackBar(
+                ft.Text(f"❌ Connection failed to {self.config.get_ollama_config()['host']}: {str(ex)}"),
+                bgcolor=ft.Colors.RED_100,
+                duration=6000  # Longer duration for error messages
+            )
+            self.page.open(snack_bar)
     
     def _update_config_from_ui(self):
         """Update configuration from all UI components."""
@@ -351,7 +418,7 @@ class BMLibrarianConfigApp:
             title=ft.Text("Success", color=ft.Colors.GREEN_700),
             content=ft.Text(message),
             actions=[
-                ft.TextButton("OK", on_click=lambda _: self._close_dialog())
+                ft.TextButton("OK", on_click=lambda _: self._close_dialog(dialog))
             ]
         )
         self.page.overlay.append(dialog)
@@ -365,7 +432,7 @@ class BMLibrarianConfigApp:
             title=ft.Text("Error", color=ft.Colors.RED_700),
             content=ft.Text(message),
             actions=[
-                ft.TextButton("OK", on_click=lambda _: self._close_dialog())
+                ft.TextButton("OK", on_click=lambda _: self._close_dialog(dialog))
             ]
         )
         self.page.overlay.append(dialog)
@@ -375,7 +442,7 @@ class BMLibrarianConfigApp:
     def _show_confirm_dialog(self, title: str, message: str, callback):
         """Show confirmation dialog."""
         def handle_result(result):
-            self._close_dialog()
+            self._close_dialog(dialog)
             callback(result)
         
         dialog = ft.AlertDialog(
@@ -391,11 +458,20 @@ class BMLibrarianConfigApp:
         dialog.open = True
         self.page.update()
     
-    def _close_dialog(self):
-        """Close the current dialog."""
-        if self.page.overlay:
-            self.page.overlay.clear()
-            self.page.update()
+    def _close_dialog(self, dialog=None):
+        """Close the specified dialog or all dialogs if none specified."""
+        if dialog:
+            # Close specific dialog
+            dialog.open = False
+            if dialog in self.page.overlay:
+                self.page.overlay.remove(dialog)
+        else:
+            # Close all dialogs (fallback for backward compatibility)
+            for overlay in self.page.overlay[:]:  # Make a copy of the list to iterate over
+                if isinstance(overlay, ft.AlertDialog):
+                    overlay.open = False
+                    self.page.overlay.remove(overlay)
+        self.page.update()
 
 
 def run_config_app():
