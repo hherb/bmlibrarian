@@ -206,11 +206,20 @@ class WorkflowExecutor:
                 research_question, documents, update_callback
             )
             
-            # Interactive review of scored documents
+            # Interactive review of scored documents with potential human overrides
+            score_overrides = {}
             if self.interactive_mode:
                 score_threshold = self.config_overrides.get('score_threshold', 2.5)
-                if not self.interactive_handler.get_user_approval_for_scores(scored_documents, score_threshold, update_callback):
-                    raise Exception("User cancelled workflow at document scoring review")
+                score_overrides = self.interactive_handler.get_user_approval_for_scores(
+                    documents, scored_documents, score_threshold, update_callback
+                )
+                
+                # If we have overrides, re-run scoring with human scores
+                if score_overrides:
+                    print(f"Re-scoring documents with {len(score_overrides)} human overrides...")
+                    scored_documents = self.steps_handler.execute_document_scoring(
+                        research_question, documents, update_callback, score_overrides
+                    )
             
             # Step 6: Extract Citations
             citations = self.steps_handler.execute_citation_extraction(

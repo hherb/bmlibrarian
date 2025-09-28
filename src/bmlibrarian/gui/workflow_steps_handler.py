@@ -71,13 +71,14 @@ class WorkflowStepsHandler:
         return documents
     
     def execute_document_scoring(self, research_question: str, documents: List[Dict],
-                               update_callback: Callable) -> List[Tuple[Dict, Dict]]:
-        """Execute the document scoring step.
+                               update_callback: Callable, score_overrides: Optional[Dict[int, float]] = None) -> List[Tuple[Dict, Dict]]:
+        """Execute the document scoring step with optional human overrides.
         
         Args:
             research_question: The research question for relevance scoring
             documents: List of documents to score
             update_callback: Callback for status updates
+            score_overrides: Dictionary mapping document indices to human scores
             
         Returns:
             List of (document, scoring_result) tuples above threshold
@@ -86,6 +87,7 @@ class WorkflowStepsHandler:
                       "Scoring documents for relevance...")
         
         scored_documents = []
+        all_scored_documents = []  # Keep track of all scored docs for override application
         high_scoring = 0
         
         # Get scoring configuration
@@ -100,11 +102,25 @@ class WorkflowStepsHandler:
             docs_to_process = documents[:max_docs_to_score]
             docs_to_score = min(max_docs_to_score, len(documents))
             
-        for doc in docs_to_process:
+        for i, doc in enumerate(docs_to_process):
             try:
                 scoring_result = self.agents['scoring_agent'].evaluate_document(research_question, doc)
                 if scoring_result and isinstance(scoring_result, dict) and 'score' in scoring_result:
+                    original_score = scoring_result['score']
+                    
+                    # Apply human override if provided
+                    if score_overrides and i in score_overrides:
+                        # Create modified scoring result with human score
+                        modified_result = scoring_result.copy()
+                        modified_result['score'] = score_overrides[i]
+                        modified_result['human_override'] = True
+                        modified_result['original_ai_score'] = original_score
+                        scoring_result = modified_result
+                        print(f"Applied human override for document {i}: {original_score:.1f} → {score_overrides[i]:.1f}")
+                    
                     score = scoring_result['score']
+                    all_scored_documents.append((doc, scoring_result))
+                    
                     if score >= score_threshold:
                         # Store as (document, scoring_result) tuple as expected by citation agent
                         scored_documents.append((doc, scoring_result))
@@ -114,8 +130,13 @@ class WorkflowStepsHandler:
                 print(f"Error scoring document: {e}")
                 continue
         
+        # Update status message
+        override_msg = ""
+        if score_overrides:
+            override_msg = f" (with {len(score_overrides)} human overrides)"
+            
         update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
-                      f"Scored {docs_to_score} documents ({len(scored_documents)} above threshold ≥{score_threshold}), {high_scoring} high relevance (≥4.0)")
+                      f"Scored {docs_to_score} documents ({len(scored_documents)} above threshold ≥{score_threshold}), {high_scoring} high relevance (≥4.0){override_msg}")
         
         return scored_documents
     

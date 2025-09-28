@@ -7,7 +7,8 @@
       "Bash(awk:*)",
       "Bash(uv run pytest:*)",
       "Bash(python test_json_fixes.py:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

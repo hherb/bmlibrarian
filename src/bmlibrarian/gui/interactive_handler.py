@@ -113,9 +113,13 @@ Interactive mode: Review the search results above. Proceeding automatically in 3
         
         return True  # Auto-approve after showing results
     
-    def get_user_approval_for_scores(self, scored_documents: List, threshold: float, 
-                                   update_callback: Callable) -> bool:
-        """Get user approval for document scores in interactive mode."""
+    def get_user_approval_for_scores(self, documents: List, scored_documents: List, threshold: float, 
+                                   update_callback: Callable) -> dict:
+        """Get user approval and potential score overrides for document scores in interactive mode.
+        
+        Returns:
+            Dictionary with score overrides where key is document index and value is human score
+        """
         high_scoring = sum(1 for _, result in scored_documents if result.get('score', 0) >= 4.0)
         
         # Create score distribution summary
@@ -142,14 +146,73 @@ High relevance documents (≥4.0): {high_scoring}
 Score distribution:
 {score_summary}
 
-Interactive mode: Review the document scores above. Proceeding automatically in 3 seconds..."""
+Interactive mode: Review and edit document scores below. Click buttons to continue."""
         
         update_callback(WorkflowStep.SCORE_DOCUMENTS, "waiting", content)
         
-        # Brief pause to let user see the scores
-        time.sleep(3)
+        # Show interactive document scoring interface
+        return self._show_interactive_scoring(documents, scored_documents, update_callback)
+    
+    def _show_interactive_scoring(self, documents: List, scored_documents: List, 
+                                update_callback: Callable) -> dict:
+        """Show interactive scoring interface with document details and human override options."""
+        self.waiting_for_user = True
+        self.user_response = None
+        score_overrides = {}
         
-        return True  # Auto-approve after showing scores
+        def handle_scoring_result(overrides: dict):
+            """Handle the result from interactive scoring."""
+            nonlocal score_overrides
+            score_overrides = overrides
+            
+            # Update step content based on whether overrides were applied
+            if overrides:
+                override_count = len(overrides)
+                update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
+                              f"Applied {override_count} human score overrides")
+            else:
+                update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
+                              "Proceeding with AI scores")
+            
+            self.waiting_for_user = False
+        
+        # Get the step card for document scoring and enable scoring interface
+        print(f"Available step cards: {list(self.step_cards.keys()) if self.step_cards else 'None'}")
+        step_card = self._get_step_card(WorkflowStep.SCORE_DOCUMENTS)
+        print(f"Retrieved step card for document scoring: {step_card is not None}")
+        
+        if step_card:
+            try:
+                step_card.enable_document_scoring(documents, scored_documents, handle_scoring_result)
+                # Trigger a page update to show the scoring interface
+                self._trigger_page_update(update_callback)
+                print("Interactive document scoring enabled successfully")
+            except Exception as e:
+                print(f"Error enabling document scoring: {e} - proceeding with AI scores")
+                return {}
+        else:
+            print("Step card not found - proceeding with AI scores")
+            return {}
+        
+        # Wait for user response
+        print("Workflow paused: Waiting for interactive document scoring...")
+        timeout = 600  # 10 minute timeout for scoring review
+        elapsed = 0
+        
+        while self.waiting_for_user and elapsed < timeout:
+            time.sleep(0.1)  # Check every 100ms
+            elapsed += 0.1
+        
+        if elapsed >= timeout:
+            print("Document scoring timeout - using AI scores")
+            return {}
+        
+        # Disable scoring interface
+        if step_card:
+            step_card.disable_document_scoring()
+        
+        print(f"Interactive document scoring completed. Overrides: {len(score_overrides)}")
+        return score_overrides
     
     def get_user_approval_for_citations(self, citations: List, update_callback: Callable) -> bool:
         """Get user approval for extracted citations in interactive mode."""
