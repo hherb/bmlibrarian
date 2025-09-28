@@ -408,7 +408,9 @@ class ResearchGUI:
                 self.final_report = self.workflow_executor.run_workflow(
                     self.research_question,
                     self.human_in_loop,
-                    self._update_step_status
+                    self._update_step_status,
+                    self.dialog_manager,  # Pass dialog manager for interactive mode
+                    self.step_cards  # Pass step cards for inline editing
                 )
                 
                 print(f"Workflow completed. Final report length: {len(self.final_report) if self.final_report else 0}")

@@ -206,3 +206,4 @@ class DialogManager:
             self.show_success_dialog("Content copied to clipboard!")
         except Exception as ex:
             self.show_error_dialog(f"Failed to copy to clipboard: {str(ex)}")
+    

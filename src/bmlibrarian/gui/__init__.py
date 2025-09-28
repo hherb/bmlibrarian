@@ -9,6 +9,10 @@ from .research_app import ResearchGUI
 from .components import StepCard
 from .dialogs import DialogManager
 from .workflow import WorkflowExecutor, initialize_agents_in_main_thread
+from .interactive_handler import InteractiveHandler
+from .query_processor import QueryProcessor
+from .workflow_steps_handler import WorkflowStepsHandler
+from .report_builder import ReportBuilder
 
 __all__ = [
     'BMLibrarianConfigApp',
@@ -16,5 +20,9 @@ __all__ = [
     'StepCard',
     'DialogManager',
     'WorkflowExecutor',
-    'initialize_agents_in_main_thread'
+    'initialize_agents_in_main_thread',
+    'InteractiveHandler',
+    'QueryProcessor',
+    'WorkflowStepsHandler',
+    'ReportBuilder'
 ]

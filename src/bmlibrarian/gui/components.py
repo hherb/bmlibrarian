@@ -15,7 +15,7 @@ class StepCard:
     def __init__(self, step: WorkflowStep, on_expand_change: Optional[Callable] = None):
         self.step = step
         self.expanded = False
-        self.status = "pending"  # pending, running, completed, error
+        self.status = "pending"  # pending, running, completed, error, waiting
         self.content = ""
         self.error_message = ""
         self.on_expand_change = on_expand_change
@@ -25,6 +25,14 @@ class StepCard:
         self.content_text = None
         self.status_icon = None
         self.progress_bar = None
+        
+        # Inline editing components
+        self.editing_mode = False
+        self.edit_field = None
+        self.accept_button = None
+        self.cancel_button = None
+        self.edit_container = None
+        self.edit_callback = None
         
     def build(self) -> ft.ExpansionTile:
         """Build the expansion tile UI component."""
@@ -104,7 +112,8 @@ class StepCard:
             "pending": ft.Icons.SCHEDULE,
             "running": ft.Icons.REFRESH,
             "completed": ft.Icons.CHECK_CIRCLE,
-            "error": ft.Icons.ERROR
+            "error": ft.Icons.ERROR,
+            "waiting": ft.Icons.EDIT
         }
         return icons.get(self.status, ft.Icons.HELP)
     
@@ -114,7 +123,8 @@ class StepCard:
             "pending": ft.Colors.GREY_500,
             "running": ft.Colors.BLUE_500,
             "completed": ft.Colors.GREEN_500,
-            "error": ft.Colors.RED_500
+            "error": ft.Colors.RED_500,
+            "waiting": ft.Colors.ORANGE_500
         }
         return colors.get(self.status, ft.Colors.GREY_500)
     
@@ -123,3 +133,105 @@ class StepCard:
         self.expanded = e.data == "true"
         if self.on_expand_change:
             self.on_expand_change(self, self.expanded)
+    
+    def enable_inline_editing(self, initial_text: str, callback: Callable[[bool, str], None]):
+        """Enable inline editing mode with text field and accept/cancel buttons."""
+        self.editing_mode = True
+        self.edit_callback = callback
+        
+        # Create edit field
+        self.edit_field = ft.TextField(
+            value=initial_text,
+            multiline=True,
+            min_lines=3,
+            max_lines=8,
+            expand=True,
+            hint_text="Edit the query as needed (no markdown formatting)"
+        )
+        
+        # Create buttons
+        self.accept_button = ft.ElevatedButton(
+            "Accept",
+            icon=ft.Icons.CHECK,
+            on_click=self._on_accept_edit,
+            bgcolor=ft.Colors.GREEN_600,
+            color=ft.Colors.WHITE,
+            height=36
+        )
+        
+        self.cancel_button = ft.TextButton(
+            "Cancel",
+            icon=ft.Icons.CLOSE,
+            on_click=self._on_cancel_edit,
+            height=36
+        )
+        
+        # Create edit container
+        self.edit_container = ft.Container(
+            content=ft.Column([
+                ft.Text("Edit Query:", size=12, weight=ft.FontWeight.BOLD),
+                ft.Text("Use & for AND, | for OR, () for grouping. No backticks or markdown.", 
+                        size=10, color=ft.Colors.GREY_600),
+                self.edit_field,
+                ft.Row([
+                    self.accept_button,
+                    self.cancel_button
+                ], spacing=10, alignment=ft.MainAxisAlignment.END)
+            ], spacing=10),
+            padding=ft.padding.all(10),
+            bgcolor=ft.Colors.YELLOW_50,
+            border=ft.border.all(2, ft.Colors.ORANGE_300),
+            border_radius=5
+        )
+        
+        # Replace content container with edit container
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            # Get the content container and replace it
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                # Add edit container after progress bar
+                content_container.content.controls = [
+                    self.progress_bar,
+                    self.edit_container,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]
+        
+        # Auto-expand the tile to show editing interface
+        if self.expansion_tile:
+            self.expansion_tile.initially_expanded = True
+    
+    def disable_inline_editing(self):
+        """Disable inline editing mode and return to normal view."""
+        self.editing_mode = False
+        self.edit_callback = None
+        
+        # Remove edit container and restore normal content
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                # Restore original content structure
+                content_container.content.controls = [
+                    self.progress_bar,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]
+    
+    def _on_accept_edit(self, e):
+        """Handle accept button click."""
+        if self.edit_callback and self.edit_field:
+            edited_text = self.edit_field.value or ""
+            self.edit_callback(True, edited_text)
+    
+    def _on_cancel_edit(self, e):
+        """Handle cancel button click."""
+        if self.edit_callback:
+            self.edit_callback(False, "")

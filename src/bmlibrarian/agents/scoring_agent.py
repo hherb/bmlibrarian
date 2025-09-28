@@ -182,7 +182,9 @@ Please evaluate how well this document addresses the user's question and provide
         self._call_callback("evaluation_started", f"Question: {user_question}")
         
         # Retry logic for failed attempts
-        max_retries = 2
+        max_retries = 3  # Increased from 2 to handle more edge cases
+        response = None
+        
         for attempt in range(max_retries + 1):
             try:
                 messages = [{'role': 'user', 'content': evaluation_prompt}]
@@ -190,10 +192,20 @@ Please evaluate how well this document addresses the user's question and provide
                 response = self._make_ollama_request(
                     messages,
                     system_prompt=self.system_prompt,
-                    num_predict=300,  # Allow longer responses for reasoning
+                    num_predict=500 + (attempt * 100),  # Increase length on retries
                     temperature=0.1 + (attempt * 0.05)  # Slightly increase temp on retries
                 )
-                break  # Success, exit retry loop
+                
+                # Check if response looks complete (basic validation)
+                if response and len(response.strip()) > 20 and (response.strip().endswith('}') or '"score"' in response):
+                    break  # Success, exit retry loop
+                else:
+                    if attempt < max_retries:
+                        logger.warning(f"Response appears incomplete on attempt {attempt + 1}, retrying...")
+                        continue
+                    else:
+                        logger.warning(f"Response still incomplete after {max_retries + 1} attempts")
+                        break
                 
             except ValueError as e:
                 if "Empty response" in str(e) and attempt < max_retries:
@@ -234,7 +246,13 @@ Please evaluate how well this document addresses the user's question and provide
             return scoring_result
             
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Invalid JSON response from model: {response}")
+            # Check if response was truncated
+            response_length = len(response) if response else 0
+            if response_length < 50 or (response and not response.strip().endswith('}')):
+                logger.warning(f"JSON response appears truncated (length: {response_length}): {response[:100]}...")
+            else:
+                logger.error(f"Invalid JSON response from model (length: {response_length}): {response[:200]}...")
+            
             # Fallback: try to extract score using regex
             fallback_result = self._extract_score_fallback(response)
             if fallback_result:
