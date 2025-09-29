@@ -4,29 +4,28 @@ This guide explains how to use the BMLibrarian Command Line Interface (CLI) for 
 
 ## What is the BMLibrarian CLI?
 
-The BMLibrarian CLI is an interactive command-line application that guides you through the complete process of evidence-based medical literature research. It provides human-in-the-loop interaction at every step, ensuring you maintain control while leveraging AI-powered analysis.
-
-**Two CLI Versions Available:**
-- **bmlibrarian_cli_refactored.py** - **RECOMMENDED** - Modular architecture with enhanced features and counterfactual analysis
-- **bmlibrarian_cli.py** - Legacy version maintained for compatibility
+The BMLibrarian CLI (`bmlibrarian_cli.py`) is an interactive command-line application that guides you through the complete process of evidence-based medical literature research. Built on a modular architecture, it provides human-in-the-loop interaction at every step while leveraging a sophisticated multi-agent AI system for literature analysis.
 
 ## Features
 
-### Enhanced Features (Refactored CLI)
-- 🔍 **Interactive Research Workflow**: Enhanced 8-step guidance through literature research
-- 🤖 **AI-Assisted Query Generation**: Generate and edit database queries with AI help
+### Core Capabilities
+- 🔄 **Enum-Based Workflow**: 11-step research process with meaningful step names
+- 🤖 **Multi-Agent System**: Specialized AI agents for different research tasks
 - 📊 **Real-time Document Scoring**: AI evaluates document relevance with human review
 - 📝 **Citation Extraction**: Extract relevant passages from high-scoring documents
 - 📄 **Professional Reports**: Generate medical publication-style reports
 - 🧠 **Counterfactual Analysis**: Optional analysis to find contradictory evidence
-- 💾 **Enhanced Markdown Export**: Save reports with optional counterfactual analysis
-- ⚙️ **Configurable Thresholds**: Adjust scoring and relevance parameters
-- 🔄 **Iterative Refinement**: Go back and adjust parameters at any step
-- 🏗️ **Modular Architecture**: Cleaner, more maintainable codebase
+- ⚙️ **Configurable Parameters**: Adjust scoring, relevance, and processing parameters
+- 🔄 **Iterative Refinement**: Repeatable steps for query and threshold adjustment
+- 🏗️ **Modular Architecture**: Clean separation of concerns across specialized modules
+- 💾 **Enhanced Export**: Comprehensive markdown reports with technical details
 
-### Legacy Features (Original CLI)
-- All core workflow features without counterfactual analysis
-- Compatible with existing workflows and scripts
+### Interactive Features
+- **Human-in-the-Loop**: Review and approve each major step
+- **Query Editing**: Modify AI-generated database queries
+- **Parameter Adjustment**: Fine-tune relevance thresholds and limits
+- **Step Navigation**: Jump between workflow steps as needed
+- **Progress Tracking**: Real-time feedback on processing status
 
 ## Quick Start
 
@@ -40,47 +39,54 @@ Ensure you have:
 
 ### 2. Launch the CLI
 
-**Recommended (Refactored CLI):**
 ```bash
-# Simple launch
-uv run python bmlibrarian_cli_refactored.py
-
-# With options
-uv run python bmlibrarian_cli_refactored.py --quick
-uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
-```
-
-**Legacy CLI:**
-```bash
-# Simple launch
+# Interactive research workflow
 uv run python bmlibrarian_cli.py
+
+# Quick mode for testing (limited results, faster processing)
+uv run python bmlibrarian_cli.py --quick
+
+# Automated mode with specific question
+uv run python bmlibrarian_cli.py --auto "What are the effects of exercise on cardiovascular health?"
+
+# Custom parameters
+uv run python bmlibrarian_cli.py --max-results 50 --score-threshold 3.0 --timeout 30
 ```
 
-### 3. Follow the Enhanced Interactive Workflow
+### 3. Follow the Interactive Workflow
 
-The refactored CLI guides you through 8 steps:
-1. **Research Question** - Enter your medical question
-2. **Query Generation** - AI generates database query (with editing)
-3. **Document Search** - Execute search and review results
-4. **Relevance Scoring** - AI scores documents for relevance
-5. **Citation Extraction** - Extract relevant passages
-6. **Report Generation** - Create professional report
-7. **Counterfactual Analysis** - **NEW** Optional analysis for contradictory evidence
-8. **Export** - Save as enhanced markdown file
+The CLI guides you through 11 comprehensive steps:
+1. **Research Question Collection** - Enter your medical question
+2. **Query Generation & Editing** - AI generates database query with your review
+3. **Document Search** - Execute search and review results  
+4. **Search Results Review** - Review and approve found documents
+5. **Document Relevance Scoring** - AI scores documents for relevance (1-5 scale)
+6. **Citation Extraction** - Extract relevant passages from high-scoring documents
+7. **Report Generation** - Create comprehensive research report
+8. **Counterfactual Analysis** - Optional analysis for contradictory evidence
+9. **Contradictory Evidence Search** - Search for opposing viewpoints (optional)
+10. **Comprehensive Report Editing** - Integrate all evidence types
+11. **Report Export** - Save as professional markdown report
 
 ### 4. Command Line Options
 
-The refactored CLI supports additional configuration options:
+Complete list of available options:
 
 ```bash
-# Quick testing mode (reduced limits for faster execution)
-uv run python bmlibrarian_cli_refactored.py --quick
+# Execution modes
+--quick                    # Quick mode (limited results, faster)
+--auto "question"          # Automated mode with specific question
+--debug                    # Enhanced debug logging
 
-# Custom limits
-uv run python bmlibrarian_cli_refactored.py --max-results 50 --timeout 10
+# Search parameters  
+--max-results N            # Maximum search results (default: 100)
+--score-threshold N.N      # Relevance threshold 1.0-5.0 (default: 2.5)
+--max-citations N          # Maximum citations to extract (default: 30)
+--timeout N                # Operation timeout in seconds (default: 120)
 
-# Adjust thresholds
-uv run python bmlibrarian_cli_refactored.py --score-threshold 3.0 --min-relevance 0.8
+# Processing options
+--show-progress           # Display detailed progress indicators
+--comprehensive-counterfactual # Enable extended counterfactual analysis
 ```
 
 ## Detailed Workflow

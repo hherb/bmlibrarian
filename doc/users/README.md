@@ -1,34 +1,82 @@
 # User Documentation
 
-Welcome to BMLibrarian user documentation! This section contains all the information you need to install, configure, and use BMLibrarian effectively.
+Welcome to BMLibrarian user documentation! BMLibrarian is a comprehensive AI-powered biomedical literature analysis platform featuring multi-agent research workflows, desktop GUI applications, and advanced literature review capabilities.
 
 ## Getting Started
 
 Start here if you're new to BMLibrarian:
 
 📖 **[Getting Started Guide](getting_started.md)**
-- Installation instructions
-- Prerequisites and setup
-- Basic configuration
-- Quick start examples
+- Installation and setup
+- Prerequisites (PostgreSQL, Ollama)
+- Initial configuration
+- First research workflow
 
-## Core Features
+## User Interfaces
 
-### Migration System
+### GUI Applications
 
-🗄️ **[Migration System Guide](migration_system.md)**
-- Understanding the migration system
-- Creating and managing migrations
-- Best practices and safety guidelines
-- Advanced migration patterns
+🖥️ **[Research GUI Guide](research_gui_guide.md)**
+- Desktop research application with visual workflow
+- Interactive research question input
+- Real-time progress tracking
+- Report preview and export
+
+🔧 **[Configuration GUI Guide](config_gui_guide.md)**
+- Visual agent configuration interface
+- Model selection and parameter tuning
+- Connection testing and validation
 
 ### Command Line Interface
 
-⚡ **[CLI Reference](cli_reference.md)**
+⚡ **[CLI Guide](cli_guide.md)**
+- Interactive research workflow
+- Command-line options and modes
+- Automated execution patterns
+
+📋 **[CLI Reference](cli_reference.md)**
 - Complete command reference
-- Usage examples
+- Usage examples and patterns
 - Configuration options
-- Environment variables
+
+## Research Workflows
+
+🔄 **[Workflow Guide](workflow_guide.md)**
+- Understanding the multi-agent research process
+- Workflow steps and execution flow
+- Interactive vs. automated modes
+- Customizing research parameters
+
+🧠 **[Agents Guide](agents_guide.md)**
+- Multi-agent system overview
+- Individual agent capabilities
+- Agent configuration and tuning
+
+## Advanced Features
+
+### Literature Analysis
+
+📝 **[Citation Guide](citation_guide.md)**
+- Citation extraction from documents
+- Relevance scoring and filtering
+- Quality assessment techniques
+
+📊 **[Reporting Guide](reporting_guide.md)**
+- Report generation and formatting
+- Citation integration
+- Export options and formats
+
+🔍 **[Counterfactual Guide](counterfactual_guide.md)**
+- Contradictory evidence analysis
+- Research question generation
+- Evidence strength assessment
+
+### Configuration Management
+
+⚙️ **[Configuration Guide](configuration_guide.md)**
+- Agent configuration and tuning
+- Model selection and parameters
+- Database and API setup
 
 ## Support
 
@@ -44,25 +92,36 @@ Start here if you're new to BMLibrarian:
 
 ### Installation
 ```bash
-pip install bmlibrarian
+# Install dependencies
+uv sync
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your database credentials
 ```
 
-### Basic Commands
+### Running Applications
 ```bash
-# Initialize database
-bmlibrarian migrate init --host localhost --user username --password password --database dbname
+# Interactive CLI research
+uv run python bmlibrarian_cli.py
 
-# Apply migrations
-bmlibrarian migrate apply --host localhost --user username --password password --database dbname
+# Research GUI (desktop)
+uv run python bmlibrarian_research_gui.py
+
+# Configuration GUI
+uv run python bmlibrarian_config_gui.py
+
+# Quick testing mode
+uv run python bmlibrarian_cli.py --quick
 ```
 
-### Environment Variables
+### Configuration Files
 ```bash
-export POSTGRES_USER=username
-export POSTGRES_PASSWORD=password
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_DB=bmlibrarian_dev
+# Primary configuration location
+~/.bmlibrarian/config.json
+
+# Legacy fallback (current directory)
+bmlibrarian_config.json
 ```
 
 ## Need More Help?

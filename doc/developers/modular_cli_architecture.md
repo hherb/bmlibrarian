@@ -2,17 +2,18 @@
 
 ## Overview
 
-The BMLibrarian refactored CLI (`bmlibrarian_cli_refactored.py`) implements a modular architecture that separates concerns across specialized modules. This design improves maintainability, testability, and extensibility compared to the original monolithic CLI.
+The BMLibrarian CLI (`bmlibrarian_cli.py`) implements a modular architecture that separates concerns across specialized modules. This design improves maintainability, testability, and extensibility while integrating seamlessly with the enum-based workflow system and multi-agent architecture.
 
 ## Architecture Principles
 
 ### 1. Separation of Concerns
 Each module handles a specific aspect of the CLI functionality:
-- **Configuration**: Command-line parsing, settings management
+- **Configuration**: Command-line parsing, settings management, agent configuration
 - **User Interface**: Display functions, user interaction, input validation
 - **Query Processing**: Database search coordination, query editing
 - **Formatting**: Report generation, markdown export, file operations
-- **Workflow**: Multi-agent orchestration, state management
+- **Workflow**: Enum-based workflow orchestration, multi-agent coordination
+- **Workflow Steps**: Step definitions, execution context, and conditional logic
 
 ### 2. Dependency Injection
 Components receive their dependencies through constructor injection, enabling:
@@ -36,7 +37,8 @@ src/bmlibrarian/cli/
 ├── ui.py                    # User interface components
 ├── query_processing.py      # Query editing and database search
 ├── formatting.py            # Report formatting and export
-└── workflow.py              # Multi-agent workflow orchestration
+├── workflow.py              # Multi-agent workflow orchestration
+└── workflow_steps.py        # Enum-based workflow step definitions
 ```
 
 ## Core Modules
@@ -144,26 +146,50 @@ class CLIConfig:
 ## Technical Details
 ```
 
-### WorkflowOrchestrator (`workflow.py`)
+### WorkflowSteps (`workflow_steps.py`)
 
-**Purpose**: Coordinate the complete multi-agent research workflow with state management.
+**Purpose**: Defines the enum-based workflow system with flexible step orchestration.
 
 **Key Components**:
-- **Agent Management**: Initialize and coordinate all agents including CounterfactualAgent
-- **State Tracking**: Maintain workflow state for potential session resumption
-- **Error Recovery**: Handle failures gracefully with user options
-- **Progress Reporting**: Provide detailed progress updates
+- **WorkflowStep Enum**: Meaningful step names instead of brittle numbering
+- **WorkflowDefinition**: Step dependencies, branching conditions, and repetition logic  
+- **WorkflowExecutor**: Context management and step execution tracking
+- **StepResult Enum**: SUCCESS, FAILURE, REPEAT, BRANCH, SKIP, USER_CANCELLED
 
-**Enhanced Workflow (8 Steps)**:
-1. **Agent Setup**: Initialize all agents with connection testing
-2. **Research Question**: Collect and validate user input
-3. **Document Search**: Execute search with query editing
-4. **Document Review**: Filter and review search results
-5. **Relevance Scoring**: AI-powered document assessment
-6. **Citation Extraction**: Extract relevant passages
-7. **Report Generation**: Synthesize professional report
-8. **Counterfactual Analysis**: **NEW** - Optional contradictory evidence analysis
-9. **Export**: Save enhanced report with counterfactual results
+**Features**:
+- **Repeatable Steps**: Support for iterative workflows and agent-driven refinement
+- **Conditional Branching**: Dynamic step selection based on execution context
+- **Context Preservation**: Maintain workflow state across step executions
+- **Auto Mode Support**: Graceful handling of non-interactive execution
+
+### WorkflowOrchestrator (`workflow.py`)
+
+**Purpose**: Coordinate the complete multi-agent research workflow using enum-based step definitions.
+
+**Key Components**:
+- **Enum-Based Execution**: Uses `WorkflowStep` definitions from `workflow_steps.py`
+- **Agent Management**: Initialize and coordinate all agents with configuration integration
+- **Context Management**: Preserve workflow state for session resumption and step repetition
+- **Step Handlers**: Individual handlers for each workflow step with error recovery
+- **Progress Reporting**: Real-time progress updates with step-specific messaging
+
+**Enum-Based Workflow Integration**:
+The `WorkflowOrchestrator` uses the enum-based workflow system from `workflow_steps.py`:
+
+```python
+# Default workflow steps (from workflow_steps.py)
+COLLECT_RESEARCH_QUESTION → GENERATE_AND_EDIT_QUERY → SEARCH_DOCUMENTS → 
+REVIEW_SEARCH_RESULTS → SCORE_DOCUMENTS → EXTRACT_CITATIONS → 
+GENERATE_REPORT → PERFORM_COUNTERFACTUAL_ANALYSIS → 
+SEARCH_CONTRADICTORY_EVIDENCE → EDIT_COMPREHENSIVE_REPORT → 
+REVIEW_AND_REVISE_REPORT → EXPORT_REPORT
+
+# Repeatable/conditional steps for iterative workflows:
+- REFINE_QUERY: When search results are insufficient
+- ADJUST_SCORING_THRESHOLDS: For better citation extraction
+- REQUEST_MORE_CITATIONS: When agents need more evidence
+- REVIEW_AND_REVISE_REPORT: For iterative editing
+```
 
 **Counterfactual Integration**:
 ```python

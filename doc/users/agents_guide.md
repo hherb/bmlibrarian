@@ -43,7 +43,7 @@ Synthesizes extracted citations into professional medical reports.
 - Generates Vancouver-style references
 - Creates methodology notes
 
-### CounterfactualAgent - Critical Analysis **NEW**
+### CounterfactualAgent - Critical Analysis
 Analyzes reports to identify potential contradictory evidence and research gaps.
 
 **What it does:**
@@ -52,6 +52,16 @@ Analyzes reports to identify potential contradictory evidence and research gaps.
 - Prioritizes questions by importance (High/Medium/Low)
 - Optionally searches for studies that contradict findings
 - Provides confidence assessments and recommendations
+
+### EditorAgent - Comprehensive Report Integration
+Creates balanced final reports that integrate all evidence types including counterfactual analysis.
+
+**What it does:**
+- Combines original report with counterfactual analysis
+- Creates balanced perspective incorporating contradictory evidence
+- Maintains professional medical publication style
+- Provides comprehensive evidence assessment
+- Generates final integrated reports with all findings
 
 ## Getting Started
 
@@ -75,19 +85,51 @@ uv sync
 
 ### Basic Usage
 
+**Using Individual Agents (Programmatic)**:
 ```python
-from bmlibrarian.agents import QueryAgent, DocumentScoringAgent
+from bmlibrarian.agents import (
+    QueryAgent, DocumentScoringAgent, CitationFinderAgent, 
+    ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator
+)
 
-# Search for papers
-query_agent = QueryAgent()
-documents = list(query_agent.find_abstracts("diabetes treatment options"))
+# Initialize orchestrator and agents
+orchestrator = AgentOrchestrator(max_workers=4)
+query_agent = QueryAgent(orchestrator=orchestrator)
+scoring_agent = DocumentScoringAgent(orchestrator=orchestrator)
+citation_agent = CitationFinderAgent(orchestrator=orchestrator)
+reporting_agent = ReportingAgent(orchestrator=orchestrator)
 
-# Score papers for relevance
-scoring_agent = DocumentScoringAgent()
-for doc in documents[:3]:  # Score first 3 results
-    result = scoring_agent.evaluate_document("diabetes treatment options", doc)
-    print(f"Score: {result['score']}/5 - {doc['title']}")
-    print(f"Why: {result['reasoning']}\n")
+# Search for documents
+user_question = "What are the cardiovascular benefits of exercise?"
+documents = query_agent.search_documents(user_question)
+
+# Score documents for relevance
+scored_docs = [(doc, scoring_agent.evaluate_document(user_question, doc)) 
+               for doc in documents if scoring_agent.evaluate_document(user_question, doc)]
+
+# Extract citations
+citations = citation_agent.process_scored_documents_for_citations(
+    user_question=user_question, scored_documents=scored_docs, score_threshold=2.5)
+
+# Generate report
+report = reporting_agent.generate_citation_based_report(
+    user_question=user_question, citations=citations, format_output=True)
+```
+
+**Using Complete Workflow (Recommended)**:
+```python
+# Use CLI for complete workflow
+# uv run python bmlibrarian_cli.py
+
+# Use GUI for visual workflow
+# uv run python bmlibrarian_research_gui.py
+
+# Use workflow orchestrator programmatically
+from bmlibrarian.cli import WorkflowOrchestrator, CLIConfig, UserInterface
+config = CLIConfig()
+ui = UserInterface(config)
+orchestrator = WorkflowOrchestrator(config, ui, query_processor, formatter)
+success = orchestrator.run_complete_workflow("research question")
 ```
 
 ## QueryAgent Guide

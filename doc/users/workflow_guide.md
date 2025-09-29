@@ -4,6 +4,11 @@
 
 BMLibrarian uses an advanced enum-based workflow system to guide you through comprehensive medical literature research. This flexible system supports iterative refinement, allowing agents to request additional evidence and enabling you to enhance your research quality through multiple passes.
 
+The workflow is available through multiple interfaces:
+- **CLI Interface**: Interactive command-line workflow with detailed user control
+- **Research GUI**: Visual workflow with real-time progress tracking and report preview
+- **Automated Mode**: Non-interactive execution for batch processing
+
 ## Workflow Steps
 
 The BMLibrarian research workflow consists of 12 main steps that can be executed linearly or with iterative refinement:

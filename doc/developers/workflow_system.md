@@ -4,6 +4,11 @@
 
 BMLibrarian's workflow system provides flexible, enum-based orchestration for multi-agent research workflows. This system replaces brittle numbered steps with meaningful workflow orchestration that supports repeatable steps, branching logic, and iterative agent-driven refinement.
 
+The workflow system is integrated across multiple interfaces:
+- **CLI Interface**: Interactive command-line workflow execution with `bmlibrarian_cli.py`
+- **GUI Interface**: Visual workflow progress with real-time updates in `bmlibrarian_research_gui.py`
+- **Programmatic API**: Direct workflow execution for custom applications
+
 ## Architecture
 
 ### Core Components
@@ -163,8 +168,9 @@ def _handle_my_new_step(self, context: Dict[str, Any]) -> StepResult:
 ```
 
 ### 4. Register Handler
-Add your handler to the step dispatcher:
+Add your handler to the step dispatcher in both CLI and GUI interfaces:
 
+**CLI Interface** (`cli/workflow.py`):
 ```python
 def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> StepResult:
     """Handle execution of a workflow step."""
@@ -174,6 +180,29 @@ def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> 
         # ... existing handlers ...
     except Exception as e:
         logger.error(f"Error executing step {step}: {e}")
+        return StepResult.FAILURE
+```
+
+**GUI Interface** (`gui/workflow.py`):
+```python
+async def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> StepResult:
+    """Handle execution of a workflow step with GUI updates."""
+    try:
+        # Update GUI status
+        self.gui.update_step_status(step, StepStatus.RUNNING)
+        
+        if step == WorkflowStep.MY_NEW_STEP:
+            result = self._handle_my_new_step(context)
+        # ... existing handlers ...
+        
+        # Update GUI with result
+        status = StepStatus.COMPLETED if result == StepResult.SUCCESS else StepStatus.ERROR
+        self.gui.update_step_status(step, status)
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error executing step {step}: {e}")
+        self.gui.update_step_status(step, StepStatus.ERROR, str(e))
         return StepResult.FAILURE
 ```
 
@@ -385,6 +414,124 @@ When migrating from numbered step systems:
 4. **Test thoroughly**: Verify workflow behavior matches original
 5. **Update documentation**: Reflect new step names in user guides
 
+## GUI Integration
+
+### Visual Workflow Progress
+
+The GUI system (`gui/research_app.py`) provides real-time visual feedback for workflow execution:
+
+```python
+class ResearchGUI:
+    def __init__(self):
+        self.step_cards: Dict[WorkflowStep, StepCard] = {}
+        
+    def create_workflow_steps(self):
+        """Create visual cards for each workflow step."""
+        steps = [
+            WorkflowStep.COLLECT_RESEARCH_QUESTION,
+            WorkflowStep.GENERATE_AND_EDIT_QUERY,
+            # ... all workflow steps
+        ]
+        
+        for step in steps:
+            card = StepCard(step, self.page)
+            self.step_cards[step] = card
+            
+    def update_step_status(self, step: WorkflowStep, status: StepStatus, message: str = ""):
+        """Update visual status of workflow step."""
+        if step in self.step_cards:
+            self.step_cards[step].update_status(status, message)
+            self.page.update()
+```
+
+### Step Status Management
+
+Visual workflow steps use the `StepStatus` enum for GUI updates:
+
+```python
+class StepStatus(Enum):
+    PENDING = "pending"      # Step not yet started (gray)
+    RUNNING = "running"      # Step currently executing (blue with spinner)
+    COMPLETED = "completed"  # Step finished successfully (green)
+    ERROR = "error"          # Step failed with error (red)
+    SKIPPED = "skipped"      # Step was skipped (yellow)
+```
+
+### Async Workflow Execution
+
+GUI workflows execute asynchronously to prevent UI blocking:
+
+```python
+async def start_research_workflow(self):
+    """Start the research workflow asynchronously."""
+    self.workflow_running = True
+    
+    try:
+        # Initialize workflow executor
+        workflow_executor = WorkflowExecutor(self)
+        
+        # Execute workflow steps
+        success = await workflow_executor.execute_complete_workflow(
+            research_question=self.research_question,
+            human_in_loop=self.human_in_loop
+        )
+        
+        if success:
+            self.show_completion_dialog()
+        else:
+            self.show_error_dialog("Workflow execution failed")
+            
+    except Exception as e:
+        logger.error(f"Workflow error: {e}")
+        self.show_error_dialog(f"Workflow error: {str(e)}")
+    finally:
+        self.workflow_running = False
+```
+
+### Thread Safety
+
+GUI workflow execution must handle thread safety:
+
+```python
+def update_step_status_safely(self, step: WorkflowStep, status: StepStatus, message: str = ""):
+    """Thread-safe step status update."""
+    def update():
+        self.update_step_status(step, status, message)
+    
+    # Schedule update on UI thread
+    self.page.run_thread_safe(update)
+```
+
+## Configuration Integration
+
+### Agent Configuration
+Workflows respect agent configuration from `~/.bmlibrarian/config.json`:
+
+```python
+class WorkflowExecutor:
+    def __init__(self, research_gui):
+        self.gui = research_gui
+        self.config = get_config()  # Load configuration
+        
+    def initialize_agents(self):
+        """Initialize agents with configuration."""
+        self.query_agent = QueryAgent(
+            orchestrator=self.orchestrator,
+            **get_agent_config('query_agent')
+        )
+        # ... initialize other agents
+```
+
+### Model Selection
+Agents use configured models from the GUI configuration system:
+
+```python
+def get_configured_model(self, agent_type: str) -> str:
+    """Get configured model for agent type."""
+    agent_config = get_agent_config(agent_type)
+    return agent_config.get('model', 'gpt-oss:20b')  # Default fallback
+```
+
 ## Best Practices
 
 1. **Meaningful Names**: Use descriptive enum names that clearly indicate purpose
@@ -397,3 +544,7 @@ When migrating from numbered step systems:
 8. **Documentation**: Document step behavior and context requirements
 9. **Logging**: Include structured logging for debugging and monitoring
 10. **Flexibility**: Design steps to support future extensions and modifications
+11. **GUI Integration**: Ensure steps work with both CLI and GUI interfaces
+12. **Thread Safety**: Handle GUI updates safely from background threads
+13. **Async Support**: Use async patterns for non-blocking GUI execution
+14. **Configuration Respect**: Honor user configuration settings and agent parameters

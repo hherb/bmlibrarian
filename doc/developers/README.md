@@ -11,6 +11,24 @@ Welcome to BMLibrarian developer documentation! This section provides technical 
 - Security model and error handling
 - Performance considerations
 
+🧠 **[Multi-Agent Architecture](agents_architecture.md)**
+- AI agent system design and coordination
+- Queue-based orchestration architecture
+- Agent communication patterns
+- Performance and scalability considerations
+
+🔄 **[Workflow System](workflow_system.md)**
+- Enum-based workflow orchestration
+- Step definitions and execution models
+- Repeatable and conditional workflows
+- Context management and state preservation
+
+🖥️ **[GUI Architecture](gui_architecture.md)**
+- Modular GUI design with Flet framework
+- Component-based architecture
+- Dialog management and user interactions
+- Real-time workflow visualization
+
 ## API Reference
 
 📚 **[API Reference](api_reference.md)**
@@ -49,14 +67,38 @@ uv run pytest tests/
 
 ```
 bmlibrarian/
-├── src/bmlibrarian/          # Main package
-│   ├── __init__.py          # Package exports
-│   ├── migrations.py        # Migration management
-│   ├── cli.py              # CLI interface
-│   └── app.py              # App integration
-├── tests/                   # Test suite
-├── doc/                     # Documentation
-└── baseline_schema.sql     # Database schema
+├── src/bmlibrarian/           # Main source code
+│   ├── agents/                # Multi-agent system
+│   │   ├── __init__.py        # Agent module exports
+│   │   ├── base.py            # BaseAgent foundation class
+│   │   ├── query_agent.py     # Natural language query processing
+│   │   ├── scoring_agent.py   # Document relevance scoring
+│   │   ├── citation_agent.py  # Citation extraction from documents
+│   │   ├── reporting_agent.py # Report synthesis and formatting
+│   │   ├── counterfactual_agent.py # Counterfactual analysis
+│   │   ├── editor_agent.py    # Comprehensive report editing
+│   │   ├── queue_manager.py   # SQLite-based task queue system
+│   │   └── orchestrator.py    # Multi-agent workflow coordination
+│   ├── cli/                   # Modular CLI architecture
+│   │   ├── __init__.py        # CLI module exports
+│   │   ├── config.py          # Configuration management
+│   │   ├── ui.py              # User interface components
+│   │   ├── query_processing.py # Query editing and search
+│   │   ├── formatting.py      # Report formatting and export
+│   │   ├── workflow.py        # Workflow orchestration
+│   │   └── workflow_steps.py  # Enum-based workflow step definitions
+│   ├── gui/                   # Graphical user interfaces
+│   │   ├── __init__.py        # GUI module exports
+│   │   ├── config_app.py      # Configuration GUI application
+│   │   ├── research_app.py    # Main research GUI application
+│   │   ├── components.py      # Reusable UI components
+│   │   ├── dialogs.py         # Dialog management and interactions
+│   │   ├── workflow.py        # Real agent orchestration and execution
+│   │   └── tabs/              # Configuration GUI tab components
+│   └── lab/                   # Experimental tools and interfaces
+├── tests/                     # Comprehensive test suite
+├── doc/                       # Documentation
+└── examples/                  # Demonstration scripts
 ```
 
 ### Testing
@@ -66,49 +108,78 @@ bmlibrarian/
 uv run pytest tests/ --cov=src/bmlibrarian
 
 # Run specific test categories
-uv run pytest tests/test_migrations.py  # Migration tests
-uv run pytest tests/test_cli.py         # CLI tests
-uv run pytest tests/test_app.py         # App tests
+uv run pytest tests/test_query_agent.py    # Query processing tests
+uv run pytest tests/test_scoring_agent.py  # Document scoring tests
+uv run pytest tests/test_citation_agent.py # Citation extraction tests
+uv run pytest tests/test_reporting_agent.py# Report generation tests
+uv run pytest tests/test_counterfactual_agent.py # Counterfactual analysis tests
+
+# Run GUI applications for testing
+uv run python bmlibrarian_cli.py --quick                     # Interactive CLI testing
+uv run python bmlibrarian_research_gui.py --quick            # Research GUI testing
+uv run python bmlibrarian_config_gui.py                      # Configuration GUI testing
 ```
 
-Current test coverage: **98.43%**
+Current test coverage: **>95%** across all agent modules
 
 ## Key Development Areas
 
-### Migration System Core
-- **File**: `src/bmlibrarian/migrations.py`
-- **Purpose**: Database migration management
-- **Key Classes**: `MigrationManager`
+### Multi-Agent System Core
+- **Directory**: `src/bmlibrarian/agents/`
+- **Purpose**: AI-powered literature analysis and processing
+- **Key Classes**: `BaseAgent`, `QueryAgent`, `DocumentScoringAgent`, `CitationFinderAgent`, `ReportingAgent`, `CounterfactualAgent`, `EditorAgent`
+- **Orchestration**: `AgentOrchestrator` with SQLite-based queue system
 
-### CLI Interface
-- **File**: `src/bmlibrarian/cli.py`
-- **Purpose**: Command-line interface
-- **Key Functions**: `create_parser()`, `main()`
+### Modular CLI Architecture
+- **Directory**: `src/bmlibrarian/cli/`
+- **Purpose**: Interactive command-line interface with workflow orchestration
+- **Key Classes**: `CLIConfig`, `UserInterface`, `QueryProcessor`, `ReportFormatter`, `WorkflowOrchestrator`
+- **Workflow System**: Enum-based step definitions with repeatable and conditional execution
 
-### Application Integration
-- **File**: `src/bmlibrarian/app.py`
-- **Purpose**: Python API integration
-- **Key Functions**: `initialize_app()`, `get_database_connection()`
+### GUI Applications
+- **Directory**: `src/bmlibrarian/gui/`
+- **Purpose**: Desktop applications for configuration and research
+- **Key Applications**: 
+  - `ConfigApp` - Tabbed configuration interface for agents and settings
+  - `ResearchGUI` - Visual research workflow with real-time progress
+- **Components**: Modular design with reusable UI components and dialog management
+
+### Workflow Orchestration System
+- **File**: `src/bmlibrarian/cli/workflow_steps.py`
+- **Purpose**: Flexible, enum-based workflow execution
+- **Key Features**: Meaningful step names, repeatable steps, conditional branching, context management
 
 ## Development Guidelines
 
 ### Code Quality
-- Follow PEP 8 style guidelines
-- Use type hints for all functions
-- Write comprehensive docstrings
-- Maintain test coverage above 80%
+- **Follow Modern Python Standards**: Use PEP 8 style guidelines, type hints, and Python >=3.12 features
+- **BaseAgent Pattern**: All agents inherit from `BaseAgent` with standardized interfaces
+- **Configuration Integration**: Use `get_model()` and `get_agent_config()` from config system
+- **Comprehensive Testing**: Unit tests for all agents with >95% coverage
+- **Documentation First**: Create both user guides and developer documentation
 
-### Testing Strategy
-- Unit tests for all public methods
-- Integration tests for database operations
-- CLI tests for command-line interface
-- Mock external dependencies
+### Agent Development Standards
+- **Parameter Filtering**: Filter agent config to only include supported parameters (temperature, top_p, etc.)
+- **Queue Integration**: New agents should support queue-based processing via `AgentOrchestrator`
+- **Workflow Integration**: Implement workflow step handlers for enum-based orchestration
+- **Connection Testing**: All agents must implement connection testing methods for LLM services
+- **Progress Tracking**: Support progress callbacks for long-running operations
+- **Document ID Integrity**: Always use real database IDs, never mock/fabricated references
+- **No Artificial Limits**: Process ALL documents unless explicitly configured otherwise
 
-### Documentation
-- Update user docs for user-facing changes
-- Update API docs for code changes
-- Include examples in docstrings
-- Maintain architecture documentation
+### GUI Development Standards
+- **Modular Design**: Use component-based architecture with reusable UI elements
+- **Flet Framework**: Follow Flet best practices for cross-platform desktop applications
+- **Real-time Updates**: Support live progress updates during workflow execution
+- **Dialog Management**: Centralized dialog handling for consistent user experience
+- **Configuration Integration**: Respect agent models and parameters from `~/.bmlibrarian/config.json`
+
+### Workflow Development Guidelines
+- **WorkflowStep Enum**: Use meaningful names for new workflow steps
+- **Repeatable Steps**: Mark steps as repeatable when they support iteration
+- **Branching Logic**: Implement conditional execution and error recovery
+- **Context Management**: Preserve state across step executions
+- **Auto Mode Support**: Ensure steps work in non-interactive mode
 
 ## Advanced Topics
 
