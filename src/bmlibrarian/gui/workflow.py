@@ -119,11 +119,19 @@ class WorkflowExecutor:
         # Store workflow results for tab access
         self.documents = []
         self.scored_documents = []
+        self.citations = []
+        self.final_report = ""
+        
+        # Store model information for report footnotes
+        self.agent_model_info = {}
         
         # Initialize modular components
         self.interactive_handler = None
         self.query_processor = QueryProcessor()
         self.steps_handler = WorkflowStepsHandler(agents, config_overrides)
+        
+        # Collect agent model information for footnotes
+        self._collect_agent_model_info()
         self.workflow_steps = [
             WorkflowStep.COLLECT_RESEARCH_QUESTION,
             WorkflowStep.GENERATE_AND_EDIT_QUERY,
@@ -262,6 +270,15 @@ class WorkflowExecutor:
                 research_question, scored_documents, update_callback
             )
             
+            # Store citations for tab access IMMEDIATELY after getting them
+            self.citations = citations
+            print(f"📝 Workflow stored {len(citations)} citations for tab access")
+            
+            # Force a manual update callback to trigger tab updates since citations are now stored
+            print(f"🔄 Triggering manual tab update for EXTRACT_CITATIONS")
+            update_callback(WorkflowStep.EXTRACT_CITATIONS, "tab_update",
+                          f"Tab update: {len(citations)} citations available")
+            
             # Interactive review of citations
             if self.interactive_mode:
                 if not self.interactive_handler.get_user_approval_for_citations(citations, update_callback):
@@ -292,10 +309,21 @@ class WorkflowExecutor:
             print("Building final report...")
             final_report = self.report_builder.build_final_report(
                 research_question, report_content, counterfactual_analysis,
-                documents, scored_documents, citations, self.interactive_mode
+                documents, scored_documents, citations, self.interactive_mode,
+                self.agent_model_info
             )
             
+            # Store final report for tab access
+            self.final_report = final_report if final_report else ""
             print(f"Final report built, length: {len(final_report) if final_report else 0}")
+            
+            # Trigger report tab update
+            if final_report:
+                print(f"🔄 Triggering manual tab update for EXPORT_REPORT")
+                update_callback(WorkflowStep.EXPORT_REPORT, "tab_update",
+                              f"Tab update: Final report ready ({len(final_report)} characters)")
+            
+            print(f"Workflow summary: {self.get_workflow_summary()}")
             return final_report
             
         except Exception as e:
@@ -324,6 +352,50 @@ class WorkflowExecutor:
         
         return "\n".join(summary_lines)
     
+    def _collect_agent_model_info(self):
+        """Collect model information from all agents for report footnotes."""
+        try:
+            for agent_name, agent in self.agents.items():
+                if agent_name == 'orchestrator':
+                    continue
+                    
+                agent_info = {
+                    'model': getattr(agent, 'model', 'Unknown'),
+                    'host': getattr(agent, 'host', 'Unknown'),
+                    'temperature': getattr(agent, 'temperature', 'Unknown'),
+                    'top_p': getattr(agent, 'top_p', 'Unknown')
+                }
+                
+                # Map agent names to workflow steps
+                workflow_step_map = {
+                    'query_agent': 'Query Generation',
+                    'scoring_agent': 'Document Scoring',
+                    'citation_agent': 'Citation Extraction',
+                    'reporting_agent': 'Report Generation',
+                    'counterfactual_agent': 'Counterfactual Analysis',
+                    'editor_agent': 'Report Editing'
+                }
+                
+                step_name = workflow_step_map.get(agent_name, agent_name)
+                self.agent_model_info[step_name] = agent_info
+                
+            print(f"Collected model info for {len(self.agent_model_info)} agents")
+            
+        except Exception as e:
+            print(f"Error collecting agent model info: {e}")
+            self.agent_model_info = {}
     
-    
-    
+    def get_workflow_summary(self) -> Dict[str, Any]:
+        """Get a summary of workflow execution results.
+        
+        Returns:
+            Dictionary with workflow statistics and results
+        """
+        return {
+            'documents_found': len(self.documents),
+            'documents_scored': len(self.scored_documents),
+            'citations_extracted': len(self.citations),
+            'report_length': len(self.final_report),
+            'interactive_mode': getattr(self, 'interactive_mode', False),
+            'agent_models': self.agent_model_info
+        }

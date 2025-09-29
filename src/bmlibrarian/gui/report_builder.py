@@ -18,7 +18,7 @@ class ReportBuilder:
     def build_final_report(self, research_question: str, report_content: str,
                           counterfactual_analysis: Any, documents: List[Dict], 
                           scored_documents: List[Tuple[Dict, Dict]], citations: List,
-                          human_in_loop: bool) -> str:
+                          human_in_loop: bool, agent_model_info: Optional[Dict] = None) -> str:
         """Build the comprehensive final report.
         
         Args:
@@ -54,6 +54,9 @@ class ReportBuilder:
         # Build metadata section
         metadata_section = self._build_metadata_section(human_in_loop)
         
+        # Build model information footnotes
+        model_footnotes = self._build_model_footnotes(agent_model_info)
+        
         # Assemble the complete report
         final_report = f"""# Research Report: {research_question}
 
@@ -73,6 +76,8 @@ class ReportBuilder:
 ---
 
 {metadata_section}
+
+{model_footnotes}
 
 *This report was generated using BMLibrarian's AI-powered multi-agent research system with real database queries and LLM analysis.*
 """
@@ -190,7 +195,46 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         return f"""**Report Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
 **Research Mode**: {'Interactive' if human_in_loop else 'Automated'} (Real Agents)  
 **Processing Time**: Completed {len(self.workflow_steps)} workflow steps  
-**Agent Status**: ✅ Real BMLibrarian Agents"""
+**Agent Status**: ✅ Real BMLibrarian Agents"""  
+    
+    def _build_model_footnotes(self, agent_model_info: Optional[Dict] = None) -> str:
+        """Build the model information footnotes section.
+        
+        Args:
+            agent_model_info: Dictionary containing model information for each agent
+            
+        Returns:
+            Formatted model information footnotes
+        """
+        if not agent_model_info:
+            return "## Model Information\n\n*Model information not available.*"
+        
+        footnotes = ["## Model Information\n"]
+        footnotes.append("The following AI models and parameters were used for each workflow step:\n")
+        
+        for step_name, model_info in agent_model_info.items():
+            model = model_info.get('model', 'Unknown')
+            temperature = model_info.get('temperature', 'Unknown')
+            top_p = model_info.get('top_p', 'Unknown')
+            host = model_info.get('host', 'Unknown')
+            
+            # Format the model information
+            footnotes.append(f"**{step_name}**:")
+            footnotes.append(f"- Model: `{model}`")
+            footnotes.append(f"- Temperature: `{temperature}`")
+            footnotes.append(f"- Top-p: `{top_p}`")
+            footnotes.append(f"- Host: `{host}`")
+            footnotes.append("")  # Empty line
+        
+        # Add explanation of parameters
+        footnotes.extend([
+            "### Parameter Explanations\n",
+            "- **Temperature**: Controls randomness in model responses (0.0 = deterministic, 1.0 = highly random)",
+            "- **Top-p**: Nucleus sampling parameter controlling diversity of token selection",
+            "- **Host**: Ollama server endpoint for local LLM inference"
+        ])
+        
+        return "\n".join(footnotes)
     
     def build_preview_summary(self, research_question: str, documents: List[Dict],
                             scored_documents: List[Tuple[Dict, Dict]], 

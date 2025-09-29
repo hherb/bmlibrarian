@@ -34,11 +34,6 @@ class ResearchGUI:
         self.human_loop_toggle = None
         self.start_button = None
         self.step_cards: Dict[WorkflowStep, StepCard] = {}
-        self.report_card = None
-        self.report_content = None
-        self.save_button = None
-        self.copy_button = None
-        self.preview_button = None
         self.status_text = None
         self.workflow_expansion = None
         
@@ -68,11 +63,14 @@ class ResearchGUI:
             WorkflowStep.EXPORT_REPORT
         ]
         
-        # Literature and scoring data for tabs
+        # Literature, scoring, citations, and report data for tabs
         self.documents = []
         self.scored_documents = []
+        self.citations = []
         self.literature_tab_content = None
         self.scoring_tab_content = None
+        self.citations_tab_content = None
+        self.report_tab_content = None
     
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -226,20 +224,13 @@ class ResearchGUI:
         # Create tabbed interface
         self._create_tabbed_interface()
         
-        # Report display section
-        self._create_report_section()
-        
-        # Add all sections to page with proper expansion
+        # Add all sections to page with proper expansion (no separate report section needed)
         main_content = ft.Column([
             header,
             controls_section,
             ft.Container(
                 content=self.tabs_container,
-                expand=True  # Tabs get most of the space
-            ),
-            ft.Container(
-                content=self.report_card,
-                height=200  # Fixed height for report section
+                expand=True  # Tabs get all the remaining space
             )
         ], spacing=8, expand=True)
         
@@ -258,6 +249,12 @@ class ResearchGUI:
         
         # Create scoring tab content (initially empty)
         scoring_tab = self._create_scoring_tab()
+        
+        # Create citations tab content (initially empty)
+        citations_tab = self._create_citations_tab()
+        
+        # Create report tab content (initially empty)
+        report_tab = self._create_report_tab()
         
         # Create tabs
         self.tabs_container = ft.Tabs(
@@ -278,6 +275,16 @@ class ResearchGUI:
                     text="Scoring",
                     icon=ft.Icons.ANALYTICS,
                     content=scoring_tab
+                ),
+                ft.Tab(
+                    text="Citations",
+                    icon=ft.Icons.FORMAT_QUOTE,
+                    content=citations_tab
+                ),
+                ft.Tab(
+                    text="Report",
+                    icon=ft.Icons.DESCRIPTION,
+                    content=report_tab
                 )
             ],
             tab_alignment=ft.TabAlignment.START
@@ -351,6 +358,60 @@ class ResearchGUI:
         )
         return self.scoring_tab_content
     
+    def _create_citations_tab(self):
+        """Create the citations tab content."""
+        self.citations_tab_content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    "Extracted Citations",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Text(
+                    "Relevant passages extracted from high-scoring documents.",
+                    size=14,
+                    color=ft.Colors.GREY_600
+                ),
+                ft.Container(
+                    content=ft.Text("No citations extracted yet."),
+                    padding=ft.padding.all(20),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        return self.citations_tab_content
+    
+    def _create_report_tab(self):
+        """Create the report tab content."""
+        self.report_tab_content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    "Research Report",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Text(
+                    "Final comprehensive research report with citations and analysis.",
+                    size=14,
+                    color=ft.Colors.GREY_600
+                ),
+                ft.Container(
+                    content=ft.Text("Report will appear here once workflow is complete."),
+                    padding=ft.padding.all(20),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        return self.report_tab_content
+    
     def _create_step_cards(self):
         """Create step cards for each workflow step."""
         self.step_cards = {}
@@ -358,84 +419,6 @@ class ResearchGUI:
             card = StepCard(step, on_expand_change=self._on_step_expand)
             self.step_cards[step] = card
     
-    def _create_report_section(self):
-        """Create the final report display section."""
-        self.report_content = ft.Markdown(
-            value="# Final Report\n\nYour research report will appear here once the workflow is complete.",
-            selectable=True,
-            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-            on_tap_link=self._on_report_link_tap,
-            width=None,
-            auto_follow_links=False
-        )
-        
-        # Additional action buttons
-        self.save_button = ft.ElevatedButton(
-            "Save Report",
-            icon=ft.Icons.SAVE,
-            on_click=self._save_report,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.GREEN_600,
-                color=ft.Colors.WHITE
-            ),
-            height=40,
-            disabled=True
-        )
-        
-        self.copy_button = ft.ElevatedButton(
-            "Copy to Clipboard",
-            icon=ft.Icons.COPY,
-            on_click=self._copy_report,
-            height=40,
-            disabled=True
-        )
-        
-        self.preview_button = ft.ElevatedButton(
-            "Preview",
-            icon=ft.Icons.PREVIEW,
-            on_click=self._preview_report,
-            height=40,
-            disabled=True
-        )
-        
-        # Report container with proper scrolling
-        report_scroll = ft.Container(
-            content=ft.Column(
-                [self.report_content],
-                scroll=ft.ScrollMode.ALWAYS,
-                expand=True
-            ),
-            bgcolor=ft.Colors.GREY_50,
-            border_radius=5,
-            padding=ft.padding.all(15),
-            height=500,  # Increased height
-            expand=True
-        )
-        
-        self.report_card = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text(
-                        "Research Report",
-                        size=18,
-                        weight=ft.FontWeight.W_600,
-                        color=ft.Colors.BLUE_700
-                    ),
-                    ft.Container(expand=True),
-                    ft.Row([
-                        self.preview_button,
-                        self.copy_button,
-                        self.save_button
-                    ], spacing=10)
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                report_scroll
-            ], spacing=10, expand=True),
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.WHITE,
-            border_radius=10,
-            border=ft.border.all(1, ft.Colors.GREY_300),
-            visible=False  # Hidden until we have a report
-        )
     
     def _on_question_change(self, e):
         """Handle research question input change."""
@@ -493,11 +476,7 @@ class ResearchGUI:
                 
                 print(f"Workflow completed. Final report length: {len(self.final_report) if self.final_report else 0}")
                 
-                # Show the final report
-                if self.final_report:
-                    self._show_final_report()
-                else:
-                    print("No final report generated by workflow")
+                # Final report is now displayed in the Report tab automatically
                 
                 # Final check and update for tabs after workflow completion
                 print("🔍 Final tab update check after workflow completion...")
@@ -520,6 +499,24 @@ class ResearchGUI:
                         self.update_scored_documents(scored_docs)
                     else:
                         print(f"❌ Final update: No scored documents in workflow_executor.scored_documents")
+                
+                print(f"📝 Workflow executor has 'citations' attr: {hasattr(self.workflow_executor, 'citations')}")
+                if hasattr(self.workflow_executor, 'citations'):
+                    citations = self.workflow_executor.citations
+                    print(f"📚 Workflow executor citations count: {len(citations) if citations else 0}")
+                    if citations:
+                        print(f"📝 Final update: Updating citations tab with {len(citations)} citations")
+                        self.update_citations(citations)
+                    else:
+                        print(f"❌ Final update: No citations in workflow_executor.citations")
+                
+                # Check for final report
+                if hasattr(self.workflow_executor, 'final_report') and self.workflow_executor.final_report:
+                    report = self.workflow_executor.final_report
+                    print(f"📄 Final update: Updating report tab with final report (length: {len(report)})")
+                    self.update_report(report)
+                else:
+                    print(f"❌ Final update: No final report available")
                 
             except Exception as ex:
                 self._handle_workflow_error(ex)
@@ -567,6 +564,29 @@ class ResearchGUI:
                         print(f"❌ No scored documents to update Scoring tab")
                 else:
                     print(f"❌ workflow_executor has no 'scored_documents' attribute")
+                    
+            elif step == WorkflowStep.EXTRACT_CITATIONS and (status == "completed" or status == "tab_update"):
+                print(f"📝 EXTRACT_CITATIONS {status} - checking for citations...")
+                if hasattr(self.workflow_executor, 'citations'):
+                    citations = self.workflow_executor.citations
+                    print(f"📚 Found {len(citations)} citations in workflow_executor")
+                    if citations:
+                        print(f"✅ Updating Citations tab with {len(citations)} citations")
+                        self.update_citations(citations)
+                    else:
+                        print(f"❌ No citations to update Citations tab")
+                else:
+                    print(f"❌ workflow_executor has no 'citations' attribute")
+                    
+            elif step == WorkflowStep.EXPORT_REPORT and (status == "completed" or status == "tab_update"):
+                print(f"📄 EXPORT_REPORT {status} - checking for final report...")
+                if hasattr(self.workflow_executor, 'final_report') and self.workflow_executor.final_report:
+                    report = self.workflow_executor.final_report
+                    print(f"📝 Found report with length: {len(report)}")
+                    print(f"✅ Updating Report tab with final report")
+                    self.update_report(report)
+                else:
+                    print(f"❌ No final report available in workflow_executor")
             
             if self.page:
                 self.page.update()
@@ -589,6 +609,30 @@ class ResearchGUI:
         self._update_scoring_tab()
         if self.page:
             self.page.update()
+    
+    def update_citations(self, citations):
+        """Update the citations and refresh the citations tab."""
+        print(f"📝 update_citations called with {len(citations)} citations")
+        self.citations = citations
+        print(f"📚 Stored {len(self.citations)} citations in app.citations")
+        print(f"📄 Calling _update_citations_tab...")
+        self._update_citations_tab()
+        print(f"📱 Updating page...")
+        if self.page:
+            self.page.update()
+        print(f"✅ Citations tab update completed")
+    
+    def update_report(self, report_content: str):
+        """Update the report and refresh the report tab."""
+        print(f"📄 update_report called with report length: {len(report_content) if report_content else 0}")
+        self.final_report = report_content
+        print(f"📝 Stored report content in app.final_report")
+        print(f"📄 Calling _update_report_tab...")
+        self._update_report_tab()
+        print(f"📱 Updating page...")
+        if self.page:
+            self.page.update()
+        print(f"✅ Report tab update completed")
     
     def _update_literature_tab(self):
         """Update the literature tab with found documents."""
@@ -681,6 +725,145 @@ class ResearchGUI:
                 spacing=10,
                 scroll=ft.ScrollMode.AUTO
             )
+    
+    def _update_citations_tab(self):
+        """Update the citations tab with extracted citations."""
+        print(f"📝 _update_citations_tab called")
+        print(f"🔢 Citations count: {len(self.citations) if self.citations else 0}")
+        print(f"📄 Citations tab content exists: {self.citations_tab_content is not None}")
+        
+        if not self.citations:
+            print(f"❌ No citations - exiting _update_citations_tab")
+            return
+        
+        # Create citation cards for citations tab
+        citation_cards = []
+        
+        # Header with count
+        citation_cards.append(
+            ft.Text(
+                f"Extracted Citations ({len(self.citations)} citations found)",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        citation_cards.append(
+            ft.Text(
+                "Relevant passages extracted from high-scoring documents, ordered by relevance.",
+                size=14,
+                color=ft.Colors.GREY_600
+            )
+        )
+        
+        # Sort citations by relevance score (highest first)
+        sorted_citations = sorted(self.citations, 
+                                key=lambda c: getattr(c, 'relevance_score', 0), reverse=True)
+        
+        # Create expandable cards for each citation
+        for i, citation in enumerate(sorted_citations):
+            citation_card = self._create_citation_card(i, citation)
+            citation_cards.append(citation_card)
+        
+        # Update the citations tab content
+        print(f"📋 Created {len(citation_cards)} citation cards")
+        if self.citations_tab_content:
+            print(f"✅ Updating citations_tab_content with {len(citation_cards)} cards")
+            self.citations_tab_content.content = ft.Column(
+                citation_cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            )
+            print(f"✅ Citations tab content updated successfully")
+        else:
+            print(f"❌ citations_tab_content is None - cannot update!")
+    
+    def _update_report_tab(self):
+        """Update the report tab with the final report."""
+        print(f"📄 _update_report_tab called")
+        print(f"📝 Report exists: {bool(self.final_report)}")
+        print(f"📊 Report length: {len(self.final_report) if self.final_report else 0}")
+        print(f"📄 Report tab content exists: {self.report_tab_content is not None}")
+        
+        if not self.final_report:
+            print(f"❌ No report - exiting _update_report_tab")
+            return
+        
+        # Create report content for the tab
+        report_components = []
+        
+        # Header with action buttons
+        action_buttons = ft.Row([
+            ft.ElevatedButton(
+                "Preview",
+                icon=ft.Icons.PREVIEW,
+                on_click=self._preview_report,
+                height=40
+            ),
+            ft.ElevatedButton(
+                "Copy to Clipboard",
+                icon=ft.Icons.COPY,
+                on_click=self._copy_report,
+                height=40
+            ),
+            ft.ElevatedButton(
+                "Save Report",
+                icon=ft.Icons.SAVE,
+                on_click=self._save_report,
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.GREEN_600,
+                    color=ft.Colors.WHITE
+                ),
+                height=40
+            )
+        ], spacing=10, alignment=ft.MainAxisAlignment.END)
+        
+        # Header with title and buttons
+        report_components.append(
+            ft.Row([
+                ft.Text(
+                    f"Research Report ({len(self.final_report):,} characters)",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Container(expand=True),
+                action_buttons
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        )
+        
+        # Report content display
+        report_display = ft.Container(
+            content=ft.Column([
+                ft.Markdown(
+                    value=self.final_report,
+                    selectable=True,
+                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                    on_tap_link=self._on_report_link_tap,
+                    auto_follow_links=False
+                )
+            ], scroll=ft.ScrollMode.ALWAYS, expand=True),
+            bgcolor=ft.Colors.GREY_50,
+            border_radius=5,
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        
+        report_components.append(report_display)
+        
+        # Update the report tab content
+        print(f"📋 Created report display components")
+        if self.report_tab_content:
+            print(f"✅ Updating report_tab_content with final report")
+            self.report_tab_content.content = ft.Column(
+                report_components,
+                spacing=10,
+                expand=True
+            )
+            print(f"✅ Report tab content updated successfully")
+        else:
+            print(f"❌ report_tab_content is None - cannot update!")
     
     def _create_document_card(self, index: int, doc: dict, show_score: bool = False, scoring_result: dict = None):
         """Create an expandable card for a document.
@@ -819,22 +1002,188 @@ class ResearchGUI:
         else:
             return ft.Colors.RED_700
     
-    def _show_final_report(self):
-        """Display the final research report."""
-        print(f"_show_final_report called. Report exists: {bool(self.final_report)}, Length: {len(self.final_report) if self.final_report else 0}")
-        if not self.final_report:
-            print("No final report to display")
-            return
+    def _create_citation_card(self, index: int, citation):
+        """Create an expandable card for a citation.
         
-        self.report_content.value = self.final_report
-        self.save_button.disabled = False
-        self.copy_button.disabled = False
-        self.preview_button.disabled = False
-        self.report_card.visible = True
+        Args:
+            index: Citation index
+            citation: Citation object or dictionary
+        """
+        # Handle both Citation objects and dictionaries
+        if hasattr(citation, 'document_title'):
+            title = citation.document_title
+            summary = citation.summary
+            passage = citation.passage
+            authors = getattr(citation, 'authors', [])
+            publication_date = getattr(citation, 'publication_date', 'Unknown')
+            relevance_score = getattr(citation, 'relevance_score', 0)
+            document_id = getattr(citation, 'document_id', 'Unknown')
+            pmid = getattr(citation, 'pmid', None)
+        elif isinstance(citation, dict):
+            title = citation.get('document_title', 'Untitled Document')
+            summary = citation.get('summary', 'No summary available')
+            passage = citation.get('passage', 'No passage available')
+            authors = citation.get('authors', [])
+            publication_date = citation.get('publication_date', 'Unknown')
+            relevance_score = citation.get('relevance_score', 0)
+            document_id = citation.get('document_id', 'Unknown')
+            pmid = citation.get('pmid', None)
+        else:
+            title = 'Unknown Citation'
+            summary = str(citation)
+            passage = str(citation)
+            authors = []
+            publication_date = 'Unknown'
+            relevance_score = 0
+            document_id = 'Unknown'
+            pmid = None
         
-        if self.page:
-            self.page.update()
-        print("Final report displayed and buttons enabled")
+        # Truncate title for display
+        display_title = title[:80] + "..." if len(title) > 80 else title
+        
+        # Create title row with relevance score
+        relevance_color = self._get_relevance_color(relevance_score)
+        title_row = [
+            ft.Text(
+                f"{index + 1}. {display_title}",
+                size=12,
+                weight=ft.FontWeight.W_500,
+                color=ft.Colors.BLUE_800
+            ),
+            ft.Container(
+                content=ft.Text(
+                    f"{relevance_score:.2f}",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.WHITE
+                ),
+                bgcolor=relevance_color,
+                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                border_radius=12,
+                margin=ft.margin.only(left=10)
+            )
+        ]
+        
+        # Create subtitle with authors and date
+        authors_str = ', '.join(authors[:3]) if authors else 'Unknown authors'
+        if len(authors) > 3:
+            authors_str += '...'
+        subtitle_text = f"{authors_str} ({publication_date})"
+        
+        # Create expansion tile
+        return ft.ExpansionTile(
+            title=ft.Row(title_row, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            subtitle=ft.Text(
+                subtitle_text,
+                size=11,
+                color=ft.Colors.GREY_600
+            ),
+            controls=[
+                ft.Container(
+                    content=ft.Column([
+                        # Full title
+                        ft.Container(
+                            content=ft.Text(
+                                f"Title: {title}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.BLUE_900
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Authors
+                        ft.Container(
+                            content=ft.Text(
+                                f"Authors: {', '.join(authors) if authors else 'Unknown'}",
+                                size=10,
+                                color=ft.Colors.GREY_700
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Citation metadata
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    f"Relevance Score: {relevance_score:.3f}",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=relevance_color
+                                ),
+                                ft.Text(
+                                    f"Document ID: {document_id}",
+                                    size=10,
+                                    color=ft.Colors.GREY_600
+                                ),
+                                *([
+                                    ft.Text(
+                                        f"PMID: {pmid}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600
+                                    )
+                                ] if pmid else [])
+                            ], spacing=4),
+                            padding=ft.padding.only(bottom=8),
+                            bgcolor=ft.Colors.BLUE_50,
+                            border_radius=5
+                        ),
+                        # Summary
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    "Summary:",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.BLACK
+                                ),
+                                ft.Text(
+                                    summary,
+                                    size=10,
+                                    color=ft.Colors.GREY_800,
+                                    selectable=True
+                                )
+                            ], spacing=4),
+                            padding=ft.padding.all(8),
+                            bgcolor=ft.Colors.GREEN_50,
+                            border_radius=5
+                        ),
+                        # Passage
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    "Extracted Passage:",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.BLACK
+                                ),
+                                ft.Text(
+                                    passage,
+                                    size=10,
+                                    color=ft.Colors.GREY_800,
+                                    selectable=True,
+                                    italic=True
+                                )
+                            ], spacing=4),
+                            padding=ft.padding.all(8),
+                            bgcolor=ft.Colors.GREY_100,
+                            border_radius=5
+                        )
+                    ], spacing=4),
+                    padding=ft.padding.all(10)
+                )
+            ]
+        )
+    
+    def _get_relevance_color(self, relevance: float) -> str:
+        """Get color based on relevance score (0-1 range)."""
+        if relevance >= 0.8:
+            return ft.Colors.GREEN_700
+        elif relevance >= 0.6:
+            return ft.Colors.BLUE_700
+        elif relevance >= 0.4:
+            return ft.Colors.ORANGE_700
+        else:
+            return ft.Colors.RED_700
+    
     
     def _handle_workflow_error(self, error: Exception):
         """Handle workflow execution errors."""
