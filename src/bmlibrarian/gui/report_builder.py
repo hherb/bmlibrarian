@@ -44,7 +44,7 @@ class ReportBuilder:
         )
         
         # Build methodology section
-        methodology_section = self._build_methodology_section()
+        methodology_section = self._build_methodology_section(counterfactual_analysis)
         
         # Build limitations section
         limitations_section = self._build_limitations_section(
@@ -147,20 +147,31 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
 **High Relevance Documents**: {high_relevance_count}  
 **Citations Extracted**: {len(citations)}"""
     
-    def _build_methodology_section(self) -> str:
+    def _build_methodology_section(self, counterfactual_analysis: Any = None) -> str:
         """Build the methodology section.
+        
+        Args:
+            counterfactual_analysis: Counterfactual analysis results to determine type
         
         Returns:
             Formatted methodology section
         """
-        return """## Research Methodology
+        # Determine type of counterfactual analysis performed
+        cf_description = "**Counterfactual Analysis**: Analyzed for potential contradictory evidence"
+        if counterfactual_analysis:
+            if hasattr(counterfactual_analysis, 'get') and counterfactual_analysis.get('contradictory_evidence'):
+                cf_description = "**Comprehensive Counterfactual Analysis**: Performed literature search for contradictory evidence with citation extraction"
+            elif hasattr(counterfactual_analysis, 'counterfactual_questions'):
+                cf_description = "**Basic Counterfactual Analysis**: Analyzed claims and generated research questions for finding contradictory evidence"
+        
+        return f"""## Research Methodology
 
 - **Query Generation**: Natural language converted to PostgreSQL query
 - **Database Search**: Searched biomedical literature database  
 - **Relevance Scoring**: AI-powered document scoring (1-5 scale)
 - **Citation Extraction**: Extracted relevant passages from high-scoring documents
 - **Report Synthesis**: Generated comprehensive medical research report
-- **Counterfactual Analysis**: Analyzed for potential contradictory evidence"""
+- {cf_description}"""
     
     def _build_limitations_section(self, documents: List[Dict], 
                                  scored_documents: List[Tuple[Dict, Dict]], 

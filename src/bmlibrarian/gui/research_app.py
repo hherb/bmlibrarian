@@ -23,6 +23,7 @@ class ResearchGUI:
         self.page: Optional[ft.Page] = None
         self.research_question = ""
         self.human_in_loop = True
+        self.comprehensive_counterfactual = False
         self.workflow_running = False
         
         # Command-line configuration
@@ -32,6 +33,7 @@ class ResearchGUI:
         # GUI components
         self.question_field = None
         self.human_loop_toggle = None
+        self.counterfactual_toggle = None
         self.start_button = None
         self.step_cards: Dict[WorkflowStep, StepCard] = {}
         self.status_text = None
@@ -63,13 +65,15 @@ class ResearchGUI:
             WorkflowStep.EXPORT_REPORT
         ]
         
-        # Literature, scoring, citations, and report data for tabs
+        # Literature, scoring, citations, counterfactual, and report data for tabs
         self.documents = []
         self.scored_documents = []
         self.citations = []
+        self.counterfactual_analysis = None
         self.literature_tab_content = None
         self.scoring_tab_content = None
         self.citations_tab_content = None
+        self.counterfactual_tab_content = None
         self.report_tab_content = None
     
     def main(self, page: ft.Page):
@@ -104,6 +108,7 @@ class ResearchGUI:
             self.research_question = self.auto_question
             self.question_field.value = self.auto_question
             self.human_loop_toggle.value = self.human_in_loop
+            self.counterfactual_toggle.value = self.comprehensive_counterfactual
             self.start_button.disabled = False
             self._update_status()
             self.page.update()
@@ -173,7 +178,13 @@ class ResearchGUI:
         self.human_loop_toggle = ft.Switch(
             label="Interactive mode",
             value=self.human_in_loop,
-            on_change=self._on_toggle_change
+            on_change=self._on_human_loop_toggle_change
+        )
+        
+        self.counterfactual_toggle = ft.Switch(
+            label="Comprehensive counterfactual analysis",
+            value=self.comprehensive_counterfactual,
+            on_change=self._on_counterfactual_toggle_change
         )
         
         self.start_button = ft.ElevatedButton(
@@ -199,6 +210,7 @@ class ResearchGUI:
         # Right-side controls
         controls_column = ft.Column([
             self.human_loop_toggle,
+            self.counterfactual_toggle,
             self.start_button
         ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
         
@@ -253,6 +265,9 @@ class ResearchGUI:
         # Create citations tab content (initially empty)
         citations_tab = self._create_citations_tab()
         
+        # Create counterfactual tab content (initially empty)
+        counterfactual_tab = self._create_counterfactual_tab()
+        
         # Create report tab content (initially empty)
         report_tab = self._create_report_tab()
         
@@ -280,6 +295,11 @@ class ResearchGUI:
                     text="Citations",
                     icon=ft.Icons.FORMAT_QUOTE,
                     content=citations_tab
+                ),
+                ft.Tab(
+                    text="Counterfactual",
+                    icon=ft.Icons.PSYCHOLOGY,
+                    content=counterfactual_tab
                 ),
                 ft.Tab(
                     text="Report",
@@ -412,6 +432,33 @@ class ResearchGUI:
         )
         return self.report_tab_content
     
+    def _create_counterfactual_tab(self):
+        """Create the counterfactual analysis tab content."""
+        self.counterfactual_tab_content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    "Counterfactual Analysis",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Text(
+                    "Analysis of potential contradictory evidence and research questions.",
+                    size=14,
+                    color=ft.Colors.GREY_600
+                ),
+                ft.Container(
+                    content=ft.Text("Counterfactual analysis will appear here when enabled and completed."),
+                    padding=ft.padding.all(20),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        return self.counterfactual_tab_content
+    
     def _create_step_cards(self):
         """Create step cards for each workflow step."""
         self.step_cards = {}
@@ -427,9 +474,15 @@ class ResearchGUI:
         self._update_status()
         self.page.update()
     
-    def _on_toggle_change(self, e):
+    def _on_human_loop_toggle_change(self, e):
         """Handle human-in-the-loop toggle change."""
         self.human_in_loop = e.control.value
+        self._update_status()
+        self.page.update()
+    
+    def _on_counterfactual_toggle_change(self, e):
+        """Handle comprehensive counterfactual analysis toggle change."""
+        self.comprehensive_counterfactual = e.control.value
         self._update_status()
         self.page.update()
     
@@ -438,10 +491,13 @@ class ResearchGUI:
         if not self.research_question:
             self.status_text.value = "Enter a research question to begin"
         elif self.workflow_running:
-            self.status_text.value = f"Research in progress... ({'Interactive' if self.human_in_loop else 'Automated'} mode)"
+            mode = "Interactive" if self.human_in_loop else "Automated"
+            cf_mode = " + Comprehensive Counterfactual" if self.comprehensive_counterfactual else ""
+            self.status_text.value = f"Research in progress... ({mode}{cf_mode} mode)"
         else:
             mode = "Interactive" if self.human_in_loop else "Automated"
-            self.status_text.value = f"Ready to start research in {mode} mode"
+            cf_mode = " + Comprehensive Counterfactual" if self.comprehensive_counterfactual else ""
+            self.status_text.value = f"Ready to start research in {mode}{cf_mode} mode"
     
     def _on_step_expand(self, card: StepCard, expanded: bool):
         """Handle step card expansion change."""
@@ -466,6 +522,10 @@ class ResearchGUI:
         def run_workflow():
             try:
                 print("Starting workflow execution...")
+                
+                # Update config overrides with counterfactual setting
+                self.workflow_executor.config_overrides['comprehensive_counterfactual'] = self.comprehensive_counterfactual
+                
                 self.final_report = self.workflow_executor.run_workflow(
                     self.research_question,
                     self.human_in_loop,
@@ -577,6 +637,19 @@ class ResearchGUI:
                         print(f"❌ No citations to update Citations tab")
                 else:
                     print(f"❌ workflow_executor has no 'citations' attribute")
+                        
+            elif step == WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS and (status == "completed" or status == "tab_update"):
+                print(f"🧿 PERFORM_COUNTERFACTUAL_ANALYSIS {status} - checking for counterfactual analysis...")
+                if hasattr(self.workflow_executor, 'counterfactual_analysis'):
+                    cf_analysis = self.workflow_executor.counterfactual_analysis
+                    print(f"🤖 Found counterfactual analysis: {bool(cf_analysis)}")
+                    if cf_analysis:
+                        print(f"✅ Updating Counterfactual tab with analysis")
+                        self.update_counterfactual_analysis(cf_analysis)
+                    else:
+                        print(f"❌ No counterfactual analysis to update Counterfactual tab")
+                else:
+                    print(f"❌ workflow_executor has no 'counterfactual_analysis' attribute")
                     
             elif step == WorkflowStep.EXPORT_REPORT and (status == "completed" or status == "tab_update"):
                 print(f"📄 EXPORT_REPORT {status} - checking for final report...")
@@ -621,6 +694,18 @@ class ResearchGUI:
         if self.page:
             self.page.update()
         print(f"✅ Citations tab update completed")
+    
+    def update_counterfactual_analysis(self, counterfactual_analysis):
+        """Update the counterfactual analysis and refresh the counterfactual tab."""
+        print(f"🧿 update_counterfactual_analysis called with analysis: {bool(counterfactual_analysis)}")
+        self.counterfactual_analysis = counterfactual_analysis
+        print(f"🤖 Stored counterfactual analysis in app.counterfactual_analysis")
+        print(f"📄 Calling _update_counterfactual_tab...")
+        self._update_counterfactual_tab()
+        print(f"📱 Updating page...")
+        if self.page:
+            self.page.update()
+        print(f"✅ Counterfactual tab update completed")
     
     def update_report(self, report_content: str):
         """Update the report and refresh the report tab."""
@@ -876,8 +961,21 @@ class ResearchGUI:
         """
         title = doc.get('title', 'Untitled Document')
         abstract = doc.get('abstract', 'No abstract available')
-        year = doc.get('year', 'Unknown year')
+        publication_date = doc.get('publication_date', None)
+        # Extract year from publication_date or fallback to year field
+        if publication_date and str(publication_date).strip() and str(publication_date) != 'Unknown':
+            pub_date_str = str(publication_date).strip()
+            # Extract year from date (e.g., "2016-01-01" -> "2016")
+            if '-' in pub_date_str:
+                year = pub_date_str.split('-')[0]
+            else:
+                year = pub_date_str
+        else:
+            year = doc.get('year', 'Unknown year')
         authors = doc.get('authors', 'Unknown authors')
+        publication = doc.get('publication', None)
+        pmid = doc.get('pmid', None)
+        doi = doc.get('doi', None)
         
         # Truncate title for display
         display_title = title[:80] + "..." if len(title) > 80 else title
@@ -910,8 +1008,15 @@ class ResearchGUI:
                 )
             )
         
-        # Create subtitle with year
-        subtitle_text = f"Year: {year}"
+        # Create subtitle with publication and year
+        pub_info_parts = []
+        if publication and publication.strip():
+            pub_info_parts.append(publication.strip())
+        if year and year != 'Unknown year':
+            pub_info_parts.append(str(year))
+        
+        subtitle_text = ' • '.join(pub_info_parts) if pub_info_parts else 'Unknown publication'
+        
         if show_score and scoring_result:
             reasoning = scoring_result.get('reasoning', 'No reasoning provided')[:50] + "..."
             subtitle_text += f" | {reasoning}"
@@ -945,6 +1050,38 @@ class ResearchGUI:
                                 color=ft.Colors.GREY_700
                             ),
                             padding=ft.padding.only(bottom=8)
+                        ),
+                        # Publication metadata
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    f"Publication: {publication if publication else 'Unknown'}",
+                                    size=10,
+                                    color=ft.Colors.GREY_600
+                                ),
+                                ft.Text(
+                                    f"Year: {year if year != 'Unknown year' else 'Unknown'}",
+                                    size=10,
+                                    color=ft.Colors.GREY_600
+                                ),
+                                *([
+                                    ft.Text(
+                                        f"PMID: {pmid}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600
+                                    )
+                                ] if pmid else []),
+                                *([
+                                    ft.Text(
+                                        f"DOI: {doi}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600
+                                    )
+                                ] if doi else [])
+                            ], spacing=4),
+                            padding=ft.padding.only(bottom=8),
+                            bgcolor=ft.Colors.GREY_50,
+                            border_radius=5
                         ),
                         # Scoring details (if available)
                         *([ft.Container(
@@ -1016,27 +1153,33 @@ class ResearchGUI:
             passage = citation.passage
             authors = getattr(citation, 'authors', [])
             publication_date = getattr(citation, 'publication_date', 'Unknown')
+            publication = getattr(citation, 'publication', None)
             relevance_score = getattr(citation, 'relevance_score', 0)
             document_id = getattr(citation, 'document_id', 'Unknown')
             pmid = getattr(citation, 'pmid', None)
+            doi = getattr(citation, 'doi', None)
         elif isinstance(citation, dict):
             title = citation.get('document_title', 'Untitled Document')
             summary = citation.get('summary', 'No summary available')
             passage = citation.get('passage', 'No passage available')
             authors = citation.get('authors', [])
             publication_date = citation.get('publication_date', 'Unknown')
+            publication = citation.get('publication', None)
             relevance_score = citation.get('relevance_score', 0)
             document_id = citation.get('document_id', 'Unknown')
             pmid = citation.get('pmid', None)
+            doi = citation.get('doi', None)
         else:
             title = 'Unknown Citation'
             summary = str(citation)
             passage = str(citation)
             authors = []
             publication_date = 'Unknown'
+            publication = None
             relevance_score = 0
             document_id = 'Unknown'
             pmid = None
+            doi = None
         
         # Truncate title for display
         display_title = title[:80] + "..." if len(title) > 80 else title
@@ -1064,11 +1207,30 @@ class ResearchGUI:
             )
         ]
         
-        # Create subtitle with authors and date
+        # Create subtitle with authors, publication, and date
         authors_str = ', '.join(authors[:3]) if authors else 'Unknown authors'
         if len(authors) > 3:
             authors_str += '...'
-        subtitle_text = f"{authors_str} ({publication_date})"
+        
+        # Extract year from publication_date for display
+        if publication_date and publication_date != 'Unknown':
+            # Extract year from publication_date (e.g., "2016-01-01" -> "2016")
+            if '-' in str(publication_date):
+                year_only = str(publication_date).split('-')[0]
+            else:
+                year_only = str(publication_date)
+        else:
+            year_only = 'Unknown'
+        
+        # Build publication info
+        pub_info_parts = []
+        if publication and publication.strip():
+            pub_info_parts.append(publication.strip())
+        if year_only != 'Unknown':
+            pub_info_parts.append(year_only)
+        
+        pub_info = ' • '.join(pub_info_parts) if pub_info_parts else 'Unknown publication'
+        subtitle_text = f"{authors_str} | {pub_info}"
         
         # Create expansion tile
         return ft.ExpansionTile(
@@ -1110,6 +1272,16 @@ class ResearchGUI:
                                     color=relevance_color
                                 ),
                                 ft.Text(
+                                    f"Publication: {publication if publication else 'Unknown'}",
+                                    size=10,
+                                    color=ft.Colors.GREY_600
+                                ),
+                                ft.Text(
+                                    f"Year: {year_only if publication_date and publication_date != 'Unknown' else 'Unknown'}",
+                                    size=10,
+                                    color=ft.Colors.GREY_600
+                                ),
+                                ft.Text(
                                     f"Document ID: {document_id}",
                                     size=10,
                                     color=ft.Colors.GREY_600
@@ -1120,7 +1292,14 @@ class ResearchGUI:
                                         size=10,
                                         color=ft.Colors.GREY_600
                                     )
-                                ] if pmid else [])
+                                ] if pmid else []),
+                                *([
+                                    ft.Text(
+                                        f"DOI: {doi}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600
+                                    )
+                                ] if doi else [])
                             ], spacing=4),
                             padding=ft.padding.only(bottom=8),
                             bgcolor=ft.Colors.BLUE_50,
@@ -1357,3 +1536,790 @@ class ResearchGUI:
     def _on_report_link_tap(self, e):
         """Handle links in the report."""
         print(f"Report link tapped: {e.data}")
+    
+    def _update_counterfactual_tab(self):
+        """Update the counterfactual tab with analysis results."""
+        print(f"🧿 _update_counterfactual_tab called")
+        print(f"🤖 Analysis exists: {bool(self.counterfactual_analysis)}")
+        print(f"📄 Counterfactual tab content exists: {self.counterfactual_tab_content is not None}")
+        
+        if not self.counterfactual_analysis:
+            print(f"❌ No counterfactual analysis - exiting _update_counterfactual_tab")
+            return
+        
+        # Create counterfactual analysis content for the tab
+        cf_components = []
+        
+        # Header
+        cf_components.append(
+            ft.Text(
+                f"Counterfactual Analysis Results",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        # Check if we have comprehensive analysis (dictionary) or basic analysis (object)
+        if isinstance(self.counterfactual_analysis, dict) and 'summary' in self.counterfactual_analysis:
+            # Comprehensive analysis with search results (dictionary format)
+            summary = self.counterfactual_analysis.get('summary', {})
+            contradictory_evidence = self.counterfactual_analysis.get('contradictory_evidence', [])
+            contradictory_citations = self.counterfactual_analysis.get('contradictory_citations', [])
+            
+            cf_components.append(
+                ft.Text(
+                    f"📚 Comprehensive Counterfactual Analysis with Literature Search Completed",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PURPLE_700
+                )
+            )
+            
+            cf_components.append(
+                ft.Text(
+                    f"Found {len(contradictory_evidence)} contradictory studies and extracted {len(contradictory_citations)} citations that challenge the original claims.",
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                    italic=True
+                )
+            )
+            
+            # Comprehensive analysis display
+            cf_components.append(self._create_comprehensive_analysis_display(self.counterfactual_analysis))
+                
+        elif hasattr(self.counterfactual_analysis, 'main_claims') or hasattr(self.counterfactual_analysis, 'counterfactual_questions'):
+            # Basic counterfactual analysis object
+            questions_count = len(getattr(self.counterfactual_analysis, 'counterfactual_questions', []))
+            claims_count = len(getattr(self.counterfactual_analysis, 'main_claims', []))
+            
+            cf_components.append(
+                ft.Text(
+                    f"📋 Basic Counterfactual Analysis Completed",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.ORANGE_700
+                )
+            )
+            
+            cf_components.append(
+                ft.Text(
+                    f"Analyzed {claims_count} claims and generated {questions_count} research questions for finding contradictory evidence.",
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                    italic=True
+                )
+            )
+            
+            cf_components.append(self._create_basic_analysis_display(self.counterfactual_analysis))
+        else:
+            # Fallback for unknown format - show what we got
+            cf_components.append(
+                ft.Text(
+                    f"⚠️ Counterfactual Analysis (Unknown Format)",
+                    size=15,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.GREY_700
+                )
+            )
+            
+            # Try to display whatever we have
+            analysis_str = str(self.counterfactual_analysis)
+            if len(analysis_str) > 500:
+                analysis_str = analysis_str[:500] + "..."
+            
+            cf_components.append(
+                ft.Container(
+                    content=ft.Text(
+                        f"Raw analysis data:\n{analysis_str}",
+                        size=11,
+                        color=ft.Colors.GREY_800
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            )
+        
+        # Update the counterfactual tab content
+        print(f"📋 Created counterfactual analysis display components")
+        if self.counterfactual_tab_content:
+            print(f"✅ Updating counterfactual_tab_content with analysis")
+            self.counterfactual_tab_content.content = ft.Column(
+                cf_components,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            )
+            print(f"✅ Counterfactual tab content updated successfully")
+        else:
+            print(f"❌ counterfactual_tab_content is None - cannot update!")
+    
+    def _create_basic_analysis_display(self, analysis) -> ft.Container:
+        """Create display components for basic counterfactual analysis."""
+        components = []
+        
+        # 1. HYPOTHESES BEING CONTESTED - Main Claims
+        hypotheses_components = []
+        hypotheses_components.append(
+            ft.Text(
+                "📋 Hypotheses Being Contested",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        if hasattr(analysis, 'main_claims') and analysis.main_claims:
+            hypotheses_components.append(
+                ft.Text(
+                    "Original Claims from Report:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_800
+                )
+            )
+            
+            for i, claim in enumerate(analysis.main_claims, 1):
+                hypotheses_components.append(
+                    ft.Container(
+                        content=ft.Text(
+                            f"{i}. {claim}",
+                            size=12,
+                            color=ft.Colors.GREY_800
+                        ),
+                        padding=ft.padding.symmetric(horizontal=15, vertical=5),
+                        bgcolor=ft.Colors.BLUE_50,
+                        border_radius=5,
+                        margin=ft.margin.only(bottom=4)
+                    )
+                )
+        
+        components.append(
+            ft.Container(
+                content=ft.Column(hypotheses_components, spacing=6),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.BLUE_50,
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.BLUE_200)
+            )
+        )
+        
+        # 2. RESEARCH QUESTIONS FOR CONTESTING - What to Search For
+        if hasattr(analysis, 'counterfactual_questions') and analysis.counterfactual_questions:
+            research_components = []
+            research_components.append(
+                ft.Text(
+                    f"🔍 Research Questions for Finding Contradictory Evidence ({len(analysis.counterfactual_questions)})",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.ORANGE_700
+                )
+            )
+            
+            research_components.append(
+                ft.Text(
+                    "These research questions were generated to systematically search for evidence that might contradict the original claims:",
+                    size=11,
+                    color=ft.Colors.GREY_600,
+                    italic=True
+                )
+            )
+            
+            question_cards = []
+            for i, question in enumerate(analysis.counterfactual_questions, 1):
+                priority_color = self._get_priority_color(getattr(question, 'priority', 'MEDIUM'))
+                
+                question_cards.append(
+                    ft.ExpansionTile(
+                        title=ft.Row([
+                            ft.Text(
+                                f"{i}. {getattr(question, 'question', 'Unknown question')[:70]}...",
+                                size=12,
+                                weight=ft.FontWeight.W_500,
+                                color=ft.Colors.ORANGE_800
+                            ),
+                            ft.Container(
+                                content=ft.Text(
+                                    getattr(question, 'priority', 'MEDIUM'),
+                                    size=10,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.WHITE
+                                ),
+                                bgcolor=priority_color,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                border_radius=12
+                            )
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        controls=[
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text(
+                                        f"Full Question: {getattr(question, 'question', 'Unknown')}",
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.Colors.GREY_800
+                                    ),
+                                    ft.Text(
+                                        f"Target Claim: {getattr(question, 'target_claim', 'Unknown')}",
+                                        size=10,
+                                        color=ft.Colors.ORANGE_700,
+                                        weight=ft.FontWeight.W_500
+                                    ),
+                                    ft.Text(
+                                        f"Reasoning: {getattr(question, 'reasoning', 'Unknown')}",
+                                        size=10,
+                                        color=ft.Colors.GREY_700
+                                    ),
+                                    ft.Text(
+                                        f"Search Keywords: {', '.join(getattr(question, 'search_keywords', []))}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600
+                                    )
+                                ], spacing=4),
+                                padding=ft.padding.all(12)
+                            )
+                        ]
+                    )
+                )
+            
+            components.append(
+                ft.Container(
+                    content=ft.Column([
+                        *research_components,
+                        ft.Container(
+                            content=ft.Column(question_cards, spacing=8),
+                            margin=ft.margin.only(top=10)
+                        )
+                    ], spacing=8),
+                    padding=ft.padding.all(15),
+                    bgcolor=ft.Colors.ORANGE_50,
+                    border_radius=8,
+                    border=ft.border.all(1, ft.Colors.ORANGE_200)
+                )
+            )
+        
+        # 3. PRELIMINARY ASSESSMENT - Before Literature Search
+        assessment_components = []
+        assessment_components.append(
+            ft.Text(
+                "⚖️ Preliminary Assessment (Before Literature Search)",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREEN_700
+            )
+        )
+        
+        if hasattr(analysis, 'overall_assessment') and analysis.overall_assessment:
+            assessment_components.extend([
+                ft.Text(
+                    "Initial Analysis:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.GREEN_800
+                ),
+                ft.Container(
+                    content=ft.Text(
+                        analysis.overall_assessment,
+                        size=12,
+                        color=ft.Colors.GREY_800
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.GREEN_50,
+                    border_radius=5
+                )
+            ])
+        
+        if hasattr(analysis, 'confidence_level'):
+            confidence_level = getattr(analysis, 'confidence_level', 'Unknown')
+            confidence_color = ft.Colors.GREEN_700 if confidence_level in ['HIGH', 'MEDIUM-HIGH'] else ft.Colors.ORANGE_700 if 'MEDIUM' in confidence_level else ft.Colors.RED_700
+            
+            assessment_components.extend([
+                ft.Container(
+                    content=ft.Text(
+                        "Initial Confidence Level:",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.GREEN_800
+                    ),
+                    margin=ft.margin.only(top=10)
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"Confidence: {confidence_level}",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=confidence_color
+                        ),
+                        ft.Text(
+                            "Note: This assessment is preliminary and should be validated through systematic literature search using the research questions above.",
+                            size=11,
+                            color=ft.Colors.GREY_600,
+                            italic=True
+                        )
+                    ], spacing=4),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.GREEN_50,
+                    border_radius=5
+                )
+            ])
+        
+        # Summary statistics
+        stats_components = []
+        stats_components.append(
+            ft.Container(
+                content=ft.Text(
+                    "Analysis Statistics:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PURPLE_700
+                ),
+                margin=ft.margin.only(top=10)
+            )
+        )
+        
+        stats_list = []
+        if hasattr(analysis, 'main_claims'):
+            stats_list.append(f"• Claims Identified: {len(analysis.main_claims)}")
+        if hasattr(analysis, 'counterfactual_questions'):
+            stats_list.append(f"• Research Questions Generated: {len(analysis.counterfactual_questions)}")
+            high_priority = sum(1 for q in analysis.counterfactual_questions if getattr(q, 'priority', '') == 'HIGH')
+            stats_list.append(f"• High Priority Questions: {high_priority}")
+        
+        if stats_list:
+            stats_components.append(
+                ft.Container(
+                    content=ft.Text(
+                        '\n'.join(stats_list),
+                        size=11,
+                        color=ft.Colors.GREY_800
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.PURPLE_50,
+                    border_radius=5
+                )
+            )
+        
+        assessment_components.extend(stats_components)
+        
+        # Note about next steps
+        assessment_components.append(
+            ft.Container(
+                content=ft.Text(
+                    "📝 Next Step: Run comprehensive counterfactual analysis with literature search to find actual contradictory evidence and validate these preliminary findings.",
+                    size=11,
+                    color=ft.Colors.BLUE_700,
+                    weight=ft.FontWeight.W_500,
+                    italic=True
+                ),
+                padding=ft.padding.all(10),
+                bgcolor=ft.Colors.BLUE_50,
+                border_radius=5,
+                border=ft.border.all(1, ft.Colors.BLUE_300),
+                margin=ft.margin.only(top=15)
+            )
+        )
+        
+        components.append(
+            ft.Container(
+                content=ft.Column(assessment_components, spacing=8),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.GREEN_50,
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.GREEN_200)
+            )
+        )
+        
+        return ft.Container(
+            content=ft.Column(components, spacing=15),
+            expand=True
+        )
+    
+    def _create_comprehensive_analysis_display(self, analysis_dict) -> ft.Container:
+        """Create display components for comprehensive counterfactual analysis with search results."""
+        components = []
+        
+        summary = analysis_dict.get('summary', {})
+        analysis_obj = analysis_dict.get('analysis')  # CounterfactualAnalysis object
+        contradictory_evidence = analysis_dict.get('contradictory_evidence', [])
+        contradictory_citations = analysis_dict.get('contradictory_citations', [])
+        
+        # 1. HYPOTHESES BEING CONTESTED - Main Claims and Target Claims
+        hypotheses_components = []
+        hypotheses_components.append(
+            ft.Text(
+                "📋 Hypotheses Being Contested",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        if analysis_obj and hasattr(analysis_obj, 'main_claims') and analysis_obj.main_claims:
+            hypotheses_components.append(
+                ft.Text(
+                    "Original Claims from Report:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_800
+                )
+            )
+            
+            for i, claim in enumerate(analysis_obj.main_claims, 1):
+                hypotheses_components.append(
+                    ft.Container(
+                        content=ft.Text(
+                            f"{i}. {claim}",
+                            size=12,
+                            color=ft.Colors.GREY_800
+                        ),
+                        padding=ft.padding.symmetric(horizontal=15, vertical=5),
+                        bgcolor=ft.Colors.BLUE_50,
+                        border_radius=5,
+                        margin=ft.margin.only(bottom=4)
+                    )
+                )
+        
+        # Show target claims from counterfactual questions
+        if contradictory_citations:
+            unique_claims = set()
+            for cite in contradictory_citations:
+                if 'original_claim' in cite:
+                    unique_claims.add(cite['original_claim'])
+            
+            if unique_claims:
+                hypotheses_components.append(
+                    ft.Container(
+                        content=ft.Text(
+                            "Specific Claims Being Challenged:",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.ORANGE_700
+                        ),
+                        margin=ft.margin.only(top=10)
+                    )
+                )
+                
+                for i, claim in enumerate(unique_claims, 1):
+                    hypotheses_components.append(
+                        ft.Container(
+                            content=ft.Text(
+                                f"→ {claim}",
+                                size=11,
+                                color=ft.Colors.ORANGE_800,
+                                italic=True
+                            ),
+                            padding=ft.padding.symmetric(horizontal=15, vertical=4),
+                            bgcolor=ft.Colors.ORANGE_50,
+                            border_radius=5,
+                            margin=ft.margin.only(bottom=3)
+                        )
+                    )
+        
+        components.append(
+            ft.Container(
+                content=ft.Column(hypotheses_components, spacing=6),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.BLUE_50,
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.BLUE_200)
+            )
+        )
+        
+        # 2. LITERATURE USED FOR CONTESTING - Detailed Evidence
+        if contradictory_evidence:
+            literature_components = []
+            literature_components.append(
+                ft.Text(
+                    f"📚 Contesting Literature ({len(contradictory_evidence)} studies found)",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.RED_700
+                )
+            )
+            
+            evidence_cards = []
+            for i, evidence in enumerate(contradictory_evidence[:8], 1):  # Show top 8
+                doc = evidence.get('document', {})
+                score = evidence.get('score', 0)
+                reasoning = evidence.get('reasoning', '')
+                query_info = evidence.get('query_info', {})
+                
+                # Extract year from publication_date
+                publication_date = doc.get('publication_date')
+                year_display = 'Unknown'
+                if publication_date and publication_date != 'Unknown':
+                    if '-' in str(publication_date):
+                        year_display = str(publication_date).split('-')[0]
+                    else:
+                        year_display = str(publication_date)
+                
+                # Create expandable card for each study
+                evidence_cards.append(
+                    ft.ExpansionTile(
+                        title=ft.Row([
+                            ft.Text(
+                                f"{i}. {doc.get('title', 'Unknown title')[:70]}...",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.RED_800
+                            ),
+                            ft.Container(
+                                content=ft.Text(
+                                    f"{score:.1f}/5",
+                                    size=10,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.WHITE
+                                ),
+                                bgcolor=ft.Colors.RED_600,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                border_radius=12
+                            )
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        controls=[
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text(
+                                        f"Title: {doc.get('title', 'Unknown')}",
+                                        size=11,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.Colors.GREY_800
+                                    ),
+                                    ft.Text(
+                                        f"Authors: {', '.join(doc.get('authors', ['Unknown'])[:3])}",
+                                        size=10,
+                                        color=ft.Colors.GREY_700
+                                    ),
+                                    ft.Text(
+                                        f"Publication: {doc.get('publication', 'Unknown')} • {year_display}",
+                                        size=10,
+                                        color=ft.Colors.GREY_700
+                                    ),
+                                    ft.Text(
+                                        f"Relevance Score: {score:.1f}/5.0",
+                                        size=10,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.Colors.RED_600
+                                    ),
+                                    ft.Text(
+                                        f"Reasoning: {reasoning[:150]}{'...' if len(reasoning) > 150 else ''}",
+                                        size=10,
+                                        color=ft.Colors.GREY_600,
+                                        italic=True
+                                    ),
+                                    ft.Text(
+                                        f"Challenges Claim: {query_info.get('target_claim', 'Unknown')[:100]}{'...' if len(query_info.get('target_claim', '')) > 100 else ''}",
+                                        size=10,
+                                        color=ft.Colors.ORANGE_700,
+                                        weight=ft.FontWeight.W_500
+                                    ) if query_info.get('target_claim') else ft.Container(),
+                                    ft.Text(
+                                        f"DOI: {doc.get('doi', 'Not available')}",
+                                        size=9,
+                                        color=ft.Colors.GREY_500
+                                    ) if doc.get('doi') else ft.Container()
+                                ], spacing=4),
+                                padding=ft.padding.all(12)
+                            )
+                        ]
+                    )
+                )
+            
+            components.append(
+                ft.Container(
+                    content=ft.Column([
+                        *literature_components,
+                        ft.Text(
+                            f"Studies are ranked by relevance score (1-5). Scores ≥3.0 indicate strong contradictory evidence.",
+                            size=11,
+                            color=ft.Colors.GREY_600,
+                            italic=True
+                        ),
+                        ft.Container(
+                            content=ft.Column(evidence_cards, spacing=8),
+                            margin=ft.margin.only(top=10)
+                        )
+                    ], spacing=8),
+                    padding=ft.padding.all(15),
+                    bgcolor=ft.Colors.RED_50,
+                    border_radius=8,
+                    border=ft.border.all(1, ft.Colors.RED_200)
+                )
+            )
+        
+        # 3. VERDICT/REPORT - Citations and Revised Assessment
+        verdict_components = []
+        verdict_components.append(
+            ft.Text(
+                "⚖️ Verdict & Final Assessment",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREEN_700
+            )
+        )
+        
+        # Summary statistics
+        if summary:
+            verdict_components.append(
+                ft.Text(
+                    "Analysis Summary:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PURPLE_700
+                )
+            )
+            
+            stats_text = []
+            stats_mapping = {
+                'claims_analyzed': 'Claims Analyzed',
+                'questions_generated': 'Research Questions Generated', 
+                'database_searches': 'Literature Searches Performed',
+                'contradictory_documents_found': 'Contradictory Studies Found',
+                'contradictory_citations_extracted': 'Contradictory Citations Extracted'
+            }
+            
+            for key, label in stats_mapping.items():
+                if key in summary:
+                    stats_text.append(f"• {label}: {summary[key]}")
+            
+            verdict_components.append(
+                ft.Container(
+                    content=ft.Text(
+                        '\n'.join(stats_text),
+                        size=11,
+                        color=ft.Colors.GREY_800
+                    ),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.PURPLE_50,
+                    border_radius=5
+                )
+            )
+        
+        # Confidence assessment
+        if summary:
+            original_confidence = summary.get('original_confidence', 'Unknown')
+            revised_confidence = summary.get('revised_confidence', original_confidence)
+            
+            confidence_color = ft.Colors.GREEN_700 if revised_confidence in ['HIGH', 'MEDIUM-HIGH'] else ft.Colors.ORANGE_700 if 'MEDIUM' in revised_confidence else ft.Colors.RED_700
+            
+            verdict_components.extend([
+                ft.Container(
+                    content=ft.Text(
+                        "Confidence Assessment:",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.GREEN_800
+                    ),
+                    margin=ft.margin.only(top=10)
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"Original Confidence: {original_confidence}",
+                            size=12,
+                            color=ft.Colors.GREY_700
+                        ),
+                        ft.Text(
+                            f"Revised Confidence: {revised_confidence}",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=confidence_color
+                        ),
+                        ft.Text(
+                            f"Confidence {'decreased' if revised_confidence != original_confidence else 'maintained'} based on contradictory evidence analysis.",
+                            size=11,
+                            color=ft.Colors.GREY_600,
+                            italic=True
+                        )
+                    ], spacing=4),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.GREEN_50,
+                    border_radius=5
+                )
+            ])
+        
+        # Contradictory citations details
+        if contradictory_citations:
+            verdict_components.extend([
+                ft.Container(
+                    content=ft.Text(
+                        f"Extracted Contradictory Citations ({len(contradictory_citations)}):",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.DEEP_ORANGE_700
+                    ),
+                    margin=ft.margin.only(top=10)
+                ),
+                ft.Text(
+                    f"Found {len(contradictory_citations)} specific citations that challenge the original claims. "
+                    f"These citations provide evidence that contradicts or questions the report's conclusions.",
+                    size=11,
+                    color=ft.Colors.GREY_800
+                )
+            ])
+            
+            # Show first few citations as examples
+            citation_examples = []
+            for i, cite in enumerate(contradictory_citations[:3], 1):
+                citation_obj = cite.get('citation', {})
+                if hasattr(citation_obj, 'relevant_text'):
+                    citation_examples.append(
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    f"Citation {i}: \"{getattr(citation_obj, 'relevant_text', '')[:100]}...\"",
+                                    size=10,
+                                    color=ft.Colors.GREY_700,
+                                    italic=True
+                                ),
+                                ft.Text(
+                                    f"Challenges: {cite.get('original_claim', '')[:80]}...",
+                                    size=9,
+                                    color=ft.Colors.ORANGE_600
+                                )
+                            ], spacing=2),
+                            padding=ft.padding.all(8),
+                            bgcolor=ft.Colors.ORANGE_50,
+                            border_radius=5
+                        )
+                    )
+            
+            if citation_examples:
+                verdict_components.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                "Sample Contradictory Citations:",
+                                size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.DEEP_ORANGE_800
+                            ),
+                            *citation_examples
+                        ], spacing=6),
+                        margin=ft.margin.only(top=8)
+                    )
+                )
+        
+        components.append(
+            ft.Container(
+                content=ft.Column(verdict_components, spacing=8),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.GREEN_50,
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.GREEN_200)
+            )
+        )
+        
+        return ft.Container(
+            content=ft.Column(components, spacing=15),
+            expand=True
+        )
+    
+    def _get_priority_color(self, priority: str) -> str:
+        """Get color based on priority level."""
+        if priority == "HIGH":
+            return ft.Colors.RED_700
+        elif priority == "MEDIUM":
+            return ft.Colors.ORANGE_700
+        else:
+            return ft.Colors.GREEN_700

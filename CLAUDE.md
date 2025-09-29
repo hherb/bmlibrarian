@@ -205,6 +205,7 @@ bmlibrarian/
 - **Type Safety**: Use type hints throughout the codebase
 - **Error Handling**: Robust error recovery and logging
 - **Model Standards**: Only use approved models (`gpt-oss:20b`, `medgemma4B_it_q8:latest`)
+- **Temporal Precision**: Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
 
 ### Agent Development Guidelines
 - **BaseAgent Pattern**: All agents inherit from BaseAgent with standardized interfaces

@@ -120,6 +120,7 @@ class WorkflowExecutor:
         self.documents = []
         self.scored_documents = []
         self.citations = []
+        self.counterfactual_analysis = None
         self.final_report = ""
         
         # Store model information for report footnotes
@@ -297,10 +298,30 @@ class WorkflowExecutor:
                 report_content = report
             else:
                 report_content = str(report)
-                
-            counterfactual_analysis = self.steps_handler.execute_counterfactual_analysis(
-                report_content, citations, update_callback
-            )
+            
+            # Check if comprehensive counterfactual analysis is enabled
+            comprehensive_cf = self.config_overrides.get('comprehensive_counterfactual', False)
+            
+            if comprehensive_cf:
+                print("🧠 Performing comprehensive counterfactual analysis with literature search...")
+                counterfactual_analysis = self.steps_handler.execute_comprehensive_counterfactual_analysis(
+                    report_content, citations, update_callback
+                )
+            else:
+                print("🧠 Performing basic counterfactual analysis...")
+                counterfactual_analysis = self.steps_handler.execute_counterfactual_analysis(
+                    report_content, citations, update_callback
+                )
+            
+            # Store counterfactual analysis for tab access IMMEDIATELY after getting it
+            self.counterfactual_analysis = counterfactual_analysis
+            print(f"🧠 Workflow stored counterfactual analysis for tab access: {bool(counterfactual_analysis)}")
+            
+            # Force a manual update callback to trigger tab updates
+            if counterfactual_analysis:
+                print(f"🔄 Triggering manual tab update for PERFORM_COUNTERFACTUAL_ANALYSIS")
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "tab_update",
+                              f"Tab update: Counterfactual analysis completed")
             
             # Steps 9-11: Complete remaining steps
             self.steps_handler.complete_remaining_steps(update_callback)
@@ -396,6 +417,7 @@ class WorkflowExecutor:
             'documents_scored': len(self.scored_documents),
             'citations_extracted': len(self.citations),
             'report_length': len(self.final_report),
+            'counterfactual_analysis_performed': bool(self.counterfactual_analysis),
             'interactive_mode': getattr(self, 'interactive_mode', False),
             'agent_models': self.agent_model_info
         }

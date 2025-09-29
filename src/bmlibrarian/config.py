@@ -67,12 +67,26 @@ DEFAULT_CONFIG = {
             "top_p": 0.8,
             "max_tokens": 6000,
             "comprehensive_format": True
+        },
+        "formatting": {
+            "require_specific_years": True,  # Use specific years instead of "recent study"
+            "temporal_precision": True  # Enforce precise temporal references in reports
         }
     },
     "database": {
         "max_results_per_query": 10,
         "batch_size": 50,
         "use_ranking": False
+    },
+    "search": {
+        "max_results": 100,  # Default maximum number of documents to retrieve
+        "score_threshold": 2.5,  # Minimum relevance score threshold
+        "max_documents_to_score": None,  # None = score all documents
+        "max_documents_for_citations": None,  # None = use all scored documents
+        "counterfactual_max_results": 10,  # Max results per counterfactual query
+        "counterfactual_min_score": 3,  # Min score for counterfactual evidence
+        "query_retry_attempts": 3,  # Number of times to retry failed tsquery with reformulation
+        "auto_fix_tsquery_syntax": True  # Automatically fix common tsquery syntax errors
     }
 }
 
@@ -191,6 +205,10 @@ class BMLibrarianConfig:
     def get_database_config(self) -> Dict[str, Any]:
         """Get database configuration."""
         return self._config["database"]
+    
+    def get_search_config(self) -> Dict[str, Any]:
+        """Get search configuration."""
+        return self._config["search"]
     
     def get(self, key_path: str, default=None):
         """
@@ -319,3 +337,7 @@ def get_agent_config(agent_type: str) -> Dict[str, Any]:
 def get_ollama_host() -> str:
     """Get Ollama host URL."""
     return get_config().get_ollama_config()["host"]
+
+def get_search_config() -> Dict[str, Any]:
+    """Get search configuration."""
+    return get_config().get_search_config()

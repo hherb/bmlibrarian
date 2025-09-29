@@ -124,6 +124,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 - Include evidence strength indicators (★★★★☆, etc.)
 - Use appropriate medical terminology consistently
 - Format citations in consistent academic style
+- IMPORTANT: Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
 
 Response Format:
 Return ONLY a valid JSON object with this exact structure:

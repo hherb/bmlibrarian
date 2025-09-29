@@ -55,9 +55,12 @@ class WorkflowStepsHandler:
             # Return the query_text that was potentially edited by the user
             return query_text
         
+        from ..config import get_search_config
+        search_config = get_search_config()
+        
         documents_generator = self.agents['query_agent'].find_abstracts(
             question=research_question,
-            max_rows=self.config_overrides.get('max_results', 50),
+            max_rows=self.config_overrides.get('max_results', search_config.get('max_results', 100)),
             human_in_the_loop=interactive_mode,
             human_query_modifier=query_modifier if interactive_mode else None
         )
@@ -93,9 +96,12 @@ class WorkflowStepsHandler:
         all_scored_documents = []  # Keep track of all scored docs for override application
         high_scoring = 0
         
-        # Get scoring configuration
-        score_threshold = self.config_overrides.get('score_threshold', 2.5)
-        max_docs_to_score = self.config_overrides.get('max_documents_to_score')
+        # Get scoring configuration from search config
+        from ..config import get_search_config
+        search_config = get_search_config()
+        
+        score_threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
+        max_docs_to_score = self.config_overrides.get('max_documents_to_score', search_config.get('max_documents_to_score'))
         
         # Score ALL documents unless explicitly limited
         if max_docs_to_score is None:
@@ -160,8 +166,11 @@ class WorkflowStepsHandler:
                       "Extracting relevant citations...")
         
         # Use ALL scored documents for citations unless explicitly limited
-        max_docs_for_citations = self.config_overrides.get('max_documents_for_citations')
-        score_threshold = self.config_overrides.get('score_threshold', 2.5)
+        from ..config import get_search_config
+        search_config = get_search_config()
+        
+        max_docs_for_citations = self.config_overrides.get('max_documents_for_citations', search_config.get('max_documents_for_citations'))
+        score_threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
         
         if max_docs_for_citations is None:
             docs_for_citations = scored_documents  # Use ALL scored documents
@@ -230,6 +239,40 @@ class WorkflowStepsHandler:
         
         return counterfactual_analysis
     
+    def execute_comprehensive_counterfactual_analysis(self, report_content: str, citations: List,
+                                                     update_callback: Callable) -> Any:
+        """Execute comprehensive counterfactual analysis with literature search.
+        
+        Args:
+            report_content: Content of the generated report
+            citations: List of citations used in the report
+            update_callback: Callback for status updates
+            
+        Returns:
+            Comprehensive counterfactual analysis results with contradictory evidence
+        """
+        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "running",
+                      "Performing comprehensive counterfactual analysis with literature search...")
+        
+        # Use the comprehensive find_contradictory_literature method
+        from ..config import get_search_config
+        search_config = get_search_config()
+        
+        comprehensive_analysis = self.agents['counterfactual_agent'].find_contradictory_literature(
+            document_content=report_content,
+            document_title="Research Report with Citations",
+            max_results_per_query=self.config_overrides.get('counterfactual_max_results', search_config.get('counterfactual_max_results', 10)),
+            min_relevance_score=self.config_overrides.get('counterfactual_min_score', search_config.get('counterfactual_min_score', 3)),
+            query_agent=self.agents.get('query_agent'),
+            scoring_agent=self.agents.get('scoring_agent'),
+            citation_agent=self.agents.get('citation_agent')
+        )
+        
+        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "completed",
+                      "Comprehensive counterfactual analysis complete with literature search")
+        
+        return comprehensive_analysis
+    
     def complete_remaining_steps(self, update_callback: Callable):
         """Complete the remaining workflow steps (placeholders for now).
         
@@ -266,5 +309,5 @@ class WorkflowStepsHandler:
             'high_scoring_documents': high_scoring,
             'extracted_citations': len(citations),
             'score_threshold': self.config_overrides.get('score_threshold', 2.5),
-            'max_results': self.config_overrides.get('max_results', 50)
+            'max_results': self.config_overrides.get('max_results', get_search_config().get('max_results', 100))
         }

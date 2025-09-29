@@ -285,7 +285,7 @@ def find_abstracts(
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
         {source_filter}
         {date_filter}
-        ORDER BY rank_score DESC
+        ORDER BY rank_score DESC, d.publication_date DESC NULLS LAST
         """
     else:
         base_query = f"""
@@ -294,6 +294,7 @@ def find_abstracts(
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
         {source_filter}
         {date_filter}
+        ORDER BY d.publication_date DESC NULLS LAST
         """
     
     # Add limit if specified

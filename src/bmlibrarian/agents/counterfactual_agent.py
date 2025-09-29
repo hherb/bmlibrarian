@@ -8,6 +8,7 @@ This is essential for rigorous academic research and evidence evaluation.
 
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,98 @@ from .base import BaseAgent
 from ..config import get_config, get_model, get_agent_config
 
 logger = logging.getLogger(__name__)
+
+
+def fix_tsquery_syntax(query: str) -> str:
+    """
+    Fix common PostgreSQL tsquery syntax errors.
+    
+    Args:
+        query: The original tsquery string
+        
+    Returns:
+        Fixed tsquery string with corrected syntax
+    """
+    # Remove any quotes around single words (they're not needed in tsquery)
+    query = re.sub(r"'(\w+)'", r'\1', query)
+    
+    # Replace 'OR' with '|' 
+    query = re.sub(r'\sOR\s', ' | ', query, flags=re.IGNORECASE)
+    
+    # Replace 'AND' with '&'
+    query = re.sub(r'\sAND\s', ' & ', query, flags=re.IGNORECASE)
+    
+    # Fix quoted phrases - keep quotes only for multi-word phrases
+    query = re.sub(r"'([^']*\s[^']*)'", r'"\1"', query)
+    
+    # Remove extra parentheses that might cause nesting issues
+    # Simplify complex nested expressions
+    while '((' in query and '))' in query:
+        query = re.sub(r'\(\(([^()]+)\)\)', r'(\1)', query)
+    
+    # Fix spaced operators
+    query = re.sub(r'\s*\|\s*', ' | ', query)
+    query = re.sub(r'\s*&\s*', ' & ', query)
+    
+    # Remove any remaining single quotes around operators
+    query = re.sub(r"'(\||\&)'", r'\1', query)
+    
+    return query.strip()
+
+
+def simplify_query_for_retry(query: str, attempt: int) -> str:
+    """
+    Progressively simplify a query for retry attempts.
+    
+    Args:
+        query: The query to simplify
+        attempt: The retry attempt number (1, 2, 3, etc.)
+        
+    Returns:
+        Simplified query string
+    """
+    if attempt == 1:
+        # First retry: Fix syntax and reduce nesting
+        query = fix_tsquery_syntax(query)
+        # Remove complex nested expressions
+        query = re.sub(r'\([^()]*\([^()]*\)[^()]*\)', lambda m: m.group(0).replace('(', '').replace(')', ''), query)
+        
+    elif attempt == 2:
+        # Second retry: Further simplification - split OR groups
+        query = fix_tsquery_syntax(query)
+        # Convert complex OR expressions to simpler ones
+        query = re.sub(r'\([^()]*\|[^()]*\)', lambda m: m.group(0).split(' | ')[0].replace('(', '').replace(')', ''), query)
+        
+    elif attempt >= 3:
+        # Final retry: Extract main keywords only
+        query = fix_tsquery_syntax(query)
+        # Extract just the main terms, remove operators
+        terms = re.findall(r'\b[a-zA-Z]{3,}\b', query)
+        if terms:
+            query = ' & '.join(terms[:5])  # Use first 5 main terms only
+        
+    return query
+
+
+def extract_keywords_from_question(question: str) -> str:
+    """
+    Extract main keywords from a research question as fallback query.
+    
+    Args:
+        question: Research question text
+        
+    Returns:
+        Simple keyword-based tsquery
+    """
+    # Remove common question words
+    stop_words = {'are', 'is', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'there', 'studies', 'showing', 'compared'}
+    
+    # Extract meaningful words (3+ characters, not stop words)
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', question.lower())
+    keywords = [word for word in words if word not in stop_words]
+    
+    # Take first 4-5 most relevant keywords
+    return ' & '.join(keywords[:5]) if keywords else 'medical'
 
 
 @dataclass
@@ -597,37 +690,37 @@ Confidence in Original Claims: {analysis.confidence_level}
             from .scoring_agent import DocumentScoringAgent
             scoring_agent = DocumentScoringAgent(model=get_model("scoring_agent"))
         
+        # Get retry configuration
+        from ..config import get_search_config
+        search_config = get_search_config()
+        max_retries = search_config.get('query_retry_attempts', 3)
+        auto_fix_syntax = search_config.get('auto_fix_tsquery_syntax', True)
+        
         for query_info in research_queries:
             self._call_callback("database_search", f"Searching: {query_info['target_claim']}")
             
-            try:
-                # find_abstracts returns a generator and uses max_rows parameter
-                results_generator = find_abstracts(
-                    query_info['db_query'], 
-                    max_rows=max_results_per_query,
-                    plain=False  # Use advanced to_tsquery syntax
-                )
-                
-                # Convert generator to list and check if results exist
-                results = list(results_generator)
-                
-                if results:
-                    # Score documents for relevance
-                    for result in results:
-                        score_result = scoring_agent.evaluate_document(
-                            query_info['question'], result
-                        )
-                        
-                        if score_result and score_result['score'] >= min_relevance_score:
-                            all_contradictory_evidence.append({
-                                'document': result,
-                                'score': score_result['score'],
-                                'reasoning': score_result['reasoning'],
-                                'query_info': query_info
-                            })
-                            
-            except Exception as e:
-                logger.warning(f"Database search failed for query '{query_info['question']}': {e}")
+            # Try database search with retry mechanism
+            results = self._search_with_retry(
+                query_info, 
+                max_results_per_query, 
+                max_retries,
+                auto_fix_syntax
+            )
+            
+            if results:
+                # Score documents for relevance
+                for result in results:
+                    score_result = scoring_agent.evaluate_document(
+                        query_info['question'], result
+                    )
+                    
+                    if score_result and score_result['score'] >= min_relevance_score:
+                        all_contradictory_evidence.append({
+                            'document': result,
+                            'score': score_result['score'],
+                            'reasoning': score_result['reasoning'],
+                            'query_info': query_info
+                        })
         
         result['contradictory_evidence'] = all_contradictory_evidence
         
@@ -679,3 +772,101 @@ Confidence in Original Claims: {analysis.confidence_level}
         }
         
         return result
+    
+    def _search_with_retry(self, query_info: Dict[str, str], max_results: int, max_retries: int, auto_fix_syntax: bool) -> List[Dict]:
+        """
+        Search database with automatic retry and query reformulation on syntax errors.
+        
+        Args:
+            query_info: Dictionary containing 'db_query', 'question', and 'target_claim'
+            max_results: Maximum number of results to return
+            max_retries: Maximum number of retry attempts
+            auto_fix_syntax: Whether to automatically fix syntax errors
+            
+        Returns:
+            List of document dictionaries, or empty list if all attempts fail
+        """
+        try:
+            from ..database import find_abstracts
+        except ImportError:
+            logger.error("Database module not available")
+            return []
+        
+        original_query = query_info['db_query']
+        question = query_info['question']
+        target_claim = query_info['target_claim']
+        
+        for attempt in range(max_retries + 1):  # +1 for the original attempt
+            try:
+                if attempt == 0:
+                    # First attempt: use original query
+                    current_query = original_query
+                    self._call_callback("database_search", f"Attempting search: {target_claim[:50]}...")
+                else:
+                    # Retry attempts: reformulate query
+                    if auto_fix_syntax:
+                        current_query = simplify_query_for_retry(original_query, attempt)
+                    else:
+                        # Fallback to keywords if no auto-fix
+                        current_query = extract_keywords_from_question(question)
+                    
+                    self._call_callback(
+                        "database_search", 
+                        f"Retry {attempt}/{max_retries}: Reformulated query for '{target_claim[:40]}...'"
+                    )
+                    logger.info(f"Query retry {attempt}: '{original_query}' -> '{current_query}'")
+                
+                # Attempt database search
+                results_generator = find_abstracts(
+                    current_query,
+                    max_rows=max_results,
+                    plain=False  # Use advanced to_tsquery syntax
+                )
+                
+                # Convert generator to list
+                results = list(results_generator)
+                
+                if results:
+                    # Success! Log and return results
+                    if attempt > 0:
+                        logger.info(f"Query retry {attempt} succeeded with {len(results)} results")
+                        self._call_callback("database_search", f"Retry {attempt} succeeded: {len(results)} results found")
+                    else:
+                        logger.debug(f"Query succeeded on first attempt: {len(results)} results")
+                    
+                    return results
+                else:
+                    # No results, but no error - this is not a syntax error
+                    if attempt == 0:
+                        logger.info(f"Query returned no results: '{current_query}'")
+                    continue
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Check if this is a tsquery syntax error
+                if 'syntax error in tsquery' in error_msg or 'tsquery' in error_msg:
+                    if attempt < max_retries:
+                        logger.warning(f"tsquery syntax error on attempt {attempt + 1}: {e}")
+                        self._call_callback(
+                            "database_search", 
+                            f"Query syntax error, attempting reformulation (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        continue  # Try next reformulation
+                    else:
+                        # Final attempt failed with syntax error
+                        logger.error(f"Query failed after {max_retries} retries with syntax error: {e}")
+                        self._call_callback(
+                            "database_search", 
+                            f"Query failed after {max_retries} retries: {str(e)[:100]}..."
+                        )
+                        break
+                else:
+                    # Non-syntax error (database connection, etc.)
+                    logger.error(f"Database search failed with non-syntax error: {e}")
+                    self._call_callback("database_search", f"Database error: {str(e)[:100]}...")
+                    break
+        
+        # All attempts failed
+        logger.warning(f"All {max_retries + 1} search attempts failed for question: '{question[:100]}...'")
+        return []

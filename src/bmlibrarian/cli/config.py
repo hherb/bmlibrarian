@@ -16,12 +16,12 @@ from typing import Optional, Dict, Any
 class CLIConfig:
     """Configuration settings for the BMLibrarian CLI."""
     
-    # Search settings
-    max_search_results: int = 100
+    # Search settings - defaults will be loaded from global config
+    max_search_results: int = 100  # Will be updated from search config
     max_documents_display: int = 10
     
-    # Scoring and filtering thresholds
-    default_score_threshold: float = 2.5
+    # Scoring and filtering thresholds - defaults will be loaded from global config
+    default_score_threshold: float = 2.5  # Will be updated from search config
     default_min_relevance: float = 0.7
     
     # Processing settings
@@ -41,7 +41,22 @@ class CLIConfig:
     
     def __post_init__(self):
         """Validate configuration after initialization."""
+        self._load_search_defaults()
         self.validate()
+    
+    def _load_search_defaults(self):
+        """Load default values from global search configuration."""
+        try:
+            from ..config import get_search_config
+            search_config = get_search_config()
+            
+            # Update defaults from search configuration if not already set by CLI args
+            if hasattr(self, '_from_defaults'):
+                self.max_search_results = search_config.get('max_results', 100)
+                self.default_score_threshold = search_config.get('score_threshold', 2.5)
+        except Exception:
+            # If config loading fails, keep hardcoded defaults
+            pass
     
     def validate(self) -> None:
         """Validate configuration values."""

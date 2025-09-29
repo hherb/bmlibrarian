@@ -400,6 +400,7 @@ Your task:
 2. Use formal medical writing style
 3. Include the reference number [{ref_number}] after relevant statements
 4. Start with a clear topic sentence
+5. IMPORTANT: Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
 
 Response format (JSON):
 {{
@@ -427,6 +428,7 @@ Your task:
 2. If NEW: Write 1-2 additional sentences with reference [{ref_number}]
 3. If SUPPORTING existing point: Add reference [{ref_number}] to existing sentence
 4. Maintain formal medical writing style
+5. IMPORTANT: Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
 
 Response format (JSON):
 {{
@@ -523,6 +525,7 @@ Your task:
 3. Preserve all reference numbers exactly as they appear
 4. Create a logical flow of information
 5. Add a concluding statement if appropriate
+6. IMPORTANT: Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
 
 Response format (JSON):
 {{
