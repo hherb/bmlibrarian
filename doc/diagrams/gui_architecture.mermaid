@@ -1,0 +1,70 @@
+graph TB
+    subgraph "Entry Points"
+        GUI_ENTRY[bmlibrarian_research_gui.py<br/>98 lines]
+        CONFIG_ENTRY[bmlibrarian_config_gui.py]
+    end
+    
+    subgraph "Main Application - Refactored"
+        RESEARCH_APP[research_app.py<br/>227 lines<br/>90% reduction!]
+        CONFIG_APP[config_app.py<br/>457 lines]
+    end
+    
+    subgraph "Modular GUI Architecture - NEW"
+        UI_BUILDER[ui_builder.py<br/>354 lines<br/>🔧 UI Component Builders]
+        TAB_MANAGER[tab_manager.py<br/>140 lines<br/>📑 Tab Management]
+        EVENT_HANDLERS[event_handlers.py<br/>330 lines<br/>⚡ Event Handling]
+        DATA_UPDATERS[data_updaters.py<br/>290 lines<br/>🔄 Data Updates]
+        DISPLAY_UTILS[display_utils.py<br/>570 lines<br/>🎨 Display Helpers]
+    end
+    
+    subgraph "Legacy Components - Unchanged"
+        COMPONENTS[components.py<br/>StepCard]
+        DIALOGS[dialogs.py<br/>DialogManager]
+        WORKFLOW[workflow.py<br/>WorkflowExecutor]
+    end
+    
+    subgraph "Backend Integration"
+        AGENTS[Multi-Agent System<br/>6 Specialized Agents]
+        ORCHESTRATOR[AgentOrchestrator<br/>Queue System]
+        CONFIG[Configuration System<br/>~/.bmlibrarian/config.json]
+    end
+    
+    %% Entry points to main apps
+    GUI_ENTRY --> RESEARCH_APP
+    CONFIG_ENTRY --> CONFIG_APP
+    
+    %% Main app dependencies
+    RESEARCH_APP --> UI_BUILDER
+    RESEARCH_APP --> TAB_MANAGER
+    RESEARCH_APP --> EVENT_HANDLERS
+    RESEARCH_APP --> DATA_UPDATERS
+    
+    %% Modular dependencies
+    EVENT_HANDLERS --> DATA_UPDATERS
+    DATA_UPDATERS --> DISPLAY_UTILS
+    TAB_MANAGER --> UI_BUILDER
+    DISPLAY_UTILS --> UI_BUILDER
+    
+    %% Legacy component integration
+    RESEARCH_APP --> COMPONENTS
+    RESEARCH_APP --> DIALOGS
+    RESEARCH_APP --> WORKFLOW
+    
+    %% Backend integration
+    WORKFLOW --> AGENTS
+    WORKFLOW --> ORCHESTRATOR
+    RESEARCH_APP --> CONFIG
+    CONFIG_APP --> CONFIG
+    
+    %% Styling
+    classDef new fill:#e8f5e8,stroke:#4caf50,stroke-width:3px
+    classDef refactored fill:#fff3e0,stroke:#ff9800,stroke-width:3px
+    classDef legacy fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    classDef backend fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef entry fill:#fce4ec,stroke:#e91e63,stroke-width:2px
+    
+    class UI_BUILDER,TAB_MANAGER,EVENT_HANDLERS,DATA_UPDATERS,DISPLAY_UTILS new
+    class RESEARCH_APP refactored
+    class COMPONENTS,DIALOGS,WORKFLOW legacy
+    class AGENTS,ORCHESTRATOR,CONFIG backend
+    class GUI_ENTRY,CONFIG_ENTRY entry
