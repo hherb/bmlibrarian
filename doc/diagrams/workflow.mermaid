@@ -1,0 +1,78 @@
+graph TD
+    A[Research Question Collection] --> B[Query Generation & Editing]
+    B --> C[Document Search]
+    C --> D[Search Results Review]
+    D --> E[Document Relevance Scoring]
+    E --> F[Citation Extraction]
+    F --> G[Report Generation]
+    G --> H{Counterfactual Analysis?}
+    H -->|Yes| I[Perform Counterfactual Analysis]
+    H -->|No| K[Edit Comprehensive Report]
+    I --> J{Search Contradictory Evidence?}
+    J -->|Yes| L[Search Contradictory Evidence]
+    J -->|No| K
+    L --> K
+    K --> M[Review & Revise Report]
+    M --> N{Export Report?}
+    N -->|Yes| O[Export Report]
+    N -->|No| P[End]
+    O --> P
+
+    %% Iterative/Repeatable Steps
+    B -.->|Refine Query| B
+    D -.->|Review Again| D
+    E -.->|Adjust Thresholds| E
+    F -.->|More Citations| F
+    M -.->|Revise Again| M
+
+    %% Agent Types
+    subgraph "Agents Involved"
+        QA[QueryAgent<br/>Natural Language → SQL]
+        SA[ScoringAgent<br/>Relevance Scoring 1–5]
+        CA[CitationAgent<br/>Extract Passages]
+        RA[ReportingAgent<br/>Synthesize Reports]
+        CFA[CounterfactualAgent<br/>Find Contradictions]
+        EA[EditorAgent<br/>Balanced Integration]
+    end
+
+    %% Connect agents to workflow steps
+    QA -.-> B
+    QA -.-> C
+    SA -.-> E
+    CA -.-> F
+    RA -.-> G
+    CFA -.-> I
+    CFA -.-> L
+    EA -.-> K
+
+    %% Database and System Components
+    subgraph "Infrastructure"
+        DB[(PostgreSQL<br/>with pgvector)]
+        LLM[Ollama<br/>Local LLMs]
+        QUEUE[SQLite Queue<br/>Task Management]
+    end
+
+    C -.-> DB
+    E -.-> LLM
+    F -.-> LLM
+    G -.-> LLM
+    I -.-> LLM
+    K -.-> LLM
+
+    QUEUE -.-> QA
+    QUEUE -.-> SA
+    QUEUE -.-> CA
+    QUEUE -.-> RA
+    QUEUE -.-> CFA
+    QUEUE -.-> EA
+
+    %% Styling
+    classDef optional fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef repeatable fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,stroke-dasharray:5 5
+    classDef agent fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef infrastructure fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+
+    class H,I,J,L,N,O optional
+    class B,D,E,F,M repeatable
+    class QA,SA,CA,RA,CFA,EA agent
+    class DB,LLM,QUEUE infrastructure
