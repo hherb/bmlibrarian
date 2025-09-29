@@ -58,7 +58,7 @@ class InteractiveHandler:
             try:
                 step_card.enable_inline_editing(query_text, handle_edit_result)
                 # Trigger a page update to show the editing interface
-                self._trigger_page_update(update_callback)
+                self._trigger_page_update(update_callback, WorkflowStep.GENERATE_AND_EDIT_QUERY)
                 print("Inline query editing enabled successfully")
             except Exception as e:
                 print(f"Error enabling inline editing: {e} - auto-approving query")
@@ -91,27 +91,15 @@ class InteractiveHandler:
     def get_user_approval_for_search_results(self, documents: List[Dict[str, Any]], 
                                            update_callback: Callable) -> bool:
         """Get user approval for search results in interactive mode."""
-        # Show informational content and auto-approve after brief pause
-        doc_details = ""
-        for i, doc in enumerate(documents[:5], 1):  # Show first 5 documents
-            title = doc.get('title', 'Untitled')[:60]
-            doc_details += f"{i}. {title}\n"
-        
-        if len(documents) > 5:
-            doc_details += f"... and {len(documents) - 5} more documents\n"
-        
+        # Show detailed search results with expandable abstracts
         content = f"""Found {len(documents)} documents for your research question.
 
-First few results:
-{doc_details}
-Interactive mode: Review the search results above. Proceeding automatically in 3 seconds..."""
+Interactive mode: Review the detailed search results below. Click on any document to expand and view the full abstract."""
         
         update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "waiting", content)
         
-        # Brief pause to let user see the results
-        time.sleep(3)
-        
-        return True  # Auto-approve after showing results
+        # Show interactive document search results interface
+        return self._show_interactive_search_results(documents, update_callback)
     
     def get_user_approval_for_scores(self, documents: List, scored_documents: List, threshold: float, 
                                    update_callback: Callable) -> dict:
@@ -241,16 +229,70 @@ First few citations:
         
         return True  # Auto-approve after showing citations
     
+    def _show_interactive_search_results(self, documents: List[Dict[str, Any]], 
+                                       update_callback: Callable) -> bool:
+        """Show interactive search results interface with expandable document listings."""
+        print(f"Showing interactive search results for {len(documents)} documents")
+        
+        # Get the step card for search results review and enable search results display
+        step_card = self._get_step_card(WorkflowStep.REVIEW_SEARCH_RESULTS)
+        print(f"Retrieved step card for search results review: {step_card is not None}")
+        
+        if step_card:
+            try:
+                print(f"Enabling document search results display...")
+                step_card.enable_document_search_results(documents)
+                print("Search results display enabled on step card")
+                
+                # Check if the search results container was created
+                if hasattr(step_card, 'search_results_container') and step_card.search_results_container:
+                    print("✅ Search results container was created successfully")
+                else:
+                    print("❌ Search results container was NOT created")
+                
+                # Update the step to force a UI refresh
+                update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "waiting",
+                              f"📋 Interactive review: {len(documents)} documents found. Click to expand any document and view full abstract.")
+                print("Step status updated via callback")
+                
+            except Exception as e:
+                print(f"Error enabling search results display: {e}")
+                return True
+        else:
+            print("Step card not found - auto-approving search results")
+            return True
+        
+        # Give user time to review the results (auto-approve after timeout)
+        print("Workflow paused: Showing interactive search results for 10 seconds...")
+        timeout = 10  # 10 second timeout for search results review
+        time.sleep(timeout)
+        
+        # Auto-complete the review and clean up
+        update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "completed",
+                      f"Reviewed {len(documents)} search results")
+        
+        # Disable search results interface
+        if step_card:
+            try:
+                step_card.disable_document_search_results()
+                print("Search results display disabled")
+            except Exception as e:
+                print(f"Error disabling search results display: {e}")
+        
+        print("Interactive search results review completed.")
+        return True
+    
     def _get_step_card(self, step: WorkflowStep):
         """Get the step card for a specific workflow step."""
         if self.step_cards and step in self.step_cards:
             return self.step_cards[step]
         return None
     
-    def _trigger_page_update(self, update_callback: Callable):
+    def _trigger_page_update(self, update_callback: Callable, step: WorkflowStep = None):
         """Trigger a page update to refresh the UI."""
         try:
-            # Call the update callback to trigger a page refresh
-            update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "waiting", "")
+            # Call the update callback to trigger a page refresh for the appropriate step
+            target_step = step or WorkflowStep.REVIEW_SEARCH_RESULTS
+            update_callback(target_step, "waiting", "")
         except Exception as e:
             print(f"Error triggering page update: {e}")

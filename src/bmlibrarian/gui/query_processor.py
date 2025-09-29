@@ -24,6 +24,12 @@ class QueryProcessor:
         if not query:
             return query
         
+        # Remove common prefixes that might be included in the query
+        prefixes_to_remove = ['to_tsquery:', 'tsquery:', 'query:', 'search:']
+        for prefix in prefixes_to_remove:
+            if query.lower().startswith(prefix.lower()):
+                query = query[len(prefix):].strip()
+        
         # Remove markdown code block backticks
         # Handle both single backticks and triple backticks
         query = re.sub(r'^```.*?\n?', '', query, flags=re.MULTILINE)  # Remove opening ```

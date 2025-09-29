@@ -67,6 +67,12 @@ class ResearchGUI:
             WorkflowStep.EDIT_COMPREHENSIVE_REPORT,
             WorkflowStep.EXPORT_REPORT
         ]
+        
+        # Literature and scoring data for tabs
+        self.documents = []
+        self.scored_documents = []
+        self.literature_tab_content = None
+        self.scoring_tab_content = None
     
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -217,45 +223,8 @@ class ResearchGUI:
             margin=ft.margin.only(bottom=15)
         )
         
-        # Create step cards
-        self._create_step_cards()
-        
-        # Create collapsible workflow steps section
-        steps_column = ft.Column(
-            [card.build() for card in self.step_cards.values()],
-            spacing=8
-        )
-        
-        workflow_content = ft.Container(
-            content=ft.Column([steps_column], scroll=ft.ScrollMode.AUTO),
-            height=350
-        )
-        
-        self.workflow_expansion = ft.ExpansionTile(
-            title=ft.Text(
-                "Research Workflow Progress",
-                size=16,
-                weight=ft.FontWeight.W_600,
-                color=ft.Colors.BLUE_700
-            ),
-            subtitle=ft.Text(
-                "Click to expand/collapse workflow steps",
-                size=12,
-                color=ft.Colors.GREY_600
-            ),
-            controls=[workflow_content],
-            initially_expanded=True,
-            bgcolor=ft.Colors.WHITE
-        )
-        
-        workflow_section = ft.Container(
-            content=self.workflow_expansion,
-            padding=ft.padding.all(10),
-            bgcolor=ft.Colors.WHITE,
-            border_radius=10,
-            border=ft.border.all(1, ft.Colors.GREY_300),
-            margin=ft.margin.only(bottom=15)
-        )
+        # Create tabbed interface
+        self._create_tabbed_interface()
         
         # Report display section
         self._create_report_section()
@@ -264,14 +233,123 @@ class ResearchGUI:
         main_content = ft.Column([
             header,
             controls_section,
-            workflow_section,
+            ft.Container(
+                content=self.tabs_container,
+                expand=True  # Tabs get most of the space
+            ),
             ft.Container(
                 content=self.report_card,
-                expand=True  # Report section gets remaining space
+                height=200  # Fixed height for report section
             )
         ], spacing=8, expand=True)
         
         self.page.add(main_content)
+    
+    def _create_tabbed_interface(self):
+        """Create the tabbed interface with Workflow, Literature, and Scoring tabs."""
+        # Create step cards first
+        self._create_step_cards()
+        
+        # Create workflow tab content
+        workflow_tab = self._create_workflow_tab()
+        
+        # Create literature tab content (initially empty)
+        literature_tab = self._create_literature_tab()
+        
+        # Create scoring tab content (initially empty)
+        scoring_tab = self._create_scoring_tab()
+        
+        # Create tabs
+        self.tabs_container = ft.Tabs(
+            selected_index=0,
+            animation_duration=300,
+            tabs=[
+                ft.Tab(
+                    text="Workflow",
+                    icon=ft.Icons.TIMELINE,
+                    content=workflow_tab
+                ),
+                ft.Tab(
+                    text="Literature",
+                    icon=ft.Icons.LIBRARY_BOOKS,
+                    content=literature_tab
+                ),
+                ft.Tab(
+                    text="Scoring",
+                    icon=ft.Icons.ANALYTICS,
+                    content=scoring_tab
+                )
+            ],
+            tab_alignment=ft.TabAlignment.START
+        )
+    
+    def _create_workflow_tab(self):
+        """Create the workflow progress tab content."""
+        steps_column = ft.Column(
+            [card.build() for card in self.step_cards.values()],
+            spacing=8
+        )
+        
+        workflow_content = ft.Container(
+            content=ft.Column([steps_column], scroll=ft.ScrollMode.AUTO),
+            expand=True
+        )
+        
+        return workflow_content
+    
+    def _create_literature_tab(self):
+        """Create the literature review tab content."""
+        self.literature_tab_content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    "Literature Review",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Text(
+                    "Documents will appear here after search is completed.",
+                    size=14,
+                    color=ft.Colors.GREY_600
+                ),
+                ft.Container(
+                    content=ft.Text("No documents found yet."),
+                    padding=ft.padding.all(20),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        return self.literature_tab_content
+    
+    def _create_scoring_tab(self):
+        """Create the scoring results tab content."""
+        self.scoring_tab_content = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    "Document Scoring Results",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700
+                ),
+                ft.Text(
+                    "Scored documents will appear here ordered by relevance score.",
+                    size=14,
+                    color=ft.Colors.GREY_600
+                ),
+                ft.Container(
+                    content=ft.Text("No scored documents yet."),
+                    padding=ft.padding.all(20),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        return self.scoring_tab_content
     
     def _create_step_cards(self):
         """Create step cards for each workflow step."""
@@ -421,6 +499,28 @@ class ResearchGUI:
                 else:
                     print("No final report generated by workflow")
                 
+                # Final check and update for tabs after workflow completion
+                print("🔍 Final tab update check after workflow completion...")
+                print(f"🗂️ Workflow executor has 'documents' attr: {hasattr(self.workflow_executor, 'documents')}")
+                if hasattr(self.workflow_executor, 'documents'):
+                    docs = self.workflow_executor.documents
+                    print(f"📚 Workflow executor documents count: {len(docs) if docs else 0}")
+                    if docs:
+                        print(f"📖 Final update: Updating literature tab with {len(docs)} documents")
+                        self.update_documents(docs)
+                    else:
+                        print(f"❌ Final update: No documents in workflow_executor.documents")
+                
+                print(f"📊 Workflow executor has 'scored_documents' attr: {hasattr(self.workflow_executor, 'scored_documents')}")
+                if hasattr(self.workflow_executor, 'scored_documents'):
+                    scored_docs = self.workflow_executor.scored_documents  
+                    print(f"📈 Workflow executor scored documents count: {len(scored_docs) if scored_docs else 0}")
+                    if scored_docs:
+                        print(f"📊 Final update: Updating scoring tab with {len(scored_docs)} scored documents")
+                        self.update_scored_documents(scored_docs)
+                    else:
+                        print(f"❌ Final update: No scored documents in workflow_executor.scored_documents")
+                
             except Exception as ex:
                 self._handle_workflow_error(ex)
             finally:
@@ -437,8 +537,287 @@ class ResearchGUI:
         """Update a step's status and content."""
         if step in self.step_cards:
             self.step_cards[step].update_status(status, content)
+            
+            # Debug logging
+            # print(f"Step update: {step.name} -> {status}")
+            
+            # Update tabs when documents are found or scored
+            if step == WorkflowStep.SEARCH_DOCUMENTS and (status == "completed" or status == "tab_update"):
+                print(f"🔍 SEARCH_DOCUMENTS {status} - checking for documents...")
+                if hasattr(self.workflow_executor, 'documents'):
+                    docs = self.workflow_executor.documents
+                    print(f"📚 Found {len(docs)} documents in workflow_executor")
+                    if docs:
+                        print(f"✅ Updating Literature tab with {len(docs)} documents")
+                        self.update_documents(docs)
+                    else:
+                        print(f"❌ No documents to update Literature tab")
+                else:
+                    print(f"❌ workflow_executor has no 'documents' attribute")
+                    
+            elif step == WorkflowStep.SCORE_DOCUMENTS and (status == "completed" or status == "tab_update"):
+                print(f"📊 SCORE_DOCUMENTS {status} - checking for scored documents...")
+                if hasattr(self.workflow_executor, 'scored_documents'):
+                    scored_docs = self.workflow_executor.scored_documents
+                    print(f"📈 Found {len(scored_docs)} scored documents in workflow_executor")
+                    if scored_docs:
+                        print(f"✅ Updating Scoring tab with {len(scored_docs)} scored documents")
+                        self.update_scored_documents(scored_docs)
+                    else:
+                        print(f"❌ No scored documents to update Scoring tab")
+                else:
+                    print(f"❌ workflow_executor has no 'scored_documents' attribute")
+            
             if self.page:
                 self.page.update()
+    
+    def update_documents(self, documents):
+        """Update the documents list and refresh the literature tab."""
+        print(f"📖 update_documents called with {len(documents)} documents")
+        self.documents = documents
+        print(f"📚 Stored {len(self.documents)} documents in app.documents")
+        print(f"📄 Calling _update_literature_tab...")
+        self._update_literature_tab()
+        print(f"📱 Updating page...")
+        if self.page:
+            self.page.update()
+        print(f"✅ Literature tab update completed")
+    
+    def update_scored_documents(self, scored_documents):
+        """Update the scored documents and refresh the scoring tab."""
+        self.scored_documents = scored_documents
+        self._update_scoring_tab()
+        if self.page:
+            self.page.update()
+    
+    def _update_literature_tab(self):
+        """Update the literature tab with found documents."""
+        print(f"📚 _update_literature_tab called")
+        print(f"🔢 Documents count: {len(self.documents) if self.documents else 0}")
+        print(f"📝 Literature tab content exists: {self.literature_tab_content is not None}")
+        
+        if not self.documents:
+            print(f"❌ No documents - exiting _update_literature_tab")
+            return
+        
+        # Create document cards for literature tab
+        doc_cards = []
+        
+        # Header with count
+        doc_cards.append(
+            ft.Text(
+                f"Literature Review ({len(self.documents)} documents found)",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        doc_cards.append(
+            ft.Text(
+                "All documents found in the search, ordered by search relevance.",
+                size=14,
+                color=ft.Colors.GREY_600
+            )
+        )
+        
+        # Create expandable cards for each document
+        for i, doc in enumerate(self.documents):
+            doc_card = self._create_document_card(i, doc, show_score=False)
+            doc_cards.append(doc_card)
+        
+        # Update the literature tab content
+        print(f"📋 Created {len(doc_cards)} document cards")
+        if self.literature_tab_content:
+            print(f"✅ Updating literature_tab_content with {len(doc_cards)} cards")
+            self.literature_tab_content.content = ft.Column(
+                doc_cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            )
+            print(f"✅ Literature tab content updated successfully")
+        else:
+            print(f"❌ literature_tab_content is None - cannot update!")
+    
+    def _update_scoring_tab(self):
+        """Update the scoring tab with scored documents ordered by score."""
+        if not self.scored_documents:
+            return
+        
+        # Sort documents by score (highest first)
+        sorted_docs = sorted(self.scored_documents, 
+                           key=lambda x: x[1].get('score', 0), reverse=True)
+        
+        # Create document cards for scoring tab
+        doc_cards = []
+        
+        # Header with count
+        doc_cards.append(
+            ft.Text(
+                f"Document Scoring Results ({len(sorted_docs)} documents scored)",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            )
+        )
+        
+        doc_cards.append(
+            ft.Text(
+                "Documents ordered by AI relevance score (highest to lowest).",
+                size=14,
+                color=ft.Colors.GREY_600
+            )
+        )
+        
+        # Create expandable cards for each scored document
+        for i, (doc, scoring_result) in enumerate(sorted_docs):
+            doc_card = self._create_document_card(i, doc, show_score=True, scoring_result=scoring_result)
+            doc_cards.append(doc_card)
+        
+        # Update the scoring tab content
+        if self.scoring_tab_content:
+            self.scoring_tab_content.content = ft.Column(
+                doc_cards,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            )
+    
+    def _create_document_card(self, index: int, doc: dict, show_score: bool = False, scoring_result: dict = None):
+        """Create an expandable card for a document.
+        
+        Args:
+            index: Document index
+            doc: Document dictionary
+            show_score: Whether to show scoring information
+            scoring_result: Scoring result dictionary (if show_score is True)
+        """
+        title = doc.get('title', 'Untitled Document')
+        abstract = doc.get('abstract', 'No abstract available')
+        year = doc.get('year', 'Unknown year')
+        authors = doc.get('authors', 'Unknown authors')
+        
+        # Truncate title for display
+        display_title = title[:80] + "..." if len(title) > 80 else title
+        
+        # Create title row with optional score
+        title_row = [
+            ft.Text(
+                f"{index + 1}. {display_title}",
+                size=12,
+                weight=ft.FontWeight.W_500,
+                color=ft.Colors.BLUE_800
+            )
+        ]
+        
+        if show_score and scoring_result:
+            score = scoring_result.get('score', 0)
+            score_color = self._get_score_color(score)
+            title_row.append(
+                ft.Container(
+                    content=ft.Text(
+                        f"{score:.1f}",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.WHITE
+                    ),
+                    bgcolor=score_color,
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    border_radius=12,
+                    margin=ft.margin.only(left=10)
+                )
+            )
+        
+        # Create subtitle with year
+        subtitle_text = f"Year: {year}"
+        if show_score and scoring_result:
+            reasoning = scoring_result.get('reasoning', 'No reasoning provided')[:50] + "..."
+            subtitle_text += f" | {reasoning}"
+        
+        # Create expansion tile
+        return ft.ExpansionTile(
+            title=ft.Row(title_row, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            subtitle=ft.Text(
+                subtitle_text,
+                size=11,
+                color=ft.Colors.GREY_600
+            ),
+            controls=[
+                ft.Container(
+                    content=ft.Column([
+                        # Full title
+                        ft.Container(
+                            content=ft.Text(
+                                f"Title: {title}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.BLUE_900
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Authors
+                        ft.Container(
+                            content=ft.Text(
+                                f"Authors: {authors}",
+                                size=10,
+                                color=ft.Colors.GREY_700
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Scoring details (if available)
+                        *([ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    f"AI Score: {scoring_result.get('score', 0):.1f}/5.0",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=self._get_score_color(scoring_result.get('score', 0))
+                                ),
+                                ft.Text(
+                                    f"Reasoning: {scoring_result.get('reasoning', 'No reasoning provided')}",
+                                    size=10,
+                                    color=ft.Colors.GREY_700
+                                )
+                            ], spacing=4),
+                            padding=ft.padding.only(bottom=8),
+                            bgcolor=ft.Colors.BLUE_50,
+                            border_radius=5
+                        )] if show_score and scoring_result else []),
+                        # Abstract
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    "Abstract:",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.BLACK
+                                ),
+                                ft.Text(
+                                    abstract,
+                                    size=10,
+                                    color=ft.Colors.GREY_800,
+                                    selectable=True
+                                )
+                            ], spacing=4),
+                            padding=ft.padding.all(8),
+                            bgcolor=ft.Colors.GREY_100,
+                            border_radius=5
+                        )
+                    ], spacing=4),
+                    padding=ft.padding.all(10)
+                )
+            ]
+        )
+    
+    def _get_score_color(self, score: float) -> str:
+        """Get color based on score value."""
+        if score >= 4.5:
+            return ft.Colors.GREEN_700
+        elif score >= 3.5:
+            return ft.Colors.BLUE_700
+        elif score >= 2.5:
+            return ft.Colors.ORANGE_700
+        else:
+            return ft.Colors.RED_700
     
     def _show_final_report(self):
         """Display the final research report."""

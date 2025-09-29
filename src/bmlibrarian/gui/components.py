@@ -5,7 +5,7 @@ Contains reusable UI components like StepCard for workflow progress tracking.
 """
 
 import flet as ft
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Dict
 from ..cli.workflow_steps import WorkflowStep
 
 
@@ -39,6 +39,11 @@ class StepCard:
         self.document_scoring_data = None
         self.score_overrides = {}
         self.scoring_callback = None
+        
+        # Document search results components
+        self.search_results_mode = False
+        self.document_search_data = None
+        self.search_results_container = None
         
     def build(self) -> ft.ExpansionTile:
         """Build the expansion tile UI component."""
@@ -460,6 +465,178 @@ class StepCard:
         self.score_overrides = {}
         
         # Remove scoring container and restore normal content
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                # Restore original content structure
+                content_container.content.controls = [
+                    self.progress_bar,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]
+    
+    def enable_document_search_results(self, documents: List[Dict]):
+        """Enable document search results mode with expandable document listings.
+        
+        Args:
+            documents: List of all documents found in search
+        """
+        self.search_results_mode = True
+        self.document_search_data = {'documents': documents}
+        
+        print(f"Creating search results interface for {len(documents)} documents")
+        
+        # Update the content text to show search results summary first
+        summary_text = f"📋 Found {len(documents)} documents - click below to expand and browse all results"
+        if self.content_text:
+            self.content_text.value = summary_text
+        
+        # Create search results interface
+        results_controls = []
+        
+        # Header
+        results_controls.append(
+            ft.Text(
+                f"Search Results ({len(documents)} documents found)",
+                size=14,
+                weight=ft.FontWeight.BOLD
+            )
+        )
+        
+        results_controls.append(
+            ft.Text(
+                "Click on any document to expand and view the full abstract.",
+                size=12,
+                color=ft.Colors.GREY_600
+            )
+        )
+        
+        # Document result cards
+        for i, doc in enumerate(documents):
+            doc_card = self._create_document_result_card(i, doc)
+            results_controls.append(doc_card)
+        
+        # Create search results container
+        self.search_results_container = ft.Container(
+            content=ft.Column(results_controls, spacing=8, scroll=ft.ScrollMode.AUTO),
+            padding=ft.padding.all(10),
+            bgcolor=ft.Colors.GREEN_50,
+            border=ft.border.all(2, ft.Colors.GREEN_300),
+            border_radius=5,
+            height=600  # Fixed height with scrolling
+        )
+        
+        # Replace content container with search results container
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                # Add search results container after progress bar and before original content
+                content_container.content.controls = [
+                    self.progress_bar,
+                    self.search_results_container,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]
+                print("Search results container added to expansion tile controls")
+        
+        # Auto-expand the tile to show search results
+        if self.expansion_tile:
+            self.expansion_tile.initially_expanded = True
+            print("Expansion tile set to initially expanded")
+    
+    def _create_document_result_card(self, index: int, doc: dict) -> ft.ExpansionTile:
+        """Create an expandable card for displaying search result document.
+        
+        Args:
+            index: Document index in the search results
+            doc: Document dictionary with title, abstract, year, etc.
+            
+        Returns:
+            ExpansionTile widget for the document
+        """
+        title = doc.get('title', 'Untitled Document')
+        abstract = doc.get('abstract', 'No abstract available')
+        year = doc.get('year', 'Unknown year')
+        authors = doc.get('authors', 'Unknown authors')
+        
+        # Truncate title for display
+        display_title = title[:80] + "..." if len(title) > 80 else title
+        
+        # Create expansion tile for document
+        return ft.ExpansionTile(
+            title=ft.Text(
+                f"{index + 1}. {display_title}",
+                size=12,
+                weight=ft.FontWeight.W_500,
+                color=ft.Colors.BLUE_800
+            ),
+            subtitle=ft.Text(
+                f"Year: {year}",
+                size=11,
+                color=ft.Colors.GREY_600
+            ),
+            controls=[
+                ft.Container(
+                    content=ft.Column([
+                        # Full title
+                        ft.Container(
+                            content=ft.Text(
+                                f"Title: {title}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.BLUE_900
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Authors
+                        ft.Container(
+                            content=ft.Text(
+                                f"Authors: {authors}",
+                                size=10,
+                                color=ft.Colors.GREY_700
+                            ),
+                            padding=ft.padding.only(bottom=8)
+                        ),
+                        # Abstract
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(
+                                    "Abstract:",
+                                    size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.BLACK
+                                ),
+                                ft.Text(
+                                    abstract,
+                                    size=10,
+                                    color=ft.Colors.GREY_800,
+                                    selectable=True
+                                )
+                            ], spacing=4),
+                            padding=ft.padding.all(8),
+                            bgcolor=ft.Colors.GREY_100,
+                            border_radius=5
+                        )
+                    ], spacing=4),
+                    padding=ft.padding.all(10)
+                )
+            ]
+        )
+    
+    def disable_document_search_results(self):
+        """Disable document search results mode and return to normal view."""
+        self.search_results_mode = False
+        self.document_search_data = None
+        
+        # Remove search results container and restore normal content
         if self.expansion_tile and len(self.expansion_tile.controls) > 0:
             content_container = self.expansion_tile.controls[0]
             if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):

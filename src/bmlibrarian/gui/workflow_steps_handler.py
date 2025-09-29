@@ -65,6 +65,9 @@ class WorkflowStepsHandler:
         # Convert generator to list
         documents = list(documents_generator)
         
+        # Store documents in the calling workflow BEFORE completing the step
+        # This ensures documents are available when the completion callback fires
+        
         update_callback(WorkflowStep.SEARCH_DOCUMENTS, "completed",
                       f"Found {len(documents)} documents")
         

@@ -5,7 +5,7 @@ Coordinates the research workflow using modular components for interaction,
 query processing, step execution, and report building.
 """
 
-from typing import Dict, Any, Callable, Optional
+from typing import Dict, Any, Callable, Optional, List
 from ..cli.workflow_steps import WorkflowStep
 from ..agents import (
     QueryAgent, DocumentScoringAgent, CitationFinderAgent,
@@ -116,6 +116,10 @@ class WorkflowExecutor:
         self.agents = agents
         self.config_overrides: Dict[str, Any] = config_overrides or {}
         
+        # Store workflow results for tab access
+        self.documents = []
+        self.scored_documents = []
+        
         # Initialize modular components
         self.interactive_handler = None
         self.query_processor = QueryProcessor()
@@ -193,18 +197,43 @@ class WorkflowExecutor:
                 research_question, query_text, update_callback, self.interactive_mode
             )
             
+            # Store documents for tab access IMMEDIATELY after getting them
+            self.documents = documents
+            print(f"🗂️ Workflow stored {len(documents)} documents for tab access")
+            
+            # Force a manual update callback to trigger tab updates since documents are now stored
+            print(f"🔄 Triggering manual tab update for SEARCH_DOCUMENTS")
+            update_callback(WorkflowStep.SEARCH_DOCUMENTS, "tab_update", 
+                          f"Tab update: {len(documents)} documents available")
+            
             # Step 4: Review Results
             if self.interactive_mode:
+                # Interactive mode: Show full expandable search results interface
                 if not self.interactive_handler.get_user_approval_for_search_results(documents, update_callback):
                     raise Exception("User cancelled workflow at search results review")
+            else:
+                # Auto mode: Show summary of search results with document list
+                doc_summary = self._create_document_summary(documents)
+                update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "completed",
+                              f"Found {len(documents)} documents:\n\n{doc_summary}")
             
-            update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "completed",
-                          "Search results approved")
+            if self.interactive_mode:
+                update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "completed",
+                              "Search results approved")
             
             # Step 5: Score Documents
             scored_documents = self.steps_handler.execute_document_scoring(
                 research_question, documents, update_callback
             )
+            
+            # Store scored documents for tab access IMMEDIATELY after getting them
+            self.scored_documents = scored_documents
+            print(f"📊 Workflow stored {len(scored_documents)} scored documents for tab access")
+            
+            # Force a manual update callback to trigger tab updates since scored documents are now stored
+            print(f"🔄 Triggering manual tab update for SCORE_DOCUMENTS")
+            update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
+                          f"Tab update: {len(scored_documents)} scored documents available")
             
             # Interactive review of scored documents with potential human overrides
             score_overrides = {}
@@ -220,6 +249,13 @@ class WorkflowExecutor:
                     scored_documents = self.steps_handler.execute_document_scoring(
                         research_question, documents, update_callback, score_overrides
                     )
+                    # Update stored scored documents
+                    self.scored_documents = scored_documents
+                    print(f"📊 Workflow updated scored documents with overrides: {len(scored_documents)} documents")
+                    
+                    # Trigger manual tab update for overrides
+                    update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
+                                  f"Tab update with overrides: {len(scored_documents)} scored documents")
             
             # Step 6: Extract Citations
             citations = self.steps_handler.execute_citation_extraction(
@@ -265,11 +301,28 @@ class WorkflowExecutor:
         except Exception as e:
             raise Exception(f"Workflow execution failed: {str(e)}")
     
-    
-    
-    
-    
-    
+    def _create_document_summary(self, documents: List[Dict]) -> str:
+        """Create a summary of documents for display in auto mode.
+        
+        Args:
+            documents: List of document dictionaries
+            
+        Returns:
+            Formatted string summary of documents
+        """
+        if not documents:
+            return "No documents found."
+        
+        summary_lines = []
+        for i, doc in enumerate(documents[:10], 1):  # Show first 10 documents
+            title = doc.get('title', 'Untitled Document')[:80]
+            year = doc.get('year', 'Unknown')
+            summary_lines.append(f"{i}. {title} ({year})")
+        
+        if len(documents) > 10:
+            summary_lines.append(f"... and {len(documents) - 10} more documents")
+        
+        return "\n".join(summary_lines)
     
     
     

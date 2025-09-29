@@ -150,6 +150,13 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         # Remove any surrounding quotes that the LLM might have added
         # Handle multiple layers of quotes if present
         query = query.strip()
+        
+        # Remove common prefixes that the LLM might include
+        prefixes_to_remove = ['to_tsquery:', 'tsquery:', 'query:', 'search:']
+        for prefix in prefixes_to_remove:
+            if query.lower().startswith(prefix.lower()):
+                query = query[len(prefix):].strip()
+        
         while ((query.startswith('"') and query.endswith('"')) or 
                (query.startswith("'") and query.endswith("'"))):
             query = query[1:-1].strip()
