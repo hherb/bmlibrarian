@@ -21,73 +21,143 @@ logger = logging.getLogger(__name__)
 
 def fix_tsquery_syntax(query: str) -> str:
     """
-    Fix common PostgreSQL tsquery syntax errors.
+    Fix PostgreSQL tsquery syntax errors without oversimplifying queries.
+    
+    Focuses on quote escaping and malformed syntax patterns that cause 
+    "syntax error in tsquery" without reducing query complexity.
     
     Args:
         query: The original tsquery string
         
     Returns:
-        Fixed tsquery string with corrected syntax
+        Fixed tsquery string with corrected syntax but preserved complexity
     """
-    # Remove any quotes around single words (they're not needed in tsquery)
-    query = re.sub(r"'(\w+)'", r'\1', query)
+    # Basic cleanup - remove function prefixes
+    query = query.strip()
+    if query.startswith(('to_tsquery:', 'tsquery:')):
+        query = re.sub(r'^[a-z_]+:\s*', '', query, flags=re.IGNORECASE)
     
-    # Replace 'OR' with '|' 
+    # Remove outer quotes that wrap the entire query
+    if (query.startswith('"') and query.endswith('"')) or (query.startswith("'") and query.endswith("'")):
+        query = query[1:-1]
+    
+    # CRITICAL FIX: Handle the specific malformed quote patterns causing errors
+    # Fix patterns like: '(''phrase''' -> 'phrase'
+    query = re.sub(r"'\(\s*''([^']+)''\s*'", r"'\1'", query)
+    query = re.sub(r"'\(\s*''([^']+)'''\s*'", r"'\1'", query)
+    
+    # Fix patterns like: '''phrase''' -> 'phrase'  
+    query = re.sub(r"'''([^']+)'''", r"'\1'", query)
+    query = re.sub(r"''([^']+)''", r"'\1'", query)
+    
+    # Fix quotes around operators: '&' -> &, '|' -> |
+    query = re.sub(r"'(\s*[&|]\s*)'", r'\1', query)
+    
+    # Fix quotes around parentheses: '(' -> (, ')' -> )
+    query = re.sub(r"'\s*\(\s*'", '(', query)
+    query = re.sub(r"'\s*\)\s*'", ')', query)
+    
+    # Convert double quotes to single quotes consistently
+    query = re.sub(r'"([^"]*)"', r"'\1'", query)
+    
+    # Handle operator syntax
     query = re.sub(r'\sOR\s', ' | ', query, flags=re.IGNORECASE)
-    
-    # Replace 'AND' with '&'
     query = re.sub(r'\sAND\s', ' & ', query, flags=re.IGNORECASE)
     
-    # Fix quoted phrases - keep quotes only for multi-word phrases
-    query = re.sub(r"'([^']*\s[^']*)'", r'"\1"', query)
-    
-    # Remove extra parentheses that might cause nesting issues
-    # Simplify complex nested expressions
-    while '((' in query and '))' in query:
-        query = re.sub(r'\(\(([^()]+)\)\)', r'(\1)', query)
-    
-    # Fix spaced operators
+    # Clean up spacing around operators (preserve structure)
     query = re.sub(r'\s*\|\s*', ' | ', query)
     query = re.sub(r'\s*&\s*', ' & ', query)
+    query = re.sub(r'\s*\(\s*', '(', query)
+    query = re.sub(r'\s*\)\s*', ')', query)
     
-    # Remove any remaining single quotes around operators
-    query = re.sub(r"'(\||\&)'", r'\1', query)
+    # Remove quotes around single words (PostgreSQL tsquery doesn't need them)
+    query = re.sub(r"'(\w+)'", r'\1', query)
     
-    return query.strip()
+    # Fix empty quoted strings
+    query = re.sub(r"'\s*'", '', query)
+    
+    # Clean up extra spaces
+    query = re.sub(r'\s+', ' ', query).strip()
+    
+    return query
 
 
 def simplify_query_for_retry(query: str, attempt: int) -> str:
     """
-    Progressively simplify a query for retry attempts.
+    Fix tsquery syntax errors with progressive approaches while preserving query complexity.
     
     Args:
-        query: The query to simplify
+        query: The query to fix
         attempt: The retry attempt number (1, 2, 3, etc.)
         
     Returns:
-        Simplified query string
+        Query string with syntax fixes applied
     """
     if attempt == 1:
-        # First retry: Fix syntax and reduce nesting
+        # First retry: Apply comprehensive syntax fixes but preserve structure
         query = fix_tsquery_syntax(query)
-        # Remove complex nested expressions
-        query = re.sub(r'\([^()]*\([^()]*\)[^()]*\)', lambda m: m.group(0).replace('(', '').replace(')', ''), query)
+        
+        # Additional fix for specific problematic patterns seen in errors
+        # Fix patterns like: & '('"phrase"')' -> & 'phrase'
+        query = re.sub(r"&\s*'\(\s*['\"]([^'\"]+)['\"]?\s*\)\s*'", r"& '\1'", query)
+        query = re.sub(r"\|\s*'\(\s*['\"]([^'\"]+)['\"]?\s*\)\s*'", r"| '\1'", query)
+        
+        # Fix standalone quotes around complex expressions
+        query = re.sub(r"'\s*\(([^)]+)\)\s*'", r'(\1)', query)
         
     elif attempt == 2:
-        # Second retry: Further simplification - split OR groups
+        # Second retry: More aggressive quote fixing while preserving logic
         query = fix_tsquery_syntax(query)
-        # Convert complex OR expressions to simpler ones
-        query = re.sub(r'\([^()]*\|[^()]*\)', lambda m: m.group(0).split(' | ')[0].replace('(', '').replace(')', ''), query)
+        
+        # Handle nested quote issues more aggressively  
+        # Fix pattern: (phrase1 | phrase2) & '('"phrase3"')' 
+        query = re.sub(r"'\(\s*['\"]([^'\"]+)['\"]?\s*\)'", r"'\1'", query)
+        
+        # Ensure proper phrase quoting - multi-word phrases get quotes, single words don't
+        def fix_phrase_quoting(text):
+            # Split on operators and parentheses while preserving them
+            parts = re.split(r'(\s*[&|()]\s*)', text)
+            fixed_parts = []
+            
+            for part in parts:
+                part = part.strip()
+                # Skip operators and parentheses
+                if not part or part in ['&', '|', '(', ')'] or re.match(r'^\s*[&|()]+\s*$', part):
+                    fixed_parts.append(part)
+                    continue
+                
+                # Clean existing quotes
+                clean_part = part.strip("'\"")
+                
+                # Quote multi-word phrases, leave single words unquoted
+                if ' ' in clean_part:
+                    # Escape internal quotes and wrap in quotes
+                    escaped = clean_part.replace("'", "''")
+                    fixed_parts.append(f"'{escaped}'")
+                else:
+                    fixed_parts.append(clean_part)
+            
+            return ''.join(fixed_parts)
+        
+        query = fix_phrase_quoting(query)
         
     elif attempt >= 3:
-        # Final retry: Extract main keywords only
+        # Final retry: Preserve original query but ensure basic syntax correctness
         query = fix_tsquery_syntax(query)
-        # Extract just the main terms, remove operators
-        terms = re.findall(r'\b[a-zA-Z]{3,}\b', query)
-        if terms:
-            query = ' & '.join(terms[:5])  # Use first 5 main terms only
         
-    return query
+        # Last resort fixes for any remaining syntax issues
+        # Remove any malformed quote combinations
+        query = re.sub(r"['\"]+'", "'", query)  # Multiple quotes become single quote
+        query = re.sub(r"'+['\"]", "'", query)  # Mixed quotes become single quote
+        
+        # Ensure no empty quoted expressions
+        query = re.sub(r"'\s*'", "", query)
+        
+        # Final operator cleanup
+        query = re.sub(r'\s*&\s*', ' & ', query)
+        query = re.sub(r'\s*\|\s*', ' | ', query)
+        
+    return query.strip()
 
 
 def extract_keywords_from_question(question: str) -> str:
@@ -460,7 +530,8 @@ SUPPORTING CITATIONS:
         """
         Clean and validate a PostgreSQL to_tsquery string.
         
-        Fixes common issues like unquoted multi-word phrases and invalid syntax.
+        Fixes syntax errors without oversimplifying the query structure.
+        Focuses on quote escaping and malformed patterns.
         
         Args:
             query: Raw query string from QueryAgent
@@ -468,57 +539,8 @@ SUPPORTING CITATIONS:
         Returns:
             Cleaned query string safe for PostgreSQL to_tsquery
         """
-        import re
-        
-        # Remove any function prefixes that the LLM might have added
-        query = query.strip()
-        
-        # Remove "to_tsquery:", "tsquery:", etc. prefixes
-        prefixes_to_remove = ['to_tsquery:', 'tsquery:', 'query:', 'search:']
-        for prefix in prefixes_to_remove:
-            if query.lower().startswith(prefix.lower()):
-                query = query[len(prefix):].strip()
-        
-        # Remove any outer quotes that might have been added
-        if query.startswith('"') and query.endswith('"'):
-            query = query[1:-1]
-        if query.startswith("'") and query.endswith("'"):
-            query = query[1:-1]
-        
-        # Find unquoted multi-word phrases and quote them
-        # Pattern: word spaces word that are not already quoted
-        def quote_unquoted_phrases(text):
-            # Split by operators but preserve them
-            parts = re.split(r'(\s*[&|()]\s*)', text)
-            result_parts = []
-            
-            for part in parts:
-                part = part.strip()
-                if not part or part in ['&', '|', '(', ')']:
-                    result_parts.append(part)
-                    continue
-                
-                # Check if this part contains spaces and isn't already quoted
-                if ' ' in part and not (part.startswith("'") and part.endswith("'")):
-                    # Quote it and escape internal quotes
-                    clean_part = part.replace("'", "''")
-                    result_parts.append(f"'{clean_part}'")
-                else:
-                    result_parts.append(part)
-            
-            return ' '.join(result_parts)
-        
-        # Apply the cleaning
-        cleaned_query = quote_unquoted_phrases(query)
-        
-        # Fix any double quotes that might have been created
-        cleaned_query = re.sub(r"'''+", "''", cleaned_query)  # Multiple single quotes to double quote
-        cleaned_query = re.sub(r'"""*', '"', cleaned_query)   # Multiple double quotes to single
-        
-        # Remove any double spaces and clean up
-        cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip()
-        
-        return cleaned_query
+        # Use the improved fix_tsquery_syntax function
+        return fix_tsquery_syntax(query)
 
     def generate_research_queries_with_agent(self, questions: List[CounterfactualQuestion], query_agent=None) -> List[Dict[str, str]]:
         """
@@ -544,16 +566,19 @@ SUPPORTING CITATIONS:
                 # The questions are now designed to be search-ready
                 db_query = query_agent.convert_question(question.question)
                 
+                # Clean the query to ensure PostgreSQL compatibility (fix double quotes)
+                cleaned_query = self._clean_tsquery(db_query)
+                
                 research_queries.append({
                     'question': question.question,
-                    'db_query': db_query,
+                    'db_query': cleaned_query,
                     'target_claim': question.target_claim,
                     'search_keywords': question.search_keywords,
                     'priority': question.priority,
                     'reasoning': question.reasoning
                 })
                 
-                logger.debug(f"Generated query for '{question.question[:50]}...': {db_query}")
+                logger.debug(f"Generated query for '{question.question[:50]}...': {cleaned_query}")
                 
             except Exception as e:
                 logger.warning(f"QueryAgent failed for question '{question.question}': {e}")

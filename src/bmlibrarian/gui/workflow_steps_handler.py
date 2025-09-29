@@ -77,7 +77,8 @@ class WorkflowStepsHandler:
         return documents
     
     def execute_document_scoring(self, research_question: str, documents: List[Dict],
-                               update_callback: Callable, score_overrides: Optional[Dict[int, float]] = None) -> List[Tuple[Dict, Dict]]:
+                               update_callback: Callable, score_overrides: Optional[Dict[int, float]] = None,
+                               progress_callback: Optional[Callable[[int, int, str], None]] = None) -> List[Tuple[Dict, Dict]]:
         """Execute the document scoring step with optional human overrides.
         
         Args:
@@ -85,6 +86,7 @@ class WorkflowStepsHandler:
             documents: List of documents to score
             update_callback: Callback for status updates
             score_overrides: Dictionary mapping document indices to human scores
+            progress_callback: Optional callback for progress updates (current, total, item_name)
             
         Returns:
             List of (document, scoring_result) tuples above threshold
@@ -111,32 +113,50 @@ class WorkflowStepsHandler:
             docs_to_process = documents[:max_docs_to_score]
             docs_to_score = min(max_docs_to_score, len(documents))
             
-        for i, doc in enumerate(docs_to_process):
+        # Convert progress_callback format for scoring agent (current, total) instead of (current, total, item_name)
+        def agent_progress_callback(current: int, total: int):
+            if progress_callback:
+                # The workflow progress callback expects (current, total) only, not (current, total, item_name)
+                progress_callback(current, total)
+        
+        # Use scoring agent's batch processing method with progress callback
+        scored_results = list(self.agents['scoring_agent'].process_scoring_queue(
+            user_question=research_question,
+            documents=docs_to_process,
+            progress_callback=agent_progress_callback
+        ))
+        
+        # Process results and apply overrides
+        for i, (doc, scoring_result) in enumerate(scored_results):
             try:
-                scoring_result = self.agents['scoring_agent'].evaluate_document(research_question, doc)
-                if scoring_result and isinstance(scoring_result, dict) and 'score' in scoring_result:
+                if scoring_result and 'score' in scoring_result:
                     original_score = scoring_result['score']
+                    score = original_score
+                    
+                    # Convert ScoringResult to dict format
+                    result_dict = {
+                        'score': score,
+                        'reasoning': scoring_result.get('reasoning', 'No reasoning provided'),
+                        'confidence': scoring_result.get('confidence', 1.0)
+                    }
                     
                     # Apply human override if provided
                     if score_overrides and i in score_overrides:
-                        # Create modified scoring result with human score
-                        modified_result = scoring_result.copy()
-                        modified_result['score'] = score_overrides[i]
-                        modified_result['human_override'] = True
-                        modified_result['original_ai_score'] = original_score
-                        scoring_result = modified_result
+                        result_dict['score'] = score_overrides[i]
+                        result_dict['human_override'] = True
+                        result_dict['original_ai_score'] = original_score
+                        score = score_overrides[i]
                         print(f"Applied human override for document {i}: {original_score:.1f} → {score_overrides[i]:.1f}")
                     
-                    score = scoring_result['score']
-                    all_scored_documents.append((doc, scoring_result))
+                    all_scored_documents.append((doc, result_dict))
                     
                     if score >= score_threshold:
                         # Store as (document, scoring_result) tuple as expected by citation agent
-                        scored_documents.append((doc, scoring_result))
+                        scored_documents.append((doc, result_dict))
                         if score >= 4.0:
                             high_scoring += 1
             except Exception as e:
-                print(f"Error scoring document: {e}")
+                print(f"Error processing scored document: {e}")
                 continue
         
         # Update status message
@@ -151,13 +171,15 @@ class WorkflowStepsHandler:
     
     def execute_citation_extraction(self, research_question: str, 
                                   scored_documents: List[Tuple[Dict, Dict]],
-                                  update_callback: Callable) -> List:
+                                  update_callback: Callable,
+                                  progress_callback: Optional[Callable[[int, int, str], None]] = None) -> List:
         """Execute the citation extraction step.
         
         Args:
             research_question: The research question for citation relevance
             scored_documents: List of (document, scoring_result) tuples
             update_callback: Callback for status updates
+            progress_callback: Optional callback for progress updates (current, total, item_name)
             
         Returns:
             List of extracted citations
@@ -177,10 +199,12 @@ class WorkflowStepsHandler:
         else:
             docs_for_citations = scored_documents[:max_docs_for_citations]
         
+        # Use citation agent method with progress tracking
         citations = self.agents['citation_agent'].process_scored_documents_for_citations(
             user_question=research_question,
             scored_documents=docs_for_citations,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            progress_callback=progress_callback
         )
         
         update_callback(WorkflowStep.EXTRACT_CITATIONS, "completed",

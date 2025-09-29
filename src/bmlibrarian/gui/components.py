@@ -61,6 +61,33 @@ class StepCard:
             color=ft.Colors.BLUE_400
         )
         
+        # Detailed progress bar with tqdm-style display
+        self.detailed_progress_container = ft.Container(
+            visible=False,
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Progress:", size=11, weight=ft.FontWeight.BOLD),
+                    ft.Text("", size=11, color=ft.Colors.GREY_600)  # Progress text (e.g., "25/100")
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.ProgressBar(
+                    value=0.0,
+                    height=6,
+                    color=ft.Colors.GREEN_400,
+                    bgcolor=ft.Colors.GREY_300
+                ),
+                ft.Text("", size=10, color=ft.Colors.GREY_600, italic=True)  # Current item text
+            ], spacing=4),
+            padding=ft.padding.symmetric(horizontal=10, vertical=8),
+            bgcolor=ft.Colors.GREEN_50,
+            border_radius=5,
+            border=ft.border.all(1, ft.Colors.GREEN_200)
+        )
+        
+        # Store references to detailed progress components
+        self.detailed_progress_text = self.detailed_progress_container.content.controls[0].controls[1]
+        self.detailed_progress_bar = self.detailed_progress_container.content.controls[1]
+        self.detailed_progress_item = self.detailed_progress_container.content.controls[2]
+        
         # Content text area
         self.content_text = ft.Text(
             value=self.content or "Waiting to start...",
@@ -73,6 +100,7 @@ class StepCard:
         content_container = ft.Container(
             content=ft.Column([
                 self.progress_bar,
+                self.detailed_progress_container,
                 ft.Container(
                     content=self.content_text,
                     padding=ft.padding.all(10),
@@ -116,6 +144,43 @@ class StepCard:
             if self.error_message:
                 display_content += f"\n\nError: {self.error_message}"
             self.content_text.value = display_content or "Waiting to start..."
+    
+    def update_progress(self, current: int, total: int, item_name: str = ""):
+        """Update the detailed progress bar with tqdm-style display.
+        
+        Args:
+            current: Current progress count
+            total: Total items to process
+            item_name: Name/description of current item being processed
+        """
+        if total <= 0:
+            return
+            
+        # Calculate progress percentage
+        progress_value = current / total
+        
+        # Update progress components
+        if self.detailed_progress_text:
+            self.detailed_progress_text.value = f"{current}/{total} ({progress_value*100:.1f}%)"
+        
+        if self.detailed_progress_bar:
+            self.detailed_progress_bar.value = progress_value
+        
+        if self.detailed_progress_item and item_name:
+            self.detailed_progress_item.value = item_name
+        
+        # Show/hide detailed progress container based on status
+        if self.detailed_progress_container:
+            self.detailed_progress_container.visible = (self.status == "running" and total > 1)
+    
+    def show_detailed_progress(self, visible: bool = True):
+        """Show or hide the detailed progress bar.
+        
+        Args:
+            visible: Whether to show the detailed progress bar
+        """
+        if self.detailed_progress_container:
+            self.detailed_progress_container.visible = visible
     
     def _get_status_icon(self) -> str:
         """Get the icon name for the current status."""
@@ -203,6 +268,7 @@ class StepCard:
                 # Add edit container after progress bar
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     self.edit_container,
                     ft.Container(
                         content=self.content_text,
@@ -228,6 +294,7 @@ class StepCard:
                 # Restore original content structure
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     ft.Container(
                         content=self.content_text,
                         padding=ft.padding.all(10),
@@ -323,6 +390,7 @@ class StepCard:
                 # Add scoring container after progress bar
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     self.scoring_container,
                     ft.Container(
                         content=self.content_text,
@@ -471,6 +539,7 @@ class StepCard:
                 # Restore original content structure
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     ft.Container(
                         content=self.content_text,
                         padding=ft.padding.all(10),
@@ -537,6 +606,7 @@ class StepCard:
                 # Add search results container after progress bar and before original content
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     self.search_results_container,
                     ft.Container(
                         content=self.content_text,
@@ -643,6 +713,7 @@ class StepCard:
                 # Restore original content structure
                 content_container.content.controls = [
                     self.progress_bar,
+                    self.detailed_progress_container,
                     ft.Container(
                         content=self.content_text,
                         padding=ft.padding.all(10),

@@ -377,6 +377,15 @@ def find_abstracts(
                         if row.get(field) is None:
                             row[field] = []
                     
+                    # Convert date/datetime objects to strings for JSON serialization compatibility
+                    date_fields = ['publication_date', 'added_date', 'updated_date', 'withdrawn_date']
+                    for field in date_fields:
+                        if field in row and row[field] is not None:
+                            if hasattr(row[field], 'isoformat'):
+                                row[field] = row[field].isoformat()
+                            else:
+                                row[field] = str(row[field])
+                    
                     row_dict = dict(row)
                     all_results.append(row_dict)  # Store for logging
                     total_rows += 1

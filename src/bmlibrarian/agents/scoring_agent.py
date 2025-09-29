@@ -523,7 +523,8 @@ Please evaluate how well this document addresses the user's question and provide
                             user_question: str,
                             documents: List[Dict],
                             progress_callback: Optional[Callable[[int, int], None]] = None,
-                            batch_size: int = 50) -> Iterator[Tuple[Dict, ScoringResult]]:
+                            batch_size: int = 50,
+                            force_direct: bool = False) -> Iterator[Tuple[Dict, ScoringResult]]:
         """
         Process document scoring using the queue system with memory efficiency.
         
@@ -536,9 +537,16 @@ Please evaluate how well this document addresses the user's question and provide
         Yields:
             Tuples of (document, scoring_result) as they are completed
         """
-        if not self.orchestrator:
-            # Fallback to direct processing if no orchestrator
-            logger.info("No orchestrator - falling back to direct processing")
+        # Use direct processing if no orchestrator, forced, or when progress callback is needed
+        # (queue system doesn't properly support progress callbacks)
+        if not self.orchestrator or force_direct or progress_callback:
+            if not self.orchestrator:
+                reason = "no orchestrator"
+            elif force_direct:
+                reason = "forced direct processing"
+            else:
+                reason = "progress callback requested"
+            logger.info(f"Using direct processing ({reason})")
             for i, doc in enumerate(documents):
                 result = self.evaluate_document(user_question, doc)
                 if progress_callback:

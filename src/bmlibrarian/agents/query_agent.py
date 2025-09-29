@@ -176,6 +176,9 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         # Strategy: replace quoted phrases first, then handle remaining quotes
         import re as re_module
         
+        # Convert double quotes to single quotes for PostgreSQL compatibility
+        query = re_module.sub(r'"([^"]*)"', r"'\1'", query)
+        
         # Remove quotes that are clearly used for phrase delimiting (not apostrophes)
         # Pattern: quotes that are preceded/followed by spaces or operators
         query = re_module.sub(r'(?<=[&|()\s])[\'"]+', '', query)  # Leading quotes
@@ -194,7 +197,7 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         # - Words can contain letters, numbers, apostrophes, hyphens
         pattern = r'\b[a-zA-Z0-9\'\-]+(?:\s+[a-zA-Z0-9\'\-]+)+\b'
 
-        query = re.sub(pattern, quote_phrase, query)
+        query = re_module.sub(pattern, quote_phrase, query)
 
         return query
     
