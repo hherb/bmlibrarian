@@ -117,13 +117,41 @@ class DataUpdaters:
         if hasattr(self.app.workflow_executor, 'counterfactual_analysis'):
             cf_analysis = self.app.workflow_executor.counterfactual_analysis
             print(f"🤖 Found counterfactual analysis: {bool(cf_analysis)}")
+            print(f"🔍 Analysis type: {type(cf_analysis)}")
+            
+            # Debug the contents of the analysis
             if cf_analysis:
+                if isinstance(cf_analysis, dict):
+                    print(f"📋 Analysis keys: {list(cf_analysis.keys())}")
+                    
+                    # Check contents of key sections
+                    if 'contradictory_evidence' in cf_analysis:
+                        evidence = cf_analysis['contradictory_evidence']
+                        print(f"🚫 Contradictory evidence count: {len(evidence) if evidence else 0}")
+                    
+                    if 'contradictory_citations' in cf_analysis:
+                        citations = cf_analysis['contradictory_citations']
+                        print(f"📖 Contradictory citations count: {len(citations) if citations else 0}")
+                    
+                    if 'summary' in cf_analysis:
+                        summary = cf_analysis['summary']
+                        print(f"📊 Summary keys: {list(summary.keys()) if isinstance(summary, dict) else 'Not a dict'}")
+                        
+                elif hasattr(cf_analysis, '__dict__'):
+                    print(f"📋 Analysis attributes: {list(vars(cf_analysis).keys())}")
+                else:
+                    print(f"📋 Analysis string representation: {str(cf_analysis)[:200]}...")
+                    
                 print(f"✅ Updating Counterfactual tab with analysis")
                 self.update_counterfactual_analysis(cf_analysis)
             else:
-                print(f"❌ No counterfactual analysis to update Counterfactual tab")
+                print(f"⚠️ Counterfactual analysis is None/empty - will show debug info")
+                # Still call update to show debug info
+                self.update_counterfactual_analysis(cf_analysis)
         else:
             print(f"❌ workflow_executor has no 'counterfactual_analysis' attribute")
+            # Still try to update to show debug info
+            self.update_counterfactual_analysis(None)
     
     def update_report_if_available(self):
         """Update report tab if data is available."""
@@ -137,11 +165,13 @@ class DataUpdaters:
     
     def update_all_tabs_if_data_available(self):
         """Update all tabs with available data after workflow completion."""
+        print("🔄 Final comprehensive tab update after workflow completion...")
         self.update_documents_if_available()
         self.update_scored_documents_if_available()
         self.update_citations_if_available()
-        self.update_counterfactual_if_available()
+        self.update_counterfactual_if_available()  # This will now always show something
         self.update_report_if_available()
+        print("✅ All tab updates completed")
     
     def _update_literature_tab(self):
         """Update the literature tab with found documents."""
@@ -256,30 +286,76 @@ class DataUpdaters:
     def _update_counterfactual_tab(self):
         """Update the counterfactual tab with analysis results."""
         from .display_utils import CounterfactualDisplayCreator
+        from .ui_builder import create_tab_header
         
         print(f"🧿 _update_counterfactual_tab called")
         print(f"🤖 Analysis exists: {bool(self.app.counterfactual_analysis)}")
         
-        if not self.app.counterfactual_analysis:
-            print(f"❌ No counterfactual analysis - exiting _update_counterfactual_tab")
-            return
-        
-        # Create counterfactual analysis display
-        display_creator = CounterfactualDisplayCreator()
-        cf_components = display_creator.create_counterfactual_display(self.app.counterfactual_analysis)
-        
-        # Update the counterfactual tab content
-        print(f"📋 Created counterfactual analysis display components")
-        if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
-            print(f"✅ Updating counterfactual_tab_content with analysis")
-            self.app.tab_manager.update_tab_content('counterfactual', ft.Column(
-                cf_components,
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO
-            ))
-            print(f"✅ Counterfactual tab content updated successfully")
-        else:
-            print(f"❌ counterfactual_tab_content is None - cannot update!")
+        # Always try to update the tab, even if analysis is None
+        try:
+            if not self.app.counterfactual_analysis:
+                print(f"⚠️ No counterfactual analysis - showing debug message")
+                
+                # Create debug info components
+                debug_components = [
+                    *create_tab_header(
+                        "Counterfactual Analysis Debug",
+                        subtitle="Debugging why counterfactual analysis is not displaying"
+                    ),
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("🔍 Debug Information:", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_700),
+                            ft.Text(f"• Analysis data exists: {bool(self.app.counterfactual_analysis)}", size=12),
+                            ft.Text(f"• Workflow executor exists: {hasattr(self.app, 'workflow_executor')}", size=12),
+                            ft.Text(f"• Workflow executor has analysis attr: {hasattr(self.app.workflow_executor, 'counterfactual_analysis') if hasattr(self.app, 'workflow_executor') else 'N/A'}", size=12),
+                            ft.Text(f"• Workflow executor analysis: {bool(getattr(self.app.workflow_executor, 'counterfactual_analysis', None)) if hasattr(self.app, 'workflow_executor') else 'N/A'}", size=12),
+                            ft.Text("This debug info will be replaced with actual counterfactual analysis when available.", size=11, color=ft.Colors.GREY_600, italic=True)
+                        ], spacing=8),
+                        padding=ft.padding.all(15),
+                        bgcolor=ft.Colors.ORANGE_50,
+                        border_radius=8
+                    )
+                ]
+                
+                # Update with debug components
+                if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
+                    print(f"✅ Updating counterfactual tab with debug info")
+                    self.app.tab_manager.update_tab_content('counterfactual', ft.Column(
+                        debug_components,
+                        spacing=10,
+                        scroll=ft.ScrollMode.AUTO
+                    ))
+                return
+            
+            # Debug the analysis data
+            print(f"🔍 Analysis type in _update_counterfactual_tab: {type(self.app.counterfactual_analysis)}")
+            if isinstance(self.app.counterfactual_analysis, dict):
+                print(f"📋 Analysis keys in _update_counterfactual_tab: {list(self.app.counterfactual_analysis.keys())}")
+            elif hasattr(self.app.counterfactual_analysis, '__dict__'):
+                print(f"📋 Analysis attributes in _update_counterfactual_tab: {list(vars(self.app.counterfactual_analysis).keys())}")
+            
+            # Create counterfactual analysis display
+            display_creator = CounterfactualDisplayCreator()
+            cf_components = display_creator.create_counterfactual_display(self.app.counterfactual_analysis)
+            
+            print(f"📋 Created {len(cf_components)} counterfactual analysis display components")
+            
+            # Update the counterfactual tab content
+            if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
+                print(f"✅ Updating counterfactual_tab_content with {len(cf_components)} components")
+                self.app.tab_manager.update_tab_content('counterfactual', ft.Column(
+                    cf_components,
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO
+                ))
+                print(f"✅ Counterfactual tab content updated successfully")
+            else:
+                print(f"❌ counterfactual_tab_content is None - cannot update!")
+                
+        except Exception as e:
+            print(f"❌ Error creating counterfactual display: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _update_report_tab(self):
         """Update the report tab with the final report."""

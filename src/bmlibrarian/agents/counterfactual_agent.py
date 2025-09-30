@@ -70,8 +70,33 @@ def fix_tsquery_syntax(query: str) -> str:
     query = re.sub(r'\s*\(\s*', '(', query)
     query = re.sub(r'\s*\)\s*', ')', query)
     
-    # Remove quotes around single words (PostgreSQL tsquery doesn't need them)
-    query = re.sub(r"'(\w+)'", r'\1', query)
+    # Fix phrase quoting: add quotes to multi-word phrases, remove from single words
+    def fix_phrase_quoting(text):
+        # Split on operators and parentheses while preserving them
+        parts = re.split(r'(\s*[&|()]\s*)', text)
+        fixed_parts = []
+        
+        for part in parts:
+            part = part.strip()
+            # Skip operators and parentheses
+            if not part or part in ['&', '|', '(', ')'] or re.match(r'^\s*[&|()]+\s*$', part):
+                fixed_parts.append(part)
+                continue
+            
+            # Clean existing quotes
+            clean_part = part.strip("'\"")
+            
+            # Quote multi-word phrases (including hyphenated terms), leave single words unquoted
+            if ' ' in clean_part or '-' in clean_part:
+                # Escape internal quotes and wrap in quotes
+                escaped = clean_part.replace("'", "''")
+                fixed_parts.append(f"'{escaped}'")
+            else:
+                fixed_parts.append(clean_part)
+        
+        return ''.join(fixed_parts)
+    
+    query = fix_phrase_quoting(query)
     
     # Fix empty quoted strings
     query = re.sub(r"'\s*'", '', query)

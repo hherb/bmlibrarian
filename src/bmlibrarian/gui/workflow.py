@@ -320,17 +320,25 @@ class WorkflowExecutor:
             
             # Check if comprehensive counterfactual analysis is enabled
             comprehensive_cf = self.config_overrides.get('comprehensive_counterfactual', False)
+            print(f"🔧 Config overrides: {self.config_overrides}")
+            print(f"🎛️ Comprehensive counterfactual enabled: {comprehensive_cf}")
             
             if comprehensive_cf:
                 print("🧠 Performing comprehensive counterfactual analysis with literature search...")
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "running",
+                              "Performing comprehensive counterfactual analysis with literature search...")
                 counterfactual_analysis = self.steps_handler.execute_comprehensive_counterfactual_analysis(
                     report_content, citations, update_callback
                 )
+                print(f"🔬 Comprehensive analysis completed. Type: {type(counterfactual_analysis)}")
             else:
                 print("🧠 Performing basic counterfactual analysis...")
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "running",
+                              "Performing basic counterfactual analysis...")
                 counterfactual_analysis = self.steps_handler.execute_counterfactual_analysis(
                     report_content, citations, update_callback
                 )
+                print(f"🔬 Basic analysis completed. Type: {type(counterfactual_analysis)}")
             
             # Store counterfactual analysis for tab access IMMEDIATELY after getting it
             self.counterfactual_analysis = counterfactual_analysis
