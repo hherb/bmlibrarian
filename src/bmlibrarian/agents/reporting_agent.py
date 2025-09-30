@@ -448,7 +448,8 @@ Be concise and avoid redundancy."""
                         "stream": False,
                         "options": {
                             "temperature": self.temperature,
-                            "top_p": self.top_p
+                            "top_p": self.top_p,
+                            "num_predict": getattr(self, 'max_tokens', 2000)  # Use config max_tokens or default to 2000
                         }
                     },
                     timeout=60  # Short timeout for individual citations
@@ -543,7 +544,8 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
                     "stream": False,
                     "options": {
                         "temperature": self.temperature,
-                        "top_p": self.top_p
+                        "top_p": self.top_p,
+                        "num_predict": getattr(self, 'max_tokens', 3000)  # Use config max_tokens or default to 3000
                     }
                 },
                 timeout=60

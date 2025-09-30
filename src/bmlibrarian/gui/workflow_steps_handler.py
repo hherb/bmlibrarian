@@ -58,9 +58,17 @@ class WorkflowStepsHandler:
         from ..config import get_search_config
         search_config = get_search_config()
         
+        # Debug: Show what max_results value is being used
+        config_max_results = search_config.get('max_results', 100)
+        override_max_results = self.config_overrides.get('max_results', config_max_results)
+        print(f"🔍 Document search debug:")
+        print(f"  - Config file max_results: {config_max_results}")
+        print(f"  - Config overrides: {self.config_overrides}")
+        print(f"  - Final max_rows used: {override_max_results}")
+        
         documents_generator = self.agents['query_agent'].find_abstracts(
             question=research_question,
-            max_rows=self.config_overrides.get('max_results', search_config.get('max_results', 100)),
+            max_rows=override_max_results,
             human_in_the_loop=interactive_mode,
             human_query_modifier=query_modifier if interactive_mode else None
         )
@@ -233,8 +241,20 @@ class WorkflowStepsHandler:
             format_output=True
         )
         
+        # Debug report generation
+        if hasattr(report, 'content'):
+            report_content = report.content
+        elif isinstance(report, str):
+            report_content = report
+        else:
+            report_content = str(report)
+        
+        print(f"📊 Report generation completed. Length: {len(report_content) if report_content else 0}")
+        if report_content:
+            print(f"📝 Report ends with: ...{report_content[-200:]}")
+        
         update_callback(WorkflowStep.GENERATE_REPORT, "completed",
-                      "Generated preliminary report")
+                      f"Generated preliminary report ({len(report_content) if report_content else 0} chars)")
         
         return report
     

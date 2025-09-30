@@ -54,6 +54,17 @@ class DataUpdaters:
         print(f"🧿 update_counterfactual_analysis called with analysis: {bool(counterfactual_analysis)}")
         self.app.counterfactual_analysis = counterfactual_analysis
         print(f"🤖 Stored counterfactual analysis in app.counterfactual_analysis")
+        
+        # Debug current tab state before update
+        if self.app.tab_manager:
+            current_content = self.app.tab_manager.get_tab_content('counterfactual')
+            if current_content:
+                print(f"🔍 Current counterfactual tab content type: {type(current_content.content)}")
+                if hasattr(current_content.content, 'controls'):
+                    print(f"🔍 Current tab has {len(current_content.content.controls)} controls")
+            else:
+                print(f"❌ No counterfactual tab content found")
+        
         print(f"📄 Calling _update_counterfactual_tab...")
         self._update_counterfactual_tab()
         print(f"📱 Updating page...")
@@ -343,14 +354,40 @@ class DataUpdaters:
             # Update the counterfactual tab content
             if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
                 print(f"✅ Updating counterfactual_tab_content with {len(cf_components)} components")
-                self.app.tab_manager.update_tab_content('counterfactual', ft.Column(
+                
+                # Create new column with components
+                new_content = ft.Column(
                     cf_components,
                     spacing=10,
                     scroll=ft.ScrollMode.AUTO
-                ))
-                print(f"✅ Counterfactual tab content updated successfully")
+                )
+                
+                # Update the tab content
+                self.app.tab_manager.update_tab_content('counterfactual', new_content)
+                
+                # Verify the update worked
+                updated_content = self.app.tab_manager.get_tab_content('counterfactual')
+                if updated_content and hasattr(updated_content.content, 'controls'):
+                    print(f"🔍 After update: tab has {len(updated_content.content.controls)} controls")
+                    if updated_content.content.controls:
+                        first_control = updated_content.content.controls[0]
+                        print(f"🔍 First control type: {type(first_control)}")
+                else:
+                    print(f"❌ Update verification failed - no controls found")
+                
+                # Force page update to ensure UI reflects changes
+                if self.app.page:
+                    print("🔄 Forcing page update after counterfactual tab update")
+                    self.app.page.update()
+                
+                print(f"✅ Counterfactual tab content updated successfully with {len(cf_components)} components")
             else:
                 print(f"❌ counterfactual_tab_content is None - cannot update!")
+                # Try to check what's in tab_manager
+                if self.app.tab_manager:
+                    print(f"🔍 Tab manager exists, available tabs: {list(self.app.tab_manager.tab_contents.keys())}")
+                else:
+                    print(f"❌ No tab manager found!")
                 
         except Exception as e:
             print(f"❌ Error creating counterfactual display: {e}")

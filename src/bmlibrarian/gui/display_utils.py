@@ -380,7 +380,8 @@ class CounterfactualDisplayCreator:
                 f"📚 Counterfactual Analysis Results (Data Structure Issue Detected)",
                 size=15,
                 weight=ft.FontWeight.BOLD,
-                color=ft.Colors.DEEP_PURPLE_700
+                color=ft.Colors.DEEP_PURPLE_700,
+                selectable=True
             )
         )
         
@@ -389,7 +390,8 @@ class CounterfactualDisplayCreator:
                 f"Found {len(contradictory_evidence)} contradictory studies and {len(contradictory_citations)} citations. Note: The analysis result has a data structure issue that's being worked around.",
                 size=12,
                 color=ft.Colors.GREY_600,
-                italic=True
+                italic=True,
+                selectable=True
             )
         )
         
@@ -443,27 +445,32 @@ class CounterfactualDisplayCreator:
                         "🔧 Debug Information",
                         size=14,
                         weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.ORANGE_700
+                        color=ft.Colors.ORANGE_700,
+                        selectable=True
                     ),
                     ft.Text(
                         f"The counterfactual analysis returned a database document record with nested analysis fields.",
                         size=11,
-                        color=ft.Colors.GREY_700
+                        color=ft.Colors.GREY_700,
+                        selectable=True
                     ),
                     ft.Text(
                         f"✅ Successfully extracted {len(actual_evidence)} documents and {len(actual_citations)} citations from nested structure.",
                         size=10,
-                        color=ft.Colors.GREEN_600
+                        color=ft.Colors.GREEN_600,
+                        selectable=True
                     ),
                     ft.Text(
                         f"Evidence structure: document + score + reasoning + query_info",
                         size=10,
-                        color=ft.Colors.GREY_600
+                        color=ft.Colors.GREY_600,
+                        selectable=True
                     ),
                     ft.Text(
                         f"Citation structure: citation + original_claim + counterfactual_question + scores",
                         size=10,
-                        color=ft.Colors.GREY_600
+                        color=ft.Colors.GREY_600,
+                        selectable=True
                     )
                 ], spacing=5),
                 padding=ft.padding.all(12),
@@ -780,7 +787,8 @@ class CounterfactualDisplayCreator:
                     f"📋 Claims Analyzed: {summary['claims_analyzed']}",
                     size=12,
                     weight=ft.FontWeight.W_500,
-                    color=ft.Colors.PURPLE_700
+                    color=ft.Colors.PURPLE_700,
+                    selectable=True
                 )
             )
         elif summary.get('hypotheses_contested'):

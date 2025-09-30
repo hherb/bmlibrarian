@@ -34,9 +34,12 @@ class ReportBuilder:
             Complete formatted research report as markdown string
         """
         print(f"_build_final_report called with report_content length: {len(report_content) if report_content else 0}")
+        if report_content:
+            print(f"📝 Input report_content ends with: ...{report_content[-200:]}")
         
         # Extract counterfactual analysis content
         counterfactual_content = self._format_counterfactual_analysis(counterfactual_analysis)
+        print(f"📊 Counterfactual content length: {len(counterfactual_content) if counterfactual_content else 0}")
         
         # Build research summary section
         summary_section = self._build_summary_section(
@@ -97,30 +100,162 @@ class ReportBuilder:
         if not counterfactual_analysis:
             return ""
         
-        if hasattr(counterfactual_analysis, 'summary'):
-            counterfactual_content = f"""
-
-## Counterfactual Analysis
-
-{counterfactual_analysis.summary}
-
-### Research Questions for Contradictory Evidence
-"""
-            if hasattr(counterfactual_analysis, 'questions'):
-                for i, question in enumerate(counterfactual_analysis.questions[:5], 1):
-                    if hasattr(question, 'question'):
-                        counterfactual_content += f"{i}. {question.question}\n"
-                    else:
-                        counterfactual_content += f"{i}. {question}\n"
+        # Handle the complex nested structure we discovered
+        if isinstance(counterfactual_analysis, dict):
+            return self._format_comprehensive_counterfactual(counterfactual_analysis)
+        elif hasattr(counterfactual_analysis, 'summary'):
+            return self._format_basic_counterfactual(counterfactual_analysis)
         else:
-            counterfactual_content = f"""
+            return f"""
 
 ## Counterfactual Analysis
 
 Analysis completed - {str(counterfactual_analysis)[:200]}...
 """
+    
+    def _format_comprehensive_counterfactual(self, analysis: dict) -> str:
+        """Format comprehensive counterfactual analysis with evidence and citations.
         
-        return counterfactual_content
+        Args:
+            analysis: Dictionary containing nested counterfactual analysis structure
+            
+        Returns:
+            Formatted comprehensive counterfactual section
+        """
+        content = ["\n## Counterfactual Analysis"]
+        
+        # Extract summary information
+        summary = analysis.get('summary', {})
+        if summary:
+            content.append("\n### Analysis Summary")
+            
+            claims_analyzed = summary.get('claims_analyzed', 0)
+            questions_generated = summary.get('questions_generated', 0)
+            contradictory_docs = summary.get('contradictory_documents_found', 0)
+            citations_extracted = summary.get('contradictory_citations_extracted', 0)
+            
+            if summary.get('original_confidence') and summary.get('revised_confidence'):
+                content.append(f"**Confidence Assessment**: {summary['original_confidence']} → {summary['revised_confidence']}")
+            
+            content.append(f"**Analysis Scope**: {claims_analyzed} claims analyzed, {questions_generated} research questions generated")
+            content.append(f"**Literature Search**: {contradictory_docs} contradictory studies found, {citations_extracted} citations extracted")
+        
+        # Extract and format contradictory evidence
+        contradictory_evidence = analysis.get('contradictory_evidence', [])
+        if contradictory_evidence:
+            content.append("\n### Contradictory Evidence Found")
+            content.append("\nThe following studies present evidence that challenges aspects of the original findings:\n")
+            
+            for i, evidence_item in enumerate(contradictory_evidence, 1):
+                if isinstance(evidence_item, dict) and 'document' in evidence_item:
+                    doc = evidence_item['document']
+                    score = evidence_item.get('score', 'N/A')
+                    reasoning = evidence_item.get('reasoning', 'No reasoning provided')
+                    
+                    title = doc.get('title', 'Untitled Document')
+                    authors = doc.get('authors', 'Unknown authors')
+                    year = self._extract_year_from_publication_date(doc.get('publication_date', ''))
+                    publication = doc.get('publication', 'Unknown journal')
+                    
+                    content.append(f"**{i}. {title}**")
+                    content.append(f"- *Authors*: {authors}")
+                    content.append(f"- *Publication*: {publication} ({year})")
+                    content.append(f"- *Relevance Score*: {score}")
+                    content.append(f"- *Reasoning*: {reasoning}")
+                    
+                    # Add abstract excerpt if available
+                    abstract = doc.get('abstract', '')
+                    if abstract:
+                        abstract_excerpt = abstract[:300] + "..." if len(abstract) > 300 else abstract
+                        content.append(f"- *Abstract*: {abstract_excerpt}")
+                    
+                    # Add reference information
+                    pmid = doc.get('pmid')
+                    doi = doc.get('doi')
+                    ref_info = []
+                    if pmid:
+                        ref_info.append(f"PMID: {pmid}")
+                    if doi:
+                        ref_info.append(f"DOI: {doi}")
+                    if ref_info:
+                        content.append(f"- *Reference*: {', '.join(ref_info)}")
+                    
+                    content.append("")  # Empty line between studies
+        
+        # Extract and format contradictory citations
+        contradictory_citations = analysis.get('contradictory_citations', [])
+        if contradictory_citations:
+            content.append("### Key Contradictory Findings")
+            content.append("\nSpecific passages that challenge the original claims:\n")
+            
+            for i, citation_item in enumerate(contradictory_citations, 1):
+                if isinstance(citation_item, dict) and 'citation' in citation_item:
+                    citation = citation_item['citation']
+                    original_claim = citation_item.get('original_claim', 'Unknown claim')
+                    question = citation_item.get('counterfactual_question', 'Unknown question')
+                    
+                    # Extract citation details
+                    if hasattr(citation, 'document_title'):
+                        doc_title = citation.document_title
+                        summary = getattr(citation, 'summary', 'No summary available')
+                        passage = getattr(citation, 'passage', 'No passage available')
+                        relevance = getattr(citation, 'relevance_score', 0)
+                    else:
+                        doc_title = str(citation)[:100]
+                        summary = "Citation data unavailable"
+                        passage = str(citation)[:200]
+                        relevance = 0
+                    
+                    content.append(f"**Citation {i}: {doc_title}**")
+                    content.append(f"- *Challenges Claim*: {original_claim}")
+                    content.append(f"- *Research Question*: {question}")
+                    content.append(f"- *Relevance Score*: {relevance:.3f}")
+                    content.append(f"- *Summary*: {summary}")
+                    content.append(f"- *Key Passage*: \"{passage}\"")
+                    content.append("")
+        
+        # Add methodology note
+        if contradictory_evidence or contradictory_citations:
+            content.append("### Methodology Note")
+            content.append("This counterfactual analysis systematically searched for evidence that might contradict or challenge the primary findings. The goal is to provide a balanced assessment of the evidence base and identify potential limitations or alternative interpretations.")
+        
+        return "\n".join(content)
+    
+    def _format_basic_counterfactual(self, analysis: Any) -> str:
+        """Format basic counterfactual analysis without literature search.
+        
+        Args:
+            analysis: Basic counterfactual analysis object
+            
+        Returns:
+            Formatted basic counterfactual section
+        """
+        content = ["\n## Counterfactual Analysis", "\n### Research Questions for Finding Contradictory Evidence"]
+        
+        if hasattr(analysis, 'summary'):
+            content.append(f"\n{analysis.summary}")
+        
+        if hasattr(analysis, 'questions'):
+            content.append("\nThe following research questions were generated to systematically search for contradictory evidence:\n")
+            for i, question in enumerate(analysis.questions[:5], 1):
+                if hasattr(question, 'question'):
+                    content.append(f"{i}. {question.question}")
+                else:
+                    content.append(f"{i}. {question}")
+        
+        content.append("\n*Note: This analysis identified potential areas for contradictory evidence but did not perform literature search.*")
+        return "\n".join(content)
+    
+    def _extract_year_from_publication_date(self, pub_date: str) -> str:
+        """Extract year from publication date string."""
+        if not pub_date or pub_date in ['Unknown', '']:
+            return 'Unknown year'
+        
+        # Extract year from date string (e.g., "2023-06-15" -> "2023")
+        if '-' in str(pub_date):
+            return str(pub_date).split('-')[0]
+        
+        return str(pub_date)
     
     def _build_summary_section(self, research_question: str, documents: List[Dict],
                              scored_documents: List[Tuple[Dict, Dict]], 
@@ -159,8 +294,10 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         # Determine type of counterfactual analysis performed
         cf_description = "**Counterfactual Analysis**: Analyzed for potential contradictory evidence"
         if counterfactual_analysis:
-            if hasattr(counterfactual_analysis, 'get') and counterfactual_analysis.get('contradictory_evidence'):
-                cf_description = "**Comprehensive Counterfactual Analysis**: Performed literature search for contradictory evidence with citation extraction"
+            if isinstance(counterfactual_analysis, dict) and counterfactual_analysis.get('contradictory_evidence'):
+                contradictory_docs = len(counterfactual_analysis.get('contradictory_evidence', []))
+                contradictory_citations = len(counterfactual_analysis.get('contradictory_citations', []))
+                cf_description = f"**Comprehensive Counterfactual Analysis**: Literature search performed, found {contradictory_docs} contradictory studies and extracted {contradictory_citations} citations"
             elif hasattr(counterfactual_analysis, 'counterfactual_questions'):
                 cf_description = "**Basic Counterfactual Analysis**: Analyzed claims and generated research questions for finding contradictory evidence"
         
@@ -187,12 +324,23 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         Returns:
             Formatted limitations section
         """
+        # Get counterfactual analysis details
+        cf_info = "not performed"
+        if counterfactual_analysis:
+            if isinstance(counterfactual_analysis, dict):
+                contradictory_docs = len(counterfactual_analysis.get('contradictory_evidence', []))
+                contradictory_citations = len(counterfactual_analysis.get('contradictory_citations', []))
+                cf_info = f"comprehensive analysis performed, found {contradictory_docs} contradictory studies"
+            else:
+                cf_info = "basic analysis performed"
+        
         return f"""## Limitations and Confidence
 
 - Search limited to available database content
 - Analysis performed on {len(documents)} documents
 - {len(citations)} citations extracted from {len(scored_documents)} scored documents
-- Counterfactual analysis {'performed' if counterfactual_analysis else 'not performed'}"""
+- Counterfactual analysis: {cf_info}
+- Results represent current database content and may not reflect all available literature"""
     
     def _build_metadata_section(self, human_in_loop: bool) -> str:
         """Build the metadata section.

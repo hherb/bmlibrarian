@@ -68,32 +68,51 @@ def create_start_button(on_click_handler) -> ft.ElevatedButton:
     )
 
 
+def create_max_results_field(value: int, on_change_handler) -> ft.TextField:
+    """Create the max search results input field."""
+    return ft.TextField(
+        label="Max Results",
+        hint_text="100",
+        value=str(value),
+        width=120,
+        height=45,
+        text_align=ft.TextAlign.CENTER,
+        on_change=on_change_handler,
+        input_filter=ft.NumbersOnlyInputFilter()
+    )
+
+
 def create_controls_section(
     question_field: ft.TextField,
+    max_results_field: ft.TextField,
     human_loop_toggle: ft.Switch,
     counterfactual_toggle: ft.Switch,
     start_button: ft.ElevatedButton
 ) -> ft.Container:
-    """Create the controls section with question field and toggles."""
-    controls_column = ft.Column([
-        human_loop_toggle,
-        counterfactual_toggle,
+    """Create the controls section with reorganized layout."""
+    # First row: Question field and Start button
+    first_row = ft.Row([
+        question_field,
+        ft.Container(width=20),  # Spacer
         start_button
-    ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+    ], alignment=ft.MainAxisAlignment.START, 
+       vertical_alignment=ft.CrossAxisAlignment.END)
+    
+    # Second row: Max results, Interactive toggle, and Counterfactual toggle
+    second_row = ft.Row([
+        max_results_field,
+        ft.Container(width=20),  # Spacer
+        human_loop_toggle,
+        ft.Container(width=20),  # Spacer
+        counterfactual_toggle
+    ], alignment=ft.MainAxisAlignment.START,
+       vertical_alignment=ft.CrossAxisAlignment.CENTER)
     
     return ft.Container(
         content=ft.Column([
-            ft.Row([
-                question_field,
-                ft.Container(width=20),  # Spacer
-                ft.Container(
-                    content=controls_column,
-                    width=200,
-                    alignment=ft.alignment.center
-                )
-            ], alignment=ft.MainAxisAlignment.START, 
-               vertical_alignment=ft.CrossAxisAlignment.START)
-        ], spacing=8),
+            first_row,
+            second_row
+        ], spacing=15),
         padding=ft.padding.all(15),
         bgcolor=ft.Colors.GREY_50,
         border_radius=10,

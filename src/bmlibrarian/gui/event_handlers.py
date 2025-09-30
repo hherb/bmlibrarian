@@ -39,6 +39,37 @@ class EventHandlers:
         self._update_status()
         self.app.page.update()
     
+    def on_max_results_change(self, e):
+        """Handle max results input change."""
+        try:
+            value = int(e.control.value.strip()) if e.control.value.strip() else 100
+            # Validate range
+            if value < 1:
+                value = 1
+            elif value > 1000:
+                value = 1000
+            
+            self.app.max_results = value
+            
+            # Update the config overrides
+            self.app.config_overrides['max_results'] = value
+            if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
+                self.app.workflow_executor.config_overrides['max_results'] = value
+            
+            # Update the field value if it was corrected
+            if str(value) != e.control.value.strip():
+                e.control.value = str(value)
+                self.app.page.update()
+                
+        except ValueError:
+            # Reset to default if invalid input
+            self.app.max_results = 100
+            e.control.value = "100"
+            self.app.config_overrides['max_results'] = 100
+            if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
+                self.app.workflow_executor.config_overrides['max_results'] = 100
+            self.app.page.update()
+    
     def on_step_expand(self, card: StepCard, expanded: bool):
         """Handle step card expansion change."""
         if self.app.page:
@@ -107,12 +138,37 @@ class EventHandlers:
         try:
             print("Starting workflow execution...")
             
-            # Update config overrides with counterfactual setting
-            self.app.workflow_executor.config_overrides['comprehensive_counterfactual'] = self.app.comprehensive_counterfactual
+            # Read current values from GUI widgets at the time of execution
+            try:
+                current_max_results = int(self.app.max_results_field.value.strip()) if self.app.max_results_field.value.strip() else 100
+                # Validate range
+                if current_max_results < 1:
+                    current_max_results = 1
+                elif current_max_results > 1000:
+                    current_max_results = 1000
+            except ValueError:
+                current_max_results = 100  # Default fallback
+                
+            current_human_in_loop = self.app.human_loop_toggle.value
+            current_comprehensive_counterfactual = self.app.counterfactual_toggle.value
+            
+            # Update config overrides with current GUI widget values
+            self.app.workflow_executor.config_overrides['comprehensive_counterfactual'] = current_comprehensive_counterfactual
+            self.app.workflow_executor.config_overrides['max_results'] = current_max_results
+            
+            # Also update the app state for consistency
+            self.app.max_results = current_max_results
+            self.app.human_in_loop = current_human_in_loop
+            self.app.comprehensive_counterfactual = current_comprehensive_counterfactual
+            
+            print(f"🔧 Reading GUI values at execution time:")
+            print(f"  - Max results widget: {self.app.max_results_field.value} -> using: {current_max_results}")
+            print(f"  - Interactive mode: {current_human_in_loop}")
+            print(f"  - Comprehensive counterfactual: {current_comprehensive_counterfactual}")
             
             self.app.final_report = self.app.workflow_executor.run_workflow(
                 self.app.research_question,
-                self.app.human_in_loop,
+                current_human_in_loop,
                 self._update_step_status,
                 self.app.dialog_manager,  # Pass dialog manager for interactive mode
                 self.app.step_cards  # Pass step cards for inline editing
@@ -197,6 +253,8 @@ class EventHandlers:
         
         def save_file(file_path):
             try:
+                import json
+                
                 # Expand user path and ensure .md extension
                 expanded_path = os.path.expanduser(file_path.strip())
                 if not expanded_path.endswith('.md'):
@@ -205,12 +263,33 @@ class EventHandlers:
                 # Create directory if needed
                 os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
                 
-                # Save the file
+                # Save the markdown report
                 with open(expanded_path, 'w', encoding='utf-8') as f:
                     f.write(self.app.final_report)
                 
-                self.app.dialog_manager.show_success_dialog(f"Report saved successfully to:\n{expanded_path}")
-                print(f"Report saved to: {expanded_path}")
+                # Generate JSON filename (replace .md with .json)
+                json_path = expanded_path.replace('.md', '.json')
+                
+                # Get comprehensive workflow data
+                try:
+                    comprehensive_data = self.app.workflow_executor.export_comprehensive_data(
+                        research_question=self.app.research_question,
+                        query_text=getattr(self.app.workflow_executor, 'last_query_text', None)
+                    )
+                    
+                    # Save the comprehensive JSON data
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(comprehensive_data, f, indent=2, ensure_ascii=False)
+                    
+                    success_message = f"Files saved successfully:\n• Report: {expanded_path}\n• Data: {json_path}"
+                    print(f"Report saved to: {expanded_path}")
+                    print(f"Comprehensive data saved to: {json_path}")
+                    
+                except Exception as json_error:
+                    print(f"JSON export error: {json_error}")
+                    success_message = f"Report saved to: {expanded_path}\n\nWarning: Could not save comprehensive data file: {str(json_error)}"
+                
+                self.app.dialog_manager.show_success_dialog(success_message)
                 
             except Exception as ex:
                 self.app.dialog_manager.show_error_dialog(f"Failed to save report: {str(ex)}")
@@ -241,6 +320,9 @@ class EventHandlers:
             content=ft.Column([
                 ft.Text("Save Research Report", size=18, weight=ft.FontWeight.BOLD),
                 ft.Text("Enter the path where you want to save the report:", size=12),
+                ft.Text("📄 Two files will be saved:", size=12, weight=ft.FontWeight.W_500, color=ft.Colors.BLUE_700),
+                ft.Text("• [filename].md - Formatted research report", size=11, color=ft.Colors.GREY_700),
+                ft.Text("• [filename].json - Complete workflow data for reconstruction", size=11, color=ft.Colors.GREY_700),
                 path_input,
                 ft.Row([
                     ft.Container(expand=True),
@@ -290,7 +372,7 @@ class EventHandlers:
                     ft.Container(
                         content=ft.Column([
                             ft.Markdown(
-                                value=self.app.final_report[:8000] + ("..." if len(self.app.final_report) > 8000 else ""),
+                                value=self.app.final_report,
                                 selectable=True,
                                 extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
                             )

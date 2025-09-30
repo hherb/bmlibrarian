@@ -97,7 +97,7 @@ class BaseAgent(ABC):
         options = {
             'temperature': self.temperature,
             'top_p': self.top_p,
-            'num_predict': 100  # Default response length limit
+            'num_predict': getattr(self, 'max_tokens', 1000)  # Use config max_tokens or reasonable default
         }
         options.update(overrides)
         return options

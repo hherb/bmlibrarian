@@ -17,7 +17,7 @@ from .event_handlers import EventHandlers
 from .data_updaters import DataUpdaters
 from .ui_builder import (
     create_header, create_question_field, create_toggle_switch, 
-    create_start_button, create_controls_section
+    create_start_button, create_max_results_field, create_controls_section
 )
 from ..cli.workflow_steps import WorkflowStep
 from ..cli import CLIConfig, UserInterface, QueryProcessor, ReportFormatter, WorkflowOrchestrator
@@ -29,8 +29,8 @@ class ResearchGUI:
     def __init__(self, agents=None):
         self.page: Optional[ft.Page] = None
         self.research_question = ""
-        self.human_in_loop = True
-        self.comprehensive_counterfactual = False
+        self.human_in_loop = False  # Changed default to OFF
+        self.comprehensive_counterfactual = True  # Changed default to ON
         self.workflow_running = False
         
         # Command-line configuration
@@ -39,11 +39,15 @@ class ResearchGUI:
         
         # GUI components (will be initialized in _build_ui)
         self.question_field = None
+        self.max_results_field = None
         self.human_loop_toggle = None
         self.counterfactual_toggle = None
         self.start_button = None
         self.step_cards: Dict[WorkflowStep, StepCard] = {}
         self.status_text = None
+        
+        # Default max results value
+        self.max_results = 100
         
         # Managers and handlers (initialized in main())
         self.tab_manager = None
@@ -113,6 +117,7 @@ class ResearchGUI:
         """Initialize BMLibrarian configuration and components."""
         try:
             self.config = CLIConfig()
+            self._load_config_defaults()
             self._apply_config_overrides()
             self._initialize_workflow_components()
         except Exception as e:
@@ -120,11 +125,30 @@ class ResearchGUI:
                 self.dialog_manager.show_error_dialog(f"Failed to initialize configuration: {str(e)}")
             return
     
+    def _load_config_defaults(self):
+        """Load default values from config file."""
+        try:
+            from ..config import get_search_config
+            search_config = get_search_config()
+            
+            # Load max_results from config if not already set by command line
+            if 'max_results' not in self.config_overrides:
+                self.max_results = search_config.get('max_results', 100)
+            
+        except Exception as e:
+            print(f"Warning: Could not load config defaults: {e}")
+            # Use fallback defaults
+            if 'max_results' not in self.config_overrides:
+                self.max_results = 100
+    
     def _apply_config_overrides(self):
         """Apply command-line overrides to configuration."""
         if self.config_overrides:
             for key, value in self.config_overrides.items():
                 setattr(self.config, key, value)
+                # Update max_results in GUI if specified
+                if key == 'max_results':
+                    self.max_results = value
         
         if self.auto_question:
             self.config.auto_mode = True
@@ -145,6 +169,10 @@ class ResearchGUI:
         
         # Create input components
         self.question_field = create_question_field(self.event_handlers.on_question_change)
+        self.max_results_field = create_max_results_field(
+            self.max_results,
+            self.event_handlers.on_max_results_change
+        )
         self.human_loop_toggle = create_toggle_switch(
             "Interactive mode", 
             self.human_in_loop, 
@@ -165,9 +193,10 @@ class ResearchGUI:
             visible=False
         )
         
-        # Create controls section
+        # Create controls section with new layout
         controls_section = create_controls_section(
             self.question_field,
+            self.max_results_field,
             self.human_loop_toggle,
             self.counterfactual_toggle,
             self.start_button

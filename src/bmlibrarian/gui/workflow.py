@@ -197,6 +197,9 @@ class WorkflowExecutor:
                     raise Exception("User cancelled workflow at query review")
                 query_text = final_query
             
+            # Store the final query for export
+            self.last_query_text = query_text
+            
             # Always show the full query (not truncated)
             update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed",
                           f"Final query: {query_text}")
@@ -355,6 +358,8 @@ class WorkflowExecutor:
             
             # Build comprehensive final report
             print("Building final report...")
+            print(f"Input report content length: {len(report_content) if report_content else 0}")
+            
             final_report = self.report_builder.build_final_report(
                 research_question, report_content, counterfactual_analysis,
                 documents, scored_documents, citations, self.interactive_mode,
@@ -364,6 +369,13 @@ class WorkflowExecutor:
             # Store final report for tab access
             self.final_report = final_report if final_report else ""
             print(f"Final report built, length: {len(final_report) if final_report else 0}")
+            
+            # Debug report content to see if it's being truncated
+            if final_report:
+                print(f"📝 Final report preview: ...{final_report[-200:]}")
+                if len(report_content) > 0 and len(final_report) < len(report_content):
+                    print(f"⚠️ WARNING: Final report is shorter than input report content!")
+                    print(f"Input: {len(report_content)} chars, Output: {len(final_report)} chars")
             
             # Trigger report tab update
             if final_report:
@@ -448,3 +460,167 @@ class WorkflowExecutor:
             'interactive_mode': getattr(self, 'interactive_mode', False),
             'agent_models': self.agent_model_info
         }
+    
+    def export_comprehensive_data(self, research_question: str, query_text: str = None) -> Dict[str, Any]:
+        """Export comprehensive workflow data for full reconstruction.
+        
+        Args:
+            research_question: The original research question
+            query_text: The generated PostgreSQL query (if available)
+            
+        Returns:
+            Complete workflow data dictionary suitable for JSON serialization
+        """
+        from datetime import datetime
+        import json
+        
+        def serialize_object(obj):
+            """Convert objects to JSON-serializable format."""
+            if hasattr(obj, '__dict__'):
+                # Object with attributes - convert to dict
+                result = {}
+                for key, value in vars(obj).items():
+                    try:
+                        # Test if value is JSON serializable
+                        json.dumps(value)
+                        result[key] = value
+                    except (TypeError, ValueError):
+                        # Convert non-serializable values to string
+                        result[key] = str(value)
+                return result
+            else:
+                return str(obj)
+        
+        # Extract scored documents with proper structure
+        scored_documents_data = []
+        for doc, score_result in self.scored_documents:
+            scored_documents_data.append({
+                'document': doc,
+                'score_result': score_result
+            })
+        
+        # Handle counterfactual analysis with nested structure extraction
+        counterfactual_data = None
+        if self.counterfactual_analysis:
+            try:
+                if isinstance(self.counterfactual_analysis, dict):
+                    # Complex nested structure - clean it up
+                    counterfactual_data = {}
+                    
+                    # Copy basic fields
+                    for key, value in self.counterfactual_analysis.items():
+                        if key not in ['contradictory_evidence', 'contradictory_citations']:
+                            try:
+                                json.dumps(value)
+                                counterfactual_data[key] = value
+                            except (TypeError, ValueError):
+                                counterfactual_data[key] = str(value)
+                    
+                    # Handle contradictory evidence with proper extraction
+                    contradictory_evidence = self.counterfactual_analysis.get('contradictory_evidence', [])
+                    if contradictory_evidence:
+                        evidence_data = []
+                        for evidence_item in contradictory_evidence:
+                            if isinstance(evidence_item, dict) and 'document' in evidence_item:
+                                # Extract document and metadata
+                                evidence_data.append({
+                                    'document': evidence_item['document'],
+                                    'score': evidence_item.get('score'),
+                                    'reasoning': evidence_item.get('reasoning'),
+                                    'query_info': evidence_item.get('query_info')
+                                })
+                            else:
+                                evidence_data.append(serialize_object(evidence_item))
+                        counterfactual_data['contradictory_evidence'] = evidence_data
+                    
+                    # Handle contradictory citations with proper extraction
+                    contradictory_citations = self.counterfactual_analysis.get('contradictory_citations', [])
+                    if contradictory_citations:
+                        citations_data = []
+                        for citation_item in contradictory_citations:
+                            if isinstance(citation_item, dict) and 'citation' in citation_item:
+                                # Extract citation and metadata
+                                citation_data = {
+                                    'citation': serialize_object(citation_item['citation']),
+                                    'original_claim': citation_item.get('original_claim'),
+                                    'counterfactual_question': citation_item.get('counterfactual_question'),
+                                    'document_score': citation_item.get('document_score'),
+                                    'score_reasoning': citation_item.get('score_reasoning')
+                                }
+                                citations_data.append(citation_data)
+                            else:
+                                citations_data.append(serialize_object(citation_item))
+                        counterfactual_data['contradictory_citations'] = citations_data
+                else:
+                    counterfactual_data = serialize_object(self.counterfactual_analysis)
+            except Exception as e:
+                print(f"Error serializing counterfactual analysis: {e}")
+                counterfactual_data = {"error": f"Serialization failed: {str(e)}"}
+        
+        # Serialize citations properly
+        citations_data = []
+        for citation in self.citations:
+            citations_data.append(serialize_object(citation))
+        
+        # Build comprehensive export data
+        export_data = {
+            'metadata': {
+                'export_timestamp': datetime.now().isoformat(),
+                'bmlibrarian_version': 'GUI-2024',
+                'workflow_type': 'multi_agent_research',
+                'export_format_version': '1.0'
+            },
+            'workflow_input': {
+                'research_question': research_question,
+                'generated_query': query_text,
+                'config_overrides': self.config_overrides,
+                'interactive_mode': getattr(self, 'interactive_mode', False)
+            },
+            'workflow_execution': {
+                'steps_completed': len(self.workflow_steps),
+                'workflow_steps': [step.value for step in self.workflow_steps],
+                'agent_model_info': self.agent_model_info
+            },
+            'search_results': {
+                'total_documents_found': len(self.documents),
+                'documents': self.documents,
+                'search_metadata': {
+                    'search_timestamp': datetime.now().isoformat(),
+                    'database_queried': 'bmlibrarian_knowledgebase'
+                }
+            },
+            'scoring_results': {
+                'total_documents_scored': len(self.scored_documents),
+                'scored_documents': scored_documents_data,
+                'scoring_threshold': self.config_overrides.get('score_threshold', 2.5),
+                'scoring_metadata': {
+                    'scoring_agent_model': self.agent_model_info.get('Document Scoring', {}).get('model', 'Unknown')
+                }
+            },
+            'citation_extraction': {
+                'total_citations_extracted': len(self.citations),
+                'citations': citations_data,
+                'extraction_metadata': {
+                    'citation_agent_model': self.agent_model_info.get('Citation Extraction', {}).get('model', 'Unknown')
+                }
+            },
+            'report_generation': {
+                'final_report_content': self.final_report,
+                'report_length': len(self.final_report) if self.final_report else 0,
+                'generation_metadata': {
+                    'reporting_agent_model': self.agent_model_info.get('Report Generation', {}).get('model', 'Unknown')
+                }
+            },
+            'counterfactual_analysis': {
+                'analysis_performed': bool(self.counterfactual_analysis),
+                'analysis_type': 'comprehensive' if isinstance(self.counterfactual_analysis, dict) and 
+                                self.counterfactual_analysis.get('contradictory_evidence') else 'basic',
+                'analysis_data': counterfactual_data,
+                'analysis_metadata': {
+                    'counterfactual_agent_model': self.agent_model_info.get('Counterfactual Analysis', {}).get('model', 'Unknown')
+                }
+            },
+            'workflow_summary': self.get_workflow_summary()
+        }
+        
+        return export_data
