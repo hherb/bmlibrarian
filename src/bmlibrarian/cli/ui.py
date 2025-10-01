@@ -202,38 +202,60 @@ class UserInterface:
         print("=" * 60)
         
         print(f"\n✅ Successfully scored {len(scored_docs)} documents")
-        
+
+        # Separate documents by threshold
+        high_scoring_docs = [(doc, score) for doc, score in scored_docs if score.get('score', 0) > score_threshold]
+        low_scoring_docs = [(doc, score) for doc, score in scored_docs if score.get('score', 0) <= score_threshold]
+
         # Display scoring results
         print("\n📊 Document Scores (1-5 scale, 5=most relevant):")
         print("=" * 80)
-        
-        for i, (doc, score_result) in enumerate(scored_docs[:10], 1):
-            score = score_result.get('score', 0)
-            reasoning = score_result.get('reasoning', 'No reasoning provided')
-            
-            # Color coding for scores
-            if score >= 4:
-                score_display = f"🟢 {score}/5"
-            elif score >= 3:
-                score_display = f"🟡 {score}/5"
-            elif score >= 2:
-                score_display = f"🟠 {score}/5"
-            else:
-                score_display = f"🔴 {score}/5"
-            
-            print(f"\n{i}. {score_display} - {doc.get('title', 'No title')[:60]}")
-            print(f"   ID: {doc.get('id')}")
-            print(f"   Reasoning: {reasoning}")
-            print("-" * 80)
-        
-        if len(scored_docs) > 10:
-            print(f"\n... and {len(scored_docs) - 10} more scored documents")
-        
+
+        # Show high-scoring documents first
+        if high_scoring_docs:
+            print(f"\n🎯 HIGH-SCORING DOCUMENTS (Above threshold {score_threshold}): {len(high_scoring_docs)}")
+            print("=" * 80)
+            for i, (doc, score_result) in enumerate(high_scoring_docs, 1):
+                score = score_result.get('score', 0)
+                reasoning = score_result.get('reasoning', 'No reasoning provided')
+
+                # Color coding for scores
+                if score >= 4:
+                    score_display = f"🟢 {score}/5"
+                elif score >= 3:
+                    score_display = f"🟡 {score}/5"
+                else:
+                    score_display = f"🟠 {score}/5"
+
+                print(f"\n{i}. {score_display} - {doc.get('title', 'No title')[:60]}")
+                print(f"   ID: {doc.get('id')}")
+                print(f"   Reasoning: {reasoning}")
+                print("-" * 80)
+
+        # Show low-scoring documents
+        if low_scoring_docs:
+            print(f"\n📉 LOW-SCORING DOCUMENTS (At or below threshold {score_threshold}): {len(low_scoring_docs)}")
+            print("=" * 80)
+            for i, (doc, score_result) in enumerate(low_scoring_docs, 1):
+                score = score_result.get('score', 0)
+                reasoning = score_result.get('reasoning', 'No reasoning provided')
+
+                # Color coding for scores
+                if score >= 2:
+                    score_display = f"🟠 {score}/5"
+                else:
+                    score_display = f"🔴 {score}/5"
+
+                print(f"\n{i}. {score_display} - {doc.get('title', 'No title')[:60]}")
+                print(f"   ID: {doc.get('id')}")
+                print(f"   Reasoning: {reasoning}")
+                print("-" * 80)
+
         # Show score distribution
         self._show_score_distribution(scored_docs)
-        
+
         # Ask about score threshold
-        high_scoring = len([doc for doc, score in scored_docs if score.get('score', 0) > score_threshold])
+        high_scoring = len(high_scoring_docs)
         print(f"\n⚙️  Configuration:")
         print(f"   Current threshold: {score_threshold}")
         print(f"   Documents above threshold: {high_scoring}")

@@ -88,16 +88,16 @@ class WorkflowStepsHandler:
                                update_callback: Callable, score_overrides: Optional[Dict[int, float]] = None,
                                progress_callback: Optional[Callable[[int, int, str], None]] = None) -> List[Tuple[Dict, Dict]]:
         """Execute the document scoring step with optional human overrides.
-        
+
         Args:
             research_question: The research question for relevance scoring
             documents: List of documents to score
             update_callback: Callback for status updates
             score_overrides: Dictionary mapping document indices to human scores
             progress_callback: Optional callback for progress updates (current, total, item_name)
-            
+
         Returns:
-            List of (document, scoring_result) tuples above threshold
+            List of ALL (document, scoring_result) tuples regardless of threshold
         """
         update_callback(WorkflowStep.SCORE_DOCUMENTS, "running",
                       "Scoring documents for relevance...")
@@ -171,11 +171,13 @@ class WorkflowStepsHandler:
         override_msg = ""
         if score_overrides:
             override_msg = f" (with {len(score_overrides)} human overrides)"
-            
+
         update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
                       f"Scored {docs_to_score} documents ({len(scored_documents)} above threshold ≥{score_threshold}), {high_scoring} high relevance (≥4.0){override_msg}")
-        
-        return scored_documents
+
+        # Return ALL scored documents, not just those above threshold
+        # This allows users to see all scores and adjust thresholds later
+        return all_scored_documents
     
     def execute_citation_extraction(self, research_question: str, 
                                   scored_documents: List[Tuple[Dict, Dict]],

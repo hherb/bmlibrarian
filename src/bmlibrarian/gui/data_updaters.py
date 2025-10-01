@@ -247,27 +247,66 @@ class DataUpdaters:
     def _update_scoring_tab(self):
         """Update the scoring tab with scored documents ordered by score."""
         from .display_utils import DocumentCardCreator
-        
+        from ..config import get_search_config
+        import flet as ft
+
         if not self.app.scored_documents:
             return
-        
+
+        # Get score threshold from configuration
+        search_config = get_search_config()
+        score_threshold = search_config.get('score_threshold', 2.5)
+
         # Sort documents by score (highest first)
-        sorted_docs = sorted(self.app.scored_documents, 
+        sorted_docs = sorted(self.app.scored_documents,
                            key=lambda x: x[1].get('score', 0), reverse=True)
-        
+
+        # Separate into high-scoring and low-scoring
+        high_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) > score_threshold]
+        low_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) <= score_threshold]
+
         # Create document cards
         card_creator = DocumentCardCreator()
-        doc_cards = card_creator.create_scored_document_cards_list(sorted_docs)
-        
-        # Update header
+
+        # Build components list
+        all_components = []
+
+        # Main header
         header_components = create_tab_header(
             "Document Scoring Results",
             count=len(sorted_docs),
-            subtitle="Documents ordered by AI relevance score (highest to lowest)."
+            subtitle=f"All {len(sorted_docs)} documents with AI relevance scores. Threshold: {score_threshold}"
         )
-        
-        all_components = [*header_components, *doc_cards]
-        
+        all_components.extend(header_components)
+
+        # High-scoring documents section
+        if high_scoring_docs:
+            all_components.append(ft.Container(
+                content=ft.Text(
+                    f"🎯 HIGH-SCORING DOCUMENTS (Above threshold {score_threshold}): {len(high_scoring_docs)}",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.GREEN_700
+                ),
+                padding=ft.padding.only(top=15, bottom=10)
+            ))
+            high_scoring_cards = card_creator.create_scored_document_cards_list(high_scoring_docs)
+            all_components.extend(high_scoring_cards)
+
+        # Low-scoring documents section
+        if low_scoring_docs:
+            all_components.append(ft.Container(
+                content=ft.Text(
+                    f"📉 LOW-SCORING DOCUMENTS (At or below threshold {score_threshold}): {len(low_scoring_docs)}",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.ORANGE_700
+                ),
+                padding=ft.padding.only(top=20, bottom=10)
+            ))
+            low_scoring_cards = card_creator.create_scored_document_cards_list(low_scoring_docs)
+            all_components.extend(low_scoring_cards)
+
         # Update the scoring tab content
         if self.app.tab_manager and self.app.tab_manager.get_tab_content('scoring'):
             self.app.tab_manager.update_tab_content('scoring', ft.Column(
