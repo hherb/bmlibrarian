@@ -282,13 +282,16 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         for i, item in enumerate(items, 1):
             claim = item.get('claim', 'Unknown claim')
             counterfactual_statement = item.get('counterfactual_statement', '')
+            counterfactual_question = item.get('counterfactual_question', '')
             evidence_list = item.get('counterfactual_evidence', [])
             evidence_found = item.get('evidence_found', False)
             critical_assessment = item.get('critical_assessment', '')
 
             content.append(f"\n### Claim {i}")
             content.append(f"**Original Claim**: {claim}")
-            content.append(f"\n**Counterfactual Question**: {counterfactual_statement}")
+            content.append(f"\n**Counterfactual Statement**: {counterfactual_statement}")
+            if counterfactual_question:
+                content.append(f"\n**Research Question**: {counterfactual_question}")
 
             if evidence_found and evidence_list:
                 # Show contradictory evidence with details

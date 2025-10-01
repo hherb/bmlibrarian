@@ -450,6 +450,7 @@ class ReportFormatter:
         for i, item in enumerate(items, 1):
             claim = item.get('claim', 'Unknown claim')
             counterfactual_statement = item.get('counterfactual_statement', '')
+            counterfactual_question = item.get('counterfactual_question', '')
             evidence_list = item.get('counterfactual_evidence', [])
             evidence_found = item.get('evidence_found', False)
             critical_assessment = item.get('critical_assessment', '')
@@ -458,8 +459,11 @@ class ReportFormatter:
             lines.append("")
             lines.append(f"**Original Claim:** {claim}")
             lines.append("")
-            lines.append(f"**Counterfactual Question:** {counterfactual_statement}")
+            lines.append(f"**Counterfactual Statement:** {counterfactual_statement}")
             lines.append("")
+            if counterfactual_question:
+                lines.append(f"**Research Question:** {counterfactual_question}")
+                lines.append("")
 
             if evidence_found and evidence_list:
                 lines.append(f"**Contradictory Evidence:** {len(evidence_list)} citation(s) found")

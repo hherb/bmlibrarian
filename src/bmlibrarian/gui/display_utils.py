@@ -400,38 +400,62 @@ class CounterfactualDisplayCreator:
         for i, item in enumerate(items, 1):
             claim = item.get('claim', 'Unknown claim')
             counterfactual_statement = item.get('counterfactual_statement', '')
+            counterfactual_question = item.get('counterfactual_question', '')
             evidence_list = item.get('counterfactual_evidence', [])
-            
-            # Claim section
-            claim_container = ft.Container(
-                content=ft.Column([
+
+            # Build column contents
+            column_contents = [
+                ft.Text(
+                    f"Claim {i}:",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_700,
+                    selectable=True
+                ),
+                ft.Text(
+                    claim,
+                    size=12,
+                    color=ft.Colors.BLACK87,
+                    selectable=True
+                ),
+                ft.Text(
+                    "Counterfactual Statement:",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.RED_700,
+                    selectable=True
+                ),
+                ft.Text(
+                    counterfactual_statement,
+                    size=12,
+                    color=ft.Colors.RED_800,
+                    italic=True,
+                    selectable=True
+                ),
+            ]
+
+            # Add research question if present
+            if counterfactual_question:
+                column_contents.extend([
                     ft.Text(
-                        f"Claim {i}:",
-                        size=14,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.BLUE_700,
-                        selectable=True
-                    ),
-                    ft.Text(
-                        claim,
-                        size=12,
-                        color=ft.Colors.BLACK87,
-                        selectable=True
-                    ),
-                    ft.Text(
-                        "Counterfactual Statement:",
+                        "Research Question:",
                         size=13,
                         weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.RED_700,
+                        color=ft.Colors.PURPLE_700,
                         selectable=True
                     ),
                     ft.Text(
-                        counterfactual_statement,
+                        counterfactual_question,
                         size=12,
-                        color=ft.Colors.RED_800,
+                        color=ft.Colors.PURPLE_800,
                         italic=True,
                         selectable=True
                     ),
+                ])
+
+            # Claim section
+            claim_container = ft.Container(
+                content=ft.Column(column_contents + [
                     ft.Text(
                         f"Counterfactual Evidence ({len(evidence_list)} citations):",
                         size=13,

@@ -209,13 +209,14 @@ def extract_keywords_from_question(question: str) -> str:
 @dataclass
 class CounterfactualQuestion:
     """Represents a research question designed to find contradictory evidence."""
-    question: str
+    counterfactual_statement: str  # The opposite claim as a declarative statement
+    question: str  # Research question for human understanding
     reasoning: str
     target_claim: str  # The specific claim this question targets
     search_keywords: List[str]  # Suggested keywords for literature search
     priority: str  # HIGH, MEDIUM, LOW based on importance of the claim
     created_at: Optional[datetime] = None
-    
+
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now(timezone.utc)
@@ -287,37 +288,42 @@ class CounterfactualAgent(BaseAgent):
 
 Your task is to:
 1. Extract SPECIFIC, CONCRETE factual statements from the document (not general themes)
-2. For each factual statement, generate DIRECT counterfactual questions that would contradict it
-3. Create search-ready questions that can be converted to database queries
+2. For each factual statement, generate BOTH:
+   a) A counterfactual STATEMENT (the opposite claim that would contradict it)
+   b) A research QUESTION (for human understanding of what to search for)
+3. Create search-ready statements that match how evidence appears in literature
 
-Guidelines for counterfactual question generation:
-- Extract specific claims like "Drug X is first-line treatment for Disease Y" → "What are alternative first-line treatments for Disease Y?"
-- Convert dosage claims like "10mg daily is optimal" → "What are the reported adverse effects of 10mg daily dosing?"
-- Challenge effectiveness claims like "Treatment reduces risk by 30%" → "Studies showing Treatment ineffectiveness or increased risk"
-- Question population claims like "Effective in elderly" → "Treatment effectiveness in different age groups"
+Guidelines for counterfactual generation:
+- Original: "Drug X is first-line treatment for Disease Y"
+  → Statement: "Drug X is not effective for Disease Y" or "Alternative drugs are superior to Drug X for Disease Y"
+  → Question: "What studies show Drug X ineffectiveness or alternative treatments for Disease Y?"
 
-IMPORTANT: Generate DIRECT, SPECIFIC questions that can be searched:
-✓ GOOD: "What are the first-line antibiotics for melioidosis treatment?"
-✓ GOOD: "Ceftazidime treatment failure in melioidosis cases"  
-✓ GOOD: "Alternative treatments when ceftazidime fails in melioidosis"
-✗ BAD: "Are there methodological limitations in the studies?"
-✗ BAD: "Could there be confounding factors affecting the results?"
+- Original: "Treatment reduces risk by 30%"
+  → Statement: "Treatment does not reduce risk" or "Treatment shows no benefit"
+  → Question: "What studies show Treatment ineffectiveness or lack of benefit?"
+
+- Original: "Lipophilic statins with clarithromycin cause significant interactions"
+  → Statement: "No significant interactions occur between lipophilic statins and clarithromycin" or "Co-prescription of lipophilic statins with clarithromycin is safe"
+  → Question: "What studies report safe co-prescription of lipophilic statins with clarithromycin?"
+
+CRITICAL: The counterfactual STATEMENT should express the opposite claim as a declarative statement, not a question. Medical literature contains statements, not questions.
 
 For search_keywords, provide concrete medical terms:
 - Use specific drug names, diseases, treatments
-- Include failure/adverse/alternative terms when appropriate
-- Examples: "ceftazidime", "melioidosis", "treatment failure", "first-line", "antibiotic resistance"
+- Include safe/no-interaction/ineffective/alternative terms
+- Examples: "simvastatin", "clarithromycin", "no interaction", "safe co-prescription"
 
 Response Format:
 Return ONLY a valid JSON object with this exact structure:
 
 {
     "main_claims": [
-        "Specific factual claim from the document (e.g., 'Ceftazidime is first-line treatment for melioidosis')"
+        "Specific factual claim from the document (e.g., 'Lipophilic statins with clarithromycin cause significant drug interactions')"
     ],
     "counterfactual_questions": [
         {
-            "question": "Direct searchable question to find contradictory evidence (e.g., 'What are alternative first-line treatments for melioidosis?')",
+            "counterfactual_statement": "The opposite claim as a declarative statement (e.g., 'No significant interactions occur between lipophilic statins and clarithromycin')",
+            "question": "Research question for finding this evidence (e.g., 'What studies report no significant interaction between simvastatin and clarithromycin?')",
             "reasoning": "What this would prove if contradictory evidence is found",
             "target_claim": "The exact claim this question challenges",
             "search_keywords": ["specific", "medical", "terms"],
@@ -328,7 +334,7 @@ Return ONLY a valid JSON object with this exact structure:
     "confidence_level": "HIGH|MEDIUM|LOW - how much contradictory evidence might exist"
 }
 
-Focus on concrete, searchable questions that would directly contradict specific claims."""
+Focus on generating counterfactual STATEMENTS that directly contradict specific claims and match how evidence appears in literature."""
 
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
@@ -406,12 +412,13 @@ Analyze this document to identify its main claims and generate research question
                     counterfactual_questions = []
                     for q_data in result_data['counterfactual_questions']:
                         # Validate question structure
-                        required_q_fields = ['question', 'reasoning', 'target_claim', 'search_keywords', 'priority']
+                        required_q_fields = ['counterfactual_statement', 'question', 'reasoning', 'target_claim', 'search_keywords', 'priority']
                         for field in required_q_fields:
                             if field not in q_data:
                                 raise ValueError(f"Missing required question field: {field}")
-                        
+
                         question = CounterfactualQuestion(
+                            counterfactual_statement=q_data['counterfactual_statement'],
                             question=q_data['question'],
                             reasoning=q_data['reasoning'],
                             target_claim=q_data['target_claim'],
@@ -569,32 +576,33 @@ SUPPORTING CITATIONS:
 
     def generate_research_queries_with_agent(self, questions: List[CounterfactualQuestion], query_agent=None) -> List[Dict[str, str]]:
         """
-        Generate database-ready research queries by directly using the QueryAgent on counterfactual questions.
-        
+        Generate database-ready research queries by using the QueryAgent on counterfactual statements.
+
         Args:
             questions: List of CounterfactualQuestion objects
             query_agent: QueryAgent instance for proper query formatting
-            
+
         Returns:
-            List of dictionaries with 'question', 'query', and 'metadata'
+            List of dictionaries with 'counterfactual_statement', 'question', 'query', and 'metadata'
         """
         if query_agent is None:
             # Import here to avoid circular imports
             from .query_agent import QueryAgent
             query_agent = QueryAgent(model=get_model("query_agent"))
-        
+
         research_queries = []
-        
+
         for question in questions:
             try:
-                # Use the counterfactual question directly with the QueryAgent
-                # The questions are now designed to be search-ready
-                db_query = query_agent.convert_question(question.question)
-                
+                # IMPORTANT: Use the counterfactual STATEMENT (not question) for database search
+                # Medical literature contains statements, not questions
+                db_query = query_agent.convert_question(question.counterfactual_statement)
+
                 # Clean the query to ensure PostgreSQL compatibility (fix double quotes)
                 cleaned_query = self._clean_tsquery(db_query)
-                
+
                 research_queries.append({
+                    'counterfactual_statement': question.counterfactual_statement,
                     'question': question.question,
                     'db_query': cleaned_query,
                     'target_claim': question.target_claim,
@@ -602,15 +610,15 @@ SUPPORTING CITATIONS:
                     'priority': question.priority,
                     'reasoning': question.reasoning
                 })
-                
-                logger.debug(f"Generated query for '{question.question[:50]}...': {cleaned_query}")
-                
+
+                logger.debug(f"Generated query for statement '{question.counterfactual_statement[:50]}...': {cleaned_query}")
+
             except Exception as e:
-                logger.warning(f"QueryAgent failed for question '{question.question}': {e}")
-                logger.info(f"Skipping question that couldn't be converted to database query")
-                # Skip questions that can't be converted rather than using poor fallbacks
+                logger.warning(f"QueryAgent failed for statement '{question.counterfactual_statement}': {e}")
+                logger.info(f"Skipping counterfactual that couldn't be converted to database query")
+                # Skip statements that can't be converted rather than using poor fallbacks
                 continue
-        
+
         logger.info(f"Successfully generated {len(research_queries)} database queries from {len(questions)} counterfactual questions")
         return research_queries
     
@@ -641,13 +649,14 @@ Confidence in Original Claims: {analysis.confidence_level}
         medium_priority = [q for q in analysis.counterfactual_questions if q.priority == "MEDIUM"] 
         low_priority = [q for q in analysis.counterfactual_questions if q.priority == "LOW"]
         
-        for priority_group, priority_name in [(high_priority, "HIGH PRIORITY"), 
+        for priority_group, priority_name in [(high_priority, "HIGH PRIORITY"),
                                             (medium_priority, "MEDIUM PRIORITY"),
                                             (low_priority, "LOW PRIORITY")]:
             if priority_group:
                 protocol += f"## {priority_name} Research Questions\n\n"
                 for i, question in enumerate(priority_group, 1):
                     protocol += f"### Question {i}\n"
+                    protocol += f"**Counterfactual Statement:** {question.counterfactual_statement}\n\n"
                     protocol += f"**Research Question:** {question.question}\n\n"
                     protocol += f"**Target Claim:** {question.target_claim}\n\n"
                     protocol += f"**Reasoning:** {question.reasoning}\n\n"
@@ -758,10 +767,11 @@ Confidence in Original Claims: {analysis.confidence_level}
             )
             
             if results:
-                # Score documents for relevance
+                # Score documents for relevance using the counterfactual statement
+                # (since that's what we searched for)
                 for result in results:
                     score_result = scoring_agent.evaluate_document(
-                        query_info['question'], result
+                        query_info['counterfactual_statement'], result
                     )
                     
                     if score_result and score_result['score'] >= min_relevance_score:
@@ -790,15 +800,17 @@ Confidence in Original Claims: {analysis.confidence_level}
             for evidence in sorted_evidence[:10]:  # Limit to top 10 for performance
                 doc = evidence['document']
                 query_info = evidence['query_info']
-                
+
+                # Use counterfactual statement for citation extraction
                 citation = citation_agent.extract_citation_from_document(
-                    query_info['question'], doc, min_relevance=0.4
+                    query_info['counterfactual_statement'], doc, min_relevance=0.4
                 )
-                
+
                 if citation:
                     contradictory_citations.append({
                         'citation': citation,
                         'original_claim': query_info['target_claim'],
+                        'counterfactual_statement': query_info['counterfactual_statement'],
                         'counterfactual_question': query_info['question'],
                         'document_score': evidence['score'],
                         'score_reasoning': evidence['reasoning']
@@ -855,22 +867,29 @@ Confidence in Original Claims: {analysis.confidence_level}
         """
         formatted_items = []
 
-        # Create a mapping from claims to their counterfactual questions
-        claim_to_question = {}
+        # Create a mapping from claims to their counterfactual statements and questions
+        claim_to_counterfactual = {}
         for query_info in research_queries:
             target_claim = query_info.get('target_claim', '')
+            counterfactual_statement = query_info.get('counterfactual_statement', '')
             counterfactual_question = query_info.get('question', '')
-            if target_claim and counterfactual_question:
-                claim_to_question[target_claim] = counterfactual_question
+            if target_claim:
+                claim_to_counterfactual[target_claim] = {
+                    'statement': counterfactual_statement,
+                    'question': counterfactual_question
+                }
 
         # Group citations by their original claims
         claims_with_evidence = {}
         for citation_item in contradictory_citations:
             original_claim = citation_item.get('original_claim', 'Unknown claim')
             if original_claim not in claims_with_evidence:
+                # Get the counterfactual info from our mapping
+                counterfactual_info = claim_to_counterfactual.get(original_claim, {})
                 claims_with_evidence[original_claim] = {
                     'claim': original_claim,
-                    'counterfactual_statement': citation_item.get('counterfactual_question', ''),
+                    'counterfactual_statement': counterfactual_info.get('statement', ''),
+                    'counterfactual_question': counterfactual_info.get('question', ''),
                     'citations': []
                 }
 
@@ -903,17 +922,21 @@ Confidence in Original Claims: {analysis.confidence_level}
                 formatted_item = {
                     'claim': main_claim,
                     'counterfactual_statement': claim_data['counterfactual_statement'],
+                    'counterfactual_question': claim_data['counterfactual_question'],
                     'counterfactual_evidence': citations,
                     'evidence_found': True,
                     'critical_assessment': assessment
                 }
             else:
                 # No contradictory evidence found for this claim
-                counterfactual_statement = claim_to_question.get(main_claim, 'No counterfactual question generated')
+                counterfactual_info = claim_to_counterfactual.get(main_claim, {})
+                counterfactual_statement = counterfactual_info.get('statement', 'No counterfactual statement generated')
+                counterfactual_question = counterfactual_info.get('question', 'No counterfactual question generated')
 
                 formatted_item = {
                     'claim': main_claim,
                     'counterfactual_statement': counterfactual_statement,
+                    'counterfactual_question': counterfactual_question,
                     'counterfactual_evidence': [],
                     'evidence_found': False,
                     'critical_assessment': 'No contradictory evidence found in the database. This claim appears well-supported or lacks available counter-evidence in the current literature database.'
