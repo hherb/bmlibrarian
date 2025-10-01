@@ -77,7 +77,7 @@ def create_max_results_field(value: int, on_change_handler) -> ft.TextField:
         width=120,
         height=45,
         text_align=ft.TextAlign.CENTER,
-        on_change=on_change_handler,
+        on_blur=on_change_handler,  # Use on_blur instead of on_change to avoid constant updates
         input_filter=ft.NumbersOnlyInputFilter()
     )
 

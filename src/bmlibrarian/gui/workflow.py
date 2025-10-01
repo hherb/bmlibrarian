@@ -121,6 +121,7 @@ class WorkflowExecutor:
         self.scored_documents = []
         self.citations = []
         self.counterfactual_analysis = None
+        self.preliminary_report = ""
         self.final_report = ""
         
         # Store model information for report footnotes
@@ -129,7 +130,7 @@ class WorkflowExecutor:
         # Initialize modular components
         self.interactive_handler = None
         self.query_processor = QueryProcessor()
-        self.steps_handler = WorkflowStepsHandler(agents, config_overrides)
+        self.steps_handler = WorkflowStepsHandler(agents, self.config_overrides)
         
         # Collect agent model information for footnotes
         self._collect_agent_model_info()
@@ -312,7 +313,7 @@ class WorkflowExecutor:
                 research_question, citations, update_callback
             )
             
-            # Step 8: Counterfactual Analysis
+            # Step 8: Store preliminary report (before counterfactual analysis)
             # Get report content as string
             if hasattr(report, 'content'):
                 report_content = report.content
@@ -320,6 +321,16 @@ class WorkflowExecutor:
                 report_content = report
             else:
                 report_content = str(report)
+            
+            # Store as preliminary report for tab display
+            self.preliminary_report = report_content
+            print(f"📄 Stored preliminary report ({len(self.preliminary_report)} characters)")
+            
+            # Trigger preliminary report tab update
+            update_callback(WorkflowStep.GENERATE_REPORT, "tab_update",
+                          f"Preliminary report generated ({len(self.preliminary_report)} characters)")
+            
+            # Step 9: Counterfactual Analysis
             
             # Check if comprehensive counterfactual analysis is enabled
             comprehensive_cf = self.config_overrides.get('comprehensive_counterfactual', False)

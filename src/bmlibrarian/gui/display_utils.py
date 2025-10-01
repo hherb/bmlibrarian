@@ -336,8 +336,11 @@ class CounterfactualDisplayCreator:
         """Create display components for counterfactual analysis."""
         # Check analysis type and create appropriate display
         if isinstance(analysis, dict):
+            # Check for new formatted report structure
+            if 'formatted_report' in analysis:
+                return self._create_formatted_report_display(analysis['formatted_report'])
             # Check if this looks like a corrupted database document mixed with analysis
-            if 'id' in analysis and 'source_id' in analysis and 'summary' in analysis:
+            elif 'id' in analysis and 'source_id' in analysis and 'summary' in analysis:
                 # This is a database document with analysis fields - extract clean analysis
                 return self._create_corrupted_analysis_components(analysis)
             elif 'summary' in analysis:
@@ -352,6 +355,177 @@ class CounterfactualDisplayCreator:
         else:
             # Fallback for unknown format
             return self._create_fallback_analysis_components(analysis)
+    
+    def _create_formatted_report_display(self, formatted_report: Dict[str, Any]) -> List[ft.Control]:
+        """Create display components for the new formatted counterfactual report."""
+        components = []
+        
+        items = formatted_report.get('items', [])
+        summary_statement = formatted_report.get('summary_statement', '')
+        statistics = formatted_report.get('statistics', {})
+        
+        # Header
+        components.append(
+            ft.Text(
+                "🎯 Counterfactual Evidence Analysis",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.DEEP_PURPLE_700,
+                selectable=True
+            )
+        )
+        
+        if not items:
+            components.append(
+                ft.Text(
+                    "No contradictory evidence found. The original report claims appear to be well-supported by the literature.",
+                    size=12,
+                    color=ft.Colors.GREEN_600,
+                    italic=True,
+                    selectable=True
+                )
+            )
+        else:
+            components.append(
+                ft.Text(
+                    f"Found {len(items)} claims with contradictory evidence requiring careful consideration.",
+                    size=12,
+                    color=ft.Colors.ORANGE_700,
+                    italic=True,
+                    selectable=True
+                )
+            )
+        
+        # Display each claim with its counterfactual evidence
+        for i, item in enumerate(items, 1):
+            claim = item.get('claim', 'Unknown claim')
+            counterfactual_statement = item.get('counterfactual_statement', '')
+            evidence_list = item.get('counterfactual_evidence', [])
+            
+            # Claim section
+            claim_container = ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        f"Claim {i}:",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.BLUE_700,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        claim,
+                        size=12,
+                        color=ft.Colors.BLACK87,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        "Counterfactual Statement:",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.RED_700,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        counterfactual_statement,
+                        size=12,
+                        color=ft.Colors.RED_800,
+                        italic=True,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        f"Counterfactual Evidence ({len(evidence_list)} citations):",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.ORANGE_700,
+                        selectable=True
+                    )
+                ], spacing=8),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.BLUE_GREY_50,
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.BLUE_GREY_200)
+            )
+            components.append(claim_container)
+            
+            # Evidence citations
+            for j, evidence in enumerate(evidence_list, 1):
+                title = evidence.get('title', 'Unknown title')
+                content = evidence.get('content', 'No content available')
+                relevance_score = evidence.get('relevance_score', 0)
+                document_score = evidence.get('document_score', 0)
+                score_reasoning = evidence.get('score_reasoning', '')
+                
+                evidence_container = ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"Evidence {j}: {title}",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.ORANGE_800,
+                            selectable=True
+                        ),
+                        ft.Text(
+                            content,
+                            size=11,
+                            color=ft.Colors.BLACK87,
+                            selectable=True
+                        ),
+                        ft.Row([
+                            ft.Text(
+                                f"Relevance: {relevance_score}/5",
+                                size=10,
+                                color=ft.Colors.GREY_600,
+                                selectable=True
+                            ),
+                            ft.Text(
+                                f"Document Score: {document_score}/5",
+                                size=10,
+                                color=ft.Colors.GREY_600,
+                                selectable=True
+                            )
+                        ], spacing=20),
+                        ft.Text(
+                            f"Reasoning: {score_reasoning}",
+                            size=10,
+                            color=ft.Colors.GREY_700,
+                            italic=True,
+                            selectable=True
+                        ) if score_reasoning else ft.Container()
+                    ], spacing=5),
+                    padding=ft.padding.all(12),
+                    margin=ft.margin.only(left=20, top=5, bottom=5),
+                    bgcolor=ft.Colors.ORANGE_50,
+                    border_radius=6,
+                    border=ft.border.all(1, ft.Colors.ORANGE_200)
+                )
+                components.append(evidence_container)
+        
+        # Summary section
+        if summary_statement:
+            summary_container = ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "📊 Final Summary Statement",
+                        size=15,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.PURPLE_700,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        summary_statement,
+                        size=12,
+                        color=ft.Colors.BLACK87,
+                        selectable=True
+                    )
+                ], spacing=8),
+                padding=ft.padding.all(15),
+                bgcolor=ft.Colors.PURPLE_50,
+                border_radius=8,
+                border=ft.border.all(2, ft.Colors.PURPLE_300)
+            )
+            components.append(summary_container)
+        
+        return components
     
     def _create_corrupted_analysis_components(self, corrupted_analysis: Dict) -> List[ft.Control]:
         """Create components for corrupted analysis (database document mixed with analysis fields)."""

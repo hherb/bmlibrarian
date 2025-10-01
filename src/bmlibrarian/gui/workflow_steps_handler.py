@@ -14,7 +14,7 @@ class WorkflowStepsHandler:
     
     def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
         self.agents = agents
-        self.config_overrides = config_overrides or {}
+        self.config_overrides = config_overrides if config_overrides is not None else {}
     
     def execute_query_generation(self, research_question: str, 
                                update_callback: Callable) -> str:

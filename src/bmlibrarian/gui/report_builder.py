@@ -122,6 +122,11 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         Returns:
             Formatted comprehensive counterfactual section
         """
+        # Check if we have the new formatted report structure
+        if 'formatted_report' in analysis:
+            return self._format_structured_counterfactual(analysis['formatted_report'])
+        
+        # Fallback to original formatting for backwards compatibility
         content = ["\n## Counterfactual Analysis"]
         
         # Extract summary information
@@ -244,6 +249,55 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
                     content.append(f"{i}. {question}")
         
         content.append("\n*Note: This analysis identified potential areas for contradictory evidence but did not perform literature search.*")
+        return "\n".join(content)
+    
+    def _format_structured_counterfactual(self, formatted_report: dict) -> str:
+        """Format the new structured counterfactual report for inclusion in final report.
+        
+        Args:
+            formatted_report: Dictionary with items, summary_statement, and statistics
+            
+        Returns:
+            Formatted markdown section for the counterfactual analysis
+        """
+        content = ["\n## Counterfactual Evidence Analysis"]
+        
+        items = formatted_report.get('items', [])
+        summary_statement = formatted_report.get('summary_statement', '')
+        statistics = formatted_report.get('statistics', {})
+        
+        if not items:
+            content.append("\nNo contradictory evidence was found. The original report claims appear to be well-supported by the available literature.")
+            return "\n".join(content)
+        
+        content.append(f"\nThis analysis identified {len(items)} claims with contradictory evidence that warrant careful consideration:")
+        
+        # Format each claim with its counterfactual evidence
+        for i, item in enumerate(items, 1):
+            claim = item.get('claim', 'Unknown claim')
+            counterfactual_statement = item.get('counterfactual_statement', '')
+            evidence_list = item.get('counterfactual_evidence', [])
+            
+            content.append(f"\n### Claim {i}")
+            content.append(f"**Original Claim**: {claim}")
+            content.append(f"**Counterfactual Statement**: {counterfactual_statement}")
+            content.append(f"**Contradictory Evidence** ({len(evidence_list)} citations):")
+            
+            for j, evidence in enumerate(evidence_list, 1):
+                title = evidence.get('title', 'Unknown title')
+                citation_content = evidence.get('content', 'No content available')
+                relevance_score = evidence.get('relevance_score', 0)
+                document_score = evidence.get('document_score', 0)
+                
+                content.append(f"\n{j}. **{title}**")
+                content.append(f"   - *Relevance Score*: {relevance_score}/5, *Document Score*: {document_score}/5")
+                content.append(f"   - *Finding*: {citation_content}")
+        
+        # Add summary
+        if summary_statement:
+            content.append(f"\n### Summary")
+            content.append(summary_statement)
+        
         return "\n".join(content)
     
     def _extract_year_from_publication_date(self, pub_date: str) -> str:

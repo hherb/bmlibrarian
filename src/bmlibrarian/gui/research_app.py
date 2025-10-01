@@ -59,6 +59,7 @@ class ResearchGUI:
         # Research components
         self.config = None
         self.workflow_orchestrator = None
+        self.preliminary_report = ""
         self.final_report = ""
         self.agents_initialized = agents is not None
         self.agents = agents

@@ -72,6 +72,18 @@ class DataUpdaters:
             self.app.page.update()
         print(f"✅ Counterfactual tab update completed")
     
+    def update_preliminary_report(self, report_content: str):
+        """Update the preliminary report and refresh the preliminary report tab."""
+        print(f"📄 update_preliminary_report called with report length: {len(report_content) if report_content else 0}")
+        self.app.preliminary_report = report_content
+        print(f"📝 Stored preliminary report content in app.preliminary_report")
+        print(f"📄 Calling _update_preliminary_report_tab...")
+        self._update_preliminary_report_tab()
+        print(f"📱 Updating page...")
+        if self.app.page:
+            self.app.page.update()
+        print(f"✅ Preliminary report tab update completed")
+    
     def update_report(self, report_content: str):
         """Update the report and refresh the report tab."""
         print(f"📄 update_report called with report length: {len(report_content) if report_content else 0}")
@@ -164,6 +176,16 @@ class DataUpdaters:
             # Still try to update to show debug info
             self.update_counterfactual_analysis(None)
     
+    def update_preliminary_report_if_available(self):
+        """Update preliminary report tab if data is available."""
+        if hasattr(self.app.workflow_executor, 'preliminary_report') and self.app.workflow_executor.preliminary_report:
+            report = self.app.workflow_executor.preliminary_report
+            print(f"📝 Found preliminary report with length: {len(report)}")
+            print(f"✅ Updating Preliminary Report tab with preliminary report")
+            self.update_preliminary_report(report)
+        else:
+            print(f"❌ No preliminary report available in workflow_executor")
+    
     def update_report_if_available(self):
         """Update report tab if data is available."""
         if hasattr(self.app.workflow_executor, 'final_report') and self.app.workflow_executor.final_report:
@@ -180,6 +202,7 @@ class DataUpdaters:
         self.update_documents_if_available()
         self.update_scored_documents_if_available()
         self.update_citations_if_available()
+        self.update_preliminary_report_if_available()
         self.update_counterfactual_if_available()  # This will now always show something
         self.update_report_if_available()
         print("✅ All tab updates completed")
@@ -463,6 +486,89 @@ class DataUpdaters:
             content=ft.Column([
                 ft.Markdown(
                     value=self.app.final_report,
+                    selectable=True,
+                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                    on_tap_link=handlers.on_report_link_tap,
+                    auto_follow_links=False
+                )
+            ], scroll=ft.ScrollMode.ALWAYS, expand=True),
+            bgcolor=ft.Colors.GREY_50,
+            border_radius=5,
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        
+        return [header_row, report_display]
+    
+    def _update_preliminary_report_tab(self):
+        """Update the preliminary report tab with the preliminary report."""
+        print(f"📄 _update_preliminary_report_tab called")
+        print(f"📝 Preliminary report exists: {bool(self.app.preliminary_report)}")
+        print(f"📊 Preliminary report length: {len(self.app.preliminary_report) if self.app.preliminary_report else 0}")
+        
+        if not self.app.preliminary_report:
+            print(f"❌ No preliminary report - exiting _update_preliminary_report_tab")
+            return
+        
+        # Create preliminary report components
+        preliminary_report_components = self._create_preliminary_report_components()
+        
+        # Update the preliminary report tab content
+        print(f"📋 Created preliminary report display components")
+        if self.app.tab_manager and self.app.tab_manager.get_tab_content('preliminary_report'):
+            print(f"✅ Updating preliminary_report_tab_content with preliminary report")
+            self.app.tab_manager.update_tab_content('preliminary_report', ft.Column(
+                preliminary_report_components,
+                spacing=10,
+                expand=True
+            ))
+            print(f"✅ Preliminary report tab content updated successfully")
+        else:
+            print(f"❌ preliminary_report_tab_content is None - cannot update!")
+    
+    def _create_preliminary_report_components(self) -> List[ft.Control]:
+        """Create components for the preliminary report tab."""
+        # Get event handlers
+        from .event_handlers import EventHandlers
+        handlers = EventHandlers(self.app)
+        
+        # Create action buttons
+        action_buttons = create_action_button_row([
+            {
+                'text': 'Preview',
+                'icon': ft.Icons.PREVIEW,
+                'on_click': lambda e: handlers.on_preview_preliminary_report(e)
+            },
+            {
+                'text': 'Copy to Clipboard',
+                'icon': ft.Icons.COPY,
+                'on_click': lambda e: handlers.on_copy_preliminary_report(e)
+            },
+            {
+                'text': 'Save Report',
+                'icon': ft.Icons.SAVE,
+                'on_click': lambda e: handlers.on_save_preliminary_report(e),
+                'style': {'bgcolor': ft.Colors.BLUE_600, 'color': ft.Colors.WHITE}
+            }
+        ])
+        
+        # Header with title and buttons
+        header_row = ft.Row([
+            ft.Text(
+                f"Preliminary Report ({len(self.app.preliminary_report):,} characters)",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_700
+            ),
+            ft.Container(expand=True),
+            action_buttons
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        
+        # Preliminary report content display
+        report_display = ft.Container(
+            content=ft.Column([
+                ft.Markdown(
+                    value=self.app.preliminary_report,
                     selectable=True,
                     extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
                     on_tap_link=handlers.on_report_link_tap,

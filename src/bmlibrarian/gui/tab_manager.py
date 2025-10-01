@@ -24,6 +24,7 @@ class TabManager:
         literature_tab = self._create_literature_tab()
         scoring_tab = self._create_scoring_tab()
         citations_tab = self._create_citations_tab()
+        preliminary_report_tab = self._create_preliminary_report_tab()
         counterfactual_tab = self._create_counterfactual_tab()
         report_tab = self._create_report_tab()
         
@@ -50,6 +51,11 @@ class TabManager:
                     text="Citations",
                     icon=ft.Icons.FORMAT_QUOTE,
                     content=citations_tab
+                ),
+                ft.Tab(
+                    text="Preliminary",
+                    icon=ft.Icons.ARTICLE,
+                    content=preliminary_report_tab
                 ),
                 ft.Tab(
                     text="Counterfactual",
@@ -141,6 +147,29 @@ class TabManager:
         )
         
         return self.tab_contents['citations']
+    
+    def _create_preliminary_report_tab(self) -> ft.Container:
+        """Create the preliminary report tab content."""
+        header_components = create_tab_header(
+            "Preliminary Report",
+            subtitle="Initial research report before counterfactual analysis."
+        )
+        
+        empty_state = create_empty_state(
+            "Preliminary report will appear here after report generation."
+        )
+        
+        self.tab_contents['preliminary_report'] = ft.Container(
+            content=ft.Column(
+                [*header_components, empty_state],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            ),
+            padding=ft.padding.all(15),
+            expand=True
+        )
+        
+        return self.tab_contents['preliminary_report']
     
     def _create_counterfactual_tab(self) -> ft.Container:
         """Create the counterfactual analysis tab content."""

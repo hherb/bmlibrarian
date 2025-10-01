@@ -40,34 +40,38 @@ class EventHandlers:
         self.app.page.update()
     
     def on_max_results_change(self, e):
-        """Handle max results input change."""
-        try:
-            value = int(e.control.value.strip()) if e.control.value.strip() else 100
-            # Validate range
-            if value < 1:
-                value = 1
-            elif value > 1000:
-                value = 1000
-            
-            self.app.max_results = value
-            
-            # Update the config overrides
-            self.app.config_overrides['max_results'] = value
-            if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
-                self.app.workflow_executor.config_overrides['max_results'] = value
-            
-            # Update the field value if it was corrected
-            if str(value) != e.control.value.strip():
-                e.control.value = str(value)
-                self.app.page.update()
+        """Handle max results input when field loses focus."""
+        raw_value = e.control.value.strip()
+        
+        # If field is empty, set to default
+        if not raw_value:
+            value = 100
+            e.control.value = str(value)
+        else:
+            try:
+                value = int(raw_value)
                 
-        except ValueError:
-            # Reset to default if invalid input
-            self.app.max_results = 100
-            e.control.value = "100"
-            self.app.config_overrides['max_results'] = 100
-            if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
-                self.app.workflow_executor.config_overrides['max_results'] = 100
+                # Validate range and correct if needed
+                if value < 1:
+                    value = 1
+                    e.control.value = str(value)
+                elif value > 1000:
+                    value = 1000
+                    e.control.value = str(value)
+                    
+            except ValueError:
+                # Reset to current valid value if invalid input
+                value = self.app.max_results
+                e.control.value = str(value)
+        
+        # Update internal values
+        self.app.max_results = value
+        self.app.config_overrides['max_results'] = value
+        if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
+            self.app.workflow_executor.config_overrides['max_results'] = value
+        
+        # Update UI if field value was corrected
+        if e.control.value != raw_value and self.app.page:
             self.app.page.update()
     
     def on_step_expand(self, card: StepCard, expanded: bool):
@@ -119,6 +123,27 @@ class EventHandlers:
     def on_report_link_tap(self, e):
         """Handle links in the report."""
         print(f"Report link tapped: {e.data}")
+    
+    def on_save_preliminary_report(self, e):
+        """Save the preliminary report to a file."""
+        print(f"Save preliminary report button clicked. Report exists: {bool(self.app.preliminary_report)}, Length: {len(self.app.preliminary_report) if self.app.preliminary_report else 0}")
+        if self.app.preliminary_report:
+            self._show_save_preliminary_path_dialog()
+        else:
+            self.app.dialog_manager.show_error_dialog("No preliminary report available to save")
+    
+    def on_copy_preliminary_report(self, e):
+        """Copy the preliminary report to clipboard."""
+        if self.app.preliminary_report:
+            self.app.dialog_manager.copy_to_clipboard(self.app.preliminary_report)
+    
+    def on_preview_preliminary_report(self, e):
+        """Show preliminary report in a preview dialog."""
+        print(f"Preview preliminary report button clicked. Report exists: {bool(self.app.preliminary_report)}, Length: {len(self.app.preliminary_report) if self.app.preliminary_report else 0}")
+        if self.app.preliminary_report:
+            self._show_preliminary_preview_overlay()
+        else:
+            self.app.dialog_manager.show_error_dialog("No preliminary report available to preview")
     
     def _update_status(self):
         """Update the status text."""
@@ -216,6 +241,10 @@ class EventHandlers:
         elif step == WorkflowStep.EXTRACT_CITATIONS:
             print(f"📝 EXTRACT_CITATIONS completed - checking for citations...")
             updaters.update_citations_if_available()
+                        
+        elif step == WorkflowStep.GENERATE_REPORT:
+            print(f"📄 GENERATE_REPORT completed - checking for preliminary report...")
+            updaters.update_preliminary_report_if_available()
                         
         elif step == WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS:
             print(f"🧿 PERFORM_COUNTERFACTUAL_ANALYSIS completed - checking for counterfactual analysis...")
@@ -408,3 +437,147 @@ class EventHandlers:
             print(f"Preview error: {ex}")
             # Fallback to dialog
             self.app.dialog_manager.show_preview_dialog(self.app.final_report)
+    
+    def _show_save_preliminary_path_dialog(self):
+        """Show custom save path dialog for preliminary report."""
+        import os
+        from datetime import datetime
+        
+        # Generate default path
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_filename = f"preliminary_report_{timestamp}.md"
+        default_path = os.path.join(os.path.expanduser("~/Desktop"), default_filename)
+        
+        def save_file(file_path):
+            try:
+                # Expand user path and ensure .md extension
+                expanded_path = os.path.expanduser(file_path.strip())
+                if not expanded_path.endswith('.md'):
+                    expanded_path += '.md'
+                
+                # Create directory if needed
+                os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
+                
+                # Save the markdown report
+                with open(expanded_path, 'w', encoding='utf-8') as f:
+                    f.write(self.app.preliminary_report)
+                
+                success_message = f"Preliminary report saved to: {expanded_path}"
+                print(f"Preliminary report saved to: {expanded_path}")
+                self.app.dialog_manager.show_success_dialog(success_message)
+                
+            except Exception as ex:
+                self.app.dialog_manager.show_error_dialog(f"Failed to save preliminary report: {str(ex)}")
+                print(f"Save error: {ex}")
+        
+        def close_save_dialog(e):
+            self.app.page.overlay.clear()
+            self.app.page.update()
+        
+        def handle_save(e):
+            file_path = path_input.value.strip()
+            if file_path:
+                close_save_dialog(e)
+                save_file(file_path)
+            else:
+                self.app.dialog_manager.show_error_dialog("Please enter a file path")
+        
+        # Create path input
+        path_input = ft.TextField(
+            label="Save preliminary report to:",
+            value=default_path,
+            width=500,
+            hint_text="Enter full file path (e.g., ~/Desktop/my_preliminary_report.md)"
+        )
+        
+        # Create save dialog overlay
+        save_dialog = ft.Container(
+            content=ft.Column([
+                ft.Text("Save Preliminary Report", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text("Enter the path where you want to save the preliminary report:", size=12),
+                ft.Text("📄 This is the report before counterfactual analysis.", size=11, color=ft.Colors.GREY_700),
+                path_input,
+                ft.Row([
+                    ft.Container(expand=True),
+                    ft.TextButton("Cancel", on_click=close_save_dialog),
+                    ft.ElevatedButton("Save", on_click=handle_save)
+                ], alignment=ft.MainAxisAlignment.END)
+            ], spacing=15),
+            width=600,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            padding=30,
+            shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.GREY_400)
+        )
+        
+        # Add to overlay
+        self.app.page.overlay.clear()
+        self.app.page.overlay.append(
+            ft.Container(
+                content=save_dialog,
+                alignment=ft.alignment.center,
+                bgcolor=ft.Colors.with_opacity(0.5, ft.Colors.BLACK)
+            )
+        )
+        
+        self.app.page.update()
+        print("Preliminary report save path dialog created and displayed")
+    
+    def _show_preliminary_preview_overlay(self):
+        """Show preliminary report in a preview overlay."""
+        try:
+            def close_preview(e):
+                self.app.page.overlay.clear()
+                self.app.page.update()
+            
+            # Create preview content using overlay
+            preview_content = ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text("Preliminary Report Preview", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Container(expand=True),
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            on_click=close_preview,
+                            tooltip="Close Preview"
+                        )
+                    ]),
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Markdown(
+                                value=self.app.preliminary_report,
+                                selectable=True,
+                                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
+                            )
+                        ], scroll=ft.ScrollMode.ALWAYS, expand=True),
+                        expand=True,
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5,
+                        padding=15
+                    )
+                ], expand=True),
+                width=800,
+                height=600,
+                bgcolor=ft.Colors.WHITE,
+                border_radius=10,
+                padding=20,
+                shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.GREY_400)
+            )
+            
+            # Add to overlay
+            self.app.page.overlay.clear()
+            self.app.page.overlay.append(
+                ft.Container(
+                    content=preview_content,
+                    alignment=ft.alignment.center,
+                    bgcolor=ft.Colors.with_opacity(0.5, ft.Colors.BLACK)
+                )
+            )
+            
+            self.app.page.update()
+            print("Preliminary report preview overlay created and displayed")
+            
+        except Exception as ex:
+            print(f"Preliminary report preview error: {ex}")
+            # Fallback to dialog
+            self.app.dialog_manager.show_preview_dialog(self.app.preliminary_report)

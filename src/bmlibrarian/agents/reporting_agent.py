@@ -324,8 +324,8 @@ class ReportingAgent(BaseAgent):
             references = self.create_references(citations)
             doc_to_ref = self.map_citations_to_references(citations, references)
             
-            # Process citations iteratively to build the report
-            synthesized_content = self.iterative_synthesis(user_question, citations, doc_to_ref)
+            # Process citations to build a structured report
+            synthesized_content = self.structured_synthesis(user_question, citations, doc_to_ref)
             
             if not synthesized_content:
                 logger.error("Failed to synthesize content from citations")
@@ -360,6 +360,159 @@ class ReportingAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Error synthesizing report: {e}")
             return None
+    
+    def structured_synthesis(self, user_question: str, citations: List[Citation], 
+                           doc_to_ref: Dict[str, int]) -> Optional[str]:
+        """
+        Generate a structured, readable report with clear introduction and supporting sections.
+        
+        Creates a medical publication-style report that:
+        1. Directly answers the research question in the introduction
+        2. Organizes evidence into coherent themes/categories  
+        3. Uses supporting evidence to back up key statements
+        4. Maintains professional medical writing style
+        
+        Args:
+            user_question: Original research question
+            citations: List of extracted citations
+            doc_to_ref: Mapping from document IDs to reference numbers
+            
+        Returns:
+            Structured report content or None if synthesis failed
+        """
+        import requests
+        import json
+        
+        # Sort citations by relevance score (highest first)
+        sorted_citations = sorted(citations, key=lambda c: c.relevance_score, reverse=True)
+        
+        # Prepare citation summaries for the LLM
+        citation_summaries = []
+        for i, citation in enumerate(sorted_citations, 1):
+            ref_number = doc_to_ref.get(citation.document_id, '?')
+            citation_summaries.append(f"""
+Citation {i} [Reference {ref_number}]:
+Title: {citation.document_title}
+Summary: {citation.summary}
+Passage: "{citation.passage}"
+Relevance Score: {citation.relevance_score}
+""")
+        
+        # Create comprehensive prompt for structured synthesis
+        prompt = f"""You are a medical writing expert tasked with creating a comprehensive, readable research report in the style of a medical publication.
+
+Research Question: "{user_question}"
+
+Available Evidence:
+{chr(10).join(citation_summaries)}
+
+Your task is to create a structured, readable report that follows this format:
+
+1. **Introduction (2-3 sentences)**: 
+   - Start with a clear, direct answer to the research question
+   - Provide a concise overview of what the evidence shows
+   - Set the context for the detailed evidence that follows
+
+2. **Evidence and Discussion (3-4 paragraphs)**:
+   - Organize the evidence into logical themes or categories
+   - Each paragraph should focus on a specific aspect or theme
+   - Use the citations to support your statements with proper references
+   - Synthesize related findings rather than listing them separately
+   - Compare and contrast different studies when relevant
+
+3. **Conclusion (1-2 sentences)**:
+   - Summarize the key findings and their implications
+   - Reinforce the answer to the research question
+
+**Writing Guidelines:**
+- Use formal, professional medical writing style
+- Include reference numbers [X] after statements supported by evidence
+- Use specific years instead of vague temporal references (e.g., "In a 2023 study" NOT "In a recent study")
+- Synthesize information rather than simply listing findings
+- Ensure smooth transitions between paragraphs
+- Write for a professional medical audience
+- Make the report readable and engaging, not just a concatenation of citations
+
+**Important**: Create a cohesive narrative that flows naturally. The reader should be able to understand the answer to the research question immediately, then see how the evidence supports that answer.
+
+Response format (JSON):
+{{
+    "introduction": "2-3 sentences directly answering the research question with overview",
+    "evidence_discussion": "3-4 well-structured paragraphs organizing and synthesizing the evidence",
+    "conclusion": "1-2 sentences summarizing key findings and implications",
+    "themes_identified": ["List of main themes/categories you organized the evidence around"]
+}}
+
+Write a comprehensive, professional medical report."""
+
+        try:
+            response = requests.post(
+                f"{self.host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.temperature,
+                        "top_p": self.top_p,
+                        "num_predict": getattr(self, 'max_tokens', 4000)  # Longer for comprehensive synthesis
+                    }
+                },
+                timeout=120  # Longer timeout for comprehensive synthesis
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to generate structured report: HTTP {response.status_code}")
+                return None
+            
+            result = response.json()
+            llm_response = result.get('response', '').strip()
+            
+            if not llm_response:
+                logger.error("Empty response from LLM for structured synthesis")
+                return None
+            
+            # Parse JSON response
+            try:
+                report_data = json.loads(llm_response)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                import re
+                json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+                if json_match:
+                    try:
+                        report_data = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        logger.warning(f"Could not parse JSON from structured synthesis response")
+                        # Fallback to iterative synthesis
+                        return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
+                else:
+                    logger.warning(f"No JSON found in structured synthesis response")
+                    # Fallback to iterative synthesis
+                    return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
+            
+            # Construct the structured report
+            introduction = report_data.get('introduction', '')
+            evidence_discussion = report_data.get('evidence_discussion', '')
+            conclusion = report_data.get('conclusion', '')
+            
+            if not introduction or not evidence_discussion:
+                logger.warning("Incomplete structured synthesis response, falling back to iterative method")
+                return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
+            
+            # Combine sections into final report with section headers
+            structured_content = f"{introduction}\n\n## Evidence and Discussion\n\n{evidence_discussion}"
+            if conclusion:
+                structured_content += f"\n\n## Conclusion\n\n{conclusion}"
+            
+            logger.info(f"Successfully generated structured report with themes: {report_data.get('themes_identified', [])}")
+            return structured_content
+            
+        except Exception as e:
+            logger.error(f"Error in structured synthesis: {e}")
+            # Fallback to iterative synthesis
+            logger.info("Falling back to iterative synthesis method")
+            return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
     
     def iterative_synthesis(self, user_question: str, citations: List[Citation], 
                           doc_to_ref: Dict[str, int]) -> Optional[str]:
