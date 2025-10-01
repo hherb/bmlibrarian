@@ -253,51 +253,80 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
     
     def _format_structured_counterfactual(self, formatted_report: dict) -> str:
         """Format the new structured counterfactual report for inclusion in final report.
-        
+
         Args:
             formatted_report: Dictionary with items, summary_statement, and statistics
-            
+
         Returns:
             Formatted markdown section for the counterfactual analysis
         """
         content = ["\n## Counterfactual Evidence Analysis"]
-        
+
         items = formatted_report.get('items', [])
         summary_statement = formatted_report.get('summary_statement', '')
         statistics = formatted_report.get('statistics', {})
-        
+
         if not items:
-            content.append("\nNo contradictory evidence was found. The original report claims appear to be well-supported by the available literature.")
+            content.append("\nNo claims were analyzed for counterfactual evidence.")
             return "\n".join(content)
-        
-        content.append(f"\nThis analysis identified {len(items)} claims with contradictory evidence that warrant careful consideration:")
-        
-        # Format each claim with its counterfactual evidence
+
+        # Count claims with and without evidence
+        claims_with_evidence = [item for item in items if item.get('evidence_found', False)]
+        claims_without_evidence = [item for item in items if not item.get('evidence_found', False)]
+
+        content.append(f"\nThis analysis examined {len(items)} claims from the original report:")
+        content.append(f"- **{len(claims_with_evidence)} claims** have contradictory evidence")
+        content.append(f"- **{len(claims_without_evidence)} claims** have no contradictory evidence found")
+
+        # Format each claim with its counterfactual evidence and assessment
         for i, item in enumerate(items, 1):
             claim = item.get('claim', 'Unknown claim')
             counterfactual_statement = item.get('counterfactual_statement', '')
             evidence_list = item.get('counterfactual_evidence', [])
-            
+            evidence_found = item.get('evidence_found', False)
+            critical_assessment = item.get('critical_assessment', '')
+
             content.append(f"\n### Claim {i}")
             content.append(f"**Original Claim**: {claim}")
-            content.append(f"**Counterfactual Statement**: {counterfactual_statement}")
-            content.append(f"**Contradictory Evidence** ({len(evidence_list)} citations):")
-            
-            for j, evidence in enumerate(evidence_list, 1):
-                title = evidence.get('title', 'Unknown title')
-                citation_content = evidence.get('content', 'No content available')
-                relevance_score = evidence.get('relevance_score', 0)
-                document_score = evidence.get('document_score', 0)
-                
-                content.append(f"\n{j}. **{title}**")
-                content.append(f"   - *Relevance Score*: {relevance_score}/5, *Document Score*: {document_score}/5")
-                content.append(f"   - *Finding*: {citation_content}")
-        
-        # Add summary
+            content.append(f"\n**Counterfactual Question**: {counterfactual_statement}")
+
+            if evidence_found and evidence_list:
+                # Show contradictory evidence with details
+                content.append(f"\n**Contradictory Evidence Found**: {len(evidence_list)} citation(s)")
+                content.append("")
+
+                for j, evidence in enumerate(evidence_list, 1):
+                    title = evidence.get('title', 'Unknown title')
+                    citation_content = evidence.get('content', 'No content available')
+                    passage = evidence.get('passage', '')
+                    relevance_score = evidence.get('relevance_score', 0)
+                    document_score = evidence.get('document_score', 0)
+                    score_reasoning = evidence.get('score_reasoning', '')
+
+                    content.append(f"{j}. **{title}**")
+                    content.append(f"   - **Relevance Scores**: Citation {relevance_score:.2f}/1.0, Document {document_score}/5")
+                    content.append(f"   - **Summary**: {citation_content}")
+                    if passage:
+                        # Truncate long passages
+                        display_passage = passage[:400] + "..." if len(passage) > 400 else passage
+                        content.append(f"   - **Key Passage**: \"{display_passage}\"")
+                    if score_reasoning:
+                        content.append(f"   - **Scoring Rationale**: {score_reasoning}")
+                    content.append("")
+
+                # Critical assessment
+                content.append(f"**Critical Assessment**: {critical_assessment}")
+            else:
+                # No evidence found
+                content.append(f"\n**Contradictory Evidence Found**: None")
+                content.append("")
+                content.append(f"**Assessment**: {critical_assessment}")
+
+        # Add overall summary
         if summary_statement:
-            content.append(f"\n### Summary")
+            content.append(f"\n## Overall Counterfactual Analysis Summary")
             content.append(summary_statement)
-        
+
         return "\n".join(content)
     
     def _extract_year_from_publication_date(self, pub_date: str) -> str:

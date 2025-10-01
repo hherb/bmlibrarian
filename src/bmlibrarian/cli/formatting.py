@@ -281,24 +281,30 @@ class ReportFormatter:
         lines.append(report.synthesized_answer)
         lines.append("")
         
-        # Contradictory evidence section (if available)
-        if contradictory_evidence and contradictory_evidence.get('contradictory_citations'):
-            lines.append("## Contradictory Evidence")
-            lines.append("")
-            lines.append("The following evidence was found that may contradict or limit the main findings:")
-            lines.append("")
-            
-            for i, item in enumerate(contradictory_evidence['contradictory_citations'][:5], 1):
-                citation = item.get('citation', {})
-                lines.append(f"### Contradictory Finding {i}")
+        # Contradictory evidence section (if available) - use new structured format if present
+        if contradictory_evidence:
+            # Check for new formatted_report structure
+            if 'formatted_report' in contradictory_evidence:
+                formatted_report = contradictory_evidence['formatted_report']
+                lines.extend(self._format_structured_counterfactual_section(formatted_report))
+            # Fallback to legacy format
+            elif contradictory_evidence.get('contradictory_citations'):
+                lines.append("## Contradictory Evidence")
                 lines.append("")
-                lines.append(f"**Target Claim:** {item.get('original_claim', 'N/A')}")
+                lines.append("The following evidence was found that may contradict or limit the main findings:")
                 lines.append("")
-                if hasattr(citation, 'document_title'):
-                    lines.append(f"**Source:** {citation.document_title}")
-                    lines.append(f"**Evidence:** {getattr(citation, 'summary', 'N/A')}")
-                    lines.append(f"**Relevance Score:** {item.get('document_score', 'N/A')}/5")
-                lines.append("")
+
+                for i, item in enumerate(contradictory_evidence['contradictory_citations'][:5], 1):
+                    citation = item.get('citation', {})
+                    lines.append(f"### Contradictory Finding {i}")
+                    lines.append("")
+                    lines.append(f"**Target Claim:** {item.get('original_claim', 'N/A')}")
+                    lines.append("")
+                    if hasattr(citation, 'document_title'):
+                        lines.append(f"**Source:** {citation.document_title}")
+                        lines.append(f"**Evidence:** {getattr(citation, 'summary', 'N/A')}")
+                        lines.append(f"**Relevance Score:** {item.get('document_score', 'N/A')}/5")
+                    lines.append("")
         
         # Limitations section (enhanced)
         lines.append("## Limitations")
@@ -408,7 +414,89 @@ class ReportFormatter:
         lines.append("")
         
         return lines
-    
+
+    def _format_structured_counterfactual_section(self, formatted_report: dict) -> List[str]:
+        """
+        Format the structured counterfactual report section for CLI output.
+
+        Args:
+            formatted_report: Dictionary with items, summary_statement, and statistics
+
+        Returns:
+            List of formatted lines for the counterfactual section
+        """
+        lines = []
+        lines.append("")
+        lines.append("## Counterfactual Evidence Analysis")
+        lines.append("")
+
+        items = formatted_report.get('items', [])
+        summary_statement = formatted_report.get('summary_statement', '')
+
+        if not items:
+            lines.append("No claims were analyzed for counterfactual evidence.")
+            return lines
+
+        # Count claims with and without evidence
+        claims_with_evidence = [item for item in items if item.get('evidence_found', False)]
+        claims_without_evidence = [item for item in items if not item.get('evidence_found', False)]
+
+        lines.append(f"This analysis examined **{len(items)} claims** from the original report:")
+        lines.append(f"- {len(claims_with_evidence)} claims have contradictory evidence")
+        lines.append(f"- {len(claims_without_evidence)} claims have no contradictory evidence found")
+        lines.append("")
+
+        # Format each claim
+        for i, item in enumerate(items, 1):
+            claim = item.get('claim', 'Unknown claim')
+            counterfactual_statement = item.get('counterfactual_statement', '')
+            evidence_list = item.get('counterfactual_evidence', [])
+            evidence_found = item.get('evidence_found', False)
+            critical_assessment = item.get('critical_assessment', '')
+
+            lines.append(f"### Claim {i}")
+            lines.append("")
+            lines.append(f"**Original Claim:** {claim}")
+            lines.append("")
+            lines.append(f"**Counterfactual Question:** {counterfactual_statement}")
+            lines.append("")
+
+            if evidence_found and evidence_list:
+                lines.append(f"**Contradictory Evidence:** {len(evidence_list)} citation(s) found")
+                lines.append("")
+
+                for j, evidence in enumerate(evidence_list, 1):
+                    title = evidence.get('title', 'Unknown title')
+                    citation_content = evidence.get('content', 'No content available')
+                    passage = evidence.get('passage', '')
+                    relevance_score = evidence.get('relevance_score', 0)
+                    document_score = evidence.get('document_score', 0)
+
+                    lines.append(f"{j}. **{title}**")
+                    lines.append(f"   - Relevance: Citation {relevance_score:.2f}/1.0, Document {document_score}/5")
+                    lines.append(f"   - Summary: {citation_content}")
+                    if passage:
+                        display_passage = passage[:300] + "..." if len(passage) > 300 else passage
+                        lines.append(f"   - Key Passage: \"{display_passage}\"")
+                    lines.append("")
+
+                lines.append(f"**Critical Assessment:** {critical_assessment}")
+            else:
+                lines.append(f"**Contradictory Evidence:** None found")
+                lines.append("")
+                lines.append(f"**Assessment:** {critical_assessment}")
+
+            lines.append("")
+
+        # Overall summary
+        if summary_statement:
+            lines.append("### Overall Summary")
+            lines.append("")
+            lines.append(summary_statement)
+            lines.append("")
+
+        return lines
+
     def format_citation_summary(self, citations: List[Citation]) -> str:
         """Format a summary of citations for display."""
         if not citations:

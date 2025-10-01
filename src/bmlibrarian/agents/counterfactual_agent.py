@@ -835,7 +835,7 @@ Confidence in Original Claims: {analysis.confidence_level}
         return result
     
     def _format_counterfactual_report(
-        self, 
+        self,
         analysis: 'CounterfactualAnalysis',
         research_queries: List[Dict[str, str]],
         contradictory_citations: List[Dict[str, Any]],
@@ -843,18 +843,26 @@ Confidence in Original Claims: {analysis.confidence_level}
     ) -> Dict[str, Any]:
         """
         Format counterfactual analysis results into the structured claim/statement/evidence format.
-        
+
         Args:
             analysis: CounterfactualAnalysis object with original claims
             research_queries: List of query information with target claims
             contradictory_citations: List of contradictory citations found
             contradictory_evidence: List of contradictory documents found
-            
+
         Returns:
-            Structured format with claims, counterfactual statements, evidence, and summary
+            Structured format with claims, counterfactual statements, evidence, critical assessment, and summary
         """
         formatted_items = []
-        
+
+        # Create a mapping from claims to their counterfactual questions
+        claim_to_question = {}
+        for query_info in research_queries:
+            target_claim = query_info.get('target_claim', '')
+            counterfactual_question = query_info.get('question', '')
+            if target_claim and counterfactual_question:
+                claim_to_question[target_claim] = counterfactual_question
+
         # Group citations by their original claims
         claims_with_evidence = {}
         for citation_item in contradictory_citations:
@@ -865,62 +873,149 @@ Confidence in Original Claims: {analysis.confidence_level}
                     'counterfactual_statement': citation_item.get('counterfactual_question', ''),
                     'citations': []
                 }
-            
+
             citation = citation_item.get('citation')
             if citation:
                 claims_with_evidence[original_claim]['citations'].append({
                     'title': getattr(citation, 'document_title', 'Unknown title'),
-                    'content': getattr(citation, 'content', 'No content available'),
+                    'content': getattr(citation, 'summary', 'No content available'),
+                    'passage': getattr(citation, 'passage', ''),
                     'relevance_score': getattr(citation, 'relevance_score', 0),
                     'document_score': citation_item.get('document_score', 0),
                     'score_reasoning': citation_item.get('score_reasoning', '')
                 })
-        
-        # Format each claim with its counterfactual evidence
-        for claim_data in claims_with_evidence.values():
-            if claim_data['citations']:  # Only include claims that have evidence
+
+        # Process ALL claims from the original analysis (not just those with evidence)
+        for main_claim in analysis.main_claims:
+            # Check if we found evidence for this claim
+            if main_claim in claims_with_evidence:
+                # We have contradictory evidence
+                claim_data = claims_with_evidence[main_claim]
+                citations = claim_data['citations']
+
+                # Critical assessment based on evidence strength
+                assessment = self._assess_counter_evidence_strength(
+                    main_claim,
+                    claim_data['counterfactual_statement'],
+                    citations
+                )
+
                 formatted_item = {
-                    'claim': claim_data['claim'],
+                    'claim': main_claim,
                     'counterfactual_statement': claim_data['counterfactual_statement'],
-                    'counterfactual_evidence': claim_data['citations']
+                    'counterfactual_evidence': citations,
+                    'evidence_found': True,
+                    'critical_assessment': assessment
                 }
-                formatted_items.append(formatted_item)
-        
+            else:
+                # No contradictory evidence found for this claim
+                counterfactual_statement = claim_to_question.get(main_claim, 'No counterfactual question generated')
+
+                formatted_item = {
+                    'claim': main_claim,
+                    'counterfactual_statement': counterfactual_statement,
+                    'counterfactual_evidence': [],
+                    'evidence_found': False,
+                    'critical_assessment': 'No contradictory evidence found in the database. This claim appears well-supported or lacks available counter-evidence in the current literature database.'
+                }
+
+            formatted_items.append(formatted_item)
+
         # Generate overall summary
         total_claims = len(analysis.main_claims)
-        claims_with_evidence_count = len(formatted_items)
+        claims_with_evidence_count = len([item for item in formatted_items if item['evidence_found']])
         total_citations = sum(len(item['counterfactual_evidence']) for item in formatted_items)
-        
+
         confidence_assessment = analysis.confidence_level
         if total_citations > 0:
             if total_citations >= 3:
                 confidence_assessment = "LOW - Multiple contradictory studies found"
             elif total_citations >= 1:
                 confidence_assessment = "MEDIUM-LOW - Some contradictory evidence found"
-        
+
         summary_statement = f"""
 Counterfactual Analysis Summary:
 - Original report confidence: {analysis.confidence_level}
 - Claims analyzed: {total_claims}
 - Claims with contradictory evidence: {claims_with_evidence_count}
+- Claims without contradictory evidence: {total_claims - claims_with_evidence_count}
 - Total contradictory citations found: {total_citations}
 - Revised confidence assessment: {confidence_assessment}
 
-{f"WARNING: Found {total_citations} citations that contradict key claims in the original report. " if total_citations > 0 else "No contradictory evidence found. "}
+{f"WARNING: Found {total_citations} citations that contradict {claims_with_evidence_count} of {total_claims} key claims in the original report. " if total_citations > 0 else "No contradictory evidence found for any claims. "}
 {"The original conclusions should be interpreted with caution given the contradictory evidence." if total_citations >= 2 else ""}
         """.strip()
-        
+
         return {
             'items': formatted_items,
             'summary_statement': summary_statement,
             'statistics': {
                 'total_claims_analyzed': total_claims,
                 'claims_with_contradictory_evidence': claims_with_evidence_count,
+                'claims_without_contradictory_evidence': total_claims - claims_with_evidence_count,
                 'total_contradictory_citations': total_citations,
                 'original_confidence': analysis.confidence_level,
                 'revised_confidence': confidence_assessment
             }
         }
+
+    def _assess_counter_evidence_strength(
+        self,
+        original_claim: str,
+        counterfactual_statement: str,
+        citations: List[Dict[str, Any]]
+    ) -> str:
+        """
+        Assess whether the counter-evidence is sufficient to challenge or reject the original claim.
+
+        Args:
+            original_claim: The original claim being challenged
+            counterfactual_statement: The counterfactual research question
+            citations: List of contradictory citations found
+
+        Returns:
+            Critical assessment string explaining the strength of counter-evidence
+        """
+        if not citations:
+            return "No contradictory evidence found."
+
+        num_citations = len(citations)
+        avg_document_score = sum(c.get('document_score', 0) for c in citations) / num_citations
+        avg_relevance_score = sum(c.get('relevance_score', 0) for c in citations) / num_citations
+        high_quality_citations = sum(1 for c in citations if c.get('document_score', 0) >= 4)
+
+        # Build assessment based on quantity and quality
+        assessment_parts = []
+
+        # Quantity assessment
+        if num_citations >= 3:
+            assessment_parts.append(f"**Multiple sources ({num_citations} citations)** provide contradictory evidence.")
+        elif num_citations == 2:
+            assessment_parts.append(f"**Two independent sources** provide contradictory evidence.")
+        else:
+            assessment_parts.append(f"**Single source** provides contradictory evidence.")
+
+        # Quality assessment
+        if avg_document_score >= 4.0:
+            assessment_parts.append(f"The counter-evidence is **highly relevant** (avg. relevance: {avg_document_score:.1f}/5).")
+        elif avg_document_score >= 3.0:
+            assessment_parts.append(f"The counter-evidence is **moderately relevant** (avg. relevance: {avg_document_score:.1f}/5).")
+        else:
+            assessment_parts.append(f"The counter-evidence is **weakly relevant** (avg. relevance: {avg_document_score:.1f}/5).")
+
+        # Strength conclusion
+        if num_citations >= 3 and avg_document_score >= 4.0:
+            conclusion = "**STRONG CHALLENGE**: The contradictory evidence is substantial and highly relevant, significantly undermining confidence in the original claim."
+        elif num_citations >= 2 and avg_document_score >= 3.5:
+            conclusion = "**MODERATE CHALLENGE**: The contradictory evidence raises important questions about the original claim's validity and warrants careful consideration."
+        elif num_citations >= 1 and avg_document_score >= 3.0:
+            conclusion = "**WEAK CHALLENGE**: The contradictory evidence suggests alternative interpretations exist, but is insufficient to reject the original claim."
+        else:
+            conclusion = "**MINIMAL CHALLENGE**: The contradictory evidence is limited in quantity or relevance, providing only marginal challenges to the original claim."
+
+        assessment_parts.append(conclusion)
+
+        return " ".join(assessment_parts)
     
     def _search_with_retry(self, query_info: Dict[str, str], max_results: int, max_retries: int, auto_fix_syntax: bool) -> List[Dict]:
         """

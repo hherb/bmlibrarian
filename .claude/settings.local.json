@@ -9,7 +9,8 @@
       "Bash(python test_json_fixes.py:*)",
       "WebSearch",
       "Bash(python:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(git diff:*)"
     ],
     "deny": [],
     "ask": []
