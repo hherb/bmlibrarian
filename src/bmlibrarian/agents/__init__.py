@@ -24,7 +24,8 @@ from .query_agent import QueryAgent
 from .scoring_agent import DocumentScoringAgent, ScoringResult
 from .citation_agent import CitationFinderAgent, Citation
 from .reporting_agent import ReportingAgent, Reference, Report
-from .counterfactual_agent import CounterfactualAgent, CounterfactualQuestion, CounterfactualAnalysis
+from .counterfactual_agent import CounterfactualAgent
+from .models.counterfactual import CounterfactualQuestion, CounterfactualAnalysis
 from .editor_agent import EditorAgent, EditedReport
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep

@@ -1,253 +1,43 @@
 """
 Counterfactual Checking Agent for analyzing documents and generating contradictory research questions.
 
-This agent analyzes documents (such as generated reports) and suggests literature research 
+This agent analyzes documents (such as generated reports) and suggests literature research
 questions designed to find evidence that might contradict the document's claims or conclusions.
 This is essential for rigorous academic research and evidence evaluation.
 """
 
 import json
 import logging
-import re
 from typing import Dict, List, Optional, Any, Callable
-from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from .base import BaseAgent
 from ..config import get_config, get_model, get_agent_config
+from .models.counterfactual import CounterfactualQuestion, CounterfactualAnalysis
+from .utils.query_syntax import fix_tsquery_syntax
+from .utils.citation_validation import (
+    validate_citation_supports_counterfactual,
+    assess_counter_evidence_strength
+)
+from .utils.database_search import search_with_retry
+from .formatters.counterfactual_formatter import (
+    format_counterfactual_report,
+    generate_research_protocol
+)
 
 logger = logging.getLogger(__name__)
-
-
-def fix_tsquery_syntax(query: str) -> str:
-    """
-    Fix PostgreSQL tsquery syntax errors without oversimplifying queries.
-    
-    Focuses on quote escaping and malformed syntax patterns that cause 
-    "syntax error in tsquery" without reducing query complexity.
-    
-    Args:
-        query: The original tsquery string
-        
-    Returns:
-        Fixed tsquery string with corrected syntax but preserved complexity
-    """
-    # Basic cleanup - remove function prefixes
-    query = query.strip()
-    if query.startswith(('to_tsquery:', 'tsquery:')):
-        query = re.sub(r'^[a-z_]+:\s*', '', query, flags=re.IGNORECASE)
-    
-    # Remove outer quotes that wrap the entire query
-    if (query.startswith('"') and query.endswith('"')) or (query.startswith("'") and query.endswith("'")):
-        query = query[1:-1]
-    
-    # CRITICAL FIX: Handle the specific malformed quote patterns causing errors
-    # Fix patterns like: '(''phrase''' -> 'phrase'
-    query = re.sub(r"'\(\s*''([^']+)''\s*'", r"'\1'", query)
-    query = re.sub(r"'\(\s*''([^']+)'''\s*'", r"'\1'", query)
-    
-    # Fix patterns like: '''phrase''' -> 'phrase'  
-    query = re.sub(r"'''([^']+)'''", r"'\1'", query)
-    query = re.sub(r"''([^']+)''", r"'\1'", query)
-    
-    # Fix quotes around operators: '&' -> &, '|' -> |
-    query = re.sub(r"'(\s*[&|]\s*)'", r'\1', query)
-    
-    # Fix quotes around parentheses: '(' -> (, ')' -> )
-    query = re.sub(r"'\s*\(\s*'", '(', query)
-    query = re.sub(r"'\s*\)\s*'", ')', query)
-    
-    # Convert double quotes to single quotes consistently
-    query = re.sub(r'"([^"]*)"', r"'\1'", query)
-    
-    # Handle operator syntax
-    query = re.sub(r'\sOR\s', ' | ', query, flags=re.IGNORECASE)
-    query = re.sub(r'\sAND\s', ' & ', query, flags=re.IGNORECASE)
-    
-    # Clean up spacing around operators (preserve structure)
-    query = re.sub(r'\s*\|\s*', ' | ', query)
-    query = re.sub(r'\s*&\s*', ' & ', query)
-    query = re.sub(r'\s*\(\s*', '(', query)
-    query = re.sub(r'\s*\)\s*', ')', query)
-    
-    # Fix phrase quoting: add quotes to multi-word phrases, remove from single words
-    def fix_phrase_quoting(text):
-        # Split on operators and parentheses while preserving them
-        parts = re.split(r'(\s*[&|()]\s*)', text)
-        fixed_parts = []
-        
-        for part in parts:
-            part = part.strip()
-            # Skip operators and parentheses
-            if not part or part in ['&', '|', '(', ')'] or re.match(r'^\s*[&|()]+\s*$', part):
-                fixed_parts.append(part)
-                continue
-            
-            # Clean existing quotes
-            clean_part = part.strip("'\"")
-            
-            # Quote multi-word phrases (including hyphenated terms), leave single words unquoted
-            if ' ' in clean_part or '-' in clean_part:
-                # Escape internal quotes and wrap in quotes
-                escaped = clean_part.replace("'", "''")
-                fixed_parts.append(f"'{escaped}'")
-            else:
-                fixed_parts.append(clean_part)
-        
-        return ''.join(fixed_parts)
-    
-    query = fix_phrase_quoting(query)
-    
-    # Fix empty quoted strings
-    query = re.sub(r"'\s*'", '', query)
-    
-    # Clean up extra spaces
-    query = re.sub(r'\s+', ' ', query).strip()
-    
-    return query
-
-
-def simplify_query_for_retry(query: str, attempt: int) -> str:
-    """
-    Fix tsquery syntax errors with progressive approaches while preserving query complexity.
-    
-    Args:
-        query: The query to fix
-        attempt: The retry attempt number (1, 2, 3, etc.)
-        
-    Returns:
-        Query string with syntax fixes applied
-    """
-    if attempt == 1:
-        # First retry: Apply comprehensive syntax fixes but preserve structure
-        query = fix_tsquery_syntax(query)
-        
-        # Additional fix for specific problematic patterns seen in errors
-        # Fix patterns like: & '('"phrase"')' -> & 'phrase'
-        query = re.sub(r"&\s*'\(\s*['\"]([^'\"]+)['\"]?\s*\)\s*'", r"& '\1'", query)
-        query = re.sub(r"\|\s*'\(\s*['\"]([^'\"]+)['\"]?\s*\)\s*'", r"| '\1'", query)
-        
-        # Fix standalone quotes around complex expressions
-        query = re.sub(r"'\s*\(([^)]+)\)\s*'", r'(\1)', query)
-        
-    elif attempt == 2:
-        # Second retry: More aggressive quote fixing while preserving logic
-        query = fix_tsquery_syntax(query)
-        
-        # Handle nested quote issues more aggressively  
-        # Fix pattern: (phrase1 | phrase2) & '('"phrase3"')' 
-        query = re.sub(r"'\(\s*['\"]([^'\"]+)['\"]?\s*\)'", r"'\1'", query)
-        
-        # Ensure proper phrase quoting - multi-word phrases get quotes, single words don't
-        def fix_phrase_quoting(text):
-            # Split on operators and parentheses while preserving them
-            parts = re.split(r'(\s*[&|()]\s*)', text)
-            fixed_parts = []
-            
-            for part in parts:
-                part = part.strip()
-                # Skip operators and parentheses
-                if not part or part in ['&', '|', '(', ')'] or re.match(r'^\s*[&|()]+\s*$', part):
-                    fixed_parts.append(part)
-                    continue
-                
-                # Clean existing quotes
-                clean_part = part.strip("'\"")
-                
-                # Quote multi-word phrases, leave single words unquoted
-                if ' ' in clean_part:
-                    # Escape internal quotes and wrap in quotes
-                    escaped = clean_part.replace("'", "''")
-                    fixed_parts.append(f"'{escaped}'")
-                else:
-                    fixed_parts.append(clean_part)
-            
-            return ''.join(fixed_parts)
-        
-        query = fix_phrase_quoting(query)
-        
-    elif attempt >= 3:
-        # Final retry: Preserve original query but ensure basic syntax correctness
-        query = fix_tsquery_syntax(query)
-        
-        # Last resort fixes for any remaining syntax issues
-        # Remove any malformed quote combinations
-        query = re.sub(r"['\"]+'", "'", query)  # Multiple quotes become single quote
-        query = re.sub(r"'+['\"]", "'", query)  # Mixed quotes become single quote
-        
-        # Ensure no empty quoted expressions
-        query = re.sub(r"'\s*'", "", query)
-        
-        # Final operator cleanup
-        query = re.sub(r'\s*&\s*', ' & ', query)
-        query = re.sub(r'\s*\|\s*', ' | ', query)
-        
-    return query.strip()
-
-
-def extract_keywords_from_question(question: str) -> str:
-    """
-    Extract main keywords from a research question as fallback query.
-    
-    Args:
-        question: Research question text
-        
-    Returns:
-        Simple keyword-based tsquery
-    """
-    # Remove common question words
-    stop_words = {'are', 'is', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'there', 'studies', 'showing', 'compared'}
-    
-    # Extract meaningful words (3+ characters, not stop words)
-    words = re.findall(r'\b[a-zA-Z]{3,}\b', question.lower())
-    keywords = [word for word in words if word not in stop_words]
-    
-    # Take first 4-5 most relevant keywords
-    return ' & '.join(keywords[:5]) if keywords else 'medical'
-
-
-@dataclass
-class CounterfactualQuestion:
-    """Represents a research question designed to find contradictory evidence."""
-    counterfactual_statement: str  # The opposite claim as a declarative statement
-    question: str  # Research question for human understanding
-    reasoning: str
-    target_claim: str  # The specific claim this question targets
-    search_keywords: List[str]  # Suggested keywords for literature search
-    priority: str  # HIGH, MEDIUM, LOW based on importance of the claim
-    created_at: Optional[datetime] = None
-
-    def __post_init__(self):
-        if self.created_at is None:
-            self.created_at = datetime.now(timezone.utc)
-
-
-@dataclass
-class CounterfactualAnalysis:
-    """Complete analysis of a document with suggested counterfactual questions."""
-    document_title: str
-    main_claims: List[str]
-    counterfactual_questions: List[CounterfactualQuestion]
-    overall_assessment: str
-    confidence_level: str  # HIGH, MEDIUM, LOW - how confident we are in the document's claims
-    created_at: Optional[datetime] = None
-    
-    def __post_init__(self):
-        if self.created_at is None:
-            self.created_at = datetime.now(timezone.utc)
 
 
 class CounterfactualAgent(BaseAgent):
     """
     Agent for analyzing documents and generating research questions to find contradictory evidence.
-    
+
     This agent performs counterfactual checking by:
     1. Analyzing a document to identify key claims and conclusions
     2. Generating research questions designed to find contradictory evidence
     3. Providing search keywords and prioritization for each question
     4. Assessing the overall confidence level in the document's claims
     """
-    
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -260,12 +50,12 @@ class CounterfactualAgent(BaseAgent):
     ):
         """
         Initialize the CounterfactualAgent.
-        
+
         Args:
             model: The name of the Ollama model to use (default: from config)
             host: The Ollama server host URL (default: from config)
             temperature: Model temperature for creative question generation (default: from config)
-            top_p: Model top-p sampling parameter (default: from config) 
+            top_p: Model top-p sampling parameter (default: from config)
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
@@ -274,15 +64,15 @@ class CounterfactualAgent(BaseAgent):
         config = get_config()
         agent_config = get_agent_config("counterfactual")
         ollama_config = config.get_ollama_config()
-        
+
         # Use provided values or fall back to configuration
         model = model or get_model("counterfactual_agent")
         host = host or ollama_config["host"]
         temperature = temperature if temperature is not None else agent_config.get("temperature", 0.2)
         top_p = top_p if top_p is not None else agent_config.get("top_p", 0.9)
-        
+
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
-        
+
         # System prompt for counterfactual analysis
         self.system_prompt = """You are a medical research expert specializing in identifying specific factual claims that can be systematically challenged through literature search.
 
@@ -339,24 +129,24 @@ Focus on generating counterfactual STATEMENTS that directly contradict specific 
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "counterfactual_agent"
-    
+
     def analyze_document(self, document_content: str, document_title: str = "Untitled Document") -> Optional[CounterfactualAnalysis]:
         """
         Analyze a document and generate counterfactual research questions.
-        
+
         Args:
             document_content: The full text content of the document to analyze
             document_title: Optional title of the document
-            
+
         Returns:
             CounterfactualAnalysis object with suggested research questions, None if analysis fails
         """
         if not document_content or not document_content.strip():
             logger.error("Document content is empty or None")
             return None
-        
+
         self._call_callback("counterfactual_analysis", f"Analyzing document: {document_title}")
-        
+
         # Retry mechanism for incomplete responses
         max_retries = 3
         for attempt in range(max_retries):
@@ -375,7 +165,7 @@ DOCUMENT CONTENT:
 Analyze this document to identify its main claims and generate research questions that could help find contradictory evidence. Focus on methodological limitations, alternative explanations, and potential biases."""
                     }
                 ]
-                
+
                 # Get response from LLM with increased token limit for comprehensive analysis
                 # Increase tokens progressively on retries
                 token_limit = 4000 + (attempt * 1000)  # 4000, 5000, 6000
@@ -385,18 +175,18 @@ Analyze this document to identify its main claims and generate research question
                     num_predict=token_limit,
                     temperature=self.temperature + (attempt * 0.1)  # Slightly increase randomness on retries
                 )
-                
+
                 # Parse the JSON response
                 try:
                     # Use inherited robust JSON parsing from BaseAgent
                     result_data = self._parse_json_response(response)
-                    
+
                     # Validate required fields
                     required_fields = ['main_claims', 'counterfactual_questions', 'overall_assessment', 'confidence_level']
                     for field in required_fields:
                         if field not in result_data:
                             raise ValueError(f"Missing required field: {field}")
-                    
+
                     # Create CounterfactualQuestion objects
                     counterfactual_questions = []
                     for q_data in result_data['counterfactual_questions']:
@@ -421,7 +211,7 @@ Analyze this document to identify its main claims and generate research question
                             priority=q_data.get('priority', 'MEDIUM').upper()
                         )
                         counterfactual_questions.append(question)
-                    
+
                     # Create and return CounterfactualAnalysis object
                     analysis = CounterfactualAnalysis(
                         document_title=document_title,
@@ -430,61 +220,61 @@ Analyze this document to identify its main claims and generate research question
                         overall_assessment=result_data['overall_assessment'],
                         confidence_level=result_data['confidence_level'].upper()
                     )
-                    
+
                     self._call_callback("counterfactual_complete", f"Generated {len(counterfactual_questions)} research questions")
                     return analysis
-                    
+
                 except json.JSONDecodeError as e:
                     # Check if this is an incomplete response that we should retry
                     if len(response) < 100 or not response.strip().endswith('}'):
                         logger.warning(f"Attempt {attempt + 1}: Incomplete JSON response (length: {len(response)}), retrying...")
                         if attempt < max_retries - 1:  # Don't log full error on retries
                             continue
-                    
+
                     logger.error(f"Failed to parse JSON response on attempt {attempt + 1}: {e}")
                     logger.error(f"Raw response (first 500 chars): {response[:500]}")
                     logger.error(f"Raw response length: {len(response)}")
-                    
+
                     if attempt == max_retries - 1:  # Last attempt
                         return None
                     continue
-                    
+
                 except ValueError as e:
                     logger.warning(f"Attempt {attempt + 1}: Invalid response structure: {e}")
                     if attempt < max_retries - 1:
                         continue
-                    
+
                     logger.error(f"Invalid response structure after {max_retries} attempts: {e}")
                     logger.error(f"Parsed data keys: {list(result_data.keys()) if 'result_data' in locals() else 'No data parsed'}")
                     return None
-                    
+
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1}: Error during counterfactual analysis: {e}")
                 if attempt == max_retries - 1:  # Last attempt
                     logger.error(f"Error during counterfactual analysis after {max_retries} attempts: {e}")
                     return None
                 continue
-        
+
         # Should not reach here, but just in case
         return None
-    
+
     def analyze_report_citations(self, report_content: str, citations: List[Any]) -> Optional[CounterfactualAnalysis]:
         """
         Analyze a research report along with its citations to generate targeted counterfactual questions.
-        
+
         Args:
             report_content: The text content of the research report
             citations: List of Citation objects or citation data used in the report
-            
+
         Returns:
             CounterfactualAnalysis with questions targeting both the report and its evidence base
         """
         if not report_content:
             logger.error("Report content is empty")
             return None
-        
+
         self._call_callback("citation_analysis", f"Analyzing report with {len(citations)} citations")
-        
+
         # Format citation information for analysis
         citation_summaries = []
         for i, citation in enumerate(citations, 1):
@@ -494,35 +284,35 @@ Analyze this document to identify its main claims and generate research question
                 title = citation.get('document_title', 'Unknown Title')
                 summary = citation.get('summary', 'No summary available')
                 citation_summaries.append(f"Citation {i}: {title} - {summary}")
-        
+
         # Combine report and citations for comprehensive analysis
         combined_content = f"""RESEARCH REPORT:
 {report_content}
 
 SUPPORTING CITATIONS:
 {chr(10).join(citation_summaries)}"""
-        
+
         return self.analyze_document(combined_content, "Research Report with Citations")
-    
+
     def get_high_priority_questions(self, analysis: CounterfactualAnalysis) -> List[CounterfactualQuestion]:
         """
         Filter and return only high-priority counterfactual questions from an analysis.
-        
+
         Args:
             analysis: CounterfactualAnalysis object
-            
+
         Returns:
             List of high-priority CounterfactualQuestion objects
         """
         return [q for q in analysis.counterfactual_questions if q.priority == "HIGH"]
-    
+
     def format_questions_for_search(self, questions: List[CounterfactualQuestion]) -> List[str]:
         """
         Format counterfactual questions into PostgreSQL to_tsquery format for database searches.
-        
+
         Args:
             questions: List of CounterfactualQuestion objects
-            
+
         Returns:
             List of PostgreSQL to_tsquery formatted search strings
         """
@@ -540,33 +330,33 @@ SUPPORTING CITATIONS:
                     # Single word - just clean it
                     clean_keyword = keyword.strip().replace("'", "''")
                     formatted_keywords.append(clean_keyword)
-            
+
             keywords_or = " | ".join(formatted_keywords)
-            
+
             # Add negation and contradiction terms (single words, so no quoting needed)
             negation_terms = ["ineffective", "contraindication", "adverse", "negative", "fail", "limitation", "confound"]
             negation_or = " | ".join(negation_terms)
-            
+
             # Combine keywords with negation terms using AND logic
             query = f"({keywords_or}) & ({negation_or})"
             search_queries.append(query)
-        
+
         return search_queries
-    
+
     def _clean_tsquery(self, query: str) -> str:
         """
         Clean and validate a PostgreSQL to_tsquery string.
-        
+
         Fixes syntax errors without oversimplifying the query structure.
         Focuses on quote escaping and malformed patterns.
-        
+
         Args:
             query: Raw query string from QueryAgent
-            
+
         Returns:
             Cleaned query string safe for PostgreSQL to_tsquery
         """
-        # Use the improved fix_tsquery_syntax function
+        # Use the improved fix_tsquery_syntax function from utils
         return fix_tsquery_syntax(query)
 
     def generate_research_queries_with_agent(self, questions: List[CounterfactualQuestion], query_agent=None) -> List[Dict[str, str]]:
@@ -616,53 +406,22 @@ SUPPORTING CITATIONS:
 
         logger.info(f"Successfully generated {len(research_queries)} database queries from {len(questions)} counterfactual questions")
         return research_queries
-    
+
     def generate_research_protocol(self, analysis: CounterfactualAnalysis) -> str:
         """
         Generate a structured research protocol for investigating the counterfactual questions.
-        
+
         Args:
             analysis: CounterfactualAnalysis object
-            
+
         Returns:
             Formatted research protocol as a string
         """
-        protocol = f"""# Counterfactual Research Protocol
-Document: {analysis.document_title}
-Generated: {analysis.created_at.strftime('%Y-%m-%d %H:%M:%S') if analysis.created_at else 'Unknown'}
-Confidence in Original Claims: {analysis.confidence_level}
+        return generate_research_protocol(analysis)
 
-## Main Claims to Verify
-"""
-        for i, claim in enumerate(analysis.main_claims, 1):
-            protocol += f"{i}. {claim}\n"
-        
-        protocol += f"\n## Overall Assessment\n{analysis.overall_assessment}\n\n"
-        
-        # Group questions by priority
-        high_priority = [q for q in analysis.counterfactual_questions if q.priority == "HIGH"]
-        medium_priority = [q for q in analysis.counterfactual_questions if q.priority == "MEDIUM"] 
-        low_priority = [q for q in analysis.counterfactual_questions if q.priority == "LOW"]
-        
-        for priority_group, priority_name in [(high_priority, "HIGH PRIORITY"),
-                                            (medium_priority, "MEDIUM PRIORITY"),
-                                            (low_priority, "LOW PRIORITY")]:
-            if priority_group:
-                protocol += f"## {priority_name} Research Questions\n\n"
-                for i, question in enumerate(priority_group, 1):
-                    protocol += f"### Question {i}\n"
-                    protocol += f"**Counterfactual Statement:** {question.counterfactual_statement}\n\n"
-                    protocol += f"**Research Question:** {question.question}\n\n"
-                    protocol += f"**Target Claim:** {question.target_claim}\n\n"
-                    protocol += f"**Reasoning:** {question.reasoning}\n\n"
-                    protocol += f"**Search Keywords:** {', '.join(question.search_keywords)}\n\n"
-                    protocol += "---\n\n"
-        
-        return protocol
-    
     def find_contradictory_literature(
-        self, 
-        document_content: str, 
+        self,
+        document_content: str,
         document_title: str = "Document",
         max_results_per_query: int = 10,
         min_relevance_score: int = 3,
@@ -672,14 +431,14 @@ Confidence in Original Claims: {analysis.confidence_level}
     ) -> Dict[str, Any]:
         """
         Complete workflow to find contradictory literature for a document.
-        
+
         This method performs the entire counterfactual analysis workflow:
         1. Analyze document for claims and generate questions
         2. Create database queries with QueryAgent
-        3. Search database for contradictory evidence  
+        3. Search database for contradictory evidence
         4. Score and filter results
         5. Extract citations from relevant contradictory studies
-        
+
         Args:
             document_content: The document text to analyze
             document_title: Title/identifier for the document
@@ -688,7 +447,7 @@ Confidence in Original Claims: {analysis.confidence_level}
             query_agent: Optional QueryAgent instance
             scoring_agent: Optional DocumentScoringAgent instance
             citation_agent: Optional CitationFinderAgent instance
-            
+
         Returns:
             Dictionary containing:
             - 'analysis': CounterfactualAnalysis object
@@ -702,29 +461,29 @@ Confidence in Original Claims: {analysis.confidence_level}
             'contradictory_citations': [],
             'summary': {}
         }
-        
+
         # Step 1: Perform counterfactual analysis
         self._call_callback("workflow_started", f"Analyzing document: {document_title}")
-        
+
         analysis = self.analyze_document(document_content, document_title)
         if not analysis:
             logger.error("Failed to analyze document for counterfactual questions")
             return result
-        
+
         result['analysis'] = analysis
-        
+
         # Step 2: Generate database queries
         if query_agent is None:
             from .query_agent import QueryAgent
             query_agent = QueryAgent(model=get_model("query_agent"))
-        
+
         high_priority_questions = self.get_high_priority_questions(analysis)
         self._call_callback("queries_generating", f"Creating {len(high_priority_questions)} priority queries")
-        
+
         research_queries = self.generate_research_queries_with_agent(
             high_priority_questions, query_agent
         )
-        
+
         # Step 3: Search database for contradictory evidence
         try:
             from ..database import find_abstracts
@@ -737,19 +496,19 @@ Confidence in Original Claims: {analysis.confidence_level}
                 'database_available': False
             }
             return result
-        
+
         all_contradictory_evidence = []
-        
+
         if scoring_agent is None:
             from .scoring_agent import DocumentScoringAgent
             scoring_agent = DocumentScoringAgent(model=get_model("scoring_agent"))
-        
+
         # Get retry configuration
         from ..config import get_search_config
         search_config = get_search_config()
         max_retries = search_config.get('query_retry_attempts', 3)
         auto_fix_syntax = search_config.get('auto_fix_tsquery_syntax', True)
-        
+
         for query_info in research_queries:
             claim_short = query_info['target_claim'][:80] + "..." if len(query_info['target_claim']) > 80 else query_info['target_claim']
             self._call_callback("database_search", f"Searching: {claim_short}")
@@ -760,11 +519,12 @@ Confidence in Original Claims: {analysis.confidence_level}
             self._call_callback("search_query", f"Query: {db_query}")
 
             # Try database search with retry mechanism
-            results = self._search_with_retry(
+            results = search_with_retry(
                 query_info,
                 max_results_per_query,
                 max_retries,
-                auto_fix_syntax
+                auto_fix_syntax,
+                callback=self.callback
             )
 
             num_found = len(results) if results else 0
@@ -775,15 +535,15 @@ Confidence in Original Claims: {analysis.confidence_level}
                 # Score documents for relevance using the counterfactual statement
                 # (since that's what we searched for)
                 num_scored = 0
-                for result in results:
+                for result_doc in results:
                     score_result = scoring_agent.evaluate_document(
-                        query_info['counterfactual_statement'], result
+                        query_info['counterfactual_statement'], result_doc
                     )
 
                     if score_result and score_result['score'] >= min_relevance_score:
                         num_scored += 1
                         all_contradictory_evidence.append({
-                            'document': result,
+                            'document': result_doc,
                             'score': score_result['score'],
                             'reasoning': score_result['reasoning'],
                             'query_info': query_info
@@ -791,15 +551,15 @@ Confidence in Original Claims: {analysis.confidence_level}
 
                 logger.info(f"Documents passing score threshold (>={min_relevance_score}): {num_scored}/{num_found}")
                 self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found}")
-        
+
         result['contradictory_evidence'] = all_contradictory_evidence
-        
+
         # Step 4: Extract citations from contradictory evidence
         if all_contradictory_evidence:
             if citation_agent is None:
                 from .citation_agent import CitationFinderAgent
                 citation_agent = CitationFinderAgent(model=get_model("citation_agent"))
-            
+
             num_docs_to_process = min(10, len(all_contradictory_evidence))
             self._call_callback("citations_extracting", f"Extracting citations from top {num_docs_to_process} documents")
             logger.info(f"Processing top {num_docs_to_process} documents for citation extraction")
@@ -831,11 +591,13 @@ Confidence in Original Claims: {analysis.confidence_level}
                     # CRITICAL VALIDATION: Verify the passage actually SUPPORTS the counterfactual
                     # (not just topically related to it)
                     logger.info(f"  → Validating citation supports counterfactual...")
-                    supports_counterfactual = self._validate_citation_supports_counterfactual(
+                    supports_counterfactual = validate_citation_supports_counterfactual(
                         citation.passage,
                         citation.summary,
                         query_info['counterfactual_statement'],
-                        query_info['target_claim']
+                        query_info['target_claim'],
+                        self._make_ollama_request,
+                        self._parse_json_response
                     )
 
                     if supports_counterfactual:
@@ -860,15 +622,16 @@ Confidence in Original Claims: {analysis.confidence_level}
 
             result['contradictory_citations'] = contradictory_citations
             self._call_callback("workflow_complete", f"Found {len(contradictory_citations)} valid contradictory citations")
-        
+
         # Generate formatted counterfactual report
-        formatted_result = self._format_counterfactual_report(
-            analysis, 
+        formatted_result = format_counterfactual_report(
+            analysis,
             research_queries,
             result.get('contradictory_citations', []),
-            all_contradictory_evidence
+            all_contradictory_evidence,
+            assess_counter_evidence_strength
         )
-        
+
         # Keep original result structure for backwards compatibility
         result['summary'] = {
             'document_title': document_title,
@@ -882,391 +645,8 @@ Confidence in Original Claims: {analysis.confidence_level}
             'database_available': True,
             'revised_confidence': 'MEDIUM-LOW' if result.get('contradictory_citations') else analysis.confidence_level
         }
-        
+
         # Add formatted report to result
         result['formatted_report'] = formatted_result
-        
+
         return result
-    
-    def _format_counterfactual_report(
-        self,
-        analysis: 'CounterfactualAnalysis',
-        research_queries: List[Dict[str, str]],
-        contradictory_citations: List[Dict[str, Any]],
-        contradictory_evidence: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """
-        Format counterfactual analysis results into the structured claim/statement/evidence format.
-
-        Args:
-            analysis: CounterfactualAnalysis object with original claims
-            research_queries: List of query information with target claims
-            contradictory_citations: List of contradictory citations found
-            contradictory_evidence: List of contradictory documents found
-
-        Returns:
-            Structured format with claims, counterfactual statements, evidence, critical assessment, and summary
-        """
-        formatted_items = []
-
-        # Create a mapping from claims to their counterfactual statements and questions
-        claim_to_counterfactual = {}
-        for query_info in research_queries:
-            target_claim = query_info.get('target_claim', '')
-            counterfactual_statement = query_info.get('counterfactual_statement', '')
-            counterfactual_question = query_info.get('question', '')
-            if target_claim:
-                claim_to_counterfactual[target_claim] = {
-                    'statement': counterfactual_statement,
-                    'question': counterfactual_question
-                }
-
-        # Group citations by their original claims
-        claims_with_evidence = {}
-        for citation_item in contradictory_citations:
-            original_claim = citation_item.get('original_claim', 'Unknown claim')
-            if original_claim not in claims_with_evidence:
-                # Get the counterfactual info from our mapping
-                counterfactual_info = claim_to_counterfactual.get(original_claim, {})
-                claims_with_evidence[original_claim] = {
-                    'claim': original_claim,
-                    'counterfactual_statement': counterfactual_info.get('statement', ''),
-                    'counterfactual_question': counterfactual_info.get('question', ''),
-                    'citations': []
-                }
-
-            citation = citation_item.get('citation')
-            if citation:
-                claims_with_evidence[original_claim]['citations'].append({
-                    'title': getattr(citation, 'document_title', 'Unknown title'),
-                    'passage': getattr(citation, 'passage', 'No passage extracted'),  # ACTUAL quoted text
-                    'summary': getattr(citation, 'summary', 'No summary available'),  # LLM summary
-                    'authors': getattr(citation, 'authors', []),
-                    'publication_date': getattr(citation, 'publication_date', 'Unknown date'),
-                    'pmid': getattr(citation, 'pmid', None),
-                    'doi': getattr(citation, 'doi', None),
-                    'publication': getattr(citation, 'publication', None),
-                    'relevance_score': getattr(citation, 'relevance_score', 0),
-                    'document_score': citation_item.get('document_score', 0),
-                    'score_reasoning': citation_item.get('score_reasoning', '')
-                })
-
-        # Process ALL claims from the original analysis (not just those with evidence)
-        for main_claim in analysis.main_claims:
-            # Check if we found evidence for this claim
-            if main_claim in claims_with_evidence:
-                # We have contradictory evidence
-                claim_data = claims_with_evidence[main_claim]
-                citations = claim_data['citations']
-
-                # Critical assessment based on evidence strength
-                assessment = self._assess_counter_evidence_strength(
-                    main_claim,
-                    claim_data['counterfactual_statement'],
-                    citations
-                )
-
-                formatted_item = {
-                    'claim': main_claim,
-                    'counterfactual_statement': claim_data['counterfactual_statement'],
-                    'counterfactual_question': claim_data['counterfactual_question'],
-                    'counterfactual_evidence': citations,
-                    'evidence_found': True,
-                    'critical_assessment': assessment
-                }
-            else:
-                # No contradictory evidence found for this claim
-                counterfactual_info = claim_to_counterfactual.get(main_claim, {})
-                counterfactual_statement = counterfactual_info.get('statement', 'No counterfactual statement generated')
-                counterfactual_question = counterfactual_info.get('question', 'No counterfactual question generated')
-
-                formatted_item = {
-                    'claim': main_claim,
-                    'counterfactual_statement': counterfactual_statement,
-                    'counterfactual_question': counterfactual_question,
-                    'counterfactual_evidence': [],
-                    'evidence_found': False,
-                    'critical_assessment': 'No contradictory evidence found in the database. This claim appears well-supported or lacks available counter-evidence in the current literature database.'
-                }
-
-            formatted_items.append(formatted_item)
-
-        # Generate overall summary
-        total_claims = len(analysis.main_claims)
-        claims_with_evidence_count = len([item for item in formatted_items if item['evidence_found']])
-        total_citations = sum(len(item['counterfactual_evidence']) for item in formatted_items)
-
-        confidence_assessment = analysis.confidence_level
-        if total_citations > 0:
-            if total_citations >= 3:
-                confidence_assessment = "LOW - Multiple contradictory studies found"
-            elif total_citations >= 1:
-                confidence_assessment = "MEDIUM-LOW - Some contradictory evidence found"
-
-        summary_statement = f"""
-Counterfactual Analysis Summary:
-- Original report confidence: {analysis.confidence_level}
-- Claims analyzed: {total_claims}
-- Claims with contradictory evidence: {claims_with_evidence_count}
-- Claims without contradictory evidence: {total_claims - claims_with_evidence_count}
-- Total contradictory citations found: {total_citations}
-- Revised confidence assessment: {confidence_assessment}
-
-{f"WARNING: Found {total_citations} citations that contradict {claims_with_evidence_count} of {total_claims} key claims in the original report. " if total_citations > 0 else "No contradictory evidence found for any claims. "}
-{"The original conclusions should be interpreted with caution given the contradictory evidence." if total_citations >= 2 else ""}
-        """.strip()
-
-        return {
-            'items': formatted_items,
-            'summary_statement': summary_statement,
-            'statistics': {
-                'total_claims_analyzed': total_claims,
-                'claims_with_contradictory_evidence': claims_with_evidence_count,
-                'claims_without_contradictory_evidence': total_claims - claims_with_evidence_count,
-                'total_contradictory_citations': total_citations,
-                'original_confidence': analysis.confidence_level,
-                'revised_confidence': confidence_assessment
-            }
-        }
-
-    def _validate_citation_supports_counterfactual(
-        self,
-        passage: str,
-        summary: str,
-        counterfactual_statement: str,
-        original_claim: str
-    ) -> bool:
-        """
-        Validate that a citation actually SUPPORTS the counterfactual statement.
-
-        This is critical because the citation agent might extract passages that are merely
-        topically related rather than actually supporting the counterfactual claim.
-
-        Args:
-            passage: The actual quoted text from the document
-            summary: The LLM's interpretation of the passage
-            counterfactual_statement: The claim we're trying to find support for
-            original_claim: The original claim (for context)
-
-        Returns:
-            True if the passage supports the counterfactual, False otherwise
-        """
-        validation_prompt = f"""You are validating whether a passage from medical literature actually SUPPORTS a specific claim.
-
-COUNTERFACTUAL CLAIM (what we're trying to prove):
-{counterfactual_statement}
-
-ORIGINAL CLAIM (for context - we want evidence AGAINST this):
-{original_claim}
-
-PASSAGE FROM DOCUMENT:
-{passage}
-
-TASK: Does this passage actually SUPPORT the counterfactual claim above?
-
-IMPORTANT:
-- Return "YES" ONLY if the passage provides evidence that SUPPORTS the counterfactual claim
-- Return "NO" if the passage:
-  * Contradicts the counterfactual claim (supports the original claim instead)
-  * Is merely topically related without taking a position
-  * Discusses the topic but doesn't provide evidence for the counterfactual
-
-Response Format - Return ONLY valid JSON:
-{{
-    "supports_counterfactual": true/false,
-    "reasoning": "Brief explanation of why the passage does or doesn't support the counterfactual claim"
-}}
-
-Example 1:
-Counterfactual: "Drug X does not cause side effect Y"
-Passage: "In our study, Drug X showed no significant increase in side effect Y compared to placebo"
-Answer: {{"supports_counterfactual": true, "reasoning": "Passage provides direct evidence of no significant increase"}}
-
-Example 2:
-Counterfactual: "Drug X does not cause side effect Y"
-Passage: "Drug X caused a 3-fold increase in side effect Y in 15% of patients"
-Answer: {{"supports_counterfactual": false, "reasoning": "Passage shows Drug X DOES cause side effect Y, contradicting counterfactual"}}
-
-Return ONLY the JSON object, no other text."""
-
-        try:
-            messages = [{'role': 'user', 'content': validation_prompt}]
-            response = self._make_ollama_request(
-                messages,
-                system_prompt="You are a medical literature validation expert. Analyze passages carefully to determine if they support specific claims.",
-                num_predict=300,
-                temperature=0.1  # Low temperature for consistent validation
-            )
-
-            result = self._parse_json_response(response)
-
-            if not isinstance(result, dict) or 'supports_counterfactual' not in result:
-                logger.warning(f"Invalid validation response format, defaulting to False")
-                return False
-
-            supports = result['supports_counterfactual']
-            reasoning = result.get('reasoning', 'No reasoning provided')
-
-            logger.debug(f"Citation validation: {supports} - {reasoning}")
-
-            return supports
-
-        except Exception as e:
-            logger.warning(f"Citation validation failed: {e}, defaulting to False for safety")
-            return False
-
-    def _assess_counter_evidence_strength(
-        self,
-        original_claim: str,
-        counterfactual_statement: str,
-        citations: List[Dict[str, Any]]
-    ) -> str:
-        """
-        Assess whether the counter-evidence is sufficient to challenge or reject the original claim.
-
-        Args:
-            original_claim: The original claim being challenged
-            counterfactual_statement: The counterfactual research question
-            citations: List of contradictory citations found
-
-        Returns:
-            Critical assessment string explaining the strength of counter-evidence
-        """
-        if not citations:
-            return "No contradictory evidence found."
-
-        num_citations = len(citations)
-        avg_document_score = sum(c.get('document_score', 0) for c in citations) / num_citations
-        avg_relevance_score = sum(c.get('relevance_score', 0) for c in citations) / num_citations
-        high_quality_citations = sum(1 for c in citations if c.get('document_score', 0) >= 4)
-
-        # Build assessment based on quantity and quality
-        assessment_parts = []
-
-        # Quantity assessment
-        if num_citations >= 3:
-            assessment_parts.append(f"**Multiple sources ({num_citations} citations)** provide contradictory evidence.")
-        elif num_citations == 2:
-            assessment_parts.append(f"**Two independent sources** provide contradictory evidence.")
-        else:
-            assessment_parts.append(f"**Single source** provides contradictory evidence.")
-
-        # Quality assessment
-        if avg_document_score >= 4.0:
-            assessment_parts.append(f"The counter-evidence is **highly relevant** (avg. relevance: {avg_document_score:.1f}/5).")
-        elif avg_document_score >= 3.0:
-            assessment_parts.append(f"The counter-evidence is **moderately relevant** (avg. relevance: {avg_document_score:.1f}/5).")
-        else:
-            assessment_parts.append(f"The counter-evidence is **weakly relevant** (avg. relevance: {avg_document_score:.1f}/5).")
-
-        # Strength conclusion
-        if num_citations >= 3 and avg_document_score >= 4.0:
-            conclusion = "**STRONG CHALLENGE**: The contradictory evidence is substantial and highly relevant, significantly undermining confidence in the original claim."
-        elif num_citations >= 2 and avg_document_score >= 3.5:
-            conclusion = "**MODERATE CHALLENGE**: The contradictory evidence raises important questions about the original claim's validity and warrants careful consideration."
-        elif num_citations >= 1 and avg_document_score >= 3.0:
-            conclusion = "**WEAK CHALLENGE**: The contradictory evidence suggests alternative interpretations exist, but is insufficient to reject the original claim."
-        else:
-            conclusion = "**MINIMAL CHALLENGE**: The contradictory evidence is limited in quantity or relevance, providing only marginal challenges to the original claim."
-
-        assessment_parts.append(conclusion)
-
-        return " ".join(assessment_parts)
-    
-    def _search_with_retry(self, query_info: Dict[str, str], max_results: int, max_retries: int, auto_fix_syntax: bool) -> List[Dict]:
-        """
-        Search database with automatic retry and query reformulation on syntax errors.
-        
-        Args:
-            query_info: Dictionary containing 'db_query', 'question', and 'target_claim'
-            max_results: Maximum number of results to return
-            max_retries: Maximum number of retry attempts
-            auto_fix_syntax: Whether to automatically fix syntax errors
-            
-        Returns:
-            List of document dictionaries, or empty list if all attempts fail
-        """
-        try:
-            from ..database import find_abstracts
-        except ImportError:
-            logger.error("Database module not available")
-            return []
-        
-        original_query = query_info['db_query']
-        question = query_info['question']
-        target_claim = query_info['target_claim']
-        
-        for attempt in range(max_retries + 1):  # +1 for the original attempt
-            try:
-                if attempt == 0:
-                    # First attempt: use original query
-                    current_query = original_query
-                    self._call_callback("database_search", f"Attempting search: {target_claim[:50]}...")
-                else:
-                    # Retry attempts: reformulate query
-                    if auto_fix_syntax:
-                        current_query = simplify_query_for_retry(original_query, attempt)
-                    else:
-                        # Fallback to keywords if no auto-fix
-                        current_query = extract_keywords_from_question(question)
-                    
-                    self._call_callback(
-                        "database_search", 
-                        f"Retry {attempt}/{max_retries}: Reformulated query for '{target_claim[:40]}...'"
-                    )
-                    logger.info(f"Query retry {attempt}: '{original_query}' -> '{current_query}'")
-                
-                # Attempt database search
-                results_generator = find_abstracts(
-                    current_query,
-                    max_rows=max_results,
-                    plain=False  # Use advanced to_tsquery syntax
-                )
-                
-                # Convert generator to list
-                results = list(results_generator)
-                
-                if results:
-                    # Success! Log and return results
-                    if attempt > 0:
-                        logger.info(f"Query retry {attempt} succeeded with {len(results)} results")
-                        self._call_callback("database_search", f"Retry {attempt} succeeded: {len(results)} results found")
-                    else:
-                        logger.debug(f"Query succeeded on first attempt: {len(results)} results")
-                    
-                    return results
-                else:
-                    # No results, but no error - this is not a syntax error
-                    if attempt == 0:
-                        logger.info(f"Query returned no results: '{current_query}'")
-                    continue
-                    
-            except Exception as e:
-                error_msg = str(e).lower()
-                
-                # Check if this is a tsquery syntax error
-                if 'syntax error in tsquery' in error_msg or 'tsquery' in error_msg:
-                    if attempt < max_retries:
-                        logger.warning(f"tsquery syntax error on attempt {attempt + 1}: {e}")
-                        self._call_callback(
-                            "database_search", 
-                            f"Query syntax error, attempting reformulation (attempt {attempt + 1}/{max_retries})..."
-                        )
-                        continue  # Try next reformulation
-                    else:
-                        # Final attempt failed with syntax error
-                        logger.error(f"Query failed after {max_retries} retries with syntax error: {e}")
-                        self._call_callback(
-                            "database_search", 
-                            f"Query failed after {max_retries} retries: {str(e)[:100]}..."
-                        )
-                        break
-                else:
-                    # Non-syntax error (database connection, etc.)
-                    logger.error(f"Database search failed with non-syntax error: {e}")
-                    self._call_callback("database_search", f"Database error: {str(e)[:100]}...")
-                    break
-        
-        # All attempts failed
-        logger.warning(f"All {max_retries + 1} search attempts failed for question: '{question[:100]}...'")
-        return []

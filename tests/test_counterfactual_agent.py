@@ -10,9 +10,9 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-from bmlibrarian.agents.counterfactual_agent import (
-    CounterfactualAgent, 
-    CounterfactualQuestion, 
+from bmlibrarian.agents.counterfactual_agent import CounterfactualAgent
+from bmlibrarian.agents.models.counterfactual import (
+    CounterfactualQuestion,
     CounterfactualAnalysis
 )
 
@@ -23,13 +23,15 @@ class TestCounterfactualQuestion:
     def test_counterfactual_question_creation(self):
         """Test basic CounterfactualQuestion creation."""
         question = CounterfactualQuestion(
+            counterfactual_statement="Exercise does not improve cardiovascular health",
             question="Are there studies showing exercise doesn't improve cardiovascular health?",
             reasoning="To verify the claim that exercise universally improves heart health",
             target_claim="Exercise improves cardiovascular outcomes",
             search_keywords=["exercise", "cardiovascular", "negative effects"],
             priority="HIGH"
         )
-        
+
+        assert question.counterfactual_statement == "Exercise does not improve cardiovascular health"
         assert question.question == "Are there studies showing exercise doesn't improve cardiovascular health?"
         assert question.priority == "HIGH"
         assert len(question.search_keywords) == 3
@@ -38,13 +40,14 @@ class TestCounterfactualQuestion:
     def test_counterfactual_question_auto_timestamp(self):
         """Test that created_at is automatically set."""
         question = CounterfactualQuestion(
+            counterfactual_statement="Test statement",
             question="Test question",
-            reasoning="Test reasoning", 
+            reasoning="Test reasoning",
             target_claim="Test claim",
             search_keywords=["test"],
             priority="MEDIUM"
         )
-        
+
         assert isinstance(question.created_at, datetime)
 
 
@@ -55,17 +58,19 @@ class TestCounterfactualAnalysis:
         """Test basic CounterfactualAnalysis creation."""
         questions = [
             CounterfactualQuestion(
+                counterfactual_statement="Test statement 1",
                 question="Test question 1",
                 reasoning="Test reasoning 1",
-                target_claim="Test claim 1", 
+                target_claim="Test claim 1",
                 search_keywords=["test1"],
                 priority="HIGH"
             ),
             CounterfactualQuestion(
+                counterfactual_statement="Test statement 2",
                 question="Test question 2",
                 reasoning="Test reasoning 2",
                 target_claim="Test claim 2",
-                search_keywords=["test2"], 
+                search_keywords=["test2"],
                 priority="LOW"
             )
         ]
@@ -103,6 +108,7 @@ class TestCounterfactualAgent:
             ],
             "counterfactual_questions": [
                 {
+                    "counterfactual_statement": "Exercise worsens heart conditions in certain populations",
                     "question": "Are there studies showing exercise can worsen heart conditions in certain populations?",
                     "reasoning": "To verify if exercise benefits apply universally or have population-specific contraindications",
                     "target_claim": "Exercise improves cardiovascular health",
@@ -110,9 +116,10 @@ class TestCounterfactualAgent:
                     "priority": "HIGH"
                 },
                 {
+                    "counterfactual_statement": "Physical activity reduces heart disease risk by less than 30%",
                     "question": "Do any meta-analyses show smaller effect sizes than 30% risk reduction?",
                     "reasoning": "To verify the magnitude of claimed risk reduction",
-                    "target_claim": "Regular physical activity reduces heart disease risk by 30%", 
+                    "target_claim": "Regular physical activity reduces heart disease risk by 30%",
                     "search_keywords": ["meta-analysis", "physical activity", "risk reduction", "effect size"],
                     "priority": "MEDIUM"
                 }
@@ -126,7 +133,7 @@ class TestCounterfactualAgent:
         assert agent.model == "test-model"
         assert agent.get_agent_type() == "counterfactual_agent"
         assert agent.temperature == 0.2  # Should use default for creative generation
-        assert "critical thinking expert" in agent.system_prompt
+        assert "medical research expert" in agent.system_prompt
     
     def test_get_agent_type(self, agent):
         """Test get_agent_type method."""
@@ -247,10 +254,10 @@ class TestCounterfactualAgent:
     def test_get_high_priority_questions(self, agent):
         """Test filtering high priority questions."""
         questions = [
-            CounterfactualQuestion("Q1", "R1", "C1", ["k1"], "HIGH"),
-            CounterfactualQuestion("Q2", "R2", "C2", ["k2"], "MEDIUM"),
-            CounterfactualQuestion("Q3", "R3", "C3", ["k3"], "HIGH"),
-            CounterfactualQuestion("Q4", "R4", "C4", ["k4"], "LOW")
+            CounterfactualQuestion("S1", "Q1", "R1", "C1", ["k1"], "HIGH"),
+            CounterfactualQuestion("S2", "Q2", "R2", "C2", ["k2"], "MEDIUM"),
+            CounterfactualQuestion("S3", "Q3", "R3", "C3", ["k3"], "HIGH"),
+            CounterfactualQuestion("S4", "Q4", "R4", "C4", ["k4"], "LOW")
         ]
         
         analysis = CounterfactualAnalysis(
@@ -269,6 +276,7 @@ class TestCounterfactualAgent:
         """Test formatting questions for PostgreSQL to_tsquery search queries."""
         questions = [
             CounterfactualQuestion(
+                "Exercise causes harm",
                 "Does exercise cause harm?",
                 "Test reasoning",
                 "Test claim",
@@ -276,6 +284,7 @@ class TestCounterfactualAgent:
                 "HIGH"
             ),
             CounterfactualQuestion(
+                "Physical activity is ineffective",
                 "Is physical activity ineffective?",
                 "Test reasoning 2",
                 "Test claim 2",
@@ -287,9 +296,13 @@ class TestCounterfactualAgent:
         search_queries = agent.format_questions_for_search(questions)
         assert len(search_queries) == 2
         # Check PostgreSQL to_tsquery format with | for OR and & for AND
-        assert "exercise | adverse effects | harm" in search_queries[0]
-        assert "physical activity | ineffective" in search_queries[1]
-        # Should include negation terms
+        # Note: Multi-word phrases are quoted
+        assert "exercise" in search_queries[0]
+        assert "'adverse effects'" in search_queries[0]  # Multi-word phrase is quoted
+        assert "harm" in search_queries[0]
+        assert "'physical activity'" in search_queries[1]  # Multi-word phrase is quoted
+        assert "ineffective" in search_queries[1]
+        # Should include negation terms combined with AND
         assert "ineffective" in search_queries[0] or "adverse" in search_queries[0]
 
     @patch('bmlibrarian.agents.counterfactual_agent.CounterfactualAgent.generate_research_queries_with_agent')
@@ -297,6 +310,7 @@ class TestCounterfactualAgent:
         """Test database query generation with QueryAgent integration."""
         questions = [
             CounterfactualQuestion(
+                "Exercise causes harm",
                 "Does exercise cause harm?",
                 "Test reasoning",
                 "Exercise improves health",
@@ -326,9 +340,9 @@ class TestCounterfactualAgent:
     def test_generate_research_protocol(self, agent):
         """Test research protocol generation."""
         questions = [
-            CounterfactualQuestion("High Q", "High R", "High C", ["high"], "HIGH"),
-            CounterfactualQuestion("Med Q", "Med R", "Med C", ["med"], "MEDIUM"),
-            CounterfactualQuestion("Low Q", "Low R", "Low C", ["low"], "LOW")
+            CounterfactualQuestion("High S", "High Q", "High R", "High C", ["high"], "HIGH"),
+            CounterfactualQuestion("Med S", "Med Q", "Med R", "Med C", ["med"], "MEDIUM"),
+            CounterfactualQuestion("Low S", "Low Q", "Low R", "Low C", ["low"], "LOW")
         ]
         
         analysis = CounterfactualAnalysis(
@@ -385,23 +399,23 @@ class TestCounterfactualAgent:
     def test_system_prompt_usage(self, mock_request, agent, mock_ollama_response):
         """Test that system prompt is properly used in requests."""
         mock_request.return_value = json.dumps(mock_ollama_response)
-        
+
         agent.analyze_document("Test content", "Test Document")
-        
+
         # Verify system prompt was passed
         mock_request.assert_called_once()
         call_kwargs = mock_request.call_args[1]
         assert 'system_prompt' in call_kwargs
-        assert 'critical thinking expert' in call_kwargs['system_prompt']
+        assert 'medical research expert' in call_kwargs['system_prompt']
     
     def test_priority_case_normalization(self, agent):
         """Test that priority values are normalized to uppercase."""
         # This would be tested through the full analysis workflow
         # The dataclass should handle case normalization in __post_init__
         question = CounterfactualQuestion(
-            "Test", "Test", "Test", ["test"], "high"  # lowercase
+            "Statement", "Test", "Test", "Test", ["test"], "high"  # lowercase
         )
-        # Note: The current implementation doesn't auto-normalize, 
+        # Note: The current implementation doesn't auto-normalize,
         # but the agent converts to uppercase when parsing JSON
         assert question.priority == "high"  # Current behavior
         
@@ -409,8 +423,9 @@ class TestCounterfactualAgent:
         test_response = {
             "main_claims": ["Test claim"],
             "counterfactual_questions": [{
+                "counterfactual_statement": "Test statement",
                 "question": "Test question",
-                "reasoning": "Test reasoning", 
+                "reasoning": "Test reasoning",
                 "target_claim": "Test claim",
                 "search_keywords": ["test"],
                 "priority": "medium"  # lowercase in response
