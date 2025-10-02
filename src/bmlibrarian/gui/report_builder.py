@@ -289,7 +289,10 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
 
             content.append(f"\n### Claim {i}")
             content.append(f"**Original Claim**: {claim}")
-            content.append(f"\n**Counterfactual Statement**: {counterfactual_statement}")
+            if counterfactual_statement:
+                content.append(f"\n**Counterfactual Statement**: {counterfactual_statement}")
+            else:
+                content.append(f"\n**Counterfactual Statement**: _(No counterfactual statement generated - claim may be too complex or lack specificity)_")
             if counterfactual_question:
                 content.append(f"\n**Research Question**: {counterfactual_question}")
 
@@ -300,19 +303,54 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
 
                 for j, evidence in enumerate(evidence_list, 1):
                     title = evidence.get('title', 'Unknown title')
-                    citation_content = evidence.get('content', 'No content available')
                     passage = evidence.get('passage', '')
+                    summary = evidence.get('summary', 'No summary available')
+                    authors = evidence.get('authors', [])
+                    pub_date = evidence.get('publication_date', 'Unknown date')
+                    pmid = evidence.get('pmid')
+                    doi = evidence.get('doi')
+                    publication = evidence.get('publication')
                     relevance_score = evidence.get('relevance_score', 0)
                     document_score = evidence.get('document_score', 0)
                     score_reasoning = evidence.get('score_reasoning', '')
 
+                    # Build citation metadata
+                    metadata_parts = []
+                    if authors:
+                        author_str = ', '.join(authors[:3])
+                        if len(authors) > 3:
+                            author_str += ' et al.'
+                        metadata_parts.append(author_str)
+                    if pub_date and pub_date != 'Unknown date':
+                        metadata_parts.append(f"({pub_date})")
+                    if publication:
+                        metadata_parts.append(publication)
+                    metadata_line = '. '.join(metadata_parts) if metadata_parts else 'Metadata unavailable'
+
+                    # Add identifiers
+                    id_parts = []
+                    if pmid:
+                        id_parts.append(f"PMID: {pmid}")
+                    if doi:
+                        id_parts.append(f"DOI: {doi}")
+                    id_line = ' | '.join(id_parts) if id_parts else None
+
                     content.append(f"{j}. **{title}**")
+                    content.append(f"   {metadata_line}")
+                    if id_line:
+                        content.append(f"   {id_line}")
                     content.append(f"   - **Relevance Scores**: Citation {relevance_score:.2f}/1.0, Document {document_score}/5")
-                    content.append(f"   - **Summary**: {citation_content}")
-                    if passage:
+
+                    # Show passage first (actual quoted text from the document)
+                    if passage and passage != 'No passage extracted':
                         # Truncate long passages
                         display_passage = passage[:400] + "..." if len(passage) > 400 else passage
-                        content.append(f"   - **Key Passage**: \"{display_passage}\"")
+                        content.append(f"   - **Passage**: \"{display_passage}\"")
+
+                    # Show summary (LLM-generated interpretation)
+                    if summary and summary != 'No summary available':
+                        content.append(f"   - **Summary**: {summary}")
+
                     if score_reasoning:
                         content.append(f"   - **Scoring Rationale**: {score_reasoning}")
                     content.append("")

@@ -264,53 +264,8 @@ Please evaluate how well this document addresses the user's question and provide
             self._call_callback("evaluation_failed", str(e))
             raise
     
-    def _parse_json_response(self, response: str) -> Dict:
-        """
-        Parse JSON response with robust error handling.
-        
-        Attempts to fix common JSON formatting issues before parsing.
-        
-        Args:
-            response: Raw response string from model
-            
-        Returns:
-            Parsed JSON dictionary
-            
-        Raises:
-            json.JSONDecodeError: If JSON cannot be parsed
-        """
-        response = response.strip()
-        
-        # Remove markdown code block wrapper if present
-        if response.startswith('```json') and response.endswith('```'):
-            response = response[7:-3].strip()  # Remove ```json and ```
-        elif response.startswith('```') and response.endswith('```'):
-            response = response[3:-3].strip()   # Remove ``` and ```
-        
-        # Try parsing as-is first
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            pass
-        
-        # Try to fix incomplete JSON by adding missing closing braces/quotes
-        if response.startswith('{') and not response.endswith('}'):
-            # Try to complete the JSON structure
-            attempts = [
-                response + '"}',  # Missing closing quote and brace
-                response + '}',   # Missing closing brace only
-                response + '"}'   # Missing quote then brace
-            ]
-            
-            for attempt in attempts:
-                try:
-                    return json.loads(attempt)
-                except json.JSONDecodeError:
-                    continue
-        
-        # If all attempts fail, raise the original error
-        raise json.JSONDecodeError("Could not parse JSON response", response, 0)
-    
+    # NOTE: _parse_json_response is now inherited from BaseAgent
+
     def _extract_score_fallback(self, response: str) -> Optional[ScoringResult]:
         """
         Extract score using regex when JSON parsing fails.

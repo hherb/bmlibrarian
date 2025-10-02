@@ -169,18 +169,12 @@ Respond only with valid JSON."""
                 logger.warning(f"Empty response from model for document {document.get('id', 'unknown')}")
                 return None
             
-            # Parse JSON response
+            # Parse JSON response using inherited robust method from BaseAgent
             try:
-                citation_data = json.loads(llm_response)
-            except json.JSONDecodeError:
-                # Try to extract JSON from response if wrapped in text
-                import re
-                json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-                if json_match:
-                    citation_data = json.loads(json_match.group())
-                else:
-                    logger.error(f"Could not parse JSON from LLM response: {llm_response}")
-                    return None
+                citation_data = self._parse_json_response(llm_response)
+            except json.JSONDecodeError as e:
+                logger.error(f"Could not parse JSON from LLM response: {e}")
+                return None
             
             # Check if relevant content was found
             if not citation_data.get('has_relevant_content', False):

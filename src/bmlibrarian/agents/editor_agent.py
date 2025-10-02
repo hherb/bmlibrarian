@@ -222,16 +222,8 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
                 
                 # Parse the JSON response
                 try:
-                    # Extract JSON from response
-                    response_cleaned = response.strip()
-                    json_start = response_cleaned.find('{')
-                    json_end = response_cleaned.rfind('}')
-                    
-                    if json_start != -1 and json_end != -1 and json_end > json_start:
-                        json_part = response_cleaned[json_start:json_end + 1]
-                        result_data = json.loads(json_part)
-                    else:
-                        result_data = json.loads(response_cleaned)
+                    # Parse JSON response using inherited robust method from BaseAgent
+                    result_data = self._parse_json_response(response)
                     
                     # Validate required fields
                     required_fields = [

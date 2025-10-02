@@ -472,24 +472,13 @@ Write a comprehensive, professional medical report."""
                 logger.error("Empty response from LLM for structured synthesis")
                 return None
             
-            # Parse JSON response
+            # Parse JSON response using inherited robust method from BaseAgent
             try:
-                report_data = json.loads(llm_response)
-            except json.JSONDecodeError:
-                # Try to extract JSON from response
-                import re
-                json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-                if json_match:
-                    try:
-                        report_data = json.loads(json_match.group())
-                    except json.JSONDecodeError:
-                        logger.warning(f"Could not parse JSON from structured synthesis response")
-                        # Fallback to iterative synthesis
-                        return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
-                else:
-                    logger.warning(f"No JSON found in structured synthesis response")
-                    # Fallback to iterative synthesis
-                    return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
+                report_data = self._parse_json_response(llm_response)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Could not parse JSON from structured synthesis response: {e}")
+                # Fallback to iterative synthesis
+                return self.iterative_synthesis(user_question, sorted_citations, doc_to_ref)
             
             # Construct the structured report
             introduction = report_data.get('introduction', '')
@@ -619,18 +608,12 @@ Be concise and avoid redundancy."""
                     logger.warning(f"Empty response for citation {i+1}")
                     continue
                 
-                # Parse JSON response
+                # Parse JSON response using inherited robust method from BaseAgent
                 try:
-                    citation_data = json.loads(llm_response)
-                except json.JSONDecodeError:
-                    # Try to extract JSON from response
-                    import re
-                    json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-                    if json_match:
-                        citation_data = json.loads(json_match.group())
-                    else:
-                        logger.warning(f"Could not parse JSON for citation {i+1}: {llm_response}")
-                        continue
+                    citation_data = self._parse_json_response(llm_response)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Could not parse JSON for citation {i+1}: {e}")
+                    continue
                 
                 # Process the result
                 if not current_content:
@@ -714,20 +697,13 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
             if not llm_response:
                 return None
             
-            # Parse JSON response
+            # Parse JSON response using inherited robust method from BaseAgent
             try:
-                format_data = json.loads(llm_response)
+                format_data = self._parse_json_response(llm_response)
                 return format_data.get('formatted_content')
-            except json.JSONDecodeError:
-                # Try to extract JSON
-                import re
-                json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-                if json_match:
-                    format_data = json.loads(json_match.group())
-                    return format_data.get('formatted_content')
-                else:
-                    logger.warning("Could not parse final formatting response")
-                    return None
+            except json.JSONDecodeError as e:
+                logger.warning(f"Could not parse final formatting response: {e}")
+                return None
         
         except Exception as e:
             logger.warning(f"Error in final formatting: {e}")

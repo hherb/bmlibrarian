@@ -10,6 +10,7 @@ Provides common functionality for all AI agents including:
 - Queue integration for large-scale processing
 """
 
+import json
 import logging
 import time
 import ollama
@@ -310,7 +311,66 @@ class BaseAgent(ABC):
             source_agent=self.get_agent_type(),
             priority=priority or TaskPriority.NORMAL
         )
-    
+
+    def _parse_json_response(self, response: str) -> Dict:
+        """
+        Parse JSON response with robust error handling.
+
+        Attempts to fix common JSON formatting issues before parsing.
+        This method is available to all agents inheriting from BaseAgent.
+
+        Args:
+            response: Raw response string from model
+
+        Returns:
+            Parsed JSON dictionary
+
+        Raises:
+            json.JSONDecodeError: If JSON cannot be parsed
+        """
+        response = response.strip()
+
+        # Remove markdown code block wrapper if present
+        if response.startswith('```json') and response.endswith('```'):
+            response = response[7:-3].strip()  # Remove ```json and ```
+        elif response.startswith('```') and response.endswith('```'):
+            response = response[3:-3].strip()   # Remove ``` and ```
+
+        # Try parsing as-is first
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from response if it has extra text
+        json_start = response.find('{')
+        json_end = response.rfind('}')
+
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            json_part = response[json_start:json_end + 1]
+            try:
+                return json.loads(json_part)
+            except json.JSONDecodeError:
+                pass
+
+        # Try to fix incomplete JSON by adding missing closing braces/quotes
+        if response.startswith('{') and not response.endswith('}'):
+            # Try to complete the JSON structure
+            attempts = [
+                response + '"}',  # Missing closing quote and brace
+                response + '}',   # Missing closing brace only
+                response + '"}'   # Missing quote then brace
+            ]
+
+            for attempt in attempts:
+                try:
+                    return json.loads(attempt)
+                except json.JSONDecodeError:
+                    continue
+
+        # If all attempts fail, raise the original error
+        raise json.JSONDecodeError("Could not parse JSON response", response, 0)
+
     @abstractmethod
     def get_agent_type(self) -> str:
         """

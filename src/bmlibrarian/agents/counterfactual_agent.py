@@ -388,19 +388,8 @@ Analyze this document to identify its main claims and generate research question
                 
                 # Parse the JSON response
                 try:
-                    # First, try to extract JSON from the response if it contains extra text
-                    response_cleaned = response.strip()
-                    
-                    # Look for JSON object in the response
-                    json_start = response_cleaned.find('{')
-                    json_end = response_cleaned.rfind('}')
-                    
-                    if json_start != -1 and json_end != -1 and json_end > json_start:
-                        json_part = response_cleaned[json_start:json_end + 1]
-                        result_data = json.loads(json_part)
-                    else:
-                        # Try parsing the whole response as JSON
-                        result_data = json.loads(response_cleaned)
+                    # Use inherited robust JSON parsing from BaseAgent
+                    result_data = self._parse_json_response(response)
                     
                     # Validate required fields
                     required_fields = ['main_claims', 'counterfactual_questions', 'overall_assessment', 'confidence_level']
@@ -411,19 +400,25 @@ Analyze this document to identify its main claims and generate research question
                     # Create CounterfactualQuestion objects
                     counterfactual_questions = []
                     for q_data in result_data['counterfactual_questions']:
-                        # Validate question structure
-                        required_q_fields = ['counterfactual_statement', 'question', 'reasoning', 'target_claim', 'search_keywords', 'priority']
-                        for field in required_q_fields:
-                            if field not in q_data:
-                                raise ValueError(f"Missing required question field: {field}")
+                        # Validate essential fields (allow some to be missing with defaults)
+                        if 'target_claim' not in q_data:
+                            logger.warning(f"Skipping counterfactual question missing 'target_claim'")
+                            continue
 
+                        # Get counterfactual statement (required)
+                        counterfactual_statement = q_data.get('counterfactual_statement', '')
+                        if not counterfactual_statement:
+                            logger.warning(f"No counterfactual_statement for claim '{q_data['target_claim'][:50]}...', skipping")
+                            continue
+
+                        # Build question with defaults for optional fields
                         question = CounterfactualQuestion(
-                            counterfactual_statement=q_data['counterfactual_statement'],
-                            question=q_data['question'],
-                            reasoning=q_data['reasoning'],
+                            counterfactual_statement=counterfactual_statement,
+                            question=q_data.get('question', counterfactual_statement),  # Default to statement if no question
+                            reasoning=q_data.get('reasoning', 'No reasoning provided'),
                             target_claim=q_data['target_claim'],
-                            search_keywords=q_data['search_keywords'],
-                            priority=q_data['priority'].upper()
+                            search_keywords=q_data.get('search_keywords', []),
+                            priority=q_data.get('priority', 'MEDIUM').upper()
                         )
                         counterfactual_questions.append(question)
                     
@@ -756,31 +751,46 @@ Confidence in Original Claims: {analysis.confidence_level}
         auto_fix_syntax = search_config.get('auto_fix_tsquery_syntax', True)
         
         for query_info in research_queries:
-            self._call_callback("database_search", f"Searching: {query_info['target_claim']}")
-            
+            claim_short = query_info['target_claim'][:80] + "..." if len(query_info['target_claim']) > 80 else query_info['target_claim']
+            self._call_callback("database_search", f"Searching: {claim_short}")
+
+            # Log the PostgreSQL query for debugging
+            db_query = query_info.get('db_query', 'N/A')
+            logger.info(f"PostgreSQL query: {db_query}")
+            self._call_callback("search_query", f"Query: {db_query}")
+
             # Try database search with retry mechanism
             results = self._search_with_retry(
-                query_info, 
-                max_results_per_query, 
+                query_info,
+                max_results_per_query,
                 max_retries,
                 auto_fix_syntax
             )
-            
+
+            num_found = len(results) if results else 0
+            logger.info(f"Documents found: {num_found}")
+            self._call_callback("search_results", f"Found {num_found} documents")
+
             if results:
                 # Score documents for relevance using the counterfactual statement
                 # (since that's what we searched for)
+                num_scored = 0
                 for result in results:
                     score_result = scoring_agent.evaluate_document(
                         query_info['counterfactual_statement'], result
                     )
-                    
+
                     if score_result and score_result['score'] >= min_relevance_score:
+                        num_scored += 1
                         all_contradictory_evidence.append({
                             'document': result,
                             'score': score_result['score'],
                             'reasoning': score_result['reasoning'],
                             'query_info': query_info
                         })
+
+                logger.info(f"Documents passing score threshold (>={min_relevance_score}): {num_scored}/{num_found}")
+                self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found}")
         
         result['contradictory_evidence'] = all_contradictory_evidence
         
@@ -790,16 +800,24 @@ Confidence in Original Claims: {analysis.confidence_level}
                 from .citation_agent import CitationFinderAgent
                 citation_agent = CitationFinderAgent(model=get_model("citation_agent"))
             
-            self._call_callback("citations_extracting", f"Extracting citations from {len(all_contradictory_evidence)} documents")
-            
+            num_docs_to_process = min(10, len(all_contradictory_evidence))
+            self._call_callback("citations_extracting", f"Extracting citations from top {num_docs_to_process} documents")
+            logger.info(f"Processing top {num_docs_to_process} documents for citation extraction")
+
             contradictory_citations = []
-            
+            num_citations_extracted = 0
+            num_citations_validated = 0
+            num_citations_rejected = 0
+
             # Process top contradictory evidence (sorted by score)
             sorted_evidence = sorted(all_contradictory_evidence, key=lambda x: x['score'], reverse=True)
-            
-            for evidence in sorted_evidence[:10]:  # Limit to top 10 for performance
+
+            for idx, evidence in enumerate(sorted_evidence[:10], 1):  # Limit to top 10 for performance
                 doc = evidence['document']
                 query_info = evidence['query_info']
+                doc_title = doc.get('title', 'Unknown')[:60] + "..." if len(doc.get('title', '')) > 60 else doc.get('title', 'Unknown')
+
+                logger.info(f"Processing document {idx}/{num_docs_to_process}: {doc_title}")
 
                 # Use counterfactual statement for citation extraction
                 citation = citation_agent.extract_citation_from_document(
@@ -807,17 +825,41 @@ Confidence in Original Claims: {analysis.confidence_level}
                 )
 
                 if citation:
-                    contradictory_citations.append({
-                        'citation': citation,
-                        'original_claim': query_info['target_claim'],
-                        'counterfactual_statement': query_info['counterfactual_statement'],
-                        'counterfactual_question': query_info['question'],
-                        'document_score': evidence['score'],
-                        'score_reasoning': evidence['reasoning']
-                    })
-            
+                    num_citations_extracted += 1
+                    logger.info(f"  ✓ Citation extracted from: {citation.document_title}")
+
+                    # CRITICAL VALIDATION: Verify the passage actually SUPPORTS the counterfactual
+                    # (not just topically related to it)
+                    logger.info(f"  → Validating citation supports counterfactual...")
+                    supports_counterfactual = self._validate_citation_supports_counterfactual(
+                        citation.passage,
+                        citation.summary,
+                        query_info['counterfactual_statement'],
+                        query_info['target_claim']
+                    )
+
+                    if supports_counterfactual:
+                        num_citations_validated += 1
+                        logger.info(f"  ✓ Citation VALIDATED (supports counterfactual)")
+                        contradictory_citations.append({
+                            'citation': citation,
+                            'original_claim': query_info['target_claim'],
+                            'counterfactual_statement': query_info['counterfactual_statement'],
+                            'counterfactual_question': query_info['question'],
+                            'document_score': evidence['score'],
+                            'score_reasoning': evidence['reasoning']
+                        })
+                    else:
+                        num_citations_rejected += 1
+                        logger.info(f"  ✗ Citation REJECTED (does not support counterfactual): {citation.document_title}")
+                else:
+                    logger.info(f"  - No citation extracted from: {doc_title}")
+
+            logger.info(f"Citation extraction summary: Extracted={num_citations_extracted}, Validated={num_citations_validated}, Rejected={num_citations_rejected}")
+            self._call_callback("validation_complete", f"Citations: {num_citations_extracted} extracted, {num_citations_validated} validated, {num_citations_rejected} rejected")
+
             result['contradictory_citations'] = contradictory_citations
-            self._call_callback("workflow_complete", f"Found {len(contradictory_citations)} contradictory citations")
+            self._call_callback("workflow_complete", f"Found {len(contradictory_citations)} valid contradictory citations")
         
         # Generate formatted counterfactual report
         formatted_result = self._format_counterfactual_report(
@@ -897,8 +939,13 @@ Confidence in Original Claims: {analysis.confidence_level}
             if citation:
                 claims_with_evidence[original_claim]['citations'].append({
                     'title': getattr(citation, 'document_title', 'Unknown title'),
-                    'content': getattr(citation, 'summary', 'No content available'),
-                    'passage': getattr(citation, 'passage', ''),
+                    'passage': getattr(citation, 'passage', 'No passage extracted'),  # ACTUAL quoted text
+                    'summary': getattr(citation, 'summary', 'No summary available'),  # LLM summary
+                    'authors': getattr(citation, 'authors', []),
+                    'publication_date': getattr(citation, 'publication_date', 'Unknown date'),
+                    'pmid': getattr(citation, 'pmid', None),
+                    'doi': getattr(citation, 'doi', None),
+                    'publication': getattr(citation, 'publication', None),
                     'relevance_score': getattr(citation, 'relevance_score', 0),
                     'document_score': citation_item.get('document_score', 0),
                     'score_reasoning': citation_item.get('score_reasoning', '')
@@ -981,6 +1028,92 @@ Counterfactual Analysis Summary:
                 'revised_confidence': confidence_assessment
             }
         }
+
+    def _validate_citation_supports_counterfactual(
+        self,
+        passage: str,
+        summary: str,
+        counterfactual_statement: str,
+        original_claim: str
+    ) -> bool:
+        """
+        Validate that a citation actually SUPPORTS the counterfactual statement.
+
+        This is critical because the citation agent might extract passages that are merely
+        topically related rather than actually supporting the counterfactual claim.
+
+        Args:
+            passage: The actual quoted text from the document
+            summary: The LLM's interpretation of the passage
+            counterfactual_statement: The claim we're trying to find support for
+            original_claim: The original claim (for context)
+
+        Returns:
+            True if the passage supports the counterfactual, False otherwise
+        """
+        validation_prompt = f"""You are validating whether a passage from medical literature actually SUPPORTS a specific claim.
+
+COUNTERFACTUAL CLAIM (what we're trying to prove):
+{counterfactual_statement}
+
+ORIGINAL CLAIM (for context - we want evidence AGAINST this):
+{original_claim}
+
+PASSAGE FROM DOCUMENT:
+{passage}
+
+TASK: Does this passage actually SUPPORT the counterfactual claim above?
+
+IMPORTANT:
+- Return "YES" ONLY if the passage provides evidence that SUPPORTS the counterfactual claim
+- Return "NO" if the passage:
+  * Contradicts the counterfactual claim (supports the original claim instead)
+  * Is merely topically related without taking a position
+  * Discusses the topic but doesn't provide evidence for the counterfactual
+
+Response Format - Return ONLY valid JSON:
+{{
+    "supports_counterfactual": true/false,
+    "reasoning": "Brief explanation of why the passage does or doesn't support the counterfactual claim"
+}}
+
+Example 1:
+Counterfactual: "Drug X does not cause side effect Y"
+Passage: "In our study, Drug X showed no significant increase in side effect Y compared to placebo"
+Answer: {{"supports_counterfactual": true, "reasoning": "Passage provides direct evidence of no significant increase"}}
+
+Example 2:
+Counterfactual: "Drug X does not cause side effect Y"
+Passage: "Drug X caused a 3-fold increase in side effect Y in 15% of patients"
+Answer: {{"supports_counterfactual": false, "reasoning": "Passage shows Drug X DOES cause side effect Y, contradicting counterfactual"}}
+
+Return ONLY the JSON object, no other text."""
+
+        try:
+            messages = [{'role': 'user', 'content': validation_prompt}]
+            response = self._make_ollama_request(
+                messages,
+                system_prompt="You are a medical literature validation expert. Analyze passages carefully to determine if they support specific claims.",
+                num_predict=300,
+                temperature=0.1  # Low temperature for consistent validation
+            )
+
+            result = self._parse_json_response(response)
+
+            if not isinstance(result, dict) or 'supports_counterfactual' not in result:
+                logger.warning(f"Invalid validation response format, defaulting to False")
+                return False
+
+            supports = result['supports_counterfactual']
+            reasoning = result.get('reasoning', 'No reasoning provided')
+
+            logger.debug(f"Citation validation: {supports} - {reasoning}")
+
+            return supports
+
+        except Exception as e:
+            logger.warning(f"Citation validation failed: {e}, defaulting to False for safety")
+            return False
 
     def _assess_counter_evidence_strength(
         self,

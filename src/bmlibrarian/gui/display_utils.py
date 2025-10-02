@@ -426,9 +426,9 @@ class CounterfactualDisplayCreator:
                     selectable=True
                 ),
                 ft.Text(
-                    counterfactual_statement,
+                    counterfactual_statement if counterfactual_statement else "(No counterfactual statement generated - claim may be too complex or lack specificity)",
                     size=12,
-                    color=ft.Colors.RED_800,
+                    color=ft.Colors.RED_800 if counterfactual_statement else ft.Colors.GREY_600,
                     italic=True,
                     selectable=True
                 ),
@@ -474,48 +474,113 @@ class CounterfactualDisplayCreator:
             # Evidence citations
             for j, evidence in enumerate(evidence_list, 1):
                 title = evidence.get('title', 'Unknown title')
-                content = evidence.get('content', 'No content available')
+                passage = evidence.get('passage', '')
+                summary = evidence.get('summary', '')
+                authors = evidence.get('authors', [])
+                pub_date = evidence.get('publication_date', 'Unknown date')
+                pmid = evidence.get('pmid')
+                doi = evidence.get('doi')
+                publication = evidence.get('publication')
                 relevance_score = evidence.get('relevance_score', 0)
                 document_score = evidence.get('document_score', 0)
                 score_reasoning = evidence.get('score_reasoning', '')
-                
+
+                # Build citation metadata line
+                metadata_parts = []
+                if authors:
+                    author_str = ', '.join(authors[:3])
+                    if len(authors) > 3:
+                        author_str += f' et al.'
+                    metadata_parts.append(author_str)
+                if pub_date and pub_date != 'Unknown date':
+                    metadata_parts.append(f"({pub_date})")
+                if publication:
+                    metadata_parts.append(publication)
+                if pmid:
+                    metadata_parts.append(f"PMID: {pmid}")
+                if doi:
+                    metadata_parts.append(f"DOI: {doi}")
+
+                citation_metadata = ' | '.join(metadata_parts) if metadata_parts else 'Metadata unavailable'
+
+                # Build evidence display elements
+                evidence_elements = [
+                    ft.Text(
+                        f"Evidence {j}: {title}",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.ORANGE_800,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        citation_metadata,
+                        size=10,
+                        color=ft.Colors.GREY_700,
+                        italic=True,
+                        selectable=True
+                    )
+                ]
+
+                # Add passage if available (this is the actual quoted text)
+                if passage and passage != 'No passage extracted':
+                    evidence_elements.append(ft.Text(
+                        "Passage:",
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.BLACK87,
+                        selectable=True
+                    ))
+                    evidence_elements.append(ft.Text(
+                        f'"{passage}"',
+                        size=11,
+                        color=ft.Colors.BLACK87,
+                        italic=True,
+                        selectable=True
+                    ))
+
+                # Add summary if available (LLM interpretation)
+                if summary and summary != 'No summary available':
+                    evidence_elements.append(ft.Text(
+                        "Summary:",
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.GREY_700,
+                        selectable=True
+                    ))
+                    evidence_elements.append(ft.Text(
+                        summary,
+                        size=10,
+                        color=ft.Colors.GREY_700,
+                        selectable=True
+                    ))
+
+                # Add scoring information
+                evidence_elements.append(ft.Row([
+                    ft.Text(
+                        f"Relevance: {relevance_score}/5",
+                        size=10,
+                        color=ft.Colors.GREY_600,
+                        selectable=True
+                    ),
+                    ft.Text(
+                        f"Document Score: {document_score}/5",
+                        size=10,
+                        color=ft.Colors.GREY_600,
+                        selectable=True
+                    )
+                ], spacing=20))
+
+                if score_reasoning:
+                    evidence_elements.append(ft.Text(
+                        f"Reasoning: {score_reasoning}",
+                        size=10,
+                        color=ft.Colors.GREY_700,
+                        italic=True,
+                        selectable=True
+                    ))
+
                 evidence_container = ft.Container(
-                    content=ft.Column([
-                        ft.Text(
-                            f"Evidence {j}: {title}",
-                            size=12,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.ORANGE_800,
-                            selectable=True
-                        ),
-                        ft.Text(
-                            content,
-                            size=11,
-                            color=ft.Colors.BLACK87,
-                            selectable=True
-                        ),
-                        ft.Row([
-                            ft.Text(
-                                f"Relevance: {relevance_score}/5",
-                                size=10,
-                                color=ft.Colors.GREY_600,
-                                selectable=True
-                            ),
-                            ft.Text(
-                                f"Document Score: {document_score}/5",
-                                size=10,
-                                color=ft.Colors.GREY_600,
-                                selectable=True
-                            )
-                        ], spacing=20),
-                        ft.Text(
-                            f"Reasoning: {score_reasoning}",
-                            size=10,
-                            color=ft.Colors.GREY_700,
-                            italic=True,
-                            selectable=True
-                        ) if score_reasoning else ft.Container()
-                    ], spacing=5),
+                    content=ft.Column(evidence_elements, spacing=5),
                     padding=ft.padding.all(12),
                     margin=ft.margin.only(left=20, top=5, bottom=5),
                     bgcolor=ft.Colors.ORANGE_50,
