@@ -28,20 +28,26 @@ The `HumanEditLogger` class provides a flexible, reusable interface for logging 
 
 **Key Methods:**
 
-1. **`log_edit(context, machine_output, human_edit=None, log_all=False)`**
+1. **`log_edit(context, machine_output, human_edit=None, log_all=False, explicitly_approved=False)`**
    - Generic method for logging any LLM interaction
-   - Only logs when `human_edit` is provided (unless `log_all=True`)
+   - Only logs when `human_edit` is provided or `explicitly_approved=True`
    - Prevents database clutter from unchanged outputs
+   - Stores "APPROVED" for explicit approvals vs actual edit text for changes
 
-2. **`log_document_score_edit(user_question, document, ai_score, ai_reasoning, human_score=None)`**
+2. **`log_document_score_edit(user_question, document, ai_score, ai_reasoning, human_score=None, explicitly_approved=False)`**
    - Specialized method for document scoring edits
    - Captures the full evaluation context
-   - Only logs when human overrides the AI score
+   - Only logs when human overrides the AI score OR explicitly approves it
 
-3. **`log_query_edit(user_question, system_prompt, ai_query, human_query=None)`**
+3. **`log_query_edit(user_question, system_prompt, ai_query, human_query=None, explicitly_approved=False)`**
    - Specialized method for query generation edits
    - Captures query refinement interactions
-   - Only logs when human modifies the AI-generated query
+   - Only logs when human modifies the AI-generated query OR explicitly approves it
+
+4. **`log_citation_review(user_question, citation, review_status=None)`**
+   - Specialized method for citation acceptance/rejection
+   - Logs human review decisions on extracted citations
+   - Only logs when review_status is provided ('accepted' or 'refused')
 
 ### Singleton Pattern
 
@@ -59,10 +65,10 @@ logger = get_human_edit_logger()
 
 **File:** `src/bmlibrarian/gui/workflow_steps_handler.py`
 
-When users override AI document scores in the Research GUI, the edit is logged:
+When users override AI document scores or explicitly approve them in the Research GUI, the edit is logged:
 
 ```python
-# Applied in execute_document_scoring() when score_overrides exist
+# Applied in execute_document_scoring() when score_overrides or score_approvals exist
 if score_overrides and i in score_overrides:
     result_dict['score'] = score_overrides[i]
     result_dict['human_override'] = True
@@ -78,12 +84,31 @@ if score_overrides and i in score_overrides:
         ai_reasoning=scoring_result.get('reasoning', ''),
         human_score=int(score_overrides[i])
     )
+
+# Log explicit approvals
+if score_approvals and i in score_approvals and score_approvals[i]:
+    logger.log_document_score_edit(
+        user_question=research_question,
+        document=doc,
+        ai_score=int(original_score),
+        ai_reasoning=scoring_result.get('reasoning', ''),
+        explicitly_approved=True
+    )
 ```
 
 **Data Captured:**
 - **Context:** User question + document metadata (title, abstract, authors, publication info)
 - **Machine:** JSON with AI score and reasoning
 - **Human:** JSON with human score, edit type ("override" or "approval"), and original AI score
+
+**UI Component:** Checkbox in scoring interface (`src/bmlibrarian/gui/components.py`):
+```python
+ft.Checkbox(
+    label="Approve AI score",
+    value=False,
+    on_change=lambda e: self._on_score_approval_change(index, e.control.value)
+)
+```
 
 ### 2. Query Generation (GUI Workflow)
 
@@ -114,6 +139,70 @@ def handle_edit_result(approved: bool, new_query: str = ""):
 - **Machine:** AI-generated ts_query
 - **Human:** Human-edited ts_query
 
+### 3. Citation Review (GUI Workflow)
+
+**File:** `src/bmlibrarian/gui/interactive_handler.py`
+
+When users accept or refuse extracted citations:
+
+```python
+def _show_interactive_citation_review(self, citations: List, update_callback: Callable) -> Dict[int, str]:
+    # ... citation review UI ...
+
+    # Log citation reviews
+    from bmlibrarian.agents import get_human_edit_logger
+    logger = get_human_edit_logger()
+
+    for idx, status in citation_reviews.items():
+        logger.log_citation_review(
+            user_question=research_question,
+            citation=citations[idx],
+            review_status=status
+        )
+```
+
+**Data Captured:**
+- **Context:** User question + document title + cited passage
+- **Machine:** JSON with citation details and AI reasoning
+- **Human:** Review status ('accepted' or 'refused')
+
+**UI Component:** Interactive citation review cards (`src/bmlibrarian/gui/components.py`) with:
+- Full abstract display
+- Yellow-highlighted passages (using TextSpan with bgcolor)
+- Three-state toggle button (Unrated → Accepted → Refused)
+- 📌 markers around highlighted text for visibility
+
+### 4. Query Generation (CLI Workflow)
+
+**File:** `src/bmlibrarian/cli/query_processing.py`
+
+When users manually edit AI-generated queries in the CLI:
+
+```python
+elif choice == '2':
+    # Manual editing
+    original_query = current_query
+    new_query = self.ui.get_manual_query_edit(current_query)
+
+    if new_query != current_query:
+        current_query = new_query
+
+        # Log the human edit to database
+        from bmlibrarian.agents import get_human_edit_logger
+        logger = get_human_edit_logger()
+        logger.log_query_edit(
+            user_question=question,
+            system_prompt="QueryAgent system prompt for converting natural language to PostgreSQL ts_query",
+            ai_query=original_query,
+            human_query=current_query
+        )
+```
+
+**Data Captured:**
+- **Context:** System prompt + user question
+- **Machine:** Original AI-generated ts_query
+- **Human:** Human-edited ts_query
+
 ## Usage Examples
 
 ### Document Scoring Edit
@@ -136,36 +225,6 @@ Machine:
   "score": 3,
   "reasoning": "Document provides relevant information on exercise and cardiovascular health in elderly, but lacks comprehensive data on all cardiovascular benefits."
 }
-### 3. Query Generation (CLI Workflow)
-
-**File:** `src/bmlibrarian/cli/query_processing.py`
-
-When users manually edit AI-generated queries in the CLI:
-
-```python
-elif choice == '2':
-    # Manual editing
-    original_query = current_query
-    new_query = self.ui.get_manual_query_edit(current_query)
-    
-    if new_query != current_query:
-        current_query = new_query
-        
-        # Log the human edit to database
-        from bmlibrarian.agents import get_human_edit_logger
-        logger = get_human_edit_logger()
-        logger.log_query_edit(
-            user_question=question,
-            system_prompt="QueryAgent system prompt for converting natural language to PostgreSQL ts_query",
-            ai_query=original_query,
-            human_query=current_query
-        )
-```
-
-**Data Captured:**
-- **Context:** System prompt + user question
-- **Machine:** Original AI-generated ts_query
-- **Human:** Human-edited ts_query
 
 ## Querying the Data
 

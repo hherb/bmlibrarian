@@ -31,7 +31,9 @@ class Citation:
     doi: Optional[str] = None
     publication: Optional[str] = None
     created_at: Optional[datetime] = None
-    
+    human_review_status: Optional[str] = None  # 'accepted', 'refused', or None (unrated)
+    abstract: Optional[str] = None  # Full abstract for display in review
+
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now(timezone.utc)
@@ -185,7 +187,7 @@ Respond only with valid JSON."""
                 logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
                 return None
             
-            # Create citation with verified document ID
+            # Create citation with verified document ID and abstract for review
             citation = Citation(
                 passage=citation_data['relevant_passage'],
                 summary=citation_data['summary'],
@@ -196,7 +198,8 @@ Respond only with valid JSON."""
                 publication_date=document.get('publication_date', 'Unknown'),
                 pmid=document.get('pmid'),
                 doi=document.get('doi'),
-                publication=document.get('publication')
+                publication=document.get('publication'),
+                abstract=abstract  # Include full abstract for citation review
             )
             
             return citation

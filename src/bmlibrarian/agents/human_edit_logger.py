@@ -202,6 +202,60 @@ class HumanEditLogger:
             logger.error(f"Database insert failed: {e}")
             return False
 
+    def log_citation_review(
+        self,
+        user_question: str,
+        citation,
+        review_status: Optional[str] = None
+    ) -> bool:
+        """
+        Log a citation review interaction (accepted, refused, or unrated).
+
+        Args:
+            user_question: The research question
+            citation: The Citation object being reviewed
+            review_status: 'accepted', 'refused', or None (unrated)
+
+        Returns:
+            True if logged successfully, False otherwise
+        """
+        # Build context with citation details
+        passage = citation.passage if hasattr(citation, 'passage') else citation.get('passage', '')
+        summary = citation.summary if hasattr(citation, 'summary') else citation.get('summary', '')
+        title = citation.document_title if hasattr(citation, 'document_title') else citation.get('document_title', '')
+        abstract = citation.abstract if hasattr(citation, 'abstract') else citation.get('abstract', '')
+
+        context = f"""User Question: {user_question}
+
+Document: {title}
+
+AI Summary: {summary}
+
+Extracted Passage: {passage}
+
+Full Abstract: {abstract}"""
+
+        # Machine output is the citation extraction
+        machine_output = json.dumps({
+            'passage': passage,
+            'summary': summary,
+            'relevance_score': citation.relevance_score if hasattr(citation, 'relevance_score') else citation.get('relevance_score', 0)
+        }, indent=2)
+
+        # Human review
+        human_edit = None
+        is_approved = False
+
+        if review_status == 'accepted':
+            human_edit = "ACCEPTED"
+            is_approved = True
+        elif review_status == 'refused':
+            human_edit = "REFUSED"
+            is_approved = False
+        # If None (unrated), we don't log it
+
+        return self.log_edit(context, machine_output, human_edit, explicitly_approved=is_approved)
+
 
 # Singleton instance
 _human_edit_logger = None

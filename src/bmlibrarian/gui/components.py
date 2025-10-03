@@ -745,3 +745,324 @@ class StepCard:
                         border_radius=5
                     )
                 ]
+    def enable_citation_review(self, citations: List, callback: Callable[[Dict[int, str]], None]):
+        """Enable citation review mode with accept/refuse/unrated toggle for each citation.
+        
+        Args:
+            citations: List of Citation objects to review
+            callback: Callback function to receive citation review statuses
+        """
+        self.citation_review_mode = True
+        self.citation_data = {'citations': citations}
+        self.citation_callback = callback
+        self.citation_reviews = {}  # Maps citation index to 'accepted', 'refused', or None
+        
+        # Create citation review interface
+        review_controls = []
+        
+        # Header
+        review_controls.append(
+            ft.Text(
+                f"Citation Review ({len(citations)} citations extracted)",
+                size=14,
+                weight=ft.FontWeight.BOLD
+            )
+        )
+        
+        review_controls.append(
+            ft.Text(
+                "Review each citation. The passage is highlighted in the abstract. Toggle: Refuse ❌ → Unrated ⚪ → Accept ✅",
+                size=12,
+                color=ft.Colors.GREY_600
+            )
+        )
+        
+        # Citation review cards
+        for i, citation in enumerate(citations):
+            citation_card = self._create_citation_review_card(i, citation)
+            review_controls.append(citation_card)
+        
+        # Action buttons
+        button_row = ft.Row([
+            ft.ElevatedButton(
+                "Continue with Reviewed Citations",
+                icon=ft.Icons.CHECK_CIRCLE,
+                on_click=self._on_apply_citation_reviews,
+                bgcolor=ft.Colors.GREEN_700,
+                color=ft.Colors.WHITE
+            ),
+            ft.TextButton(
+                "Continue with All Citations",
+                icon=ft.Icons.SKIP_NEXT,
+                on_click=self._on_continue_all_citations
+            )
+        ], spacing=10)
+        
+        review_controls.append(ft.Container(height=10))
+        review_controls.append(button_row)
+        
+        # Create scrollable container for citations
+        self.citation_container = ft.Container(
+            content=ft.Column(
+                controls=review_controls,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO
+            ),
+            padding=ft.padding.all(15),
+            bgcolor=ft.Colors.BLUE_50,
+            border=ft.border.all(2, ft.Colors.BLUE_300),
+            border_radius=5,
+            height=600  # Fixed height with scrolling
+        )
+        
+        # Replace content container with citation review container
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                content_container.content.controls = [
+                    self.progress_bar,
+                    self.detailed_progress_container,
+                    self.citation_container,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]
+        
+        # Auto-expand the tile to show citation review interface
+        if self.expansion_tile:
+            self.expansion_tile.initially_expanded = True
+
+    def _create_citation_review_card(self, index: int, citation) -> ft.Container:
+        """Create a card for reviewing a citation with highlighted abstract."""
+        # Get citation details
+        passage = citation.passage if hasattr(citation, 'passage') else citation.get('passage', '')
+        summary = citation.summary if hasattr(citation, 'summary') else citation.get('summary', '')
+        title = citation.document_title if hasattr(citation, 'document_title') else citation.get('document_title', '')
+        abstract = citation.abstract if hasattr(citation, 'abstract') else citation.get('abstract', '')
+
+        # Create highlighted abstract widget
+        abstract_widget = self._create_highlighted_abstract(abstract, passage)
+
+        # Create status toggle button
+        status_button = ft.IconButton(
+            icon=ft.Icons.RADIO_BUTTON_UNCHECKED,
+            icon_color=ft.Colors.GREY_400,
+            tooltip="Unrated - Click to Accept",
+            on_click=lambda e: self._toggle_citation_status(index, status_button),
+            data={'index': index, 'status': None}  # Track status in button data
+        )
+
+        return ft.Container(
+            content=ft.Column([
+                # Citation header with status toggle
+                ft.Row([
+                    ft.Text(f"Citation {index + 1}", size=13, weight=ft.FontWeight.BOLD,
+                           color=ft.Colors.BLUE_800, expand=True),
+                    status_button
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+
+                # Document title
+                ft.Text(f"📄 {title}", size=12, weight=ft.FontWeight.W_500),
+
+                # Summary
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Summary:", size=11, weight=ft.FontWeight.BOLD),
+                        ft.Text(summary, size=11, color=ft.Colors.GREY_700, selectable=True)
+                    ]),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.AMBER_50,
+                    border_radius=3
+                ),
+
+                # Abstract with highlighted passage
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Abstract (highlighted passage):", size=11, weight=ft.FontWeight.BOLD),
+                        abstract_widget
+                    ], spacing=5),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.GREY_100,
+                    border_radius=3,
+                    expand=True
+                )
+            ], spacing=8),
+            padding=ft.padding.all(12),
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            border_radius=5,
+            bgcolor=ft.Colors.WHITE
+        )
+
+    def _create_highlighted_abstract(self, abstract: str, passage: str):
+        """Create abstract widget with yellow-highlighted passage (like text marker)."""
+        if not abstract or not passage:
+            return ft.Text(abstract or "No abstract available", size=11, selectable=True)
+
+        import re
+
+        # Clean up passage for matching (remove extra whitespace)
+        clean_passage = ' '.join(passage.split())
+
+        # Try to find exact match (case-insensitive)
+        pattern = re.compile(re.escape(clean_passage), re.IGNORECASE)
+        match = pattern.search(abstract)
+
+        if match:
+            # Found the passage - create text spans with highlighting
+            start, end = match.span()
+
+            # Build text spans
+            spans = []
+
+            # Text before highlight
+            if start > 0:
+                spans.append(
+                    ft.TextSpan(
+                        abstract[:start],
+                        style=ft.TextStyle(size=11, color=ft.Colors.BLACK87)
+                    )
+                )
+
+            # Highlighted passage (yellow background like highlighter marker)
+            spans.append(
+                ft.TextSpan(
+                    "📌 " + abstract[start:end] + " 📌",
+                    style=ft.TextStyle(
+                        size=11,
+                        color=ft.Colors.BLACK,
+                        weight=ft.FontWeight.W_600,
+                        bgcolor=ft.Colors.YELLOW_300  # Yellow highlighter effect
+                    )
+                )
+            )
+
+            # Text after highlight
+            if end < len(abstract):
+                spans.append(
+                    ft.TextSpan(
+                        abstract[end:],
+                        style=ft.TextStyle(size=11, color=ft.Colors.BLACK87)
+                    )
+                )
+
+            return ft.Text(
+                spans=spans,
+                selectable=True
+            )
+        else:
+            # If exact match not found, try fuzzy matching with first 50 chars
+            passage_start = ' '.join(passage.split()[:10])  # First ~10 words
+            fuzzy_pattern = re.compile(re.escape(passage_start), re.IGNORECASE)
+            fuzzy_match = fuzzy_pattern.search(abstract)
+
+            if fuzzy_match:
+                # Show partial match with warning
+                start = fuzzy_match.span()[0]
+                # Highlight a larger section (next 200 chars) as approximate match
+                end = min(start + len(clean_passage), len(abstract))
+
+                spans = []
+                if start > 0:
+                    spans.append(ft.TextSpan(abstract[:start], style=ft.TextStyle(size=11, color=ft.Colors.BLACK87)))
+
+                spans.append(
+                    ft.TextSpan(
+                        "⚠️ " + abstract[start:end] + " ⚠️",
+                        style=ft.TextStyle(
+                            size=11,
+                            color=ft.Colors.BLACK,
+                            weight=ft.FontWeight.W_600,
+                            bgcolor=ft.Colors.ORANGE_200  # Orange for partial match
+                        )
+                    )
+                )
+
+                if end < len(abstract):
+                    spans.append(ft.TextSpan(abstract[end:], style=ft.TextStyle(size=11, color=ft.Colors.BLACK87)))
+
+                return ft.Column([
+                    ft.Text("⚠️ Approximate match only", size=10, color=ft.Colors.ORANGE_700, italic=True),
+                    ft.Text(spans=spans, selectable=True)
+                ])
+            else:
+                # No match - show separately
+                return ft.Column([
+                    ft.Container(
+                        content=ft.Text(f"📌 Cited Passage:\n{passage}",
+                                      size=11, weight=ft.FontWeight.W_600, selectable=True),
+                        padding=ft.padding.all(8),
+                        bgcolor=ft.Colors.YELLOW_300,
+                        border_radius=3
+                    ),
+                    ft.Text("Full Abstract:", size=10, weight=ft.FontWeight.BOLD),
+                    ft.Text(abstract, size=11, color=ft.Colors.BLACK87, selectable=True)
+                ], spacing=5)
+
+    def _toggle_citation_status(self, index: int, button):
+        """Toggle citation status: None → accepted → refused → None"""
+        current_status = button.data.get('status')
+        
+        # Cycle through states
+        if current_status is None:
+            # Unrated → Accepted
+            new_status = 'accepted'
+            button.icon = ft.Icons.CHECK_CIRCLE
+            button.icon_color = ft.Colors.GREEN_700
+            button.tooltip = "Accepted ✅ - Click to Refuse"
+        elif current_status == 'accepted':
+            # Accepted → Refused
+            new_status = 'refused'
+            button.icon = ft.Icons.CANCEL
+            button.icon_color = ft.Colors.RED_700
+            button.tooltip = "Refused ❌ - Click to Clear"
+        else:  # refused
+            # Refused → Unrated
+            new_status = None
+            button.icon = ft.Icons.RADIO_BUTTON_UNCHECKED
+            button.icon_color = ft.Colors.GREY_400
+            button.tooltip = "Unrated ⚪ - Click to Accept"
+        
+        # Update button data
+        button.data['status'] = new_status
+        
+        # Update review tracking
+        self.citation_reviews[index] = new_status
+        
+        # Update UI
+        button.update()
+
+    def _on_apply_citation_reviews(self, _):
+        """Handle apply citation reviews button click."""
+        if self.citation_callback:
+            self.citation_callback(self.citation_reviews)
+        self.disable_citation_review()
+
+    def _on_continue_all_citations(self, _):
+        """Handle continue with all citations button click."""
+        if self.citation_callback:
+            self.citation_callback({})  # Empty dict means use all citations
+        self.disable_citation_review()
+
+    def disable_citation_review(self):
+        """Disable citation review mode and return to normal view."""
+        self.citation_review_mode = False
+        self.citation_data = None
+        self.citation_reviews = {}
+        
+        # Remove citation review container and restore normal content
+        if self.expansion_tile and len(self.expansion_tile.controls) > 0:
+            content_container = self.expansion_tile.controls[0]
+            if hasattr(content_container, 'content') and hasattr(content_container.content, 'controls'):
+                content_container.content.controls = [
+                    self.progress_bar,
+                    self.detailed_progress_container,
+                    ft.Container(
+                        content=self.content_text,
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5
+                    )
+                ]

@@ -269,22 +269,60 @@ class WorkflowExecutor:
                 score_overrides = score_data.get('overrides', {}) if isinstance(score_data, dict) else score_data
                 score_approvals = score_data.get('approvals', {}) if isinstance(score_data, dict) else {}
 
-                # If we have overrides or approvals, re-run scoring with human feedback
+                # Apply human feedback and log - no re-scoring needed
                 if score_overrides or score_approvals:
-                    print(f"Re-scoring documents with {len(score_overrides)} override(s) and {len(score_approvals)} approval(s)...")
-                    scored_documents = self.steps_handler.execute_document_scoring(
-                        research_question, documents, update_callback,
-                        score_overrides=score_overrides,
-                        score_approvals=score_approvals,
-                        progress_callback=scoring_progress_callback
-                    )
-                    # Update stored scored documents
-                    self.scored_documents = scored_documents
-                    print(f"📊 Workflow updated scored documents with human feedback: {len(scored_documents)} documents")
+                    from bmlibrarian.agents import get_human_edit_logger
+                    logger = get_human_edit_logger()
 
-                    # Trigger manual tab update for human feedback
-                    update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
-                                  f"Tab update with human feedback: {len(scored_documents)} scored documents")
+                    # Apply overrides to scored_documents for further processing
+                    updated_scored_documents = []
+                    for doc_index, (doc, scoring_result) in enumerate(scored_documents):
+                        # Make a copy of the scoring result
+                        updated_result = dict(scoring_result)
+
+                        # Apply override if present
+                        if doc_index in score_overrides:
+                            human_score = score_overrides[doc_index]
+                            # Replace the score with human override
+                            updated_result['score'] = human_score
+                            updated_result['human_override'] = True
+                            updated_result['original_ai_score'] = scoring_result.get('score')
+
+                            # Log the override
+                            try:
+                                logger.log_document_score_edit(
+                                    user_question=research_question,
+                                    document=doc,
+                                    ai_score=int(scoring_result.get('score', 0)),
+                                    ai_reasoning=scoring_result.get('reasoning', ''),
+                                    human_score=int(human_score),
+                                    explicitly_approved=False
+                                )
+                            except Exception as e:
+                                print(f"Warning: Failed to log override for document {doc_index}: {e}")
+
+                        # Log approval if present
+                        if doc_index in score_approvals:
+                            updated_result['human_approved'] = True
+                            try:
+                                logger.log_document_score_edit(
+                                    user_question=research_question,
+                                    document=doc,
+                                    ai_score=int(scoring_result.get('score', 0)),
+                                    ai_reasoning=scoring_result.get('reasoning', ''),
+                                    human_score=None,
+                                    explicitly_approved=True
+                                )
+                            except Exception as e:
+                                print(f"Warning: Failed to log approval for document {doc_index}: {e}")
+
+                        updated_scored_documents.append((doc, updated_result))
+
+                    # Update scored documents with human feedback applied
+                    scored_documents = updated_scored_documents
+                    self.scored_documents = scored_documents
+
+                    print(f"📊 Applied {len(score_overrides)} override(s) and logged {len(score_approvals)} approval(s)")
             
             # Step 6: Extract Citations
             # Create progress callback for citation extraction (citation agent format: current, total)

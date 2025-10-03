@@ -227,32 +227,86 @@ Interactive mode: Review and edit document scores below. Click buttons to contin
         print(f"Interactive document scoring completed. Result: {score_data}")
         return score_data
     
-    def get_user_approval_for_citations(self, citations: List, update_callback: Callable) -> bool:
-        """Get user approval for extracted citations in interactive mode."""
-        # Show preview of first few citations
-        citation_preview = ""
-        for i, citation in enumerate(citations[:3], 1):
-            if hasattr(citation, 'text'):
-                text = citation.text[:100] + "..." if len(citation.text) > 100 else citation.text
-            elif isinstance(citation, dict):
-                text = citation.get('text', str(citation))[:100] + "..."
-            else:
-                text = str(citation)[:100] + "..."
-            citation_preview += f"{i}. {text}\n\n"
-        
+    def get_user_approval_for_citations(self, citations: List, update_callback: Callable) -> Dict[int, str]:
+        """Get user review for extracted citations in interactive mode.
+
+        Returns:
+            Dictionary mapping citation indices to review status ('accepted', 'refused', or None)
+        """
         content = f"""Citation extraction completed!
 
 Extracted {len(citations)} relevant citations from high-scoring documents.
 
-First few citations:
-{citation_preview}Interactive mode: Review the citations above. Proceeding automatically in 3 seconds..."""
-        
+Interactive mode: Review each citation below. Toggle status: Refuse ❌ → Unrated ⚪ → Accept ✅"""
+
         update_callback(WorkflowStep.EXTRACT_CITATIONS, "waiting", content)
-        
-        # Brief pause to let user see the citations
-        time.sleep(3)
-        
-        return True  # Auto-approve after showing citations
+
+        # Show interactive citation review interface
+        return self._show_interactive_citation_review(citations, update_callback)
+
+    def _show_interactive_citation_review(self, citations: List, update_callback: Callable) -> Dict[int, str]:
+        """Show interactive citation review interface with accept/refuse/unrated toggles."""
+        self.waiting_for_user = True
+        self.user_response = None
+        citation_reviews = {}
+
+        def handle_citation_reviews(reviews: dict):
+            """Handle the result from citation review."""
+            nonlocal citation_reviews
+            citation_reviews = reviews
+
+            # Count review statuses
+            accepted = sum(1 for status in reviews.values() if status == 'accepted')
+            refused = sum(1 for status in reviews.values() if status == 'refused')
+            unrated = len(citations) - accepted - refused
+
+            # Update step content based on reviews
+            if reviews:
+                update_callback(WorkflowStep.EXTRACT_CITATIONS, "completed",
+                              f"Citation review: {accepted} accepted, {refused} refused, {unrated} unrated")
+            else:
+                update_callback(WorkflowStep.EXTRACT_CITATIONS, "completed",
+                              f"Proceeding with all {len(citations)} citations")
+
+            self.waiting_for_user = False
+
+        # Get the step card for citation extraction and enable review interface
+        print(f"Available step cards: {list(self.step_cards.keys()) if self.step_cards else 'None'}")
+        step_card = self._get_step_card(WorkflowStep.EXTRACT_CITATIONS)
+        print(f"Retrieved step card for citation review: {step_card is not None}")
+
+        if step_card:
+            try:
+                step_card.enable_citation_review(citations, handle_citation_reviews)
+                # Trigger a page update to show the review interface
+                self._trigger_page_update(update_callback)
+                print("Interactive citation review enabled successfully")
+            except Exception as e:
+                print(f"Error enabling citation review: {e} - proceeding with all citations")
+                return {}
+        else:
+            print("Step card not found - proceeding with all citations")
+            return {}
+
+        # Wait for user response
+        print("Workflow paused: Waiting for interactive citation review...")
+        timeout = 600  # 10 minute timeout for citation review
+        elapsed = 0
+
+        while self.waiting_for_user and elapsed < timeout:
+            time.sleep(0.1)  # Check every 100ms
+            elapsed += 0.1
+
+        if elapsed >= timeout:
+            print("Citation review timeout - using all citations")
+            return {}
+
+        # Disable review interface
+        if step_card:
+            step_card.disable_citation_review()
+
+        print(f"Interactive citation review completed. Reviews: {citation_reviews}")
+        return citation_reviews
     
     def _show_interactive_search_results(self, documents: List[Dict[str, Any]], 
                                        update_callback: Callable) -> bool:
