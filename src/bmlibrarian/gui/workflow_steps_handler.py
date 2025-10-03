@@ -85,15 +85,18 @@ class WorkflowStepsHandler:
         return documents
     
     def execute_document_scoring(self, research_question: str, documents: List[Dict],
-                               update_callback: Callable, score_overrides: Optional[Dict[int, float]] = None,
+                               update_callback: Callable,
+                               score_overrides: Optional[Dict[int, float]] = None,
+                               score_approvals: Optional[Dict[int, bool]] = None,
                                progress_callback: Optional[Callable[[int, int, str], None]] = None) -> List[Tuple[Dict, Dict]]:
-        """Execute the document scoring step with optional human overrides.
+        """Execute the document scoring step with optional human overrides and approvals.
 
         Args:
             research_question: The research question for relevance scoring
             documents: List of documents to score
             update_callback: Callback for status updates
-            score_overrides: Dictionary mapping document indices to human scores
+            score_overrides: Dictionary mapping document indices to human override scores
+            score_approvals: Dictionary mapping document indices to approval status
             progress_callback: Optional callback for progress updates (current, total, item_name)
 
         Returns:
@@ -148,13 +151,48 @@ class WorkflowStepsHandler:
                         'confidence': scoring_result.get('confidence', 1.0)
                     }
                     
-                    # Apply human override if provided
+                    # Apply human override or approval if provided
                     if score_overrides and i in score_overrides:
                         result_dict['score'] = score_overrides[i]
                         result_dict['human_override'] = True
                         result_dict['original_ai_score'] = original_score
                         score = score_overrides[i]
                         print(f"Applied human override for document {i}: {original_score:.1f} → {score_overrides[i]:.1f}")
+
+                        # Log the human override to database
+                        try:
+                            from bmlibrarian.agents import get_human_edit_logger
+                            logger = get_human_edit_logger()
+                            logger.log_document_score_edit(
+                                user_question=research_question,
+                                document=doc,
+                                ai_score=int(original_score),
+                                ai_reasoning=scoring_result.get('reasoning', ''),
+                                human_score=int(score_overrides[i]),
+                                explicitly_approved=False
+                            )
+                        except Exception as e:
+                            print(f"Warning: Failed to log human override: {e}")
+
+                    elif score_approvals and i in score_approvals:
+                        # User explicitly approved the AI score
+                        result_dict['human_approved'] = True
+                        print(f"User approved AI score for document {i}: {original_score:.1f}")
+
+                        # Log the human approval to database
+                        try:
+                            from bmlibrarian.agents import get_human_edit_logger
+                            logger = get_human_edit_logger()
+                            logger.log_document_score_edit(
+                                user_question=research_question,
+                                document=doc,
+                                ai_score=int(original_score),
+                                ai_reasoning=scoring_result.get('reasoning', ''),
+                                human_score=None,
+                                explicitly_approved=True
+                            )
+                        except Exception as e:
+                            print(f"Warning: Failed to log human approval: {e}")
                     
                     all_scored_documents.append((doc, result_dict))
                     

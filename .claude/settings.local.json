@@ -10,7 +10,9 @@
       "WebSearch",
       "Bash(python:*)",
       "Bash(uv run:*)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(psql:*)",
+      "Bash(psycopg:*)"
     ],
     "deny": [],
     "ask": []

@@ -257,28 +257,34 @@ class WorkflowExecutor:
             update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
                           f"Tab update: {len(scored_documents)} scored documents available")
             
-            # Interactive review of scored documents with potential human overrides
-            score_overrides = {}
+            # Interactive review of scored documents with potential human overrides/approvals
+            score_data = {}
             if self.interactive_mode:
                 score_threshold = self.config_overrides.get('score_threshold', 2.5)
-                score_overrides = self.interactive_handler.get_user_approval_for_scores(
+                score_data = self.interactive_handler.get_user_approval_for_scores(
                     documents, scored_documents, score_threshold, update_callback
                 )
-                
-                # If we have overrides, re-run scoring with human scores
-                if score_overrides:
-                    print(f"Re-scoring documents with {len(score_overrides)} human overrides...")
+
+                # Extract overrides and approvals
+                score_overrides = score_data.get('overrides', {}) if isinstance(score_data, dict) else score_data
+                score_approvals = score_data.get('approvals', {}) if isinstance(score_data, dict) else {}
+
+                # If we have overrides or approvals, re-run scoring with human feedback
+                if score_overrides or score_approvals:
+                    print(f"Re-scoring documents with {len(score_overrides)} override(s) and {len(score_approvals)} approval(s)...")
                     scored_documents = self.steps_handler.execute_document_scoring(
-                        research_question, documents, update_callback, score_overrides,
+                        research_question, documents, update_callback,
+                        score_overrides=score_overrides,
+                        score_approvals=score_approvals,
                         progress_callback=scoring_progress_callback
                     )
                     # Update stored scored documents
                     self.scored_documents = scored_documents
-                    print(f"📊 Workflow updated scored documents with overrides: {len(scored_documents)} documents")
-                    
-                    # Trigger manual tab update for overrides
+                    print(f"📊 Workflow updated scored documents with human feedback: {len(scored_documents)} documents")
+
+                    # Trigger manual tab update for human feedback
                     update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
-                                  f"Tab update with overrides: {len(scored_documents)} scored documents")
+                                  f"Tab update with human feedback: {len(scored_documents)} scored documents")
             
             # Step 6: Extract Citations
             # Create progress callback for citation extraction (citation agent format: current, total)

@@ -29,26 +29,29 @@ from .models.counterfactual import CounterfactualQuestion, CounterfactualAnalysi
 from .editor_agent import EditorAgent, EditedReport
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
+from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 
 __all__ = [
-    "BaseAgent", 
-    "QueryAgent", 
+    "BaseAgent",
+    "QueryAgent",
     "DocumentScoringAgent",
     "ScoringResult",
     "CitationFinderAgent",
     "Citation",
     "ReportingAgent",
-    "Reference", 
+    "Reference",
     "Report",
     "CounterfactualAgent",
     "CounterfactualQuestion",
     "CounterfactualAnalysis",
     "EditorAgent",
     "EditedReport",
-    "QueueManager", 
-    "TaskStatus", 
+    "QueueManager",
+    "TaskStatus",
     "TaskPriority",
     "AgentOrchestrator",
     "Workflow",
-    "WorkflowStep"
+    "WorkflowStep",
+    "HumanEditLogger",
+    "get_human_edit_logger"
 ]

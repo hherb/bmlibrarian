@@ -329,6 +329,7 @@ class StepCard:
         }
         self.scoring_callback = callback
         self.score_overrides = {}
+        self.score_approvals = {}  # Track which scores are explicitly approved
         
         # Create scoring interface
         scoring_controls = []
@@ -344,7 +345,7 @@ class StepCard:
         
         scoring_controls.append(
             ft.Text(
-                "Review AI scores and reasoning. Enter human scores to override AI evaluation.",
+                "Review AI scores and reasoning. Check 'Approve' to confirm AI score, or enter a different score to override.",
                 size=12,
                 color=ft.Colors.GREY_600
             )
@@ -415,11 +416,18 @@ class StepCard:
         # Create human score input field
         human_score_field = ft.TextField(
             label="Human Score (1-5)",
-            hint_text="Leave empty to use AI score",
+            hint_text="Override AI score",
             width=120,
             height=40,
             keyboard_type=ft.KeyboardType.NUMBER,
             on_change=lambda e: self._on_score_override_change(index, e.control.value)
+        )
+
+        # Create approval checkbox
+        approve_checkbox = ft.Checkbox(
+            label="Approve AI score",
+            value=False,
+            on_change=lambda e: self._on_score_approval_change(index, e.control.value)
         )
         
         return ft.Container(
@@ -457,14 +465,15 @@ class StepCard:
                         border_radius=5,
                         width=80
                     ),
-                    # Human override
+                    # Human interaction
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("Human Override", size=11, weight=ft.FontWeight.BOLD),
-                            human_score_field
-                        ], spacing=2),
+                            ft.Text("Human Review", size=11, weight=ft.FontWeight.BOLD),
+                            human_score_field,
+                            approve_checkbox
+                        ], spacing=5),
                         padding=ft.padding.all(8),
-                        width=140
+                        width=160
                     ),
                     # Reasoning
                     ft.Container(
@@ -504,6 +513,8 @@ class StepCard:
                 score = float(value)
                 if 1 <= score <= 5:
                     self.score_overrides[index] = score
+                    # If user enters a score, clear approval checkbox
+                    self.score_approvals.pop(index, None)
                 else:
                     # Invalid score range - remove override
                     self.score_overrides.pop(index, None)
@@ -513,11 +524,24 @@ class StepCard:
         except ValueError:
             # Invalid number - remove override
             self.score_overrides.pop(index, None)
-    
+
+    def _on_score_approval_change(self, index: int, approved: bool):
+        """Handle changes to approval checkboxes."""
+        if approved:
+            self.score_approvals[index] = True
+            # If user approves, clear any override
+            self.score_overrides.pop(index, None)
+        else:
+            self.score_approvals.pop(index, None)
+
     def _on_apply_score_overrides(self, _):
         """Handle apply overrides button click."""
         if self.scoring_callback:
-            self.scoring_callback(self.score_overrides)
+            # Pass both overrides and approvals
+            self.scoring_callback({
+                'overrides': self.score_overrides,
+                'approvals': self.score_approvals
+            })
         self.disable_document_scoring()
     
     def _on_continue_ai_scores(self, _):

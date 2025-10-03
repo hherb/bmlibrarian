@@ -18,23 +18,23 @@ class InteractiveHandler:
         self.waiting_for_user = False
         self.user_response = None
     
-    def get_user_approval_for_query(self, query_text: str, research_question: str, 
+    def get_user_approval_for_query(self, query_text: str, research_question: str,
                                   update_callback: Callable, query_cleaner: Callable) -> Optional[str]:
         """Get user approval and editing for the generated query in interactive mode."""
         # Show step as waiting and enable inline editing
-        update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "waiting", 
+        update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "waiting",
                       f"Generated query: {query_text}\n\nClick below to edit the query if needed, then click Accept to continue.")
-        
+
         # Enable inline editing on the step card
-        return self._show_inline_query_editing(query_text, update_callback, query_cleaner)
+        return self._show_inline_query_editing(query_text, research_question, update_callback, query_cleaner)
     
-    def _show_inline_query_editing(self, query_text: str, update_callback: Callable, 
-                                 query_cleaner: Callable) -> Optional[str]:
+    def _show_inline_query_editing(self, query_text: str, research_question: str,
+                                 update_callback: Callable, query_cleaner: Callable) -> Optional[str]:
         """Show inline query editing in the step card."""
         self.waiting_for_user = True
         self.user_response = None
         edited_query = None
-        
+
         def handle_edit_result(approved: bool, new_query: str = ""):
             """Handle the result from inline editing."""
             nonlocal edited_query
@@ -42,6 +42,22 @@ class InteractiveHandler:
                 # Clean the query by removing markdown formatting
                 cleaned_query = query_cleaner(new_query if new_query.strip() else query_text)
                 edited_query = cleaned_query
+
+                # Log query edit to database if it was changed
+                if edited_query != query_text:
+                    try:
+                        from bmlibrarian.agents import get_human_edit_logger
+                        logger = get_human_edit_logger()
+                        # Note: We'd need access to system_prompt here. For now, we'll use a simplified context
+                        logger.log_query_edit(
+                            user_question=research_question,
+                            system_prompt="Query generation system prompt (see QueryAgent.system_prompt)",
+                            ai_query=query_text,
+                            human_query=edited_query
+                        )
+                    except Exception as e:
+                        print(f"Warning: Failed to log query edit: {e}")
+
                 # Update the step to show the accepted query
                 update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed",
                               f"Final query: {edited_query}")
@@ -141,27 +157,36 @@ Interactive mode: Review and edit document scores below. Click buttons to contin
         # Show interactive document scoring interface
         return self._show_interactive_scoring(documents, scored_documents, update_callback)
     
-    def _show_interactive_scoring(self, documents: List, scored_documents: List, 
+    def _show_interactive_scoring(self, documents: List, scored_documents: List,
                                 update_callback: Callable) -> dict:
-        """Show interactive scoring interface with document details and human override options."""
+        """Show interactive scoring interface with document details and human override and approval options."""
         self.waiting_for_user = True
         self.user_response = None
-        score_overrides = {}
-        
-        def handle_scoring_result(overrides: dict):
+        score_data = {}
+
+        def handle_scoring_result(result: dict):
             """Handle the result from interactive scoring."""
-            nonlocal score_overrides
-            score_overrides = overrides
-            
-            # Update step content based on whether overrides were applied
+            nonlocal score_data
+            score_data = result
+
+            # Extract overrides and approvals
+            overrides = result.get('overrides', {}) if isinstance(result, dict) else result
+            approvals = result.get('approvals', {}) if isinstance(result, dict) else {}
+
+            # Update step content based on what was provided
+            messages = []
             if overrides:
-                override_count = len(overrides)
+                messages.append(f"{len(overrides)} override(s)")
+            if approvals:
+                messages.append(f"{len(approvals)} approval(s)")
+
+            if messages:
                 update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
-                              f"Applied {override_count} human score overrides")
+                              f"Applied {', '.join(messages)}")
             else:
                 update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
                               "Proceeding with AI scores")
-            
+
             self.waiting_for_user = False
         
         # Get the step card for document scoring and enable scoring interface
@@ -198,9 +223,9 @@ Interactive mode: Review and edit document scores below. Click buttons to contin
         # Disable scoring interface
         if step_card:
             step_card.disable_document_scoring()
-        
-        print(f"Interactive document scoring completed. Overrides: {len(score_overrides)}")
-        return score_overrides
+
+        print(f"Interactive document scoring completed. Result: {score_data}")
+        return score_data
     
     def get_user_approval_for_citations(self, citations: List, update_callback: Callable) -> bool:
         """Get user approval for extracted citations in interactive mode."""

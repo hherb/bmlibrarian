@@ -51,8 +51,9 @@ class QueryProcessor:
                     
                 elif choice == '2':
                     # Manual editing
+                    original_query = current_query
                     new_query = self.ui.get_manual_query_edit(current_query)
-                    
+
                     if new_query != current_query:
                         # Basic validation
                         if self._validate_tsquery(new_query):
@@ -61,6 +62,20 @@ class QueryProcessor:
                         else:
                             self.ui.show_warning_message("Query format may be invalid, but proceeding...")
                             current_query = new_query
+
+                        # Log the human edit to database
+                        try:
+                            from bmlibrarian.agents import get_human_edit_logger
+                            logger = get_human_edit_logger()
+                            logger.log_query_edit(
+                                user_question=question,
+                                system_prompt="QueryAgent system prompt for converting natural language to PostgreSQL ts_query",
+                                ai_query=original_query,
+                                human_query=current_query
+                            )
+                        except Exception as e:
+                            # Don't fail the workflow if logging fails
+                            pass
                     else:
                         self.ui.show_info_message("No changes made - keeping original query")
                     continue
