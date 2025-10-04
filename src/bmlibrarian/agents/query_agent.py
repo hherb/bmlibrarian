@@ -12,6 +12,7 @@ from datetime import date
 
 from .base import BaseAgent
 from ..database import find_abstracts
+from .utils.query_syntax import fix_tsquery_syntax
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -255,53 +256,16 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
     
     def _fix_malformed_syntax(self, query: str) -> str:
         """
-        Fix common syntax issues in generated queries.
-        
+        Fix common syntax issues in generated queries using comprehensive fix.
+
         Args:
             query: The query string to fix
-            
+
         Returns:
             Query with syntax issues fixed
         """
-        import re as re_module
-        
-        # Remove invalid wildcard characters around quoted phrases
-        query = re_module.sub(r'\*\s*\'([^\']*)\'\s*\*', r"'\1'", query)  # *'phrase'* -> 'phrase'
-        query = re_module.sub(r'\*\s*\'([^\']*)', r"'\1'", query)  # *'phrase -> 'phrase'
-        query = re_module.sub(r'([^\']*)\'\s*\*', r"\1'", query)  # phrase'* -> phrase'
-        
-        # Remove single quotes around individual terms (PostgreSQL to_tsquery doesn't need them)
-        # But keep quotes around multi-word phrases
-        def fix_quotes(match):
-            content = match.group(1)
-            # If it's a single word, remove quotes
-            if not ' ' in content.strip():
-                return content
-            # If it's multiple words, keep the quotes but ensure proper escaping
-            return f"'{content}'"
-        
-        # Fix single-quoted terms: 'word' -> word, but keep 'multi word' -> 'multi word'
-        query = re_module.sub(r"'([^']*)'", fix_quotes, query)
-        
-        # Remove any remaining malformed quote patterns
-        query = re_module.sub(r"''([^']*)''", r"'\1'", query)  # Double quotes to single
-        
-        # Fix operators with spaces
-        query = re_module.sub(r'\s*&\s*', ' & ', query)
-        query = re_module.sub(r'\s*\|\s*', ' | ', query)
-        
-        # Remove trailing/leading operators
-        query = re_module.sub(r'^[\s&|]+', '', query)
-        query = re_module.sub(r'[\s&|]+$', '', query)
-        
-        # Fix empty parentheses or single terms in parentheses
-        query = re_module.sub(r'\(\s*\)', '', query)
-        query = re_module.sub(r'\(\s*([^|&()]+)\s*\)', r'\1', query)
-        
-        # Clean up multiple spaces
-        query = re_module.sub(r'\s+', ' ', query)
-        
-        return query.strip()
+        # Use the comprehensive fix_tsquery_syntax function
+        return fix_tsquery_syntax(query)
     
     def _validate_tsquery(self, query: str) -> bool:
         """
@@ -400,6 +364,12 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
                 logger.warning(f"Human query modification failed: {e}")
                 self._call_callback("human_review_failed", str(e))
                 # Continue with original query
+
+        # Step 2.5: Fix any malformed quotes in the query (from LLM or human edits)
+        ts_query_str_before = ts_query_str
+        ts_query_str = fix_tsquery_syntax(ts_query_str)
+        if ts_query_str != ts_query_str_before:
+            logger.info(f"Query syntax fixed: '{ts_query_str_before}' -> '{ts_query_str}'")
 
         # Step 3: Search database with the final query
         try:

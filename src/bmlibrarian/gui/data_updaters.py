@@ -692,7 +692,7 @@ class DataUpdaters:
     def _create_single_editable_scoring_card(self, index: int, doc: dict, score_data: dict) -> ft.Container:
         """Create a single editable scoring card."""
         import flet as ft
-        from .display_utils import truncate_text, extract_year_from_date
+        from .ui_builder import truncate_text, extract_year_from_date
 
         doc_id = doc.get('id')
         title = doc.get('title', 'Untitled Document')

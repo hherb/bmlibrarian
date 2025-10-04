@@ -33,6 +33,11 @@ def fix_tsquery_syntax(query: str) -> str:
     if (query.startswith('"') and query.endswith('"')) or (query.startswith("'") and query.endswith("'")):
         query = query[1:-1]
 
+    # EARLY FIX: Remove orphaned quotes from LLM errors like "Alzheimer's disease' |"
+    # Match and remove quotes that appear isolated before operators (NOT part of 's or 'phrase')
+    # Pattern: single quote preceded by non-quote, non-s character, followed by whitespace + operator
+    query = re.sub(r"([a-rt-z0-9])\s*'\s*([|&()])", r"\1 \2", query, flags=re.IGNORECASE)
+
     # CRITICAL FIX: Handle the specific malformed quote patterns causing errors
     # Fix patterns like: '(''phrase''' -> 'phrase'
     query = re.sub(r"'\(\s*''([^']+)''\s*'", r"'\1'", query)
@@ -70,6 +75,11 @@ def fix_tsquery_syntax(query: str) -> str:
 
     # Fix phrase quoting: add quotes to multi-word phrases, remove from single words
     def fix_phrase_quoting(text):
+        # STEP 1: Protect possessive apostrophes (e.g., Alzheimer's, Parkinson's)
+        # Replace 's with a placeholder to preserve during quote processing
+        APOSTROPHE_PLACEHOLDER = '\x00APOSTROPHE\x00'
+        text = re.sub(r"([a-z])'s\b", rf"\1{APOSTROPHE_PLACEHOLDER}s", text, flags=re.IGNORECASE)
+
         # Split on operators and parentheses while preserving them (including !)
         parts = re.split(r'(\s*[&|()!]\s*)', text)
         fixed_parts = []
@@ -86,29 +96,34 @@ def fix_tsquery_syntax(query: str) -> str:
                 # Extract the term after !
                 negated_term = part[1:].strip("'\"")
                 if ' ' in negated_term or '-' in negated_term:
-                    escaped = negated_term.replace("'", "''")
-                    fixed_parts.append(f"!'{escaped}'")
+                    # Restore apostrophes as doubled for PostgreSQL
+                    negated_term = negated_term.replace(APOSTROPHE_PLACEHOLDER, "''")
+                    fixed_parts.append(f"!'{negated_term}'")
                 else:
+                    # Restore apostrophes
+                    negated_term = negated_term.replace(APOSTROPHE_PLACEHOLDER, "'")
                     fixed_parts.append(f"!{negated_term}")
                 continue
 
-            # Clean existing quotes
+            # Clean existing quotes (but preserve our placeholder)
             clean_part = part.strip("'\"")
 
             # Quote multi-word phrases (including hyphenated terms), leave single words unquoted
             if ' ' in clean_part or '-' in clean_part:
-                # Escape internal quotes and wrap in quotes
-                escaped = clean_part.replace("'", "''")
-                fixed_parts.append(f"'{escaped}'")
+                # Restore apostrophes as doubled for PostgreSQL tsquery
+                clean_part = clean_part.replace(APOSTROPHE_PLACEHOLDER, "''")
+                fixed_parts.append(f"'{clean_part}'")
             else:
+                # Restore apostrophes as single for unquoted words
+                clean_part = clean_part.replace(APOSTROPHE_PLACEHOLDER, "'")
                 fixed_parts.append(clean_part)
 
         return ''.join(fixed_parts)
 
     query = fix_phrase_quoting(query)
 
-    # Fix empty quoted strings
-    query = re.sub(r"'\s*'", '', query)
+    # Fix empty quoted strings (but NOT doubled apostrophes like ''s which are valid escapes)
+    query = re.sub(r"'\s+'", '', query)  # Require at least one whitespace character
 
     # Clean up extra spaces
     query = re.sub(r'\s+', ' ', query).strip()

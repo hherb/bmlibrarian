@@ -6,6 +6,7 @@ Handles query validation, editing, database search orchestration, and result pro
 
 from typing import List, Dict, Any, Optional, Generator
 from bmlibrarian.agents import QueryAgent
+from bmlibrarian.agents.utils.query_syntax import fix_tsquery_syntax
 
 
 class QueryProcessor:
@@ -141,19 +142,22 @@ class QueryProcessor:
         """Execute database search with the given query."""
         try:
             from bmlibrarian.database import find_abstracts
-            
+
+            # Pre-process query to fix malformed quotes from LLM
+            query = fix_tsquery_syntax(query)
+
             documents = []
             results_generator = find_abstracts(
                 query,
                 max_rows=self.config.max_search_results,
                 plain=False  # Use to_tsquery format
             )
-            
+
             for doc in results_generator:
                 documents.append(doc)
-            
+
             return documents
-            
+
         except Exception as e:
             raise Exception(f"Database search failed: {e}")
     

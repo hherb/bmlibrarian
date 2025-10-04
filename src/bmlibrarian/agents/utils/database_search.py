@@ -8,7 +8,7 @@ retry mechanisms and progressive query simplification.
 import logging
 from typing import Dict, List, Callable, Optional
 
-from .query_syntax import simplify_query_for_retry, extract_keywords_from_question
+from .query_syntax import simplify_query_for_retry, extract_keywords_from_question, fix_tsquery_syntax
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +51,17 @@ def search_with_retry(
             except Exception as e:
                 logger.warning(f"Callback error: {e}")
 
+    # Pre-process the original query to fix obvious quote mismatches
+    # This handles cases where LLM generates malformed queries like: Alzheimer's disease'
+    original_query_before = original_query
+    original_query = fix_tsquery_syntax(original_query)
+    if original_query != original_query_before:
+        logger.info(f"Query preprocessed: '{original_query_before}' -> '{original_query}'")
+
     for attempt in range(max_retries + 1):  # +1 for the original attempt
         try:
             if attempt == 0:
-                # First attempt: use original query
+                # First attempt: use pre-processed original query
                 current_query = original_query
                 _call_callback("database_search", f"Attempting search: {target_claim[:50]}...")
             else:
