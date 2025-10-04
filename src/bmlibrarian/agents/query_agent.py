@@ -59,12 +59,13 @@ Rules:
 1. Extract the most relevant biomedical keywords from the user's question
 2. Use '&' for AND operations (terms that should all appear)
 3. Use '|' for OR operations (alternative terms)
-4. Use parentheses to group related terms
-5. Use multi-word phrases naturally (e.g., myocardial infarction, early diagnosis)
-6. Focus on medical terminology, drug names, disease names, biological processes
-7. Include both specific terms and broader category terms when relevant
-8. Avoid common words like 'the', 'and', 'or', 'what', 'how'
-9. Return ONLY the to_tsquery string, no explanation
+4. Use '!' for NOT operations (to exclude terms) - prefix the term to negate
+5. Use parentheses to group related terms
+6. Use multi-word phrases naturally (e.g., myocardial infarction, early diagnosis)
+7. Focus on medical terminology, drug names, disease names, biological processes
+8. Include both specific terms and broader category terms when relevant
+9. Avoid common words like 'the', 'and', 'or', 'what', 'how'
+10. Return ONLY the to_tsquery string, no explanation
 
 Examples:
 Question: "What are the effects of aspirin on cardiovascular disease?"
@@ -81,6 +82,9 @@ to_tsquery: "(myocardial infarction | AMI | heart attack) & research"
 
 Question: "Biomarkers for early Alzheimer's diagnosis"
 to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (biomarker | marker | blood test | cerebrospinal fluid)"
+
+Question: "Statins for cholesterol but not in children"
+to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
 """
     
     def get_agent_type(self) -> str:

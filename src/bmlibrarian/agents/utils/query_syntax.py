@@ -55,24 +55,41 @@ def fix_tsquery_syntax(query: str) -> str:
     # Handle operator syntax
     query = re.sub(r'\sOR\s', ' | ', query, flags=re.IGNORECASE)
     query = re.sub(r'\sAND\s', ' & ', query, flags=re.IGNORECASE)
+    query = re.sub(r'\sNOT\s', ' !', query, flags=re.IGNORECASE)
+
+    # Fix malformed NOT patterns like "& NOT" or "&NOT" -> "& !"
+    query = re.sub(r'&\s*NOT\s+', '& !', query, flags=re.IGNORECASE)
+    query = re.sub(r'\|\s*NOT\s+', '| !', query, flags=re.IGNORECASE)
 
     # Clean up spacing around operators (preserve structure)
     query = re.sub(r'\s*\|\s*', ' | ', query)
     query = re.sub(r'\s*&\s*', ' & ', query)
+    query = re.sub(r'\s*!\s*', '!', query)  # NOT operator should be directly attached
     query = re.sub(r'\s*\(\s*', '(', query)
     query = re.sub(r'\s*\)\s*', ')', query)
 
     # Fix phrase quoting: add quotes to multi-word phrases, remove from single words
     def fix_phrase_quoting(text):
-        # Split on operators and parentheses while preserving them
-        parts = re.split(r'(\s*[&|()]\s*)', text)
+        # Split on operators and parentheses while preserving them (including !)
+        parts = re.split(r'(\s*[&|()!]\s*)', text)
         fixed_parts = []
 
         for part in parts:
             part = part.strip()
-            # Skip operators and parentheses
-            if not part or part in ['&', '|', '(', ')'] or re.match(r'^\s*[&|()]+\s*$', part):
+            # Skip operators and parentheses (including NOT operator !)
+            if not part or part in ['&', '|', '(', ')', '!'] or re.match(r'^\s*[&|()!]+\s*$', part):
                 fixed_parts.append(part)
+                continue
+
+            # Handle negated terms (starting with !)
+            if part.startswith('!'):
+                # Extract the term after !
+                negated_term = part[1:].strip("'\"")
+                if ' ' in negated_term or '-' in negated_term:
+                    escaped = negated_term.replace("'", "''")
+                    fixed_parts.append(f"!'{escaped}'")
+                else:
+                    fixed_parts.append(f"!{negated_term}")
                 continue
 
             # Clean existing quotes
@@ -173,6 +190,7 @@ def simplify_query_for_retry(query: str, attempt: int) -> str:
         # Final operator cleanup
         query = re.sub(r'\s*&\s*', ' & ', query)
         query = re.sub(r'\s*\|\s*', ' | ', query)
+        query = re.sub(r'\s*!\s*', '!', query)  # NOT operator stays attached
 
     return query.strip()
 
