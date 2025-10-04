@@ -8,15 +8,22 @@ import flet as ft
 from typing import Dict, List, Optional, Any
 from .components import StepCard
 from .ui_builder import create_tab_header, create_empty_state
+from .scoring_interface import ScoringInterface
 from ..cli.workflow_steps import WorkflowStep
 
 
 class TabManager:
     """Manages the tabbed interface for the research GUI."""
-    
-    def __init__(self):
+
+    def __init__(self, page: ft.Page = None):
         self.tabs_container: Optional[ft.Tabs] = None
         self.tab_contents: Dict[str, ft.Container] = {}
+        self.scoring_interface: Optional[ScoringInterface] = None
+        self.page = page
+
+        # Create scoring interface if page is available
+        if page:
+            self.scoring_interface = ScoringInterface(page)
         
     def create_tabbed_interface(self, step_cards: Dict[WorkflowStep, StepCard]) -> ft.Tabs:
         """Create the complete tabbed interface."""
@@ -107,24 +114,32 @@ class TabManager:
         return self.tab_contents['literature']
     
     def _create_scoring_tab(self) -> ft.Container:
-        """Create the scoring results tab content."""
-        header_components = create_tab_header(
-            "Document Scoring Results",
-            subtitle="Scored documents will appear here ordered by relevance score."
-        )
-        
-        empty_state = create_empty_state("No scored documents yet.")
-        
-        self.tab_contents['scoring'] = ft.Container(
-            content=ft.Column(
+        """Create the scoring results tab content with integrated scoring interface."""
+        # Create scoring interface if not already created
+        if not self.scoring_interface and self.page:
+            self.scoring_interface = ScoringInterface(self.page)
+
+        # Use scoring interface if available, otherwise create placeholder
+        if self.scoring_interface:
+            scoring_content = self.scoring_interface.create_interface()
+        else:
+            header_components = create_tab_header(
+                "Document Scoring Results",
+                subtitle="Scored documents will appear here ordered by relevance score."
+            )
+            empty_state = create_empty_state("No scored documents yet.")
+            scoring_content = ft.Column(
                 [*header_components, empty_state],
                 spacing=10,
                 scroll=ft.ScrollMode.AUTO
-            ),
+            )
+
+        self.tab_contents['scoring'] = ft.Container(
+            content=scoring_content,
             padding=ft.padding.all(15),
             expand=True
         )
-        
+
         return self.tab_contents['scoring']
     
     def _create_citations_tab(self) -> ft.Container:

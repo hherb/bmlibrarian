@@ -12,9 +12,10 @@ from ..cli.workflow_steps import WorkflowStep
 
 class InteractiveHandler:
     """Handles all interactive user interface operations for the research workflow."""
-    
-    def __init__(self, step_cards: Optional[Dict] = None):
+
+    def __init__(self, step_cards: Optional[Dict] = None, tab_manager=None):
         self.step_cards = step_cards
+        self.tab_manager = tab_manager
         self.waiting_for_user = False
         self.user_response = None
     
@@ -189,40 +190,45 @@ Interactive mode: Review and edit document scores below. Click buttons to contin
 
             self.waiting_for_user = False
         
-        # Get the step card for document scoring and enable scoring interface
-        print(f"Available step cards: {list(self.step_cards.keys()) if self.step_cards else 'None'}")
-        step_card = self._get_step_card(WorkflowStep.SCORE_DOCUMENTS)
-        print(f"Retrieved step card for document scoring: {step_card is not None}")
-        
-        if step_card:
+        # Use the scoring tab interface instead of step card
+        if self.tab_manager and self.tab_manager.scoring_interface:
             try:
-                step_card.enable_document_scoring(documents, scored_documents, handle_scoring_result)
-                # Trigger a page update to show the scoring interface
-                self._trigger_page_update(update_callback)
-                print("Interactive document scoring enabled successfully")
+                # Switch to the Scoring tab (index 2)
+                if self.tab_manager.tabs_container:
+                    self.tab_manager.tabs_container.selected_index = 2  # Scoring tab
+                    if self.tab_manager.page:
+                        self.tab_manager.page.update()
+
+                # Start the scoring interface
+                self.tab_manager.scoring_interface.start_scoring(
+                    documents, scored_documents, handle_scoring_result
+                )
+                print("Interactive document scoring enabled in Scoring tab")
             except Exception as e:
-                print(f"Error enabling document scoring: {e} - proceeding with AI scores")
+                print(f"Error enabling scoring interface: {e} - proceeding with AI scores")
+                import traceback
+                traceback.print_exc()
                 return {}
         else:
-            print("Step card not found - proceeding with AI scores")
+            print("Scoring interface not found - proceeding with AI scores")
             return {}
-        
+
         # Wait for user response
-        print("Workflow paused: Waiting for interactive document scoring...")
+        print("Workflow paused: Waiting for interactive document scoring in Scoring tab...")
         timeout = 600  # 10 minute timeout for scoring review
         elapsed = 0
-        
+
         while self.waiting_for_user and elapsed < timeout:
             time.sleep(0.1)  # Check every 100ms
             elapsed += 0.1
-        
+
         if elapsed >= timeout:
             print("Document scoring timeout - using AI scores")
             return {}
-        
+
         # Disable scoring interface
-        if step_card:
-            step_card.disable_document_scoring()
+        if self.tab_manager and self.tab_manager.scoring_interface:
+            self.tab_manager.scoring_interface.disable_scoring()
 
         print(f"Interactive document scoring completed. Result: {score_data}")
         return score_data
@@ -341,14 +347,9 @@ Interactive mode: Review each citation below. Toggle status: Refuse ❌ → Unra
             print("Step card not found - auto-approving search results")
             return True
         
-        # Give user time to review the results (auto-approve after timeout)
-        print("Workflow paused: Showing interactive search results for 10 seconds...")
-        timeout = 10  # 10 second timeout for search results review
-        time.sleep(timeout)
-        
-        # Auto-complete the review and clean up
+        # Auto-complete the review (no delay needed - documents are in Literature tab)
         update_callback(WorkflowStep.REVIEW_SEARCH_RESULTS, "completed",
-                      f"Reviewed {len(documents)} search results")
+                      f"Reviewed {len(documents)} search results (available in Literature tab)")
         
         # Disable search results interface
         if step_card:

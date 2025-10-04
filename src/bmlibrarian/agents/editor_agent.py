@@ -135,11 +135,11 @@ Return ONLY a valid JSON object with this exact structure:
     "methodology_section": "Truthful description of the AI-powered literature search using PubMed and medRxiv data sources - do NOT fabricate systematic review processes",
     "findings_section": "Detailed presentation of supporting evidence with subheadings",
     "contradictory_evidence_section": "Balanced presentation of conflicting or limiting evidence (null if none)",
-    "limitations_section": "Discussion of study limitations, biases, and methodological concerns", 
+    "limitations_section": "Discussion of study limitations, biases, and methodological concerns",
     "conclusions_section": "Balanced conclusions with confidence levels and recommendations",
+    "references": [],
     "evidence_quality_table": "Markdown table showing evidence quality assessment (null if not applicable)",
-    "confidence_assessment": "HIGH|MODERATE|LIMITED - overall confidence in conclusions",
-    "word_count": 0
+    "confidence_assessment": "HIGH|MODERATE|LIMITED - overall confidence in conclusions"
 }
 
 Be thorough, balanced, and maintain high academic standards throughout."""

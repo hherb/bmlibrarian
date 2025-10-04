@@ -265,7 +265,7 @@ class DataUpdaters:
         high_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) > score_threshold]
         low_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) <= score_threshold]
 
-        # Create document cards
+        # Create document cards with edit functionality
         card_creator = DocumentCardCreator()
 
         # Build components list
@@ -279,6 +279,61 @@ class DataUpdaters:
         )
         all_components.extend(header_components)
 
+        # Add "Add More Documents" button if we hit the max_results limit
+        print(f"🔍 Checking if 'Add More Documents' button should be shown...")
+        print(f"  - workflow_executor exists: {self.app.workflow_executor is not None}")
+        print(f"  - documents count: {len(self.app.documents) if self.app.documents else 0}")
+
+        if self.app.workflow_executor and self.app.documents:
+            # Check if the number of found documents equals max_results (indicating there may be more)
+            from ..config import get_search_config
+            search_config = get_search_config()
+
+            # Get max_results from multiple sources (in priority order)
+            max_results = None
+            if hasattr(self.app, 'config_overrides') and self.app.config_overrides:
+                max_results = self.app.config_overrides.get('max_results')
+            if max_results is None and hasattr(self.app.workflow_executor, 'config_overrides'):
+                max_results = self.app.workflow_executor.config_overrides.get('max_results')
+            if max_results is None:
+                max_results = search_config.get('max_results', 100)
+
+            print(f"  - max_results: {max_results}")
+            print(f"  - Should show button: {len(self.app.documents) >= max_results}")
+            print(f"  - event_handlers exists: {hasattr(self.app, 'event_handlers')}")
+            print(f"  - human_in_loop: {getattr(self.app, 'human_in_loop', 'N/A')}")
+
+            # Only show button in interactive mode and if we hit the limit
+            if len(self.app.documents) >= max_results:
+                print(f"✅ Adding 'Add More Documents' button!")
+                add_more_button = ft.ElevatedButton(
+                    text=f"Add More Documents (fetch next {max_results})",
+                    icon=ft.Icons.ADD_CIRCLE,
+                    on_click=self.app.event_handlers.on_add_more_documents if hasattr(self.app, 'event_handlers') else None,
+                    bgcolor=ft.Colors.BLUE_600,
+                    color=ft.Colors.WHITE
+                )
+                all_components.append(ft.Container(
+                    content=add_more_button,
+                    padding=ft.padding.only(top=10, bottom=10)
+                ))
+            else:
+                print(f"❌ Not adding button - document count ({len(self.app.documents)}) < max_results ({max_results})")
+
+        # Add Continue Workflow button (for extracting citations and generating report)
+        if self.app.scored_documents:
+            continue_button = ft.ElevatedButton(
+                text="Continue Workflow (Extract Citations & Generate Report)",
+                icon=ft.Icons.ARROW_FORWARD,
+                on_click=self.app.event_handlers.on_continue_workflow if hasattr(self.app, 'event_handlers') else None,
+                bgcolor=ft.Colors.GREEN_600,
+                color=ft.Colors.WHITE
+            )
+            all_components.append(ft.Container(
+                content=continue_button,
+                padding=ft.padding.only(top=10, bottom=15)
+            ))
+
         # High-scoring documents section
         if high_scoring_docs:
             all_components.append(ft.Container(
@@ -290,7 +345,8 @@ class DataUpdaters:
                 ),
                 padding=ft.padding.only(top=15, bottom=10)
             ))
-            high_scoring_cards = card_creator.create_scored_document_cards_list(high_scoring_docs)
+            # Create editable scoring cards
+            high_scoring_cards = self._create_editable_scoring_cards(high_scoring_docs, 0)
             all_components.extend(high_scoring_cards)
 
         # Low-scoring documents section
@@ -304,7 +360,8 @@ class DataUpdaters:
                 ),
                 padding=ft.padding.only(top=20, bottom=10)
             ))
-            low_scoring_cards = card_creator.create_scored_document_cards_list(low_scoring_docs)
+            # Create editable scoring cards
+            low_scoring_cards = self._create_editable_scoring_cards(low_scoring_docs, len(high_scoring_docs))
             all_components.extend(low_scoring_cards)
 
         # Update the scoring tab content
@@ -621,3 +678,165 @@ class DataUpdaters:
         )
         
         return [header_row, report_display]
+    def _create_editable_scoring_cards(self, scored_docs: List[tuple], start_index: int) -> List[ft.Control]:
+        """Create editable scoring cards for documents."""
+        cards = []
+
+        for i, (doc, score_data) in enumerate(scored_docs):
+            global_index = start_index + i
+            card = self._create_single_editable_scoring_card(global_index, doc, score_data)
+            cards.append(card)
+
+        return cards
+
+    def _create_single_editable_scoring_card(self, index: int, doc: dict, score_data: dict) -> ft.Container:
+        """Create a single editable scoring card."""
+        import flet as ft
+        from .display_utils import truncate_text, extract_year_from_date
+
+        doc_id = doc.get('id')
+        title = doc.get('title', 'Untitled Document')
+        abstract = doc.get('abstract', 'No abstract available')  # Show full abstract, no truncation
+        ai_score = score_data.get('score', 0)
+        reasoning = score_data.get('reasoning', 'No reasoning provided')
+        is_human_edited = score_data.get('human_edited', False)
+        human_score = score_data.get('human_score', None)
+
+        # Display score (human or AI)
+        display_score = human_score if human_score is not None else ai_score
+        score_source = "👤 Human" if is_human_edited else "🤖 AI"
+
+        # Year extraction
+        publication_date = doc.get('publication_date', None)
+        if publication_date and str(publication_date).strip():
+            year = extract_year_from_date(str(publication_date).strip())
+        else:
+            year = doc.get('year', 'Unknown')
+
+        # Score edit input
+        score_input = ft.TextField(
+            label="Edit score (1-5)",
+            value=str(display_score),
+            width=120,
+            text_size=12,
+            on_change=lambda e, idx=index, did=doc_id: self._on_score_edit(idx, did, e.control.value)
+        )
+
+        # Reset button (visible only if human edited)
+        reset_button = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="Reset to AI score",
+            visible=is_human_edited,
+            on_click=lambda e, idx=index, did=doc_id: self._on_score_reset(idx, did)
+        )
+
+        # Build card
+        return ft.Container(
+            content=ft.Column([
+                # Header row
+                ft.Row([
+                    ft.Text(f"#{index + 1}: {title}",  # Full title, no truncation
+                           size=13, weight=ft.FontWeight.BOLD, expand=True),
+                    ft.Container(
+                        content=ft.Text(f"{score_source}: {display_score}/5",
+                                       size=12, weight=ft.FontWeight.BOLD,
+                                       color=ft.Colors.GREEN_700 if is_human_edited else ft.Colors.BLUE_700),
+                        bgcolor=ft.Colors.GREEN_50 if is_human_edited else ft.Colors.BLUE_50,
+                        padding=ft.padding.all(5),
+                        border_radius=5
+                    )
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+
+                # Metadata
+                ft.Text(f"{doc.get('publication', 'Unknown')} • {year}",
+                       size=11, color=ft.Colors.GREY_600),
+
+                # Full Abstract (scrollable if long)
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Abstract:", size=11, weight=ft.FontWeight.BOLD),
+                        ft.Text(abstract, size=11, color=ft.Colors.GREY_700, selectable=True)
+                    ], spacing=3),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.GREY_100,
+                    border_radius=5
+                ),
+
+                # Reasoning
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("AI Reasoning:", size=11, weight=ft.FontWeight.BOLD),
+                        ft.Text(reasoning, size=11, color=ft.Colors.GREY_600)
+                    ], spacing=3),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.BLUE_50,
+                    border_radius=5
+                ),
+
+                # Edit controls
+                ft.Row([
+                    score_input,
+                    reset_button,
+                    ft.Text(f"(AI: {ai_score})" if is_human_edited else "",
+                           size=11, color=ft.Colors.GREY_500)
+                ], spacing=10)
+            ], spacing=8),
+            padding=ft.padding.all(12),
+            bgcolor=ft.Colors.GREY_50,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            border_radius=8
+        )
+
+    def _on_score_edit(self, index: int, doc_id: int, value: str):
+        """Handle score edit."""
+        try:
+            score = float(value.strip())
+            if 1 <= score <= 5:
+                # Find the document in scored_documents and update it
+                for i, (doc, score_data) in enumerate(self.app.scored_documents):
+                    if doc.get('id') == doc_id:
+                        # Store original AI score if not already stored
+                        if 'original_ai_score' not in score_data:
+                            score_data['original_ai_score'] = score_data.get('score', 0)
+
+                        # Update with human edit
+                        score_data['human_score'] = score
+                        score_data['human_edited'] = True
+                        score_data['score'] = score  # Update display score
+                        print(f"✏️ Human edited score for doc {doc_id}: {score}")
+
+                        # Update the scored_documents list
+                        self.app.scored_documents[i] = (doc, score_data)
+
+                        # Refresh the scoring tab to show changes
+                        self._update_scoring_tab()
+                        if self.app.page:
+                            self.app.page.update()
+                        break
+        except ValueError:
+            pass  # Invalid input, ignore
+
+    def _on_score_reset(self, index: int, doc_id: int):
+        """Reset score to AI original."""
+        # Find the document and reset to AI score
+        for i, (doc, score_data) in enumerate(self.app.scored_documents):
+            if doc.get('id') == doc_id:
+                # Get original AI score
+                ai_score = score_data.get('original_ai_score', score_data.get('score', 0))
+
+                # Reset to AI score
+                score_data['score'] = ai_score
+                score_data['human_edited'] = False
+                if 'human_score' in score_data:
+                    del score_data['human_score']
+
+                print(f"🔄 Reset score for doc {doc_id} to AI score: {ai_score}")
+
+                # Update the scored_documents list
+                self.app.scored_documents[i] = (doc, score_data)
+
+                # Refresh the scoring tab
+                self._update_scoring_tab()
+                if self.app.page:
+                    self.app.page.update()
+                break

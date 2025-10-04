@@ -150,7 +150,8 @@ def find_abstracts(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     batch_size: int = 50,
-    use_ranking: bool = False
+    use_ranking: bool = False,
+    offset: int = 0
 ) -> Generator[Dict, None, None]:
     """
     Find documents using PostgreSQL text search with optional date and source filtering.
@@ -159,13 +160,14 @@ def find_abstracts(
         ts_query_str: Text search query string
         max_rows: Maximum number of rows to return (0 = no limit)
         use_pubmed: Include PubMed sources
-        use_medrxiv: Include medRxiv sources  
+        use_medrxiv: Include medRxiv sources
         use_others: Include other sources
         plain: If True, use plainto_tsquery (simple text); if False, use to_tsquery (advanced syntax)
         from_date: Only include documents published on or after this date (inclusive)
         to_date: Only include documents published on or before this date (inclusive)
         batch_size: Number of rows to fetch in each database round trip (default: 50)
         use_ranking: If True, calculate and order by relevance ranking (default: False for speed)
+        offset: Number of rows to skip before returning results (default: 0)
         
     Yields:
         Dict containing document information with keys:
@@ -278,6 +280,7 @@ def find_abstracts(
         source_filter = f"AND d.source_id IN ({source_id_placeholders})"
     
     # Build query with optional ranking
+    # IMPORTANT: Always include d.id in ORDER BY to ensure stable ordering for OFFSET
     if use_ranking:
         base_query = f"""
         SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
@@ -285,7 +288,7 @@ def find_abstracts(
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
         {source_filter}
         {date_filter}
-        ORDER BY rank_score DESC, d.publication_date DESC NULLS LAST
+        ORDER BY rank_score DESC, d.publication_date DESC NULLS LAST, d.id ASC
         """
     else:
         base_query = f"""
@@ -294,14 +297,19 @@ def find_abstracts(
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
         {source_filter}
         {date_filter}
-        ORDER BY d.publication_date DESC NULLS LAST
+        ORDER BY d.publication_date DESC NULLS LAST, d.id ASC
         """
     
-    # Add limit if specified
+    # Add limit and offset if specified
     if max_rows > 0:
         query = base_query + f" LIMIT {max_rows}"
+        if offset > 0:
+            query += f" OFFSET {offset}"
     else:
-        query = base_query
+        if offset > 0:
+            query = base_query + f" OFFSET {offset}"
+        else:
+            query = base_query
     
     # Prepare query parameters based on ranking and filtering
     if use_ranking:

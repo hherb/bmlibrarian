@@ -336,7 +336,8 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
         batch_size: int = 50,
         use_ranking: bool = False,
         human_in_the_loop: bool = False,
-        human_query_modifier: Optional[Callable[[str], str]] = None
+        human_query_modifier: Optional[Callable[[str], str]] = None,
+        offset: int = 0
     ) -> Generator[Dict, None, None]:
         """
         Find biomedical abstracts using natural language questions.
@@ -348,7 +349,7 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
             question: Natural language question (e.g., "What are the effects of aspirin on heart disease?")
             max_rows: Maximum number of rows to return (0 = no limit)
             use_pubmed: Include PubMed sources
-            use_medrxiv: Include medRxiv sources  
+            use_medrxiv: Include medRxiv sources
             use_others: Include other sources
             from_date: Only include documents published on or after this date (inclusive)
             to_date: Only include documents published on or before this date (inclusive)
@@ -356,6 +357,7 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
             use_ranking: If True, calculate and order by relevance ranking
             human_in_the_loop: If True, allow human to modify the generated query
             human_query_modifier: Optional function to modify query when human_in_the_loop=True
+            offset: Number of rows to skip before returning results (default: 0)
 
         Yields:
             Dict containing document information (same format as database.find_abstracts)
@@ -410,7 +412,8 @@ to_tsquery: "(Alzheimer's disease | AD | early diagnosis | early detection) & (b
                 from_date=from_date,
                 to_date=to_date,
                 batch_size=batch_size,
-                use_ranking=use_ranking
+                use_ranking=use_ranking,
+                offset=offset
             )
 
             self._call_callback("search_completed", ts_query_str)

@@ -78,7 +78,33 @@ class EventHandlers:
         """Handle step card expansion change."""
         if self.app.page:
             self.app.page.update()
-    
+
+    def on_add_more_documents(self, e):
+        """Fetch additional documents with offset and score only the new ones."""
+        if not self.app.workflow_executor or not self.app.documents:
+            self.app.dialog_manager.show_error_dialog("No documents to extend")
+            return
+
+        # Disable the button during fetch
+        if e.control:
+            e.control.disabled = True
+            e.control.text = "Fetching..."
+            self.app.page.update()
+
+        # Run fetch in separate thread to avoid blocking UI
+        thread = threading.Thread(target=self._fetch_more_documents_thread, daemon=True)
+        thread.start()
+
+    def on_continue_workflow(self, e):
+        """Continue workflow from scoring: extract citations (incremental) and regenerate report."""
+        if not self.app.scored_documents:
+            self.app.dialog_manager.show_error_dialog("No scored documents to process")
+            return
+
+        # Run in separate thread
+        thread = threading.Thread(target=self._continue_workflow_thread, daemon=True)
+        thread.start()
+
     def on_start_research(self, e):
         """Start the research workflow."""
         if not self.app.research_question or self.app.workflow_running:
@@ -196,7 +222,8 @@ class EventHandlers:
                 current_human_in_loop,
                 self._update_step_status,
                 self.app.dialog_manager,  # Pass dialog manager for interactive mode
-                self.app.step_cards  # Pass step cards for inline editing
+                self.app.step_cards,  # Pass step cards for inline editing
+                self.app.tab_manager  # Pass tab manager for scoring interface
             )
             
             print(f"Workflow completed. Final report length: {len(self.app.final_report) if self.app.final_report else 0}")
@@ -581,3 +608,314 @@ class EventHandlers:
             print(f"Preliminary report preview error: {ex}")
             # Fallback to dialog
             self.app.dialog_manager.show_preview_dialog(self.app.preliminary_report)
+
+    def _fetch_more_documents_thread(self):
+        """Fetch additional documents with offset and score only the new ones."""
+        try:
+            from ..config import get_search_config
+
+            # Get current offset (number of documents already fetched)
+            offset = len(self.app.documents)
+
+            # Get max_results - use the same value that was used for the initial search
+            # Priority: workflow_executor config > app config > search config
+            max_results = None
+            if hasattr(self.app.workflow_executor, 'config_overrides'):
+                max_results = self.app.workflow_executor.config_overrides.get('max_results')
+            if max_results is None and hasattr(self.app, 'config_overrides'):
+                max_results = self.app.config_overrides.get('max_results')
+            if max_results is None:
+                search_config = get_search_config()
+                max_results = search_config.get('max_results', 100)
+
+            print(f"🔄 Fetching more documents: offset={offset}, max_results={max_results}")
+            print(f"   Sources: workflow_executor.config_overrides={getattr(self.app.workflow_executor, 'config_overrides', {})}")
+            print(f"   Sources: app.config_overrides={getattr(self.app, 'config_overrides', {})}")
+
+            # Get the last query used (stored in workflow_executor)
+            if not hasattr(self.app.workflow_executor, 'last_query_text') or not self.app.workflow_executor.last_query_text:
+                self.app.dialog_manager.show_error_dialog("Cannot fetch more documents: no previous query found")
+                # Refresh scoring tab to reset button
+                self.app.data_updaters.update_scored_documents(self.app.scored_documents)
+                return
+
+            query_text = self.app.workflow_executor.last_query_text
+
+            # Fetch additional documents using the QueryAgent with offset
+            query_agent = self.app.agents['query_agent']
+
+            documents_generator = query_agent.find_abstracts(
+                question=self.app.research_question,
+                max_rows=max_results,
+                human_in_the_loop=False,  # No interaction for additional fetches
+                human_query_modifier=None,
+                offset=offset
+            )
+
+            # Convert generator to list
+            new_documents = list(documents_generator)
+
+            print(f"✅ Fetched {len(new_documents)} additional documents")
+
+            if not new_documents:
+                self.app.dialog_manager.show_info_dialog(
+                    "No more documents found in the database.\n\n"
+                    f"Total documents retrieved: {len(self.app.documents)}"
+                )
+                # Refresh scoring tab to remove the button since there are no more documents
+                self.app.data_updaters.update_scored_documents(self.app.scored_documents)
+                return
+
+            # Deduplicate: Filter out documents that are already in our list
+            existing_ids = {doc.get('id') for doc in self.app.documents if doc.get('id')}
+            deduplicated_docs = [doc for doc in new_documents if doc.get('id') not in existing_ids]
+
+            duplicates_found = len(new_documents) - len(deduplicated_docs)
+            if duplicates_found > 0:
+                print(f"⚠️ Filtered out {duplicates_found} duplicate document(s)")
+
+            if not deduplicated_docs:
+                self.app.dialog_manager.show_info_dialog(
+                    "All fetched documents were duplicates.\n\n"
+                    f"Total unique documents: {len(self.app.documents)}"
+                )
+                # Refresh scoring tab
+                self.app.data_updaters.update_scored_documents(self.app.scored_documents)
+                return
+
+            # Store the original number of documents to identify which are new
+            original_doc_count = len(self.app.documents)
+
+            # Add only deduplicated documents to the existing list
+            self.app.documents.extend(deduplicated_docs)
+            self.app.workflow_executor.documents = self.app.documents
+
+            # Update new_documents to only include deduplicated ones for scoring
+            new_documents = deduplicated_docs
+
+            # Update literature tab
+            self.app.data_updaters.update_documents(self.app.documents)
+
+            # Score ONLY the new documents
+            print(f"📊 Scoring {len(new_documents)} new documents...")
+
+            scoring_agent = self.app.agents['scoring_agent']
+            new_scored_docs = []
+
+            for idx, doc in enumerate(new_documents):
+                print(f"  Scoring document {idx + 1}/{len(new_documents)}: {doc.get('title', 'Untitled')[:50]}...")
+                score_data = scoring_agent.evaluate_document(
+                    user_question=self.app.research_question,
+                    document=doc
+                )
+                new_scored_docs.append((doc, score_data))
+
+            # Merge new scored documents with existing ones
+            self.app.scored_documents.extend(new_scored_docs)
+            self.app.workflow_executor.scored_documents = self.app.scored_documents
+
+            # Update scoring tab (which will show the button again if we hit the limit)
+            self.app.data_updaters.update_scored_documents(self.app.scored_documents)
+
+            print(f"✅ Successfully added and scored {len(new_documents)} new documents")
+
+            # Show success message
+            self.app.dialog_manager.show_info_dialog(
+                f"Successfully fetched and scored {len(new_documents)} additional documents.\n\n"
+                f"Total documents: {len(self.app.documents)}\n"
+                f"Total scored: {len(self.app.scored_documents)}"
+            )
+
+        except Exception as ex:
+            print(f"❌ Error fetching more documents: {ex}")
+            import traceback
+            traceback.print_exc()
+            self.app.dialog_manager.show_error_dialog(f"Error fetching more documents: {str(ex)}")
+        finally:
+            # Re-enable UI
+            if self.app.page:
+                self.app.page.update()
+    def _continue_workflow_thread(self):
+        """Continue workflow: incremental citation extraction + full report regeneration."""
+        try:
+            from ..config import get_search_config
+
+            print("🔄 Continuing workflow from scoring...")
+
+            # Get configuration
+            search_config = get_search_config()
+            score_threshold = search_config.get('score_threshold', 2.5)
+
+            # Determine which documents need citations extracted
+            # Check if we have existing citations to know which docs were already processed
+            existing_citation_doc_ids = set()
+            if self.app.citations:
+                for citation in self.app.citations:
+                    if hasattr(citation, 'document_id'):
+                        existing_citation_doc_ids.add(citation.document_id)
+                    elif hasattr(citation, 'doc_id'):
+                        existing_citation_doc_ids.add(citation.doc_id)
+
+            # Find high-scoring documents that need citation extraction
+            docs_needing_citations = []
+            for doc, score_data in self.app.scored_documents:
+                if score_data.get('score', 0) > score_threshold:
+                    doc_id = doc.get('id')
+                    if doc_id not in existing_citation_doc_ids:
+                        docs_needing_citations.append((doc, score_data))
+
+            print(f"📚 Documents needing citation extraction: {len(docs_needing_citations)}")
+            print(f"📖 Existing citations: {len(self.app.citations)}")
+
+            # Extract citations ONLY from new documents
+            if docs_needing_citations:
+                print(f"🔍 Extracting citations from {len(docs_needing_citations)} new high-scoring documents...")
+
+                citation_agent = self.app.agents['citation_agent']
+                new_citations = citation_agent.process_scored_documents_for_citations(
+                    user_question=self.app.research_question,
+                    scored_documents=docs_needing_citations,
+                    score_threshold=score_threshold
+                )
+
+                # Merge with existing citations
+                self.app.citations.extend(new_citations)
+                self.app.workflow_executor.citations = self.app.citations
+
+                print(f"✅ Extracted {len(new_citations)} new citations")
+                print(f"📚 Total citations: {len(self.app.citations)}")
+
+                # Update citations tab
+                self.app.data_updaters.update_citations(self.app.citations)
+            else:
+                print("✅ No new documents need citation extraction")
+
+            # Regenerate FULL report with all citations
+            print(f"📝 Regenerating report with {len(self.app.citations)} total citations...")
+
+            reporting_agent = self.app.agents['reporting_agent']
+
+            # Get Report object (not formatted string) for EditorAgent
+            report_object = reporting_agent.generate_citation_based_report(
+                user_question=self.app.research_question,
+                citations=self.app.citations,
+                format_output=False  # Get Report object, not formatted string
+            )
+
+            # Also get formatted string for display
+            new_report_formatted = reporting_agent.generate_citation_based_report(
+                user_question=self.app.research_question,
+                citations=self.app.citations,
+                format_output=True  # Get formatted string for display
+            )
+
+            # Store formatted version as preliminary report for display
+            self.app.preliminary_report = new_report_formatted
+            self.app.workflow_executor.preliminary_report = new_report_formatted
+
+            # Update preliminary report tab
+            self.app.data_updaters.update_preliminary_report(new_report_formatted)
+
+            print(f"✅ Report regenerated successfully")
+
+            # Continue to counterfactual analysis if enabled
+            if self.app.comprehensive_counterfactual:
+                print(f"🧠 Performing comprehensive counterfactual analysis with literature search...")
+
+                # Use the workflow executor's steps handler for comprehensive counterfactual
+                from ..cli.workflow_steps import WorkflowStep
+
+                # Use the steps_handler to perform comprehensive counterfactual analysis
+                # This includes: analyzing report → generating questions → searching literature → finding contradictions
+                def dummy_callback(step, status, message):
+                    print(f"  [{step.name}] {status}: {message}")
+
+                counterfactual_analysis = self.app.workflow_executor.steps_handler.execute_comprehensive_counterfactual_analysis(
+                    new_report_formatted,
+                    self.app.citations,
+                    dummy_callback
+                )
+
+                # Store counterfactual analysis
+                self.app.counterfactual_analysis = counterfactual_analysis
+                self.app.workflow_executor.counterfactual_analysis = counterfactual_analysis
+
+                # Update counterfactual tab
+                self.app.data_updaters.update_counterfactual_if_available()
+
+                print(f"🔬 Counterfactual analysis completed and displayed in tab")
+
+                # Convert CounterfactualAnalysis object to dict for editor agent
+                # The editor agent expects a dict with 'contradictory_citations' key
+                if counterfactual_analysis:
+                    if hasattr(counterfactual_analysis, 'to_dict'):
+                        contradictory_dict = counterfactual_analysis.to_dict()
+                    elif hasattr(counterfactual_analysis, '__dict__'):
+                        contradictory_dict = counterfactual_analysis.__dict__
+                    else:
+                        contradictory_dict = {'analysis': str(counterfactual_analysis)}
+                else:
+                    contradictory_dict = None
+
+                # Generate final comprehensive report with editor agent
+                print(f"📝 Generating comprehensive final report...")
+
+                editor_agent = self.app.agents['editor_agent']
+                final_report = editor_agent.create_comprehensive_report(
+                    original_report=report_object,  # Pass Report object, not formatted string
+                    research_question=self.app.research_question,
+                    supporting_citations=self.app.citations,
+                    contradictory_evidence=contradictory_dict
+                )
+
+                # Check if editor agent succeeded, otherwise use preliminary report
+                if final_report and (hasattr(final_report, 'content') or isinstance(final_report, str)):
+                    # Extract content from EditedReport object if needed
+                    if hasattr(final_report, 'content'):
+                        final_report_content = final_report.content
+                    else:
+                        final_report_content = final_report
+
+                    # Store and update final report
+                    self.app.final_report = final_report_content
+                    self.app.workflow_executor.final_report = final_report_content
+                    self.app.data_updaters.update_report(final_report_content)
+                    print(f"✅ Comprehensive final report generated ({len(final_report_content)} chars)")
+                else:
+                    # Fallback: use preliminary report as final report
+                    print(f"⚠️ Editor agent failed, using preliminary report as final report")
+                    self.app.final_report = new_report_formatted
+                    self.app.workflow_executor.final_report = new_report_formatted
+                    self.app.data_updaters.update_report(new_report_formatted)
+
+                # Show success dialog
+                self.app.dialog_manager.show_info_dialog(
+                    f"Workflow completed successfully!\n\n"
+                    f"New citations extracted: {len(new_citations) if docs_needing_citations else 0}\n"
+                    f"Total citations: {len(self.app.citations)}\n"
+                    f"Preliminary report regenerated\n"
+                    f"Counterfactual analysis performed\n"
+                    f"Final comprehensive report generated"
+                )
+            else:
+                # No counterfactual - preliminary report is final
+                self.app.final_report = new_report_formatted
+                self.app.workflow_executor.final_report = new_report_formatted
+                self.app.data_updaters.update_report(new_report_formatted)
+
+                # Show success dialog
+                self.app.dialog_manager.show_info_dialog(
+                    f"Workflow continued successfully!\n\n"
+                    f"New citations extracted: {len(new_citations) if docs_needing_citations else 0}\n"
+                    f"Total citations: {len(self.app.citations)}\n"
+                    f"Report regenerated with all evidence"
+                )
+
+        except Exception as ex:
+            print(f"❌ Error continuing workflow: {ex}")
+            import traceback
+            traceback.print_exc()
+            self.app.dialog_manager.show_error_dialog(f"Error continuing workflow: {str(ex)}")
+        finally:
+            if self.app.page:
+                self.app.page.update()

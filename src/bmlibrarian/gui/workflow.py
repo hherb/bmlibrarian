@@ -123,6 +123,7 @@ class WorkflowExecutor:
         self.counterfactual_analysis = None
         self.preliminary_report = ""
         self.final_report = ""
+        self.last_query_text = None  # Store last query for "Add More Documents" feature
         
         # Store model information for report footnotes
         self.agent_model_info = {}
@@ -153,33 +154,35 @@ class WorkflowExecutor:
         self.dialog_manager = None
         self.step_cards = None
     
-    def run_workflow(self, research_question: str, human_in_loop: bool, 
+    def run_workflow(self, research_question: str, human_in_loop: bool,
                     update_callback: Callable[[WorkflowStep, str, str], None],
-                    dialog_manager=None, step_cards=None) -> str:
+                    dialog_manager=None, step_cards=None, tab_manager=None) -> str:
         """
         Run the complete research workflow.
-        
+
         Args:
             research_question: The research question to investigate
             human_in_loop: Whether to run in interactive mode
             update_callback: Callback function for step updates (step, status, content)
             dialog_manager: Dialog manager for interactive prompts
             step_cards: Dictionary of step cards for inline editing
-            
+            tab_manager: Tab manager for accessing scoring interface
+
         Returns:
             Final report content as string
         """
         if not self.agents:
             raise Exception("Agents not initialized")
-        
+
         # Store interactive mode setting and callback
         self.interactive_mode = human_in_loop
         self.update_callback = update_callback
         self.dialog_manager = dialog_manager
         self.step_cards = step_cards
+        self.tab_manager = tab_manager
         
-        # Initialize interactive handler with step cards
-        self.interactive_handler = InteractiveHandler(step_cards)
+        # Initialize interactive handler with step cards and tab manager
+        self.interactive_handler = InteractiveHandler(step_cards, tab_manager=tab_manager)
         
         try:
             # Step 1: Research Question Collection
@@ -349,8 +352,9 @@ class WorkflowExecutor:
             
             # Interactive review of citations
             if self.interactive_mode:
-                if not self.interactive_handler.get_user_approval_for_citations(citations, update_callback):
-                    raise Exception("User cancelled workflow at citation review")
+                citation_reviews = self.interactive_handler.get_user_approval_for_citations(citations, update_callback)
+                # citation_reviews is a dict mapping citation indices to review status
+                # Empty dict means "proceed with all citations" - this is valid, not a cancellation
             
             # Step 7: Generate Report
             report = self.steps_handler.execute_report_generation(
@@ -373,9 +377,13 @@ class WorkflowExecutor:
             # Trigger preliminary report tab update
             update_callback(WorkflowStep.GENERATE_REPORT, "tab_update",
                           f"Preliminary report generated ({len(self.preliminary_report)} characters)")
-            
+
+            # Mark report generation as completed
+            update_callback(WorkflowStep.GENERATE_REPORT, "completed",
+                          f"Preliminary report generated ({len(self.preliminary_report)} characters)")
+
             # Step 9: Counterfactual Analysis
-            
+
             # Check if comprehensive counterfactual analysis is enabled
             comprehensive_cf = self.config_overrides.get('comprehensive_counterfactual', False)
             print(f"🔧 Config overrides: {self.config_overrides}")

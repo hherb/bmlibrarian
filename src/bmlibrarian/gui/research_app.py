@@ -110,7 +110,7 @@ class ResearchGUI:
         """Initialize all managers and handlers."""
         self.dialog_manager = DialogManager(self.page)
         self.workflow_executor = WorkflowExecutor(self.agents, self.config_overrides)
-        self.tab_manager = TabManager()
+        self.tab_manager = TabManager(self.page)  # Pass page for scoring interface
         self.event_handlers = EventHandlers(self)
         self.data_updaters = DataUpdaters(self)
     

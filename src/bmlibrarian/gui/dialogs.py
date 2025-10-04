@@ -38,7 +38,7 @@ class DialogManager:
             self.page.dialog.open = False
             self.page.dialog = None
             self.page.update()
-            
+
         self.page.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Error", color=ft.Colors.RED_700),
@@ -47,7 +47,23 @@ class DialogManager:
         )
         self.page.dialog.open = True
         self.page.update()
-    
+
+    def show_info_dialog(self, message: str):
+        """Show information dialog."""
+        def close_info(e):
+            self.page.dialog.open = False
+            self.page.dialog = None
+            self.page.update()
+
+        self.page.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Information", color=ft.Colors.BLUE_700),
+            content=ft.Text(message),
+            actions=[ft.TextButton("OK", on_click=close_info)]
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
     def show_confirm_dialog(self, title: str, message: str, callback):
         """Show confirmation dialog."""
         def handle_cancel(e):

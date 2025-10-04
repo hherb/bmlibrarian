@@ -81,25 +81,26 @@ Your task is to:
 2. For each factual statement, generate BOTH:
    a) A counterfactual STATEMENT (the opposite claim that would contradict it)
    b) A research QUESTION (for human understanding of what to search for)
-3. Create search-ready statements that match how evidence appears in literature
+3. Create search-ready statements that match how evidence appears in literature. 
+The statement should contain keywords that will optimally distinguish the docuemnts we are looking for.
 
 Guidelines for counterfactual generation:
 - Original: "Drug X is first-line treatment for Disease Y"
   → Statement: "Drug X is not effective for Disease Y" or "Alternative drugs are superior to Drug X for Disease Y"
-  → Question: "What studies show Drug X ineffectiveness or alternative treatments for Disease Y?"
-
-- Original: "Treatment reduces risk by 30%"
-  → Statement: "Treatment does not reduce risk" or "Treatment shows no benefit"
-  → Question: "What studies show Treatment ineffectiveness or lack of benefit?"
+  → Question: "Is there a drug that is more effective for Disease Y than Drug X?"
+- Original: "Treatment with X reduces cardiovascular risk by 30%"
+  → Statement: "Treatment  with drug X does not reduce cardiovascular risk" or "Treatment with X shows no cardiovascular benefit"
+  → Question: "Is there evidence of ineffectiveness or lack of benefit for treatment X?"
 
 - Original: "Lipophilic statins with clarithromycin cause significant interactions"
-  → Statement: "No significant interactions occur between lipophilic statins and clarithromycin" or "Co-prescription of lipophilic statins with clarithromycin is safe"
-  → Question: "What studies report safe co-prescription of lipophilic statins with clarithromycin?"
+  → Statement:  "Combination of lipophilic statins with clarithromycin is safe"
+  → Question: "Is it safe to co-prescribe of lipophilic statins with clarithromycin?"
 
 CRITICAL: The counterfactual STATEMENT should express the opposite claim as a declarative statement, not a question. Medical literature contains statements, not questions.
 
 For search_keywords, provide concrete medical terms:
 - Use specific drug names, diseases, treatments
+- Expand abbreviations (e.g., "ACE" to "angiotensin-converting enzyme (ACE)")
 - Include safe/no-interaction/ineffective/alternative terms
 - Examples: "simvastatin", "clarithromycin", "no interaction", "safe co-prescription"
 
@@ -648,5 +649,8 @@ SUPPORTING CITATIONS:
 
         # Add formatted report to result
         result['formatted_report'] = formatted_result
+
+        # Add research queries to result for GUI display
+        result['research_queries'] = research_queries
 
         return result

@@ -75,7 +75,22 @@ class WorkflowStepsHandler:
         
         # Convert generator to list
         documents = list(documents_generator)
-        
+
+        # Deduplicate documents by ID (defensive programming - shouldn't be needed with proper ORDER BY)
+        seen_ids = set()
+        deduplicated_documents = []
+        for doc in documents:
+            doc_id = doc.get('id')
+            if doc_id and doc_id not in seen_ids:
+                seen_ids.add(doc_id)
+                deduplicated_documents.append(doc)
+            elif doc_id:
+                print(f"⚠️  Found duplicate document in search results: {doc_id} - {doc.get('title', 'Unknown')[:60]}")
+
+        if len(deduplicated_documents) < len(documents):
+            print(f"🔍 Deduplicated {len(documents)} search results to {len(deduplicated_documents)} unique documents")
+            documents = deduplicated_documents
+
         # Store documents in the calling workflow BEFORE completing the step
         # This ensures documents are available when the completion callback fires
         

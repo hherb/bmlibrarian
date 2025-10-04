@@ -844,45 +844,46 @@ class CounterfactualDisplayCreator:
     def _create_comprehensive_sections(self, analysis_dict: Dict) -> List[ft.Control]:
         """Create sections for comprehensive analysis."""
         sections = []
-        
+
         summary = analysis_dict.get('summary', {})
         analysis_obj = analysis_dict.get('analysis')
         contradictory_evidence = analysis_dict.get('contradictory_evidence', [])
         contradictory_citations = analysis_dict.get('contradictory_citations', [])
-        
+        research_queries = analysis_dict.get('research_queries', [])
+
         # Original analysis section (if exists)
         if analysis_obj:
-            sections.extend(self._create_basic_sections(analysis_obj))
-        
+            sections.extend(self._create_basic_sections(analysis_obj, research_queries, contradictory_evidence))
+
         # Summary section
         if summary:
             sections.append(self._create_summary_section(summary))
-        
+
         # Contradictory evidence section
         if contradictory_evidence:
             sections.append(self._create_contradictory_evidence_section(contradictory_evidence))
-        
-        # Contradictory citations section  
+
+        # Contradictory citations section
         if contradictory_citations:
             sections.append(self._create_contradictory_citations_section(contradictory_citations))
-        
+
         return sections
     
-    def _create_basic_sections(self, analysis: Any) -> List[ft.Control]:
+    def _create_basic_sections(self, analysis: Any, research_queries: List[Dict] = None, contradictory_evidence: List[Dict] = None) -> List[ft.Control]:
         """Create sections for basic analysis."""
         sections = []
-        
+
         # Main claims section
         if hasattr(analysis, 'main_claims') and analysis.main_claims:
             sections.append(self._create_claims_section(analysis.main_claims))
-        
+
         # Research questions section
         if hasattr(analysis, 'counterfactual_questions') and analysis.counterfactual_questions:
-            sections.append(self._create_questions_section(analysis.counterfactual_questions))
-        
+            sections.append(self._create_questions_section(analysis.counterfactual_questions, research_queries, contradictory_evidence))
+
         # Assessment section
         sections.append(self._create_assessment_section(analysis))
-        
+
         return sections
     
     def _create_claims_section(self, claims: List[str]) -> ft.Container:
@@ -926,16 +927,115 @@ class CounterfactualDisplayCreator:
             border=ft.border.all(1, ft.Colors.BLUE_200)
         )
     
-    def _create_questions_section(self, questions: List[Any]) -> ft.Container:
-        """Create research questions section."""
+    def _create_questions_section(self, questions: List[Any], research_queries: List[Dict] = None, contradictory_evidence: List[Dict] = None) -> ft.Container:
+        """Create research questions section with optional database query information and search statistics."""
         question_cards = []
-        
+
+        # Create a mapping from counterfactual_statement to query info for lookup
+        query_map = {}
+        if research_queries:
+            for query_info in research_queries:
+                stmt = query_info.get('counterfactual_statement', '')
+                query_map[stmt] = query_info
+
+        # Calculate statistics per query from contradictory evidence
+        query_stats = {}
+        if contradictory_evidence:
+            for evidence_item in contradictory_evidence:
+                if isinstance(evidence_item, dict) and 'query_info' in evidence_item:
+                    stmt = evidence_item['query_info'].get('counterfactual_statement', '')
+                    if stmt not in query_stats:
+                        query_stats[stmt] = {
+                            'total_docs': 0,
+                            'scores': []
+                        }
+                    query_stats[stmt]['total_docs'] += 1
+                    if 'score' in evidence_item:
+                        query_stats[stmt]['scores'].append(evidence_item['score'])
+
         for i, question in enumerate(questions, 1):
             priority = getattr(question, 'priority', 'MEDIUM')
             priority_badge = create_priority_badge(priority)
-            
+
             question_text = getattr(question, 'question', 'Unknown question')
-            
+            counterfactual_statement = getattr(question, 'counterfactual_statement', '')
+
+            # Find matching query info for this question
+            query_info = query_map.get(counterfactual_statement)
+
+            # Build the content sections
+            content_items = [
+                ft.Text(
+                    f"Full Question: {question_text}",
+                    size=11,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.GREY_800
+                ),
+                ft.Text(
+                    f"Counterfactual Statement: {counterfactual_statement}",
+                    size=10,
+                    color=ft.Colors.PURPLE_700,
+                    weight=ft.FontWeight.W_500
+                ),
+                ft.Text(
+                    f"Target Claim: {getattr(question, 'target_claim', 'Unknown')}",
+                    size=10,
+                    color=ft.Colors.ORANGE_700,
+                    weight=ft.FontWeight.W_500
+                ),
+                ft.Text(
+                    f"Reasoning: {getattr(question, 'reasoning', 'Unknown')}",
+                    size=10,
+                    color=ft.Colors.GREY_700
+                )
+            ]
+
+            # Add database query information if available
+            if query_info:
+                db_query = query_info.get('db_query', 'N/A')
+                stats = query_stats.get(counterfactual_statement, {})
+                total_docs = stats.get('total_docs', 0)
+                scores = stats.get('scores', [])
+
+                # Calculate scoring statistics
+                stats_text = f"Documents found: {total_docs}"
+                if scores:
+                    avg_score = sum(scores) / len(scores)
+                    min_score = min(scores)
+                    max_score = max(scores)
+                    stats_text += f" | Relevance scores: min={min_score:.1f}, avg={avg_score:.1f}, max={max_score:.1f}"
+
+                content_items.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                "📊 Literature Search Results:",
+                                size=10,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.BLUE_800
+                            ),
+                            ft.Container(
+                                content=ft.Text(
+                                    f"PostgreSQL Query: {db_query}",
+                                    size=9,
+                                    color=ft.Colors.GREY_700,
+                                    selectable=True
+                                ),
+                                padding=ft.padding.all(8),
+                                bgcolor=ft.Colors.GREY_100,
+                                border_radius=4
+                            ),
+                            ft.Text(
+                                stats_text,
+                                size=9,
+                                color=ft.Colors.BLUE_700,
+                                weight=ft.FontWeight.W_500
+                            )
+                        ], spacing=4),
+                        margin=ft.margin.only(top=8)
+                    )
+                )
+
             question_cards.append(
                 ft.ExpansionTile(
                     title=ft.Row([
@@ -949,25 +1049,7 @@ class CounterfactualDisplayCreator:
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     controls=[
                         ft.Container(
-                            content=ft.Column([
-                                ft.Text(
-                                    f"Full Question: {question_text}",
-                                    size=11,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=ft.Colors.GREY_800
-                                ),
-                                ft.Text(
-                                    f"Target Claim: {getattr(question, 'target_claim', 'Unknown')}",
-                                    size=10,
-                                    color=ft.Colors.ORANGE_700,
-                                    weight=ft.FontWeight.W_500
-                                ),
-                                ft.Text(
-                                    f"Reasoning: {getattr(question, 'reasoning', 'Unknown')}",
-                                    size=10,
-                                    color=ft.Colors.GREY_700
-                                )
-                            ], spacing=4),
+                            content=ft.Column(content_items, spacing=4),
                             padding=ft.padding.all(12)
                         )
                     ]

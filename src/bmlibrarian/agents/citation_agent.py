@@ -208,50 +208,53 @@ Respond only with valid JSON."""
             logger.error(f"Error extracting citation from document {document.get('id')}: {e}")
             return None
     
-    def process_scored_documents_for_citations(self, user_question: str, 
-                                             scored_documents: List[Tuple[Dict, Dict]], 
+    def process_scored_documents_for_citations(self, user_question: str,
+                                             scored_documents: List[Tuple[Dict, Dict]],
                                              score_threshold: float = 2.0,
                                              min_relevance: float = 0.7,
                                              progress_callback: Optional[Callable] = None) -> List[Citation]:
         """
         Process scored documents to extract citations above threshold.
-        
+
+        NOTE: A document can yield multiple citations (different passages),
+        but duplicate documents in scored_documents should be handled upstream.
+
         Args:
             user_question: Original user question
             scored_documents: List of (document, scoring_result) tuples
             score_threshold: Minimum score to process document
             min_relevance: Minimum relevance score for citations
             progress_callback: Optional progress callback
-            
+
         Returns:
             List of extracted citations
         """
         citations = []
         qualifying_docs = [
-            (doc, score) for doc, score in scored_documents 
+            (doc, score) for doc, score in scored_documents
             if score.get('score', 0) > score_threshold
         ]
-        
+
         if not qualifying_docs:
             logger.info(f"No documents above score threshold {score_threshold}")
             return citations
-        
+
         logger.info(f"Processing {len(qualifying_docs)} documents above threshold {score_threshold}")
-        
+
         for i, (document, score_result) in enumerate(qualifying_docs):
             if progress_callback:
                 progress_callback(i + 1, len(qualifying_docs))
-            
+
             citation = self.extract_citation_from_document(
                 user_question=user_question,
                 document=document,
                 min_relevance=min_relevance
             )
-            
+
             if citation:
                 citations.append(citation)
                 logger.debug(f"Extracted citation from document {document['id']}: {citation.summary}")
-        
+
         logger.info(f"Extracted {len(citations)} citations from {len(qualifying_docs)} documents")
         return citations
     
