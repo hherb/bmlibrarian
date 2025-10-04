@@ -155,17 +155,7 @@ class ReportingAgent(BaseAgent):
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "reporting_agent"
-    
-    def test_connection(self) -> bool:
-        """Test connection to Ollama service."""
-        try:
-            import requests
-            response = requests.get(f"{self.host}/api/tags", timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            logger.warning(f"Cannot connect to Ollama at {self.host}: {e}")
-            return False
-    
+
     def create_references(self, citations: List[Citation]) -> List[Reference]:
         """
         Create numbered references from citations.
@@ -446,31 +436,16 @@ Response format (JSON):
 Write a comprehensive, professional medical report."""
 
         try:
-            response = requests.post(
-                f"{self.host}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": self.temperature,
-                        "top_p": self.top_p,
-                        "num_predict": getattr(self, 'max_tokens', 4000)  # Longer for comprehensive synthesis
-                    }
-                },
-                timeout=120  # Longer timeout for comprehensive synthesis
+            # Use BaseAgent's generate method with ollama library
+            llm_response = self._generate_from_prompt(
+                prompt,
+                num_predict=getattr(self, 'max_tokens', 4000)  # Longer for comprehensive synthesis
             )
-            
-            if response.status_code != 200:
-                logger.error(f"Failed to generate structured report: HTTP {response.status_code}")
-                return None
-            
-            result = response.json()
-            llm_response = result.get('response', '').strip()
-            
-            if not llm_response:
-                logger.error("Empty response from LLM for structured synthesis")
-                return None
+        except (ConnectionError, ValueError) as e:
+            logger.error(f"Failed to generate structured report: {e}")
+            return None
+
+        try:
             
             # Parse JSON response using inherited robust method from BaseAgent
             try:
@@ -580,33 +555,16 @@ Response format (JSON):
 }}
 
 Be concise and avoid redundancy."""
-            
+
             try:
-                response = requests.post(
-                    f"{self.host}/api/generate",
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": self.temperature,
-                            "top_p": self.top_p,
-                            "num_predict": getattr(self, 'max_tokens', 2000)  # Use config max_tokens or default to 2000
-                        }
-                    },
-                    timeout=60  # Short timeout for individual citations
+                # Use BaseAgent's generate method with ollama library
+                llm_response = self._generate_from_prompt(
+                    prompt,
+                    num_predict=getattr(self, 'max_tokens', 2000)  # Use config max_tokens or default to 2000
                 )
-                
-                if response.status_code != 200:
-                    logger.warning(f"Failed to process citation {i+1}: HTTP {response.status_code}")
-                    continue
-                
-                result = response.json()
-                llm_response = result.get('response', '').strip()
-                
-                if not llm_response:
-                    logger.warning(f"Empty response for citation {i+1}")
-                    continue
+            except (ConnectionError, ValueError) as e:
+                logger.warning(f"Failed to process citation {i+1}: {e}")
+                continue
                 
                 # Parse JSON response using inherited robust method from BaseAgent
                 try:
@@ -670,32 +628,13 @@ Response format (JSON):
 }}
 
 Do not add or remove any reference numbers. Only improve readability and flow."""
-        
+
         try:
-            response = requests.post(
-                f"{self.host}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": self.temperature,
-                        "top_p": self.top_p,
-                        "num_predict": getattr(self, 'max_tokens', 3000)  # Use config max_tokens or default to 3000
-                    }
-                },
-                timeout=60
+            # Use BaseAgent's generate method with ollama library
+            llm_response = self._generate_from_prompt(
+                prompt,
+                num_predict=getattr(self, 'max_tokens', 3000)  # Use config max_tokens or default to 3000
             )
-            
-            if response.status_code != 200:
-                logger.warning("Failed final formatting, using unformatted content")
-                return None
-            
-            result = response.json()
-            llm_response = result.get('response', '').strip()
-            
-            if not llm_response:
-                return None
             
             # Parse JSON response using inherited robust method from BaseAgent
             try:

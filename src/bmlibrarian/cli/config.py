@@ -350,41 +350,32 @@ class ConfigurationManager:
 def load_bmlibrarian_config(config_path: str = None) -> Dict[str, Any]:
     """
     Load BMLibrarian configuration from JSON file.
-    
+
     Args:
         config_path: Path to config file. If None, searches for bmlibrarian_config.json
                     in current directory and parent directories.
-    
+
     Returns:
         Configuration dictionary
     """
+    from bmlibrarian.utils.config_loader import load_config_with_fallback, load_json_config
+
     if config_path is None:
-        # Search for config file in standard locations
-        search_paths = [
-            Path.home() / ".bmlibrarian" / "config.json",  # Primary location
-            Path.cwd() / "bmlibrarian_config.json",  # Legacy location
-            Path.cwd().parent / "bmlibrarian_config.json",
-            Path(__file__).parent.parent.parent.parent / "bmlibrarian_config.json"
-        ]
-        
-        config_path = None
-        for path in search_paths:
-            if path.exists():
-                config_path = str(path)
-                break
-        
-        if config_path is None:
+        # Use utility to find config in standard locations
+        config = load_config_with_fallback()
+        if config is None:
             print("⚠️  Warning: bmlibrarian_config.json not found, using default settings")
             return {}
-    
-    try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        print(f"✅ Loaded configuration from {config_path}")
         return config
-    except Exception as e:
-        print(f"⚠️  Warning: Failed to load config from {config_path}: {e}")
-        return {}
+    else:
+        # Load from specific path
+        try:
+            config = load_json_config(Path(config_path))
+            print(f"✅ Loaded configuration from {config_path}")
+            return config
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to load config from {config_path}: {e}")
+            return {}
 
 
 def create_config_with_models(args: argparse.Namespace, config_path: str = None) -> CLIConfig:

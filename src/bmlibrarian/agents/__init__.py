@@ -30,6 +30,7 @@ from .editor_agent import EditorAgent, EditedReport
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
+from .factory import AgentFactory
 
 __all__ = [
     "BaseAgent",
@@ -53,5 +54,6 @@ __all__ = [
     "Workflow",
     "WorkflowStep",
     "HumanEditLogger",
-    "get_human_edit_logger"
+    "get_human_edit_logger",
+    "AgentFactory"
 ]

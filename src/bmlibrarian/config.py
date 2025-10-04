@@ -107,28 +107,17 @@ class BMLibrarianConfig:
         """Load configuration from various sources in priority order."""
         if self._config_loaded:
             return
-        
+
         # 1. Load from config file if it exists
-        config_paths = [
-            os.path.expanduser("~/.bmlibrarian/config.json"),  # Primary location
-            os.path.join(os.getcwd(), "bmlibrarian_config.json"),  # Fallback for current directory
-            os.path.join(os.path.dirname(__file__), "..", "..", "bmlibrarian_config.json")  # Project root fallback
-        ]
-        
-        for config_path in config_paths:
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        file_config = json.load(f)
-                    self._merge_config(file_config)
-                    logger.info(f"Loaded configuration from: {config_path}")
-                    break
-                except (json.JSONDecodeError, IOError) as e:
-                    logger.warning(f"Failed to load config from {config_path}: {e}")
-        
+        from .utils.config_loader import load_config_with_fallback
+
+        file_config = load_config_with_fallback()
+        if file_config:
+            self._merge_config(file_config)
+
         # 2. Override with environment variables
         self._load_env_overrides()
-        
+
         self._config_loaded = True
     
     def _merge_config(self, new_config: Dict[str, Any]):
@@ -257,53 +246,56 @@ class BMLibrarianConfig:
     def save_config(self, file_path: Optional[str] = None):
         """
         Save current configuration to a file.
-        
+
         Args:
             file_path: Path to save the config file. If None, saves to ~/.bmlibrarian/config.json
         """
+        from .utils.config_loader import save_json_config
+        from .utils.path_utils import get_default_config_path
+        from pathlib import Path
+
         if file_path is None:
-            file_path = os.path.expanduser("~/.bmlibrarian/config.json")
-        
+            file_path = get_default_config_path()
+        else:
+            file_path = Path(file_path)
+
         try:
-            # Ensure the directory exists (OS agnostic)
-            config_dir = os.path.dirname(file_path)
-            os.makedirs(config_dir, exist_ok=True)
-            
-            with open(file_path, 'w') as f:
-                json.dump(self._config, f, indent=2)
-            logger.info(f"Configuration saved to: {file_path}")
+            save_json_config(self._config, file_path)
             print(f"📁 Configuration saved to: {file_path}")  # Debug output
         except IOError as e:
-            logger.error(f"Failed to save configuration: {e}")
             print(f"❌ Failed to save configuration: {e}")  # Debug output
             raise
     
     def create_sample_config(self, file_path: Optional[str] = None):
         """
         Create a sample configuration file for editing.
-        
+
         Args:
             file_path: Path to create the sample config. If None, uses default location.
         """
+        from .utils.config_loader import save_json_config
+        from .utils.path_utils import get_legacy_config_path
+        from pathlib import Path
+
         if file_path is None:
-            file_path = os.path.join(os.getcwd(), "bmlibrarian_config.json")
-        
+            file_path = get_legacy_config_path()
+        else:
+            file_path = Path(file_path)
+
         # Add comments to the sample config
         sample_config = {
             "_comment": "BMLibrarian Configuration File - Edit this file to customize models and settings",
             "_model_options": {
                 "fast": "medgemma4B_it_q8:latest",
-                "medical": "medgemma-27b-text-it-Q8_0:latest", 
+                "medical": "medgemma-27b-text-it-Q8_0:latest",
                 "complex": "gpt-oss:20b",
                 "note": "You can use any model available in your Ollama installation"
             },
             **DEFAULT_CONFIG
         }
-        
+
         try:
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            with open(file_path, 'w') as f:
-                json.dump(sample_config, f, indent=2)
+            save_json_config(sample_config, file_path)
             print(f"✅ Sample configuration created at: {file_path}")
             print("📝 Edit this file to customize your model settings")
         except IOError as e:

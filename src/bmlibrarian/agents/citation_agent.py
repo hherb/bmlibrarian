@@ -74,17 +74,7 @@ class CitationFinderAgent(BaseAgent):
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "citation_finder_agent"
-    
-    def test_connection(self) -> bool:
-        """Test connection to Ollama service."""
-        try:
-            import requests
-            response = requests.get(f"{self.host}/api/tags", timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            logger.warning(f"Cannot connect to Ollama at {self.host}: {e}")
-            return False
-    
+
     def extract_citation_from_document(self, user_question: str, document: Dict[str, Any], 
                                      min_relevance: float = 0.7) -> Optional[Citation]:
         """
@@ -141,34 +131,12 @@ If no sufficiently relevant content is found, respond with:
 }}
 
 Respond only with valid JSON."""
-            
-            # Make request to Ollama
-            import requests
-            
-            response = requests.post(
-                f"{self.host}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": self.temperature,
-                        "top_p": self.top_p
-                    }
-                },
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Ollama request failed: {response.status_code}")
-                return None
-            
-            result = response.json()
-            llm_response = result.get('response', '').strip()
-            
-            # Handle empty responses
-            if not llm_response:
-                logger.warning(f"Empty response from model for document {document.get('id', 'unknown')}")
+
+            # Make request to Ollama using BaseAgent method
+            try:
+                llm_response = self._generate_from_prompt(prompt)
+            except (ConnectionError, ValueError) as e:
+                logger.error(f"Ollama request failed for document {document.get('id', 'unknown')}: {e}")
                 return None
             
             # Parse JSON response using inherited robust method from BaseAgent

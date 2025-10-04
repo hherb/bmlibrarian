@@ -195,24 +195,112 @@ class BaseAgent(ABC):
             }})
             raise
     
+    def _generate_from_prompt(self, prompt: str, **ollama_options) -> str:
+        """
+        Simple generation from a single prompt string using ollama.generate().
+
+        Uses the ollama library's native generate() method for simple prompt-based generation.
+        Useful for agents that don't need complex chat conversations.
+
+        Args:
+            prompt: The prompt string
+            **ollama_options: Additional Ollama options (overrides defaults)
+
+        Returns:
+            The model's response content
+
+        Raises:
+            ConnectionError: If unable to connect to Ollama
+            ValueError: If the response is invalid
+
+        Examples:
+            >>> response = self._generate_from_prompt("What is 2+2?")
+            >>> print(response)
+            "4"
+        """
+        start_time = time.time()
+        agent_logger = logging.getLogger('bmlibrarian.agents')
+
+        # Log the request
+        agent_logger.info(f"Ollama generate request to {self.model}", extra={'structured_data': {
+            'event_type': 'agent_ollama_generate',
+            'agent_type': self.get_agent_type(),
+            'model': self.model,
+            'prompt_length': len(prompt),
+            'options': self._get_ollama_options(**ollama_options),
+            'timestamp': start_time
+        }})
+
+        try:
+            # Get options with any overrides
+            options = self._get_ollama_options(**ollama_options)
+
+            response = self.client.generate(
+                model=self.model,
+                prompt=prompt,
+                options=options
+            )
+
+            content = response['response']
+            if not content or not content.strip():
+                raise ValueError("Empty response from model")
+
+            # Log successful response
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.info(f"Ollama response received in {response_time:.2f}ms", extra={'structured_data': {
+                'event_type': 'agent_ollama_response',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'response_length': len(content),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+
+            return content.strip()
+
+        except ollama.ResponseError as e:
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Ollama response error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'error_type': 'ResponseError',
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+            raise ConnectionError(f"Failed to get response from Ollama: {e}")
+        except Exception as e:
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Unexpected error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': self.model,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+            raise
+
     def test_connection(self) -> bool:
         """
         Test the connection to Ollama server and verify model availability.
-        
+
         Returns:
             True if connection is successful and model is available
         """
         try:
             models = self.client.list()
             available_models = [model.model for model in models.models]
-            
+
             if self.model not in available_models:
                 logger.warning(f"Model {self.model} not found. Available models: {available_models}")
                 return False
-                
+
             logger.info(f"Successfully connected to Ollama. Model {self.model} is available.")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Ollama: {e}")
             return False
