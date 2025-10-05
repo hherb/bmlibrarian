@@ -340,36 +340,136 @@ class WorkflowStepsHandler:
     
     def execute_comprehensive_counterfactual_analysis(self, report_content: str, citations: List,
                                                      update_callback: Callable) -> Any:
-        """Execute comprehensive counterfactual analysis with literature search.
-        
+        """Execute comprehensive counterfactual analysis with progressive GUI updates.
+
         Args:
             report_content: Content of the generated report
             citations: List of citations used in the report
             update_callback: Callback for status updates
-            
+
         Returns:
             Comprehensive counterfactual analysis results with contradictory evidence
         """
         update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "running",
                       "Performing comprehensive counterfactual analysis with literature search...")
-        
+
         # Use the comprehensive find_contradictory_literature method
         from ..config import get_search_config
         search_config = get_search_config()
-        
-        comprehensive_analysis = self.agents['counterfactual_agent'].find_contradictory_literature(
-            document_content=report_content,
-            document_title="Research Report with Citations",
-            max_results_per_query=self.config_overrides.get('counterfactual_max_results', search_config.get('counterfactual_max_results', 10)),
-            min_relevance_score=self.config_overrides.get('counterfactual_min_score', search_config.get('counterfactual_min_score', 3)),
-            query_agent=self.agents.get('query_agent'),
-            scoring_agent=self.agents.get('scoring_agent'),
-            citation_agent=self.agents.get('citation_agent')
-        )
-        
+
+        # Use the same max_results as the initial literature search for consistency
+        main_max_results = self.config_overrides.get('max_results', search_config.get('max_results', 100))
+        counterfactual_max_results = self.config_overrides.get('counterfactual_max_results', main_max_results)
+
+        print(f"🔍 Counterfactual search using max_results: {counterfactual_max_results} (main search used: {main_max_results})")
+
+        # Track intermediate data for progressive updates
+        progressive_data = {
+            'analysis': None,
+            'research_queries': [],
+            'contradictory_evidence': []
+        }
+
+        # Create a custom progress callback for real-time GUI updates
+        def counterfactual_progress_callback(event_type: str, data: Any):
+            """Handle counterfactual agent progress events and update GUI progressively."""
+            try:
+                if event_type == "counterfactual_complete":
+                    # Initial analysis complete - update claims and questions
+                    if isinstance(data, str):
+                        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "progress", data)
+                elif event_type == "analysis_complete":
+                    # Store analysis and update claims/questions sections
+                    progressive_data['analysis'] = data
+                    if hasattr(data, 'main_claims'):
+                        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_claims", data.main_claims)
+                    if hasattr(data, 'counterfactual_questions'):
+                        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_questions", data.counterfactual_questions)
+                elif event_type == "queries_generated":
+                    # Research queries generated - update searches section
+                    progressive_data['research_queries'] = data
+                    update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_searches", data)
+                elif event_type == "search_results":
+                    # Search completed - update results section incrementally
+                    update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "progress", data)
+                elif event_type == "scoring_complete":
+                    # Scoring complete - update results section with scored documents
+                    if isinstance(data, list):
+                        progressive_data['contradictory_evidence'].extend(data)
+                        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_results", progressive_data['contradictory_evidence'])
+                elif event_type == "citations_complete":
+                    # Citation extraction complete - update citations section
+                    if isinstance(data, dict):
+                        update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_citations", data)
+                else:
+                    # Generic progress message
+                    update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "progress", str(data))
+            except Exception as e:
+                print(f"⚠️  Error in counterfactual progress callback: {e}")
+
+        # Store original callback and set our custom one
+        original_callback = self.agents['counterfactual_agent'].callback
+        self.agents['counterfactual_agent'].callback = counterfactual_progress_callback
+
+        try:
+            comprehensive_analysis = self.agents['counterfactual_agent'].find_contradictory_literature(
+                document_content=report_content,
+                document_title="Research Report with Citations",
+                max_results_per_query=counterfactual_max_results,
+                min_relevance_score=self.config_overrides.get('counterfactual_min_score', search_config.get('counterfactual_min_score', 3)),
+                query_agent=self.agents.get('query_agent'),
+                scoring_agent=self.agents.get('scoring_agent'),
+                citation_agent=self.agents.get('citation_agent')
+            )
+        finally:
+            # Restore original callback
+            self.agents['counterfactual_agent'].callback = original_callback
+
+        # Final update with complete data
+        if comprehensive_analysis and isinstance(comprehensive_analysis, dict):
+            # Update claims section
+            analysis_obj = comprehensive_analysis.get('analysis')
+            if analysis_obj and hasattr(analysis_obj, 'main_claims'):
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_claims",
+                              analysis_obj.main_claims)
+
+            # Update questions section
+            if analysis_obj and hasattr(analysis_obj, 'counterfactual_questions'):
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_questions",
+                              analysis_obj.counterfactual_questions)
+
+            # Update searches section
+            research_queries = comprehensive_analysis.get('research_queries', [])
+            if research_queries:
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_searches",
+                              research_queries)
+
+            # Update results section
+            contradictory_evidence = comprehensive_analysis.get('contradictory_evidence', [])
+            if contradictory_evidence:
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_results",
+                              contradictory_evidence)
+
+            # Update citations section
+            contradictory_citations = comprehensive_analysis.get('contradictory_citations', [])
+            rejected_citations = comprehensive_analysis.get('rejected_citations', [])
+            no_citation_extracted = comprehensive_analysis.get('no_citation_extracted', [])
+            update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_citations",
+                          {
+                              'contradictory_citations': contradictory_citations,
+                              'rejected_citations': rejected_citations,
+                              'no_citation_extracted': no_citation_extracted
+                          })
+
+            # Update summary section
+            summary = comprehensive_analysis.get('summary', {})
+            if summary:
+                update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "cf_summary",
+                              summary)
+
         update_callback(WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS, "completed",
                       "Comprehensive counterfactual analysis complete with literature search")
-        
+
         return comprehensive_analysis
     
     def complete_remaining_steps(self, update_callback: Callable):

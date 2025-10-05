@@ -83,7 +83,7 @@ DEFAULT_CONFIG = {
         "score_threshold": 2.5,  # Minimum relevance score threshold
         "max_documents_to_score": None,  # None = score all documents
         "max_documents_for_citations": None,  # None = use all scored documents
-        "counterfactual_max_results": 10,  # Max results per counterfactual query
+        "counterfactual_max_results": 10,  # Max results per counterfactual query (defaults to main max_results if not set)
         "counterfactual_min_score": 3,  # Min score for counterfactual evidence
         "query_retry_attempts": 3,  # Number of times to retry failed tsquery with reformulation
         "auto_fix_tsquery_syntax": True  # Automatically fix common tsquery syntax errors

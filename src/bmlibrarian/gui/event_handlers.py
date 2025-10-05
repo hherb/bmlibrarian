@@ -8,7 +8,7 @@ import threading
 import os
 from datetime import datetime
 import flet as ft
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import TYPE_CHECKING, Optional, Callable, Any
 from .components import StepCard
 from ..cli.workflow_steps import WorkflowStep
 
@@ -274,6 +274,10 @@ class EventHandlers:
             if status in ["completed", "tab_update"]:
                 self._handle_step_completion(step)
 
+            # Handle progressive counterfactual updates
+            if step == WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS:
+                self._handle_counterfactual_progressive_update(status, content)
+
             if self.app.page:
                 self.app.page.update()
 
@@ -365,6 +369,32 @@ class EventHandlers:
                 query=query,
                 show_edit_button=False  # Button shown by interactive_handler if needed
             )
+
+    def _handle_counterfactual_progressive_update(self, status: str, content: Any):
+        """Handle progressive counterfactual analysis updates."""
+        from .data_updaters import DataUpdaters
+        updaters = DataUpdaters(self.app)
+
+        # Handle different progressive update types
+        if status == "cf_claims" and content:
+            updaters.update_counterfactual_claims(content)
+        elif status == "cf_questions" and content:
+            updaters.update_counterfactual_questions(content)
+        elif status == "cf_searches" and content:
+            updaters.update_counterfactual_searches(content)
+        elif status == "cf_results" and content:
+            updaters.update_counterfactual_results(content)
+        elif status == "cf_citations" and content:
+            if isinstance(content, dict):
+                updaters.update_counterfactual_citations(
+                    content.get('contradictory_citations', []),
+                    content.get('rejected_citations', []),
+                    content.get('no_citation_extracted', [])
+                )
+        elif status == "cf_summary" and content:
+            updaters.update_counterfactual_summary(content)
+        elif status == "progress" and content:
+            updaters.show_counterfactual_progress(content)
 
     def _update_tabs_after_workflow(self):
         """Update all tabs with final workflow data."""

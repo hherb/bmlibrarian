@@ -169,7 +169,8 @@ Analyze this document to identify its main claims and generate research question
 
                 # Get response from LLM with increased token limit for comprehensive analysis
                 # Increase tokens progressively on retries
-                token_limit = 4000 + (attempt * 1000)  # 4000, 5000, 6000
+                # Start higher (6000) and increase more aggressively to avoid truncation
+                token_limit = 6000 + (attempt * 2000)  # 6000, 8000, 10000
                 response = self._make_ollama_request(
                     messages=messages,
                     system_prompt=self.system_prompt,
@@ -473,6 +474,9 @@ SUPPORTING CITATIONS:
 
         result['analysis'] = analysis
 
+        # Callback: Analysis complete (claims and questions identified)
+        self._call_callback("analysis_complete", analysis)
+
         # Step 2: Generate database queries
         if query_agent is None:
             from .query_agent import QueryAgent
@@ -484,6 +488,9 @@ SUPPORTING CITATIONS:
         research_queries = self.generate_research_queries_with_agent(
             high_priority_questions, query_agent
         )
+
+        # Callback: Research queries generated
+        self._call_callback("queries_generated", research_queries)
 
         # Step 3: Search database for contradictory evidence
         try:
@@ -554,6 +561,10 @@ SUPPORTING CITATIONS:
                 self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found}")
 
         result['contradictory_evidence'] = all_contradictory_evidence
+
+        # Callback: All scoring complete, update results display
+        if all_contradictory_evidence:
+            self._call_callback("scoring_complete", all_contradictory_evidence)
 
         # Step 4: Extract citations from contradictory evidence
         if all_contradictory_evidence:
@@ -644,6 +655,14 @@ SUPPORTING CITATIONS:
             result['contradictory_citations'] = contradictory_citations
             result['rejected_citations'] = rejected_citations
             result['no_citation_extracted'] = no_citation_extracted
+
+            # Callback: Citations complete, update citations display
+            self._call_callback("citations_complete", {
+                'contradictory_citations': contradictory_citations,
+                'rejected_citations': rejected_citations,
+                'no_citation_extracted': no_citation_extracted
+            })
+
             self._call_callback("workflow_complete", f"Found {len(contradictory_citations)} valid contradictory citations")
 
         # Generate formatted counterfactual report

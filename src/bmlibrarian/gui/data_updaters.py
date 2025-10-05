@@ -5,7 +5,7 @@ Contains functions for updating tab content with workflow data.
 """
 
 import flet as ft
-from typing import TYPE_CHECKING, List, Any
+from typing import TYPE_CHECKING, List, Any, Dict
 from .ui_builder import create_tab_header, create_action_button_row
 
 if TYPE_CHECKING:
@@ -128,7 +128,123 @@ class DataUpdaters:
         if self.app.page:
             self.app.page.update()
         print(f"✅ Citations tab update completed")
-    
+
+    # Progressive Counterfactual Analysis Updates
+
+    def update_counterfactual_claims(self, claims: List[Any]):
+        """Update counterfactual tab with identified claims."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_claims_section'):
+            return
+
+        from .counterfactual_progressive import create_claims_display
+
+        self.app.tab_manager.counterfactual_claims_section.content = create_claims_display(claims)
+        self.app.tab_manager.counterfactual_claims_section.visible = True
+
+        # Hide empty state
+        if hasattr(self.app.tab_manager, 'counterfactual_content'):
+            if self.app.tab_manager.counterfactual_content.controls:
+                self.app.tab_manager.counterfactual_content.controls[0].visible = False  # Hide empty state
+
+        if self.app.page:
+            self.app.page.update()
+
+    def update_counterfactual_questions(self, questions: List[Any]):
+        """Update counterfactual tab with generated research questions."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_questions_section'):
+            return
+
+        from .counterfactual_progressive import create_questions_display
+
+        self.app.tab_manager.counterfactual_questions_section.content = create_questions_display(questions)
+        self.app.tab_manager.counterfactual_questions_section.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def update_counterfactual_searches(self, research_queries: List[Dict[str, Any]]):
+        """Update counterfactual tab with database search queries."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_searches_section'):
+            return
+
+        from .counterfactual_progressive import create_searches_display
+
+        self.app.tab_manager.counterfactual_searches_section.content = create_searches_display(research_queries)
+        self.app.tab_manager.counterfactual_searches_section.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def update_counterfactual_results(self, contradictory_evidence: List[Dict[str, Any]]):
+        """Update counterfactual tab with search results and scoring."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_results_section'):
+            return
+
+        from .counterfactual_progressive import create_results_display
+
+        self.app.tab_manager.counterfactual_results_section.content = create_results_display(contradictory_evidence)
+        self.app.tab_manager.counterfactual_results_section.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def update_counterfactual_citations(self, contradictory_citations: List[Dict[str, Any]],
+                                       rejected_citations: List[Dict[str, Any]] = None,
+                                       no_citation_extracted: List[Dict[str, Any]] = None):
+        """Update counterfactual tab with citation extraction results."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_citations_section'):
+            return
+
+        from .counterfactual_progressive import create_citations_display
+
+        self.app.tab_manager.counterfactual_citations_section.content = create_citations_display(
+            contradictory_citations,
+            rejected_citations,
+            no_citation_extracted
+        )
+        self.app.tab_manager.counterfactual_citations_section.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def update_counterfactual_summary(self, summary: Dict[str, Any]):
+        """Update counterfactual tab with final summary."""
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_summary_section'):
+            return
+
+        from .counterfactual_progressive import create_summary_display
+
+        self.app.tab_manager.counterfactual_summary_section.content = create_summary_display(summary)
+        self.app.tab_manager.counterfactual_summary_section.visible = True
+
+        # Hide progress bar when complete
+        if hasattr(self.app.tab_manager, 'counterfactual_progress_bar'):
+            self.app.tab_manager.counterfactual_progress_bar.visible = False
+        if hasattr(self.app.tab_manager, 'counterfactual_progress_text'):
+            self.app.tab_manager.counterfactual_progress_text.visible = False
+
+        # Show continue button
+        if self.app.human_in_loop and hasattr(self.app.tab_manager, 'counterfactual_continue_button'):
+            self.app.tab_manager.counterfactual_continue_button.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def show_counterfactual_progress(self, message: str):
+        """Update counterfactual progress text."""
+        if not self.app.tab_manager:
+            return
+
+        if hasattr(self.app.tab_manager, 'counterfactual_progress_bar'):
+            self.app.tab_manager.counterfactual_progress_bar.visible = True
+
+        if hasattr(self.app.tab_manager, 'counterfactual_progress_text'):
+            self.app.tab_manager.counterfactual_progress_text.value = message
+            self.app.tab_manager.counterfactual_progress_text.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
     def update_counterfactual_analysis(self, counterfactual_analysis: Any):
         """Update the counterfactual analysis and refresh the counterfactual tab."""
         print(f"🧿 update_counterfactual_analysis called with analysis: {bool(counterfactual_analysis)}")
@@ -488,11 +604,31 @@ class DataUpdaters:
             print(f"❌ citations_list is None - cannot update!")
     
     def _update_counterfactual_tab(self):
-        """Update the counterfactual tab with analysis results."""
+        """Update the counterfactual tab with analysis results.
+
+        NOTE: This is the OLD display method. The NEW progressive display is handled
+        by the individual update_counterfactual_* methods. We should NOT replace the
+        progressive sections here - they're already populated!
+        """
         from .display_utils import CounterfactualDisplayCreator
 
         print(f"🧿 _update_counterfactual_tab called")
         print(f"🤖 Analysis exists: {bool(self.app.counterfactual_analysis)}")
+
+        # Check if progressive sections are already populated
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'counterfactual_claims_section'):
+            if self.app.tab_manager.counterfactual_claims_section.visible:
+                print(f"✅ Progressive sections already populated - skipping old display method")
+                # Just hide progress bar and show continue button
+                if hasattr(self.app.tab_manager, 'counterfactual_progress_bar'):
+                    self.app.tab_manager.counterfactual_progress_bar.visible = False
+                if hasattr(self.app.tab_manager, 'counterfactual_progress_text'):
+                    self.app.tab_manager.counterfactual_progress_text.visible = False
+                if self.app.human_in_loop and hasattr(self.app.tab_manager, 'counterfactual_continue_button'):
+                    self.app.tab_manager.counterfactual_continue_button.visible = True
+                if self.app.page:
+                    self.app.page.update()
+                return
 
         # Update counterfactual content container
         if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_content'):
@@ -507,19 +643,11 @@ class DataUpdaters:
                     size=12,
                     color=ft.Colors.GREY_600
                 )
-                self.app.tab_manager.counterfactual_content.controls = [empty_text]
+                # Only update the empty state (first control), don't touch progressive sections
+                if len(self.app.tab_manager.counterfactual_content.controls) > 0:
+                    self.app.tab_manager.counterfactual_content.controls[0] = empty_text
             else:
-                # Debug the analysis data
-                print(f"🔍 Analysis type: {type(self.app.counterfactual_analysis)}")
-
-                # Create counterfactual analysis display
-                display_creator = CounterfactualDisplayCreator()
-                cf_display_controls = display_creator.create_counterfactual_display(self.app.counterfactual_analysis)
-
-                print(f"📋 Created {len(cf_display_controls)} counterfactual display controls")
-
-                # Update content container
-                self.app.tab_manager.counterfactual_content.controls = cf_display_controls
+                print(f"⚠️ Old counterfactual display method called - this shouldn't happen with progressive display")
 
                 # Show continue button in interactive mode
                 if self.app.human_in_loop and hasattr(self.app.tab_manager, 'counterfactual_continue_button'):

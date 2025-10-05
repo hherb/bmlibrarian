@@ -621,10 +621,10 @@ class TabManager:
                 self.page.update()
     
     def _create_counterfactual_tab(self) -> ft.Container:
-        """Create the counterfactual analysis tab content with progress bar and action buttons."""
+        """Create the counterfactual analysis tab content with progressive audit trail display."""
         header_components = create_tab_header(
             "Counterfactual Analysis",
-            subtitle="Analysis of potential contradictory evidence and research questions."
+            subtitle="Progressive workflow showing claims, queries, searches, and contradictory evidence."
         )
 
         # Progress bar for counterfactual analysis
@@ -636,15 +636,41 @@ class TabManager:
             visible=False
         )
 
+        # Progress text for detailed status
+        self.counterfactual_progress_text = ft.Text(
+            "",
+            size=11,
+            color=ft.Colors.GREY_600,
+            visible=False
+        )
+
         # Empty state
         empty_state = create_empty_state(
             "Counterfactual analysis will appear here when enabled and completed."
         )
 
-        # Container for counterfactual content (will be populated dynamically)
+        # Progressive audit trail sections (initially empty, populated as workflow progresses)
+        self.counterfactual_claims_section = ft.Container(visible=False)
+        self.counterfactual_questions_section = ft.Container(visible=False)
+        self.counterfactual_searches_section = ft.Container(visible=False)
+        self.counterfactual_results_section = ft.Container(visible=False)
+        self.counterfactual_scoring_section = ft.Container(visible=False)
+        self.counterfactual_citations_section = ft.Container(visible=False)
+        self.counterfactual_summary_section = ft.Container(visible=False)
+
+        # Container for counterfactual content (will be populated progressively)
         self.counterfactual_content = ft.Column(
-            [empty_state],
-            spacing=8,
+            [
+                empty_state,
+                self.counterfactual_claims_section,
+                self.counterfactual_questions_section,
+                self.counterfactual_searches_section,
+                self.counterfactual_results_section,
+                self.counterfactual_scoring_section,
+                self.counterfactual_citations_section,
+                self.counterfactual_summary_section
+            ],
+            spacing=12,
             scroll=ft.ScrollMode.AUTO
         )
 
@@ -662,6 +688,7 @@ class TabManager:
             [
                 *header_components,
                 self.counterfactual_progress_bar,
+                self.counterfactual_progress_text,
                 ft.Container(height=5),
                 self.counterfactual_content,
                 ft.Container(height=10),
