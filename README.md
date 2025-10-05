@@ -31,10 +31,12 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 - **GUI Applications**: Desktop interfaces for research and configuration
 
 ### 📊 Advanced Analytics
-- **Counterfactual Analysis**: Systematic search for contradictory evidence
-- **Evidence Strength Assessment**: Quality evaluation of research findings
+- **Counterfactual Analysis**: Systematic search for contradictory evidence with progressive audit trail
+- **Evidence Strength Assessment**: Quality evaluation with citation validation and rejection reasoning
 - **Temporal Precision**: Specific year references instead of vague temporal terms
 - **Document Verification**: Real database ID validation to prevent hallucination
+- **Citation Validation**: AI-powered verification that citations actually support counterfactual claims
+- **User Override Capability**: Expert users can override AI rejection decisions with custom reasoning
 
 ## Quick Start
 
@@ -108,8 +110,10 @@ uv run python bmlibrarian_research_gui.py
 # Features:
 # - Visual workflow progress with collapsible step cards
 # - Real-time agent execution with model configuration
+# - Progressive counterfactual audit trail showing claims, queries, searches, and results
 # - Formatted markdown report preview with scrolling
 # - Direct file save functionality
+# - Complete transparency into citation validation and rejection reasoning
 ```
 
 #### Configuration GUI
@@ -208,9 +212,17 @@ The interactive medical research CLI (`bmlibrarian_cli.py`) provides:
 The GUI research application (`bmlibrarian_research_gui.py`) offers:
 - Native cross-platform desktop interface built with Flet
 - Visual workflow progress with collapsible step cards
+- **Progressive counterfactual audit trail** with real-time updates showing:
+  - 📋 Identified claims with confidence levels
+  - ❓ Counterfactual research questions with priority badges
+  - 🔍 Database searches with PostgreSQL queries
+  - 📊 Search results with color-coded relevance scores
+  - 📝 Citation extraction showing validated, rejected, and no-extraction cases
+  - 📈 Summary statistics and confidence assessment
 - Real-time agent execution with configured AI models
 - Formatted markdown report preview with scrollable display
 - Direct file save functionality (macOS-compatible)
+- Complete transparency into citation validation and rejection reasoning
 
 ### Configuration Interface
 The configuration GUI (`bmlibrarian_config_gui.py`) provides:
@@ -432,29 +444,43 @@ BMLibrarian is NOT YET a **production-ready** system with:
 
 ### Recent Major Updates
 
+#### Progressive Counterfactual Audit Trail (Latest)
+- **Real-time workflow visualization**: Complete transparency into counterfactual analysis
+- **Stage-by-stage display**: Claims → Questions → Searches → Results → Citations → Summary
+- **Citation validation transparency**: See exactly why citations were rejected or accepted
+- **Persistent audit trail**: All stages remain visible after completion for detailed study
+- **User override capability**: Expert users can accept rejected citations with custom reasoning
+- **Enhanced token limits**: Reduced JSON truncation errors (6K→10K tokens)
+- **Consistent search parameters**: Counterfactual search uses same max_results as main search
+
 #### Multi-Agent System Implementation
 - Complete 6-agent architecture with specialized roles
 - Enum-based workflow orchestration system
 - SQLite-based task queue for memory-efficient processing
 - Human-in-the-loop interaction with auto-mode support
 
-#### Advanced Research Capabilities  
+#### Advanced Research Capabilities
 - Counterfactual analysis for finding contradictory evidence
+- Citation validation with AI-powered verification and rejection reasoning
 - Comprehensive report editing with evidence integration
 - Agent-driven refinement (agents can request more citations)
 - Document verification to prevent citation hallucination
+- Full abstract display for user judgment on rejected citations
 
 #### Modern GUI Applications
-- Desktop research application with visual workflow progress
+- Desktop research application with progressive workflow visualization
+- Progressive counterfactual audit trail with real-time updates
 - Configuration GUI with model selection and parameter tuning
 - Cross-platform compatibility with native desktop and web modes
 - Real-time agent execution monitoring
+- Color-coded relevance scores and priority badges
 
 #### Workflow Enhancement
 - Iterative query refinement and threshold adjustment
 - Branching logic for conditional step execution
 - Context management and state preservation
 - Enhanced markdown export with proper citation formatting
+- Progressive display that persists after workflow completion
 
 ## License
 
