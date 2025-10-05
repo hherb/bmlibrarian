@@ -895,22 +895,61 @@ class EventHandlers:
         # Extract and store final report
         if final_report and (hasattr(final_report, 'content') or isinstance(final_report, str)):
             final_report_content = final_report.content if hasattr(final_report, 'content') else final_report
-            self.app.final_report = final_report_content
-            self.app.workflow_executor.final_report = final_report_content
-            self.app.data_updaters.update_report(final_report_content)
-            print(f"✅ Comprehensive final report generated ({len(final_report_content)} chars)")
+
+            # Build the full report with audit trail using report_builder
+            print(f"📝 Building full final report with audit trail...")
+            comprehensive_report = self.app.workflow_executor.report_builder.build_final_report(
+                self.app.research_question,
+                final_report_content,
+                counterfactual_analysis,
+                self.app.documents,
+                self.app.scored_documents,
+                self.app.citations,
+                False,  # human_in_loop (we're in continue mode)
+                self.app.workflow_executor.agent_model_info
+            )
+
+            self.app.final_report = comprehensive_report
+            self.app.workflow_executor.final_report = comprehensive_report
+            self.app.data_updaters.update_report(comprehensive_report)
+            print(f"✅ Comprehensive final report with audit trail generated ({len(comprehensive_report)} chars)")
         else:
-            # Fallback to preliminary report
-            print(f"⚠️ Editor agent failed, using preliminary report as final report")
-            self.app.final_report = report_formatted
-            self.app.workflow_executor.final_report = report_formatted
-            self.app.data_updaters.update_report(report_formatted)
+            # Fallback to preliminary report with audit trail
+            print(f"⚠️ Editor agent failed, building final report from preliminary with audit trail")
+            comprehensive_report = self.app.workflow_executor.report_builder.build_final_report(
+                self.app.research_question,
+                report_formatted,
+                counterfactual_analysis,
+                self.app.documents,
+                self.app.scored_documents,
+                self.app.citations,
+                False,  # human_in_loop
+                self.app.workflow_executor.agent_model_info
+            )
+
+            self.app.final_report = comprehensive_report
+            self.app.workflow_executor.final_report = comprehensive_report
+            self.app.data_updaters.update_report(comprehensive_report)
 
     def _finalize_without_counterfactual(self, report_formatted: str):
         """Finalize workflow without counterfactual analysis."""
-        self.app.final_report = report_formatted
-        self.app.workflow_executor.final_report = report_formatted
-        self.app.data_updaters.update_report(report_formatted)
+        # Build the full report with audit trail using report_builder
+        print(f"📝 Building final report without counterfactual (with audit trail)...")
+        comprehensive_report = self.app.workflow_executor.report_builder.build_final_report(
+            self.app.research_question,
+            report_formatted,
+            None,  # No counterfactual analysis
+            self.app.documents,
+            self.app.scored_documents,
+            self.app.citations,
+            False,  # human_in_loop (we're in continue mode)
+            self.app.workflow_executor.agent_model_info
+        )
+
+        self.app.final_report = comprehensive_report
+        self.app.workflow_executor.final_report = comprehensive_report
+        self.app.data_updaters.update_report(comprehensive_report)
+        print(f"✅ Final report with audit trail generated ({len(comprehensive_report)} chars)")
 
     def _convert_counterfactual_to_dict(self, counterfactual_analysis) -> Optional[dict]:
         """Convert CounterfactualAnalysis object to dict."""

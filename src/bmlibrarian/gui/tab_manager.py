@@ -21,6 +21,9 @@ class TabManager:
         self.scoring_interface: Optional[ScoringInterface] = None
         self.page = page
 
+        # Store references to event handlers (will be set after initialization)
+        self.event_handlers = None
+
         # Create scoring interface if page is available
         if page:
             self.scoring_interface = ScoringInterface(page)
@@ -785,16 +788,35 @@ class TabManager:
 
         return self.tab_contents['report']
 
+    def wire_event_handlers(self, event_handlers):
+        """Wire up event handlers to tab manager buttons.
+
+        Args:
+            event_handlers: EventHandlers instance with handler methods
+        """
+        self.event_handlers = event_handlers
+
+        # Update button click handlers to use the event_handlers
+        if hasattr(self, 'report_save_button') and self.report_save_button:
+            self.report_save_button.on_click = event_handlers.on_save_report
+
+        if hasattr(self, 'report_export_json_button') and self.report_export_json_button:
+            # Note: JSON export is included in save report, so we can reuse the same handler
+            self.report_export_json_button.on_click = event_handlers.on_save_report
+
     def _on_report_save(self, e):
         """Handle save report button click."""
-        # TODO: Implement save report functionality
-        pass
+        # Delegate to event handlers if available
+        if self.event_handlers and hasattr(self.event_handlers, 'on_save_report'):
+            self.event_handlers.on_save_report(e)
 
     def _on_report_export_json(self, e):
         """Handle export JSON button click."""
-        # TODO: Implement export JSON functionality
-        pass
-    
+        # Delegate to event handlers if available
+        if self.event_handlers and hasattr(self.event_handlers, 'on_save_report'):
+            # JSON export is included in the save report handler
+            self.event_handlers.on_save_report(e)
+
     def get_tab_content(self, tab_name: str) -> Optional[ft.Container]:
         """Get a specific tab's content container."""
         return self.tab_contents.get(tab_name)

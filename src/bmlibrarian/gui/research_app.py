@@ -206,7 +206,10 @@ class ResearchGUI:
         # Create step cards and tabbed interface
         self._create_step_cards()
         tabs_container = self.tab_manager.create_tabbed_interface(self.step_cards)
-        
+
+        # Wire event handlers to tab manager buttons (must be done after tabs are created)
+        self.tab_manager.wire_event_handlers(self.event_handlers)
+
         # Build main layout
         main_content = ft.Column([
             header,
