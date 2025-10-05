@@ -647,32 +647,17 @@ class UserInterface:
     
     def display_contradictory_evidence_results(self, contradictory_results: Dict[str, Any]) -> None:
         """Display results of contradictory evidence search."""
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 80)
         print("Contradictory Evidence Search Results")
-        print("=" * 60)
-        
+        print("=" * 80)
+
         if contradictory_results.get('contradictory_evidence'):
             self.show_success_message(f"Found {len(contradictory_results.get('contradictory_evidence', []))} contradictory documents")
-            
-            # Display top contradictory evidence
-            print("\n📄 Top Contradictory Evidence:")
-            sorted_evidence = sorted(
-                contradictory_results.get('contradictory_evidence', []), 
-                key=lambda x: x['score'], 
-                reverse=True
-            )
-            
-            for i, evidence in enumerate(sorted_evidence[:3], 1):
-                doc = evidence['document']
-                print(f"\n{i}. Score: {evidence['score']}/5")
-                print(f"   Title: {doc.get('title', 'No title')}")
-                print(f"   Authors: {', '.join(doc.get('authors', [])[:3])}")
-                print(f"   Target Claim: {evidence['query_info']['target_claim']}")
-                print(f"   Reasoning: {evidence['reasoning']}")
-            
+
+            # Display validated contradictory citations
             if contradictory_results.get('contradictory_citations'):
-                self.show_success_message(f"Extracted {len(contradictory_results.get('contradictory_citations', []))} contradictory citations")
-                
+                self.show_success_message(f"✓ Extracted {len(contradictory_results.get('contradictory_citations', []))} VALIDATED contradictory citations")
+
                 # Display key contradictory citations
                 for i, cit_info in enumerate(contradictory_results.get('contradictory_citations', [])[:2], 1):
                     citation = cit_info['citation']
@@ -681,7 +666,83 @@ class UserInterface:
                     print(f"   Relevance: {citation.relevance_score:.3f}")
                     print(f"   Passage: \"{citation.passage[:150]}...\"")
                     print(f"   Contradicts: {cit_info['original_claim']}")
-            
+
+            # Display rejected citations with reasoning and allow user override
+            rejected = contradictory_results.get('rejected_citations', [])
+            if rejected:
+                print(f"\n⚠️  {len(rejected)} citations were REJECTED during validation:")
+                print("=" * 80)
+
+                # Initialize skip flag
+                self._skip_remaining_overrides = False
+
+                for i, rejected_info in enumerate(rejected, 1):
+                    citation = rejected_info['citation']
+                    doc = rejected_info['document']
+
+                    print(f"\n{'─' * 80}")
+                    print(f"REJECTED CITATION #{i}")
+                    print(f"{'─' * 80}")
+                    print(f"📄 Document: {doc.get('title', 'No title')}")
+                    print(f"👥 Authors: {', '.join(doc.get('authors', [])[:3])}")
+                    print(f"📅 Year: {doc.get('publication_year', 'Unknown')}")
+                    print(f"⭐ Relevance Score: {rejected_info['document_score']}/5")
+
+                    print(f"\n🎯 Target Claim: {rejected_info['original_claim']}")
+                    print(f"🔄 Counterfactual: {rejected_info['counterfactual_statement']}")
+
+                    print(f"\n📝 Extracted Passage:")
+                    print(f"   \"{citation.passage}\"")
+
+                    print(f"\n❌ AI Rejection Reasoning:")
+                    print(f"   {rejected_info['rejection_reasoning']}")
+
+                    # Show full abstract for user judgment
+                    abstract = doc.get('abstract', '')
+                    if abstract:
+                        print(f"\n📋 Full Abstract (for your judgment):")
+                        print(f"   {abstract}")
+
+                    print(f"\n💭 AI Scoring Reasoning:")
+                    print(f"   {rejected_info['score_reasoning']}")
+
+                    # Allow user override (skip if in auto mode or user chose to skip)
+                    if not self._skip_remaining_overrides:
+                        print(f"\n❓ Do you disagree with the AI's rejection?")
+                        override_choice = self._get_user_override_for_rejected_citation(i, len(rejected))
+                        if override_choice:
+                            override_reasoning = self._get_user_override_reasoning()
+                            # Mark this citation for inclusion with user override
+                            rejected_info['user_override'] = True
+                            rejected_info['user_reasoning'] = override_reasoning
+                            # Move to contradictory_citations list
+                            if 'contradictory_citations' not in contradictory_results:
+                                contradictory_results['contradictory_citations'] = []
+                            contradictory_results['contradictory_citations'].append(rejected_info)
+                            self.show_success_message(f"✓ Citation #{i} ACCEPTED by user override")
+                        else:
+                            if not self._skip_remaining_overrides:
+                                self.show_info_message(f"Citation #{i} remains rejected")
+
+            # Display documents where no citation could be extracted
+            no_citation = contradictory_results.get('no_citation_extracted', [])
+            if no_citation:
+                print(f"\n📭 {len(no_citation)} documents found but NO citation could be extracted:")
+                print("=" * 80)
+
+                for i, doc_info in enumerate(no_citation, 1):
+                    doc = doc_info['document']
+                    print(f"\n{i}. Document: {doc.get('title', 'No title')}")
+                    print(f"   Authors: {', '.join(doc.get('authors', [])[:3])}")
+                    print(f"   Year: {doc.get('publication_year', 'Unknown')}")
+                    print(f"   Relevance Score: {doc_info['document_score']}/5")
+                    print(f"   Target Claim: {doc_info['original_claim']}")
+
+                    # Show abstract
+                    abstract = doc.get('abstract', '')
+                    if abstract:
+                        print(f"   Abstract: {abstract[:300]}{'...' if len(abstract) > 300 else ''}")
+
             # Update analysis summary
             summary = contradictory_results.get('summary', {})
             if summary.get('contradictory_citations_extracted', 0) > 0:
@@ -743,7 +804,45 @@ class UserInterface:
     def show_info_message(self, message: str) -> None:
         """Show an info message."""
         print(f"ℹ️  {message}")
-    
+
+    def _get_user_override_for_rejected_citation(self, citation_num: int, total_rejected: int) -> bool:
+        """Ask user if they want to override the AI's rejection of a citation."""
+        while True:
+            try:
+                response = input(f"   Accept this citation anyway? (y/n/skip remaining): ").strip().lower()
+                if response in ['y', 'yes']:
+                    return True
+                elif response in ['n', 'no']:
+                    return False
+                elif response in ['skip', 's', 'skip remaining']:
+                    # Set a flag to skip all remaining rejections
+                    self._skip_remaining_overrides = True
+                    return False
+                else:
+                    print("   Please enter 'y', 'n', or 'skip remaining'.")
+            except (KeyboardInterrupt, EOFError):
+                print("\n   Skipping override prompt")
+                return False
+
+    def _get_user_override_reasoning(self) -> str:
+        """Get user's reasoning for overriding the AI's rejection."""
+        print("\n📝 Please provide your reasoning for accepting this citation:")
+        print("   (Press Enter twice to finish, or Ctrl+D to skip)")
+        lines = []
+        try:
+            while True:
+                line = input("   ")
+                if not line and lines:  # Empty line after some input
+                    break
+                if line:  # Non-empty line
+                    lines.append(line)
+        except (KeyboardInterrupt, EOFError):
+            print("\n   Using default reasoning")
+            return "User expert judgment - citation deemed relevant despite AI rejection"
+
+        reasoning = " ".join(lines).strip()
+        return reasoning if reasoning else "User expert judgment - citation deemed relevant despite AI rejection"
+
     def show_step_header(self, step_num: int, step_name: str) -> None:
         """Show a step header."""
         print("\n" + "=" * 60)

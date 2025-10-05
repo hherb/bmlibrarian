@@ -18,7 +18,7 @@ def validate_citation_supports_counterfactual(
     original_claim: str,
     llm_request_func: Callable,
     json_parser_func: Callable
-) -> bool:
+) -> tuple[bool, str]:
     """
     Validate that a citation actually SUPPORTS the counterfactual statement.
 
@@ -34,7 +34,7 @@ def validate_citation_supports_counterfactual(
         json_parser_func: Function to parse JSON responses (from BaseAgent)
 
     Returns:
-        True if the passage supports the counterfactual, False otherwise
+        Tuple of (supports: bool, reasoning: str)
     """
     validation_prompt = f"""You are validating whether a passage from medical literature actually SUPPORTS a specific claim.
 
@@ -87,18 +87,18 @@ Return ONLY the JSON object, no other text."""
 
         if not isinstance(result, dict) or 'supports_counterfactual' not in result:
             logger.warning(f"Invalid validation response format, defaulting to False")
-            return False
+            return False, "Invalid validation response format"
 
         supports = result['supports_counterfactual']
         reasoning = result.get('reasoning', 'No reasoning provided')
 
         logger.debug(f"Citation validation: {supports} - {reasoning}")
 
-        return supports
+        return supports, reasoning
 
     except Exception as e:
         logger.warning(f"Citation validation failed: {e}, defaulting to False for safety")
-        return False
+        return False, f"Validation error: {str(e)}"
 
 
 def assess_counter_evidence_strength(

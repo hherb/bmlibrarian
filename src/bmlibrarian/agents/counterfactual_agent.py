@@ -566,6 +566,8 @@ SUPPORTING CITATIONS:
             logger.info(f"Processing top {num_docs_to_process} documents for citation extraction")
 
             contradictory_citations = []
+            rejected_citations = []
+            no_citation_extracted = []
             num_citations_extracted = 0
             num_citations_validated = 0
             num_citations_rejected = 0
@@ -592,7 +594,7 @@ SUPPORTING CITATIONS:
                     # CRITICAL VALIDATION: Verify the passage actually SUPPORTS the counterfactual
                     # (not just topically related to it)
                     logger.info(f"  → Validating citation supports counterfactual...")
-                    supports_counterfactual = validate_citation_supports_counterfactual(
+                    supports_counterfactual, validation_reasoning = validate_citation_supports_counterfactual(
                         citation.passage,
                         citation.summary,
                         query_info['counterfactual_statement'],
@@ -615,13 +617,33 @@ SUPPORTING CITATIONS:
                     else:
                         num_citations_rejected += 1
                         logger.info(f"  ✗ Citation REJECTED (does not support counterfactual): {citation.document_title}")
+                        rejected_citations.append({
+                            'citation': citation,
+                            'document': doc,
+                            'original_claim': query_info['target_claim'],
+                            'counterfactual_statement': query_info['counterfactual_statement'],
+                            'counterfactual_question': query_info['question'],
+                            'document_score': evidence['score'],
+                            'score_reasoning': evidence['reasoning'],
+                            'rejection_reasoning': validation_reasoning
+                        })
                 else:
                     logger.info(f"  - No citation extracted from: {doc_title}")
+                    no_citation_extracted.append({
+                        'document': doc,
+                        'original_claim': query_info['target_claim'],
+                        'counterfactual_statement': query_info['counterfactual_statement'],
+                        'counterfactual_question': query_info['question'],
+                        'document_score': evidence['score'],
+                        'score_reasoning': evidence['reasoning']
+                    })
 
             logger.info(f"Citation extraction summary: Extracted={num_citations_extracted}, Validated={num_citations_validated}, Rejected={num_citations_rejected}")
             self._call_callback("validation_complete", f"Citations: {num_citations_extracted} extracted, {num_citations_validated} validated, {num_citations_rejected} rejected")
 
             result['contradictory_citations'] = contradictory_citations
+            result['rejected_citations'] = rejected_citations
+            result['no_citation_extracted'] = no_citation_extracted
             self._call_callback("workflow_complete", f"Found {len(contradictory_citations)} valid contradictory citations")
 
         # Generate formatted counterfactual report
