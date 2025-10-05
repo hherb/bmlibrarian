@@ -23,28 +23,40 @@ class MethodologyMetadata:
     # Original query information
     human_question: str
     generated_query: str
-    
+
     # Initial search results
     total_documents_found: int
-    
+
     # Document scoring information
     scoring_threshold: float
     documents_by_score: Dict[int, int]  # score -> count mapping
     documents_above_threshold: int
-    
+
     # Citation extraction details
     documents_processed_for_citations: int
     citation_extraction_threshold: float
-    
+
     # Counterfactual analysis (optional)
     counterfactual_performed: bool = False
     counterfactual_queries_generated: int = 0
     counterfactual_documents_found: int = 0
     counterfactual_citations_extracted: int = 0
-    
+
     # Processing details
     iterative_processing_used: bool = True
     context_window_management: bool = True
+
+    # AI Model Audit Trail
+    query_model: Optional[str] = None
+    scoring_model: Optional[str] = None
+    citation_model: Optional[str] = None
+    reporting_model: Optional[str] = None
+    counterfactual_model: Optional[str] = None
+    editor_model: Optional[str] = None
+
+    # Model parameters (optional, for transparency)
+    model_temperature: Optional[float] = None
+    model_top_p: Optional[float] = None
 
 
 @dataclass
@@ -257,7 +269,39 @@ class ReportingAgent(BaseAgent):
             sections.append(f"To assess evidence completeness, {metadata.counterfactual_queries_generated} counterfactual research questions were generated to search for contradictory evidence. ")
             sections.append(f"This identified {metadata.counterfactual_documents_found} additional documents, yielding {metadata.counterfactual_citations_extracted} citations that provided alternative perspectives or contradictory findings.")
             sections.append("")
-        
+
+        # AI Model Audit Trail Section
+        model_info = []
+        if metadata.query_model:
+            model_info.append(f"Query Generation: {metadata.query_model}")
+        if metadata.scoring_model:
+            model_info.append(f"Document Scoring: {metadata.scoring_model}")
+        if metadata.citation_model:
+            model_info.append(f"Citation Extraction: {metadata.citation_model}")
+        if metadata.reporting_model:
+            model_info.append(f"Report Synthesis: {metadata.reporting_model}")
+        if metadata.counterfactual_model:
+            model_info.append(f"Counterfactual Analysis: {metadata.counterfactual_model}")
+        if metadata.editor_model:
+            model_info.append(f"Report Editing: {metadata.editor_model}")
+
+        if model_info:
+            sections.append("**AI Models Used:**")
+            for info in model_info:
+                sections.append(f"- {info}")
+
+            # Add model parameters if available
+            param_info = []
+            if metadata.model_temperature is not None:
+                param_info.append(f"Temperature: {metadata.model_temperature}")
+            if metadata.model_top_p is not None:
+                param_info.append(f"Top-p: {metadata.model_top_p}")
+
+            if param_info:
+                sections.append(f"- Model Parameters: {', '.join(param_info)}")
+
+            sections.append("")
+
         return "\n".join(sections).strip()
     
     def assess_evidence_strength(self, citations: List[Citation]) -> str:

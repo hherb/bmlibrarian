@@ -14,9 +14,89 @@ if TYPE_CHECKING:
 
 class DataUpdaters:
     """Handles data updates for GUI tabs."""
-    
+
     def __init__(self, app: 'ResearchGUI'):
         self.app = app
+
+    def update_search_tab(self, question: str, query: str = None, show_edit_button: bool = False):
+        """Update the search tab with research question and query."""
+        if not self.app.tab_manager:
+            return
+
+        # Update question text
+        if hasattr(self.app.tab_manager, 'search_question_text'):
+            self.app.tab_manager.search_question_text.value = question
+
+        # Update query if provided
+        if query and hasattr(self.app.tab_manager, 'search_query_text'):
+            self.app.tab_manager.search_query_text.value = query
+            self.app.tab_manager.search_query_text.visible = True
+
+        # Show edit button in interactive mode
+        if show_edit_button and hasattr(self.app.tab_manager, 'search_edit_button'):
+            self.app.tab_manager.search_edit_button.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+    def show_search_progress(self, visible: bool = True):
+        """Show or hide the search progress bar."""
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'search_progress_bar'):
+            self.app.tab_manager.search_progress_bar.visible = visible
+            if self.app.page:
+                self.app.page.update()
+
+    def show_literature_progress(self, visible: bool = True, current: int = 0, total: int = 0):
+        """Update literature search progress."""
+        if not self.app.tab_manager:
+            return
+
+        if hasattr(self.app.tab_manager, 'literature_progress_bar'):
+            self.app.tab_manager.literature_progress_bar.visible = visible
+
+        if total > 0 and hasattr(self.app.tab_manager, 'literature_progress_text'):
+            progress_pct = (current / total) * 100
+            self.app.tab_manager.literature_progress_text.value = f"{current}/{total} ({progress_pct:.1f}%)"
+            self.app.tab_manager.literature_progress_text.visible = visible
+
+        if self.app.page:
+            self.app.page.update()
+
+    def show_scoring_progress(self, visible: bool = True, current: int = 0, total: int = 0):
+        """Update scoring progress bar."""
+        if not self.app.tab_manager:
+            return
+
+        if hasattr(self.app.tab_manager, 'scoring_progress_bar'):
+            self.app.tab_manager.scoring_progress_bar.visible = visible
+            if total > 0:
+                self.app.tab_manager.scoring_progress_bar.value = current / total
+
+        if total > 0 and hasattr(self.app.tab_manager, 'scoring_progress_text'):
+            progress_pct = (current / total) * 100
+            self.app.tab_manager.scoring_progress_text.value = f"{current}/{total} documents scored ({progress_pct:.1f}%)"
+            self.app.tab_manager.scoring_progress_text.visible = visible
+
+        if self.app.page:
+            self.app.page.update()
+
+    def show_citations_progress(self, visible: bool = True, current: int = 0, total: int = 0):
+        """Update citation extraction progress bar."""
+        if not self.app.tab_manager:
+            return
+
+        if hasattr(self.app.tab_manager, 'citations_progress_bar'):
+            self.app.tab_manager.citations_progress_bar.visible = visible
+            if total > 0:
+                self.app.tab_manager.citations_progress_bar.value = current / total
+
+        if total > 0 and hasattr(self.app.tab_manager, 'citations_progress_text'):
+            progress_pct = (current / total) * 100
+            self.app.tab_manager.citations_progress_text.value = f"{current}/{total} citations extracted ({progress_pct:.1f}%)"
+            self.app.tab_manager.citations_progress_text.visible = visible
+
+        if self.app.page:
+            self.app.page.update()
     
     def update_documents(self, documents: List[dict]):
         """Update the documents list and refresh the literature tab."""
@@ -210,39 +290,36 @@ class DataUpdaters:
     def _update_literature_tab(self):
         """Update the literature tab with found documents."""
         from .display_utils import DocumentCardCreator
-        
+
         print(f"📚 _update_literature_tab called")
         print(f"🔢 Documents count: {len(self.app.documents) if self.app.documents else 0}")
-        
+
         if not self.app.documents:
             print(f"❌ No documents - exiting _update_literature_tab")
             return
-        
+
         # Create document cards
         card_creator = DocumentCardCreator()
         doc_cards = card_creator.create_document_cards_list(self.app.documents, show_score=False)
-        
-        # Update header
-        header_components = create_tab_header(
-            "Literature Review",
-            count=len(self.app.documents),
-            subtitle="All documents found in the search, ordered by search relevance."
-        )
-        
-        all_components = [*header_components, *doc_cards]
-        
-        # Update the literature tab content
-        print(f"📋 Created {len(doc_cards)} document cards")
-        if self.app.tab_manager and self.app.tab_manager.get_tab_content('literature'):
-            print(f"✅ Updating literature_tab_content with {len(doc_cards)} cards")
-            self.app.tab_manager.update_tab_content('literature', ft.Column(
-                all_components,
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO
-            ))
+
+        # Update document list container
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'literature_document_list'):
+            print(f"✅ Updating literature_document_list with {len(doc_cards)} cards")
+            self.app.tab_manager.literature_document_list.controls = doc_cards
+
+            # Show continue button in interactive mode
+            if self.app.human_in_loop and hasattr(self.app.tab_manager, 'literature_continue_button'):
+                self.app.tab_manager.literature_continue_button.visible = True
+                self.app.tab_manager.literature_refine_button.visible = True
+
+            # Hide progress bar
+            self.show_literature_progress(visible=False)
+
+            if self.app.page:
+                self.app.page.update()
             print(f"✅ Literature tab content updated successfully")
         else:
-            print(f"❌ literature_tab_content is None - cannot update!")
+            print(f"❌ literature_document_list is None - cannot update!")
     
     def _update_scoring_tab(self):
         """Update the scoring tab with scored documents ordered by score."""
@@ -375,139 +452,87 @@ class DataUpdaters:
     def _update_citations_tab(self):
         """Update the citations tab with extracted citations."""
         from .display_utils import CitationCardCreator
-        
+
         print(f"📝 _update_citations_tab called")
         print(f"🔢 Citations count: {len(self.app.citations) if self.app.citations else 0}")
-        
+
         if not self.app.citations:
             print(f"❌ No citations - exiting _update_citations_tab")
             return
-        
+
         # Sort citations by relevance score (highest first)
-        sorted_citations = sorted(self.app.citations, 
+        sorted_citations = sorted(self.app.citations,
                                 key=lambda c: getattr(c, 'relevance_score', 0), reverse=True)
-        
+
         # Create citation cards
         card_creator = CitationCardCreator()
         citation_cards = card_creator.create_citation_cards_list(sorted_citations)
-        
-        # Update header
-        header_components = create_tab_header(
-            "Extracted Citations",
-            count=len(self.app.citations),
-            subtitle="Relevant passages extracted from high-scoring documents, ordered by relevance."
-        )
-        
-        all_components = [*header_components, *citation_cards]
-        
-        # Update the citations tab content
-        print(f"📋 Created {len(citation_cards)} citation cards")
-        if self.app.tab_manager and self.app.tab_manager.get_tab_content('citations'):
-            print(f"✅ Updating citations_tab_content with {len(citation_cards)} cards")
-            self.app.tab_manager.update_tab_content('citations', ft.Column(
-                all_components,
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO
-            ))
+
+        # Update citations list container
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'citations_list'):
+            print(f"✅ Updating citations_list with {len(citation_cards)} cards")
+            self.app.tab_manager.citations_list.controls = citation_cards
+
+            # Show continue button in interactive mode
+            if self.app.human_in_loop and hasattr(self.app.tab_manager, 'citations_continue_button'):
+                self.app.tab_manager.citations_continue_button.visible = True
+                self.app.tab_manager.citations_request_more_button.visible = True
+
+            # Hide progress bar
+            self.show_citations_progress(visible=False)
+
+            if self.app.page:
+                self.app.page.update()
             print(f"✅ Citations tab content updated successfully")
         else:
-            print(f"❌ citations_tab_content is None - cannot update!")
+            print(f"❌ citations_list is None - cannot update!")
     
     def _update_counterfactual_tab(self):
         """Update the counterfactual tab with analysis results."""
         from .display_utils import CounterfactualDisplayCreator
-        from .ui_builder import create_tab_header
-        
+
         print(f"🧿 _update_counterfactual_tab called")
         print(f"🤖 Analysis exists: {bool(self.app.counterfactual_analysis)}")
-        
-        # Always try to update the tab, even if analysis is None
+
+        # Update counterfactual content container
+        if not self.app.tab_manager or not hasattr(self.app.tab_manager, 'counterfactual_content'):
+            print(f"❌ counterfactual_content is None - cannot update!")
+            return
+
         try:
             if not self.app.counterfactual_analysis:
-                print(f"⚠️ No counterfactual analysis - showing debug message")
-                
-                # Create debug info components
-                debug_components = [
-                    *create_tab_header(
-                        "Counterfactual Analysis Debug",
-                        subtitle="Debugging why counterfactual analysis is not displaying"
-                    ),
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("🔍 Debug Information:", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_700),
-                            ft.Text(f"• Analysis data exists: {bool(self.app.counterfactual_analysis)}", size=12),
-                            ft.Text(f"• Workflow executor exists: {hasattr(self.app, 'workflow_executor')}", size=12),
-                            ft.Text(f"• Workflow executor has analysis attr: {hasattr(self.app.workflow_executor, 'counterfactual_analysis') if hasattr(self.app, 'workflow_executor') else 'N/A'}", size=12),
-                            ft.Text(f"• Workflow executor analysis: {bool(getattr(self.app.workflow_executor, 'counterfactual_analysis', None)) if hasattr(self.app, 'workflow_executor') else 'N/A'}", size=12),
-                            ft.Text("This debug info will be replaced with actual counterfactual analysis when available.", size=11, color=ft.Colors.GREY_600, italic=True)
-                        ], spacing=8),
-                        padding=ft.padding.all(15),
-                        bgcolor=ft.Colors.ORANGE_50,
-                        border_radius=8
-                    )
-                ]
-                
-                # Update with debug components
-                if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
-                    print(f"✅ Updating counterfactual tab with debug info")
-                    self.app.tab_manager.update_tab_content('counterfactual', ft.Column(
-                        debug_components,
-                        spacing=10,
-                        scroll=ft.ScrollMode.AUTO
-                    ))
-                return
-            
-            # Debug the analysis data
-            print(f"🔍 Analysis type in _update_counterfactual_tab: {type(self.app.counterfactual_analysis)}")
-            if isinstance(self.app.counterfactual_analysis, dict):
-                print(f"📋 Analysis keys in _update_counterfactual_tab: {list(self.app.counterfactual_analysis.keys())}")
-            elif hasattr(self.app.counterfactual_analysis, '__dict__'):
-                print(f"📋 Analysis attributes in _update_counterfactual_tab: {list(vars(self.app.counterfactual_analysis).keys())}")
-            
-            # Create counterfactual analysis display
-            display_creator = CounterfactualDisplayCreator()
-            cf_components = display_creator.create_counterfactual_display(self.app.counterfactual_analysis)
-            
-            print(f"📋 Created {len(cf_components)} counterfactual analysis display components")
-            
-            # Update the counterfactual tab content
-            if self.app.tab_manager and self.app.tab_manager.get_tab_content('counterfactual'):
-                print(f"✅ Updating counterfactual_tab_content with {len(cf_components)} components")
-                
-                # Create new column with components
-                new_content = ft.Column(
-                    cf_components,
-                    spacing=10,
-                    scroll=ft.ScrollMode.AUTO
+                print(f"⚠️ No counterfactual analysis - showing empty state")
+                empty_text = ft.Text(
+                    "No counterfactual analysis performed.",
+                    size=12,
+                    color=ft.Colors.GREY_600
                 )
-                
-                # Update the tab content
-                self.app.tab_manager.update_tab_content('counterfactual', new_content)
-                
-                # Verify the update worked
-                updated_content = self.app.tab_manager.get_tab_content('counterfactual')
-                if updated_content and hasattr(updated_content.content, 'controls'):
-                    print(f"🔍 After update: tab has {len(updated_content.content.controls)} controls")
-                    if updated_content.content.controls:
-                        first_control = updated_content.content.controls[0]
-                        print(f"🔍 First control type: {type(first_control)}")
-                else:
-                    print(f"❌ Update verification failed - no controls found")
-                
-                # Force page update to ensure UI reflects changes
-                if self.app.page:
-                    print("🔄 Forcing page update after counterfactual tab update")
-                    self.app.page.update()
-                
-                print(f"✅ Counterfactual tab content updated successfully with {len(cf_components)} components")
+                self.app.tab_manager.counterfactual_content.controls = [empty_text]
             else:
-                print(f"❌ counterfactual_tab_content is None - cannot update!")
-                # Try to check what's in tab_manager
-                if self.app.tab_manager:
-                    print(f"🔍 Tab manager exists, available tabs: {list(self.app.tab_manager.tab_contents.keys())}")
-                else:
-                    print(f"❌ No tab manager found!")
-                
+                # Debug the analysis data
+                print(f"🔍 Analysis type: {type(self.app.counterfactual_analysis)}")
+
+                # Create counterfactual analysis display
+                display_creator = CounterfactualDisplayCreator()
+                cf_display_controls = display_creator.create_counterfactual_display(self.app.counterfactual_analysis)
+
+                print(f"📋 Created {len(cf_display_controls)} counterfactual display controls")
+
+                # Update content container
+                self.app.tab_manager.counterfactual_content.controls = cf_display_controls
+
+                # Show continue button in interactive mode
+                if self.app.human_in_loop and hasattr(self.app.tab_manager, 'counterfactual_continue_button'):
+                    self.app.tab_manager.counterfactual_continue_button.visible = True
+
+            # Hide progress bar
+            if hasattr(self.app.tab_manager, 'counterfactual_progress_bar'):
+                self.app.tab_manager.counterfactual_progress_bar.visible = False
+
+            if self.app.page:
+                self.app.page.update()
+            print(f"✅ Counterfactual tab content updated successfully")
+
         except Exception as e:
             print(f"❌ Error creating counterfactual display: {e}")
             import traceback
@@ -518,26 +543,39 @@ class DataUpdaters:
         print(f"📄 _update_report_tab called")
         print(f"📝 Report exists: {bool(self.app.final_report)}")
         print(f"📊 Report length: {len(self.app.final_report) if self.app.final_report else 0}")
-        
+
         if not self.app.final_report:
             print(f"❌ No report - exiting _update_report_tab")
             return
-        
-        # Create report components
-        report_components = self._create_report_components()
-        
-        # Update the report tab content
-        print(f"📋 Created report display components")
-        if self.app.tab_manager and self.app.tab_manager.get_tab_content('report'):
-            print(f"✅ Updating report_tab_content with final report")
-            self.app.tab_manager.update_tab_content('report', ft.Column(
-                report_components,
-                spacing=10,
-                expand=True
-            ))
+
+        # Update report content container
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'report_content'):
+            print(f"✅ Updating report_content with markdown")
+
+            # Create markdown display
+            markdown_display = ft.Markdown(
+                value=self.app.final_report,
+                selectable=True,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                auto_follow_links=False
+            )
+
+            self.app.tab_manager.report_content.controls = [markdown_display]
+
+            # Show save buttons
+            if hasattr(self.app.tab_manager, 'report_save_button'):
+                self.app.tab_manager.report_save_button.visible = True
+                self.app.tab_manager.report_export_json_button.visible = True
+
+            # Hide progress bar
+            if hasattr(self.app.tab_manager, 'report_progress_bar'):
+                self.app.tab_manager.report_progress_bar.visible = False
+
+            if self.app.page:
+                self.app.page.update()
             print(f"✅ Report tab content updated successfully")
         else:
-            print(f"❌ report_tab_content is None - cannot update!")
+            print(f"❌ report_content is None - cannot update!")
     
     def _create_report_components(self) -> List[ft.Control]:
         """Create components for the report tab."""
@@ -601,26 +639,39 @@ class DataUpdaters:
         print(f"📄 _update_preliminary_report_tab called")
         print(f"📝 Preliminary report exists: {bool(self.app.preliminary_report)}")
         print(f"📊 Preliminary report length: {len(self.app.preliminary_report) if self.app.preliminary_report else 0}")
-        
+
         if not self.app.preliminary_report:
             print(f"❌ No preliminary report - exiting _update_preliminary_report_tab")
             return
-        
-        # Create preliminary report components
-        preliminary_report_components = self._create_preliminary_report_components()
-        
-        # Update the preliminary report tab content
-        print(f"📋 Created preliminary report display components")
-        if self.app.tab_manager and self.app.tab_manager.get_tab_content('preliminary_report'):
-            print(f"✅ Updating preliminary_report_tab_content with preliminary report")
-            self.app.tab_manager.update_tab_content('preliminary_report', ft.Column(
-                preliminary_report_components,
-                spacing=10,
-                expand=True
-            ))
+
+        # Update preliminary report content container
+        if self.app.tab_manager and hasattr(self.app.tab_manager, 'preliminary_report_content'):
+            print(f"✅ Updating preliminary_report_content with markdown")
+
+            # Create markdown display
+            markdown_display = ft.Markdown(
+                value=self.app.preliminary_report,
+                selectable=True,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                auto_follow_links=False
+            )
+
+            self.app.tab_manager.preliminary_report_content.controls = [markdown_display]
+
+            # Show continue button in interactive mode
+            if self.app.human_in_loop and hasattr(self.app.tab_manager, 'preliminary_continue_button'):
+                self.app.tab_manager.preliminary_continue_button.visible = True
+                self.app.tab_manager.preliminary_skip_button.visible = True
+
+            # Hide progress bar
+            if hasattr(self.app.tab_manager, 'preliminary_progress_bar'):
+                self.app.tab_manager.preliminary_progress_bar.visible = False
+
+            if self.app.page:
+                self.app.page.update()
             print(f"✅ Preliminary report tab content updated successfully")
         else:
-            print(f"❌ preliminary_report_tab_content is None - cannot update!")
+            print(f"❌ preliminary_report_content is None - cannot update!")
     
     def _create_preliminary_report_components(self) -> List[ft.Control]:
         """Create components for the preliminary report tab."""

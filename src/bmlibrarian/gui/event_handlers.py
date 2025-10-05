@@ -266,9 +266,66 @@ class EventHandlers:
         if step in self.app.step_cards:
             self.app.step_cards[step].update_status(status, content)
 
+            # Auto-switch to relevant tab when step starts or is running
+            if status in ["running", "waiting"]:
+                self._switch_to_relevant_tab(step)
+                self._show_progress_bar_for_step(step, status)
+
             if status in ["completed", "tab_update"]:
                 self._handle_step_completion(step)
 
+            if self.app.page:
+                self.app.page.update()
+
+    def _show_progress_bar_for_step(self, step: WorkflowStep, status: str):
+        """Show the appropriate progress bar when a step starts running."""
+        from .data_updaters import DataUpdaters
+        updaters = DataUpdaters(self.app)
+
+        # Map steps to their progress bar show methods
+        if step == WorkflowStep.GENERATE_AND_EDIT_QUERY:
+            updaters.show_search_progress(visible=(status == "running"))
+        elif step == WorkflowStep.SEARCH_DOCUMENTS:
+            updaters.show_literature_progress(visible=(status == "running"))
+        elif step == WorkflowStep.SCORE_DOCUMENTS:
+            updaters.show_scoring_progress(visible=(status == "running"))
+        elif step == WorkflowStep.EXTRACT_CITATIONS:
+            updaters.show_citations_progress(visible=(status == "running"))
+        elif step == WorkflowStep.GENERATE_REPORT:
+            if self.app.tab_manager and hasattr(self.app.tab_manager, 'preliminary_progress_bar'):
+                self.app.tab_manager.preliminary_progress_bar.visible = (status == "running")
+        elif step == WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS:
+            if self.app.tab_manager and hasattr(self.app.tab_manager, 'counterfactual_progress_bar'):
+                self.app.tab_manager.counterfactual_progress_bar.visible = (status == "running")
+        elif step == WorkflowStep.EXPORT_REPORT:
+            if self.app.tab_manager and hasattr(self.app.tab_manager, 'report_progress_bar'):
+                self.app.tab_manager.report_progress_bar.visible = (status == "running")
+
+    def _switch_to_relevant_tab(self, step: WorkflowStep):
+        """Switch to the tab relevant for the current workflow step."""
+        if not self.app.tab_manager or not self.app.tab_manager.tabs_container:
+            return
+
+        # Map workflow steps to tab indices
+        # Tab order: Search(0), Literature(1), Scoring(2), Citations(3), Preliminary(4), Counterfactual(5), Report(6)
+        step_to_tab = {
+            WorkflowStep.COLLECT_RESEARCH_QUESTION: 0,        # Search tab
+            WorkflowStep.GENERATE_AND_EDIT_QUERY: 0,          # Search tab
+            WorkflowStep.SEARCH_DOCUMENTS: 1,                  # Literature tab
+            WorkflowStep.REVIEW_SEARCH_RESULTS: 1,             # Literature tab
+            WorkflowStep.SCORE_DOCUMENTS: 2,                   # Scoring tab
+            WorkflowStep.EXTRACT_CITATIONS: 3,                 # Citations tab
+            WorkflowStep.GENERATE_REPORT: 4,                   # Preliminary tab
+            WorkflowStep.PERFORM_COUNTERFACTUAL_ANALYSIS: 5,   # Counterfactual tab
+            WorkflowStep.SEARCH_CONTRADICTORY_EVIDENCE: 5,     # Counterfactual tab
+            WorkflowStep.EDIT_COMPREHENSIVE_REPORT: 6,         # Report tab
+            WorkflowStep.EXPORT_REPORT: 6                      # Report tab
+        }
+
+        tab_index = step_to_tab.get(step)
+        if tab_index is not None:
+            print(f"🔄 Auto-switching to tab {tab_index} for step {step.name}")
+            self.app.tab_manager.tabs_container.selected_index = tab_index
             if self.app.page:
                 self.app.page.update()
 
@@ -278,6 +335,10 @@ class EventHandlers:
         updaters = DataUpdaters(self.app)
 
         step_handlers = {
+            WorkflowStep.COLLECT_RESEARCH_QUESTION: lambda: updaters.update_search_tab(
+                self.app.research_question, show_edit_button=False
+            ),
+            WorkflowStep.GENERATE_AND_EDIT_QUERY: lambda: self._update_search_with_query(updaters),
             WorkflowStep.SEARCH_DOCUMENTS: updaters.update_documents_if_available,
             WorkflowStep.SCORE_DOCUMENTS: updaters.update_scored_documents_if_available,
             WorkflowStep.EXTRACT_CITATIONS: updaters.update_citations_if_available,
@@ -290,6 +351,20 @@ class EventHandlers:
         if handler:
             print(f"📌 {step.name} completed - updating tab...")
             handler()
+
+    def _update_search_with_query(self, updaters):
+        """Update Search tab with generated query."""
+        # Get the query from workflow executor if available
+        query = None
+        if hasattr(self.app.workflow_executor, 'last_query_text'):
+            query = self.app.workflow_executor.last_query_text
+
+        if query:
+            updaters.update_search_tab(
+                self.app.research_question,
+                query=query,
+                show_edit_button=False  # Button shown by interactive_handler if needed
+            )
 
     def _update_tabs_after_workflow(self):
         """Update all tabs with final workflow data."""

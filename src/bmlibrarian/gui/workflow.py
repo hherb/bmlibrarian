@@ -176,11 +176,22 @@ class WorkflowExecutor:
             # Step 5: Score Documents
             # Create progress callback for scoring (scoring agent format: current, total)
             def scoring_progress_callback(current: int, total: int):
+                # Update StepCard progress
                 if WorkflowStep.SCORE_DOCUMENTS in self.step_cards:
                     card = self.step_cards[WorkflowStep.SCORE_DOCUMENTS]
                     card.update_progress(current, total, f"Scoring document {current}/{total}")
-                    if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
-                        self.dialog_manager.page.update()
+
+                # Update Scoring tab progress bar
+                if self.tab_manager:
+                    from .data_updaters import DataUpdaters
+                    updaters = DataUpdaters(type('obj', (), {
+                        'tab_manager': self.tab_manager,
+                        'page': self.dialog_manager.page if self.dialog_manager else None
+                    })())
+                    updaters.show_scoring_progress(visible=True, current=current, total=total)
+
+                if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
+                    self.dialog_manager.page.update()
             
             scored_documents = self.steps_handler.execute_document_scoring(
                 research_question, documents, update_callback, 
@@ -266,11 +277,22 @@ class WorkflowExecutor:
             # Step 6: Extract Citations
             # Create progress callback for citation extraction (citation agent format: current, total)
             def citation_progress_callback(current: int, total: int):
+                # Update StepCard progress
                 if WorkflowStep.EXTRACT_CITATIONS in self.step_cards:
                     card = self.step_cards[WorkflowStep.EXTRACT_CITATIONS]
                     card.update_progress(current, total, f"Extracting citation {current}/{total}")
-                    if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
-                        self.dialog_manager.page.update()
+
+                # Update Citations tab progress bar
+                if self.tab_manager:
+                    from .data_updaters import DataUpdaters
+                    updaters = DataUpdaters(type('obj', (), {
+                        'tab_manager': self.tab_manager,
+                        'page': self.dialog_manager.page if self.dialog_manager else None
+                    })())
+                    updaters.show_citations_progress(visible=True, current=current, total=total)
+
+                if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
+                    self.dialog_manager.page.update()
             
             citations = self.steps_handler.execute_citation_extraction(
                 research_question, scored_documents, update_callback,

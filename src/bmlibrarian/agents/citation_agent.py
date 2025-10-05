@@ -316,6 +316,7 @@ Respond only with valid JSON."""
                 'pmid': citation.pmid,
                 'doi': citation.doi,
                 'publication': citation.publication,
+                'abstract': citation.abstract,  # Include abstract for highlighting in GUI
                 'created_at': citation.created_at.isoformat(),
                 'has_citation': True
             }
@@ -396,6 +397,7 @@ Respond only with valid JSON."""
                             pmid=result_data.get('pmid'),
                             doi=result_data.get('doi'),
                             publication=result_data.get('publication'),
+                            abstract=result_data.get('abstract'),  # Include abstract for highlighting
                             created_at=datetime.fromisoformat(result_data['created_at'])
                         )
                 

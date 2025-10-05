@@ -22,6 +22,7 @@ def extract_citation_data(citation: Any) -> Dict[str, Any]:
             'title': citation.document_title,
             'summary': citation.summary,
             'passage': citation.passage,
+            'abstract': getattr(citation, 'abstract', None),  # Full abstract for highlighting
             'authors': getattr(citation, 'authors', []),
             'publication_date': getattr(citation, 'publication_date', 'Unknown'),
             'publication': getattr(citation, 'publication', None),
@@ -45,6 +46,8 @@ def extract_citation_data(citation: Any) -> Dict[str, Any]:
                   citation.get('content') or
                   'No passage available')
 
+        abstract = citation.get('abstract', None)  # Full abstract for highlighting
+
         authors = citation.get('authors', [])
         if isinstance(authors, str):
             authors = [authors] if authors else []
@@ -53,6 +56,7 @@ def extract_citation_data(citation: Any) -> Dict[str, Any]:
             'title': title,
             'summary': summary,
             'passage': passage,
+            'abstract': abstract,
             'authors': authors,
             'publication_date': citation.get('publication_date', 'Unknown'),
             'publication': citation.get('publication', None),
@@ -68,6 +72,7 @@ def extract_citation_data(citation: Any) -> Dict[str, Any]:
             'title': 'Unknown Citation',
             'summary': citation_str[:200] + "..." if len(citation_str) > 200 else citation_str,
             'passage': citation_str[:200] + "..." if len(citation_str) > 200 else citation_str,
+            'abstract': None,
             'authors': [],
             'publication_date': 'Unknown',
             'publication': None,
@@ -138,6 +143,8 @@ def create_citation_metadata(citation_data: Dict[str, Any]) -> List[tuple]:
 
 def create_citation_content_sections(citation_data: Dict[str, Any]) -> List[ft.Control]:
     """Create content sections for citation card."""
+    from .text_highlighting import create_highlighted_abstract
+
     sections = []
 
     # Full title
@@ -157,13 +164,33 @@ def create_citation_content_sections(citation_data: Dict[str, Any]) -> List[ft.C
         ft.Colors.GREEN_50
     ))
 
-    # Passage
-    sections.append(create_text_content_section(
-        "Extracted Passage:",
-        citation_data['passage'],
-        ft.Colors.GREY_100,
-        italic=True
-    ))
+    # Abstract with highlighted passage (or just passage if no abstract)
+    if citation_data.get('abstract'):
+        # Show full abstract with highlighted passage
+        sections.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Text("Abstract with Highlighted Citation:",
+                           size=10, weight=ft.FontWeight.BOLD),
+                    create_highlighted_abstract(
+                        citation_data['abstract'],
+                        citation_data['passage']
+                    )
+                ], spacing=5),
+                padding=ft.padding.all(10),
+                bgcolor=ft.Colors.GREY_50,
+                border_radius=5,
+                border=ft.border.all(1, ft.Colors.GREY_300)
+            )
+        )
+    else:
+        # Fallback: just show the passage if no abstract available
+        sections.append(create_text_content_section(
+            "Extracted Passage:",
+            citation_data['passage'],
+            ft.Colors.GREY_100,
+            italic=True
+        ))
 
     return sections
 

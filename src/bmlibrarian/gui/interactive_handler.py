@@ -31,7 +31,7 @@ class InteractiveHandler:
     
     def _show_inline_query_editing(self, query_text: str, research_question: str,
                                  update_callback: Callable, query_cleaner: Callable) -> Optional[str]:
-        """Show inline query editing in the step card."""
+        """Show inline query editing using Search tab or StepCard fallback."""
         self.waiting_for_user = True
         self.user_response = None
         edited_query = None
@@ -65,44 +65,59 @@ class InteractiveHandler:
             else:
                 edited_query = None  # User cancelled
             self.waiting_for_user = False
-        
-        # Get the step card for query generation and enable inline editing
-        print(f"Available step cards: {list(self.step_cards.keys()) if self.step_cards else 'None'}")
-        step_card = self._get_step_card(WorkflowStep.GENERATE_AND_EDIT_QUERY)
-        print(f"Retrieved step card for query editing: {step_card is not None}")
-        
-        if step_card:
+
+        # Try to use Search tab first (new tab-based UI)
+        if self.tab_manager and hasattr(self.tab_manager, 'enable_search_query_editing'):
             try:
-                step_card.enable_inline_editing(query_text, handle_edit_result)
-                # Trigger a page update to show the editing interface
-                self._trigger_page_update(update_callback, WorkflowStep.GENERATE_AND_EDIT_QUERY)
-                print("Inline query editing enabled successfully")
+                print("Using Search tab for query editing (new tab-based UI)")
+                self.tab_manager.enable_search_query_editing(query_text, handle_edit_result)
+                print("Search tab query editing enabled successfully")
             except Exception as e:
-                print(f"Error enabling inline editing: {e} - auto-approving query")
+                print(f"Error enabling Search tab editing: {e} - falling back to StepCard")
+                # Fall through to StepCard fallback
+                self.tab_manager = None
+
+        # Fallback to StepCard (old UI or if Search tab failed)
+        if not self.tab_manager:
+            print(f"Available step cards: {list(self.step_cards.keys()) if self.step_cards else 'None'}")
+            step_card = self._get_step_card(WorkflowStep.GENERATE_AND_EDIT_QUERY)
+            print(f"Retrieved step card for query editing: {step_card is not None}")
+
+            if step_card:
+                try:
+                    step_card.enable_inline_editing(query_text, handle_edit_result)
+                    # Trigger a page update to show the editing interface
+                    self._trigger_page_update(update_callback, WorkflowStep.GENERATE_AND_EDIT_QUERY)
+                    print("Inline query editing enabled successfully on StepCard")
+                except Exception as e:
+                    print(f"Error enabling inline editing: {e} - auto-approving query")
+                    return query_text
+            else:
+                print("Step card not found - auto-approving query")
                 return query_text
-        else:
-            print("Step card not found - auto-approving query")
-            print("This means inline editing is not available, falling back to showing full query")
-            return query_text
-        
+
         # Wait for user response
-        print("Workflow paused: Waiting for inline query editing...")
+        print("Workflow paused: Waiting for query editing (Search tab or StepCard)...")
         timeout = 300  # 5 minute timeout
         elapsed = 0
-        
+
         while self.waiting_for_user and elapsed < timeout:
             time.sleep(0.1)  # Check every 100ms
             elapsed += 0.1
-        
+
         if elapsed >= timeout:
             print("Query editing timeout - using original query")
             return query_text
-        
+
         # Disable inline editing
-        if step_card:
-            step_card.disable_inline_editing()
-        
-        print(f"Inline query editing completed. Result: {edited_query is not None}")
+        if self.tab_manager and hasattr(self.tab_manager, 'disable_search_query_editing'):
+            self.tab_manager.disable_search_query_editing()
+        else:
+            step_card = self._get_step_card(WorkflowStep.GENERATE_AND_EDIT_QUERY)
+            if step_card:
+                step_card.disable_inline_editing()
+
+        print(f"Query editing completed. Result: {edited_query is not None}")
         return edited_query
     
     def get_user_approval_for_search_results(self, documents: List[Dict[str, Any]], 
