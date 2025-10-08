@@ -462,7 +462,7 @@ class EventHandlers:
                 ft.Text("• [filename].md - Markdown formatted report", size=11, color=ft.Colors.GREY_700)
             )
 
-        dialog_content = ft.Column([
+        dialog_content_column = ft.Column([
             ft.Text(title, size=18, weight=ft.FontWeight.BOLD),
             ft.Text("Enter the path where you want to save:", size=12),
             *desc_lines,
@@ -473,6 +473,16 @@ class EventHandlers:
                 ft.ElevatedButton("Save", on_click=handle_save)
             ], alignment=ft.MainAxisAlignment.END)
         ], spacing=15)
+
+        # Wrap the dialog content in a styled container
+        dialog_content = ft.Container(
+            content=dialog_content_column,
+            width=600,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            padding=20,
+            shadow=ft.BoxShadow(blur_radius=10, color=ft.Colors.GREY_400)
+        )
 
         self._show_overlay_dialog(dialog_content)
 

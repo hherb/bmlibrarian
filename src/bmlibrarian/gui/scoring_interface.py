@@ -6,7 +6,10 @@ human editing, and the "Add More Documents" feature.
 """
 
 import flet as ft
+import logging
 from typing import Callable, Dict, List, Tuple, Any
+
+logger = logging.getLogger(__name__)
 
 
 class ScoringInterface:
@@ -26,6 +29,10 @@ class ScoringInterface:
         self.progress_text = None
         self.scoring_container = None
         self.main_container = None
+
+        # PDF viewer
+        from .pdf_viewer_dialog import PDFViewerDialog
+        self.pdf_viewer = PDFViewerDialog(page)
 
     def create_interface(self) -> ft.Container:
         """Create the main scoring interface container."""
@@ -212,6 +219,19 @@ class ScoringInterface:
             on_change=lambda e: self._on_score_override(index, e.control.value)
         )
 
+        # PDF button (show full text or fetch full text)
+        pdf_button = self._create_pdf_button(doc)
+
+        # Build controls row
+        controls_row = ft.Row([
+            approval_checkbox,
+            score_input
+        ], spacing=20)
+
+        # Add PDF button if available
+        if pdf_button:
+            controls_row.controls.append(pdf_button)
+
         # Build card
         return ft.Container(
             content=ft.Column([
@@ -231,10 +251,7 @@ class ScoringInterface:
                     bgcolor=ft.Colors.BLUE_50,
                     border_radius=5
                 ),
-                ft.Row([
-                    approval_checkbox,
-                    score_input
-                ], spacing=20)
+                controls_row
             ], spacing=8),
             padding=ft.padding.all(15),
             bgcolor=ft.Colors.GREY_50,
@@ -292,3 +309,175 @@ class ScoringInterface:
         """Disable scoring mode and show results."""
         self.scoring_mode = False
         # The scoring tab will be updated by the normal update flow
+
+    def _create_pdf_button(self, doc: dict) -> ft.Control:
+        """Create PDF button(s) for a document.
+
+        Args:
+            doc: Document dictionary
+
+        Returns:
+            Button control or Row of buttons, or None if nothing available
+        """
+        from ..utils.pdf_manager import PDFManager
+
+        pdf_manager = PDFManager()
+
+        # Primary button (main action)
+        primary_button = None
+
+        # Check if PDF already exists locally
+        if pdf_manager.pdf_exists(doc):
+            primary_button = ft.ElevatedButton(
+                "Show Full Text",
+                icon=ft.Icons.PICTURE_AS_PDF,
+                on_click=lambda e: self._on_show_pdf(doc),
+                bgcolor=ft.Colors.GREEN_600,
+                color=ft.Colors.WHITE,
+                tooltip="Open PDF with system viewer"
+            )
+        # Check if PDF URL is available for download
+        elif doc.get('pdf_url'):
+            primary_button = ft.ElevatedButton(
+                "Fetch Full Text",
+                icon=ft.Icons.DOWNLOAD,
+                on_click=lambda e: self._on_fetch_pdf(doc),
+                bgcolor=ft.Colors.ORANGE_600,
+                color=ft.Colors.WHITE,
+                tooltip="Download and open PDF"
+            )
+        # Check if document URL is available
+        elif doc.get('url'):
+            primary_button = ft.ElevatedButton(
+                "Browse Online",
+                icon=ft.Icons.OPEN_IN_BROWSER,
+                on_click=lambda e: self._on_browse_url(doc, doc['url']),
+                bgcolor=ft.Colors.BLUE_600,
+                color=ft.Colors.WHITE,
+                tooltip="Open document page in browser"
+            )
+        # Check if DOI is available (can construct URL)
+        elif doc.get('doi'):
+            doi_url = f"https://doi.org/{doc['doi']}"
+            primary_button = ft.ElevatedButton(
+                "Browse DOI",
+                icon=ft.Icons.OPEN_IN_BROWSER,
+                on_click=lambda e: self._on_browse_url(doc, doi_url),
+                bgcolor=ft.Colors.BLUE_400,
+                color=ft.Colors.WHITE,
+                tooltip=f"Open DOI: {doc['doi']}"
+            )
+
+        # Always provide "Import PDF" option if no local PDF exists
+        if not pdf_manager.pdf_exists(doc):
+            import_button = ft.ElevatedButton(
+                "Import PDF",
+                icon=ft.Icons.UPLOAD_FILE,
+                on_click=lambda e: self._on_import_pdf(doc),
+                bgcolor=ft.Colors.PURPLE_600,
+                color=ft.Colors.WHITE,
+                tooltip="Import PDF file from your computer"
+            )
+
+            # If we have a primary button, show both
+            if primary_button:
+                return ft.Row([primary_button, import_button], spacing=10)
+            else:
+                # Only import button available
+                return import_button
+        else:
+            # PDF exists, just return primary button
+            return primary_button
+
+    def _on_show_pdf(self, doc: dict):
+        """Handle 'Show Full Text' button click.
+
+        Args:
+            doc: Document dictionary
+        """
+        from ..utils.pdf_manager import PDFManager
+
+        pdf_manager = PDFManager()
+        pdf_path = pdf_manager.get_pdf_path(doc)
+
+        if pdf_path and pdf_path.exists():
+            self.pdf_viewer.show_pdf(pdf_path, doc)
+        else:
+            # Shouldn't happen, but handle gracefully
+            self._show_error("PDF file not found")
+
+    def _on_fetch_pdf(self, doc: dict):
+        """Handle 'Fetch Full Text' button click.
+
+        Args:
+            doc: Document dictionary
+        """
+        def on_success(pdf_path):
+            # Update button state (would need to rebuild card, but for now just notify)
+            pass
+
+        def on_error(error_msg):
+            pass
+
+        self.pdf_viewer.download_and_show_pdf(doc, on_success, on_error)
+
+    def _on_browse_url(self, doc: dict, url: str):
+        """Handle 'Browse Online' or 'Browse DOI' button click.
+
+        Args:
+            doc: Document dictionary
+            url: URL to open in browser
+        """
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+            # Show confirmation
+            title = doc.get('title', 'Document')
+            if self.page:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(f"Opening in browser: {title[:50]}..."),
+                        bgcolor=ft.Colors.BLUE_700
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Failed to open URL in browser: {e}")
+            self._show_error(f"Failed to open browser: {str(e)}")
+
+    def _on_import_pdf(self, doc: dict):
+        """Handle 'Import PDF' button click.
+
+        Args:
+            doc: Document dictionary
+        """
+        def on_success(pdf_path):
+            # Rebuild the scoring UI to update button from "Import" to "Show"
+            # For now, just show success message
+            if self.page:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(f"PDF imported successfully!"),
+                        bgcolor=ft.Colors.GREEN_700
+                    )
+                )
+
+        def on_error(error_msg):
+            # Error already shown by pdf_viewer
+            pass
+
+        self.pdf_viewer.import_pdf(doc, on_success, on_error)
+
+    def _show_error(self, message: str):
+        """Show error snackbar.
+
+        Args:
+            message: Error message
+        """
+        if self.page:
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text(message),
+                    bgcolor=ft.Colors.RED_700
+                )
+            )
