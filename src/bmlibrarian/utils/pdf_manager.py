@@ -77,12 +77,18 @@ class PDFManager:
             return False
         return pdf_path.exists()
 
-    def download_pdf(self, document: Dict[str, Any], timeout: int = 30) -> Optional[Path]:
-        """Download PDF from URL and save to organized storage.
+    def download_pdf(
+        self,
+        document: Dict[str, Any],
+        timeout: int = 30,
+        max_retries: int = 3
+    ) -> Optional[Path]:
+        """Download PDF from URL and save to organized storage with retry logic.
 
         Args:
             document: Document dictionary with pdf_url
             timeout: Download timeout in seconds
+            max_retries: Maximum number of retry attempts
 
         Returns:
             Path to downloaded file, or None if download failed
@@ -100,26 +106,104 @@ class PDFManager:
         if pdf_path is None:
             return None
 
-        # Download the file
-        try:
-            logger.info(f"Downloading PDF from {pdf_url}")
-            response = requests.get(pdf_url, timeout=timeout, stream=True)
-            response.raise_for_status()
+        # Try download with retries
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    logger.info(f"Retry attempt {attempt + 1}/{max_retries} for {pdf_url}")
+                else:
+                    logger.info(f"Downloading PDF from {pdf_url}")
 
-            # Save to file
-            with open(pdf_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                # Add headers to mimic browser request
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'Accept': 'application/pdf,*/*'
+                }
 
-            logger.info(f"PDF saved to {pdf_path}")
-            return pdf_path
+                response = requests.get(
+                    pdf_url,
+                    timeout=timeout,
+                    stream=True,
+                    headers=headers,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
 
-        except requests.RequestException as e:
-            logger.error(f"Failed to download PDF: {e}")
-            return None
-        except IOError as e:
-            logger.error(f"Failed to save PDF: {e}")
-            return None
+                # Verify content type if available
+                content_type = response.headers.get('content-type', '').lower()
+                if content_type and 'pdf' not in content_type and 'octet-stream' not in content_type:
+                    logger.warning(f"Unexpected content type: {content_type} for {pdf_url}")
+
+                # Save to file with progress tracking
+                total_size = 0
+                with open(pdf_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:  # filter out keep-alive new chunks
+                            f.write(chunk)
+                            total_size += len(chunk)
+
+                # Verify file was actually written
+                if total_size == 0:
+                    logger.error(f"Downloaded file is empty: {pdf_url}")
+                    if pdf_path.exists():
+                        pdf_path.unlink()
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+
+                logger.info(f"PDF saved to {pdf_path} ({total_size} bytes)")
+                return pdf_path
+
+            except requests.exceptions.Timeout as e:
+                logger.error(f"Download timeout for {pdf_url}: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                return None
+
+            except requests.exceptions.HTTPError as e:
+                # Don't retry on 403 Forbidden or 404 Not Found
+                if e.response.status_code in [403, 404, 401]:
+                    logger.error(f"HTTP {e.response.status_code} error (no retry): {pdf_url}")
+                    return None
+                logger.error(f"HTTP error downloading PDF: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                return None
+
+            except requests.exceptions.ChunkedEncodingError as e:
+                logger.error(f"Incomplete download (chunked encoding error): {e}")
+                # Clean up partial file
+                if pdf_path.exists():
+                    pdf_path.unlink()
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2)  # Wait before retry
+                    continue
+                return None
+
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"Connection error: {e}")
+                if pdf_path.exists():
+                    pdf_path.unlink()
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2)
+                    continue
+                return None
+
+            except requests.RequestException as e:
+                logger.error(f"Failed to download PDF: {e}")
+                if pdf_path.exists():
+                    pdf_path.unlink()
+                if attempt < max_retries - 1:
+                    continue
+                return None
+
+            except IOError as e:
+                logger.error(f"Failed to save PDF: {e}")
+                return None
+
+        return None
 
     def get_or_download_pdf(self, document: Dict[str, Any]) -> Optional[Path]:
         """Get PDF path if it exists, otherwise download it.
@@ -630,8 +714,8 @@ class PDFManager:
             if not doc.get('pdf_filename'):
                 doc['pdf_filename'] = self._generate_filename(doc)
 
-            # Download PDF
-            pdf_path = self.download_pdf(doc, timeout=timeout)
+            # Download PDF with retry logic
+            pdf_path = self.download_pdf(doc, timeout=timeout, max_retries=3)
 
             if not pdf_path:
                 return {
@@ -669,4 +753,335 @@ class PDFManager:
                 'doc_id': doc_id,
                 'reason': 'exception',
                 'error': str(e)
+            }
+
+    def reconstruct_doi_from_filename(self, filename: str) -> Optional[str]:
+        """Reconstruct DOI from PDF filename.
+
+        Reverses the DOI-to-filename conversion where slashes were replaced
+        with underscores OR hyphens.
+
+        Args:
+            filename: PDF filename (e.g., "10.1234_example.pdf" or "10.1234-example.pdf")
+
+        Returns:
+            Reconstructed DOI (e.g., "10.1234/example") or None if not DOI-like
+        """
+        # Remove .pdf extension
+        name_without_ext = filename.replace('.pdf', '')
+
+        # Check if it looks like a DOI (starts with "10.")
+        if not name_without_ext.startswith('10.'):
+            return None
+
+        # Some filenames use hyphens instead of underscores
+        # Try underscores first (most common)
+        if '_' in name_without_ext:
+            reconstructed_doi = name_without_ext.replace('_', '/')
+        elif '-' in name_without_ext:
+            # Fallback to hyphens (less common but exists)
+            reconstructed_doi = name_without_ext.replace('-', '/')
+        else:
+            # No separators - probably not a DOI format we can reconstruct
+            return None
+
+        return reconstructed_doi
+
+    def find_document_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
+        """Find document in database by DOI.
+
+        Args:
+            doi: DOI to search for
+
+        Returns:
+            Document dictionary if found, None otherwise
+        """
+        if not self.db_conn:
+            logger.error("No database connection available")
+            return None
+
+        try:
+            with self.db_conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, doi, title, publication_date, pdf_filename, pdf_url
+                    FROM document
+                    WHERE doi = %s
+                """, (doi,))
+                result = cursor.fetchone()
+
+                if result:
+                    doc_id, doi, title, pub_date, pdf_filename, pdf_url = result
+                    return {
+                        'id': doc_id,
+                        'doi': doi,
+                        'title': title,
+                        'publication_date': str(pub_date) if pub_date else None,
+                        'pdf_filename': pdf_filename,
+                        'pdf_url': pdf_url
+                    }
+
+        except Exception as e:
+            logger.error(f"Failed to query database for DOI {doi}: {e}")
+
+        return None
+
+    def match_orphaned_pdfs(
+        self,
+        directory: Optional[Path] = None,
+        dry_run: bool = True,
+        include_subdirs: bool = True
+    ) -> Dict[str, Any]:
+        """Match orphaned PDFs to documents by reconstructing DOI from filename.
+
+        Finds PDF files in the specified directory (or base_dir), attempts to
+        reconstruct DOI from filename, searches database for matching document,
+        and optionally links the PDF to the document.
+
+        Args:
+            directory: Directory to search for orphaned PDFs (default: base_dir)
+            dry_run: If True, only report matches without updating database
+            include_subdirs: If True, also search 'failed' and 'unknown' subdirs
+
+        Returns:
+            Dictionary with matching statistics and details
+        """
+        if directory is None:
+            directory = self.base_dir
+
+        if not directory.exists():
+            logger.error(f"Directory does not exist: {directory}")
+            return {
+                'error': f'Directory not found: {directory}',
+                'total': 0,
+                'matched': 0,
+                'linked': 0,
+                'failed': 0
+            }
+
+        stats = {
+            'total_pdfs': 0,
+            'doi_reconstructed': 0,
+            'matched': 0,
+            'linked': 0,
+            'already_linked': 0,
+            'replaced': 0,
+            'duplicates_deleted': 0,
+            'no_match': 0,
+            'not_doi_format': 0,
+            'failed': 0,
+            'details': []
+        }
+
+        # Determine directories to search
+        search_dirs = [directory]
+
+        if include_subdirs:
+            # Also search common orphan directories
+            failed_dir = directory / 'failed'
+            unknown_dir = directory / 'unknown'
+
+            if failed_dir.exists():
+                search_dirs.append(failed_dir)
+                logger.info(f"Will also search: {failed_dir}")
+
+            if unknown_dir.exists():
+                search_dirs.append(unknown_dir)
+                logger.info(f"Will also search: {unknown_dir}")
+
+        # Collect all PDF files from all search directories
+        pdf_files = []
+        for search_dir in search_dirs:
+            logger.info(f"Searching for orphaned PDFs in: {search_dir}")
+            dir_pdfs = list(search_dir.glob('*.pdf'))
+            pdf_files.extend(dir_pdfs)
+            logger.info(f"  Found {len(dir_pdfs)} PDFs")
+
+        stats['total_pdfs'] = len(pdf_files)
+        logger.info(f"Total PDFs found: {stats['total_pdfs']}")
+
+        for pdf_file in pdf_files:
+            filename = pdf_file.name
+
+            # Try to reconstruct DOI from filename
+            doi = self.reconstruct_doi_from_filename(filename)
+
+            if not doi:
+                stats['not_doi_format'] += 1
+                stats['details'].append({
+                    'filename': filename,
+                    'status': 'not_doi_format'
+                })
+                continue
+
+            stats['doi_reconstructed'] += 1
+
+            # Search database for document with this DOI
+            doc = self.find_document_by_doi(doi)
+
+            if not doc:
+                stats['no_match'] += 1
+                stats['details'].append({
+                    'filename': filename,
+                    'doi': doi,
+                    'status': 'no_match'
+                })
+                continue
+
+            stats['matched'] += 1
+
+            # Check if document already has a pdf_filename
+            if doc.get('pdf_filename'):
+                # First, check if file exists at the CORRECT year-based location
+                correct_path = self.get_pdf_path(doc)
+
+                if correct_path and correct_path.exists():
+                    # File exists at correct location
+                    # Check if orphaned file is the same or different
+                    if correct_path.resolve() == pdf_file.resolve():
+                        # Same file - already in correct location, just skip
+                        stats['already_linked'] += 1
+                        stats['details'].append({
+                            'filename': filename,
+                            'doi': doi,
+                            'doc_id': doc['id'],
+                            'status': 'already_in_correct_location',
+                            'path': str(correct_path)
+                        })
+                        continue
+                    else:
+                        # Different file - orphaned is a duplicate
+                        # Compare file dates, keep newer
+                        orphaned_mtime = pdf_file.stat().st_mtime
+                        correct_mtime = correct_path.stat().st_mtime
+
+                        if orphaned_mtime > correct_mtime:
+                            # Orphaned is newer - replace correct file
+                            logger.info(f"Orphaned PDF {pdf_file} is newer than {correct_path} - replacing")
+                            if not dry_run:
+                                correct_path.unlink()  # Delete older file
+                                # Will move orphaned below and count as replacement
+                                stats['replaced'] += 1
+                            stats['details'].append({
+                                'filename': filename,
+                                'doi': doi,
+                                'doc_id': doc['id'],
+                                'status': 'will_replace_older' if dry_run else 'replaced_older',
+                                'newer': str(pdf_file),
+                                'deleted': str(correct_path)
+                            })
+                        else:
+                            # Correct file is newer - delete orphaned
+                            logger.info(f"Orphaned PDF {pdf_file} is older than {correct_path} - deleting")
+                            if not dry_run:
+                                pdf_file.unlink()
+                            stats['duplicates_deleted'] += 1
+                            stats['details'].append({
+                                'filename': filename,
+                                'doi': doi,
+                                'doc_id': doc['id'],
+                                'status': 'duplicate_deleted_older',
+                                'kept': str(correct_path),
+                                'deleted': str(pdf_file)
+                            })
+                            continue
+                else:
+                    # File NOT at correct location - need to move orphaned file there
+                    logger.info(f"Document {doc['id']} has pdf_filename but not at correct location - will move {pdf_file}")
+
+            # Link PDF to document (moves to correct location and updates DB)
+            if not dry_run:
+                result = self._link_orphaned_pdf(pdf_file, doc)
+                if result['status'] == 'linked':
+                    stats['linked'] += 1
+                else:
+                    stats['failed'] += 1
+                stats['details'].append(result)
+            else:
+                stats['details'].append({
+                    'filename': filename,
+                    'doi': doi,
+                    'doc_id': doc['id'],
+                    'doc_title': doc.get('title', 'Unknown'),
+                    'status': 'would_link',
+                    'current_location': str(pdf_file)
+                })
+
+        return stats
+
+    def _link_orphaned_pdf(
+        self,
+        pdf_file: Path,
+        doc: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Link an orphaned PDF file to a document.
+
+        Moves the PDF to the year-based directory structure and updates
+        the database.
+
+        Args:
+            pdf_file: Path to orphaned PDF file
+            doc: Document dictionary
+
+        Returns:
+            Dictionary with link result details
+        """
+        doc_id = doc['id']
+        filename = pdf_file.name
+
+        try:
+            # Set pdf_filename in document for path calculation
+            doc['pdf_filename'] = filename
+
+            # Determine target path (year-based)
+            relative_path = self.get_relative_pdf_path(doc)
+            if not relative_path:
+                return {
+                    'filename': filename,
+                    'doi': doc.get('doi'),
+                    'doc_id': doc_id,
+                    'status': 'failed',
+                    'reason': 'Could not determine target path'
+                }
+
+            target_path = self.base_dir / relative_path
+
+            # Create year directory if needed
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Move file
+            shutil.move(str(pdf_file), str(target_path))
+            logger.info(f"Moved orphaned PDF: {pdf_file} -> {target_path}")
+
+            # Update database
+            success = self.update_database_pdf_path(doc_id, relative_path)
+
+            if not success:
+                # Try to move file back
+                shutil.move(str(target_path), str(pdf_file))
+                return {
+                    'filename': filename,
+                    'doi': doc.get('doi'),
+                    'doc_id': doc_id,
+                    'status': 'failed',
+                    'reason': 'Database update failed, file moved back'
+                }
+
+            return {
+                'filename': filename,
+                'doi': doc.get('doi'),
+                'doc_id': doc_id,
+                'doc_title': doc.get('title', 'Unknown'),
+                'status': 'linked',
+                'from': str(pdf_file),
+                'to': str(relative_path)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to link orphaned PDF {filename} to document {doc_id}: {e}")
+            return {
+                'filename': filename,
+                'doi': doc.get('doi'),
+                'doc_id': doc_id,
+                'status': 'failed',
+                'reason': str(e)
             }
