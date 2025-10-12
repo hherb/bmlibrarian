@@ -29,6 +29,7 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 - **Local LLM Integration**: Ollama service for privacy-preserving AI inference
 - **Comprehensive Testing**: Unit tests for all agents with >95% coverage
 - **GUI Applications**: Desktop interfaces for research and configuration
+- **Browser-Based Downloader**: Playwright automation for Cloudflare-protected PDFs (optional)
 
 ### 📊 Advanced Analytics
 - **Counterfactual Analysis**: Systematic search for contradictory evidence with progressive audit trail
@@ -126,6 +127,31 @@ uv run python bmlibrarian_config_gui.py
 # - Parameter tuning with interactive sliders
 # - Connection testing and validation
 ```
+
+#### Browser-Based PDF Download (Optional)
+
+For PDFs protected by Cloudflare or anti-bot measures:
+
+```bash
+# Install browser automation support (optional)
+uv add --optional browser
+uv run python -m playwright install chromium
+
+# Download PDFs using browser automation
+uv run python download_pdfs_with_browser.py --batch-size 20
+
+# Run with visible browser (for debugging)
+uv run python download_pdfs_with_browser.py --visible
+
+# Test the browser downloader
+uv run python test_browser_download.py
+```
+
+See [BROWSER_DOWNLOADER.md](BROWSER_DOWNLOADER.md) for detailed documentation on:
+- Cloudflare bypass techniques
+- CAPTCHA handling
+- Stealth mode configuration
+- Performance optimization
 
 #### Multi-Agent Workflow (Programmatic)
 ```python

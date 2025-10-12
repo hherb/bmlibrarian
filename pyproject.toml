@@ -12,6 +12,12 @@ dependencies = [
     "requests>=2.31.0",
     "psycopg-binary>=3.2.9",
     "flet[all]>=0.24.1",
+    "playwright>=1.55.0",
+]
+
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.48.0",
 ]
 
 [project.scripts]

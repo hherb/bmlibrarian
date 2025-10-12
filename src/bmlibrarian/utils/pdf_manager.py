@@ -81,7 +81,8 @@ class PDFManager:
         self,
         document: Dict[str, Any],
         timeout: int = 30,
-        max_retries: int = 3
+        max_retries: int = 3,
+        use_browser_fallback: bool = True
     ) -> Optional[Path]:
         """Download PDF from URL and save to organized storage with retry logic.
 
@@ -89,6 +90,7 @@ class PDFManager:
             document: Document dictionary with pdf_url
             timeout: Download timeout in seconds
             max_retries: Maximum number of retry attempts
+            use_browser_fallback: If True, use browser automation when regular download fails
 
         Returns:
             Path to downloaded file, or None if download failed
@@ -202,6 +204,33 @@ class PDFManager:
             except IOError as e:
                 logger.error(f"Failed to save PDF: {e}")
                 return None
+
+        # All retries failed - try browser-based download if enabled
+        if use_browser_fallback:
+            logger.info(f"Regular download failed, attempting browser-based download for: {pdf_url}")
+            try:
+                from .browser_downloader import download_pdf_with_browser
+
+                result = download_pdf_with_browser(
+                    url=pdf_url,
+                    save_path=pdf_path,
+                    headless=True,
+                    timeout=timeout * 1000  # Convert to milliseconds
+                )
+
+                if result['status'] == 'success':
+                    logger.info(f"Browser download successful: {result['path']} ({result['size']} bytes)")
+                    return pdf_path
+                else:
+                    logger.error(f"Browser download failed: {result.get('error', 'Unknown error')}")
+
+            except ImportError:
+                logger.warning(
+                    "Browser downloader not available. Install with: "
+                    "uv add playwright && uv run python -m playwright install chromium"
+                )
+            except Exception as e:
+                logger.error(f"Browser download exception: {e}")
 
         return None
 
