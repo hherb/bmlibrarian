@@ -182,7 +182,11 @@ class DataUpdaters:
 
         from .counterfactual_progressive import create_results_display
 
-        self.app.tab_manager.counterfactual_results_section.content = create_results_display(contradictory_evidence)
+        # Pass page to enable PDF functionality in unified document cards
+        self.app.tab_manager.counterfactual_results_section.content = create_results_display(
+            contradictory_evidence,
+            page=self.app.page
+        )
         self.app.tab_manager.counterfactual_results_section.visible = True
 
         if self.app.page:
@@ -197,10 +201,12 @@ class DataUpdaters:
 
         from .counterfactual_progressive import create_citations_display
 
+        # Pass page to enable PDF functionality and unified citation cards with highlighting
         self.app.tab_manager.counterfactual_citations_section.content = create_citations_display(
             contradictory_citations,
             rejected_citations,
-            no_citation_extracted
+            no_citation_extracted,
+            page=self.app.page
         )
         self.app.tab_manager.counterfactual_citations_section.visible = True
 
@@ -405,7 +411,8 @@ class DataUpdaters:
     
     def _update_literature_tab(self):
         """Update the literature tab with found documents."""
-        from .display_utils import DocumentCardCreator
+        from .card_factory import CardFactory
+        from ..utils.pdf_manager import PDFManager
 
         print(f"📚 _update_literature_tab called")
         print(f"🔢 Documents count: {len(self.app.documents) if self.app.documents else 0}")
@@ -414,9 +421,10 @@ class DataUpdaters:
             print(f"❌ No documents - exiting _update_literature_tab")
             return
 
-        # Create document cards
-        card_creator = DocumentCardCreator()
-        doc_cards = card_creator.create_document_cards_list(self.app.documents, show_score=False)
+        # Create document cards using CardFactory with PDF manager
+        pdf_manager = PDFManager()
+        card_factory = CardFactory(self.app.page, pdf_manager=pdf_manager)
+        doc_cards = card_factory.create_search_results_cards(self.app.documents)
 
         # Update document list container
         if self.app.tab_manager and hasattr(self.app.tab_manager, 'literature_document_list'):
@@ -439,7 +447,8 @@ class DataUpdaters:
     
     def _update_scoring_tab(self):
         """Update the scoring tab with scored documents ordered by score."""
-        from .display_utils import DocumentCardCreator
+        from .card_factory import CardFactory
+        from ..utils.pdf_manager import PDFManager
         from ..config import get_search_config
         import flet as ft
 
@@ -458,8 +467,9 @@ class DataUpdaters:
         high_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) > score_threshold]
         low_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) <= score_threshold]
 
-        # Create document cards with edit functionality
-        card_creator = DocumentCardCreator()
+        # Create document cards with edit functionality using CardFactory
+        pdf_manager = PDFManager()
+        card_factory = CardFactory(self.app.page, pdf_manager=pdf_manager)
 
         # Build components list
         all_components = []
@@ -567,7 +577,8 @@ class DataUpdaters:
     
     def _update_citations_tab(self):
         """Update the citations tab with extracted citations."""
-        from .display_utils import CitationCardCreator
+        from .card_factory import CardFactory
+        from ..utils.pdf_manager import PDFManager
 
         print(f"📝 _update_citations_tab called")
         print(f"🔢 Citations count: {len(self.app.citations) if self.app.citations else 0}")
@@ -580,9 +591,10 @@ class DataUpdaters:
         sorted_citations = sorted(self.app.citations,
                                 key=lambda c: getattr(c, 'relevance_score', 0), reverse=True)
 
-        # Create citation cards
-        card_creator = CitationCardCreator()
-        citation_cards = card_creator.create_citation_cards_list(sorted_citations)
+        # Create citation cards using CardFactory with PDF manager
+        pdf_manager = PDFManager()
+        card_factory = CardFactory(self.app.page, pdf_manager=pdf_manager)
+        citation_cards = card_factory.create_citation_cards(sorted_citations)
 
         # Update citations list container
         if self.app.tab_manager and hasattr(self.app.tab_manager, 'citations_list'):

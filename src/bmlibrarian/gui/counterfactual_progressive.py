@@ -7,6 +7,72 @@ Displays claims, questions, searches, results, scoring, and citations as they ha
 
 import flet as ft
 from typing import List, Dict, Any, Optional
+from .unified_document_card import UnifiedDocumentCard, DocumentCardContext
+
+
+def extract_citation_data_from_object(citation: Any) -> Dict[str, Any]:
+    """Extract citation data from citation object or dictionary.
+
+    Args:
+        citation: Citation object or dictionary
+
+    Returns:
+        Dictionary with standardized citation data
+    """
+    if hasattr(citation, '__dict__'):
+        # Citation object
+        return {
+            'document_id': getattr(citation, 'document_id', 'Unknown'),
+            'title': getattr(citation, 'document_title', 'Unknown Document'),
+            'summary': getattr(citation, 'summary', ''),
+            'passage': getattr(citation, 'passage', ''),
+            'abstract': getattr(citation, 'abstract', ''),
+            'authors': getattr(citation, 'authors', []),
+            'publication': getattr(citation, 'publication', 'Unknown'),
+            'publication_date': getattr(citation, 'publication_date', 'Unknown'),
+            'year': getattr(citation, 'year', 'Unknown'),
+            'relevance_score': getattr(citation, 'relevance_score', 0),
+            'pmid': getattr(citation, 'pmid', None),
+            'doi': getattr(citation, 'doi', None),
+            'pdf_path': getattr(citation, 'pdf_path', None),
+            'pdf_url': getattr(citation, 'pdf_url', None)
+        }
+    elif isinstance(citation, dict):
+        # Dictionary
+        return {
+            'document_id': citation.get('document_id', 'Unknown'),
+            'title': citation.get('document_title') or citation.get('title', 'Unknown Document'),
+            'summary': citation.get('summary', ''),
+            'passage': citation.get('passage', ''),
+            'abstract': citation.get('abstract', ''),
+            'authors': citation.get('authors', []),
+            'publication': citation.get('publication', 'Unknown'),
+            'publication_date': citation.get('publication_date', 'Unknown'),
+            'year': citation.get('year', 'Unknown'),
+            'relevance_score': citation.get('relevance_score', 0),
+            'pmid': citation.get('pmid'),
+            'doi': citation.get('doi'),
+            'pdf_path': citation.get('pdf_path'),
+            'pdf_url': citation.get('pdf_url')
+        }
+    else:
+        # Fallback
+        return {
+            'document_id': 'Unknown',
+            'title': str(citation),
+            'summary': '',
+            'passage': str(citation)[:200],
+            'abstract': '',
+            'authors': [],
+            'publication': 'Unknown',
+            'publication_date': 'Unknown',
+            'year': 'Unknown',
+            'relevance_score': 0,
+            'pmid': None,
+            'doi': None,
+            'pdf_path': None,
+            'pdf_url': None
+        }
 
 
 def create_section_container(title: str, icon: str, color: str, controls: List[ft.Control]) -> ft.Container:
@@ -183,61 +249,54 @@ def create_searches_display(research_queries: List[Dict[str, Any]]) -> ft.Contai
     )
 
 
-def create_document_card(doc: Dict[str, Any], score: float, reasoning: str, index: int) -> ft.Container:
-    """Create a document card for search results."""
-    title = doc.get('title', 'No title')
-    authors = doc.get('authors', [])
-    year = doc.get('publication_year', 'Unknown')
+def create_document_card(doc: Dict[str, Any], score: float, reasoning: str, index: int, page: ft.Page = None) -> ft.Control:
+    """Create a unified document card for search results.
 
-    # Color-code by score
-    score_color = ft.Colors.RED_600 if score >= 4 else ft.Colors.ORANGE_600 if score >= 3 else ft.Colors.GREY_600
+    Args:
+        doc: Document dictionary
+        score: Relevance score (1-5 scale)
+        reasoning: AI scoring reasoning
+        index: Document index (1-based for display)
+        page: Flet page instance (optional, for PDF functionality)
 
-    return ft.Container(
-        content=ft.Column([
-            ft.Row([
-                ft.Container(
-                    content=ft.Text(
-                        f"{score}/5",
-                        size=12,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.WHITE
-                    ),
-                    padding=ft.padding.all(6),
-                    bgcolor=score_color,
-                    border_radius=4
-                ),
-                ft.Column([
-                    ft.Text(
-                        f"{index}. {title}",
-                        size=11,
-                        weight=ft.FontWeight.W_500,
-                        selectable=True
-                    ),
-                    ft.Text(
-                        f"{', '.join(authors[:3])} ({year})",
-                        size=9,
-                        color=ft.Colors.GREY_600,
-                        selectable=True
-                    )
-                ], spacing=2, expand=True)
-            ], spacing=10),
-            ft.Text(
-                f"Reasoning: {reasoning}",
-                size=9,
-                color=ft.Colors.GREY_700,
-                italic=True,
-                selectable=True
-            ) if reasoning else ft.Container()
-        ], spacing=6),
-        padding=ft.padding.all(10),
-        bgcolor=ft.Colors.WHITE,
-        border_radius=6,
-        border=ft.border.all(1, ft.Colors.GREY_300)
+    Returns:
+        ExpansionTile widget using unified card design
+    """
+    # Use page if provided, otherwise create a minimal placeholder
+    # This allows PDF functionality when page is available
+    if page is None:
+        # Create a minimal page placeholder for backwards compatibility
+        # Note: PDF features won't work without a real page
+        import warnings
+        warnings.warn("Creating counterfactual document card without page - PDF features will not be available")
+        page = ft.Page()  # Minimal placeholder
+
+    # Create unified card creator with PDF manager
+    from ..utils.pdf_manager import PDFManager
+    pdf_manager = PDFManager()
+    card_creator = UnifiedDocumentCard(page, pdf_manager=pdf_manager)
+
+    # Create card with counterfactual context
+    # Note: index is 1-based from the loop, but create_card expects 0-based
+    return card_creator.create_card(
+        index=index - 1,  # Convert to 0-based index
+        doc=doc,
+        context=DocumentCardContext.COUNTERFACTUAL,
+        ai_score=score,
+        scoring_reasoning=reasoning
     )
 
 
-def create_results_display(contradictory_evidence: List[Dict[str, Any]]) -> ft.Container:
-    """Create display for search results with scoring."""
+def create_results_display(contradictory_evidence: List[Dict[str, Any]], page: ft.Page = None) -> ft.Container:
+    """Create display for search results with scoring.
+
+    Args:
+        contradictory_evidence: List of evidence dictionaries with document, score, reasoning
+        page: Flet page instance (optional, enables PDF functionality in cards)
+
+    Returns:
+        Container with search results section
+    """
     controls = []
 
     if not contradictory_evidence:
@@ -263,12 +322,13 @@ def create_results_display(contradictory_evidence: List[Dict[str, Any]]) -> ft.C
         )
         controls.append(ft.Container(height=8))
 
-        for i, evidence in enumerate(sorted_evidence[:10], 1):  # Show top 10
+        # Show ALL documents (not just top 10) using unified cards
+        for i, evidence in enumerate(sorted_evidence, 1):
             doc = evidence.get('document', {})
             score = evidence.get('score', 0)
             reasoning = evidence.get('reasoning', '')
 
-            controls.append(create_document_card(doc, score, reasoning, i))
+            controls.append(create_document_card(doc, score, reasoning, i, page))
 
     return create_section_container(
         "📊 Search Results & Scoring",
@@ -280,11 +340,31 @@ def create_results_display(contradictory_evidence: List[Dict[str, Any]]) -> ft.C
 
 def create_citations_display(contradictory_citations: List[Dict[str, Any]],
                             rejected_citations: List[Dict[str, Any]] = None,
-                            no_citation_extracted: List[Dict[str, Any]] = None) -> ft.Container:
-    """Create display for citation extraction results."""
+                            no_citation_extracted: List[Dict[str, Any]] = None,
+                            page: ft.Page = None) -> ft.Container:
+    """Create display for citation extraction results using unified citation cards.
+
+    Args:
+        contradictory_citations: List of validated citation dictionaries
+        rejected_citations: List of rejected citation dictionaries (optional)
+        no_citation_extracted: List of documents with no citations (optional)
+        page: Flet page instance (optional, enables PDF functionality)
+
+    Returns:
+        Container with citation sections
+    """
     controls = []
 
-    # Validated citations
+    # Use page if provided, otherwise create minimal placeholder
+    if page is None:
+        page = ft.Page()  # Minimal placeholder for backwards compatibility
+
+    # Create unified card creator with PDF manager
+    from ..utils.pdf_manager import PDFManager
+    pdf_manager = PDFManager()
+    card_creator = UnifiedDocumentCard(page, pdf_manager=pdf_manager)
+
+    # Validated citations - use unified citation cards
     if contradictory_citations:
         controls.append(
             ft.Text(
@@ -294,41 +374,48 @@ def create_citations_display(contradictory_citations: List[Dict[str, Any]],
                 color=ft.Colors.GREEN_700
             )
         )
+        controls.append(ft.Container(height=8))
 
-        for i, cit_info in enumerate(contradictory_citations[:5], 1):  # Show top 5
+        # Show ALL validated citations (not just top 5) using unified cards
+        for i, cit_info in enumerate(contradictory_citations, 1):
             citation = cit_info.get('citation')
             if citation:
-                doc_title = citation.document_title if hasattr(citation, 'document_title') else 'Unknown'
-                passage = citation.passage if hasattr(citation, 'passage') else ''
+                # Extract citation data
+                citation_data = extract_citation_data_from_object(citation)
 
-                controls.append(
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text(
-                                f"{i}. {doc_title}",
-                                size=10,
-                                weight=ft.FontWeight.W_500,
-                                selectable=True
-                            ),
-                            ft.Container(
-                                content=ft.Text(
-                                    f'"{passage[:150]}..."' if len(passage) > 150 else f'"{passage}"',
-                                    size=9,
-                                    italic=True,
-                                    color=ft.Colors.GREY_700,
-                                    selectable=True
-                                ),
-                                padding=ft.padding.only(left=12, top=4)
-                            )
-                        ], spacing=4),
-                        padding=ft.padding.all(8),
-                        bgcolor=ft.Colors.GREEN_50,
-                        border_radius=4,
-                        border=ft.border.all(1, ft.Colors.GREEN_200)
-                    )
+                # Build document dictionary
+                doc = {
+                    'id': citation_data.get('document_id', f'cit_{i}'),
+                    'title': citation_data['title'],
+                    'authors': citation_data.get('authors', []),
+                    'publication': citation_data.get('publication', 'Unknown'),
+                    'publication_date': citation_data.get('publication_date', 'Unknown'),
+                    'year': citation_data.get('year', 'Unknown'),
+                    'abstract': citation_data.get('abstract', ''),
+                    'pmid': citation_data.get('pmid'),
+                    'doi': citation_data.get('doi'),
+                    'pdf_path': citation_data.get('pdf_path'),
+                    'pdf_url': citation_data.get('pdf_url')
+                }
+
+                # Build citation-specific data
+                cit_data = {
+                    'summary': citation_data.get('summary', ''),
+                    'passage': citation_data.get('passage', ''),
+                    'relevance_score': citation_data.get('relevance_score', 0)
+                }
+
+                # Create unified citation card
+                citation_card = card_creator.create_card(
+                    index=i - 1,  # 0-based index
+                    doc=doc,
+                    context=DocumentCardContext.CITATIONS,
+                    citation_data=cit_data,
+                    relevance_score=cit_data['relevance_score']
                 )
+                controls.append(citation_card)
 
-    # Rejected citations
+    # Rejected citations - summary only (no full cards needed)
     if rejected_citations:
         controls.append(ft.Container(height=12))
         controls.append(
@@ -348,7 +435,7 @@ def create_citations_display(contradictory_citations: List[Dict[str, Any]],
             )
         )
 
-    # No citation extracted
+    # No citation extracted - summary only
     if no_citation_extracted:
         controls.append(ft.Container(height=12))
         controls.append(

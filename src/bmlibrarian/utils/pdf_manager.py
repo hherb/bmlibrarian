@@ -50,7 +50,16 @@ class PDFManager:
         if not pdf_filename:
             return None
 
-        # Extract year from publication_date
+        # Check if pdf_filename already includes a path (year/filename.pdf)
+        # If so, use it directly relative to base_dir
+        if '/' in pdf_filename:
+            # Already has directory structure - use as-is
+            full_path = self.base_dir / pdf_filename
+            if create_dirs:
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+            return full_path
+
+        # Extract year from publication_date for flat filenames
         year = self._extract_year(document)
         if year:
             year_dir = self.base_dir / str(year)

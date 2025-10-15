@@ -13,10 +13,18 @@ from .interactive_handler import InteractiveHandler
 from .query_processor import QueryProcessor
 from .workflow_steps_handler import WorkflowStepsHandler
 from .report_builder import ReportBuilder
+from .unified_document_card import (
+    UnifiedDocumentCard,
+    DocumentCardContext,
+    create_literature_card,
+    create_scored_card,
+    create_citation_card
+)
+from .card_factory import CardFactory, create_document_cards_for_tab
 
 __all__ = [
     'BMLibrarianConfigApp',
-    'ResearchGUI', 
+    'ResearchGUI',
     'StepCard',
     'DialogManager',
     'WorkflowExecutor',
@@ -24,5 +32,12 @@ __all__ = [
     'InteractiveHandler',
     'QueryProcessor',
     'WorkflowStepsHandler',
-    'ReportBuilder'
+    'ReportBuilder',
+    'UnifiedDocumentCard',
+    'DocumentCardContext',
+    'create_literature_card',
+    'create_scored_card',
+    'create_citation_card',
+    'CardFactory',
+    'create_document_cards_for_tab'
 ]

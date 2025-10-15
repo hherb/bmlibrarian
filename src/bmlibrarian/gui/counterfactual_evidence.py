@@ -5,9 +5,10 @@ Contains functions for displaying contradictory evidence and citations.
 """
 
 import flet as ft
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .ui_builder import truncate_text, extract_year_from_date
 from .citation_card_utils import extract_citation_data
+from .unified_document_card import UnifiedDocumentCard, DocumentCardContext
 
 
 def extract_document_data(doc: dict) -> Dict[str, str]:
@@ -42,51 +43,45 @@ def extract_document_data(doc: dict) -> Dict[str, str]:
         }
 
 
-def create_evidence_card(index: int, doc: dict) -> ft.ExpansionTile:
-    """Create a single evidence card."""
-    doc_data = extract_document_data(doc)
+def create_evidence_card(index: int, doc: dict, page: Optional[ft.Page] = None) -> ft.ExpansionTile:
+    """Create a single evidence card using unified document card.
 
-    return ft.ExpansionTile(
-        title=ft.Text(
-            f"{index}. {truncate_text(doc_data['title'], 80)}",
-            size=12,
-            weight=ft.FontWeight.W_500,
-            color=ft.Colors.RED_800
-        ),
-        subtitle=ft.Text(
-            f"{doc_data['authors']} • {doc_data['year']}",
-            size=10,
-            color=ft.Colors.GREY_600
-        ),
-        controls=[
-            ft.Container(
-                content=ft.Column([
-                    ft.Text(
-                        f"Title: {doc_data['title']}",
-                        size=11,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.RED_900
-                    ),
-                    ft.Text(
-                        f"Authors: {doc_data['authors']}",
-                        size=10,
-                        color=ft.Colors.GREY_700
-                    ),
-                    ft.Text(
-                        f"Abstract: {doc_data['abstract']}",
-                        size=10,
-                        color=ft.Colors.GREY_700
-                    )
-                ], spacing=4),
-                padding=ft.padding.all(12)
-            )
-        ]
+    Args:
+        index: Document index (1-based)
+        doc: Document dictionary
+        page: Flet page instance (optional, enables PDF functionality)
+
+    Returns:
+        ExpansionTile widget using unified card design
+    """
+    # Use page if provided, otherwise create minimal placeholder
+    if page is None:
+        page = ft.Page()  # Minimal placeholder for backwards compatibility
+
+    # Create unified card creator with PDF manager
+    from ..utils.pdf_manager import PDFManager
+    pdf_manager = PDFManager()
+    card_creator = UnifiedDocumentCard(page, pdf_manager=pdf_manager)
+
+    # Create card with counterfactual context
+    return card_creator.create_card(
+        index=index - 1,  # Convert from 1-based to 0-based
+        doc=doc,
+        context=DocumentCardContext.COUNTERFACTUAL
     )
 
 
-def create_contradictory_evidence_section(evidence: List[dict]) -> ft.Container:
-    """Create contradictory evidence section."""
-    evidence_cards = [create_evidence_card(i + 1, doc) for i, doc in enumerate(evidence)]
+def create_contradictory_evidence_section(evidence: List[dict], page: Optional[ft.Page] = None) -> ft.Container:
+    """Create contradictory evidence section.
+
+    Args:
+        evidence: List of evidence documents
+        page: Flet page instance (optional, enables PDF functionality)
+
+    Returns:
+        Container with evidence cards
+    """
+    evidence_cards = [create_evidence_card(i + 1, doc, page) for i, doc in enumerate(evidence)]
 
     return ft.Container(
         content=ft.Column([
@@ -114,47 +109,72 @@ def create_contradictory_evidence_section(evidence: List[dict]) -> ft.Container:
     )
 
 
-def create_contradictory_citation_card(index: int, citation: Any) -> ft.ExpansionTile:
-    """Create a single contradictory citation card."""
+def create_contradictory_citation_card(index: int, citation: Any, page: Optional[ft.Page] = None) -> ft.ExpansionTile:
+    """Create a single contradictory citation card using unified card.
+
+    Args:
+        index: Citation index (1-based)
+        citation: Citation object or dictionary
+        page: Flet page instance (optional, enables PDF functionality)
+
+    Returns:
+        ExpansionTile widget using unified card design
+    """
+    # Extract citation data first
     citation_data = extract_citation_data(citation)
 
-    return ft.ExpansionTile(
-        title=ft.Text(
-            f"{index}. {truncate_text(citation_data['title'], 80)}",
-            size=12,
-            weight=ft.FontWeight.W_500,
-            color=ft.Colors.DEEP_ORANGE_800
-        ),
-        subtitle=ft.Text(
-            f"Relevance: {citation_data['relevance_score']:.3f}",
-            size=10,
-            color=ft.Colors.GREY_600
-        ),
-        controls=[
-            ft.Container(
-                content=ft.Column([
-                    ft.Text(
-                        f"Summary: {citation_data['summary']}",
-                        size=11,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.DEEP_ORANGE_900
-                    ),
-                    ft.Text(
-                        f"Extracted Passage: {citation_data['passage']}",
-                        size=10,
-                        color=ft.Colors.GREY_700,
-                        italic=True
-                    )
-                ], spacing=4),
-                padding=ft.padding.all(12)
-            )
-        ]
+    # Use page if provided, otherwise create minimal placeholder
+    if page is None:
+        page = ft.Page()  # Minimal placeholder for backwards compatibility
+
+    # Create unified card creator with PDF manager
+    from ..utils.pdf_manager import PDFManager
+    pdf_manager = PDFManager()
+    card_creator = UnifiedDocumentCard(page, pdf_manager=pdf_manager)
+
+    # Build document dictionary from citation data
+    doc = {
+        'id': citation_data.get('document_id', f'cit_{index}'),
+        'title': citation_data['title'],
+        'authors': citation_data['authors'],
+        'publication': citation_data.get('publication', 'Unknown'),
+        'publication_date': citation_data.get('publication_date', 'Unknown'),
+        'year': citation_data.get('publication_date', 'Unknown'),
+        'abstract': citation_data.get('abstract', ''),
+        'pmid': citation_data.get('pmid'),
+        'doi': citation_data.get('doi'),
+        'pdf_path': citation_data.get('pdf_path'),
+        'pdf_url': citation_data.get('pdf_url')
+    }
+
+    # Build citation-specific data
+    cit_data = {
+        'summary': citation_data['summary'],
+        'passage': citation_data['passage'],
+        'relevance_score': citation_data['relevance_score']
+    }
+
+    # Create card with citation context
+    return card_creator.create_card(
+        index=index - 1,  # Convert from 1-based to 0-based
+        doc=doc,
+        context=DocumentCardContext.CITATIONS,
+        citation_data=cit_data,
+        relevance_score=citation_data['relevance_score']
     )
 
 
-def create_contradictory_citations_section(citations: List[Any]) -> ft.Container:
-    """Create contradictory citations section."""
-    citation_cards = [create_contradictory_citation_card(i + 1, citation) for i, citation in enumerate(citations)]
+def create_contradictory_citations_section(citations: List[Any], page: Optional[ft.Page] = None) -> ft.Container:
+    """Create contradictory citations section.
+
+    Args:
+        citations: List of citation objects
+        page: Flet page instance (optional, enables PDF functionality)
+
+    Returns:
+        Container with citation cards
+    """
+    citation_cards = [create_contradictory_citation_card(i + 1, citation, page) for i, citation in enumerate(citations)]
 
     return ft.Container(
         content=ft.Column([

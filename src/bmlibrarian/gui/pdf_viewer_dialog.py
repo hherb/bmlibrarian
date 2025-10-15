@@ -101,20 +101,50 @@ class PDFViewerDialog:
 
         def download_task():
             try:
-                pdf_manager = PDFManager()
+                # Get database connection for updates
+                from ..app import get_database_connection
+                db_conn = get_database_connection()
+                pdf_manager = PDFManager(db_conn=db_conn)
+
+                # Download PDF
                 pdf_path = pdf_manager.download_pdf(document)
 
                 if pdf_path and pdf_path.exists():
-                    # Success - close dialog and open PDF
-                    self.page.run_task(lambda: self._on_download_success(pdf_path, document, on_success))
+                    # Update database with relative path
+                    doc_id = document.get('id')
+                    if doc_id and db_conn:
+                        try:
+                            relative_path = pdf_manager.get_relative_pdf_path(document)
+                            if relative_path:
+                                pdf_manager.update_database_pdf_path(doc_id, relative_path)
+                                logger.info(f"Updated database with PDF path: {relative_path}")
+                                # Update document dict for UI
+                                document['pdf_filename'] = relative_path
+                        except Exception as e:
+                            logger.error(f"Failed to update database: {e}")
+
+                    # Close database connection
+                    if db_conn:
+                        db_conn.close()
+
+                    # Success - call handler on UI thread
+                    def update_ui():
+                        self._on_download_success(pdf_path, document, on_success)
+                    self.page.run_thread(update_ui)
                 else:
+                    if db_conn:
+                        db_conn.close()
                     error_msg = "Download failed - check logs for details"
-                    self.page.run_task(lambda: self._on_download_error(error_msg, on_error))
+                    def update_ui():
+                        self._on_download_error(error_msg, on_error)
+                    self.page.run_thread(update_ui)
 
             except Exception as e:
                 error_msg = f"Download error: {str(e)}"
                 logger.error(error_msg, exc_info=True)
-                self.page.run_task(lambda: self._on_download_error(error_msg, on_error))
+                def update_ui():
+                    self._on_download_error(error_msg, on_error)
+                self.page.run_thread(update_ui)
 
         thread = threading.Thread(target=download_task, daemon=True)
         thread.start()
@@ -299,10 +329,13 @@ class PDFViewerDialog:
             on_error: Error callback
         """
         from ..utils.pdf_manager import PDFManager
+        from ..app import get_database_connection
         import shutil
 
         try:
-            pdf_manager = PDFManager()
+            # Get database connection for updates
+            db_conn = get_database_connection()
+            pdf_manager = PDFManager(db_conn=db_conn)
 
             # Generate filename if needed
             if not document.get('pdf_filename'):
@@ -316,6 +349,23 @@ class PDFViewerDialog:
             # Copy file to organized storage
             logger.info(f"Importing PDF from {source_path} to {dest_path}")
             shutil.copy2(source_path, dest_path)
+
+            # Update database with relative path
+            doc_id = document.get('id')
+            if doc_id and db_conn:
+                try:
+                    relative_path = pdf_manager.get_relative_pdf_path(document)
+                    if relative_path:
+                        pdf_manager.update_database_pdf_path(doc_id, relative_path)
+                        logger.info(f"Updated database with PDF path: {relative_path}")
+                        # Update document dict for UI
+                        document['pdf_filename'] = relative_path
+                except Exception as e:
+                    logger.error(f"Failed to update database: {e}")
+
+            # Close database connection
+            if db_conn:
+                db_conn.close()
 
             # Success
             logger.info(f"PDF imported successfully to {dest_path}")

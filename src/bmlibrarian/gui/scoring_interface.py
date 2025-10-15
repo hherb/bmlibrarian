@@ -435,12 +435,11 @@ class ScoringInterface:
             # Show confirmation
             title = doc.get('title', 'Document')
             if self.page:
-                self.page.show_snack_bar(
-                    ft.SnackBar(
-                        content=ft.Text(f"Opening in browser: {title[:50]}..."),
-                        bgcolor=ft.Colors.BLUE_700
-                    )
+                snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Opening in browser: {title[:50]}..."),
+                    bgcolor=ft.Colors.BLUE_700
                 )
+                self.page.open(snack_bar)
         except Exception as e:
             logger.error(f"Failed to open URL in browser: {e}")
             self._show_error(f"Failed to open browser: {str(e)}")
@@ -455,12 +454,11 @@ class ScoringInterface:
             # Rebuild the scoring UI to update button from "Import" to "Show"
             # For now, just show success message
             if self.page:
-                self.page.show_snack_bar(
-                    ft.SnackBar(
-                        content=ft.Text(f"PDF imported successfully!"),
-                        bgcolor=ft.Colors.GREEN_700
-                    )
+                snack_bar = ft.SnackBar(
+                    content=ft.Text(f"PDF imported successfully!"),
+                    bgcolor=ft.Colors.GREEN_700
                 )
+                self.page.open(snack_bar)
 
         def on_error(error_msg):
             # Error already shown by pdf_viewer
@@ -475,9 +473,8 @@ class ScoringInterface:
             message: Error message
         """
         if self.page:
-            self.page.show_snack_bar(
-                ft.SnackBar(
-                    content=ft.Text(message),
-                    bgcolor=ft.Colors.RED_700
-                )
+            snack_bar = ft.SnackBar(
+                content=ft.Text(message),
+                bgcolor=ft.Colors.RED_700
             )
+            self.page.open(snack_bar)
