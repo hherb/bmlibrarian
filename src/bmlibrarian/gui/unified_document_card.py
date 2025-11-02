@@ -631,8 +631,25 @@ class UnifiedDocumentCard:
 
     def _create_fulltext_button(self, doc: Dict) -> ft.Container:
         """Create full-text access button based on PDF availability."""
+        from ..utils.pdf_manager import PDFManager
+        from ..app import get_database_connection
+
         pdf_path = doc.get('pdf_path')
         pdf_url = doc.get('pdf_url')
+
+        # If we have pdf_filename but no pdf_path, try to resolve it
+        if not pdf_path and doc.get('pdf_filename'):
+            try:
+                db_conn = get_database_connection()
+                pdf_manager = PDFManager(db_conn=db_conn)
+                resolved_path = pdf_manager.get_pdf_path(doc, create_dirs=False)
+                if db_conn:
+                    db_conn.close()
+                if resolved_path and resolved_path.exists():
+                    pdf_path = str(resolved_path)
+                    doc['pdf_path'] = pdf_path  # Update doc dict for next time
+            except Exception as e:
+                logger.warning(f"Failed to resolve PDF path: {e}")
 
         # Determine button type
         if pdf_path and Path(pdf_path).exists():
@@ -652,7 +669,7 @@ class UnifiedDocumentCard:
             button = ft.ElevatedButton(
                 "⬇️ Fetch Full Text",
                 icon=ft.Icons.DOWNLOAD,
-                on_click=lambda e: self._fetch_pdf(doc),
+                on_click=lambda e: self._fetch_pdf(doc, button),
                 style=ft.ButtonStyle(
                     bgcolor=ft.Colors.ORANGE_600,
                     color=ft.Colors.WHITE
@@ -664,7 +681,7 @@ class UnifiedDocumentCard:
             button = ft.ElevatedButton(
                 "📤 Upload Full Text",
                 icon=ft.Icons.UPLOAD_FILE,
-                on_click=lambda e: self._upload_pdf(doc),
+                on_click=lambda e: self._upload_pdf(doc, button),
                 style=ft.ButtonStyle(
                     bgcolor=ft.Colors.GREEN_600,
                     color=ft.Colors.WHITE
@@ -688,40 +705,52 @@ class UnifiedDocumentCard:
         else:
             self._show_error("PDF file not found at expected location")
 
-    def _fetch_pdf(self, doc: Dict):
+    def _fetch_pdf(self, doc: Dict, button: ft.ElevatedButton):
         """Download PDF from URL."""
         from .pdf_viewer_dialog import PDFViewerDialog
 
         viewer = PDFViewerDialog(self.page)
         viewer.download_and_show_pdf(
             doc,
-            on_success=lambda path: self._on_pdf_downloaded(doc, path),
+            on_success=lambda path: self._on_pdf_downloaded(doc, path, button),
             on_error=lambda msg: self._show_error(msg)
         )
 
-    def _upload_pdf(self, doc: Dict):
+    def _upload_pdf(self, doc: Dict, button: ft.ElevatedButton):
         """Show file picker to upload PDF manually."""
         from .pdf_viewer_dialog import PDFViewerDialog
 
         viewer = PDFViewerDialog(self.page)
         viewer.import_pdf(
             doc,
-            on_success=lambda path: self._on_pdf_uploaded(doc, path),
+            on_success=lambda path: self._on_pdf_uploaded(doc, path, button),
             on_error=lambda msg: self._show_error(msg)
         )
 
-    def _on_pdf_downloaded(self, doc: Dict, pdf_path: Path):
+    def _on_pdf_downloaded(self, doc: Dict, pdf_path: Path, button: ft.ElevatedButton):
         """Handle successful PDF download."""
         logger.info(f"PDF downloaded successfully for document {doc.get('id')}: {pdf_path}")
 
-        # Update document dict with pdf_filename so UI can refresh
-        doc['pdf_filename'] = doc.get('pdf_filename')
+        # Update document dict with pdf_path so UI can show view button
         doc['pdf_path'] = str(pdf_path)
+
+        # Update the button to show "View Full Text"
+        button.text = "📄 View Full Text"
+        button.icon = ft.Icons.PICTURE_AS_PDF
+        button.on_click = lambda _: self._view_pdf(doc)
+        button.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_600,
+            color=ft.Colors.WHITE
+        )
+
+        # Update the UI
+        if self.page:
+            self.page.update()
 
         # Show success snackbar
         if self.page:
             snack_bar = ft.SnackBar(
-                content=ft.Text("✅ PDF downloaded! Database updated. The 'View Full Text' button will appear on next refresh."),
+                content=ft.Text("✅ PDF downloaded! Click 'View Full Text' to open it."),
                 bgcolor=ft.Colors.GREEN_700,
                 duration=5000
             )
@@ -730,18 +759,30 @@ class UnifiedDocumentCard:
         if self.on_pdf_status_change:
             self.on_pdf_status_change(doc.get('id'), "downloaded")
 
-    def _on_pdf_uploaded(self, doc: Dict, pdf_path: Path):
+    def _on_pdf_uploaded(self, doc: Dict, pdf_path: Path, button: ft.ElevatedButton):
         """Handle successful PDF upload."""
         logger.info(f"PDF uploaded successfully for document {doc.get('id')}: {pdf_path}")
 
-        # Update document dict with pdf_filename so UI can refresh
-        doc['pdf_filename'] = doc.get('pdf_filename')
+        # Update document dict with pdf_path so UI can show view button
         doc['pdf_path'] = str(pdf_path)
+
+        # Update the button to show "View Full Text"
+        button.text = "📄 View Full Text"
+        button.icon = ft.Icons.PICTURE_AS_PDF
+        button.on_click = lambda _: self._view_pdf(doc)
+        button.style = ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_600,
+            color=ft.Colors.WHITE
+        )
+
+        # Update the UI
+        if self.page:
+            self.page.update()
 
         # Show success snackbar
         if self.page:
             snack_bar = ft.SnackBar(
-                content=ft.Text("✅ PDF imported! Database updated. The 'View Full Text' button will appear on next refresh."),
+                content=ft.Text("✅ PDF imported! Click 'View Full Text' to open it."),
                 bgcolor=ft.Colors.GREEN_700,
                 duration=5000
             )

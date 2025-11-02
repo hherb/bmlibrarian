@@ -53,11 +53,8 @@ class PDFViewerDialog:
                 self._show_error(f"Unsupported platform: {platform.system()}")
                 return
 
-            # Show confirmation dialog
-            self._show_info(
-                "PDF Opened",
-                f"Opening PDF in system viewer:\n\n{title}\n\nPath: {pdf_path}"
-            )
+            # PDF opened successfully - just log it, no dialog needed
+            logger.info(f"Opened PDF in system viewer: {title} at {pdf_path}")
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to open PDF: {e}")
