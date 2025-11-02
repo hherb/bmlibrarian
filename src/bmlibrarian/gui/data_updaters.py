@@ -659,7 +659,39 @@ class DataUpdaters:
                 if len(self.app.tab_manager.counterfactual_content.controls) > 0:
                     self.app.tab_manager.counterfactual_content.controls[0] = empty_text
             else:
-                print(f"⚠️ Old counterfactual display method called - this shouldn't happen with progressive display")
+                print(f"⚠️ Old counterfactual display method called - populating progressive sections from completed data")
+
+                # Populate progressive sections from the completed analysis
+                analysis = self.app.counterfactual_analysis
+
+                # Populate claims section
+                if isinstance(analysis, dict):
+                    if 'analysis' in analysis and hasattr(analysis['analysis'], 'main_claims'):
+                        self.update_counterfactual_claims(analysis['analysis'].main_claims)
+
+                    # Populate questions section
+                    if 'analysis' in analysis and hasattr(analysis['analysis'], 'counterfactual_questions'):
+                        self.update_counterfactual_questions(analysis['analysis'].counterfactual_questions)
+
+                    # Populate searches section
+                    if 'research_queries' in analysis and analysis['research_queries']:
+                        self.update_counterfactual_searches(analysis['research_queries'])
+
+                    # Populate results section
+                    if 'contradictory_evidence' in analysis and analysis['contradictory_evidence']:
+                        self.update_counterfactual_results(analysis['contradictory_evidence'])
+
+                    # Populate citations section
+                    if 'contradictory_citations' in analysis or 'rejected_citations' in analysis:
+                        self.update_counterfactual_citations(
+                            analysis.get('contradictory_citations', []),
+                            analysis.get('rejected_citations', []),
+                            analysis.get('no_citation_extracted', [])
+                        )
+
+                    # Populate summary section
+                    if 'summary' in analysis:
+                        self.update_counterfactual_summary(analysis['summary'])
 
                 # Show continue button in interactive mode
                 if self.app.human_in_loop and hasattr(self.app.tab_manager, 'counterfactual_continue_button'):

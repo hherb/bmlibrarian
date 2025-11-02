@@ -32,6 +32,7 @@ class ResearchGUI:
         self.human_in_loop = False  # Changed default to OFF
         self.comprehensive_counterfactual = True  # Changed default to ON
         self.workflow_running = False
+        self.workflow_continuing = False  # Prevents concurrent workflow continuations
         
         # Command-line configuration
         self.config_overrides = {}

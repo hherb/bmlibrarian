@@ -86,6 +86,14 @@ class EventHandlers:
             self.app.dialog_manager.show_error_dialog("No scored documents to process")
             return
 
+        # Prevent multiple simultaneous workflow continuations
+        if hasattr(self.app, 'workflow_continuing') and self.app.workflow_continuing:
+            print("⚠️ Workflow continuation already in progress, ignoring duplicate click")
+            return
+
+        # Disable the button to prevent multiple clicks
+        self._disable_button_temporarily(e.control, "Processing...")
+
         self._run_in_thread(self._continue_workflow_thread)
 
     # ===== Report Action Handlers =====
@@ -655,6 +663,9 @@ class EventHandlers:
         try:
             from ..config import get_search_config
 
+            # Set flag to prevent concurrent executions
+            self.app.workflow_continuing = True
+
             print("🔄 Continuing workflow from scoring...")
 
             score_threshold = get_search_config().get('score_threshold', 2.5)
@@ -681,6 +692,13 @@ class EventHandlers:
         except Exception as ex:
             self._handle_continue_error(ex)
         finally:
+            # Clear the continuation flag
+            self.app.workflow_continuing = False
+
+            # Re-enable buttons by updating the scoring tab
+            if hasattr(self.app, 'data_updaters') and self.app.data_updaters:
+                self.app.data_updaters.update_scored_documents(self.app.scored_documents)
+
             if self.app.page:
                 self.app.page.update()
 
@@ -871,14 +889,11 @@ class EventHandlers:
         """Perform counterfactual analysis and generate final report."""
         print(f"🧠 Performing comprehensive counterfactual analysis with literature search...")
 
-        # Execute comprehensive counterfactual analysis
-        def dummy_callback(step, status, message):
-            print(f"  [{step.name}] {status}: {message}")
-
+        # Execute comprehensive counterfactual analysis with proper GUI updates
         counterfactual_analysis = self.app.workflow_executor.steps_handler.execute_comprehensive_counterfactual_analysis(
             report_formatted,
             self.app.citations,
-            dummy_callback
+            self._update_step_status
         )
 
         # Store counterfactual analysis
