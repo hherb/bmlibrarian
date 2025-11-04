@@ -473,3 +473,139 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             f"Generated {result.total_queries} queries, {len(result.unique_queries)} unique")
 
         return result
+
+    def find_abstracts_multi_query(
+        self,
+        question: str,
+        max_rows: int = 100,
+        use_pubmed: bool = True,
+        use_medrxiv: bool = True,
+        use_others: bool = True,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+        human_in_the_loop: bool = False,
+        human_query_modifier: Optional[Callable[[list[str]], list[str]]] = None
+    ) -> Generator[Dict, None, None]:
+        """
+        Find abstracts using multi-model query generation.
+
+        Process (SERIAL execution):
+        1. Generate multiple queries using different models
+        2. If human_in_the_loop, show queries and allow selection/editing
+        3. Execute each query SERIALLY to get document IDs
+        4. De-duplicate IDs across all queries
+        5. Fetch full documents for unique IDs
+        6. Yield documents
+
+        Args:
+            question: Natural language question
+            max_rows: Max results per query (total may be less after dedup)
+            use_pubmed: Include PubMed sources
+            use_medrxiv: Include medRxiv sources
+            use_others: Include other sources
+            from_date: Only include documents published on or after this date
+            to_date: Only include documents published on or before this date
+            human_in_the_loop: Allow user to review/select queries
+            human_query_modifier: Callback for query selection
+
+        Yields:
+            Document dictionaries (same format as find_abstracts)
+
+        Example:
+            >>> agent = QueryAgent()
+            >>> for doc in agent.find_abstracts_multi_query("aspirin benefits"):
+            ...     print(doc['title'])
+        """
+        from bmlibrarian.config import get_query_generation_config
+        from bmlibrarian.database import find_abstract_ids, fetch_documents_by_ids
+
+        # Get configuration
+        qg_config = get_query_generation_config()
+
+        # Check if multi-model enabled
+        if not qg_config.get('multi_model_enabled', False):
+            # Fallback to original single-query behavior
+            logger.info("Multi-model disabled, using single-query fallback")
+            yield from self.find_abstracts(
+                question=question,
+                max_rows=max_rows,
+                use_pubmed=use_pubmed,
+                use_medrxiv=use_medrxiv,
+                use_others=use_others,
+                from_date=from_date,
+                to_date=to_date
+            )
+            return
+
+        # Step 1: Generate queries with multiple models
+        logger.info("Starting multi-model query generation")
+        self._call_callback("multi_query_generation_started", question)
+
+        query_results = self.convert_question_multi_model(question)
+
+        # Step 2: Human-in-the-loop query selection
+        queries_to_execute = query_results.unique_queries
+
+        if human_in_the_loop and human_query_modifier:
+            try:
+                self._call_callback("human_query_review_started", "Showing queries for review")
+                modified_queries = human_query_modifier(queries_to_execute)
+                if modified_queries:
+                    queries_to_execute = modified_queries
+                    logger.info(f"User selected {len(queries_to_execute)} queries to execute")
+                self._call_callback("queries_selected", f"{len(queries_to_execute)} queries selected")
+            except Exception as e:
+                logger.warning(f"Human query modification failed: {e}")
+                # Continue with original queries
+
+        # Step 3: Execute queries SERIALLY and collect IDs
+        logger.info(f"Executing {len(queries_to_execute)} queries serially")
+        self._call_callback("multi_query_execution_started", f"Executing {len(queries_to_execute)} queries")
+
+        all_document_ids = set()
+        rows_per_query = max_rows // len(queries_to_execute) if len(queries_to_execute) > 1 else max_rows
+
+        for i, query in enumerate(queries_to_execute, 1):
+            try:
+                logger.info(f"Executing query {i}/{len(queries_to_execute)}: {query[:50]}...")
+                self._call_callback("query_executing", f"Query {i}/{len(queries_to_execute)}")
+
+                # Execute query to get IDs only (fast)
+                ids = find_abstract_ids(
+                    ts_query_str=query,
+                    max_rows=rows_per_query,
+                    use_pubmed=use_pubmed,
+                    use_medrxiv=use_medrxiv,
+                    use_others=use_others,
+                    plain=False,  # Use to_tsquery format
+                    from_date=from_date,
+                    to_date=to_date
+                )
+
+                all_document_ids.update(ids)
+                logger.info(f"Query {i} found {len(ids)} IDs, total unique: {len(all_document_ids)}")
+                self._call_callback("query_executed", f"Found {len(ids)} IDs")
+
+            except Exception as e:
+                logger.error(f"Query execution failed: {query} - {e}")
+                self._call_callback("query_failed", f"Query {i} failed: {str(e)}")
+                # Continue with other queries
+
+        # Step 4: Fetch full documents for unique IDs
+        logger.info(f"Fetching {len(all_document_ids)} unique documents")
+        self._call_callback("fetching_documents", f"Fetching {len(all_document_ids)} documents")
+
+        if not all_document_ids:
+            logger.warning("No documents found across all queries")
+            self._call_callback("no_documents_found", "No documents found")
+            return
+
+        documents = fetch_documents_by_ids(all_document_ids)
+
+        logger.info(f"Multi-query search complete: {len(queries_to_execute)} queries → {len(documents)} documents")
+        self._call_callback("multi_query_search_completed",
+            f"{len(queries_to_execute)} queries → {len(documents)} documents")
+
+        # Step 5: Yield documents
+        for doc in documents:
+            yield doc
