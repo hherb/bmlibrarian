@@ -29,9 +29,31 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "running",
                       "Generating database query...")
-        
-        query_text = self.agents['query_agent'].convert_question(research_question)
-        
+
+        # Check if multi-model query generation is enabled
+        from ..config import get_query_generation_config
+        qg_config = get_query_generation_config()
+
+        if qg_config.get('multi_model_enabled', False):
+            # Use multi-model query generation
+            print(f"🔍 Using multi-model query generation with {len(qg_config.get('models', []))} models")
+            multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+
+            # For GUI, we'll use all unique queries (user can't review them in non-interactive mode)
+            # In the future, could add interactive query selection UI here
+            if multi_result.unique_queries:
+                # For now, use the first query for display/editing
+                # But all queries will be used in the search step
+                query_text = multi_result.unique_queries[0]
+                print(f"📊 Generated {len(multi_result.unique_queries)} unique queries")
+                for i, q in enumerate(multi_result.unique_queries, 1):
+                    print(f"   Query {i}: {q[:80]}...")
+            else:
+                query_text = ""
+        else:
+            # Use single-model query generation (original behavior)
+            query_text = self.agents['query_agent'].convert_question(research_question)
+
         return query_text
     
     def execute_document_search(self, research_question: str, query_text: str,
@@ -49,15 +71,16 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.SEARCH_DOCUMENTS, "running",
                       "Searching database...")
-        
+
         # Use the query that might have been edited by the user
         def query_modifier(original_query):
             # Return the query_text that was potentially edited by the user
             return query_text
-        
-        from ..config import get_search_config
+
+        from ..config import get_search_config, get_query_generation_config
         search_config = get_search_config()
-        
+        qg_config = get_query_generation_config()
+
         # Debug: Show what max_results value is being used
         config_max_results = search_config.get('max_results', 100)
         override_max_results = self.config_overrides.get('max_results', config_max_results)
@@ -65,13 +88,24 @@ class WorkflowStepsHandler:
         print(f"  - Config file max_results: {config_max_results}")
         print(f"  - Config overrides: {self.config_overrides}")
         print(f"  - Final max_rows used: {override_max_results}")
-        
-        documents_generator = self.agents['query_agent'].find_abstracts(
-            question=research_question,
-            max_rows=override_max_results,
-            human_in_the_loop=interactive_mode,
-            human_query_modifier=query_modifier if interactive_mode else None
-        )
+
+        # Check if multi-model query generation is enabled
+        if qg_config.get('multi_model_enabled', False):
+            print(f"🔍 Using multi-model document search")
+            documents_generator = self.agents['query_agent'].find_abstracts_multi_query(
+                question=research_question,
+                max_rows=override_max_results,
+                human_in_the_loop=False,  # GUI doesn't support interactive query selection yet
+                human_query_modifier=None
+            )
+        else:
+            # Single-model search (original behavior)
+            documents_generator = self.agents['query_agent'].find_abstracts(
+                question=research_question,
+                max_rows=override_max_results,
+                human_in_the_loop=interactive_mode,
+                human_query_modifier=query_modifier if interactive_mode else None
+            )
         
         # Convert generator to list
         documents = list(documents_generator)
