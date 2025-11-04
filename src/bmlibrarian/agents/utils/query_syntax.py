@@ -29,6 +29,20 @@ def fix_tsquery_syntax(query: str) -> str:
     if query.startswith(('to_tsquery:', 'tsquery:')):
         query = re.sub(r'^[a-z_]+:\s*', '', query, flags=re.IGNORECASE)
 
+    # Remove markdown code blocks (``` or ```sql, etc.) - LLMs sometimes wrap queries
+    if query.startswith('```') and query.endswith('```'):
+        # Remove opening ```
+        query = query[3:]
+        # Remove language identifier if present (e.g., 'sql\n')
+        if '\n' in query:
+            parts = query.split('\n', 1)
+            if len(parts) > 1:
+                query = parts[1]
+        # Remove closing ```
+        if query.endswith('```'):
+            query = query[:-3]
+        query = query.strip()
+
     # Remove outer quotes that wrap the entire query
     if (query.startswith('"') and query.endswith('"')) or (query.startswith("'") and query.endswith("'")):
         query = query[1:-1]

@@ -169,6 +169,10 @@ class MultiModelQueryGenerator:
             )
 
             query = response['message']['content'].strip()
+
+            # Sanitize query: remove markdown code blocks
+            query = self._sanitize_query(query)
+
             generation_time = time.time() - start_time
 
             return QueryGenerationResult(
@@ -184,6 +188,43 @@ class MultiModelQueryGenerator:
             generation_time = time.time() - start_time
             logger.error(f"Query generation failed for {model}: {e}")
             raise  # Re-raise to be caught by caller
+
+    def _sanitize_query(self, query: str) -> str:
+        """Sanitize query by removing markdown formatting.
+
+        LLMs sometimes wrap queries in markdown code blocks like:
+        ```query here```
+        or
+        ```sql
+        query here
+        ```
+
+        This method strips those out to get the raw query.
+
+        Args:
+            query: Raw query string from LLM
+
+        Returns:
+            Sanitized query string
+        """
+        query = query.strip()
+
+        # Remove markdown code blocks (``` or ```sql, etc.)
+        if query.startswith('```') and query.endswith('```'):
+            # Remove opening ```
+            query = query[3:]
+            # Remove language identifier if present (e.g., 'sql\n')
+            if '\n' in query:
+                # Split on first newline and take the rest
+                parts = query.split('\n', 1)
+                if len(parts) > 1:
+                    query = parts[1]
+            # Remove closing ```
+            if query.endswith('```'):
+                query = query[:-3]
+            query = query.strip()
+
+        return query
 
     def _deduplicate_queries(self, queries: List[str]) -> List[str]:
         """Remove duplicate queries using case-insensitive comparison.
