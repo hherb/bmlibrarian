@@ -56,11 +56,12 @@ class QueryGenerationTab:
             tooltip="Enable using multiple models to generate diverse queries"
         )
 
-        # Queries per model slider
-        self.queries_per_model_text = ft.Text(
-            f"Queries per model: {queries_per_model}",
+        # Queries per model slider with value display
+        self.queries_per_model_value_text = ft.Text(
+            f"{queries_per_model}",
             size=14,
-            weight=ft.FontWeight.W_500
+            weight=ft.FontWeight.W_500,
+            width=60
         )
 
         self.queries_per_model_slider = ft.Slider(
@@ -70,7 +71,8 @@ class QueryGenerationTab:
             value=queries_per_model,
             label="{value}",
             on_change=self._on_queries_per_model_changed,
-            disabled=not enabled
+            disabled=not enabled,
+            width=300
         )
 
         # Checkboxes for options
@@ -172,8 +174,11 @@ class QueryGenerationTab:
                         # Queries per model
                         ft.Container(
                             ft.Column([
-                                self.queries_per_model_text,
-                                self.queries_per_model_slider,
+                                ft.Text("Queries per model", size=14, weight=ft.FontWeight.W_500),
+                                ft.Row([
+                                    self.queries_per_model_slider,
+                                    self.queries_per_model_value_text
+                                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                                 ft.Text(
                                     "More queries = better coverage but slower",
                                     size=11,
@@ -258,7 +263,7 @@ class QueryGenerationTab:
     def _on_queries_per_model_changed(self, e):
         """Handle queries per model slider change."""
         value = int(self.queries_per_model_slider.value)
-        self.queries_per_model_text.value = f"Queries per model: {value}"
+        self.queries_per_model_value_text.value = f"{value}"
         self.app.page.update()
 
     def _refresh_models(self, e):
@@ -391,7 +396,8 @@ class QueryGenerationTab:
         if self.queries_per_model_slider:
             value = qg_config.get('queries_per_model', 1)
             self.queries_per_model_slider.value = value
-            self.queries_per_model_text.value = f"Queries per model: {value}"
+            if self.queries_per_model_value_text:
+                self.queries_per_model_value_text.value = f"{value}"
 
         if self.show_queries_checkbox:
             self.show_queries_checkbox.value = qg_config.get('show_all_queries_to_user', True)

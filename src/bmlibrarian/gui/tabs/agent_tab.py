@@ -101,29 +101,49 @@ class AgentConfigTab:
     def _build_parameters_section(self) -> ft.Container:
         """Build agent parameters section."""
         agent_config = self.app.config.get_agent_config(self.agent_type)
-        
-        # Temperature
+
+        # Temperature value display
+        temp_value = agent_config.get('temperature', 0.1)
+        self.controls['temperature_text'] = ft.Text(
+            f"{temp_value:.2f}",
+            size=14,
+            weight=ft.FontWeight.W_500,
+            width=60
+        )
+
+        # Temperature slider
         self.controls['temperature'] = ft.Slider(
             min=0.0,
             max=2.0,
-            value=agent_config.get('temperature', 0.1),
+            value=temp_value,
             divisions=20,
             label="{value}",
             width=300,
-            tooltip="Controls randomness in responses (0.0 = deterministic, 2.0 = very random)"
+            tooltip="Controls randomness in responses (0.0 = deterministic, 2.0 = very random)",
+            on_change=self._on_temperature_changed
         )
-        
-        # Top-p
+
+        # Top-p value display
+        top_p_value = agent_config.get('top_p', 0.9)
+        self.controls['top_p_text'] = ft.Text(
+            f"{top_p_value:.2f}",
+            size=14,
+            weight=ft.FontWeight.W_500,
+            width=60
+        )
+
+        # Top-p slider
         self.controls['top_p'] = ft.Slider(
             min=0.0,
             max=1.0,
-            value=agent_config.get('top_p', 0.9),
+            value=top_p_value,
             divisions=10,
             label="{value}",
             width=300,
-            tooltip="Nucleus sampling parameter (0.0 = most focused, 1.0 = least focused)"
+            tooltip="Nucleus sampling parameter (0.0 = most focused, 1.0 = least focused)",
+            on_change=self._on_top_p_changed
         )
-        
+
         # Max Tokens
         self.controls['max_tokens'] = ft.TextField(
             label="Max Tokens",
@@ -132,17 +152,19 @@ class AgentConfigTab:
             helper_text="Maximum tokens in response",
             input_filter=ft.NumbersOnlyInputFilter()
         )
-        
+
         return ft.Container(
             ft.Column([
                 ft.Text("Model Parameters", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
                     ft.Text("Temperature:", width=120),
-                    self.controls['temperature']
+                    self.controls['temperature'],
+                    self.controls['temperature_text']
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([
                     ft.Text("Top-p:", width=120),
-                    self.controls['top_p']
+                    self.controls['top_p'],
+                    self.controls['top_p_text']
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([
                     self.controls['max_tokens']
@@ -155,39 +177,57 @@ class AgentConfigTab:
         """Build advanced settings section."""
         agent_config = self.app.config.get_agent_config(self.agent_type)
         advanced_controls = []
-        
+
         # Agent-specific settings
         if self.agent_type == 'scoring':
+            score_value = agent_config.get('min_relevance_score', 3)
+            self.controls['min_relevance_score_text'] = ft.Text(
+                f"{int(score_value)}",
+                size=14,
+                weight=ft.FontWeight.W_500,
+                width=60
+            )
             self.controls['min_relevance_score'] = ft.Slider(
                 min=1,
                 max=5,
-                value=agent_config.get('min_relevance_score', 3),
+                value=score_value,
                 divisions=4,
                 label="{value}",
                 width=300,
-                tooltip="Minimum relevance score to consider"
+                tooltip="Minimum relevance score to consider",
+                on_change=self._on_min_score_changed
             )
             advanced_controls.append(
                 ft.Row([
                     ft.Text("Min Relevance Score:", width=150),
-                    self.controls['min_relevance_score']
+                    self.controls['min_relevance_score'],
+                    self.controls['min_relevance_score_text']
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
             )
-            
+
         elif self.agent_type == 'citation':
+            relevance_value = agent_config.get('min_relevance', 0.7)
+            self.controls['min_relevance_text'] = ft.Text(
+                f"{relevance_value:.2f}",
+                size=14,
+                weight=ft.FontWeight.W_500,
+                width=60
+            )
             self.controls['min_relevance'] = ft.Slider(
                 min=0.0,
                 max=1.0,
-                value=agent_config.get('min_relevance', 0.7),
+                value=relevance_value,
                 divisions=10,
                 label="{value}",
                 width=300,
-                tooltip="Minimum relevance threshold for citations"
+                tooltip="Minimum relevance threshold for citations",
+                on_change=self._on_min_relevance_changed
             )
             advanced_controls.append(
                 ft.Row([
                     ft.Text("Min Relevance:", width=150),
-                    self.controls['min_relevance']
+                    self.controls['min_relevance'],
+                    self.controls['min_relevance_text']
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
             )
             
@@ -290,7 +330,31 @@ class AgentConfigTab:
                 self.app.page.update()
             
             self.app._show_error_dialog(f"Failed to refresh models: {str(ex)}")
-    
+
+    def _on_temperature_changed(self, e):
+        """Handle temperature slider change."""
+        value = self.controls['temperature'].value
+        self.controls['temperature_text'].value = f"{value:.2f}"
+        self.app.page.update()
+
+    def _on_top_p_changed(self, e):
+        """Handle top_p slider change."""
+        value = self.controls['top_p'].value
+        self.controls['top_p_text'].value = f"{value:.2f}"
+        self.app.page.update()
+
+    def _on_min_score_changed(self, e):
+        """Handle min relevance score slider change."""
+        value = self.controls['min_relevance_score'].value
+        self.controls['min_relevance_score_text'].value = f"{int(value)}"
+        self.app.page.update()
+
+    def _on_min_relevance_changed(self, e):
+        """Handle min relevance slider change."""
+        value = self.controls['min_relevance'].value
+        self.controls['min_relevance_text'].value = f"{value:.2f}"
+        self.app.page.update()
+
     def update_config(self):
         """Update configuration from UI controls."""
         print(f"🔧 Updating {self.agent_key} settings from UI...")  # Debug
@@ -341,24 +405,38 @@ class AgentConfigTab:
         """Refresh tab with current configuration."""
         current_model = self.app.config.get_model(self.agent_key)
         agent_config = self.app.config.get_agent_config(self.agent_type)
-        
+
         # Update model selection
         self.controls['model'].value = current_model
-        
-        # Update parameters
-        self.controls['temperature'].value = agent_config.get('temperature', 0.1)
-        self.controls['top_p'].value = agent_config.get('top_p', 0.9)
+
+        # Update parameters and their text displays
+        temp_value = agent_config.get('temperature', 0.1)
+        self.controls['temperature'].value = temp_value
+        if 'temperature_text' in self.controls:
+            self.controls['temperature_text'].value = f"{temp_value:.2f}"
+
+        top_p_value = agent_config.get('top_p', 0.9)
+        self.controls['top_p'].value = top_p_value
+        if 'top_p_text' in self.controls:
+            self.controls['top_p_text'].value = f"{top_p_value:.2f}"
+
         self.controls['max_tokens'].value = str(agent_config.get('max_tokens', 1000))
-        
-        # Update agent-specific settings
+
+        # Update agent-specific settings and their text displays
         if self.agent_type == 'scoring' and 'min_relevance_score' in self.controls:
-            self.controls['min_relevance_score'].value = agent_config.get('min_relevance_score', 3)
-            
+            score_value = agent_config.get('min_relevance_score', 3)
+            self.controls['min_relevance_score'].value = score_value
+            if 'min_relevance_score_text' in self.controls:
+                self.controls['min_relevance_score_text'].value = f"{int(score_value)}"
+
         elif self.agent_type == 'citation' and 'min_relevance' in self.controls:
-            self.controls['min_relevance'].value = agent_config.get('min_relevance', 0.7)
-            
+            relevance_value = agent_config.get('min_relevance', 0.7)
+            self.controls['min_relevance'].value = relevance_value
+            if 'min_relevance_text' in self.controls:
+                self.controls['min_relevance_text'].value = f"{relevance_value:.2f}"
+
         elif self.agent_type == 'editor' and 'comprehensive_format' in self.controls:
             self.controls['comprehensive_format'].value = agent_config.get('comprehensive_format', True)
-            
+
         elif self.agent_type == 'counterfactual' and 'retry_attempts' in self.controls:
             self.controls['retry_attempts'].value = str(agent_config.get('retry_attempts', 3))
