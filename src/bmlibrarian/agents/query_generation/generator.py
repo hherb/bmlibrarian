@@ -67,11 +67,18 @@ class MultiModelQueryGenerator:
         for model in models:
             for attempt in range(1, queries_per_model + 1):
                 try:
+                    # Increase temperature for subsequent attempts to get variation
+                    # Attempt 1: base temperature
+                    # Attempt 2: +0.2
+                    # Attempt 3: +0.4
+                    adjusted_temperature = temperature + (0.2 * (attempt - 1))
+                    adjusted_temperature = min(adjusted_temperature, 1.0)  # Cap at 1.0
+
                     result = self._generate_single_query(
                         model=model,
                         question=question,
                         system_prompt=system_prompt,
-                        temperature=temperature,
+                        temperature=adjusted_temperature,
                         top_p=top_p,
                         attempt=attempt
                     )

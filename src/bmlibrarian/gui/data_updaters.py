@@ -62,33 +62,41 @@ class DataUpdaters:
             query_entries = []
 
             for i, query_result in enumerate(query_generation_result.all_queries):
-                if query_result.error:
-                    continue
+                # Sanitize the query for display (even if it has an error)
+                sanitized_query = fix_tsquery_syntax(query_result.query) if query_result.query else ""
 
-                # Sanitize the query for display
-                sanitized_query = fix_tsquery_syntax(query_result.query)
-
-                # Find matching execution stats if available
+                # Find matching execution stats if available (match by query text, not index)
                 result_count = None
-                if query_stats:
+                if query_stats and sanitized_query:
                     for stat in query_stats:
-                        if stat['query_index'] == i + 1:
+                        # Match by query text content since indices may not align due to filtering
+                        if stat['query_text'] == sanitized_query:
                             result_count = stat['result_count'] if stat['success'] else "ERROR"
+                            print(f"📊 Matched query {i+1}: '{sanitized_query[:50]}...' -> {result_count} results")
                             break
+
+                    # Debug: if no match found, log it
+                    if result_count is None:
+                        print(f"⚠️  No stats match for query {i+1}: '{sanitized_query[:50]}...'")
+                        print(f"   Available stats queries: {[s['query_text'][:50] for s in query_stats]}")
 
                 # Build query display string
                 model_name = query_result.model.split(':')[0]  # Shorten model name
-                query_display = f"model {model_name} attempt {query_result.attempt_number}: {sanitized_query}"
 
-                if result_count is not None:
-                    query_display += f"  results: {result_count}"
+                # Show error status if query failed during generation
+                if query_result.error:
+                    query_display = f"model {model_name} attempt {query_result.attempt_number}: GENERATION FAILED"
+                else:
+                    query_display = f"model {model_name} attempt {query_result.attempt_number}: {sanitized_query}"
+                    if result_count is not None:
+                        query_display += f"  results: {result_count}"
 
                 # Create text widget for this query
                 query_text = ft.Text(
                     query_display,
                     size=11,
                     selectable=True,
-                    color=ft.Colors.GREY_800 if result_count != "ERROR" else ft.Colors.RED_700
+                    color=ft.Colors.GREY_800 if not query_result.error and result_count != "ERROR" else ft.Colors.RED_700
                 )
                 query_entries.append(query_text)
 
