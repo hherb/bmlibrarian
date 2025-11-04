@@ -12,20 +12,23 @@ from ..cli.workflow_steps import WorkflowStep
 class WorkflowStepsHandler:
     """Handles execution of individual workflow steps with agent coordination."""
 
-    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
+    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None, tab_manager: Optional[Any] = None):
         self.agents = agents
         self.config_overrides = config_overrides if config_overrides is not None else {}
         self.multi_query_generation_result = None  # Store for linking with search results
         self.multi_query_stats = None  # Store query execution statistics
+        self.performance_tracker = None  # Query performance tracker
+        self.session_id = None  # Session ID for performance tracking
+        self.tab_manager = tab_manager  # Reference to TabManager for GUI updates
     
-    def execute_query_generation(self, research_question: str, 
+    def execute_query_generation(self, research_question: str,
                                update_callback: Callable) -> str:
         """Execute the query generation step.
-        
+
         Args:
             research_question: The research question to convert
             update_callback: Callback for status updates
-            
+
         Returns:
             Generated PostgreSQL query string
         """
@@ -38,8 +41,38 @@ class WorkflowStepsHandler:
 
         if qg_config.get('multi_model_enabled', False):
             # Use multi-model query generation
-            print(f"🔍 Using multi-model query generation with {len(qg_config.get('models', []))} models")
-            multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+            num_models = len(qg_config.get('models', []))
+            queries_per = qg_config.get('queries_per_model', 1)
+            total_queries = num_models * queries_per
+            print(f"🔍 Using multi-model query generation with {num_models} models, {queries_per} queries each = {total_queries} total")
+
+            # Set up callback to update GUI progress
+            queries_generated = [0]  # Use list to allow modification in nested function
+
+            def progress_callback(event_type: str, data):
+                """Update GUI with query generation progress."""
+                if event_type == "query_generated":
+                    queries_generated[0] += 1
+                    if isinstance(data, dict):
+                        model_short = data.get('model', '').split(':')[0]
+                        attempt = data.get('attempt', '?')
+                        query = data.get('query', '')[:60]
+                        progress_msg = f"Generated query {queries_generated[0]}/{total_queries}: {model_short} attempt {attempt}"
+                        print(f"   ✓ {progress_msg}")
+                        if self.tab_manager:
+                            self.tab_manager.update_search_progress(progress_msg, show_bar=True)
+
+            # Temporarily set callback
+            original_callback = self.agents['query_agent'].callback
+            self.agents['query_agent'].callback = progress_callback
+
+            try:
+                multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+            finally:
+                self.agents['query_agent'].callback = original_callback
+                # Clear progress
+                if self.tab_manager:
+                    self.tab_manager.update_search_progress("", show_bar=False)
 
             # Store for later linking with search results
             self.multi_query_generation_result = multi_result
@@ -106,6 +139,13 @@ class WorkflowStepsHandler:
         if qg_config.get('multi_model_enabled', False):
             print(f"🔍 Using multi-model document search")
 
+            # Initialize performance tracker for this session
+            from ..agents.query_generation import QueryPerformanceTracker
+            import hashlib
+            self.session_id = hashlib.md5(research_question.encode()).hexdigest()
+            self.performance_tracker = QueryPerformanceTracker()  # In-memory database
+            self.performance_tracker.start_session(self.session_id)
+
             # Create a custom callback to capture query statistics
             original_callback = self.agents['query_agent'].callback
 
@@ -114,6 +154,11 @@ class WorkflowStepsHandler:
                 print(f"🔍 DEBUG: stats_callback called with event_type={event_type}")
 
                 if event_type == "multi_query_stats":
+                    # Parse JSON string to dict if needed
+                    import json
+                    if isinstance(data, str):
+                        data = json.loads(data)
+
                     # Store the statistics for display
                     self.multi_query_stats = data
                     print(f"🔍 DEBUG: Stored multi_query_stats with {len(data.get('query_stats', []))} queries")
@@ -147,7 +192,9 @@ class WorkflowStepsHandler:
                     question=research_question,
                     max_rows=override_max_results,
                     human_in_the_loop=False,  # GUI doesn't support interactive query selection yet
-                    human_query_modifier=None
+                    human_query_modifier=None,
+                    performance_tracker=self.performance_tracker,
+                    session_id=self.session_id
                 )
                 # CRITICAL: Consume generator INSIDE try block while callback is active
                 documents = list(documents_generator)
@@ -309,6 +356,49 @@ class WorkflowStepsHandler:
                 print(f"Error processing scored document: {e}")
                 continue
         
+        # Update performance tracker with document scores if available
+        print(f"🔍 DEBUG: Checking performance tracker: tracker={'available' if self.performance_tracker else 'None'}, session_id={self.session_id if self.session_id else 'None'}")
+        if self.performance_tracker and self.session_id:
+            document_scores = {}
+            for doc, result_dict in all_scored_documents:
+                doc_id = doc.get('id')
+                if doc_id and 'score' in result_dict:
+                    document_scores[doc_id] = result_dict['score']
+
+            print(f"🔍 DEBUG: Collected {len(document_scores)} document scores to update")
+            if document_scores:
+                print(f"🔍 DEBUG: Updating performance tracker with {len(document_scores)} document scores")
+                self.performance_tracker.update_document_scores(self.session_id, document_scores)
+
+                # Get and display performance statistics
+                from ..config import get_search_config
+                search_config = get_search_config()
+                threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
+
+                print(f"🔍 DEBUG: Getting query statistics for session {self.session_id} with threshold {threshold}")
+                stats = self.performance_tracker.get_query_statistics(
+                    session_id=self.session_id,
+                    score_threshold=threshold
+                )
+
+                print(f"🔍 DEBUG: Got {len(stats) if stats else 0} query statistics")
+                if stats:
+                    print("\n" + "="*80)
+                    print("QUERY PERFORMANCE ANALYSIS")
+                    print("="*80)
+                    formatted_stats = self.agents['query_agent'].format_query_performance_stats(
+                        stats, score_threshold=threshold
+                    )
+                    print(formatted_stats)
+
+                    # Update GUI if tab_manager is available
+                    print(f"🔍 DEBUG: Updating GUI with statistics, tab_manager={'available' if self.tab_manager else 'NOT available'}")
+                    if self.tab_manager:
+                        self.tab_manager.update_search_performance_stats(stats, score_threshold=threshold)
+                        print("🔍 DEBUG: GUI update complete")
+                else:
+                    print("🔍 DEBUG: No statistics to display")
+
         # Update status message
         override_msg = ""
         if score_overrides:

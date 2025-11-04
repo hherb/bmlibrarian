@@ -12,7 +12,12 @@
       "Bash(uv run:*)",
       "Bash(git diff:*)",
       "Bash(psql:*)",
-      "Bash(psycopg:*)"
+      "Bash(psycopg:*)",
+      "Read(//Users/hherb/.bmlibrarian/**)",
+      "Bash(cat:*)",
+      "Bash(python3:*)",
+      "Read(//private/tmp/**)",
+      "Read(//tmp/**)"
     ],
     "deny": [],
     "ask": []

@@ -48,10 +48,11 @@ class WorkflowExecutor:
     at key workflow steps before proceeding.
     """
     
-    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
+    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None, tab_manager: Optional[Any] = None):
         self.agents = agents
         self.config_overrides: Dict[str, Any] = config_overrides or {}
-        
+        self.tab_manager = tab_manager  # Store tab_manager reference
+
         # Store workflow results for tab access
         self.documents = []
         self.scored_documents = []
@@ -60,14 +61,14 @@ class WorkflowExecutor:
         self.preliminary_report = ""
         self.final_report = ""
         self.last_query_text = None  # Store last query for "Add More Documents" feature
-        
+
         # Store model information for report footnotes
         self.agent_model_info = {}
-        
+
         # Initialize modular components
         self.interactive_handler = None
         self.query_processor = QueryProcessor()
-        self.steps_handler = WorkflowStepsHandler(agents, self.config_overrides)
+        self.steps_handler = WorkflowStepsHandler(agents, self.config_overrides, tab_manager)
         
         # Collect agent model information for footnotes
         self._collect_agent_model_info()
