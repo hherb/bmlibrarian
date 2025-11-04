@@ -87,6 +87,17 @@ DEFAULT_CONFIG = {
         "counterfactual_min_score": 3,  # Min score for counterfactual evidence
         "query_retry_attempts": 3,  # Number of times to retry failed tsquery with reformulation
         "auto_fix_tsquery_syntax": True  # Automatically fix common tsquery syntax errors
+    },
+    "query_generation": {
+        "multi_model_enabled": False,  # Feature flag - default disabled for backward compatibility
+        "models": [
+            "medgemma-27b-text-it-Q8_0:latest"  # Default: single model (same as query_agent)
+        ],
+        "queries_per_model": 1,  # 1-3 queries per model (1 = single query like original behavior)
+        "execution_mode": "serial",  # Always serial for local Ollama + PostgreSQL instances
+        "deduplicate_results": True,  # Remove duplicate documents across queries
+        "show_all_queries_to_user": True,  # Display all generated queries in CLI
+        "allow_query_selection": True  # Let user select which queries to execute
     }
 }
 
@@ -333,3 +344,7 @@ def get_ollama_host() -> str:
 def get_search_config() -> Dict[str, Any]:
     """Get search configuration."""
     return get_config().get_search_config()
+
+def get_query_generation_config() -> Dict[str, Any]:
+    """Get query generation configuration."""
+    return get_config().get("query_generation", DEFAULT_CONFIG["query_generation"])

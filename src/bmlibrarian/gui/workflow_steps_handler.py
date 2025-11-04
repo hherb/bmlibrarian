@@ -11,10 +11,12 @@ from ..cli.workflow_steps import WorkflowStep
 
 class WorkflowStepsHandler:
     """Handles execution of individual workflow steps with agent coordination."""
-    
+
     def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
         self.agents = agents
         self.config_overrides = config_overrides if config_overrides is not None else {}
+        self.multi_query_generation_result = None  # Store for linking with search results
+        self.multi_query_stats = None  # Store query execution statistics
     
     def execute_query_generation(self, research_question: str, 
                                update_callback: Callable) -> str:
@@ -29,9 +31,42 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "running",
                       "Generating database query...")
-        
-        query_text = self.agents['query_agent'].convert_question(research_question)
-        
+
+        # Check if multi-model query generation is enabled
+        from ..config import get_query_generation_config
+        qg_config = get_query_generation_config()
+
+        if qg_config.get('multi_model_enabled', False):
+            # Use multi-model query generation
+            print(f"🔍 Using multi-model query generation with {len(qg_config.get('models', []))} models")
+            multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+
+            # Store for later linking with search results
+            self.multi_query_generation_result = multi_result
+
+            # For GUI, we'll use all unique queries (user can't review them in non-interactive mode)
+            # In the future, could add interactive query selection UI here
+            if multi_result.unique_queries:
+                # Sanitize queries for display (same sanitization that will be applied during execution)
+                from ..agents.utils.query_syntax import fix_tsquery_syntax
+                sanitized_queries = [fix_tsquery_syntax(q) for q in multi_result.unique_queries]
+
+                # For now, use the first sanitized query for display/editing
+                # But all queries will be used in the search step
+                query_text = sanitized_queries[0]
+                print(f"📊 Generated {len(sanitized_queries)} unique queries (sanitized)")
+
+                # Display each query with model and attempt info
+                for query_result in multi_result.all_queries:
+                    if not query_result.error:
+                        sanitized_q = fix_tsquery_syntax(query_result.query)
+                        print(f"   model {query_result.model} attempt {query_result.attempt_number}: {sanitized_q}")
+            else:
+                query_text = ""
+        else:
+            # Use single-model query generation (original behavior)
+            query_text = self.agents['query_agent'].convert_question(research_question)
+
         return query_text
     
     def execute_document_search(self, research_question: str, query_text: str,
@@ -49,15 +84,16 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.SEARCH_DOCUMENTS, "running",
                       "Searching database...")
-        
+
         # Use the query that might have been edited by the user
         def query_modifier(original_query):
             # Return the query_text that was potentially edited by the user
             return query_text
-        
-        from ..config import get_search_config
+
+        from ..config import get_search_config, get_query_generation_config
         search_config = get_search_config()
-        
+        qg_config = get_query_generation_config()
+
         # Debug: Show what max_results value is being used
         config_max_results = search_config.get('max_results', 100)
         override_max_results = self.config_overrides.get('max_results', config_max_results)
@@ -65,16 +101,69 @@ class WorkflowStepsHandler:
         print(f"  - Config file max_results: {config_max_results}")
         print(f"  - Config overrides: {self.config_overrides}")
         print(f"  - Final max_rows used: {override_max_results}")
-        
-        documents_generator = self.agents['query_agent'].find_abstracts(
-            question=research_question,
-            max_rows=override_max_results,
-            human_in_the_loop=interactive_mode,
-            human_query_modifier=query_modifier if interactive_mode else None
-        )
-        
-        # Convert generator to list
-        documents = list(documents_generator)
+
+        # Check if multi-model query generation is enabled
+        if qg_config.get('multi_model_enabled', False):
+            print(f"🔍 Using multi-model document search")
+
+            # Create a custom callback to capture query statistics
+            original_callback = self.agents['query_agent'].callback
+
+            def stats_callback(event_type: str, data):
+                """Capture query statistics from the agent."""
+                print(f"🔍 DEBUG: stats_callback called with event_type={event_type}")
+
+                if event_type == "multi_query_stats":
+                    # Store the statistics for display
+                    self.multi_query_stats = data
+                    print(f"🔍 DEBUG: Stored multi_query_stats with {len(data.get('query_stats', []))} queries")
+
+                    # Print detailed per-query results
+                    if isinstance(data, dict) and 'query_stats' in data:
+                        print(f"\n📊 Multi-query execution results:")
+                        for stat in data['query_stats']:
+                            if stat['success']:
+                                # Match with generation info to get model name
+                                query_idx = stat['query_index'] - 1  # Convert to 0-based
+                                model_info = ""
+                                if self.multi_query_generation_result and query_idx < len(self.multi_query_generation_result.all_queries):
+                                    gen_result = self.multi_query_generation_result.all_queries[query_idx]
+                                    model_info = f"model {gen_result.model} attempt {gen_result.attempt_number}: "
+
+                                print(f"   {model_info}{stat['query_text']}  results: {stat['result_count']}")
+                            else:
+                                print(f"   Query {stat['query_index']}: FAILED - {stat['error']}")
+                        print(f"   Total unique documents: {data['total_unique_ids']}\n")
+
+                # Call original callback if it exists
+                if original_callback:
+                    original_callback(event_type, data)
+
+            # Temporarily replace callback
+            self.agents['query_agent'].callback = stats_callback
+
+            try:
+                documents_generator = self.agents['query_agent'].find_abstracts_multi_query(
+                    question=research_question,
+                    max_rows=override_max_results,
+                    human_in_the_loop=False,  # GUI doesn't support interactive query selection yet
+                    human_query_modifier=None
+                )
+                # CRITICAL: Consume generator INSIDE try block while callback is active
+                documents = list(documents_generator)
+            finally:
+                # Restore original callback
+                self.agents['query_agent'].callback = original_callback
+        else:
+            # Single-model search (original behavior)
+            documents_generator = self.agents['query_agent'].find_abstracts(
+                question=research_question,
+                max_rows=override_max_results,
+                human_in_the_loop=interactive_mode,
+                human_query_modifier=query_modifier if interactive_mode else None
+            )
+            # Convert generator to list
+            documents = list(documents_generator)
 
         # Deduplicate documents by ID (defensive programming - shouldn't be needed with proper ORDER BY)
         seen_ids = set()

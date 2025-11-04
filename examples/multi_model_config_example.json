@@ -1,0 +1,186 @@
+{
+  "_comment": "Example Multi-Model Query Generation Configuration",
+  "_note": "This file demonstrates various configuration options for multi-model query generation in BMLibrarian",
+
+  "query_generation": {
+    "_comment": "Multi-model query generation settings",
+
+    "multi_model_enabled": true,
+    "_note_enabled": "Set to true to enable multi-model query generation. Default: false (backward compatible)",
+
+    "models": [
+      "medgemma-27b-text-it-Q8_0:latest",
+      "gpt-oss:20b"
+    ],
+    "_note_models": "List 1-3 models. Each must be available in Ollama. Models are used serially (not in parallel)",
+
+    "queries_per_model": 1,
+    "_note_queries": "Generate 1-3 queries per model. More queries = better coverage but slower. Recommended: 1",
+
+    "execution_mode": "serial",
+    "_note_execution": "Always 'serial' for local Ollama + PostgreSQL instances (parallel not supported)",
+
+    "deduplicate_results": true,
+    "_note_dedupe": "Remove duplicate documents across queries. Recommended: true",
+
+    "show_all_queries_to_user": true,
+    "_note_show": "Display all generated queries in CLI for user review. Recommended: true in interactive mode",
+
+    "allow_query_selection": true,
+    "_note_selection": "Let user select which queries to execute in interactive mode. Recommended: true"
+  },
+
+  "_usage_examples": {
+    "_comment": "Common configuration patterns for different use cases",
+
+    "conservative": {
+      "_description": "Single model, single query - same as original behavior",
+      "_use_case": "Quick searches, testing, or when speed is critical",
+      "multi_model_enabled": false,
+      "models": ["medgemma-27b-text-it-Q8_0:latest"],
+      "queries_per_model": 1,
+      "_expected_queries": 1,
+      "_expected_time": "2-5 seconds"
+    },
+
+    "balanced": {
+      "_description": "Two models, one query each - recommended starting point",
+      "_use_case": "Most research tasks, good coverage/speed tradeoff",
+      "multi_model_enabled": true,
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "gpt-oss:20b"
+      ],
+      "queries_per_model": 1,
+      "_expected_queries": "2 (may be fewer after de-duplication)",
+      "_expected_time": "5-8 seconds",
+      "_expected_coverage": "+20-30% more documents"
+    },
+
+    "comprehensive": {
+      "_description": "Two models, two queries each - thorough literature search",
+      "_use_case": "Important research questions requiring comprehensive coverage",
+      "multi_model_enabled": true,
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "gpt-oss:20b"
+      ],
+      "queries_per_model": 2,
+      "_expected_queries": "3-4 (after de-duplication)",
+      "_expected_time": "10-15 seconds",
+      "_expected_coverage": "+30-40% more documents"
+    },
+
+    "aggressive": {
+      "_description": "Three models, two queries each - maximum coverage",
+      "_use_case": "Systematic reviews, meta-analyses, when completeness is critical",
+      "multi_model_enabled": true,
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "gpt-oss:20b",
+        "medgemma4B_it_q8:latest"
+      ],
+      "queries_per_model": 2,
+      "_expected_queries": "4-6 (after de-duplication)",
+      "_expected_time": "15-25 seconds",
+      "_expected_coverage": "+40-60% more documents"
+    },
+
+    "speed_focused": {
+      "_description": "Two fast models, single query - faster than balanced, better than single",
+      "_use_case": "When you want multi-model benefits but time is limited",
+      "multi_model_enabled": true,
+      "models": [
+        "medgemma4B_it_q8:latest",
+        "gpt-oss:20b"
+      ],
+      "queries_per_model": 1,
+      "_expected_queries": "2",
+      "_expected_time": "4-6 seconds",
+      "_expected_coverage": "+15-25% more documents"
+    }
+  },
+
+  "_model_recommendations": {
+    "_comment": "Recommended model combinations based on use case",
+
+    "medical_focus": {
+      "_description": "Medical domain-specific models for biomedical research",
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "medgemma4B_it_q8:latest"
+      ]
+    },
+
+    "general_and_medical": {
+      "_description": "Combine general knowledge with medical expertise",
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "gpt-oss:20b"
+      ]
+    },
+
+    "maximum_diversity": {
+      "_description": "Maximum model diversity for broadest coverage",
+      "models": [
+        "medgemma-27b-text-it-Q8_0:latest",
+        "gpt-oss:20b",
+        "medgemma4B_it_q8:latest"
+      ]
+    }
+  },
+
+  "_performance_notes": {
+    "_comment": "Important performance considerations",
+
+    "serial_execution": "Models are queried one at a time (serial, not parallel). This is optimal for local Ollama instances.",
+
+    "query_generation_time": "Varies by model size. Large models (27B) take 3-5 seconds, small models (4B) take 1-2 seconds per query.",
+
+    "database_query_time": "ID-only queries are very fast (~0.1-0.5 seconds each). Full document fetch happens only once after de-duplication.",
+
+    "total_overhead": "Typically 2-3x slower than single-model mode, but finds 20-40% more relevant documents.",
+
+    "de_duplication": "Case-insensitive query de-duplication and document ID de-duplication happen automatically."
+  },
+
+  "_troubleshooting": {
+    "_comment": "Common issues and solutions",
+
+    "model_not_found": {
+      "issue": "Error: Model X not found in Ollama",
+      "solution": "Run 'ollama pull model-name' to download the model, or remove it from the models list"
+    },
+
+    "slow_query_generation": {
+      "issue": "Each model takes 5-10 seconds to generate a query",
+      "solution": "This is normal for large models (20B+). Use smaller models or reduce queries_per_model"
+    },
+
+    "too_many_documents": {
+      "issue": "Query returns thousands of documents, scoring takes too long",
+      "solution": "Reduce max_rows in CLI settings, use fewer models, or refine your research question"
+    },
+
+    "duplicate_queries": {
+      "issue": "Multiple models generate identical queries",
+      "solution": "This is normal. System automatically de-duplicates queries (no action needed)"
+    }
+  },
+
+  "_migration_guide": {
+    "_comment": "How to migrate from single-model to multi-model",
+
+    "step_1": "Test with multi_model_enabled: false (verify existing behavior works)",
+    "step_2": "Enable multi-model with single model first (multi_model_enabled: true, 1 model)",
+    "step_3": "Add second model to verify multi-model workflow",
+    "step_4": "Tune: Adjust number of models and queries_per_model based on results",
+    "step_5": "Production: Use balanced or comprehensive configuration for production workflows"
+  },
+
+  "_see_also": {
+    "user_guide": "doc/users/multi_model_query_guide.md",
+    "developer_docs": "doc/developers/multi_model_architecture.md",
+    "configuration_gui": "Use 'uv run python bmlibrarian_config_gui.py' for graphical configuration"
+  }
+}

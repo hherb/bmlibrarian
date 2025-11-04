@@ -4,7 +4,7 @@ import os
 import time
 import logging
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, List, Union, cast, LiteralString
+from typing import Dict, Generator, Optional, List, Union, cast, LiteralString, Any
 from datetime import date
 
 import psycopg
@@ -415,6 +415,179 @@ def find_abstracts(
         'results': all_results,  # Full result set for observability
         'timestamp': time.time()
     }})
+
+
+def find_abstract_ids(
+    ts_query_str: str,
+    max_rows: int = 100,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True,
+    plain: bool = False,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    offset: int = 0
+) -> set[int]:
+    """
+    Execute search and return ONLY document IDs (fast).
+
+    This is much faster than find_abstracts() because:
+    - No JOINs with authors table
+    - No text field transfers
+    - Returns set[int] for easy de-duplication
+
+    Designed for multi-query workflows where document IDs are collected
+    from multiple queries before fetching full documents.
+
+    Args:
+        ts_query_str: Text search query string
+        max_rows: Maximum number of IDs to return
+        use_pubmed: Include PubMed sources
+        use_medrxiv: Include medRxiv sources
+        use_others: Include other sources
+        plain: If True, use plainto_tsquery; if False, use to_tsquery
+        from_date: Only include documents published on or after this date
+        to_date: Only include documents published on or before this date
+        offset: Number of rows to skip before returning results
+
+    Returns:
+        Set of document IDs
+
+    Example:
+        >>> ids = find_abstract_ids("aspirin & heart", max_rows=100, plain=False)
+        >>> print(f"Found {len(ids)} documents")
+        Found 87 documents
+    """
+    logger.info(f"Searching for document IDs: query='{ts_query_str[:100]}...', max_rows={max_rows}")
+
+    db_manager = get_db_manager()
+
+    # Build source ID filter (same logic as find_abstracts)
+    source_ids = []
+    all_sources_enabled = use_pubmed and use_medrxiv and use_others
+
+    if not all_sources_enabled and DatabaseManager._source_ids:
+        if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
+            source_ids.append(DatabaseManager._source_ids['pubmed'])
+        if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
+            source_ids.append(DatabaseManager._source_ids['medrxiv'])
+        if use_others and 'others' in DatabaseManager._source_ids:
+            source_ids.extend(DatabaseManager._source_ids['others'])
+
+    # Build WHERE clause
+    where_clauses = []
+    params = []
+
+    # Text search condition
+    if plain:
+        where_clauses.append("d.search_vector @@ plainto_tsquery('english', %s)")
+    else:
+        where_clauses.append("d.search_vector @@ to_tsquery('english', %s)")
+    params.append(ts_query_str)
+
+    # Source filtering
+    if source_ids:
+        where_clauses.append(f"d.source_id = ANY(%s)")
+        params.append(source_ids)
+
+    # Date filtering
+    if from_date:
+        where_clauses.append("d.publication_date >= %s")
+        params.append(from_date)
+    if to_date:
+        where_clauses.append("d.publication_date <= %s")
+        params.append(to_date)
+
+    where_clause = " AND ".join(where_clauses)
+
+    # Simple ID-only query - no JOINs, no text fields
+    # Note: Must include publication_date in SELECT when using it in ORDER BY with DISTINCT
+    sql = f"""
+        SELECT DISTINCT d.id, d.publication_date
+        FROM document d
+        WHERE {where_clause}
+        ORDER BY d.publication_date DESC NULLS LAST
+        LIMIT %s OFFSET %s
+    """
+    params.extend([max_rows, offset])
+
+    # Execute and collect IDs
+    document_ids = set()
+    start_time = time.time()
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            for row in cur.fetchall():
+                document_ids.add(row[0])  # Still only collect the ID, ignore publication_date
+
+    elapsed = time.time() - start_time
+    logger.info(f"Found {len(document_ids)} document IDs in {elapsed:.2f}s")
+
+    return document_ids
+
+
+def fetch_documents_by_ids(
+    document_ids: set[int],
+    batch_size: int = 50
+) -> list[Dict[str, Any]]:
+    """
+    Fetch full document details for given IDs.
+
+    Designed for multi-query workflows: collect IDs from multiple queries,
+    de-duplicate them, then fetch full documents once.
+
+    Args:
+        document_ids: Set of document IDs to fetch
+        batch_size: Number of documents per database query (prevents param limits)
+
+    Returns:
+        List of document dictionaries (same format as find_abstracts)
+
+    Example:
+        >>> ids = {123, 456, 789}
+        >>> docs = fetch_documents_by_ids(ids)
+        >>> print(f"Fetched {len(docs)} documents")
+        Fetched 3 documents
+    """
+    if not document_ids:
+        logger.debug("No document IDs provided, returning empty list")
+        return []
+
+    logger.info(f"Fetching {len(document_ids)} documents in batches of {batch_size}")
+
+    db_manager = get_db_manager()
+    documents = []
+
+    # Convert set to list for batching
+    id_list = list(document_ids)
+
+    # Fetch in batches to avoid PostgreSQL parameter limits
+    for i in range(0, len(id_list), batch_size):
+        batch_ids = id_list[i:i + batch_size]
+
+        logger.debug(f"Fetching batch {i // batch_size + 1}: {len(batch_ids)} documents")
+
+        # Simple query - authors are stored as text array in document table
+        sql = """
+            SELECT
+                d.*,
+                s.name as source_name
+            FROM document d
+            LEFT JOIN sources s ON d.source_id = s.id
+            WHERE d.id = ANY(%s)
+            ORDER BY d.publication_date DESC NULLS LAST
+        """
+
+        with db_manager.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, [batch_ids])
+                batch_docs = cur.fetchall()
+                documents.extend(batch_docs)
+
+    logger.info(f"Fetched {len(documents)} documents")
+
+    return documents
 
 
 def close_database():

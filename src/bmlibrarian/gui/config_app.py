@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from ..config import get_config, DEFAULT_CONFIG
-from .tabs import GeneralSettingsTab, AgentConfigTab
+from .tabs import GeneralSettingsTab, AgentConfigTab, QueryGenerationTab
 
 
 class BMLibrarianConfigApp:
@@ -148,7 +148,16 @@ class BMLibrarianConfigApp:
             icon=ft.Icons.SETTINGS,
             content=general_tab.build()
         )
-        
+
+        # Query Generation Tab
+        query_gen_tab = QueryGenerationTab(self)
+        self.tab_objects['query_generation'] = query_gen_tab  # Store reference
+        self.tabs['query_generation'] = ft.Tab(
+            text="Query Generation",
+            icon=ft.Icons.AUTO_AWESOME,
+            content=query_gen_tab.build()
+        )
+
         # Agent Configuration Tabs
         agent_types = {
             'query_agent': ('Query Agent', ft.Icons.SEARCH),
@@ -158,7 +167,7 @@ class BMLibrarianConfigApp:
             'counterfactual_agent': ('Counterfactual Agent', ft.Icons.PSYCHOLOGY),
             'editor_agent': ('Editor Agent', ft.Icons.EDIT)
         }
-        
+
         for agent_key, (display_name, icon) in agent_types.items():
             agent_tab = AgentConfigTab(self, agent_key, display_name)
             self.tab_objects[agent_key] = agent_tab  # Store reference
@@ -391,22 +400,33 @@ class BMLibrarianConfigApp:
             general_tab = self.tab_objects.get('general')
             if general_tab and hasattr(general_tab, 'update_config'):
                 general_tab.update_config()
-            
+
+            # Update query generation settings
+            query_gen_tab = self.tab_objects.get('query_generation')
+            if query_gen_tab and hasattr(query_gen_tab, 'get_config'):
+                qg_config = query_gen_tab.get_config()
+                self.config._config['query_generation'] = qg_config
+
             # Update agent tabs
             agent_types = ['query_agent', 'scoring_agent', 'citation_agent', 'reporting_agent', 'counterfactual_agent', 'editor_agent']
             for agent_key in agent_types:
                 agent_tab = self.tab_objects.get(agent_key)
                 if agent_tab and hasattr(agent_tab, 'update_config'):
                     agent_tab.update_config()
-                    
+
             print("✅ Configuration updated from UI")  # Debug output
-                    
+
         except Exception as ex:
             print(f"❌ Error updating config from UI: {ex}")  # Debug output
             self._show_error_dialog(f"Failed to update configuration from UI: {str(ex)}")
     
     def _refresh_all_tabs(self):
         """Refresh all tabs with current configuration."""
+        # Refresh query generation tab
+        query_gen_tab = self.tab_objects.get('query_generation')
+        if query_gen_tab and hasattr(query_gen_tab, 'refresh_from_config'):
+            query_gen_tab.refresh_from_config()
+
         # This will be implemented by individual tabs
         if self.page:
             self.page.update()
