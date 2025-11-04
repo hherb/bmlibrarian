@@ -7,7 +7,7 @@ to_tsquery format optimized for biomedical literature searches.
 
 import re
 import logging
-from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING
+from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING, Any
 from datetime import date
 
 from .base import BaseAgent
@@ -16,6 +16,7 @@ from .utils.query_syntax import fix_tsquery_syntax
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
+    from .query_generation.data_types import MultiModelQueryResult
 
 
 logger = logging.getLogger(__name__)
@@ -396,3 +397,79 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             self._call_callback("search_failed", str(e))
             logger.error(f"Database search failed: {e}")
             raise
+
+    def convert_question_multi_model(
+        self,
+        question: str
+    ) -> 'MultiModelQueryResult':
+        """
+        Convert question using multiple models for improved query diversity.
+
+        When multi_model_enabled is False, falls back to single-model behavior
+        identical to convert_question() for backward compatibility.
+
+        Args:
+            question: The natural language question to convert
+
+        Returns:
+            MultiModelQueryResult containing all generated queries and metadata
+
+        Raises:
+            ValueError: If question is empty
+            ConnectionError: If unable to connect to Ollama
+        """
+        if not question or not question.strip():
+            raise ValueError("Question cannot be empty")
+
+        from bmlibrarian.config import get_query_generation_config
+        from .query_generation import MultiModelQueryGenerator
+        from .query_generation.data_types import QueryGenerationResult, MultiModelQueryResult
+
+        # Get configuration
+        qg_config = get_query_generation_config()
+
+        # Check if multi-model is enabled
+        if not qg_config.get('multi_model_enabled', False):
+            # Fallback: single model, single query (backward compatible)
+            logger.info("Multi-model disabled, using single-model fallback")
+
+            single_query = self.convert_question(question)
+
+            single_result = QueryGenerationResult(
+                model=self.model,
+                query=single_query,
+                generation_time=0.0,
+                temperature=self.temperature,
+                attempt_number=1,
+                error=None
+            )
+
+            return MultiModelQueryResult(
+                all_queries=[single_result],
+                unique_queries=[single_query],
+                model_count=1,
+                total_queries=1,
+                total_generation_time=0.0,
+                question=question
+            )
+
+        # Multi-model generation (SERIAL execution)
+        logger.info(f"Multi-model enabled: {len(qg_config['models'])} models, {qg_config['queries_per_model']} queries/model")
+
+        self._call_callback("multi_model_generation_started", question)
+
+        generator = MultiModelQueryGenerator(self.host, self.callback)
+
+        result = generator.generate_queries(
+            question=question,
+            system_prompt=self.system_prompt,
+            models=qg_config['models'],
+            queries_per_model=qg_config['queries_per_model'],
+            temperature=self.temperature,
+            top_p=self.top_p
+        )
+
+        self._call_callback("multi_model_generation_completed",
+            f"Generated {result.total_queries} queries, {len(result.unique_queries)} unique")
+
+        return result
