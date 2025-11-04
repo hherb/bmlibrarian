@@ -459,10 +459,19 @@ class TabManager:
             subtitle="Relevant passages extracted from high-scoring documents."
         )
 
+        # Progress spinner (animated ring)
+        self.citations_progress_ring = ft.ProgressRing(
+            width=20,
+            height=20,
+            stroke_width=2,
+            color=ft.Colors.PURPLE_400,
+            visible=False
+        )
+
         # Progress bar for citation extraction
         self.citations_progress_bar = ft.ProgressBar(
             value=0,
-            bar_height=4,
+            bar_height=6,
             color=ft.Colors.PURPLE_400,
             bgcolor=ft.Colors.PURPLE_50,
             visible=False
@@ -471,8 +480,26 @@ class TabManager:
         # Detailed progress (tqdm-style) for citation extraction
         self.citations_progress_text = ft.Text(
             "",
+            size=12,
+            weight=ft.FontWeight.W_500,
+            color=ft.Colors.GREY_700,
+            visible=False
+        )
+
+        # Current document being processed
+        self.citations_current_doc = ft.Text(
+            "",
             size=11,
             color=ft.Colors.GREY_600,
+            italic=True,
+            visible=False
+        )
+
+        # Estimated time remaining
+        self.citations_eta = ft.Text(
+            "",
+            size=11,
+            color=ft.Colors.BLUE_600,
             visible=False
         )
 
@@ -503,11 +530,32 @@ class TabManager:
             on_click=self._on_citations_request_more
         )
 
+        # Progress container with spinner and status
+        progress_row = ft.Row(
+            [
+                self.citations_progress_ring,
+                ft.Container(width=10),
+                ft.Column(
+                    [
+                        self.citations_progress_text,
+                        self.citations_current_doc,
+                        self.citations_eta
+                    ],
+                    spacing=3,
+                    expand=True
+                )
+            ],
+            visible=False
+        )
+
+        # Store reference for visibility control
+        self.citations_progress_container = progress_row
+
         content = ft.Column(
             [
                 *header_components,
+                progress_row,
                 self.citations_progress_bar,
-                self.citations_progress_text,
                 ft.Container(height=5),
                 self.citations_list,
                 ft.Container(height=10),

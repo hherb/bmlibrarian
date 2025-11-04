@@ -80,20 +80,74 @@ class DataUpdaters:
         if self.app.page:
             self.app.page.update()
 
-    def show_citations_progress(self, visible: bool = True, current: int = 0, total: int = 0):
-        """Update citation extraction progress bar."""
+    def show_citations_progress(self, visible: bool = True, current: int = 0, total: int = 0,
+                                current_doc_title: str = None, elapsed_time: float = None):
+        """Update citation extraction progress bar with enhanced feedback.
+
+        Args:
+            visible: Whether to show progress indicators
+            current: Current number of citations processed
+            total: Total number of citations to process
+            current_doc_title: Title of document currently being processed
+            elapsed_time: Time elapsed in seconds since extraction started
+        """
         if not self.app.tab_manager:
             return
 
+        # Show/hide progress container
+        if hasattr(self.app.tab_manager, 'citations_progress_container'):
+            self.app.tab_manager.citations_progress_container.visible = visible
+
+        # Update progress ring (spinner)
+        if hasattr(self.app.tab_manager, 'citations_progress_ring'):
+            self.app.tab_manager.citations_progress_ring.visible = visible
+
+        # Update progress bar
         if hasattr(self.app.tab_manager, 'citations_progress_bar'):
             self.app.tab_manager.citations_progress_bar.visible = visible
             if total > 0:
                 self.app.tab_manager.citations_progress_bar.value = current / total
 
+        # Update progress text
         if total > 0 and hasattr(self.app.tab_manager, 'citations_progress_text'):
             progress_pct = (current / total) * 100
-            self.app.tab_manager.citations_progress_text.value = f"{current}/{total} citations extracted ({progress_pct:.1f}%)"
+            self.app.tab_manager.citations_progress_text.value = f"Extracting citations: {current}/{total} ({progress_pct:.1f}%)"
             self.app.tab_manager.citations_progress_text.visible = visible
+
+        # Update current document being processed
+        if hasattr(self.app.tab_manager, 'citations_current_doc'):
+            if current_doc_title and visible:
+                # Truncate long titles
+                truncated_title = current_doc_title[:80] + "..." if len(current_doc_title) > 80 else current_doc_title
+                self.app.tab_manager.citations_current_doc.value = f"📄 Processing: {truncated_title}"
+                self.app.tab_manager.citations_current_doc.visible = True
+            else:
+                self.app.tab_manager.citations_current_doc.visible = False
+
+        # Calculate and update ETA
+        if hasattr(self.app.tab_manager, 'citations_eta'):
+            if visible and total > 0 and current > 0 and elapsed_time is not None and elapsed_time > 0:
+                # Calculate time per document
+                time_per_doc = elapsed_time / current
+                remaining_docs = total - current
+                eta_seconds = time_per_doc * remaining_docs
+
+                # Format ETA
+                if eta_seconds < 60:
+                    eta_str = f"⏱️ ETA: {int(eta_seconds)}s"
+                elif eta_seconds < 3600:
+                    minutes = int(eta_seconds / 60)
+                    seconds = int(eta_seconds % 60)
+                    eta_str = f"⏱️ ETA: {minutes}m {seconds}s"
+                else:
+                    hours = int(eta_seconds / 3600)
+                    minutes = int((eta_seconds % 3600) / 60)
+                    eta_str = f"⏱️ ETA: {hours}h {minutes}m"
+
+                self.app.tab_manager.citations_eta.value = eta_str
+                self.app.tab_manager.citations_eta.visible = True
+            else:
+                self.app.tab_manager.citations_eta.visible = False
 
         if self.app.page:
             self.app.page.update()

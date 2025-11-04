@@ -210,8 +210,10 @@ Respond only with valid JSON."""
         logger.info(f"Processing {len(qualifying_docs)} documents above threshold {score_threshold}")
 
         for i, (document, score_result) in enumerate(qualifying_docs):
+            # Call progress callback with document title
             if progress_callback:
-                progress_callback(i + 1, len(qualifying_docs))
+                doc_title = document.get('title', 'Unknown Document')
+                progress_callback(i + 1, len(qualifying_docs), doc_title)
 
             citation = self.extract_citation_from_document(
                 user_question=user_question,

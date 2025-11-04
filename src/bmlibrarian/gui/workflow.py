@@ -275,21 +275,39 @@ class WorkflowExecutor:
                     print(f"📊 Applied {len(score_overrides)} override(s) and logged {len(score_approvals)} approval(s)")
             
             # Step 6: Extract Citations
-            # Create progress callback for citation extraction (citation agent format: current, total)
-            def citation_progress_callback(current: int, total: int):
+            # Track time and document info for enhanced progress feedback
+            import time
+            citation_start_time = time.time()
+            current_doc_info = {'title': None}  # Mutable dict to share between closures
+
+            # Create progress callback for citation extraction (citation agent format: current, total, doc_title)
+            def citation_progress_callback(current: int, total: int, doc_title: str = None):
+                # Store current document title
+                if doc_title:
+                    current_doc_info['title'] = doc_title
+
+                # Calculate elapsed time
+                elapsed_time = time.time() - citation_start_time
+
                 # Update StepCard progress
                 if WorkflowStep.EXTRACT_CITATIONS in self.step_cards:
                     card = self.step_cards[WorkflowStep.EXTRACT_CITATIONS]
                     card.update_progress(current, total, f"Extracting citation {current}/{total}")
 
-                # Update Citations tab progress bar
+                # Update Citations tab progress bar with enhanced feedback
                 if self.tab_manager:
                     from .data_updaters import DataUpdaters
                     updaters = DataUpdaters(type('obj', (), {
                         'tab_manager': self.tab_manager,
                         'page': self.dialog_manager.page if self.dialog_manager else None
                     })())
-                    updaters.show_citations_progress(visible=True, current=current, total=total)
+                    updaters.show_citations_progress(
+                        visible=True,
+                        current=current,
+                        total=total,
+                        current_doc_title=current_doc_info['title'],
+                        elapsed_time=elapsed_time
+                    )
 
                 if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
                     self.dialog_manager.page.update()
