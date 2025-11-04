@@ -492,10 +492,10 @@ def find_abstract_ids(
 
     # Date filtering
     if from_date:
-        where_clauses.append("d.publish_time >= %s")
+        where_clauses.append("d.publication_date >= %s")
         params.append(from_date)
     if to_date:
-        where_clauses.append("d.publish_time <= %s")
+        where_clauses.append("d.publication_date <= %s")
         params.append(to_date)
 
     where_clause = " AND ".join(where_clauses)
@@ -503,9 +503,9 @@ def find_abstract_ids(
     # Simple ID-only query - no JOINs, no text fields
     sql = f"""
         SELECT DISTINCT d.id
-        FROM documents d
+        FROM document d
         WHERE {where_clause}
-        ORDER BY d.publish_time DESC
+        ORDER BY d.publication_date DESC NULLS LAST
         LIMIT %s OFFSET %s
     """
     params.extend([max_rows, offset])
@@ -583,13 +583,13 @@ def fetch_documents_by_ids(
                     ) FILTER (WHERE a.id IS NOT NULL),
                     '[]'::json
                 ) as authors
-            FROM documents d
-            LEFT JOIN sources s ON d.source_id = s.id
-            LEFT JOIN document_authors da ON d.id = da.document_id
-            LEFT JOIN authors a ON da.author_id = a.id
+            FROM document d
+            LEFT JOIN source s ON d.source_id = s.id
+            LEFT JOIN document_author da ON d.id = da.document_id
+            LEFT JOIN author a ON da.author_id = a.id
             WHERE d.id = ANY(%s)
             GROUP BY d.id, s.name
-            ORDER BY d.publish_time DESC
+            ORDER BY d.publication_date DESC NULLS LAST
         """
 
         with db_manager.get_connection() as conn:
