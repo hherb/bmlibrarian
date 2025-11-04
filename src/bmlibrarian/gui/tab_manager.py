@@ -115,6 +115,12 @@ class TabManager:
             color=ft.Colors.GREY_700
         )
 
+        # Multi-model query details container (shows all queries with results)
+        self.search_queries_detail = ft.Column(
+            spacing=5,
+            visible=False
+        )
+
         # Query edit field (hidden by default, shown in interactive mode)
         self.search_query_edit = ft.TextField(
             multiline=True,
@@ -161,6 +167,7 @@ class TabManager:
                 ft.Container(height=10),
                 ft.Text("Generated Query:", size=12, weight=ft.FontWeight.BOLD),
                 self.search_query_text,
+                self.search_queries_detail,  # Add multi-model details container
                 self.search_query_edit,
                 ft.Row(
                     [self.search_edit_button, self.search_accept_button, self.search_cancel_button],

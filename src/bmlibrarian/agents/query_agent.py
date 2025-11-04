@@ -563,16 +563,23 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         self._call_callback("multi_query_execution_started", f"Executing {len(queries_to_execute)} queries")
 
         all_document_ids = set()
-        rows_per_query = max_rows // len(queries_to_execute) if len(queries_to_execute) > 1 else max_rows
+        # Use max_rows per query (not divided) - merged list may contain more documents
+        rows_per_query = max_rows
+
+        # Track per-query statistics for detailed reporting
+        query_stats = []
 
         for i, query in enumerate(queries_to_execute, 1):
             try:
-                logger.info(f"Executing query {i}/{len(queries_to_execute)}: {query[:50]}...")
+                # Fix query syntax before execution
+                sanitized_query = fix_tsquery_syntax(query)
+
+                logger.info(f"Executing query {i}/{len(queries_to_execute)}: {sanitized_query[:50]}...")
                 self._call_callback("query_executing", f"Query {i}/{len(queries_to_execute)}")
 
                 # Execute query to get IDs only (fast)
                 ids = find_abstract_ids(
-                    ts_query_str=query,
+                    ts_query_str=sanitized_query,
                     max_rows=rows_per_query,
                     use_pubmed=use_pubmed,
                     use_medrxiv=use_medrxiv,
@@ -583,13 +590,40 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
                 )
 
                 all_document_ids.update(ids)
+
+                # Store per-query statistics
+                query_stat = {
+                    'query_index': i,
+                    'query_text': sanitized_query,
+                    'result_count': len(ids),
+                    'success': True,
+                    'error': None
+                }
+                query_stats.append(query_stat)
+
                 logger.info(f"Query {i} found {len(ids)} IDs, total unique: {len(all_document_ids)}")
                 self._call_callback("query_executed", f"Found {len(ids)} IDs")
 
             except Exception as e:
+                # Store error information
+                query_stat = {
+                    'query_index': i,
+                    'query_text': query,
+                    'result_count': 0,
+                    'success': False,
+                    'error': str(e)
+                }
+                query_stats.append(query_stat)
+
                 logger.error(f"Query execution failed: {query} - {e}")
                 self._call_callback("query_failed", f"Query {i} failed: {str(e)}")
                 # Continue with other queries
+
+        # Send detailed query statistics via callback
+        self._call_callback("multi_query_stats", {
+            'query_stats': query_stats,
+            'total_unique_ids': len(all_document_ids)
+        })
 
         # Step 4: Fetch full documents for unique IDs
         logger.info(f"Fetching {len(all_document_ids)} unique documents")

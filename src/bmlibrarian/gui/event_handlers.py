@@ -351,7 +351,7 @@ class EventHandlers:
                 self.app.research_question, show_edit_button=False
             ),
             WorkflowStep.GENERATE_AND_EDIT_QUERY: lambda: self._update_search_with_query(updaters),
-            WorkflowStep.SEARCH_DOCUMENTS: updaters.update_documents_if_available,
+            WorkflowStep.SEARCH_DOCUMENTS: lambda: self._update_after_search(updaters),
             WorkflowStep.SCORE_DOCUMENTS: updaters.update_scored_documents_if_available,
             WorkflowStep.EXTRACT_CITATIONS: updaters.update_citations_if_available,
             WorkflowStep.GENERATE_REPORT: updaters.update_preliminary_report_if_available,
@@ -364,8 +364,54 @@ class EventHandlers:
             print(f"📌 {step.name} completed - updating tab...")
             handler()
 
+    def _update_after_search(self, updaters):
+        """Update tabs after search completes - both literature and search tabs."""
+        # Update literature tab with documents
+        updaters.update_documents_if_available()
+
+        # Also refresh search tab with query execution stats (for multi-model)
+        from ..config import get_query_generation_config
+        qg_config = get_query_generation_config()
+
+        if qg_config.get('multi_model_enabled', False):
+            # Re-call the search tab update, now with query stats available
+            self._update_search_with_query(updaters)
+
     def _update_search_with_query(self, updaters):
         """Update Search tab with generated query."""
+        from ..config import get_query_generation_config
+
+        qg_config = get_query_generation_config()
+
+        # Check if multi-model is enabled and we have the generation result
+        if qg_config.get('multi_model_enabled', False):
+            # Get multi-model generation result from steps handler
+            if (hasattr(self.app.workflow_executor, 'steps_handler') and
+                hasattr(self.app.workflow_executor.steps_handler, 'multi_query_generation_result') and
+                self.app.workflow_executor.steps_handler.multi_query_generation_result):
+
+                query_generation_result = self.app.workflow_executor.steps_handler.multi_query_generation_result
+                query_stats = None
+
+                # Get query execution stats if available
+                if hasattr(self.app.workflow_executor.steps_handler, 'multi_query_stats'):
+                    stats_data = self.app.workflow_executor.steps_handler.multi_query_stats
+                    print(f"🔍 DEBUG: Retrieved stats_data from steps_handler: {stats_data is not None}")
+                    if isinstance(stats_data, dict) and 'query_stats' in stats_data:
+                        query_stats = stats_data['query_stats']
+                        print(f"🔍 DEBUG: Extracted query_stats with {len(query_stats)} entries")
+                    else:
+                        print(f"🔍 DEBUG: stats_data format issue - type={type(stats_data)}, has query_stats={isinstance(stats_data, dict) and 'query_stats' in stats_data}")
+
+                # Call multi-model update method
+                updaters.update_search_tab_multi_model(
+                    self.app.research_question,
+                    query_generation_result,
+                    query_stats
+                )
+                return  # Done with multi-model update
+
+        # Fall back to single-model update
         # Get the query from workflow executor if available
         query = None
         if hasattr(self.app.workflow_executor, 'last_query_text'):

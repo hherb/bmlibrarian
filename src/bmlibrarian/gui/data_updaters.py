@@ -39,6 +39,73 @@ class DataUpdaters:
         if self.app.page:
             self.app.page.update()
 
+    def update_search_tab_multi_model(self, question: str, query_generation_result, query_stats: List[Dict] = None):
+        """Update search tab with multi-model query results.
+
+        Args:
+            question: Research question
+            query_generation_result: MultiModelQueryResult object with all_queries
+            query_stats: List of query execution statistics (optional, shown after search)
+        """
+        if not self.app.tab_manager:
+            return
+
+        # Update question text
+        if hasattr(self.app.tab_manager, 'search_question_text'):
+            self.app.tab_manager.search_question_text.value = question
+
+        # Replace single query text with multiple query display
+        if hasattr(self.app.tab_manager, 'search_query_text') and query_generation_result:
+            from ..agents.utils.query_syntax import fix_tsquery_syntax
+
+            # Create a column to hold multiple query entries
+            query_entries = []
+
+            for i, query_result in enumerate(query_generation_result.all_queries):
+                if query_result.error:
+                    continue
+
+                # Sanitize the query for display
+                sanitized_query = fix_tsquery_syntax(query_result.query)
+
+                # Find matching execution stats if available
+                result_count = None
+                if query_stats:
+                    for stat in query_stats:
+                        if stat['query_index'] == i + 1:
+                            result_count = stat['result_count'] if stat['success'] else "ERROR"
+                            break
+
+                # Build query display string
+                model_name = query_result.model.split(':')[0]  # Shorten model name
+                query_display = f"model {model_name} attempt {query_result.attempt_number}: {sanitized_query}"
+
+                if result_count is not None:
+                    query_display += f"  results: {result_count}"
+
+                # Create text widget for this query
+                query_text = ft.Text(
+                    query_display,
+                    size=11,
+                    selectable=True,
+                    color=ft.Colors.GREY_800 if result_count != "ERROR" else ft.Colors.RED_700
+                )
+                query_entries.append(query_text)
+
+            # Replace the single text widget with a column
+            if query_entries:
+                self.app.tab_manager.search_query_text.value = f"{len(query_entries)} queries generated"
+                self.app.tab_manager.search_query_text.visible = True
+
+                # Update the detailed query list
+                if hasattr(self.app.tab_manager, 'search_queries_detail'):
+                    self.app.tab_manager.search_queries_detail.controls = query_entries
+                    self.app.tab_manager.search_queries_detail.visible = True
+                    print(f"📊 Updated GUI search tab with {len(query_entries)} queries, stats={'available' if query_stats else 'not yet'}")
+
+        if self.app.page:
+            self.app.page.update()
+
     def show_search_progress(self, visible: bool = True):
         """Show or hide the search progress bar."""
         if self.app.tab_manager and hasattr(self.app.tab_manager, 'search_progress_bar'):

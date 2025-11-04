@@ -501,8 +501,9 @@ def find_abstract_ids(
     where_clause = " AND ".join(where_clauses)
 
     # Simple ID-only query - no JOINs, no text fields
+    # Note: Must include publication_date in SELECT when using it in ORDER BY with DISTINCT
     sql = f"""
-        SELECT DISTINCT d.id
+        SELECT DISTINCT d.id, d.publication_date
         FROM document d
         WHERE {where_clause}
         ORDER BY d.publication_date DESC NULLS LAST
@@ -518,7 +519,7 @@ def find_abstract_ids(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             for row in cur.fetchall():
-                document_ids.add(row[0])
+                document_ids.add(row[0])  # Still only collect the ID, ignore publication_date
 
     elapsed = time.time() - start_time
     logger.info(f"Found {len(document_ids)} document IDs in {elapsed:.2f}s")
@@ -567,28 +568,14 @@ def fetch_documents_by_ids(
 
         logger.debug(f"Fetching batch {i // batch_size + 1}: {len(batch_ids)} documents")
 
-        # Use same query structure as find_abstracts (with authors JOIN)
+        # Simple query - authors are stored as text array in document table
         sql = """
             SELECT
                 d.*,
-                s.name as source_name,
-                COALESCE(
-                    json_agg(
-                        json_build_object(
-                            'first', a.first,
-                            'last', a.last,
-                            'middle', a.middle,
-                            'suffix', a.suffix
-                        ) ORDER BY da.author_order
-                    ) FILTER (WHERE a.id IS NOT NULL),
-                    '[]'::json
-                ) as authors
+                s.name as source_name
             FROM document d
-            LEFT JOIN source s ON d.source_id = s.id
-            LEFT JOIN document_author da ON d.id = da.document_id
-            LEFT JOIN author a ON da.author_id = a.id
+            LEFT JOIN sources s ON d.source_id = s.id
             WHERE d.id = ANY(%s)
-            GROUP BY d.id, s.name
             ORDER BY d.publication_date DESC NULLS LAST
         """
 
