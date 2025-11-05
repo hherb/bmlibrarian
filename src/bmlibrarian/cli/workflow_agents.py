@@ -5,6 +5,7 @@ Handles agent initialization, setup, and connection testing.
 """
 
 import logging
+import os
 from typing import Optional
 from bmlibrarian.agents import AgentFactory, AgentOrchestrator
 
@@ -28,10 +29,55 @@ class WorkflowAgentManager:
         self.counterfactual_agent = None
         self.editor_agent = None
 
+        # Audit tracking components
+        self.audit_conn = None
+        self.audit_enabled = False
+
+    def _setup_audit_tracking(self) -> bool:
+        """Setup audit tracking database connection."""
+        try:
+            import psycopg
+            from dotenv import load_dotenv
+
+            # Load environment variables
+            load_dotenv()
+
+            # Get database connection parameters from environment
+            db_name = os.getenv('POSTGRES_DB', 'knowledgebase')
+            db_user = os.getenv('POSTGRES_USER', 'hherb')
+            db_password = os.getenv('POSTGRES_PASSWORD', '')
+            db_host = os.getenv('POSTGRES_HOST', 'localhost')
+            db_port = os.getenv('POSTGRES_PORT', '5432')
+
+            # Create connection
+            conn_params = {
+                'dbname': db_name,
+                'user': db_user,
+                'host': db_host,
+                'port': db_port
+            }
+            if db_password:
+                conn_params['password'] = db_password
+
+            self.audit_conn = psycopg.connect(**conn_params)
+            self.audit_enabled = True
+
+            logger.info(f"Audit tracking enabled (database: {db_name})")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Could not enable audit tracking: {e}")
+            logger.info("Continuing without audit tracking")
+            self.audit_enabled = False
+            return False
+
     def setup_agents(self) -> bool:
         """Initialize and test all agents."""
         try:
             self.ui.show_progress_message("Setting up BMLibrarian agents...")
+
+            # Setup audit tracking (optional - non-fatal if fails)
+            self._setup_audit_tracking()
 
             # Create orchestrator
             self.orchestrator = AgentOrchestrator(
@@ -45,7 +91,8 @@ class WorkflowAgentManager:
             agents = AgentFactory.create_all_agents(
                 orchestrator=self.orchestrator,
                 config=config_dict,
-                auto_register=True
+                auto_register=True,
+                audit_conn=self.audit_conn  # Pass audit connection
             )
 
             # Extract individual agents
@@ -119,3 +166,12 @@ class WorkflowAgentManager:
         """Stop the agent orchestrator."""
         if self.orchestrator:
             self.orchestrator.stop_processing()
+
+    def cleanup(self):
+        """Cleanup resources including audit connection."""
+        if self.audit_conn:
+            try:
+                self.audit_conn.close()
+                logger.info("Closed audit database connection")
+            except Exception as e:
+                logger.warning(f"Error closing audit connection: {e}")
