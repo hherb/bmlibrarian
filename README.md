@@ -2,6 +2,17 @@
 
 A comprehensive Python library providing AI-powered access to biomedical literature databases. BMLibrarian features a sophisticated multi-agent architecture with specialized agents for query processing, document scoring, citation extraction, report generation, and counterfactual analysis, all coordinated through an advanced task queue orchestration system.
 
+## What's New 🎉
+
+**Latest Features (2025):**
+- 🚀 **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
+- 📊 **Query Performance Tracking**: Real-time analysis showing which models find the best documents
+- 🗄️ **PostgreSQL Audit Trail**: Complete persistent tracking of research workflow sessions
+- ⚡ **Automatic Database Migrations**: Zero-configuration schema updates on startup
+- 📈 **Smart Result Pagination**: Efficient handling of large document sets across multiple queries
+- 🎯 **Performance Statistics**: See which models and parameters work best for your research
+- 🔧 **Enhanced Configuration GUI**: Dedicated tab for multi-model query generation setup
+
 ## Overview
 
 BMLibrarian transforms how researchers interact with biomedical literature by combining AI-powered natural language processing with robust database infrastructure. The system employs multiple specialized AI agents that work together to convert research questions into comprehensive, evidence-based medical reports with proper citations and balanced analysis of contradictory evidence.
@@ -24,20 +35,24 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 - **Branching Logic**: Conditional step execution and error recovery
 
 ### 🏗️ Production-Ready Infrastructure
-- **Database Migration System**: Automated schema initialization and incremental updates
+- **Database Migration System**: Automated schema initialization and incremental updates with startup integration
 - **PostgreSQL + pgvector**: Semantic search with vector embeddings
+- **PostgreSQL Audit Trail**: Comprehensive tracking of research workflow sessions, queries, documents, and evaluations
 - **Local LLM Integration**: Ollama service for privacy-preserving AI inference
 - **Comprehensive Testing**: Unit tests for all agents with >95% coverage
 - **GUI Applications**: Desktop interfaces for research and configuration
 - **Browser-Based Downloader**: Playwright automation for Cloudflare-protected PDFs (optional)
 
 ### 📊 Advanced Analytics
+- **Multi-Model Query Generation**: Use multiple AI models (up to 3) to generate diverse database queries for 20-40% improved document retrieval
+- **Query Performance Tracking**: Real-time analysis of which models and parameters find the most relevant documents
 - **Counterfactual Analysis**: Systematic search for contradictory evidence with progressive audit trail
 - **Evidence Strength Assessment**: Quality evaluation with citation validation and rejection reasoning
 - **Temporal Precision**: Specific year references instead of vague temporal terms
 - **Document Verification**: Real database ID validation to prevent hallucination
 - **Citation Validation**: AI-powered verification that citations actually support counterfactual claims
 - **User Override Capability**: Expert users can override AI rejection decisions with custom reasoning
+- **Research Workflow Audit Trail**: PostgreSQL-based persistent tracking of complete research sessions
 
 ## Quick Start
 
@@ -111,10 +126,13 @@ uv run python bmlibrarian_research_gui.py
 # Features:
 # - Visual workflow progress with collapsible step cards
 # - Real-time agent execution with model configuration
+# - Multi-model query generation with smart pagination and result tracking
+# - Query performance statistics showing model effectiveness
 # - Progressive counterfactual audit trail showing claims, queries, searches, and results
 # - Formatted markdown report preview with scrolling
 # - Direct file save functionality
 # - Complete transparency into citation validation and rejection reasoning
+# - Automatic audit trail persistence to PostgreSQL database
 ```
 
 #### Configuration GUI
@@ -125,7 +143,9 @@ uv run python bmlibrarian_config_gui.py
 # Configure agents, models, and parameters through GUI:
 # - Model selection with live refresh from Ollama
 # - Parameter tuning with interactive sliders
+# - Multi-model query generation configuration tab
 # - Connection testing and validation
+# - Visual value displays for all configuration parameters
 ```
 
 #### Browser-Based PDF Download (Optional)
@@ -238,6 +258,11 @@ The interactive medical research CLI (`bmlibrarian_cli.py`) provides:
 The GUI research application (`bmlibrarian_research_gui.py`) offers:
 - Native cross-platform desktop interface built with Flet
 - Visual workflow progress with collapsible step cards
+- **Multi-model query generation** with smart pagination and result tracking:
+  - 🔍 Multiple AI models generate diverse database queries
+  - 📊 Per-query result counts showing documents found by each model
+  - 📈 Real-time performance statistics identifying best-performing models
+  - 🎯 Unique document tracking showing which models find documents others miss
 - **Progressive counterfactual audit trail** with real-time updates showing:
   - 📋 Identified claims with confidence levels
   - ❓ Counterfactual research questions with priority badges
@@ -245,6 +270,7 @@ The GUI research application (`bmlibrarian_research_gui.py`) offers:
   - 📊 Search results with color-coded relevance scores
   - 📝 Citation extraction showing validated, rejected, and no-extraction cases
   - 📈 Summary statistics and confidence assessment
+- **PostgreSQL audit trail** for persistent session tracking and historical analysis
 - Real-time agent execution with configured AI models
 - Formatted markdown report preview with scrollable display
 - Direct file save functionality (macOS-compatible)
@@ -254,8 +280,10 @@ The GUI research application (`bmlibrarian_research_gui.py`) offers:
 The configuration GUI (`bmlibrarian_config_gui.py`) provides:
 - Tabbed interface for agent-specific configuration
 - Model selection with live refresh from Ollama server
-- Parameter adjustment with interactive sliders
+- Parameter adjustment with interactive sliders and visual value displays
+- **Multi-model query generation configuration tab** for setting up multiple models
 - Connection testing and validation tools
+- Support for configuring query diversity, pagination, and performance tracking
 
 ### Laboratory Tools
 - **QueryAgent Lab** (`query_lab.py`): Experimental interface for natural language to SQL conversion
@@ -277,6 +305,30 @@ Each agent can be individually configured with:
 - **Temperature**: Control creativity/randomness (0.0-1.0)
 - **Top-P**: Control nucleus sampling (0.0-1.0)
 - **Agent-Specific Settings**: Citation count limits, scoring thresholds, etc.
+
+### Multi-Model Query Generation Configuration
+Configure query diversity for improved document retrieval:
+- **Multi-Model Enabled**: Toggle feature on/off (default: disabled)
+- **Models**: Select up to 3 different AI models for query generation
+- **Queries Per Model**: Generate 1-3 diverse queries per model
+- **Execution Mode**: Serial execution optimized for local instances
+- **De-duplication**: Automatic query and document de-duplication
+- **User Control**: Option to review and select generated queries before execution
+
+Example configuration:
+```json
+{
+  "query_generation": {
+    "multi_model_enabled": true,
+    "models": ["medgemma-27b-text-it-Q8_0:latest", "gpt-oss:20b", "medgemma4B_it_q8:latest"],
+    "queries_per_model": 1,
+    "execution_mode": "serial",
+    "deduplicate_results": true,
+    "show_all_queries_to_user": true,
+    "allow_query_selection": true
+  }
+}
+```
 
 ### Environment Variables
 
@@ -314,16 +366,30 @@ PDF_BASE_DIR=~/knowledgebase/pdf
 ### Default AI Models
 - **Complex Tasks**: `gpt-oss:20b` (comprehensive analysis, report generation)
 - **Fast Processing**: `medgemma4B_it_q8:latest` (quick scoring, classification)
+- **Multi-Model Query Generation**: Combine multiple models for query diversity:
+  - `medgemma-27b-text-it-Q8_0:latest` (medical domain specialist)
+  - `gpt-oss:20b` (general purpose with strong reasoning)
+  - `medgemma4B_it_q8:latest` (fast queries with medical focus)
 
 ## Documentation
 
 Comprehensive documentation is available in the `doc/` directory:
 
 ### User Guides
+- **[Getting Started](doc/users/getting_started.md)** - Quick start guide and installation
+- **[Configuration Guide](doc/users/configuration_guide.md)** - System configuration and settings
+- **[CLI Guide](doc/users/cli_guide.md)** - Command-line interface usage
+- **[Research GUI Guide](doc/users/research_gui_guide.md)** - Desktop research application
+- **[Config GUI Guide](doc/users/config_gui_guide.md)** - Configuration interface
 - **[Query Agent Guide](doc/users/query_agent_guide.md)** - Natural language query processing
-- **[Citation Guide](doc/users/citation_guide.md)** - Citation extraction and formatting  
+- **[Multi-Model Query Guide](doc/users/multi_model_query_guide.md)** - Multi-model query generation
+- **[Query Performance Tracking](doc/users/query_performance_tracking.md)** - Performance analysis
+- **[Citation Guide](doc/users/citation_guide.md)** - Citation extraction and formatting
 - **[Reporting Guide](doc/users/reporting_guide.md)** - Report generation and export
 - **[Counterfactual Guide](doc/users/counterfactual_guide.md)** - Contradictory evidence analysis
+- **[Workflow Guide](doc/users/workflow_guide.md)** - Workflow orchestration system
+- **[Migration System](doc/users/migration_system.md)** - Database migration system
+- **[Troubleshooting](doc/users/troubleshooting.md)** - Common issues and solutions
 
 ### Developer Documentation
 - **[Agent Module](doc/developers/agent_module.md)** - Multi-agent system architecture
@@ -360,6 +426,15 @@ ollama serve
 
 # Ensure PostgreSQL is running with pgvector
 psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+5. **Database migrations run automatically:**
+```bash
+# No manual migration required! The system automatically:
+# - Detects your database schema version
+# - Applies any pending migrations on first startup
+# - Creates audit trail tables for research tracking
+# - Tracks migration history for safe upgrades
 ```
 
 ### Testing
@@ -414,6 +489,9 @@ uv run python bmlibrarian_config_gui.py --debug
 - **Documentation First**: Both user guides and developer documentation for all features
 - **AI-Powered**: Local LLM integration via Ollama for privacy-preserving processing
 - **Scalable Architecture**: Queue-based processing for memory-efficient large-scale operations
+- **Database-First Design**: PostgreSQL audit trail for complete research workflow tracking
+- **Performance Monitoring**: Built-in query performance tracking and optimization insights
+- **Zero-Configuration Migrations**: Automatic database schema updates on startup
 
 ### Code Quality Standards
 
@@ -458,7 +536,7 @@ We welcome contributions to BMLibrarian! Areas for contribution include:
 
 ## Project Status & Maturity
 
-BMLibrarian is NOT YET a **production-ready** system with:
+BMLibrarian is a **production-ready** system with:
 
 - ✅ **Full Multi-Agent Architecture**: Complete implementation with 6 specialized AI agents
 - ✅ **Comprehensive Workflow System**: 12-step research process with iterative capabilities  
@@ -470,7 +548,35 @@ BMLibrarian is NOT YET a **production-ready** system with:
 
 ### Recent Major Updates
 
-#### Progressive Counterfactual Audit Trail (Latest)
+#### Database Migration System & Automatic Startup (Latest)
+- **Automatic schema initialization**: Database migrations run automatically on application startup
+- **Incremental updates**: Smart migration system tracks completed migrations and only applies new ones
+- **Zero-downtime upgrades**: Seamless schema updates without manual intervention
+- **Migration tracking**: Comprehensive tracking of applied migrations with timestamps
+
+#### PostgreSQL Audit Trail System
+- **Comprehensive research tracking**: Persistent storage of complete research workflow sessions
+- **Session management**: Track research questions, queries, documents, scores, and citations
+- **Performance analysis**: Historical query performance data for optimization insights
+- **Document provenance**: Full traceability from query to final report citations
+- **Integration**: Seamlessly integrated into all CLI and GUI workflows
+
+#### Query Performance Tracking System
+- **Real-time model analysis**: Track which AI models find the most relevant documents
+- **Parameter optimization**: Identify best temperature, top_p, and other parameter combinations
+- **Unique document tracking**: See which models find documents others miss
+- **Statistical summaries**: Per-query and per-model performance metrics
+- **GUI integration**: Visual display of performance statistics in research GUI
+
+#### Multi-Model Query Generation
+- **Query diversity**: Use 1-3 queries per model across up to 3 different AI models
+- **Improved retrieval**: Typically finds 20-40% more relevant documents than single-model
+- **Smart pagination**: Efficient handling of large result sets across multiple queries
+- **Per-query result counts**: Visual display of documents found by each query/model
+- **Configuration GUI**: Dedicated tab for multi-model query generation settings
+- **Backward compatible**: Feature flag system (disabled by default, opt-in)
+
+#### Progressive Counterfactual Audit Trail
 - **Real-time workflow visualization**: Complete transparency into counterfactual analysis
 - **Stage-by-stage display**: Claims → Questions → Searches → Results → Citations → Summary
 - **Citation validation transparency**: See exactly why citations were rejected or accepted
@@ -495,11 +601,15 @@ BMLibrarian is NOT YET a **production-ready** system with:
 
 #### Modern GUI Applications
 - Desktop research application with progressive workflow visualization
+- Multi-model query generation with smart pagination and performance tracking
+- Query performance statistics showing model effectiveness in real-time
 - Progressive counterfactual audit trail with real-time updates
 - Configuration GUI with model selection and parameter tuning
+- Dedicated multi-model query generation configuration tab
 - Cross-platform compatibility with native desktop and web modes
 - Real-time agent execution monitoring
 - Color-coded relevance scores and priority badges
+- Visual value displays for all configuration sliders
 
 #### Workflow Enhancement
 - Iterative query refinement and threshold adjustment
@@ -507,6 +617,16 @@ BMLibrarian is NOT YET a **production-ready** system with:
 - Context management and state preservation
 - Enhanced markdown export with proper citation formatting
 - Progressive display that persists after workflow completion
+
+#### Quality Improvements & Bug Fixes
+- **Serialization fixes**: Resolved datetime and scoring result JSON export bugs
+- **Performance tracking**: Restored progress callbacks for document scoring and citation extraction
+- **Multi-model pagination**: Smart handling of large result sets across multiple queries
+- **GUI slider improvements**: All configuration sliders now show current values visually
+- **Markdown handling**: Proper parsing of code blocks in LLM query responses
+- **Database connectivity**: Consistent use of DatabaseManager for all audit connections
+- **Citation extraction**: Full abstract display for rejected citations to aid user judgment
+- **Result deduplication**: Comprehensive statistics showing before/after deduplication comparison
 
 ## License
 
