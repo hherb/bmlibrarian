@@ -298,6 +298,7 @@ class WorkflowStepsHandler:
                     # Print detailed per-query results
                     if isinstance(data, dict) and 'query_stats' in data:
                         print(f"\n📊 Multi-query execution results:")
+                        total_before_dedup = 0
                         for stat in data['query_stats']:
                             if stat['success']:
                                 # Match with generation info to get model name
@@ -308,9 +309,19 @@ class WorkflowStepsHandler:
                                     model_info = f"model {gen_result.model} attempt {gen_result.attempt_number}: "
 
                                 print(f"   {model_info}{stat['query_text']}  results: {stat['result_count']}")
+                                total_before_dedup += stat['result_count']
                             else:
                                 print(f"   Query {stat['query_index']}: FAILED - {stat['error']}")
-                        print(f"   Total unique documents: {data['total_unique_ids']}\n")
+
+                        # Show overall statistics with before/after deduplication comparison
+                        total_after_dedup = data['total_unique_ids']
+                        duplicates_removed = total_before_dedup - total_after_dedup
+                        dedup_percentage = (duplicates_removed / total_before_dedup * 100) if total_before_dedup > 0 else 0
+
+                        print(f"\n📊 Overall Statistics:")
+                        print(f"   Total documents before deduplication: {total_before_dedup}")
+                        print(f"   Total documents after deduplication: {total_after_dedup}")
+                        print(f"   Duplicates removed: {duplicates_removed} ({dedup_percentage:.1f}%)\n")
 
                 # Call original callback if it exists
                 if original_callback:
