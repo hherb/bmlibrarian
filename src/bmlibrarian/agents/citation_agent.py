@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Any, Iterator, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import psycopg
 
 from .base import BaseAgent
 from .queue_manager import QueueManager, TaskPriority, TaskStatus
@@ -47,17 +48,18 @@ class CitationFinderAgent(BaseAgent):
     passages that directly answer or contribute to answering user questions.
     """
     
-    def __init__(self, 
+    def __init__(self,
                  model: str = "gpt-oss:20b",
                  host: str = "http://localhost:11434",
                  temperature: float = 0.1,
                  top_p: float = 0.9,
                  callback: Optional[Callable[[str, str], None]] = None,
                  orchestrator=None,
-                 show_model_info: bool = True):
+                 show_model_info: bool = True,
+                 audit_conn: Optional[psycopg.Connection] = None):
         """
         Initialize the CitationFinderAgent.
-        
+
         Args:
             model: The name of the Ollama model to use (default: gpt-oss:20b)
             host: The Ollama server host URL (default: http://localhost:11434)
@@ -66,10 +68,30 @@ class CitationFinderAgent(BaseAgent):
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
+            audit_conn: Optional PostgreSQL connection for audit tracking
         """
-        super().__init__(model=model, host=host, temperature=temperature, top_p=top_p, 
+        super().__init__(model=model, host=host, temperature=temperature, top_p=top_p,
                         callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "citation_finder_agent"
+
+        # Initialize audit tracking components if connection provided
+        self._citation_tracker = None
+        self._evaluator_manager = None
+        self._evaluator_id = None
+
+        if audit_conn:
+            from bmlibrarian.audit import CitationTracker, EvaluatorManager
+            self._citation_tracker = CitationTracker(audit_conn)
+            self._evaluator_manager = EvaluatorManager(audit_conn)
+
+            # Auto-create evaluator for this agent configuration
+            self._evaluator_id = self._evaluator_manager.get_evaluator_for_agent(
+                agent_type='citation',
+                model_name=model,
+                temperature=temperature,
+                top_p=top_p
+            )
+            logger.info(f"CitationAgent initialized with evaluator_id={self._evaluator_id}")
     
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
@@ -427,10 +449,10 @@ Respond only with valid JSON."""
     def get_citation_stats(self, citations: List[Citation]) -> Dict[str, Any]:
         """
         Generate statistics about extracted citations.
-        
+
         Args:
             citations: List of citations
-            
+
         Returns:
             Statistics dictionary
         """
@@ -441,11 +463,11 @@ Respond only with valid JSON."""
                 'unique_documents': 0,
                 'date_range': None
             }
-        
+
         relevance_scores = [c.relevance_score for c in citations]
         unique_docs = set(c.document_id for c in citations)
         pub_dates = [c.publication_date for c in citations if c.publication_date != 'Unknown']
-        
+
         stats = {
             'total_citations': len(citations),
             'average_relevance': sum(relevance_scores) / len(relevance_scores),
@@ -454,11 +476,203 @@ Respond only with valid JSON."""
             'unique_documents': len(unique_docs),
             'citations_per_document': len(citations) / len(unique_docs) if unique_docs else 0
         }
-        
+
         if pub_dates:
             stats['date_range'] = {
                 'earliest': min(pub_dates),
                 'latest': max(pub_dates)
             }
-        
+
         return stats
+
+    def extract_citations_with_audit(
+        self,
+        research_question_id: int,
+        session_id: int,
+        user_question: str,
+        scored_documents_with_ids: List[Tuple[Dict, Dict, int]],
+        score_threshold: float = 2.0,
+        min_relevance: float = 0.7,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> List[Tuple[Citation, int]]:
+        """
+        Extract citations WITH AUDIT TRACKING.
+
+        CRITICAL: Records each extracted citation with evaluator tracking.
+
+        Args:
+            research_question_id: ID of the research question
+            session_id: ID of the current session
+            user_question: The user's question
+            scored_documents_with_ids: List of (document, scoring_result, scoring_id) tuples
+            score_threshold: Minimum score to process document
+            min_relevance: Minimum relevance for citation extraction
+            progress_callback: Optional callback function(current, total) for progress updates
+
+        Returns:
+            List of tuples: (citation, citation_id)
+            - citation_id is the database ID for the citation record
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> import psycopg
+            >>> conn = psycopg.connect(dbname="knowledgebase", user="hherb")
+            >>> agent = CitationFinderAgent(audit_conn=conn)
+            >>> results = agent.extract_citations_with_audit(
+            ...     research_question_id=1,
+            ...     session_id=1,
+            ...     user_question="What are the benefits of exercise?",
+            ...     scored_documents_with_ids=scored_docs_with_ids,
+            ...     score_threshold=2.0
+            ... )
+            >>> for citation, citation_id in results:
+            ...     print(f"Citation {citation_id}: {citation.summary}")
+        """
+        if not self._citation_tracker or not self._evaluator_id:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        if not user_question or not user_question.strip():
+            raise ValueError("User question cannot be empty")
+
+        if not scored_documents_with_ids or not isinstance(scored_documents_with_ids, list):
+            raise ValueError("scored_documents_with_ids must be a non-empty list")
+
+        # Filter to qualifying documents
+        qualifying_docs = [
+            (doc, score_result, scoring_id)
+            for doc, score_result, scoring_id in scored_documents_with_ids
+            if score_result.get('score', 0) > score_threshold
+        ]
+
+        if not qualifying_docs:
+            logger.info(f"No documents above score threshold {score_threshold}")
+            return []
+
+        results = []
+        self._call_callback("citation_extraction_started", f"Extracting citations from {len(qualifying_docs)} documents")
+
+        for i, (doc, score_result, scoring_id) in enumerate(qualifying_docs):
+            try:
+                doc_id = doc.get('id')
+                if not doc_id:
+                    logger.error(f"Document {i+1} missing 'id' field - cannot track in audit")
+                    continue
+
+                self._call_callback("citation_extraction_progress", f"Document {i+1}/{len(qualifying_docs)}")
+
+                # Extract citation
+                citation = self.extract_citation_from_document(
+                    user_question=user_question,
+                    document=doc,
+                    min_relevance=min_relevance
+                )
+
+                if not citation:
+                    logger.debug(f"No citation extracted from document {doc_id}")
+                    continue
+
+                # Record citation in audit database
+                citation_id = self._citation_tracker.record_citation(
+                    research_question_id=research_question_id,
+                    document_id=doc_id,
+                    session_id=session_id,
+                    scoring_id=scoring_id,
+                    evaluator_id=self._evaluator_id,
+                    passage=citation.passage,
+                    summary=citation.summary,
+                    relevance_confidence=citation.relevance_score
+                )
+
+                results.append((citation, citation_id))
+
+                # Report progress for GUI updates
+                if progress_callback:
+                    progress_callback(i + 1, len(qualifying_docs))
+
+            except Exception as e:
+                logger.error(f"Failed to extract citation from document {i+1}: {e}")
+                # Continue with other documents
+                continue
+
+        total_extracted = len(results)
+        self._call_callback(
+            "citation_extraction_completed",
+            f"Extracted {total_extracted} citations from {len(qualifying_docs)} documents"
+        )
+
+        logger.info(f"Extracted {total_extracted} citations with audit tracking")
+
+        return results
+
+    def get_existing_citations(
+        self,
+        research_question_id: int,
+        session_id: Optional[int] = None,
+        accepted_only: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Get existing citations from audit database.
+
+        CRITICAL FOR RESUMPTION: Returns citations already extracted for this question.
+
+        Args:
+            research_question_id: ID of the research question
+            session_id: Optional filter by session
+            accepted_only: If True, only return human-accepted citations
+
+        Returns:
+            List of dictionaries with citation data
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> existing = agent.get_existing_citations(question_id, accepted_only=True)
+            >>> print(f"Found {len(existing)} accepted citations")
+        """
+        if not self._citation_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        if accepted_only:
+            return self._citation_tracker.get_accepted_citations(research_question_id)
+        else:
+            return self._citation_tracker.get_all_citations(research_question_id, session_id)
+
+    def update_citation_review_status(
+        self,
+        citation_id: int,
+        status: str
+    ) -> None:
+        """
+        Update human review status for a citation.
+
+        Args:
+            citation_id: ID of the citation
+            status: Review status ('accepted', 'rejected', 'modified')
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> agent.update_citation_review_status(citation_id=42, status='accepted')
+        """
+        if not self._citation_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        valid_statuses = ['accepted', 'rejected', 'modified']
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid status '{status}'. Must be one of: {valid_statuses}")
+
+        self._citation_tracker.update_human_review_status(citation_id, status)
+        logger.info(f"Updated citation {citation_id} review status: {status}")
+
+    def get_evaluator_id(self) -> Optional[int]:
+        """
+        Get the evaluator ID for this agent instance.
+
+        Returns:
+            Evaluator ID if audit tracking enabled, None otherwise
+        """
+        return self._evaluator_id

@@ -14,24 +14,100 @@ from .workflow_steps_handler import WorkflowStepsHandler
 from .report_builder import ReportBuilder
 
 
+def cleanup_agents(agents: Dict[str, Any]) -> None:
+    """Cleanup agent resources including audit database connection.
+
+    Args:
+        agents: Dictionary of agents from initialize_agents_in_main_thread()
+    """
+    if not agents:
+        return
+
+    # Return audit connection to pool if it exists
+    if '_audit_conn' in agents and '_db_manager' in agents:
+        audit_conn = agents.get('_audit_conn')
+        db_manager = agents.get('_db_manager')
+
+        if audit_conn and db_manager:
+            try:
+                print("🔄 Returning audit connection to DatabaseManager pool...")
+                db_manager._pool.putconn(audit_conn)
+                print("✅ Audit connection returned to pool")
+            except Exception as e:
+                print(f"⚠️ Error returning audit connection to pool: {e}")
+
+
 def initialize_agents_in_main_thread():
     """Initialize BMLibrarian agents in the main thread to avoid signal issues."""
     try:
         print("🔧 Initializing BMLibrarian agents with config.json settings...")
 
+        # Get database connection for audit tracking
+        from ..database import get_db_manager
+        audit_conn = None
+        db_manager = None
+
+        try:
+            db_manager = get_db_manager()
+
+            # First, check if audit schema exists using a temporary connection
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.schemata
+                            WHERE schema_name = 'audit'
+                        )
+                    """)
+                    audit_exists = cur.fetchone()[0]
+
+            if audit_exists:
+                print("📊 Audit schema found - enabling audit tracking")
+                # Get a persistent connection from the pool for audit tracking
+                # This follows the CLI pattern - connection will be returned to pool on GUI shutdown
+                audit_conn = db_manager._pool.getconn()
+                print("   Acquired connection from DatabaseManager pool for audit tracking")
+            else:
+                print("⚠️ Audit schema not found - audit tracking disabled")
+                print("   Run migrations to enable audit tracking:")
+                print("   uv run python -m bmlibrarian.migrations run")
+
+        except Exception as e:
+            print(f"⚠️ Could not initialize audit tracking: {e}")
+            print("   Continuing without audit tracking...")
+            if audit_conn and db_manager:
+                try:
+                    db_manager._pool.putconn(audit_conn)
+                except:
+                    pass
+            audit_conn = None
+
         # Use AgentFactory to create all agents with proper configuration
-        agents = AgentFactory.create_all_agents(auto_register=True)
+        agents = AgentFactory.create_all_agents(auto_register=True, audit_conn=audit_conn)
+
+        # Store db_manager in agents dict for cleanup on shutdown
+        if db_manager:
+            agents['_db_manager'] = db_manager
+            agents['_audit_conn'] = audit_conn
 
         # Print which models are being used
         for agent_name, agent in agents.items():
             if hasattr(agent, 'model') and agent_name != 'orchestrator':
                 print(f"🤖 {agent_name} using model: {agent.model}")
 
+        # Print audit tracking status
+        if audit_conn:
+            print("✅ Audit tracking enabled for scoring, citation, and reporting agents")
+        else:
+            print("ℹ️ Audit tracking not enabled")
+
         print("✅ Agents initialized successfully in main thread")
         return agents
 
     except Exception as e:
         print(f"❌ Failed to initialize agents in main thread: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -48,10 +124,11 @@ class WorkflowExecutor:
     at key workflow steps before proceeding.
     """
     
-    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
+    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None, tab_manager: Optional[Any] = None):
         self.agents = agents
         self.config_overrides: Dict[str, Any] = config_overrides or {}
-        
+        self.tab_manager = tab_manager  # Store tab_manager reference
+
         # Store workflow results for tab access
         self.documents = []
         self.scored_documents = []
@@ -60,14 +137,30 @@ class WorkflowExecutor:
         self.preliminary_report = ""
         self.final_report = ""
         self.last_query_text = None  # Store last query for "Add More Documents" feature
-        
+
+        # Audit tracking - session context
+        self.research_question_id = None
+        self.session_id = None
+        self.session_tracker = None
+        self.audit_enabled = False
+
+        # Initialize audit tracking if available
+        if '_audit_conn' in agents and agents['_audit_conn']:
+            try:
+                from ..audit import SessionTracker
+                self.session_tracker = SessionTracker(agents['_audit_conn'])
+                self.audit_enabled = True
+                print("📊 Audit tracking initialized for workflow")
+            except Exception as e:
+                print(f"⚠️ Could not initialize audit tracking: {e}")
+
         # Store model information for report footnotes
         self.agent_model_info = {}
-        
+
         # Initialize modular components
         self.interactive_handler = None
         self.query_processor = QueryProcessor()
-        self.steps_handler = WorkflowStepsHandler(agents, self.config_overrides)
+        self.steps_handler = WorkflowStepsHandler(agents, self.config_overrides, tab_manager)
         
         # Collect agent model information for footnotes
         self._collect_agent_model_info()
@@ -89,7 +182,49 @@ class WorkflowExecutor:
         # Legacy compatibility
         self.dialog_manager = None
         self.step_cards = None
-    
+
+    def _start_audit_session(self, research_question: str) -> None:
+        """Start an audit session for this workflow run."""
+        if not self.audit_enabled or not self.session_tracker:
+            return
+
+        try:
+            # Get or create research question
+            self.research_question_id = self.session_tracker.get_or_create_research_question(
+                question_text=research_question,
+                user_id=None  # GUI doesn't track users yet
+            )
+            print(f"📊 Research question ID: {self.research_question_id}")
+
+            # Start session
+            self.session_id = self.session_tracker.start_session(
+                research_question_id=self.research_question_id,
+                session_type='initial',
+                config_snapshot=self.config_overrides,
+                user_notes=f"GUI workflow - {'Interactive' if self.interactive_mode else 'Automated'} mode"
+            )
+            print(f"📊 Session ID: {self.session_id}")
+
+            # Pass session context to steps handler
+            self.steps_handler.research_question_id = self.research_question_id
+            self.steps_handler.session_id = self.session_id
+
+        except Exception as e:
+            print(f"⚠️ Error starting audit session: {e}")
+            # Don't fail the workflow, just disable audit tracking
+            self.audit_enabled = False
+
+    def _complete_audit_session(self, status: str = 'completed') -> None:
+        """Complete the audit session."""
+        if not self.audit_enabled or not self.session_tracker or not self.session_id:
+            return
+
+        try:
+            self.session_tracker.complete_session(self.session_id, status=status)
+            print(f"📊 Session completed with status: {status}")
+        except Exception as e:
+            print(f"⚠️ Error completing audit session: {e}")
+
     def run_workflow(self, research_question: str, human_in_loop: bool,
                     update_callback: Callable[[WorkflowStep, str, str], None],
                     dialog_manager=None, step_cards=None, tab_manager=None) -> str:
@@ -119,10 +254,13 @@ class WorkflowExecutor:
         
         # Initialize interactive handler with step cards and tab manager
         self.interactive_handler = InteractiveHandler(step_cards, tab_manager=tab_manager)
-        
+
+        # Start audit session
+        self._start_audit_session(research_question)
+
         try:
             # Step 1: Research Question Collection
-            update_callback(WorkflowStep.COLLECT_RESEARCH_QUESTION, "completed", 
+            update_callback(WorkflowStep.COLLECT_RESEARCH_QUESTION, "completed",
                           f"Research Question: {research_question}")
             
             # Step 2: Generate Query
@@ -423,9 +561,15 @@ class WorkflowExecutor:
                               f"Tab update: Final report ready ({len(final_report)} characters)")
             
             print(f"Workflow summary: {self.get_workflow_summary()}")
+
+            # Complete audit session successfully
+            self._complete_audit_session(status='completed')
+
             return final_report
-            
+
         except Exception as e:
+            # Complete audit session with failed status
+            self._complete_audit_session(status='failed')
             raise Exception(f"Workflow execution failed: {str(e)}")
     
     def _create_document_summary(self, documents: List[Dict]) -> str:

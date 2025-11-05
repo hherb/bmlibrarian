@@ -50,9 +50,9 @@ class AgentFactory:
     # Only these parameters will be passed to agent constructors
     SUPPORTED_PARAMS = {
         'query': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},
-        'scoring': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},
-        'citation': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},
-        'reporting': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},
+        'scoring': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
+        'citation': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
+        'reporting': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator', 'audit_conn'},
         'counterfactual': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'},
         'editor': {'model', 'host', 'temperature', 'top_p', 'callback', 'show_model_info', 'orchestrator'}
     }
@@ -142,7 +142,8 @@ class AgentFactory:
     def create_all_agents(orchestrator: Optional[AgentOrchestrator] = None,
                          config: Optional[Dict[str, Any]] = None,
                          callback: Optional[Callable] = None,
-                         auto_register: bool = True) -> Dict[str, Any]:
+                         auto_register: bool = True,
+                         audit_conn: Optional[Any] = None) -> Dict[str, Any]:
         """Create all BMLibrarian agents with unified configuration.
 
         Args:
@@ -150,6 +151,7 @@ class AgentFactory:
             config: Optional configuration dictionary (uses BMLibrarian config if not provided)
             callback: Optional callback function for all agents
             auto_register: Automatically register agents with orchestrator (default: True)
+            audit_conn: Optional PostgreSQL connection for audit tracking (psycopg.Connection)
 
         Returns:
             Dictionary with agent instances and orchestrator:
@@ -237,6 +239,10 @@ class AgentFactory:
             # Add callback if provided
             if callback:
                 kwargs['callback'] = callback
+
+            # Add audit_conn for agents that support it
+            if audit_conn and agent_type in ['scoring', 'citation', 'reporting']:
+                kwargs['audit_conn'] = audit_conn
 
             return kwargs
 

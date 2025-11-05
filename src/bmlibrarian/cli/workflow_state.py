@@ -11,25 +11,32 @@ from bmlibrarian.agents.reporting_agent import MethodologyMetadata
 
 class WorkflowStateManager:
     """Manages workflow state and context data."""
-    
+
     def __init__(self):
         # Workflow state
         self.current_question: Optional[str] = None
         self.current_query: Optional[str] = None
         self.search_results: List[Dict[str, Any]] = []
         self.scored_documents: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        self.scored_documents_with_ids: List[Tuple[Dict[str, Any], Dict[str, Any], int]] = []  # Includes scoring_id
         self.extracted_citations: List[Citation] = []
         self.final_report: Optional[Report] = None
         self.counterfactual_analysis: Optional[CounterfactualAnalysis] = None
         self.contradictory_evidence: Optional[Dict[str, Any]] = None
         self.comprehensive_report: Optional[EditedReport] = None
-        
+
         # Methodology tracking
         self.scoring_threshold: float = 2.5
         self.citation_extraction_threshold: float = 0.7
         self.documents_by_score: Dict[int, int] = {}
         self.counterfactual_documents_found: int = 0
         self.counterfactual_citations_extracted: int = 0
+
+        # Audit tracking IDs
+        self.research_question_id: Optional[int] = None
+        self.session_id: Optional[int] = None
+        self.query_id: Optional[int] = None
+        self.report_id: Optional[int] = None
     
     def get_workflow_state(self) -> Dict[str, Any]:
         """Get current workflow state for potential resumption."""
@@ -51,18 +58,25 @@ class WorkflowStateManager:
         self.current_query = None
         self.search_results = []
         self.scored_documents = []
+        self.scored_documents_with_ids = []
         self.extracted_citations = []
         self.final_report = None
         self.counterfactual_analysis = None
         self.contradictory_evidence = None
         self.comprehensive_report = None
-        
+
         # Reset methodology tracking
         self.scoring_threshold = 2.5
         self.citation_extraction_threshold = 0.7
         self.documents_by_score = {}
         self.counterfactual_documents_found = 0
         self.counterfactual_citations_extracted = 0
+
+        # Reset audit tracking IDs
+        self.research_question_id = None
+        self.session_id = None
+        self.query_id = None
+        self.report_id = None
     
     def update_question(self, question: str):
         """Update the current research question."""

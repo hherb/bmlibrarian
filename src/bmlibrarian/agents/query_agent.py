@@ -7,7 +7,7 @@ to_tsquery format optimized for biomedical literature searches.
 
 import re
 import logging
-from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING, Any
+from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING, Any, List
 from datetime import date
 
 from .base import BaseAgent
@@ -484,7 +484,9 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
         human_in_the_loop: bool = False,
-        human_query_modifier: Optional[Callable[[list[str]], list[str]]] = None
+        human_query_modifier: Optional[Callable[[list[str]], list[str]]] = None,
+        performance_tracker: Optional[Any] = None,
+        session_id: Optional[str] = None
     ) -> Generator[Dict, None, None]:
         """
         Find abstracts using multi-model query generation.
@@ -507,6 +509,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             to_date: Only include documents published on or before this date
             human_in_the_loop: Allow user to review/select queries
             human_query_modifier: Callback for query selection
+            performance_tracker: Optional QueryPerformanceTracker for tracking stats
+            session_id: Optional session ID for performance tracking
 
         Yields:
             Document dictionaries (same format as find_abstracts)
@@ -569,7 +573,16 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         # Track per-query statistics for detailed reporting
         query_stats = []
 
+        # Get mapping from SANITIZED query text to QueryGenerationResult for model info
+        query_to_result = {}
+        for qr in query_results.all_queries:
+            sanitized_qr_query = fix_tsquery_syntax(qr.query)
+            query_to_result[sanitized_qr_query] = qr
+
         for i, query in enumerate(queries_to_execute, 1):
+            import time
+            query_start_time = time.time()
+
             try:
                 # Fix query syntax before execution
                 sanitized_query = fix_tsquery_syntax(query)
@@ -589,6 +602,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
                     to_date=to_date
                 )
 
+                query_execution_time = time.time() - query_start_time
+
                 all_document_ids.update(ids)
 
                 # Store per-query statistics
@@ -600,6 +615,28 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
                     'error': None
                 }
                 query_stats.append(query_stat)
+
+                # Track in performance tracker if provided
+                if performance_tracker and session_id:
+                    # Get model info from QueryGenerationResult using sanitized query
+                    gen_result = query_to_result.get(sanitized_query)
+                    if gen_result:
+                        import uuid
+                        query_id = str(uuid.uuid4())
+                        performance_tracker.track_query(
+                            query_id=query_id,
+                            session_id=session_id,
+                            model=gen_result.model,
+                            query_text=sanitized_query,
+                            temperature=gen_result.temperature,
+                            top_p=self.top_p,
+                            attempt_number=gen_result.attempt_number,
+                            execution_time=query_execution_time,
+                            document_ids=list(ids)
+                        )
+                        logger.debug(f"Tracked query {i} for model {gen_result.model}, {len(ids)} docs")
+                    else:
+                        logger.warning(f"Could not find model info for sanitized query: {sanitized_query[:60]}...")
 
                 logger.info(f"Query {i} found {len(ids)} IDs, total unique: {len(all_document_ids)}")
                 self._call_callback("query_executed", f"Found {len(ids)} IDs")
@@ -620,10 +657,11 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
                 # Continue with other queries
 
         # Send detailed query statistics via callback
-        self._call_callback("multi_query_stats", {
+        import json
+        self._call_callback("multi_query_stats", json.dumps({
             'query_stats': query_stats,
             'total_unique_ids': len(all_document_ids)
-        })
+        }))
 
         # Step 4: Fetch full documents for unique IDs
         logger.info(f"Fetching {len(all_document_ids)} unique documents")
@@ -643,3 +681,59 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         # Step 5: Yield documents
         for doc in documents:
             yield doc
+
+    @staticmethod
+    def format_query_performance_stats(
+        stats: List[Any],
+        score_threshold: float = 3.0
+    ) -> str:
+        """Format query performance statistics for display.
+
+        Args:
+            stats: List of QueryPerformanceStats from performance_tracker
+            score_threshold: Threshold used for high-scoring documents
+
+        Returns:
+            Formatted string with statistics table
+        """
+        from .query_generation import QueryPerformanceStats
+
+        if not stats:
+            return "No performance statistics available"
+
+        lines = []
+        lines.append(f"\n{'='*80}")
+        lines.append("QUERY PERFORMANCE STATISTICS")
+        lines.append(f"{'='*80}")
+        lines.append(f"Score threshold: {score_threshold}")
+        lines.append("")
+
+        for i, stat in enumerate(stats, 1):
+            lines.append(f"Query #{i} ({stat.model}, T={stat.temperature:.2f}):")
+            lines.append(f"  Total documents: {stat.total_documents}")
+            lines.append(f"  High-scoring (>={score_threshold}): {stat.high_scoring_documents}")
+            lines.append(f"  Unique to this query: {stat.unique_documents}")
+            lines.append(f"  Unique high-scoring: {stat.unique_high_scoring}")
+            lines.append(f"  Execution time: {stat.execution_time:.2f}s")
+            lines.append(f"  Query: {stat.query[:60]}..." if len(stat.query) > 60 else f"  Query: {stat.query}")
+            lines.append("")
+
+        # Summary statistics
+        total_docs = sum(s.total_documents for s in stats)
+        total_high_scoring = sum(s.high_scoring_documents for s in stats)
+        total_unique = sum(s.unique_documents for s in stats)
+        total_unique_high = sum(s.unique_high_scoring for s in stats)
+        avg_exec_time = sum(s.execution_time for s in stats) / len(stats) if stats else 0
+
+        lines.append(f"{'='*80}")
+        lines.append("SUMMARY")
+        lines.append(f"{'='*80}")
+        lines.append(f"Total queries executed: {len(stats)}")
+        lines.append(f"Total documents found (with duplicates): {total_docs}")
+        lines.append(f"Total high-scoring (with duplicates): {total_high_scoring}")
+        lines.append(f"Total unique documents found: {total_unique}")
+        lines.append(f"Total unique high-scoring: {total_unique_high}")
+        lines.append(f"Average execution time: {avg_exec_time:.2f}s")
+        lines.append(f"{'='*80}")
+
+        return "\n".join(lines)

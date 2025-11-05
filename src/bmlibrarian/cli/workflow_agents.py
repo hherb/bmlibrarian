@@ -5,6 +5,7 @@ Handles agent initialization, setup, and connection testing.
 """
 
 import logging
+import os
 from typing import Optional
 from bmlibrarian.agents import AgentFactory, AgentOrchestrator
 
@@ -28,10 +29,112 @@ class WorkflowAgentManager:
         self.counterfactual_agent = None
         self.editor_agent = None
 
+        # Audit tracking components
+        self.db_manager = None
+        self.audit_conn = None
+        self.audit_enabled = False
+
+    def _run_pending_migrations(self) -> bool:
+        """Run any pending database migrations.
+
+        Returns:
+            True if migrations were successful or already applied, False on error
+        """
+        try:
+            from bmlibrarian.migrations import MigrationManager
+            from pathlib import Path
+
+            # Create migration manager from environment variables
+            migration_manager = MigrationManager.from_env()
+            if not migration_manager:
+                logger.debug("Could not create MigrationManager (missing credentials)")
+                return True  # Not fatal
+
+            # Find migrations directory
+            migrations_dir = Path(__file__).parent.parent.parent.parent / "migrations"
+            if not migrations_dir.exists():
+                logger.debug(f"Migrations directory not found: {migrations_dir}")
+                return True  # Not fatal
+
+            # Apply pending migrations (silent mode - use logging)
+            applied_count = migration_manager.apply_pending_migrations(migrations_dir, silent=True)
+
+            if applied_count > 0:
+                logger.info(f"Applied {applied_count} pending database migration(s)")
+            else:
+                logger.debug("No pending migrations to apply")
+
+            return True
+
+        except Exception as e:
+            logger.warning(f"Error running migrations: {e}")
+            logger.debug("Continuing without migration check")
+            return True  # Non-fatal
+
+    def _setup_audit_tracking(self) -> bool:
+        """Setup audit tracking using DatabaseManager.
+
+        Gets a connection from the pool and keeps it for the session duration.
+        This follows the pattern where CLI sessions are short-lived and don't
+        need connection recycling.
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+
+            # Run pending migrations first (ensures audit schema exists)
+            self._run_pending_migrations()
+
+            # Get database manager (already handles connection pooling)
+            self.db_manager = get_db_manager()
+
+            # Get a connection from the pool for this session
+            # Note: We manually manage this connection for the session duration
+            # rather than using context manager, as audit trackers expect persistent connections
+            self.audit_conn = self.db_manager._pool.getconn()
+
+            # Verify audit schema exists
+            with self.audit_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.schemata
+                        WHERE schema_name = 'audit'
+                    )
+                """)
+                audit_exists = cur.fetchone()[0]
+
+                if not audit_exists:
+                    logger.warning("Audit schema does not exist in database")
+                    logger.info("Migrations may have failed - check logs")
+                    # Return connection to pool
+                    self.db_manager._pool.putconn(self.audit_conn)
+                    self.audit_conn = None
+                    self.audit_enabled = False
+                    return False
+
+            self.audit_enabled = True
+            logger.info("Audit tracking enabled (using DatabaseManager connection pool)")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Could not enable audit tracking: {e}")
+            logger.info("Continuing without audit tracking")
+            self.audit_enabled = False
+            if self.audit_conn and self.db_manager:
+                try:
+                    self.db_manager._pool.putconn(self.audit_conn)
+                except:
+                    pass
+            self.audit_conn = None
+            self.db_manager = None
+            return False
+
     def setup_agents(self) -> bool:
         """Initialize and test all agents."""
         try:
             self.ui.show_progress_message("Setting up BMLibrarian agents...")
+
+            # Setup audit tracking (optional - non-fatal if fails)
+            self._setup_audit_tracking()
 
             # Create orchestrator
             self.orchestrator = AgentOrchestrator(
@@ -45,7 +148,8 @@ class WorkflowAgentManager:
             agents = AgentFactory.create_all_agents(
                 orchestrator=self.orchestrator,
                 config=config_dict,
-                auto_register=True
+                auto_register=True,
+                audit_conn=self.audit_conn  # Pass audit connection
             )
 
             # Extract individual agents
@@ -119,3 +223,13 @@ class WorkflowAgentManager:
         """Stop the agent orchestrator."""
         if self.orchestrator:
             self.orchestrator.stop_processing()
+
+    def cleanup(self):
+        """Cleanup resources including audit connection."""
+        if self.audit_conn and self.db_manager:
+            try:
+                # Return connection to the pool instead of closing
+                self.db_manager._pool.putconn(self.audit_conn)
+                logger.info("Returned audit connection to pool")
+            except Exception as e:
+                logger.warning(f"Error returning audit connection to pool: {e}")

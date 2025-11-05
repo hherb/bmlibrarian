@@ -8,6 +8,7 @@ providing numerical scores and reasoning for document relevance assessment.
 import json
 import logging
 from typing import Dict, Optional, Callable, TypedDict, List, Tuple, Iterator
+import psycopg
 
 from .base import BaseAgent
 from .queue_manager import TaskPriority
@@ -38,11 +39,12 @@ class DocumentScoringAgent(BaseAgent):
         top_p: float = 0.9,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
-        show_model_info: bool = True
+        show_model_info: bool = True,
+        audit_conn: Optional[psycopg.Connection] = None
     ):
         """
         Initialize the DocumentScoringAgent.
-        
+
         Args:
             model: The name of the Ollama model to use (default: gpt-oss:20b)
             host: The Ollama server host URL (default: http://localhost:11434)
@@ -51,8 +53,28 @@ class DocumentScoringAgent(BaseAgent):
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
+            audit_conn: Optional database connection for audit tracking
         """
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
+
+        # Audit tracking (optional)
+        self.audit_conn = audit_conn
+        self._document_tracker = None
+        self._evaluator_manager = None
+        self._evaluator_id = None
+
+        if audit_conn:
+            from bmlibrarian.audit import DocumentTracker, EvaluatorManager
+            self._document_tracker = DocumentTracker(audit_conn)
+            self._evaluator_manager = EvaluatorManager(audit_conn)
+            # Create/get evaluator for this agent configuration
+            self._evaluator_id = self._evaluator_manager.get_evaluator_for_agent(
+                agent_type='scoring',
+                model_name=model,
+                temperature=temperature,
+                top_p=top_p
+            )
+            logger.info(f"Audit tracking enabled for ScoringAgent (evaluator_id={self._evaluator_id})")
         
         # System prompt for document relevance scoring
         self.system_prompt = """You are a biomedical literature expert evaluating document relevance. Your task is to score how well a document answers or relates to a user's question.
@@ -591,5 +613,183 @@ Please evaluate how well this document addresses the user's question and provide
             "queued_top_documents_selected",
             f"Selected {len(top_results)} documents with scores >= {min_score} from {len(documents)} via queue"
         )
-        
+
         return top_results
+
+    # ========================================================================
+    # Audit-aware methods for resumption support
+    # ========================================================================
+
+    def batch_evaluate_with_audit(
+        self,
+        research_question_id: int,
+        session_id: int,
+        query_id: int,
+        user_question: str,
+        documents: list[Dict],
+        skip_already_scored: bool = True,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> list[tuple[Dict, ScoringResult, int]]:
+        """
+        Evaluate multiple documents WITH AUDIT TRACKING and resumption support.
+
+        CRITICAL: Skips documents already scored by THIS EVALUATOR (resumption).
+
+        A document scored by a different evaluator (different model/params/user)
+        will still be scored by this evaluator. This enables model comparison.
+
+        Args:
+            research_question_id: ID of the research question
+            session_id: ID of the current session
+            query_id: ID of the query that found these documents
+            user_question: The user's question
+            documents: List of document dictionaries (must include 'id' field)
+            skip_already_scored: If True, skip documents already scored by THIS evaluator
+            progress_callback: Optional callback function(current, total) for progress updates
+
+        Returns:
+            List of tuples: (document, scoring_result, scoring_id)
+            - scoring_id is the database ID for the score record
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> import psycopg
+            >>> conn = psycopg.connect(dbname="knowledgebase", user="hherb")
+            >>> agent = DocumentScoringAgent(audit_conn=conn)
+            >>> results = agent.batch_evaluate_with_audit(
+            ...     research_question_id=1,
+            ...     session_id=1,
+            ...     query_id=1,
+            ...     user_question="What are the benefits of exercise?",
+            ...     documents=doc_list
+            ... )
+            >>> for doc, score_result, scoring_id in results:
+            ...     print(f"Doc {doc['id']}: score={score_result['score']}, scoring_id={scoring_id}")
+        """
+        if not self._document_tracker or not self._evaluator_id:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        if not user_question or not user_question.strip():
+            raise ValueError("User question cannot be empty")
+
+        if not documents or not isinstance(documents, list):
+            raise ValueError("Documents must be a non-empty list")
+
+        results = []
+        skipped_count = 0
+
+        self._call_callback("batch_evaluation_started", f"Evaluating {len(documents)} documents with audit tracking")
+
+        for i, doc in enumerate(documents):
+            try:
+                doc_id = doc.get('id')
+                if not doc_id:
+                    logger.error(f"Document {i+1} missing 'id' field - cannot track in audit")
+                    continue
+
+                # RESUMPTION CHECK: Has THIS EVALUATOR already scored this document for this question?
+                # Note: A score by a different evaluator doesn't count - this enables model comparison
+                if skip_already_scored and self._document_tracker.is_document_scored(
+                    research_question_id, doc_id, self._evaluator_id
+                ):
+                    # Skip - already scored by THIS evaluator
+                    logger.debug(f"Skipping document {doc_id} - already scored by evaluator {self._evaluator_id}")
+                    skipped_count += 1
+                    continue
+
+                self._call_callback("document_evaluation_progress", f"Document {i+1}/{len(documents)}")
+
+                # Score the document
+                scoring_result = self.evaluate_document(user_question, doc)
+
+                # Record score in audit database with THIS evaluator
+                scoring_id = self._document_tracker.record_document_score(
+                    research_question_id=research_question_id,
+                    document_id=doc_id,
+                    session_id=session_id,
+                    first_query_id=query_id,
+                    evaluator_id=self._evaluator_id,
+                    relevance_score=scoring_result['score'],
+                    reasoning=scoring_result['reasoning']
+                )
+
+                results.append((doc, scoring_result, scoring_id))
+
+                # Report progress for GUI updates
+                if progress_callback:
+                    progress_callback(len(results), len(documents))
+
+            except Exception as e:
+                logger.error(f"Failed to evaluate document {i+1}: {e}")
+                # Continue with other documents
+                continue
+
+        total_evaluated = len(results)
+        self._call_callback(
+            "batch_evaluation_completed",
+            f"Evaluated {total_evaluated} documents, skipped {skipped_count} already scored"
+        )
+
+        logger.info(f"Scored {total_evaluated} documents, skipped {skipped_count} (resumption)")
+
+        return results
+
+    def get_unscored_documents(
+        self,
+        research_question_id: int,
+        documents: list[Dict]
+    ) -> list[Dict]:
+        """
+        Filter documents to only those NOT YET SCORED by THIS EVALUATOR.
+
+        CRITICAL FOR RESUMPTION: Returns only documents that need scoring by THIS evaluator.
+
+        Documents scored by other evaluators will still be included (enables model comparison).
+
+        Args:
+            research_question_id: ID of the research question
+            documents: List of document dictionaries (must include 'id' field)
+
+        Returns:
+            Filtered list of documents not yet scored by THIS evaluator
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> unscored = agent.get_unscored_documents(question_id, all_documents)
+            >>> print(f"Need to score {len(unscored)} out of {len(all_documents)} documents")
+        """
+        if not self._document_tracker or not self._evaluator_id:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        # Get list of unscored document IDs from database (for THIS evaluator)
+        unscored_ids_set = set(self._document_tracker.get_unscored_documents(
+            research_question_id, self._evaluator_id
+        ))
+
+        # Filter documents to only unscored ones
+        unscored_docs = [
+            doc for doc in documents
+            if doc.get('id') in unscored_ids_set
+        ]
+
+        logger.info(f"Found {len(unscored_docs)} unscored documents out of {len(documents)} total (evaluator {self._evaluator_id})")
+
+        return unscored_docs
+
+    def get_evaluator_id(self) -> Optional[int]:
+        """
+        Get the evaluator ID for this agent instance.
+
+        The evaluator represents the unique combination of:
+        - Model name (e.g., 'medgemma-27b-text-it-Q8_0:latest')
+        - Parameters (temperature, top_p)
+        - OR user_id (for human evaluators)
+
+        Returns:
+            Evaluator ID if audit tracking enabled, None otherwise
+        """
+        return self._evaluator_id

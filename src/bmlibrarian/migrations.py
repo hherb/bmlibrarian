@@ -1,18 +1,21 @@
 """Database migration system for bmlibrarian."""
 
 import hashlib
+import logging
 import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import psycopg
+
+logger = logging.getLogger(__name__)
 
 
 class MigrationManager:
     """Manages database migrations for bmlibrarian."""
-    
+
     def __init__(self, host: str, port: str, user: str, password: str, database: str):
         """Initialize the migration manager with database connection parameters."""
         self.host = host
@@ -26,7 +29,36 @@ class MigrationManager:
             "user": user,
             "password": password
         }
-    
+
+    @classmethod
+    def from_env(cls) -> Optional['MigrationManager']:
+        """Create MigrationManager from environment variables.
+
+        Returns:
+            MigrationManager instance or None if credentials missing
+        """
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+
+            user = os.getenv("POSTGRES_USER")
+            password = os.getenv("POSTGRES_PASSWORD")
+
+            if not user or not password:
+                logger.warning("Missing POSTGRES_USER or POSTGRES_PASSWORD in environment")
+                return None
+
+            return cls(
+                host=os.getenv("POSTGRES_HOST", "localhost"),
+                port=os.getenv("POSTGRES_PORT", "5432"),
+                user=user,
+                password=password,
+                database=os.getenv("POSTGRES_DB", "knowledgebase")
+            )
+        except Exception as e:
+            logger.warning(f"Could not create MigrationManager from environment: {e}")
+            return None
+
     def _get_connection(self, database: str = None) -> psycopg.Connection:
         """Get a database connection."""
         params = self._conn_params.copy()
@@ -143,55 +175,95 @@ class MigrationManager:
         
         print("Baseline schema applied successfully!")
     
-    def apply_pending_migrations(self, migrations_dir: Path) -> int:
-        """Apply all pending migrations from the migrations directory."""
+    def apply_pending_migrations(self, migrations_dir: Path, silent: bool = False) -> int:
+        """Apply all pending migrations from the migrations directory.
+
+        Args:
+            migrations_dir: Path to migrations directory
+            silent: If True, use logging instead of print statements
+
+        Returns:
+            Number of migrations applied
+        """
         migrations_dir = Path(migrations_dir)
-        
+
         if not migrations_dir.exists():
-            print(f"Migrations directory does not exist: {migrations_dir}")
-            print("Creating migrations directory...")
-            migrations_dir.mkdir(parents=True, exist_ok=True)
+            msg = f"Migrations directory does not exist: {migrations_dir}"
+            if silent:
+                logger.debug(msg)
+            else:
+                print(msg)
             return 0
-        
+
         # Ensure migrations table exists
-        self._create_migrations_table()
-        
+        try:
+            self._create_migrations_table()
+        except Exception as e:
+            msg = f"Could not create migrations table: {e}"
+            if silent:
+                logger.warning(msg)
+            else:
+                print(f"Warning: {msg}")
+            return 0
+
         # Get applied migrations
-        applied_migrations = {filename for filename, _ in self._get_applied_migrations()}
-        
+        try:
+            applied_migrations = {filename for filename, _ in self._get_applied_migrations()}
+        except Exception as e:
+            msg = f"Could not get applied migrations: {e}"
+            if silent:
+                logger.warning(msg)
+            else:
+                print(f"Warning: {msg}")
+            return 0
+
         # Find migration files (should be .sql files with numeric prefix)
         migration_files = []
         for file_path in migrations_dir.glob("*.sql"):
             if re.match(r'^\d+_.*\.sql$', file_path.name):
                 migration_files.append(file_path)
-        
+
         # Sort by filename (which should start with numbers for ordering)
         migration_files.sort(key=lambda x: x.name)
-        
+
         # Apply pending migrations
         applied_count = 0
         for migration_file in migration_files:
             if migration_file.name not in applied_migrations:
-                print(f"Applying migration: {migration_file.name}")
-                
+                msg = f"Applying migration: {migration_file.name}"
+                if silent:
+                    logger.info(msg)
+                else:
+                    print(msg)
+
                 # Read and validate migration
                 with open(migration_file, 'r', encoding='utf-8') as f:
                     content = f.read()
-                
+
                 checksum = self._calculate_checksum(content)
-                
+
                 try:
                     # Apply migration
                     self._apply_sql_file(migration_file)
-                    
+
                     # Record as applied
                     self._record_migration(migration_file.name, checksum)
-                    
+
                     applied_count += 1
-                    print(f"✓ Applied: {migration_file.name}")
-                    
+                    msg = f"✓ Applied: {migration_file.name}"
+                    if silent:
+                        logger.info(msg)
+                    else:
+                        print(msg)
+
                 except Exception as e:
-                    print(f"✗ Failed to apply {migration_file.name}: {e}")
-                    sys.exit(1)
-        
+                    msg = f"✗ Failed to apply {migration_file.name}: {e}"
+                    if silent:
+                        logger.error(msg)
+                    else:
+                        print(msg)
+                    # Don't exit in silent mode, just log error
+                    if not silent:
+                        sys.exit(1)
+
         return applied_count

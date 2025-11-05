@@ -8,7 +8,7 @@ from .config_app import BMLibrarianConfigApp
 from .research_app import ResearchGUI
 from .components import StepCard
 from .dialogs import DialogManager
-from .workflow import WorkflowExecutor, initialize_agents_in_main_thread
+from .workflow import WorkflowExecutor, initialize_agents_in_main_thread, cleanup_agents
 from .interactive_handler import InteractiveHandler
 from .query_processor import QueryProcessor
 from .workflow_steps_handler import WorkflowStepsHandler
@@ -29,6 +29,7 @@ __all__ = [
     'DialogManager',
     'WorkflowExecutor',
     'initialize_agents_in_main_thread',
+    'cleanup_agents',
     'InteractiveHandler',
     'QueryProcessor',
     'WorkflowStepsHandler',

@@ -99,6 +99,14 @@ class TabManager:
             visible=False
         )
 
+        # Progress text for query generation
+        self.search_progress_text = ft.Text(
+            "",
+            size=11,
+            color=ft.Colors.GREY_600,
+            visible=False
+        )
+
         # Question display
         self.search_question_text = ft.Text(
             "No research question yet.",
@@ -119,6 +127,15 @@ class TabManager:
         self.search_queries_detail = ft.Column(
             spacing=5,
             visible=False
+        )
+
+        # Query performance statistics container (shown after scoring completes)
+        self.search_performance_stats = ft.Container(
+            visible=False,
+            border=ft.border.all(1, ft.Colors.BLUE_200),
+            border_radius=8,
+            padding=15,
+            bgcolor=ft.Colors.BLUE_50
         )
 
         # Query edit field (hidden by default, shown in interactive mode)
@@ -161,6 +178,7 @@ class TabManager:
             [
                 *header_components,
                 self.search_progress_bar,
+                self.search_progress_text,
                 ft.Container(height=10),
                 ft.Text("Research Question:", size=12, weight=ft.FontWeight.BOLD),
                 self.search_question_text,
@@ -172,7 +190,9 @@ class TabManager:
                 ft.Row(
                     [self.search_edit_button, self.search_accept_button, self.search_cancel_button],
                     spacing=10
-                )
+                ),
+                ft.Container(height=10),
+                self.search_performance_stats  # Add performance statistics container
             ],
             spacing=10,
             scroll=ft.ScrollMode.AUTO
@@ -185,6 +205,19 @@ class TabManager:
         )
 
         return self.tab_contents['search']
+
+    def update_search_progress(self, message: str, show_bar: bool = True):
+        """Update search tab progress text.
+
+        Args:
+            message: Progress message to display
+            show_bar: Whether to show the progress bar
+        """
+        self.search_progress_text.value = message
+        self.search_progress_text.visible = bool(message)
+        self.search_progress_bar.visible = show_bar
+        if self.page:
+            self.page.update()
 
     def enable_search_query_editing(self, query_text: str, callback):
         """Enable search query editing mode and set workflow callback.
@@ -871,6 +904,200 @@ class TabManager:
         if self.event_handlers and hasattr(self.event_handlers, 'on_save_report'):
             # JSON export is included in the save report handler
             self.event_handlers.on_save_report(e)
+
+    def update_search_performance_stats(self, stats: List[Any], score_threshold: float = 3.0):
+        """Update the search tab with query performance statistics.
+
+        Args:
+            stats: List of QueryPerformanceStats from performance tracker
+            score_threshold: Threshold used for high-scoring documents
+        """
+        if not stats:
+            self.search_performance_stats.visible = False
+            if self.page:
+                self.page.update()
+            return
+
+        # Build performance statistics UI
+        stats_content = []
+
+        # Header
+        stats_content.append(
+            ft.Text(
+                "📊 Multi-Model Query Performance",
+                size=14,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_900
+            )
+        )
+        stats_content.append(ft.Divider(height=1, color=ft.Colors.BLUE_200))
+        stats_content.append(ft.Container(height=5))
+
+        # Summary metrics at top
+        total_docs = sum(s.total_documents for s in stats)
+        total_high_scoring = sum(s.high_scoring_documents for s in stats)
+        total_unique = sum(s.unique_documents for s in stats)
+        total_unique_high = sum(s.unique_high_scoring for s in stats)
+        avg_time = sum(s.execution_time for s in stats) / len(stats) if stats else 0
+
+        summary_metrics = ft.Row(
+            [
+                self._create_metric_card("Queries", str(len(stats)), ft.Colors.BLUE_700),
+                self._create_metric_card("Total Docs", str(total_docs), ft.Colors.GREEN_700),
+                self._create_metric_card("High-Scoring", str(total_high_scoring), ft.Colors.ORANGE_700),
+                self._create_metric_card("Unique", str(total_unique), ft.Colors.PURPLE_700),
+                self._create_metric_card("Avg Time", f"{avg_time:.1f}s", ft.Colors.TEAL_700),
+            ],
+            spacing=10,
+            wrap=True
+        )
+        stats_content.append(summary_metrics)
+        stats_content.append(ft.Container(height=10))
+
+        # Per-query details
+        stats_content.append(
+            ft.Text(
+                f"Per-Query Results (threshold ≥{score_threshold}):",
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREY_800
+            )
+        )
+        stats_content.append(ft.Container(height=5))
+
+        for i, stat in enumerate(stats, 1):
+            query_card = self._create_query_performance_card(i, stat, score_threshold)
+            stats_content.append(query_card)
+
+        # Set content and make visible
+        self.search_performance_stats.content = ft.Column(
+            stats_content,
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO
+        )
+        self.search_performance_stats.visible = True
+
+        if self.page:
+            self.page.update()
+
+    def _create_metric_card(self, label: str, value: str, color) -> ft.Container:
+        """Create a small metric card for summary statistics."""
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(value, size=18, weight=ft.FontWeight.BOLD, color=color),
+                    ft.Text(label, size=10, color=ft.Colors.GREY_600),
+                ],
+                spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ),
+            padding=8,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            border_radius=6,
+            bgcolor=ft.Colors.WHITE,
+            alignment=ft.alignment.center,
+        )
+
+    def _create_query_performance_card(
+        self, query_num: int, stat: Any, threshold: float
+    ) -> ft.Container:
+        """Create a card showing performance for a single query.
+
+        Args:
+            query_num: Query number (1-based)
+            stat: QueryPerformanceStats object
+            threshold: Score threshold used
+
+        Returns:
+            Container with formatted query performance info
+        """
+        # Model and temperature info
+        model_short = stat.model.split(':')[0] if ':' in stat.model else stat.model
+        if len(model_short) > 30:
+            model_short = model_short[:27] + "..."
+
+        header = ft.Row(
+            [
+                ft.Text(f"Query #{query_num}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_800),
+                ft.Container(expand=True),
+                ft.Text(f"{model_short}", size=10, color=ft.Colors.GREY_700, italic=True),
+                ft.Text(f"T={stat.temperature:.2f}", size=10, color=ft.Colors.GREY_600),
+            ],
+            spacing=8
+        )
+
+        # Metrics in a grid
+        metrics = ft.Row(
+            [
+                ft.Column(
+                    [
+                        ft.Text(f"{stat.total_documents}", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_700),
+                        ft.Text("Total", size=9, color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ),
+                ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
+                ft.Column(
+                    [
+                        ft.Text(f"{stat.high_scoring_documents}", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_700),
+                        ft.Text(f"≥{threshold}", size=9, color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ),
+                ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
+                ft.Column(
+                    [
+                        ft.Text(f"{stat.unique_documents}", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.PURPLE_700),
+                        ft.Text("Unique", size=9, color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ),
+                ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
+                ft.Column(
+                    [
+                        ft.Text(f"{stat.unique_high_scoring}", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.PINK_700),
+                        ft.Text("Unique High", size=9, color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ),
+                ft.VerticalDivider(width=1, color=ft.Colors.GREY_300),
+                ft.Column(
+                    [
+                        ft.Text(f"{stat.execution_time:.2f}s", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.TEAL_700),
+                        ft.Text("Time", size=9, color=ft.Colors.GREY_600),
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ),
+            ],
+            spacing=5,
+            alignment=ft.MainAxisAlignment.SPACE_EVENLY
+        )
+
+        # Query text (truncated)
+        query_display = stat.query if len(stat.query) <= 80 else stat.query[:77] + "..."
+        query_text = ft.Text(
+            f"Query: {query_display}",
+            size=10,
+            color=ft.Colors.GREY_700,
+            italic=True,
+            selectable=True
+        )
+
+        return ft.Container(
+            content=ft.Column(
+                [header, ft.Divider(height=1, color=ft.Colors.GREY_300), metrics, query_text],
+                spacing=8
+            ),
+            padding=10,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            border_radius=6,
+            bgcolor=ft.Colors.WHITE
+        )
 
     def get_tab_content(self, tab_name: str) -> Optional[ft.Container]:
         """Get a specific tab's content container."""

@@ -12,20 +12,143 @@ from ..cli.workflow_steps import WorkflowStep
 class WorkflowStepsHandler:
     """Handles execution of individual workflow steps with agent coordination."""
 
-    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None):
+    def __init__(self, agents: Dict[str, Any], config_overrides: Optional[Dict[str, Any]] = None, tab_manager: Optional[Any] = None):
         self.agents = agents
         self.config_overrides = config_overrides if config_overrides is not None else {}
         self.multi_query_generation_result = None  # Store for linking with search results
         self.multi_query_stats = None  # Store query execution statistics
-    
-    def execute_query_generation(self, research_question: str, 
+        self.performance_tracker = None  # Query performance tracker
+        self.tab_manager = tab_manager  # Reference to TabManager for GUI updates
+
+        # Audit tracking session context (set by WorkflowExecutor)
+        self.research_question_id = None
+        self.session_id = None
+        self.query_ids = []  # Track generated query IDs for document linking
+        self.scoring_ids = {}  # Track scoring_ids: doc_id -> scoring_id
+
+    def _log_generated_queries_to_audit(self, multi_result) -> List[int]:
+        """
+        Log generated queries to the audit.generated_queries table.
+
+        Args:
+            multi_result: MultiModelQueryResult with all generated queries
+
+        Returns:
+            List of query_ids that were logged
+        """
+        if not self.research_question_id or not self.session_id:
+            return []
+
+        if '_audit_conn' not in self.agents or not self.agents['_audit_conn']:
+            return []
+
+        query_ids = []
+        conn = self.agents['_audit_conn']
+
+        try:
+            with conn.cursor() as cur:
+                for query_result in multi_result.all_queries:
+                    if query_result.error:
+                        continue  # Skip failed queries
+
+                    # Sanitize the query
+                    from ..agents.utils.query_syntax import fix_tsquery_syntax
+                    sanitized = fix_tsquery_syntax(query_result.query)
+
+                    cur.execute("""
+                        INSERT INTO audit.generated_queries (
+                            research_question_id, session_id, model_name,
+                            temperature, top_p, attempt_number,
+                            query_text, query_text_sanitized,
+                            generation_time_ms
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING query_id
+                    """, (
+                        self.research_question_id,
+                        self.session_id,
+                        query_result.model,
+                        query_result.temperature,
+                        1.0,  # top_p - not available in QueryGenerationResult, use default
+                        query_result.attempt_number,
+                        query_result.query,
+                        sanitized,
+                        query_result.generation_time * 1000  # Convert seconds to milliseconds
+                    ))
+                    query_id = cur.fetchone()[0]
+                    query_ids.append(query_id)
+
+                conn.commit()
+                print(f"📊 Logged {len(query_ids)} queries to audit.generated_queries")
+
+        except Exception as e:
+            print(f"⚠️ Error logging queries to audit: {e}")
+            conn.rollback()
+
+        return query_ids
+
+    def _log_single_query_to_audit(self, query_text: str, model_name: str) -> Optional[int]:
+        """
+        Log a single query to the audit.generated_queries table.
+
+        Args:
+            query_text: The generated query text
+            model_name: The model used to generate the query
+
+        Returns:
+            query_id if logged, None otherwise
+        """
+        if not self.research_question_id or not self.session_id:
+            return None
+
+        if '_audit_conn' not in self.agents or not self.agents['_audit_conn']:
+            return None
+
+        conn = self.agents['_audit_conn']
+
+        try:
+            # Sanitize the query
+            from ..agents.utils.query_syntax import fix_tsquery_syntax
+            sanitized = fix_tsquery_syntax(query_text)
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO audit.generated_queries (
+                        research_question_id, session_id, model_name,
+                        temperature, top_p, attempt_number,
+                        query_text, query_text_sanitized,
+                        generation_time_ms
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING query_id
+                """, (
+                    self.research_question_id,
+                    self.session_id,
+                    model_name,
+                    0.0,  # Temperature not available for single query
+                    0.0,  # Top_p not available for single query
+                    1,    # Single query is always attempt 1
+                    query_text,
+                    sanitized,
+                    None  # Generation time not tracked for single query
+                ))
+                query_id = cur.fetchone()[0]
+
+            conn.commit()
+            print(f"📊 Logged single query to audit.generated_queries (query_id: {query_id})")
+            return query_id
+
+        except Exception as e:
+            print(f"⚠️ Error logging single query to audit: {e}")
+            conn.rollback()
+            return None
+
+    def execute_query_generation(self, research_question: str,
                                update_callback: Callable) -> str:
         """Execute the query generation step.
-        
+
         Args:
             research_question: The research question to convert
             update_callback: Callback for status updates
-            
+
         Returns:
             Generated PostgreSQL query string
         """
@@ -38,11 +161,45 @@ class WorkflowStepsHandler:
 
         if qg_config.get('multi_model_enabled', False):
             # Use multi-model query generation
-            print(f"🔍 Using multi-model query generation with {len(qg_config.get('models', []))} models")
-            multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+            num_models = len(qg_config.get('models', []))
+            queries_per = qg_config.get('queries_per_model', 1)
+            total_queries = num_models * queries_per
+            print(f"🔍 Using multi-model query generation with {num_models} models, {queries_per} queries each = {total_queries} total")
+
+            # Set up callback to update GUI progress
+            queries_generated = [0]  # Use list to allow modification in nested function
+
+            def progress_callback(event_type: str, data):
+                """Update GUI with query generation progress."""
+                if event_type == "query_generated":
+                    queries_generated[0] += 1
+                    if isinstance(data, dict):
+                        model_short = data.get('model', '').split(':')[0]
+                        attempt = data.get('attempt', '?')
+                        query = data.get('query', '')[:60]
+                        progress_msg = f"Generated query {queries_generated[0]}/{total_queries}: {model_short} attempt {attempt}"
+                        print(f"   ✓ {progress_msg}")
+                        if self.tab_manager:
+                            self.tab_manager.update_search_progress(progress_msg, show_bar=True)
+
+            # Temporarily set callback
+            original_callback = self.agents['query_agent'].callback
+            self.agents['query_agent'].callback = progress_callback
+
+            try:
+                multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+            finally:
+                self.agents['query_agent'].callback = original_callback
+                # Clear progress
+                if self.tab_manager:
+                    self.tab_manager.update_search_progress("", show_bar=False)
 
             # Store for later linking with search results
             self.multi_query_generation_result = multi_result
+
+            # Log queries to audit if tracking is enabled
+            if self.research_question_id and self.session_id:
+                self.query_ids = self._log_generated_queries_to_audit(multi_result)
 
             # For GUI, we'll use all unique queries (user can't review them in non-interactive mode)
             # In the future, could add interactive query selection UI here
@@ -66,6 +223,13 @@ class WorkflowStepsHandler:
         else:
             # Use single-model query generation (original behavior)
             query_text = self.agents['query_agent'].convert_question(research_question)
+
+            # Log single query to audit if tracking is enabled
+            if self.research_question_id and self.session_id and query_text:
+                model_name = self.agents['query_agent'].model
+                query_id = self._log_single_query_to_audit(query_text, model_name)
+                if query_id:
+                    self.query_ids = [query_id]
 
         return query_text
     
@@ -106,6 +270,14 @@ class WorkflowStepsHandler:
         if qg_config.get('multi_model_enabled', False):
             print(f"🔍 Using multi-model document search")
 
+            # Initialize performance tracker for this session
+            from ..agents.query_generation import QueryPerformanceTracker
+            import hashlib
+            # Use separate session ID for performance tracker (MD5 hash)
+            tracker_session_id = hashlib.md5(research_question.encode()).hexdigest()
+            self.performance_tracker = QueryPerformanceTracker()  # In-memory database
+            self.performance_tracker.start_session(tracker_session_id)
+
             # Create a custom callback to capture query statistics
             original_callback = self.agents['query_agent'].callback
 
@@ -114,6 +286,11 @@ class WorkflowStepsHandler:
                 print(f"🔍 DEBUG: stats_callback called with event_type={event_type}")
 
                 if event_type == "multi_query_stats":
+                    # Parse JSON string to dict if needed
+                    import json
+                    if isinstance(data, str):
+                        data = json.loads(data)
+
                     # Store the statistics for display
                     self.multi_query_stats = data
                     print(f"🔍 DEBUG: Stored multi_query_stats with {len(data.get('query_stats', []))} queries")
@@ -121,6 +298,7 @@ class WorkflowStepsHandler:
                     # Print detailed per-query results
                     if isinstance(data, dict) and 'query_stats' in data:
                         print(f"\n📊 Multi-query execution results:")
+                        total_before_dedup = 0
                         for stat in data['query_stats']:
                             if stat['success']:
                                 # Match with generation info to get model name
@@ -131,9 +309,19 @@ class WorkflowStepsHandler:
                                     model_info = f"model {gen_result.model} attempt {gen_result.attempt_number}: "
 
                                 print(f"   {model_info}{stat['query_text']}  results: {stat['result_count']}")
+                                total_before_dedup += stat['result_count']
                             else:
                                 print(f"   Query {stat['query_index']}: FAILED - {stat['error']}")
-                        print(f"   Total unique documents: {data['total_unique_ids']}\n")
+
+                        # Show overall statistics with before/after deduplication comparison
+                        total_after_dedup = data['total_unique_ids']
+                        duplicates_removed = total_before_dedup - total_after_dedup
+                        dedup_percentage = (duplicates_removed / total_before_dedup * 100) if total_before_dedup > 0 else 0
+
+                        print(f"\n📊 Overall Statistics:")
+                        print(f"   Total documents before deduplication: {total_before_dedup}")
+                        print(f"   Total documents after deduplication: {total_after_dedup}")
+                        print(f"   Duplicates removed: {duplicates_removed} ({dedup_percentage:.1f}%)\n")
 
                 # Call original callback if it exists
                 if original_callback:
@@ -147,7 +335,9 @@ class WorkflowStepsHandler:
                     question=research_question,
                     max_rows=override_max_results,
                     human_in_the_loop=False,  # GUI doesn't support interactive query selection yet
-                    human_query_modifier=None
+                    human_query_modifier=None,
+                    performance_tracker=self.performance_tracker,
+                    session_id=self.session_id
                 )
                 # CRITICAL: Consume generator INSIDE try block while callback is active
                 documents = list(documents_generator)
@@ -233,13 +423,57 @@ class WorkflowStepsHandler:
             if progress_callback:
                 # The workflow progress callback expects (current, total) only, not (current, total, item_name)
                 progress_callback(current, total)
-        
-        # Use scoring agent's batch processing method with progress callback
-        scored_results = list(self.agents['scoring_agent'].process_scoring_queue(
-            user_question=research_question,
-            documents=docs_to_process,
-            progress_callback=agent_progress_callback
-        ))
+
+        # Use audit-enabled scoring if session context is available
+        if self.research_question_id and self.session_id and self.query_ids:
+            # Use audit tracking
+            # For now, use the first query_id. In multi-model scenarios, documents may have been
+            # found by multiple queries, but we'll use the primary query for scoring linkage
+            primary_query_id = self.query_ids[0] if self.query_ids else None
+
+            if primary_query_id:
+                try:
+                    # It returns (document, scoring_result, scoring_id) tuples
+                    audit_results = self.agents['scoring_agent'].batch_evaluate_with_audit(
+                        research_question_id=self.research_question_id,
+                        session_id=self.session_id,
+                        query_id=primary_query_id,
+                        user_question=research_question,
+                        documents=docs_to_process,
+                        skip_already_scored=True,
+                        progress_callback=agent_progress_callback
+                    )
+
+                    # Store scoring_ids for citation tracking
+                    for doc, result, scoring_id in audit_results:
+                        if 'id' in doc:
+                            self.scoring_ids[doc['id']] = scoring_id
+
+                    # Convert to expected format (document, scoring_result)
+                    scored_results = [(doc, result) for doc, result, scoring_id in audit_results]
+                    print(f"📊 Scored {len(scored_results)} documents with audit tracking")
+                except Exception as e:
+                    print(f"⚠️ Audit scoring failed, falling back to non-audit: {e}")
+                    # Fall back to non-audit scoring
+                    scored_results = list(self.agents['scoring_agent'].process_scoring_queue(
+                        user_question=research_question,
+                        documents=docs_to_process,
+                        progress_callback=agent_progress_callback
+                    ))
+            else:
+                # No query_id, use non-audit scoring
+                scored_results = list(self.agents['scoring_agent'].process_scoring_queue(
+                    user_question=research_question,
+                    documents=docs_to_process,
+                    progress_callback=agent_progress_callback
+                ))
+        else:
+            # Use non-audit scoring
+            scored_results = list(self.agents['scoring_agent'].process_scoring_queue(
+                user_question=research_question,
+                documents=docs_to_process,
+                progress_callback=agent_progress_callback
+            ))
         
         # Process results and apply overrides
         for i, (doc, scoring_result) in enumerate(scored_results):
@@ -309,6 +543,49 @@ class WorkflowStepsHandler:
                 print(f"Error processing scored document: {e}")
                 continue
         
+        # Update performance tracker with document scores if available
+        print(f"🔍 DEBUG: Checking performance tracker: tracker={'available' if self.performance_tracker else 'None'}, session_id={self.session_id if self.session_id else 'None'}")
+        if self.performance_tracker and self.session_id:
+            document_scores = {}
+            for doc, result_dict in all_scored_documents:
+                doc_id = doc.get('id')
+                if doc_id and 'score' in result_dict:
+                    document_scores[doc_id] = result_dict['score']
+
+            print(f"🔍 DEBUG: Collected {len(document_scores)} document scores to update")
+            if document_scores:
+                print(f"🔍 DEBUG: Updating performance tracker with {len(document_scores)} document scores")
+                self.performance_tracker.update_document_scores(self.session_id, document_scores)
+
+                # Get and display performance statistics
+                from ..config import get_search_config
+                search_config = get_search_config()
+                threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
+
+                print(f"🔍 DEBUG: Getting query statistics for session {self.session_id} with threshold {threshold}")
+                stats = self.performance_tracker.get_query_statistics(
+                    session_id=self.session_id,
+                    score_threshold=threshold
+                )
+
+                print(f"🔍 DEBUG: Got {len(stats) if stats else 0} query statistics")
+                if stats:
+                    print("\n" + "="*80)
+                    print("QUERY PERFORMANCE ANALYSIS")
+                    print("="*80)
+                    formatted_stats = self.agents['query_agent'].format_query_performance_stats(
+                        stats, score_threshold=threshold
+                    )
+                    print(formatted_stats)
+
+                    # Update GUI if tab_manager is available
+                    print(f"🔍 DEBUG: Updating GUI with statistics, tab_manager={'available' if self.tab_manager else 'NOT available'}")
+                    if self.tab_manager:
+                        self.tab_manager.update_search_performance_stats(stats, score_threshold=threshold)
+                        print("🔍 DEBUG: GUI update complete")
+                else:
+                    print("🔍 DEBUG: No statistics to display")
+
         # Update status message
         override_msg = ""
         if score_overrides:
@@ -350,14 +627,58 @@ class WorkflowStepsHandler:
             docs_for_citations = scored_documents  # Use ALL scored documents
         else:
             docs_for_citations = scored_documents[:max_docs_for_citations]
-        
-        # Use citation agent method with progress tracking
-        citations = self.agents['citation_agent'].process_scored_documents_for_citations(
-            user_question=research_question,
-            scored_documents=docs_for_citations,
-            score_threshold=score_threshold,
-            progress_callback=progress_callback
-        )
+
+        # Use audit-enabled citation extraction if session context and scoring_ids available
+        if self.research_question_id and self.session_id and self.scoring_ids:
+            try:
+                # Convert (doc, result) tuples to (doc, result, scoring_id) tuples
+                docs_with_ids = []
+                for doc, result in docs_for_citations:
+                    doc_id = doc.get('id')
+                    if doc_id and doc_id in self.scoring_ids:
+                        docs_with_ids.append((doc, result, self.scoring_ids[doc_id]))
+                    else:
+                        print(f"⚠️ Warning: Document {doc_id} missing scoring_id, skipping for audit citation")
+
+                if docs_with_ids:
+                    # It returns (citation, citation_id) tuples
+                    audit_citations = self.agents['citation_agent'].extract_citations_with_audit(
+                        research_question_id=self.research_question_id,
+                        session_id=self.session_id,
+                        user_question=research_question,
+                        scored_documents_with_ids=docs_with_ids,
+                        score_threshold=score_threshold,
+                        min_relevance=0.7,  # Could be made configurable
+                        progress_callback=progress_callback
+                    )
+                    # Convert to expected format (just citations)
+                    citations = [citation for citation, citation_id in audit_citations]
+                    print(f"📊 Extracted {len(citations)} citations with audit tracking")
+                else:
+                    print(f"⚠️ No documents with scoring_ids, falling back to non-audit citation extraction")
+                    citations = self.agents['citation_agent'].process_scored_documents_for_citations(
+                        user_question=research_question,
+                        scored_documents=docs_for_citations,
+                        score_threshold=score_threshold,
+                        progress_callback=progress_callback
+                    )
+            except Exception as e:
+                print(f"⚠️ Audit citation extraction failed, falling back to non-audit: {e}")
+                # Fall back to non-audit citation extraction
+                citations = self.agents['citation_agent'].process_scored_documents_for_citations(
+                    user_question=research_question,
+                    scored_documents=docs_for_citations,
+                    score_threshold=score_threshold,
+                    progress_callback=progress_callback
+                )
+        else:
+            # Use non-audit citation extraction
+            citations = self.agents['citation_agent'].process_scored_documents_for_citations(
+                user_question=research_question,
+                scored_documents=docs_for_citations,
+                score_threshold=score_threshold,
+                progress_callback=progress_callback
+            )
         
         update_callback(WorkflowStep.EXTRACT_CITATIONS, "completed",
                       f"Extracted {len(citations)} citations from {len(docs_for_citations)} documents")
@@ -378,13 +699,42 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.GENERATE_REPORT, "running",
                       "Generating research report...")
-        
-        report = self.agents['reporting_agent'].generate_citation_based_report(
-            user_question=research_question,
-            citations=citations,
-            format_output=True
-        )
-        
+
+        # Use audit-enabled report generation if session context available
+        if self.research_question_id and self.session_id:
+            try:
+                # generate_report_with_audit returns (formatted_report, report_id)
+                report_content, report_id = self.agents['reporting_agent'].generate_report_with_audit(
+                    research_question_id=self.research_question_id,
+                    session_id=self.session_id,
+                    user_question=research_question,
+                    citations=citations,
+                    report_type='preliminary',
+                    format_output=True,
+                    is_final=False
+                )
+                # Wrap the string in an object for compatibility
+                class ReportWrapper:
+                    def __init__(self, content):
+                        self.content = content
+                report = ReportWrapper(report_content) if report_content else None
+                print(f"📊 Generated report with audit tracking (report_id: {report_id})")
+            except Exception as e:
+                print(f"⚠️ Audit report generation failed, falling back to non-audit: {e}")
+                # Fall back to non-audit report generation
+                report = self.agents['reporting_agent'].generate_citation_based_report(
+                    user_question=research_question,
+                    citations=citations,
+                    format_output=True
+                )
+        else:
+            # Use non-audit report generation
+            report = self.agents['reporting_agent'].generate_citation_based_report(
+                user_question=research_question,
+                citations=citations,
+                format_output=True
+            )
+
         # Debug report generation
         if hasattr(report, 'content'):
             report_content = report.content
