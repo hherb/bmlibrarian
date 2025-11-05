@@ -654,32 +654,47 @@ class WorkflowExecutor:
         Returns:
             Complete workflow data dictionary suitable for JSON serialization
         """
-        from datetime import datetime
+        from datetime import datetime, date
         import json
-        
-        def serialize_object(obj):
-            """Convert objects to JSON-serializable format."""
-            if hasattr(obj, '__dict__'):
+
+        def serialize_value(value):
+            """Recursively serialize a value to JSON-compatible format."""
+            # Handle datetime and date objects
+            if isinstance(value, datetime):
+                return value.isoformat()
+            elif isinstance(value, date):
+                return value.isoformat()
+            elif isinstance(value, dict):
+                # Recursively serialize dict values
+                return {k: serialize_value(v) for k, v in value.items()}
+            elif isinstance(value, (list, tuple)):
+                # Recursively serialize list/tuple items
+                return [serialize_value(item) for item in value]
+            elif hasattr(value, '__dict__'):
                 # Object with attributes - convert to dict
                 result = {}
-                for key, value in vars(obj).items():
-                    try:
-                        # Test if value is JSON serializable
-                        json.dumps(value)
-                        result[key] = value
-                    except (TypeError, ValueError):
-                        # Convert non-serializable values to string
-                        result[key] = str(value)
+                for key, val in vars(value).items():
+                    result[key] = serialize_value(val)
                 return result
             else:
-                return str(obj)
+                try:
+                    # Test if value is JSON serializable
+                    json.dumps(value)
+                    return value
+                except (TypeError, ValueError):
+                    # Convert non-serializable values to string
+                    return str(value)
+
+        def serialize_object(obj):
+            """Convert objects to JSON-serializable format."""
+            return serialize_value(obj)
         
         # Extract scored documents with proper structure
         scored_documents_data = []
         for doc, score_result in self.scored_documents:
             scored_documents_data.append({
-                'document': doc,
-                'score_result': score_result
+                'document': serialize_value(doc),
+                'score_result': serialize_value(score_result)
             })
         
         # Handle counterfactual analysis with nested structure extraction
@@ -766,7 +781,7 @@ class WorkflowExecutor:
             },
             'search_results': {
                 'total_documents_found': len(self.documents),
-                'documents': self.documents,
+                'documents': serialize_value(self.documents),
                 'search_metadata': {
                     'search_timestamp': datetime.now().isoformat(),
                     'database_queried': 'bmlibrarian_knowledgebase'
