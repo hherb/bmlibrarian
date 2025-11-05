@@ -32,7 +32,8 @@ import flet as ft
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from bmlibrarian.gui.research_app import ResearchGUI
-from bmlibrarian.gui.workflow import initialize_agents_in_main_thread
+from bmlibrarian.gui.workflow import initialize_agents_in_main_thread, cleanup_agents
+import atexit
 
 
 def main():
@@ -63,7 +64,10 @@ def main():
     
     # Initialize agents in main thread before starting GUI
     agents = initialize_agents_in_main_thread()
-    
+
+    # Register cleanup function to return audit connection on exit
+    atexit.register(cleanup_agents, agents)
+
     # Create GUI app with pre-initialized agents
     app = ResearchGUI(agents=agents)
     

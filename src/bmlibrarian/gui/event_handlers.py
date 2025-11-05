@@ -665,38 +665,30 @@ class EventHandlers:
     # ===== Threaded Workflow Operations =====
 
     def _fetch_more_documents_thread(self):
-        """Fetch additional documents with offset and score only the new ones."""
+        """Fetch additional documents with offset and score only the new ones.
+
+        Smart query selection for multi-model mode:
+        1. Use query that yielded most high-scoring documents (above threshold)
+        2. If equal, use the one with most unique high-scoring documents
+        3. When query exhausted, switch to next best query
+        4. If all exhausted, generate new queries with best model
+        """
         try:
-            from ..config import get_search_config
+            from ..config import get_search_config, get_query_generation_config
 
-            offset = len(self.app.documents)
             max_results = self._get_effective_max_results()
+            qg_config = get_query_generation_config()
+            search_config = get_search_config()
+            score_threshold = search_config.get('score_threshold', 2.5)
 
-            print(f"🔄 Fetching more documents: offset={offset}, max_results={max_results}")
-
-            if not self._validate_previous_query():
-                return
-
-            # Fetch new documents
-            query_text = self.app.workflow_executor.last_query_text
-            new_documents = self._fetch_documents_with_offset(offset, max_results)
-
-            if not new_documents:
-                self._show_no_more_documents_message()
-                return
-
-            # Deduplicate
-            deduplicated_docs = self._deduplicate_documents(new_documents)
-
-            if not deduplicated_docs:
-                self._show_all_duplicates_message()
-                return
-
-            # Add documents and score them
-            self._add_and_score_new_documents(deduplicated_docs)
-
-            # Show success
-            self._show_fetch_success_message(len(deduplicated_docs))
+            # Check if multi-model is enabled
+            if qg_config.get('multi_model_enabled', False) and hasattr(self.app.workflow_executor.steps_handler, 'multi_query_stats'):
+                print(f"🔄 Using smart multi-model query selection for fetching more documents")
+                self._fetch_more_documents_multi_model(max_results, score_threshold)
+            else:
+                # Single-model mode: use simple offset-based fetching
+                print(f"🔄 Using single-model offset-based fetching")
+                self._fetch_more_documents_single_model(max_results)
 
         except Exception as ex:
             self._handle_fetch_error(ex)
@@ -749,6 +741,288 @@ class EventHandlers:
                 self.app.page.update()
 
     # ===== Helper Methods for Document Fetching =====
+
+    def _fetch_more_documents_single_model(self, max_results: int):
+        """Fetch more documents using single-model offset-based approach."""
+        offset = len(self.app.documents)
+        print(f"🔄 Fetching more documents: offset={offset}, max_results={max_results}")
+
+        if not self._validate_previous_query():
+            return
+
+        # Fetch new documents
+        new_documents = self._fetch_documents_with_offset(offset, max_results)
+
+        if not new_documents:
+            self._show_no_more_documents_message()
+            return
+
+        # Deduplicate
+        deduplicated_docs = self._deduplicate_documents(new_documents)
+
+        if not deduplicated_docs:
+            self._show_all_duplicates_message()
+            return
+
+        # Add documents and score them
+        self._add_and_score_new_documents(deduplicated_docs)
+
+        # Show success
+        self._show_fetch_success_message(len(deduplicated_docs))
+
+    def _fetch_more_documents_multi_model(self, max_results: int, score_threshold: float):
+        """Fetch more documents using smart multi-model query selection.
+
+        Strategy:
+        1. Rank queries by their contribution to high-scoring documents
+        2. Try fetching more with the best query using offset
+        3. If exhausted, try next best query
+        4. If all exhausted, generate new queries with best model
+        """
+        # Initialize query fetch tracking if not exists
+        if not hasattr(self.app, 'query_fetch_tracking'):
+            self.app.query_fetch_tracking = {}  # Maps query_text -> offset
+
+        # Get ranked queries based on high-scoring document contribution
+        ranked_queries = self._rank_queries_by_performance(score_threshold)
+
+        if not ranked_queries:
+            print("⚠️ No query statistics available, falling back to single-model approach")
+            self._fetch_more_documents_single_model(max_results)
+            return
+
+        # Try each query in rank order until we get new documents
+        for rank, query_info in enumerate(ranked_queries, 1):
+            query_text = query_info['query_text']
+            high_score_count = query_info['high_score_count']
+            unique_high_score_count = query_info['unique_high_score_count']
+
+            # Get current offset for this query
+            current_offset = self.app.query_fetch_tracking.get(query_text, 0)
+
+            # Track whether this query has been marked as exhausted
+            if not hasattr(self.app, 'query_exhausted_tracking'):
+                self.app.query_exhausted_tracking = set()
+
+            # Skip queries that we know are exhausted
+            if query_text in self.app.query_exhausted_tracking:
+                continue
+
+            print(f"📊 Trying query #{rank} (high-scoring: {high_score_count}, unique: {unique_high_score_count})")
+            print(f"   Query: {query_text[:80]}...")
+            print(f"   Offset: {current_offset}")
+
+            # Fetch documents with this query
+            new_documents = self._fetch_documents_with_specific_query(
+                query_text, current_offset, max_results
+            )
+
+            if not new_documents:
+                print(f"   ✗ Query exhausted, marking as complete...")
+                self.app.query_exhausted_tracking.add(query_text)
+                continue
+
+            # Check if query returned fewer than max_results (indicating exhaustion)
+            if len(new_documents) < max_results:
+                print(f"   ⚠️  Query yielded {len(new_documents)} < {max_results}, marking as exhausted")
+                self.app.query_exhausted_tracking.add(query_text)
+
+            # Update offset for this query
+            self.app.query_fetch_tracking[query_text] = current_offset + len(new_documents)
+
+            # Deduplicate
+            deduplicated_docs = self._deduplicate_documents(new_documents)
+
+            if not deduplicated_docs:
+                print(f"   ✗ All documents were duplicates, trying next query...")
+                continue
+
+            # Add documents and score them
+            self._add_and_score_new_documents(deduplicated_docs)
+
+            # Show success
+            self._show_fetch_success_message(len(deduplicated_docs))
+            return
+
+        # All queries exhausted - generate new queries
+        print("🔄 All queries exhausted, generating new queries with best model...")
+        self._generate_and_fetch_with_new_queries(max_results, score_threshold)
+
+    def _rank_queries_by_performance(self, score_threshold: float) -> list:
+        """Rank queries by their contribution to high-scoring documents.
+
+        Returns list of dicts sorted by performance:
+        [
+            {
+                'query_text': str,
+                'query_index': int,
+                'model': str,
+                'high_score_count': int,  # Total high-scoring docs from this query
+                'unique_high_score_count': int  # High-scoring docs unique to this query
+            },
+            ...
+        ]
+        """
+        if not hasattr(self.app.workflow_executor.steps_handler, 'multi_query_stats'):
+            return []
+
+        stats = self.app.workflow_executor.steps_handler.multi_query_stats
+        if not isinstance(stats, dict) or 'query_stats' not in stats:
+            return []
+
+        query_stats_list = stats['query_stats']
+        if not query_stats_list:
+            return []
+
+        # Get generation results for model info
+        generation_result = self.app.workflow_executor.steps_handler.multi_query_generation_result
+
+        # Get max_results from config for comparison
+        effective_max_results = self._get_effective_max_results()
+
+        # Build map of query -> scored documents that came from it
+        # We need to match documents back to queries (this is approximate based on order)
+        query_performance = []
+
+        for query_stat in query_stats_list:
+            if not query_stat['success']:
+                continue
+
+            query_text = query_stat['query_text']
+            query_index = query_stat['query_index']
+
+            # Get model info
+            model = "unknown"
+            if generation_result and query_index - 1 < len(generation_result.all_queries):
+                gen_result = generation_result.all_queries[query_index - 1]
+                model = gen_result.model
+
+            # Count high-scoring documents
+            # NOTE: This is a simplified heuristic - we count ALL high-scoring docs
+            # In a perfect world, we'd track which query produced which document
+            high_score_count = sum(
+                1 for doc, score_data in self.app.scored_documents
+                if score_data.get('score', 0) > score_threshold
+            )
+
+            # For unique count, we use result_count from the query as a proxy
+            # since we don't track query->document mapping perfectly
+            unique_high_score_count = query_stat['result_count']
+
+            query_performance.append({
+                'query_text': query_text,
+                'query_index': query_index,
+                'model': model,
+                'high_score_count': high_score_count,
+                'unique_high_score_count': unique_high_score_count,
+                'result_count': query_stat['result_count']
+            })
+
+        # Sort by: 1) result_count (proxy for yielding max_results), 2) high_score_count
+        # Prioritize queries that hit max_results since they likely have more to give
+        query_performance.sort(
+            key=lambda x: (
+                min(x['result_count'], effective_max_results),  # Hit max_results? (capped)
+                x['high_score_count'],  # Then by high-scoring docs
+                x['unique_high_score_count']  # Then by unique high-scoring
+            ),
+            reverse=True
+        )
+
+        return query_performance
+
+    def _fetch_documents_with_specific_query(self, query_text: str, offset: int, max_results: int) -> list:
+        """Fetch documents using a specific query with offset."""
+        from ..agents.utils.query_syntax import fix_tsquery_syntax
+        from ..database import find_abstracts
+
+        # Sanitize query
+        sanitized_query = fix_tsquery_syntax(query_text)
+
+        try:
+            # Fetch documents directly using the database function
+            documents = list(find_abstracts(
+                ts_query_str=sanitized_query,
+                max_rows=max_results,
+                offset=offset,
+                use_pubmed=True,
+                use_medrxiv=True,
+                use_others=True,
+                plain=False
+            ))
+
+            print(f"✅ Fetched {len(documents)} documents with specific query (offset={offset})")
+            return documents
+
+        except Exception as e:
+            print(f"❌ Error fetching with specific query: {e}")
+            return []
+
+    def _generate_and_fetch_with_new_queries(self, max_results: int, score_threshold: float):
+        """Generate new queries with the best performing model and fetch documents."""
+        # Get the best performing model from previous queries
+        ranked_queries = self._rank_queries_by_performance(score_threshold)
+
+        if not ranked_queries:
+            self._show_no_more_documents_message()
+            return
+
+        best_model = ranked_queries[0]['model']
+        print(f"🤖 Generating new queries with best model: {best_model}")
+
+        # Generate new queries with just the best model
+        query_agent = self.app.agents['query_agent']
+
+        try:
+            # Generate new queries with the best model
+            from ..agents.query_generation import MultiModelQueryGenerator
+
+            generator = MultiModelQueryGenerator(
+                ollama_host=query_agent.host,
+                callback=None
+            )
+
+            new_result = generator.generate_queries(
+                question=self.app.research_question,
+                system_prompt=query_agent.system_prompt,
+                models=[best_model],  # Only use best model
+                queries_per_model=2,  # Generate 2 new queries
+                temperature=0.8,  # Slightly higher temperature for diversity
+                top_p=0.9
+            )
+
+            if not new_result.unique_queries:
+                print("❌ Failed to generate new queries")
+                self._show_no_more_documents_message()
+                return
+
+            print(f"✅ Generated {len(new_result.unique_queries)} new queries")
+
+            # Try each new query
+            for new_query in new_result.unique_queries:
+                new_documents = self._fetch_documents_with_specific_query(new_query, 0, max_results)
+
+                if new_documents:
+                    # Track this query
+                    self.app.query_fetch_tracking[new_query] = len(new_documents)
+
+                    # Deduplicate
+                    deduplicated_docs = self._deduplicate_documents(new_documents)
+
+                    if deduplicated_docs:
+                        # Add documents and score them
+                        self._add_and_score_new_documents(deduplicated_docs)
+                        self._show_fetch_success_message(len(deduplicated_docs))
+                        return
+
+            # No new unique documents found
+            self._show_no_more_documents_message()
+
+        except Exception as e:
+            print(f"❌ Error generating new queries: {e}")
+            import traceback
+            traceback.print_exc()
+            self._show_no_more_documents_message()
 
     def _get_effective_max_results(self) -> int:
         """Get the effective max_results from configuration hierarchy."""
