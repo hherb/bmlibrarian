@@ -30,45 +30,62 @@ class WorkflowAgentManager:
         self.editor_agent = None
 
         # Audit tracking components
+        self.db_manager = None
         self.audit_conn = None
         self.audit_enabled = False
 
     def _setup_audit_tracking(self) -> bool:
-        """Setup audit tracking database connection."""
+        """Setup audit tracking using DatabaseManager.
+
+        Gets a connection from the pool and keeps it for the session duration.
+        This follows the pattern where CLI sessions are short-lived and don't
+        need connection recycling.
+        """
         try:
-            import psycopg
-            from dotenv import load_dotenv
+            from bmlibrarian.database import get_db_manager
 
-            # Load environment variables
-            load_dotenv()
+            # Get database manager (already handles connection pooling)
+            self.db_manager = get_db_manager()
 
-            # Get database connection parameters from environment
-            db_name = os.getenv('POSTGRES_DB', 'knowledgebase')
-            db_user = os.getenv('POSTGRES_USER', 'hherb')
-            db_password = os.getenv('POSTGRES_PASSWORD', '')
-            db_host = os.getenv('POSTGRES_HOST', 'localhost')
-            db_port = os.getenv('POSTGRES_PORT', '5432')
+            # Get a connection from the pool for this session
+            # Note: We manually manage this connection for the session duration
+            # rather than using context manager, as audit trackers expect persistent connections
+            self.audit_conn = self.db_manager._pool.getconn()
 
-            # Create connection
-            conn_params = {
-                'dbname': db_name,
-                'user': db_user,
-                'host': db_host,
-                'port': db_port
-            }
-            if db_password:
-                conn_params['password'] = db_password
+            # Verify audit schema exists
+            with self.audit_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.schemata
+                        WHERE schema_name = 'audit'
+                    )
+                """)
+                audit_exists = cur.fetchone()[0]
 
-            self.audit_conn = psycopg.connect(**conn_params)
+                if not audit_exists:
+                    logger.warning("Audit schema does not exist in database")
+                    logger.info("Run migrations to create audit schema: migrations/003_create_audit_schema.sql")
+                    # Return connection to pool
+                    self.db_manager._pool.putconn(self.audit_conn)
+                    self.audit_conn = None
+                    self.audit_enabled = False
+                    return False
+
             self.audit_enabled = True
-
-            logger.info(f"Audit tracking enabled (database: {db_name})")
+            logger.info("Audit tracking enabled (using DatabaseManager connection pool)")
             return True
 
         except Exception as e:
             logger.warning(f"Could not enable audit tracking: {e}")
             logger.info("Continuing without audit tracking")
             self.audit_enabled = False
+            if self.audit_conn and self.db_manager:
+                try:
+                    self.db_manager._pool.putconn(self.audit_conn)
+                except:
+                    pass
+            self.audit_conn = None
+            self.db_manager = None
             return False
 
     def setup_agents(self) -> bool:
@@ -169,9 +186,10 @@ class WorkflowAgentManager:
 
     def cleanup(self):
         """Cleanup resources including audit connection."""
-        if self.audit_conn:
+        if self.audit_conn and self.db_manager:
             try:
-                self.audit_conn.close()
-                logger.info("Closed audit database connection")
+                # Return connection to the pool instead of closing
+                self.db_manager._pool.putconn(self.audit_conn)
+                logger.info("Returned audit connection to pool")
             except Exception as e:
-                logger.warning(f"Error closing audit connection: {e}")
+                logger.warning(f"Error returning audit connection to pool: {e}")
