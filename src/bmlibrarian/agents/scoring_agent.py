@@ -627,7 +627,8 @@ Please evaluate how well this document addresses the user's question and provide
         query_id: int,
         user_question: str,
         documents: list[Dict],
-        skip_already_scored: bool = True
+        skip_already_scored: bool = True,
+        progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> list[tuple[Dict, ScoringResult, int]]:
         """
         Evaluate multiple documents WITH AUDIT TRACKING and resumption support.
@@ -644,6 +645,7 @@ Please evaluate how well this document addresses the user's question and provide
             user_question: The user's question
             documents: List of document dictionaries (must include 'id' field)
             skip_already_scored: If True, skip documents already scored by THIS evaluator
+            progress_callback: Optional callback function(current, total) for progress updates
 
         Returns:
             List of tuples: (document, scoring_result, scoring_id)
@@ -714,6 +716,10 @@ Please evaluate how well this document addresses the user's question and provide
                 )
 
                 results.append((doc, scoring_result, scoring_id))
+
+                # Report progress for GUI updates
+                if progress_callback:
+                    progress_callback(len(results), len(documents))
 
             except Exception as e:
                 logger.error(f"Failed to evaluate document {i+1}: {e}")

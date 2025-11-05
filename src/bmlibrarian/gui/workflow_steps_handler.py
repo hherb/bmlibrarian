@@ -422,14 +422,6 @@ class WorkflowStepsHandler:
 
             if primary_query_id:
                 try:
-                    # Note: batch_evaluate_with_audit doesn't support progress callback yet
-                    # TODO: Enhance batch_evaluate_with_audit to accept progress_callback parameter
-                    # For now, we process without real-time progress updates
-
-                    # Show initial progress
-                    if progress_callback:
-                        progress_callback(0, len(docs_to_process))
-
                     # It returns (document, scoring_result, scoring_id) tuples
                     audit_results = self.agents['scoring_agent'].batch_evaluate_with_audit(
                         research_question_id=self.research_question_id,
@@ -437,17 +429,14 @@ class WorkflowStepsHandler:
                         query_id=primary_query_id,
                         user_question=research_question,
                         documents=docs_to_process,
-                        skip_already_scored=True
+                        skip_already_scored=True,
+                        progress_callback=agent_progress_callback
                     )
 
                     # Store scoring_ids for citation tracking
                     for doc, result, scoring_id in audit_results:
                         if 'id' in doc:
                             self.scoring_ids[doc['id']] = scoring_id
-
-                    # Show final progress
-                    if progress_callback:
-                        progress_callback(len(audit_results), len(docs_to_process))
 
                     # Convert to expected format (document, scoring_result)
                     scored_results = [(doc, result) for doc, result, scoring_id in audit_results]
@@ -641,7 +630,6 @@ class WorkflowStepsHandler:
                         print(f"⚠️ Warning: Document {doc_id} missing scoring_id, skipping for audit citation")
 
                 if docs_with_ids:
-                    # Note: extract_citations_with_audit doesn't support progress callback yet
                     # It returns (citation, citation_id) tuples
                     audit_citations = self.agents['citation_agent'].extract_citations_with_audit(
                         research_question_id=self.research_question_id,
@@ -649,7 +637,8 @@ class WorkflowStepsHandler:
                         user_question=research_question,
                         scored_documents_with_ids=docs_with_ids,
                         score_threshold=score_threshold,
-                        min_relevance=0.7  # Could be made configurable
+                        min_relevance=0.7,  # Could be made configurable
+                        progress_callback=progress_callback
                     )
                     # Convert to expected format (just citations)
                     citations = [citation for citation, citation_id in audit_citations]

@@ -492,7 +492,8 @@ Respond only with valid JSON."""
         user_question: str,
         scored_documents_with_ids: List[Tuple[Dict, Dict, int]],
         score_threshold: float = 2.0,
-        min_relevance: float = 0.7
+        min_relevance: float = 0.7,
+        progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> List[Tuple[Citation, int]]:
         """
         Extract citations WITH AUDIT TRACKING.
@@ -506,6 +507,7 @@ Respond only with valid JSON."""
             scored_documents_with_ids: List of (document, scoring_result, scoring_id) tuples
             score_threshold: Minimum score to process document
             min_relevance: Minimum relevance for citation extraction
+            progress_callback: Optional callback function(current, total) for progress updates
 
         Returns:
             List of tuples: (citation, citation_id)
@@ -584,6 +586,10 @@ Respond only with valid JSON."""
                 )
 
                 results.append((citation, citation_id))
+
+                # Report progress for GUI updates
+                if progress_callback:
+                    progress_callback(i + 1, len(qualifying_docs))
 
             except Exception as e:
                 logger.error(f"Failed to extract citation from document {i+1}: {e}")
