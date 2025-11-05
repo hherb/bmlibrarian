@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import psycopg
 
 from .base import BaseAgent
 from .citation_agent import Citation
@@ -147,10 +148,11 @@ class ReportingAgent(BaseAgent):
                  top_p: float = 0.9,
                  callback: Optional[Callable[[str, str], None]] = None,
                  orchestrator=None,
-                 show_model_info: bool = True):
+                 show_model_info: bool = True,
+                 audit_conn: Optional[psycopg.Connection] = None):
         """
         Initialize the ReportingAgent.
-        
+
         Args:
             model: The name of the Ollama model to use (default: gpt-oss:20b)
             host: The Ollama server host URL (default: http://localhost:11434)
@@ -159,10 +161,19 @@ class ReportingAgent(BaseAgent):
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
+            audit_conn: Optional PostgreSQL connection for audit tracking
         """
         super().__init__(model=model, host=host, temperature=temperature, top_p=top_p,
                         callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "reporting_agent"
+
+        # Initialize audit tracking components if connection provided
+        self._report_tracker = None
+
+        if audit_conn:
+            from bmlibrarian.audit import ReportTracker
+            self._report_tracker = ReportTracker(audit_conn)
+            logger.info("ReportingAgent initialized with audit tracking")
     
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
@@ -822,34 +833,279 @@ Do not add or remove any reference numbers. Only improve readability and flow.""
     def validate_citations(self, citations: List[Citation]) -> Tuple[List[Citation], List[str]]:
         """
         Validate citations and return valid ones with error messages.
-        
+
         Args:
             citations: List of citations to validate
-            
+
         Returns:
             Tuple of (valid_citations, error_messages)
         """
         valid_citations = []
         errors = []
-        
+
         for i, citation in enumerate(citations):
             # Check required fields
             if not citation.passage or not citation.passage.strip():
                 errors.append(f"Citation {i+1}: Empty passage")
                 continue
-                
+
             if not citation.document_id:
                 errors.append(f"Citation {i+1}: Missing document ID")
                 continue
-                
+
             if not citation.document_title:
                 errors.append(f"Citation {i+1}: Missing document title")
                 continue
-                
+
             if citation.relevance_score < 0 or citation.relevance_score > 1:
                 errors.append(f"Citation {i+1}: Invalid relevance score ({citation.relevance_score})")
                 continue
-            
+
             valid_citations.append(citation)
-        
+
         return valid_citations, errors
+
+    def generate_report_with_audit(
+        self,
+        research_question_id: int,
+        session_id: int,
+        user_question: str,
+        citations: List[Citation],
+        report_type: str = 'preliminary',
+        format_output: bool = True,
+        methodology_metadata: Optional[MethodologyMetadata] = None,
+        is_final: bool = False
+    ) -> Tuple[Optional[str], Optional[int]]:
+        """
+        Generate report WITH AUDIT TRACKING.
+
+        CRITICAL: Records generated report in audit database.
+
+        Args:
+            research_question_id: ID of the research question
+            session_id: ID of the current session
+            user_question: The user's question
+            citations: List of citations to synthesize
+            report_type: Type of report ('preliminary', 'comprehensive', 'counterfactual')
+            format_output: Whether to format for display
+            methodology_metadata: Optional metadata about the research workflow
+            is_final: Mark this as the final version
+
+        Returns:
+            Tuple of (formatted_report, report_id)
+            - formatted_report is the report text (or None if failed)
+            - report_id is the database ID for the report record (or None if failed)
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> import psycopg
+            >>> conn = psycopg.connect(dbname="knowledgebase", user="hherb")
+            >>> agent = ReportingAgent(audit_conn=conn)
+            >>> report_text, report_id = agent.generate_report_with_audit(
+            ...     research_question_id=1,
+            ...     session_id=1,
+            ...     user_question="What are the benefits of exercise?",
+            ...     citations=citations,
+            ...     report_type='preliminary'
+            ... )
+            >>> print(f"Report ID: {report_id}")
+        """
+        if not self._report_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        if not user_question or not user_question.strip():
+            raise ValueError("User question cannot be empty")
+
+        if not citations or not isinstance(citations, list):
+            raise ValueError("Citations must be a non-empty list")
+
+        valid_types = ['preliminary', 'comprehensive', 'counterfactual']
+        if report_type not in valid_types:
+            raise ValueError(f"Invalid report_type '{report_type}'. Must be one of: {valid_types}")
+
+        try:
+            self._call_callback("report_generation_started", f"Generating {report_type} report")
+
+            # Generate the report
+            report_text = self.generate_citation_based_report(
+                user_question=user_question,
+                citations=citations,
+                format_output=format_output,
+                methodology_metadata=methodology_metadata
+            )
+
+            if not report_text:
+                logger.error("Report generation failed")
+                return None, None
+
+            # Convert methodology_metadata to dict if provided
+            metadata_dict = None
+            if methodology_metadata:
+                metadata_dict = {
+                    'human_question': methodology_metadata.human_question,
+                    'generated_query': methodology_metadata.generated_query,
+                    'total_documents_found': methodology_metadata.total_documents_found,
+                    'scoring_threshold': methodology_metadata.scoring_threshold,
+                    'documents_by_score': methodology_metadata.documents_by_score,
+                    'documents_above_threshold': methodology_metadata.documents_above_threshold,
+                    'documents_processed_for_citations': methodology_metadata.documents_processed_for_citations,
+                    'citation_extraction_threshold': methodology_metadata.citation_extraction_threshold,
+                    'counterfactual_performed': methodology_metadata.counterfactual_performed,
+                    'counterfactual_queries_generated': methodology_metadata.counterfactual_queries_generated,
+                    'counterfactual_documents_found': methodology_metadata.counterfactual_documents_found,
+                    'counterfactual_citations_extracted': methodology_metadata.counterfactual_citations_extracted,
+                    'query_model': methodology_metadata.query_model,
+                    'scoring_model': methodology_metadata.scoring_model,
+                    'citation_model': methodology_metadata.citation_model,
+                    'reporting_model': methodology_metadata.reporting_model,
+                    'counterfactual_model': methodology_metadata.counterfactual_model,
+                    'editor_model': methodology_metadata.editor_model,
+                    'model_temperature': methodology_metadata.model_temperature,
+                    'model_top_p': methodology_metadata.model_top_p
+                }
+
+            # Record report in audit database
+            report_id = self._report_tracker.record_report(
+                research_question_id=research_question_id,
+                session_id=session_id,
+                report_type=report_type,
+                model_name=self.model,
+                temperature=self.temperature,
+                report_text=report_text,
+                citation_count=len(citations),
+                methodology_metadata=metadata_dict,
+                report_format='markdown',
+                is_final=is_final
+            )
+
+            self._call_callback(
+                "report_generation_completed",
+                f"Generated {report_type} report with {len(citations)} citations"
+            )
+
+            logger.info(f"Generated {report_type} report {report_id} with {len(citations)} citations")
+
+            return report_text, report_id
+
+        except Exception as e:
+            logger.error(f"Failed to generate report: {e}")
+            return None, None
+
+    def get_existing_reports(
+        self,
+        research_question_id: int,
+        report_type: Optional[str] = None,
+        final_only: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Get existing reports from audit database.
+
+        CRITICAL FOR RESUMPTION: Returns reports already generated for this question.
+
+        Args:
+            research_question_id: ID of the research question
+            report_type: Optional filter by report type ('preliminary', 'comprehensive', 'counterfactual')
+            final_only: If True, only return the final report
+
+        Returns:
+            List of dictionaries with report data (or single report if final_only=True)
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> final_report = agent.get_existing_reports(question_id, final_only=True)
+            >>> print(f"Final report: {final_report['report_text'][:100]}...")
+        """
+        if not self._report_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        if final_only:
+            final_report = self._report_tracker.get_final_report(research_question_id)
+            return [final_report] if final_report else []
+        elif report_type:
+            latest = self._report_tracker.get_latest_report(research_question_id, report_type)
+            return [latest] if latest else []
+        else:
+            return self._report_tracker.get_all_reports(research_question_id)
+
+    def mark_as_final(
+        self,
+        report_id: int
+    ) -> None:
+        """
+        Mark a report as the final version.
+
+        Unmarks any other reports for the same research question.
+
+        Args:
+            report_id: ID of the report
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> agent.mark_as_final(report_id=42)
+        """
+        if not self._report_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        self._report_tracker.mark_report_as_final(report_id)
+        logger.info(f"Marked report {report_id} as final")
+
+    def record_counterfactual_analysis_with_audit(
+        self,
+        research_question_id: int,
+        session_id: int,
+        source_report_id: Optional[int] = None,
+        num_questions_generated: Optional[int] = None,
+        num_queries_executed: Optional[int] = None,
+        num_documents_found: Optional[int] = None,
+        num_citations_extracted: Optional[int] = None
+    ) -> int:
+        """
+        Record a counterfactual analysis session in audit database.
+
+        Args:
+            research_question_id: ID of the research question
+            session_id: ID of the current session
+            source_report_id: ID of report analyzed (optional)
+            num_questions_generated: Number of counterfactual questions generated
+            num_queries_executed: Number of queries executed
+            num_documents_found: Number of documents found
+            num_citations_extracted: Number of citations extracted
+
+        Returns:
+            analysis_id (int) - Database ID for the analysis record
+
+        Raises:
+            RuntimeError: If audit tracking not enabled
+
+        Example:
+            >>> analysis_id = agent.record_counterfactual_analysis_with_audit(
+            ...     research_question_id=1,
+            ...     session_id=1,
+            ...     num_questions_generated=3,
+            ...     num_documents_found=15,
+            ...     num_citations_extracted=5
+            ... )
+        """
+        if not self._report_tracker:
+            raise RuntimeError("Audit tracking not enabled. Pass audit_conn to __init__()")
+
+        analysis_id = self._report_tracker.record_counterfactual_analysis(
+            research_question_id=research_question_id,
+            session_id=session_id,
+            model_name=self.model,
+            temperature=self.temperature,
+            source_report_id=source_report_id,
+            num_questions_generated=num_questions_generated,
+            num_queries_executed=num_queries_executed,
+            num_documents_found=num_documents_found,
+            num_citations_extracted=num_citations_extracted
+        )
+
+        logger.info(f"Recorded counterfactual analysis {analysis_id}")
+        return analysis_id
