@@ -1,0 +1,15 @@
+# PySide6 Requirements for BMLibrarian GUI Migration POC
+#
+# Install with: pip install -r pyside6_requirements.txt
+# or with uv: uv pip install -r pyside6_requirements.txt
+
+# PySide6 - Qt for Python (official Qt bindings, LGPL license)
+PySide6>=6.7.0
+
+# Optional: Enhanced markdown rendering
+# (The POC uses basic QTextEdit.setMarkdown(), but these provide better rendering)
+# markdown>=3.5.0
+# Pygments>=2.17.0  # For syntax highlighting in code blocks
+
+# Optional: Icons and themes
+# qt-material>=2.14  # Material Design theme for Qt applications
