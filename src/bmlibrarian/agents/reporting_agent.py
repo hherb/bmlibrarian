@@ -72,14 +72,22 @@ class Reference:
     doi: Optional[str] = None
     publication: Optional[str] = None
     
-    def format_vancouver_style(self) -> str:
-        """Format reference in Vancouver style for medical publications."""
+    def format_vancouver_style(self, include_identifiers: bool = True) -> str:
+        """Format reference in Vancouver style for medical publications.
+
+        Args:
+            include_identifiers: If True, includes PMID and DOI in the formatted string.
+                                If False, excludes them (useful when displaying separately).
+
+        Returns:
+            Formatted Vancouver-style citation string
+        """
         # Format authors (up to 6, then et al.)
         if len(self.authors) <= 6:
             author_str = ", ".join(self.authors)
         else:
             author_str = ", ".join(self.authors[:6]) + ", et al."
-        
+
         # Format publication year
         # Handle both string and datetime.date objects
         if hasattr(self.publication_date, 'year'):
@@ -91,27 +99,28 @@ class Reference:
         else:
             # Fallback to string representation
             year = str(self.publication_date)
-        
+
         # Start with author and title
         formatted = f"{author_str}. {self.title}."
-        
+
         # Add journal/publication if available
         if self.publication and self.publication.strip() and self.publication.lower() != 'unknown':
             formatted += f" {self.publication}."
-        
+
         # Add year
         formatted += f" {year}."
-        
-        # Add identifiers
-        identifiers = []
-        if self.pmid:
-            identifiers.append(f"PMID: {self.pmid}")
-        if self.doi:
-            identifiers.append(f"DOI: {self.doi}")
-        
-        if identifiers:
-            formatted += f" {'; '.join(identifiers)}."
-        
+
+        # Add identifiers if requested
+        if include_identifiers:
+            identifiers = []
+            if self.pmid:
+                identifiers.append(f"PMID: {self.pmid}")
+            if self.doi:
+                identifiers.append(f"DOI: {self.doi}")
+
+            if identifiers:
+                formatted += f" {'; '.join(identifiers)}."
+
         return formatted
 
 

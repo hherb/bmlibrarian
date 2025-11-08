@@ -540,7 +540,7 @@ class WorkflowExecutor:
             final_report = self.report_builder.build_final_report(
                 research_question, report_content, counterfactual_analysis,
                 documents, scored_documents, citations, self.interactive_mode,
-                self.agent_model_info
+                self.agent_model_info, all_scored_documents=self.scored_documents
             )
             
             # Store final report for tab access
@@ -599,16 +599,17 @@ class WorkflowExecutor:
         """Collect model information from all agents for report footnotes."""
         try:
             for agent_name, agent in self.agents.items():
-                if agent_name == 'orchestrator':
+                # Skip orchestrator and internal attributes (those starting with _)
+                if agent_name == 'orchestrator' or agent_name.startswith('_'):
                     continue
-                    
+
                 agent_info = {
                     'model': getattr(agent, 'model', 'Unknown'),
                     'host': getattr(agent, 'host', 'Unknown'),
                     'temperature': getattr(agent, 'temperature', 'Unknown'),
                     'top_p': getattr(agent, 'top_p', 'Unknown')
                 }
-                
+
                 # Map agent names to workflow steps
                 workflow_step_map = {
                     'query_agent': 'Query Generation',
@@ -618,12 +619,12 @@ class WorkflowExecutor:
                     'counterfactual_agent': 'Counterfactual Analysis',
                     'editor_agent': 'Report Editing'
                 }
-                
+
                 step_name = workflow_step_map.get(agent_name, agent_name)
                 self.agent_model_info[step_name] = agent_info
-                
+
             print(f"Collected model info for {len(self.agent_model_info)} agents")
-            
+
         except Exception as e:
             print(f"Error collecting agent model info: {e}")
             self.agent_model_info = {}

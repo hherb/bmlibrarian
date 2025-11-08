@@ -8,7 +8,7 @@ and contradictory findings with proper academic formatting.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -28,7 +28,7 @@ class EditedReport:
     contradictory_evidence_section: Optional[str]
     limitations_section: str
     conclusions_section: str
-    references: List[Dict[str, str]]
+    references: List[Any]  # Can be Reference objects or dicts
     evidence_quality_table: Optional[str]
     confidence_assessment: str
     word_count: int
@@ -447,13 +447,30 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
             for ref in edited_report.references:
                 # Use proper Vancouver-style formatting for Reference objects
                 if hasattr(ref, 'format_vancouver_style'):
-                    formatted_ref = ref.format_vancouver_style()
+                    # Format without identifiers since we'll display them separately for prominence
+                    formatted_ref = ref.format_vancouver_style(include_identifiers=False)
                     lines.append(f"{ref.number}. {formatted_ref}")
+
+                    # Add PMID and DOI on separate indented line for better auditability
+                    identifiers = []
+                    if hasattr(ref, 'pmid') and ref.pmid:
+                        identifiers.append(f"PMID: {ref.pmid}")
+                    if hasattr(ref, 'doi') and ref.doi:
+                        identifiers.append(f"DOI: {ref.doi}")
+
+                    if identifiers:
+                        lines.append(f"   {' | '.join(identifiers)}")
                 else:
                     # Fallback for dictionary format (shouldn't happen with our fix)
                     lines.append(f"{ref.get('number', 'N/A')}. {ref.get('citation', 'Citation not available')}")
+                    identifiers = []
                     if ref.get('pmid'):
-                        lines.append(f"   PMID: {ref['pmid']}")
+                        identifiers.append(f"PMID: {ref['pmid']}")
+                    if ref.get('doi'):
+                        identifiers.append(f"DOI: {ref['doi']}")
+                    if identifiers:
+                        lines.append(f"   {' | '.join(identifiers)}")
+                lines.append("")
             lines.append("")
         
         # Footer
@@ -527,13 +544,29 @@ IMPORTANT FOR METHODOLOGY SECTION: The methodology should accurately describe th
             for ref in edited_report.references:
                 # Use proper Vancouver-style formatting for Reference objects
                 if hasattr(ref, 'format_vancouver_style'):
-                    formatted_ref = ref.format_vancouver_style()
+                    # Format without identifiers since we'll display them separately for prominence
+                    formatted_ref = ref.format_vancouver_style(include_identifiers=False)
                     lines.append(f"[{ref.number}] {formatted_ref}")
+
+                    # Add PMID and DOI on separate indented line for better auditability
+                    identifiers = []
+                    if hasattr(ref, 'pmid') and ref.pmid:
+                        identifiers.append(f"PMID: {ref.pmid}")
+                    if hasattr(ref, 'doi') and ref.doi:
+                        identifiers.append(f"DOI: {ref.doi}")
+
+                    if identifiers:
+                        lines.append(f"   {' | '.join(identifiers)}")
                 else:
                     # Fallback for dictionary format (shouldn't happen with our fix)
                     lines.append(f"[{ref.get('number', 'N/A')}] {ref.get('citation', 'Citation not available')}")
+                    identifiers = []
                     if ref.get('pmid'):
-                        lines.append(f"   PMID: {ref['pmid']}")
+                        identifiers.append(f"PMID: {ref['pmid']}")
+                    if ref.get('doi'):
+                        identifiers.append(f"DOI: {ref['doi']}")
+                    if identifiers:
+                        lines.append(f"   {' | '.join(identifiers)}")
                 lines.append("")
 
         # Report Information (Audit Trail)

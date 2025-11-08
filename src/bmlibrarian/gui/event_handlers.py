@@ -1251,7 +1251,8 @@ class EventHandlers:
                 self.app.scored_documents,
                 self.app.citations,
                 False,  # human_in_loop (we're in continue mode)
-                self.app.workflow_executor.agent_model_info
+                self.app.workflow_executor.agent_model_info,
+                all_scored_documents=self.app.scored_documents
             )
 
             self.app.final_report = comprehensive_report
@@ -1269,7 +1270,8 @@ class EventHandlers:
                 self.app.scored_documents,
                 self.app.citations,
                 False,  # human_in_loop
-                self.app.workflow_executor.agent_model_info
+                self.app.workflow_executor.agent_model_info,
+                all_scored_documents=self.app.scored_documents
             )
 
             self.app.final_report = comprehensive_report
@@ -1288,7 +1290,8 @@ class EventHandlers:
             self.app.scored_documents,
             self.app.citations,
             False,  # human_in_loop (we're in continue mode)
-            self.app.workflow_executor.agent_model_info
+            self.app.workflow_executor.agent_model_info,
+            all_scored_documents=self.app.scored_documents
         )
 
         self.app.final_report = comprehensive_report

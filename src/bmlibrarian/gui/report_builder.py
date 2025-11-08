@@ -16,11 +16,12 @@ class ReportBuilder:
         self.workflow_steps = workflow_steps
     
     def build_final_report(self, research_question: str, report_content: str,
-                          counterfactual_analysis: Any, documents: List[Dict], 
+                          counterfactual_analysis: Any, documents: List[Dict],
                           scored_documents: List[Tuple[Dict, Dict]], citations: List,
-                          human_in_loop: bool, agent_model_info: Optional[Dict] = None) -> str:
+                          human_in_loop: bool, agent_model_info: Optional[Dict] = None,
+                          all_scored_documents: Optional[List[Tuple[Dict, Dict]]] = None) -> str:
         """Build the comprehensive final report.
-        
+
         Args:
             research_question: The original research question
             report_content: Main report content from reporting agent
@@ -29,21 +30,22 @@ class ReportBuilder:
             scored_documents: List of scored documents above threshold
             citations: List of extracted citations
             human_in_loop: Whether the workflow was interactive
-            
+            all_scored_documents: Optional list of ALL scored documents (for accurate stats)
+
         Returns:
             Complete formatted research report as markdown string
         """
         print(f"_build_final_report called with report_content length: {len(report_content) if report_content else 0}")
         if report_content:
             print(f"📝 Input report_content ends with: ...{report_content[-200:]}")
-        
+
         # Extract counterfactual analysis content
         counterfactual_content = self._format_counterfactual_analysis(counterfactual_analysis)
         print(f"📊 Counterfactual content length: {len(counterfactual_content) if counterfactual_content else 0}")
-        
+
         # Build research summary section
         summary_section = self._build_summary_section(
-            research_question, documents, scored_documents, citations
+            research_question, documents, scored_documents, citations, all_scored_documents
         )
         
         # Build methodology section
@@ -382,29 +384,41 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
         return str(pub_date)
     
     def _build_summary_section(self, research_question: str, documents: List[Dict],
-                             scored_documents: List[Tuple[Dict, Dict]], 
-                             citations: List) -> str:
+                             scored_documents: List[Tuple[Dict, Dict]],
+                             citations: List,
+                             all_scored_documents: Optional[List[Tuple[Dict, Dict]]] = None) -> str:
         """Build the research summary section.
-        
+
         Args:
             research_question: The research question
             documents: All found documents
             scored_documents: Documents above relevance threshold
             citations: Extracted citations
-            
+            all_scored_documents: Optional list of ALL scored documents (for accurate stats)
+
         Returns:
             Formatted summary section
         """
-        high_relevance_count = sum(1 for _, result in scored_documents 
+        # Use all_scored_documents if available, otherwise fall back to scored_documents
+        docs_to_check = all_scored_documents if all_scored_documents is not None else scored_documents
+
+        # Calculate statistics from ALL scored documents
+        above_threshold_count = sum(1 for _, result in docs_to_check
+                                   if result.get('score', 0) >= 2.5)
+        high_relevance_count = sum(1 for _, result in docs_to_check
                                  if result.get('score', 0) >= 4)
-        
+
         return f"""## Research Summary
 
-**Question**: {research_question}  
-**Documents Found**: {len(documents)}  
-**Documents Scored**: {len(scored_documents)} (threshold ≥ 2.5)  
-**High Relevance Documents**: {high_relevance_count}  
-**Citations Extracted**: {len(citations)}"""
+**Question**: {research_question}
+
+| Metric | Count |
+|--------|-------|
+| Documents Found | {len(documents)} |
+| Documents Scored | {len(docs_to_check)} |
+| Above Threshold (≥ 2.5) | {above_threshold_count} |
+| High Relevance (≥ 4.0) | {high_relevance_count} |
+| Citations Extracted | {len(citations)} |"""
     
     def _build_methodology_section(self, counterfactual_analysis: Any = None) -> str:
         """Build the methodology section.
