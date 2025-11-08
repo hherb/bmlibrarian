@@ -415,7 +415,7 @@ def create_citations_display(contradictory_citations: List[Dict[str, Any]],
                 )
                 controls.append(citation_card)
 
-    # Rejected citations - summary only (no full cards needed)
+    # Rejected citations - show full details for audit trail
     if rejected_citations:
         controls.append(ft.Container(height=12))
         controls.append(
@@ -434,6 +434,59 @@ def create_citations_display(contradictory_citations: List[Dict[str, Any]],
                 italic=True
             )
         )
+        controls.append(ft.Container(height=8))
+
+        # Show ALL rejected citations with full details using unified cards
+        for i, rejected_info in enumerate(rejected_citations, 1):
+            citation = rejected_info.get('citation')
+            if citation:
+                # Extract citation data
+                citation_data = extract_citation_data_from_object(citation)
+
+                # Build document dictionary
+                doc = {
+                    'id': citation_data.get('document_id', f'rejected_{i}'),
+                    'title': citation_data['title'],
+                    'authors': citation_data.get('authors', []),
+                    'publication': citation_data.get('publication', 'Unknown'),
+                    'publication_date': citation_data.get('publication_date', 'Unknown'),
+                    'year': citation_data.get('year', 'Unknown'),
+                    'abstract': citation_data.get('abstract', ''),
+                    'pmid': citation_data.get('pmid'),
+                    'doi': citation_data.get('doi'),
+                    'pdf_path': citation_data.get('pdf_path'),
+                    'pdf_url': citation_data.get('pdf_url')
+                }
+
+                # Build citation-specific data including rejection reasoning
+                cit_data = {
+                    'summary': citation_data.get('summary', ''),
+                    'passage': citation_data.get('passage', ''),
+                    'relevance_score': citation_data.get('relevance_score', 0),
+                    'rejection_reasoning': rejected_info.get('rejection_reasoning', 'No reason provided'),
+                    'original_claim': rejected_info.get('original_claim', ''),
+                    'counterfactual_statement': rejected_info.get('counterfactual_statement', ''),
+                    'document_score': rejected_info.get('document_score', 0),
+                    'score_reasoning': rejected_info.get('score_reasoning', '')
+                }
+
+                # Create unified citation card with rejection context
+                rejected_card = card_creator.create_card(
+                    index=i - 1,  # 0-based index
+                    doc=doc,
+                    context=DocumentCardContext.CITATIONS,
+                    citation_data=cit_data,
+                    relevance_score=cit_data['relevance_score']
+                )
+
+                # Wrap card in a container with orange/warning styling to indicate rejection
+                styled_card = ft.Container(
+                    content=rejected_card,
+                    border=ft.border.all(2, ft.Colors.ORANGE_300),
+                    border_radius=8,
+                    bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.ORANGE_700)
+                )
+                controls.append(styled_card)
 
     # No citation extracted - summary only
     if no_citation_extracted:

@@ -510,6 +510,82 @@ class UnifiedDocumentCard:
         """Create citation-specific sections (summary, passage, etc.)."""
         sections = []
 
+        # Rejection reasoning (if present) - show prominently at the top
+        if citation_data.get('rejection_reasoning'):
+            sections.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.CANCEL, size=16, color=ft.Colors.ORANGE_700),
+                            ft.Text(
+                                "Rejection Reason:",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.ORANGE_700
+                            )
+                        ], spacing=6),
+                        ft.Text(
+                            citation_data['rejection_reasoning'],
+                            size=10,
+                            color=ft.Colors.GREY_900,
+                            selectable=True
+                        )
+                    ], spacing=6),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.ORANGE_50,
+                    border=ft.border.all(2, ft.Colors.ORANGE_400),
+                    border_radius=5
+                )
+            )
+
+        # Original claim (if present, for rejected citations)
+        if citation_data.get('original_claim'):
+            sections.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Original Claim:", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700),
+                        ft.Text(citation_data['original_claim'], size=10, color=ft.Colors.GREY_800, selectable=True)
+                    ], spacing=4),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.BLUE_50,
+                    border_radius=5
+                )
+            )
+
+        # Counterfactual statement (if present, for rejected citations)
+        if citation_data.get('counterfactual_statement'):
+            sections.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Counterfactual Statement Searched:", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.PURPLE_700),
+                        ft.Text(citation_data['counterfactual_statement'], size=10, color=ft.Colors.GREY_800, selectable=True)
+                    ], spacing=4),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.PURPLE_50,
+                    border_radius=5
+                )
+            )
+
+        # Document score and reasoning (if present, for rejected citations)
+        if citation_data.get('document_score') and citation_data.get('score_reasoning'):
+            sections.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"Document Relevance Score: {citation_data['document_score']}/5.0",
+                            size=10,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.TEAL_700
+                        ),
+                        ft.Text("Scoring Reasoning:", size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+                        ft.Text(citation_data['score_reasoning'], size=9, color=ft.Colors.GREY_800, selectable=True)
+                    ], spacing=4),
+                    padding=ft.padding.all(8),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                )
+            )
+
         # Summary
         if citation_data.get('summary'):
             sections.append(
