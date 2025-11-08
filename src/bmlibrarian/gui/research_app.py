@@ -106,6 +106,8 @@ class ResearchGUI:
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.page.padding = 20
         self.page.scroll = ft.ScrollMode.AUTO
+        # Store reference to app for Settings tab access
+        self.page._research_gui_app = self
     
     def _initialize_managers(self):
         """Initialize all managers and handlers."""

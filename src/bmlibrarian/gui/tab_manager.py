@@ -37,6 +37,7 @@ class TabManager:
         preliminary_report_tab = self._create_preliminary_report_tab()
         counterfactual_tab = self._create_counterfactual_tab()
         report_tab = self._create_report_tab()
+        settings_tab = self._create_settings_tab()
 
         self.tabs_container = ft.Tabs(
             selected_index=0,
@@ -76,6 +77,11 @@ class TabManager:
                     text="Report",
                     icon=ft.Icons.DESCRIPTION,
                     content=report_tab
+                ),
+                ft.Tab(
+                    text="Settings",
+                    icon=ft.Icons.SETTINGS,
+                    content=settings_tab
                 )
             ],
             tab_alignment=ft.TabAlignment.START
@@ -1108,11 +1114,11 @@ class TabManager:
         if tab_name in self.tab_contents:
             self.tab_contents[tab_name].content = new_content
     
-    def create_tab_with_content(self, header_components: List[ft.Control], 
+    def create_tab_with_content(self, header_components: List[ft.Control],
                                content_components: List[ft.Control]) -> ft.Container:
         """Create a tab container with header and content components."""
         all_components = [*header_components, *content_components]
-        
+
         return ft.Container(
             content=ft.Column(
                 all_components,
@@ -1122,3 +1128,30 @@ class TabManager:
             padding=ft.padding.all(15),
             expand=True
         )
+
+    def _create_settings_tab(self) -> ft.Container:
+        """Create the settings tab content with nested configuration interface."""
+        # Import here to avoid circular import
+        from .settings_tab import SettingsTab
+
+        # Get the app instance from page's data if available
+        # This is a bit of a workaround since TabManager doesn't have direct access to ResearchGUI
+        app = getattr(self.page, '_research_gui_app', None) if self.page else None
+
+        if app:
+            settings_tab = SettingsTab(app)
+            content = settings_tab.build()
+        else:
+            # Fallback if app not available
+            from .ui_builder import create_empty_state
+            empty_state = create_empty_state(
+                "Settings not available. Please restart the application."
+            )
+            content = ft.Container(
+                content=ft.Column([empty_state], spacing=10),
+                padding=ft.padding.all(15),
+                expand=True
+            )
+
+        self.tab_contents['settings'] = content
+        return content
