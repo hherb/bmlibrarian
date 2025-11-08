@@ -179,7 +179,99 @@ class AgentConfigTab:
         advanced_controls = []
 
         # Agent-specific settings
-        if self.agent_type == 'scoring':
+        if self.agent_type == 'query':
+            # Multi-model query generation settings
+            qg_config = self.app.config.get('query_generation', {})
+            enabled = qg_config.get('multi_model_enabled', False)
+            models = qg_config.get('models', [])
+
+            # Ensure we have exactly 3 model slots
+            while len(models) < 3:
+                models.append(None)
+            models = models[:3]  # Limit to 3
+
+            # Enable multi-model toggle
+            self.controls['multi_model_enabled'] = ft.Switch(
+                label="Enable Multi-Model Query Generation",
+                value=enabled,
+                active_color=ft.Colors.GREEN_600,
+                on_change=self._on_multi_model_toggle,
+                tooltip="Use multiple models to generate diverse queries"
+            )
+            advanced_controls.append(self.controls['multi_model_enabled'])
+            advanced_controls.append(ft.Container(height=10))
+
+            # Model selectors (3 stacked vertically)
+            advanced_controls.append(
+                ft.Text("Query Generation Models:", size=14, weight=ft.FontWeight.BOLD)
+            )
+
+            # Get available models
+            available_models = self._get_available_models()
+            model_options = [ft.dropdown.Option("--- None ---")] + [
+                ft.dropdown.Option(model) for model in available_models
+            ]
+
+            # Model 1 (Primary - always enabled)
+            self.controls['model1'] = ft.Dropdown(
+                label="Model 1 (Primary)",
+                value=models[0] if models[0] else "--- None ---",
+                options=model_options,
+                width=350,
+                disabled=not enabled
+            )
+            advanced_controls.append(self.controls['model1'])
+
+            # Model 2 (Optional)
+            self.controls['model2'] = ft.Dropdown(
+                label="Model 2 (Optional)",
+                value=models[1] if models[1] else "--- None ---",
+                options=model_options,
+                width=350,
+                disabled=not enabled
+            )
+            advanced_controls.append(self.controls['model2'])
+
+            # Model 3 (Optional)
+            self.controls['model3'] = ft.Dropdown(
+                label="Model 3 (Optional)",
+                value=models[2] if models[2] else "--- None ---",
+                options=model_options,
+                width=350,
+                disabled=not enabled
+            )
+            advanced_controls.append(self.controls['model3'])
+
+            advanced_controls.append(ft.Container(height=10))
+
+            # Queries per model
+            queries_per_model = qg_config.get('queries_per_model', 1)
+            self.controls['queries_per_model_text'] = ft.Text(
+                f"{int(queries_per_model)}",
+                size=14,
+                weight=ft.FontWeight.W_500,
+                width=60
+            )
+            self.controls['queries_per_model'] = ft.Slider(
+                min=1,
+                max=3,
+                value=queries_per_model,
+                divisions=2,
+                label="{value}",
+                width=300,
+                tooltip="Number of query variations per model",
+                on_change=self._on_queries_per_model_changed,
+                disabled=not enabled
+            )
+            advanced_controls.append(
+                ft.Row([
+                    ft.Text("Queries per Model:", width=150),
+                    self.controls['queries_per_model'],
+                    self.controls['queries_per_model_text']
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            )
+
+        elif self.agent_type == 'scoring':
             score_value = agent_config.get('min_relevance_score', 3)
             self.controls['min_relevance_score_text'] = ft.Text(
                 f"{int(score_value)}",
@@ -355,6 +447,28 @@ class AgentConfigTab:
         self.controls['min_relevance_text'].value = f"{value:.2f}"
         self.app.page.update()
 
+    def _on_multi_model_toggle(self, e):
+        """Handle multi-model toggle change."""
+        enabled = self.controls['multi_model_enabled'].value
+
+        # Enable/disable model selectors
+        if 'model1' in self.controls:
+            self.controls['model1'].disabled = not enabled
+        if 'model2' in self.controls:
+            self.controls['model2'].disabled = not enabled
+        if 'model3' in self.controls:
+            self.controls['model3'].disabled = not enabled
+        if 'queries_per_model' in self.controls:
+            self.controls['queries_per_model'].disabled = not enabled
+
+        self.app.page.update()
+
+    def _on_queries_per_model_changed(self, e):
+        """Handle queries per model slider change."""
+        value = self.controls['queries_per_model'].value
+        self.controls['queries_per_model_text'].value = f"{int(value)}"
+        self.app.page.update()
+
     def update_config(self):
         """Update configuration from UI controls."""
         print(f"🔧 Updating {self.agent_key} settings from UI...")  # Debug
@@ -363,20 +477,42 @@ class AgentConfigTab:
             model = self.controls['model'].value
             self.app.config.set(f'models.{self.agent_key}', model)
             print(f"  Model: {model}")
-            
+
             # Update parameters
             temp = self.controls['temperature'].value
             top_p = self.controls['top_p'].value
             max_tokens = int(self.controls['max_tokens'].value)
-            
+
             self.app.config.set(f'agents.{self.agent_type}.temperature', temp)
             self.app.config.set(f'agents.{self.agent_type}.top_p', top_p)
             self.app.config.set(f'agents.{self.agent_type}.max_tokens', max_tokens)
-            
+
             print(f"  Params: temp={temp}, top_p={top_p}, max_tokens={max_tokens}")
-            
+
             # Update agent-specific settings
-            if self.agent_type == 'scoring' and 'min_relevance_score' in self.controls:
+            if self.agent_type == 'query' and 'multi_model_enabled' in self.controls:
+                # Multi-model query generation settings
+                enabled = self.controls['multi_model_enabled'].value
+                self.app.config.set('query_generation.multi_model_enabled', enabled)
+
+                # Collect selected models (excluding "--- None ---")
+                models = []
+                for i in range(1, 4):
+                    model_key = f'model{i}'
+                    if model_key in self.controls:
+                        value = self.controls[model_key].value
+                        if value and value != "--- None ---":
+                            models.append(value)
+
+                self.app.config.set('query_generation.models', models)
+
+                # Queries per model
+                if 'queries_per_model' in self.controls:
+                    qpm = int(self.controls['queries_per_model'].value)
+                    self.app.config.set('query_generation.queries_per_model', qpm)
+                    print(f"  Multi-model: enabled={enabled}, models={len(models)}, qpm={qpm}")
+
+            elif self.agent_type == 'scoring' and 'min_relevance_score' in self.controls:
                 score = int(self.controls['min_relevance_score'].value)
                 self.app.config.set(f'agents.{self.agent_type}.min_relevance_score', score)
                 print(f"  Min relevance score: {score}")
