@@ -21,3 +21,4 @@ src/bmlibrarian/gui/research_app_original_backup.py
 src/bmlibrarian/gui/research_app_refactored.py
 .coverage
 *.db
+logs/
