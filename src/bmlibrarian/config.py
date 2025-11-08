@@ -98,6 +98,35 @@ DEFAULT_CONFIG = {
         "deduplicate_results": True,  # Remove duplicate documents across queries
         "show_all_queries_to_user": True,  # Display all generated queries in CLI
         "allow_query_selection": True  # Let user select which queries to execute
+    },
+    "search_strategy": {
+        # Multiple strategies can be enabled for hybrid search
+        "keyword": {
+            "enabled": True,  # Keyword fulltext search (default enabled)
+            "max_results": 100,
+            "operator": "AND",  # AND/OR for combining search terms
+            "case_sensitive": False
+        },
+        "bm25": {
+            "enabled": False,  # BM25 probabilistic ranking
+            "max_results": 100,
+            "k1": 1.2,  # Term frequency saturation (typical: 1.2-2.0)
+            "b": 0.75   # Document length normalization (0=none, 1=full)
+        },
+        "semantic": {
+            "enabled": False,  # Vector similarity search
+            "max_results": 100,
+            "embedding_model": "nomic-embed-text:latest",
+            "similarity_threshold": 0.7  # Cosine similarity threshold (0-1)
+        },
+        "hyde": {
+            "enabled": False,  # Hypothetical Document Embeddings
+            "max_results": 100,
+            "generation_model": "medgemma-27b-text-it-Q8_0:latest",
+            "embedding_model": "nomic-embed-text:latest",
+            "num_hypothetical_docs": 3,  # Number of hypothetical documents to generate
+            "similarity_threshold": 0.7   # Cosine similarity threshold (0-1)
+        }
     }
 }
 

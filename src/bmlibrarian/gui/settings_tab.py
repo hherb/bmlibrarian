@@ -9,7 +9,7 @@ import flet as ft
 from typing import TYPE_CHECKING, Optional
 
 from ..config import get_config
-from .tabs import GeneralSettingsTab, AgentConfigTab
+from .tabs import GeneralSettingsTab, AgentConfigTab, SearchSettingsTab
 
 if TYPE_CHECKING:
     from .research_app import ResearchGUI
@@ -124,6 +124,11 @@ class SettingsTab:
         self.tab_objects['general'] = general_tab
         self.content_containers['general'] = general_tab.build()
 
+        # Search Settings
+        search_tab = SearchSettingsTab(self)
+        self.tab_objects['search'] = search_tab
+        self.content_containers['search'] = search_tab.build()
+
         # Agent Configuration Sections
         agent_types = {
             'query_agent': ('Query Agent', ft.Icons.SEARCH),
@@ -153,6 +158,7 @@ class SettingsTab:
                 'title': 'System',
                 'items': [
                     ('general', 'General', ft.Icons.SETTINGS),
+                    ('search', 'Search', ft.Icons.MANAGE_SEARCH),
                 ]
             },
             {
@@ -688,6 +694,11 @@ class SettingsTab:
             general_tab = self.tab_objects.get('general')
             if general_tab and hasattr(general_tab, 'update_config'):
                 general_tab.update_config()
+
+            # Update search settings
+            search_tab = self.tab_objects.get('search')
+            if search_tab and hasattr(search_tab, 'update_config'):
+                search_tab.update_config()
 
             # Update agent tabs (including multi-model config in query agent)
             agent_types = ['query_agent', 'scoring_agent', 'citation_agent',

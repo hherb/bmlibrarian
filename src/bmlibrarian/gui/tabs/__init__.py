@@ -5,5 +5,6 @@ Tab components for BMLibrarian Configuration GUI.
 from .general_tab import GeneralSettingsTab
 from .agent_tab import AgentConfigTab
 from .query_generation_tab import QueryGenerationTab
+from .search_tab import SearchSettingsTab
 
-__all__ = ['GeneralSettingsTab', 'AgentConfigTab', 'QueryGenerationTab']
+__all__ = ['GeneralSettingsTab', 'AgentConfigTab', 'QueryGenerationTab', 'SearchSettingsTab']
