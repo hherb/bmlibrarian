@@ -802,11 +802,11 @@ def search_hybrid(
             - documents: List of unique documents with scores from each strategy
             - strategy_metadata: Dict containing strategies used and their parameters
     """
-    from .config import get_search_config
+    from .config import get_config
 
-    # Get search configuration
+    # Get search strategy configuration
     if search_config is None:
-        search_config = get_search_config()
+        search_config = get_config().get("search_strategy", {})
 
     # Initialize result tracking
     all_documents = {}  # document_id -> document dict with scores
