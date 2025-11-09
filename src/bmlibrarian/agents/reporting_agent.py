@@ -47,6 +47,12 @@ class MethodologyMetadata:
     iterative_processing_used: bool = True
     context_window_management: bool = True
 
+    # Search strategy information (NEW)
+    search_strategies_used: Optional[List[str]] = None  # ['semantic', 'bm25', 'fulltext']
+    semantic_search_params: Optional[Dict[str, Any]] = None  # {model, threshold, max_results, documents_found}
+    bm25_search_params: Optional[Dict[str, Any]] = None  # {k1, b, max_results, query_expression, documents_found}
+    fulltext_search_params: Optional[Dict[str, Any]] = None  # {query_expression, max_results, documents_found}
+
     # AI Model Audit Trail
     query_model: Optional[str] = None
     scoring_model: Optional[str] = None

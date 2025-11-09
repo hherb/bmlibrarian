@@ -590,6 +590,190 @@ def fetch_documents_by_ids(
     return documents
 
 
+def search_with_bm25(
+    query_text: str,
+    max_results: int = 100,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using BM25 ranked full-text search.
+
+    Uses the PostgreSQL bm25() function for superior relevance ranking
+    with length normalization (approximates BM25 k1=1.2, b=0.75).
+
+    Args:
+        query_text: PostgreSQL tsquery expression (e.g., "diabetes & treatment")
+        max_results: Maximum number of results to return
+        use_pubmed: Include PubMed results
+        use_medrxiv: Include medRxiv results
+        use_others: Include other sources
+
+    Yields:
+        Document dictionaries ordered by BM25 rank (highest relevance first)
+    """
+    db_manager = get_db_manager()
+
+    # Build source filter
+    source_filters = []
+    if use_pubmed and 'pubmed' in db_manager.source_ids:
+        source_filters.append(f"source_id = {db_manager.source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in db_manager.source_ids:
+        source_filters.append(f"source_id = {db_manager.source_ids['medrxiv']}")
+    if use_others and 'other_sources' in db_manager.source_ids:
+        others = db_manager.source_ids['other_sources']
+        if isinstance(others, list):
+            source_filters.append(f"source_id = ANY(ARRAY{others})")
+        else:
+            source_filters.append(f"source_id = {others}")
+
+    source_filter = ""
+    if source_filters:
+        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+
+    logger.info(f"BM25 search: '{query_text}', max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use BM25 function with source filtering
+            sql = f"""
+                SELECT b.*, s.name as source_name
+                FROM bm25(%s, %s) b
+                LEFT JOIN sources s ON b.source_id = s.id
+                WHERE 1=1 {source_filter}
+            """
+
+            cur.execute(sql, (query_text, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"BM25 search completed for: '{query_text}'")
+
+
+def search_with_semantic(
+    search_text: str,
+    threshold: float = 0.7,
+    max_results: int = 100
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using semantic search with vector embeddings.
+
+    Uses the PostgreSQL semantic_search() function which calls ollama_embedding()
+    to generate embeddings and performs cosine similarity search on chunk embeddings.
+
+    Args:
+        search_text: Natural language search query
+        threshold: Minimum similarity score (0.0 to 1.0, default: 0.7)
+        max_results: Maximum number of results to return
+
+    Yields:
+        Document dictionaries with semantic similarity scores
+
+    Note:
+        - Uses snowflake-arctic-embed2:latest embedding model
+        - Returns chunk-level results, so documents may appear multiple times
+        - Embedding generation takes ~2-5 seconds per query
+    """
+    db_manager = get_db_manager()
+
+    logger.info(f"Semantic search: '{search_text}', threshold={threshold}, max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use semantic_search function, then join with document table
+            # Group by document to get unique documents with their best score
+            sql = """
+                WITH semantic_results AS (
+                    SELECT
+                        document_id,
+                        MAX(score) as best_score,
+                        COUNT(*) as matching_chunks
+                    FROM semantic_search(%s, %s, %s)
+                    GROUP BY document_id
+                )
+                SELECT
+                    d.*,
+                    s.name as source_name,
+                    sr.best_score as semantic_score,
+                    sr.matching_chunks
+                FROM semantic_results sr
+                JOIN document d ON sr.document_id = d.id
+                LEFT JOIN sources s ON d.source_id = s.id
+                ORDER BY sr.best_score DESC
+            """
+
+            cur.execute(sql, (search_text, threshold, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"Semantic search completed for: '{search_text}'")
+
+
+def search_with_fulltext_function(
+    query_text: str,
+    max_results: int = 100,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using the fulltext_search PostgreSQL function.
+
+    Uses the PostgreSQL fulltext_search() function for basic full-text search
+    with ts_rank scoring.
+
+    Args:
+        query_text: PostgreSQL tsquery expression (e.g., "diabetes & treatment")
+        max_results: Maximum number of results to return
+        use_pubmed: Include PubMed results
+        use_medrxiv: Include medRxiv results
+        use_others: Include other sources
+
+    Yields:
+        Document dictionaries ordered by ts_rank (highest relevance first)
+    """
+    db_manager = get_db_manager()
+
+    # Build source filter
+    source_filters = []
+    if use_pubmed and 'pubmed' in db_manager.source_ids:
+        source_filters.append(f"source_id = {db_manager.source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in db_manager.source_ids:
+        source_filters.append(f"source_id = {db_manager.source_ids['medrxiv']}")
+    if use_others and 'other_sources' in db_manager.source_ids:
+        others = db_manager.source_ids['other_sources']
+        if isinstance(others, list):
+            source_filters.append(f"source_id = ANY(ARRAY{others})")
+        else:
+            source_filters.append(f"source_id = {others}")
+
+    source_filter = ""
+    if source_filters:
+        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+
+    logger.info(f"Fulltext search: '{query_text}', max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use fulltext_search function with source filtering
+            sql = f"""
+                SELECT f.*, s.name as source_name
+                FROM fulltext_search(%s, %s) f
+                LEFT JOIN sources s ON f.source_id = s.id
+                WHERE 1=1 {source_filter}
+            """
+
+            cur.execute(sql, (query_text, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"Fulltext search completed for: '{query_text}'")
+
+
 def close_database():
     """Close the database connection pool."""
     global _db_manager
