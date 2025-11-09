@@ -135,40 +135,85 @@ class GeneralSettingsTab:
         # Create CLI config controls based on existing CLI config structure
         cli_controls = []
         
-        # Search Settings
+        # Get search config for default values
+        search_config = self.app.config.get_search_config()
+
+        # Search Settings - Store controls for later updates
+        self.controls['max_search_results'] = ft.TextField(
+            label="Max Search Results",
+            value=str(search_config.get('max_results', 100)),
+            width=200,
+            helper_text="Maximum search results to retrieve",
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
+        self.controls['display_limit'] = ft.TextField(
+            label="Display Limit",
+            value="10",
+            width=200,
+            helper_text="Maximum documents to display",
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
+        self.controls['score_threshold'] = ft.TextField(
+            label="Score Threshold",
+            value=str(search_config.get('score_threshold', 2.5)),
+            width=200,
+            helper_text="Default document score threshold",
+            input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9.]", replacement_string="")
+        )
+
+        self.controls['min_relevance'] = ft.TextField(
+            label="Min Relevance",
+            value="0.7",
+            width=200,
+            helper_text="Minimum citation relevance",
+            input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9.]", replacement_string="")
+        )
+
+        # Iterative Search Settings (NEW)
+        self.controls['min_relevant'] = ft.TextField(
+            label="Min Relevant Docs",
+            value=str(search_config.get('min_relevant', 10)),
+            width=200,
+            helper_text="Minimum high-scoring docs to find",
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
+        self.controls['search_max_retry'] = ft.TextField(
+            label="Max Retries",
+            value=str(search_config.get('max_retry', 3)),
+            width=200,
+            helper_text="Max retries per search strategy",
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
+        self.controls['search_batch_size'] = ft.TextField(
+            label="Search Batch Size",
+            value=str(search_config.get('batch_size', 100)),
+            width=200,
+            helper_text="Documents per iteration",
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
         search_section = ft.Column([
             ft.Text("Search Settings", size=16, weight=ft.FontWeight.BOLD),
             ft.Row([
-                ft.TextField(
-                    label="Max Search Results",
-                    value="100",
-                    width=200,
-                    helper_text="Maximum search results to retrieve",
-                    input_filter=ft.NumbersOnlyInputFilter()
-                ),
-                ft.TextField(
-                    label="Display Limit",
-                    value="10",
-                    width=200,
-                    helper_text="Maximum documents to display",
-                    input_filter=ft.NumbersOnlyInputFilter()
-                )
+                self.controls['max_search_results'],
+                self.controls['display_limit']
             ], spacing=20),
             ft.Row([
-                ft.TextField(
-                    label="Score Threshold",
-                    value="2.5",
-                    width=200,
-                    helper_text="Default document score threshold",
-                    input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9.]", replacement_string="")
-                ),
-                ft.TextField(
-                    label="Min Relevance",
-                    value="0.7",
-                    width=200,
-                    helper_text="Minimum citation relevance",
-                    input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9.]", replacement_string="")
-                )
+                self.controls['score_threshold'],
+                self.controls['min_relevance']
+            ], spacing=20),
+            ft.Container(height=5),
+            ft.Text("Iterative Search (for finding more relevant documents)", size=14, italic=True, color=ft.Colors.GREY_700),
+            ft.Row([
+                self.controls['min_relevant'],
+                self.controls['search_max_retry']
+            ], spacing=20),
+            ft.Row([
+                self.controls['search_batch_size']
             ], spacing=20)
         ])
         
@@ -211,25 +256,43 @@ class GeneralSettingsTab:
             host = self.controls['ollama_host'].value
             timeout = int(self.controls['ollama_timeout'].value)
             retries = int(self.controls['ollama_retries'].value)
-            
+
             self.app.config.set('ollama.host', host)
             self.app.config.set('ollama.timeout', timeout)
             self.app.config.set('ollama.max_retries', retries)
-            
+
             print(f"  Ollama: {host}, timeout: {timeout}s, retries: {retries}")
-            
+
             # Update Database settings
             max_results = int(self.controls['max_results'].value)
             batch_size = int(self.controls['batch_size'].value)
             use_ranking = self.controls['use_ranking'].value
-            
+
             self.app.config.set('database.max_results_per_query', max_results)
             self.app.config.set('database.batch_size', batch_size)
             self.app.config.set('database.use_ranking', use_ranking)
-            
+
             print(f"  Database: max_results={max_results}, batch_size={batch_size}, ranking={use_ranking}")
+
+            # Update Search settings (NEW)
+            if 'max_search_results' in self.controls:
+                max_search_results = int(self.controls['max_search_results'].value)
+                score_threshold = float(self.controls['score_threshold'].value)
+                min_relevant = int(self.controls['min_relevant'].value)
+                search_max_retry = int(self.controls['search_max_retry'].value)
+                search_batch_size = int(self.controls['search_batch_size'].value)
+
+                self.app.config.set('search.max_results', max_search_results)
+                self.app.config.set('search.score_threshold', score_threshold)
+                self.app.config.set('search.min_relevant', min_relevant)
+                self.app.config.set('search.max_retry', search_max_retry)
+                self.app.config.set('search.batch_size', search_batch_size)
+
+                print(f"  Search: max={max_search_results}, threshold={score_threshold}, min_relevant={min_relevant}")
+                print(f"  Iterative: max_retry={search_max_retry}, batch_size={search_batch_size}")
+
             print("✅ General settings updated")
-            
+
         except Exception as ex:
             print(f"❌ Error updating general settings: {ex}")
     
@@ -237,11 +300,20 @@ class GeneralSettingsTab:
         """Refresh tab with current configuration."""
         ollama_config = self.app.config.get_ollama_config()
         db_config = self.app.config.get_database_config()
-        
+        search_config = self.app.config.get_search_config()
+
         self.controls['ollama_host'].value = ollama_config.get('host', 'http://localhost:11434')
         self.controls['ollama_timeout'].value = str(ollama_config.get('timeout', 120))
         self.controls['ollama_retries'].value = str(ollama_config.get('max_retries', 3))
-        
+
         self.controls['max_results'].value = str(db_config.get('max_results_per_query', 10))
         self.controls['batch_size'].value = str(db_config.get('batch_size', 50))
         self.controls['use_ranking'].value = db_config.get('use_ranking', False)
+
+        # Refresh search settings (NEW)
+        if 'max_search_results' in self.controls:
+            self.controls['max_search_results'].value = str(search_config.get('max_results', 100))
+            self.controls['score_threshold'].value = str(search_config.get('score_threshold', 2.5))
+            self.controls['min_relevant'].value = str(search_config.get('min_relevant', 10))
+            self.controls['search_max_retry'].value = str(search_config.get('max_retry', 3))
+            self.controls['search_batch_size'].value = str(search_config.get('batch_size', 100))

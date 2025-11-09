@@ -86,7 +86,10 @@ DEFAULT_CONFIG = {
         "counterfactual_max_results": 10,  # Max results per counterfactual query (defaults to main max_results if not set)
         "counterfactual_min_score": 3,  # Min score for counterfactual evidence
         "query_retry_attempts": 3,  # Number of times to retry failed tsquery with reformulation
-        "auto_fix_tsquery_syntax": True  # Automatically fix common tsquery syntax errors
+        "auto_fix_tsquery_syntax": True,  # Automatically fix common tsquery syntax errors
+        "min_relevant": 10,  # Minimum number of high-scoring documents to find through iterative search
+        "max_retry": 3,  # Max retries per strategy (offset-based, then query modification)
+        "batch_size": 100  # Number of documents to fetch per iteration
     },
     "query_generation": {
         "multi_model_enabled": False,  # Feature flag - default disabled for backward compatibility

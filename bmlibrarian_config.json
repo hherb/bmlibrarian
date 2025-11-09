@@ -55,5 +55,29 @@
     "max_results_per_query": 10,
     "batch_size": 50,
     "use_ranking": false
+  },
+  "search": {
+    "max_results": 100,
+    "score_threshold": 2.5,
+    "max_documents_to_score": null,
+    "max_documents_for_citations": null,
+    "counterfactual_max_results": 10,
+    "counterfactual_min_score": 3,
+    "query_retry_attempts": 3,
+    "auto_fix_tsquery_syntax": true,
+    "min_relevant": 10,
+    "max_retry": 3,
+    "batch_size": 100
+  },
+  "query_generation": {
+    "multi_model_enabled": false,
+    "models": [
+      "medgemma-27b-text-it-Q8_0:latest"
+    ],
+    "queries_per_model": 1,
+    "execution_mode": "serial",
+    "deduplicate_results": true,
+    "show_all_queries_to_user": true,
+    "allow_query_selection": true
   }
 }

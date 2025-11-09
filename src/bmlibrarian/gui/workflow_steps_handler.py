@@ -370,12 +370,58 @@ class WorkflowStepsHandler:
             print(f"🔍 Deduplicated {len(documents)} search results to {len(deduplicated_documents)} unique documents")
             documents = deduplicated_documents
 
+        # Check if we got zero documents - this could indicate query syntax error or no matches
+        if len(documents) == 0:
+            print(f"\n⚠️  Initial search returned 0 documents")
+            print(f"    This could indicate:")
+            print(f"    - Query syntax error in the generated query")
+            print(f"    - No matching documents in the database")
+            print(f"    - Search parameters too restrictive")
+
+            # Get min_relevant to determine if we should trigger iterative search
+            search_config = get_search_config()
+            min_relevant = self.config_overrides.get('min_relevant', search_config.get('min_relevant', 10))
+
+            if min_relevant > 0:
+                print(f"\n🔍 Attempting iterative search to find at least {min_relevant} documents...")
+
+                # Create a simple progress callback for the search phase
+                def search_progress_callback(status: str):
+                    print(f"   {status}")
+
+                try:
+                    # Use iterative search starting from scratch
+                    all_documents, all_scored = self.agents['query_agent'].find_abstracts_iterative(
+                        question=research_question,
+                        min_relevant=min_relevant,
+                        score_threshold=self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5)),
+                        max_retry=search_config.get('max_retry', 3),
+                        batch_size=search_config.get('batch_size', 100),
+                        scoring_agent=self.agents['scoring_agent'],
+                        progress_callback=search_progress_callback
+                    )
+
+                    if all_documents:
+                        documents = all_documents
+                        print(f"✓ Iterative search found {len(documents)} total documents")
+
+                        # Store the scored documents for later use in execute_document_scoring
+                        # This avoids re-scoring the same documents
+                        self._cached_scored_documents = all_scored
+                    else:
+                        print(f"⚠️  Iterative search also returned 0 documents")
+
+                except Exception as e:
+                    print(f"❌ Iterative search failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
         # Store documents in the calling workflow BEFORE completing the step
         # This ensures documents are available when the completion callback fires
-        
+
         update_callback(WorkflowStep.SEARCH_DOCUMENTS, "completed",
                       f"Found {len(documents)} documents")
-        
+
         return documents
     
     def execute_document_scoring(self, research_question: str, documents: List[Dict],
@@ -398,20 +444,40 @@ class WorkflowStepsHandler:
         """
         update_callback(WorkflowStep.SCORE_DOCUMENTS, "running",
                       "Scoring documents for relevance...")
-        
+
         scored_documents = []
         all_scored_documents = []  # Keep track of all scored docs for override application
         high_scoring = 0
-        
+
         # Get scoring configuration from search config
         from ..config import get_search_config
         search_config = get_search_config()
-        
+
         score_threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
         max_docs_to_score = self.config_overrides.get('max_documents_to_score', search_config.get('max_documents_to_score'))
-        
+
+        # Check if we have cached scored documents from iterative search in execute_document_search
+        if hasattr(self, '_cached_scored_documents') and self._cached_scored_documents:
+            print(f"ℹ️  Using {len(self._cached_scored_documents)} pre-scored documents from iterative search")
+            all_scored_documents = self._cached_scored_documents
+
+            # Filter for documents above threshold
+            scored_documents = [(doc, score) for doc, score in all_scored_documents if score['score'] >= score_threshold]
+
+            # Clear the cache
+            self._cached_scored_documents = None
+
+            # Set flag to indicate we already used iterative search
+            self._used_cached_scores = True
+
+            # Calculate high-scoring count
+            high_scoring = len([s for d, s in scored_documents if s['score'] >= 4.0])
+
+            # Skip to the end - we already have our scores
+            docs_to_score = 0
+            docs_to_process = []
         # Score ALL documents unless explicitly limited
-        if max_docs_to_score is None:
+        elif max_docs_to_score is None:
             docs_to_process = documents
             docs_to_score = len(documents)
         else:
@@ -586,13 +652,70 @@ class WorkflowStepsHandler:
                 else:
                     print("🔍 DEBUG: No statistics to display")
 
+        # Check if we need to trigger iterative search for more relevant documents
+        # NOTE: We only do this if we didn't already use iterative search in the search phase
+        from ..config import get_search_config
+        search_config = get_search_config()
+        min_relevant = self.config_overrides.get('min_relevant', search_config.get('min_relevant', 10))
+
+        high_scoring_count = len(scored_documents)  # Documents above threshold
+
+        # Trigger iterative search if we don't have enough relevant documents
+        # AND we didn't already use cached scores from iterative search in the search phase
+        already_used_iterative = hasattr(self, '_used_cached_scores') and self._used_cached_scores
+        if high_scoring_count < min_relevant:
+            if already_used_iterative:
+                print(f"\n⚠️  Found only {high_scoring_count}/{min_relevant} documents above threshold")
+                print(f"    Iterative search was already attempted during document search")
+                print(f"    Database may have limited relevant content for this query")
+                # Clear the flag for next session
+                self._used_cached_scores = False
+            else:
+                print(f"\n⚠️  Found only {high_scoring_count}/{min_relevant} documents above threshold")
+                print(f"    Triggering iterative search for more relevant documents...")
+
+                try:
+                    # Execute iterative search using the research_question parameter
+                    additional_docs, additional_scored = self._execute_iterative_search_gui(
+                        question=research_question,  # Use the parameter, not self.research_question
+                        current_documents=documents,
+                        current_scored=all_scored_documents,
+                        min_relevant=min_relevant,
+                        score_threshold=score_threshold,
+                        update_callback=update_callback,
+                        progress_callback=progress_callback
+                    )
+
+                    if additional_scored:
+                        # Merge new documents
+                        seen_ids = {doc.get('id') for doc, _ in all_scored_documents}
+                        for doc, score in additional_scored:
+                            if doc.get('id') not in seen_ids:
+                                all_scored_documents.append((doc, score))
+                                if score['score'] >= score_threshold:
+                                    scored_documents.append((doc, score))
+                                seen_ids.add(doc.get('id'))
+
+                        # Recalculate counts
+                        high_scoring_count = len(scored_documents)
+                        high_scoring = len([s for d, s in scored_documents if s['score'] >= 4.0])
+
+                        print(f"✓ Iterative search complete: Now have {high_scoring_count} documents above threshold")
+                except Exception as e:
+                    print(f"❌ Iterative search failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
         # Update status message
         override_msg = ""
         if score_overrides:
             override_msg = f" (with {len(score_overrides)} human overrides)"
 
-        update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed",
-                      f"Scored {docs_to_score} documents ({len(scored_documents)} above threshold ≥{score_threshold}), {high_scoring} high relevance (≥4.0){override_msg}")
+        status_msg = f"Scored {len(all_scored_documents)} documents ({len(scored_documents)} above threshold ≥{score_threshold}), {high_scoring} high relevance (≥4.0){override_msg}"
+        if high_scoring_count < min_relevant:
+            status_msg += f" ⚠️ Below target of {min_relevant}"
+
+        update_callback(WorkflowStep.SCORE_DOCUMENTS, "completed", status_msg)
 
         # Return ALL scored documents, not just those above threshold
         # This allows users to see all scores and adjust thresholds later
@@ -949,3 +1072,74 @@ class WorkflowStepsHandler:
             'score_threshold': self.config_overrides.get('score_threshold', 2.5),
             'max_results': self.config_overrides.get('max_results', get_search_config().get('max_results', 100))
         }
+
+    def _execute_iterative_search_gui(
+        self,
+        question: str,
+        current_documents: List[Dict],
+        current_scored: List[Tuple[Dict, Dict]],
+        min_relevant: int,
+        score_threshold: float,
+        update_callback: Callable,
+        progress_callback: Optional[Callable] = None
+    ) -> Tuple[List[Dict], List[Tuple[Dict, Dict]]]:
+        """
+        Execute iterative search to find more relevant documents (GUI version).
+
+        Args:
+            question: User's research question
+            current_documents: Documents already fetched
+            current_scored: Documents already scored
+            min_relevant: Minimum number of high-scoring documents desired
+            score_threshold: Score threshold for "relevant" documents
+            update_callback: Callback for workflow step updates
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Tuple of (additional_documents, additional_scored_documents)
+        """
+        from ..config import get_search_config
+
+        search_config = get_search_config()
+        max_retry = self.config_overrides.get('max_retry', search_config.get('max_retry', 3))
+        batch_size = self.config_overrides.get('batch_size', search_config.get('batch_size', 100))
+
+        print(f"\n🔍 Starting iterative search to find at least {min_relevant} relevant documents...")
+        print(f"   Using threshold: {score_threshold}, max retries: {max_retry}, batch size: {batch_size}")
+
+        try:
+            # Create a progress callback that just prints status (no GUI updates during iterative search)
+            def gui_progress_callback(status: str):
+                print(f"   {status}")
+                # Don't call the GUI progress_callback since it expects (current, total) integers
+                # and we don't have reliable counts during iterative search
+
+            # Use QueryAgent's iterative search method
+            all_documents, all_scored = self.agents['query_agent'].find_abstracts_iterative(
+                question=question,
+                min_relevant=min_relevant,
+                score_threshold=score_threshold,
+                max_retry=max_retry,
+                batch_size=batch_size,
+                scoring_agent=self.agents['scoring_agent'],
+                progress_callback=gui_progress_callback
+            )
+
+            # Filter out documents we already have
+            existing_ids = {doc.get('id') for doc in current_documents}
+            additional_documents = [doc for doc in all_documents if doc.get('id') not in existing_ids]
+            additional_scored = [(doc, score) for doc, score in all_scored if doc.get('id') not in existing_ids]
+
+            if additional_documents:
+                print(f"✓ Iterative search found {len(additional_documents)} new documents "
+                      f"({len([s for d, s in additional_scored if s['score'] >= score_threshold])} above threshold)")
+            else:
+                print("⚠ Iterative search did not find any new documents")
+
+            return additional_documents, additional_scored
+
+        except Exception as e:
+            print(f"❌ Error during iterative search: {e}")
+            import traceback
+            traceback.print_exc()
+            return [], []

@@ -82,9 +82,25 @@ def create_max_results_field(value: int, on_change_handler) -> ft.TextField:
     )
 
 
+def create_min_relevant_field(value: int, on_change_handler) -> ft.TextField:
+    """Create the min relevant docs input field."""
+    return ft.TextField(
+        label="Min Relevant",
+        hint_text="10",
+        value=str(value),
+        width=120,
+        height=45,
+        text_align=ft.TextAlign.CENTER,
+        on_blur=on_change_handler,  # Use on_blur instead of on_change to avoid constant updates
+        input_filter=ft.NumbersOnlyInputFilter(),
+        tooltip="Minimum high-scoring documents to find (triggers iterative search)"
+    )
+
+
 def create_controls_section(
     question_field: ft.TextField,
     max_results_field: ft.TextField,
+    min_relevant_field: ft.TextField,
     human_loop_toggle: ft.Switch,
     counterfactual_toggle: ft.Switch,
     start_button: ft.ElevatedButton
@@ -95,19 +111,21 @@ def create_controls_section(
         question_field,
         ft.Container(width=20),  # Spacer
         start_button
-    ], alignment=ft.MainAxisAlignment.START, 
+    ], alignment=ft.MainAxisAlignment.START,
        vertical_alignment=ft.CrossAxisAlignment.END)
-    
-    # Second row: Max results, Interactive toggle, and Counterfactual toggle
+
+    # Second row: Max results, Min relevant, Interactive toggle, and Counterfactual toggle
     second_row = ft.Row([
         max_results_field,
+        ft.Container(width=10),  # Smaller spacer
+        min_relevant_field,
         ft.Container(width=20),  # Spacer
         human_loop_toggle,
         ft.Container(width=20),  # Spacer
         counterfactual_toggle
     ], alignment=ft.MainAxisAlignment.START,
        vertical_alignment=ft.CrossAxisAlignment.CENTER)
-    
+
     return ft.Container(
         content=ft.Column([
             first_row,

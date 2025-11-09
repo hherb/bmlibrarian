@@ -67,33 +67,81 @@ class WorkflowExecutionManager:
             return result
     
     def execute_document_scoring(self, question: str, documents: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-        """Execute document scoring with user review."""
+        """Execute document scoring with user review and iterative search if needed."""
+        from bmlibrarian.config import get_search_config, get_query_generation_config
+
         try:
             self.ui.show_progress_message(f"Scoring {len(documents)} documents for relevance to:")
             print(f'   "{question}"')
             self.ui.show_info_message("This may take a few minutes...")
-            
+
             scored_docs = []
-            
+
             # Score documents with progress indication
             for i, doc in enumerate(documents, 1):
                 if self.config.show_progress:
                     print(f"   Scoring document {i}/{len(documents)}: {doc.get('title', 'Untitled')[:50]}...")
-                
+
                 score_result = self.agent_manager.scoring_agent.evaluate_document(question, doc)
-                
+
                 if score_result:
                     scored_docs.append((doc, score_result))
                 else:
                     self.ui.show_warning_message(f"Failed to score document {i}")
-            
+
             if not scored_docs:
                 self.ui.show_error_message("No documents could be scored. Check Ollama connection.")
                 return []
-            
+
             # Sort by score (descending)
             scored_docs.sort(key=lambda x: x[1].get('score', 0), reverse=True)
-            
+
+            # Check if we need to trigger iterative search
+            search_config = get_search_config()
+            qg_config = get_query_generation_config()
+            min_relevant = search_config.get('min_relevant', 10)
+            score_threshold = self.config.default_score_threshold
+
+            # Count high-scoring documents
+            high_scoring_count = len([doc for doc, score in scored_docs if score.get('score', 0) >= score_threshold])
+
+            # Trigger iterative search if:
+            # 1. Not using multi-model (or multi-model failed to get enough)
+            # 2. High-scoring docs < min_relevant
+            # 3. Not in auto mode (requires user interaction)
+            if high_scoring_count < min_relevant and not self.config.auto_mode:
+                self.ui.show_warning_message(
+                    f"Found only {high_scoring_count}/{min_relevant} documents above threshold {score_threshold}"
+                )
+
+                # Ask user if they want to trigger iterative search
+                if not self.config.auto_mode:
+                    choice = input("\nWould you like to search for more relevant documents? (y/n): ").strip().lower()
+                    if choice in ['y', 'yes']:
+                        additional_docs, additional_scored = self._execute_iterative_search(
+                            question=question,
+                            current_documents=documents,
+                            current_scored=scored_docs,
+                            min_relevant=min_relevant,
+                            score_threshold=score_threshold
+                        )
+
+                        if additional_scored:
+                            # Merge and deduplicate
+                            seen_ids = {doc.get('id') for doc, _ in scored_docs}
+                            for doc, score in additional_scored:
+                                if doc.get('id') not in seen_ids:
+                                    scored_docs.append((doc, score))
+                                    seen_ids.add(doc.get('id'))
+
+                            # Re-sort
+                            scored_docs.sort(key=lambda x: x[1].get('score', 0), reverse=True)
+
+                            high_scoring_count = len([doc for doc, score in scored_docs if score.get('score', 0) >= score_threshold])
+                            self.ui.show_success_message(
+                                f"Iterative search complete: Now have {high_scoring_count} documents above threshold"
+                            )
+
             # User review of scores
             while True:
                 choice = self.ui.display_document_scores(scored_docs, self.config.default_score_threshold)
@@ -413,3 +461,69 @@ class WorkflowExecutionManager:
         except Exception as e:
             self.ui.show_error_message(f"Error generating comprehensive report: {e}")
             return None
+
+    def _execute_iterative_search(
+        self,
+        question: str,
+        current_documents: List[Dict[str, Any]],
+        current_scored: List[Tuple[Dict[str, Any], Dict[str, Any]]],
+        min_relevant: int,
+        score_threshold: float
+    ) -> Tuple[List[Dict[str, Any]], List[Tuple[Dict[str, Any], Dict[str, Any]]]]:
+        """
+        Execute iterative search to find more relevant documents.
+
+        Args:
+            question: User's research question
+            current_documents: Documents already fetched
+            current_scored: Documents already scored
+            min_relevant: Minimum number of high-scoring documents desired
+            score_threshold: Score threshold for "relevant" documents
+
+        Returns:
+            Tuple of (additional_documents, additional_scored_documents)
+        """
+        from bmlibrarian.config import get_search_config
+
+        search_config = get_search_config()
+        max_retry = search_config.get('max_retry', 3)
+        batch_size = search_config.get('batch_size', 100)
+
+        self.ui.show_info_message(f"\nStarting iterative search to find at least {min_relevant} relevant documents...")
+        self.ui.show_info_message(f"Using threshold: {score_threshold}, max retries: {max_retry}, batch size: {batch_size}")
+
+        try:
+            # Create a progress callback to show updates to the user
+            def progress_callback(status: str):
+                print(f"   {status}")
+
+            # Use QueryAgent's iterative search method
+            all_documents, all_scored = self.agent_manager.query_agent.find_abstracts_iterative(
+                question=question,
+                min_relevant=min_relevant,
+                score_threshold=score_threshold,
+                max_retry=max_retry,
+                batch_size=batch_size,
+                scoring_agent=self.agent_manager.scoring_agent,
+                progress_callback=progress_callback
+            )
+
+            # Filter out documents we already have
+            existing_ids = {doc.get('id') for doc in current_documents}
+            additional_documents = [doc for doc in all_documents if doc.get('id') not in existing_ids]
+            additional_scored = [(doc, score) for doc, score in all_scored if doc.get('id') not in existing_ids]
+
+            if additional_documents:
+                self.ui.show_success_message(
+                    f"Iterative search found {len(additional_documents)} new documents "
+                    f"({len([s for d, s in additional_scored if s['score'] >= score_threshold])} above threshold)"
+                )
+            else:
+                self.ui.show_warning_message("Iterative search did not find any new documents")
+
+            return additional_documents, additional_scored
+
+        except Exception as e:
+            self.ui.show_error_message(f"Error during iterative search: {e}")
+            logger.error(f"Iterative search failed: {e}", exc_info=True)
+            return [], []

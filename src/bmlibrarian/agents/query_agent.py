@@ -737,3 +737,255 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         lines.append(f"{'='*80}")
 
         return "\n".join(lines)
+
+    def _generate_broader_query(self, original_query: str, user_question: str, attempt: int) -> str:
+        """
+        Generate a broader version of the query using LLM.
+
+        Args:
+            original_query: The original PostgreSQL tsquery string
+            user_question: The original user question
+            attempt: The attempt number (1-based) for progressive broadening
+
+        Returns:
+            Broader version of the query as PostgreSQL tsquery string
+        """
+        # Create a prompt asking the LLM to broaden the query
+        prompt = f"""Given the following medical research question and PostgreSQL to_tsquery string, generate a BROADER version of the query that will find more documents while staying relevant to the topic.
+
+Original Question: {user_question}
+Current Query: {original_query}
+Broadening Attempt: {attempt}
+
+Instructions for broadening (attempt {attempt}):
+{"1. Add synonyms and related medical terms" if attempt == 1 else ""}
+{"2. Replace some AND operators with OR to be less restrictive" if attempt == 2 else ""}
+{"3. Remove some specific terms and keep only the core concepts" if attempt >= 3 else ""}
+
+Return ONLY the broader to_tsquery string, no explanation.
+
+Example:
+Original: "aspirin & myocardial infarction & prevention"
+Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI | AMI | cardiac event) & (prevention | prophylaxis)"
+"""
+
+        try:
+            # Call Ollama LLM to generate broader query
+            messages = [{'role': 'user', 'content': prompt}]
+            response = self._make_ollama_request(
+                messages,
+                system_prompt="You are an expert at creating PostgreSQL to_tsquery search strings for medical literature. Return only the query, no explanation.",
+                num_predict=200  # Allow longer response for complex queries
+            )
+
+            # Clean up the response
+            broader_query = response.strip()
+
+            # Validate it's a reasonable query
+            if not broader_query or len(broader_query) < 3:
+                logger.warning(f"LLM returned invalid broader query: '{broader_query}', using original")
+                return original_query
+
+            # Fix common syntax errors
+            broader_query = fix_tsquery_syntax(broader_query)
+
+            logger.info(f"Generated broader query (attempt {attempt}): {broader_query}")
+            return broader_query
+
+        except Exception as e:
+            logger.error(f"Failed to generate broader query: {e}")
+            return original_query
+
+    def find_abstracts_iterative(
+        self,
+        question: str,
+        min_relevant: int = 10,
+        score_threshold: float = 2.5,
+        max_retry: int = 3,
+        batch_size: int = 100,
+        scoring_agent = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        **search_kwargs
+    ):
+        """
+        Iteratively fetch and score documents until min_relevant high-scoring docs found.
+
+        This method implements a two-phase iterative search:
+        1. Phase 1 (Offset-based): Fetch additional batches with increasing offset (up to max_retry)
+        2. Phase 2 (Query modification): Generate broader queries via LLM (up to max_retry * max_retry)
+
+        The method scores documents as they are fetched and stops early when min_relevant
+        documents above score_threshold have been found.
+
+        Args:
+            question: Natural language research question
+            min_relevant: Minimum number of high-scoring documents to find (default: 10)
+            score_threshold: Minimum score to count as "relevant" (default: 2.5)
+            max_retry: Maximum retries per strategy phase (default: 3)
+            batch_size: Number of documents to fetch per iteration (default: 100)
+            scoring_agent: DocumentScoringAgent instance for scoring documents
+            progress_callback: Optional callback for progress updates (receives status string)
+            **search_kwargs: Additional arguments to pass to find_abstracts()
+
+        Returns:
+            Tuple of (all_documents, all_scored_documents)
+            - all_documents: List of all fetched documents
+            - all_scored_documents: List of tuples (document, ScoringResult) for all scored docs
+
+        Raises:
+            ValueError: If scoring_agent is not provided
+        """
+        if scoring_agent is None:
+            raise ValueError("scoring_agent is required for iterative search")
+
+        # Convert question to query
+        tsquery = self.convert_question(question)
+        logger.info(f"Starting iterative search with query: {tsquery}")
+
+        # Track all documents and scored results
+        all_documents = []
+        all_scored_documents = []
+        seen_doc_ids = set()
+
+        def _score_and_track(docs, phase_name: str):
+            """Helper to score a batch of documents and track results."""
+            if not docs:
+                return 0
+
+            high_scoring_count = 0
+            for doc in docs:
+                doc_id = doc.get('id')
+                if doc_id in seen_doc_ids:
+                    continue
+                seen_doc_ids.add(doc_id)
+                all_documents.append(doc)
+
+                # Score the document
+                try:
+                    score_result = scoring_agent.evaluate_document(question, doc)
+                    all_scored_documents.append((doc, score_result))
+
+                    if score_result['score'] >= score_threshold:
+                        high_scoring_count += 1
+
+                    if progress_callback:
+                        progress_callback(
+                            f"{phase_name}: Fetched {len(all_documents)} total, "
+                            f"{len([s for d, s in all_scored_documents if s['score'] >= score_threshold])} "
+                            f"above threshold (need {min_relevant})"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to score document {doc_id}: {e}")
+
+            return high_scoring_count
+
+        # Phase 1: Offset-based pagination
+        offset = 0
+        for retry in range(max_retry):
+            if progress_callback:
+                progress_callback(f"Phase 1: Offset-based fetch {retry + 1}/{max_retry}")
+
+            # Fetch batch
+            try:
+                documents = self.find_abstracts(
+                    question=question,
+                    max_rows=batch_size,
+                    offset=offset,
+                    **search_kwargs
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch documents at offset {offset}: {e}")
+                break
+
+            # If no documents returned, we've exhausted the database
+            if not documents:
+                logger.info(f"No more documents available at offset {offset}")
+                break
+
+            # Score the batch
+            _score_and_track(documents, f"Batch {retry + 1}/{max_retry}")
+
+            # Check if we have enough high-scoring documents
+            high_scoring_count = len([s for d, s in all_scored_documents if s['score'] >= score_threshold])
+            if high_scoring_count >= min_relevant:
+                logger.info(f"Found {high_scoring_count} high-scoring documents, stopping search")
+                if progress_callback:
+                    progress_callback(f"✓ Success! Found {high_scoring_count} documents above threshold")
+                return all_documents, all_scored_documents
+
+            # Move to next batch
+            offset += batch_size
+
+        # Phase 2: Query modification
+        # If we still don't have enough, try modifying the query
+        high_scoring_count = len([s for d, s in all_scored_documents if s['score'] >= score_threshold])
+        if high_scoring_count < min_relevant:
+            logger.info(
+                f"After offset-based search: {high_scoring_count}/{min_relevant} high-scoring docs. "
+                f"Starting query modification phase..."
+            )
+
+            total_query_attempts = max_retry * max_retry
+            current_query = tsquery
+
+            for modification_attempt in range(1, total_query_attempts + 1):
+                if progress_callback:
+                    progress_callback(
+                        f"Phase 2: Query modification {modification_attempt}/{total_query_attempts}"
+                    )
+
+                # Generate broader query
+                broader_query = self._generate_broader_query(current_query, question, modification_attempt)
+
+                # If query didn't change, skip
+                if broader_query == current_query:
+                    logger.warning(f"Query modification {modification_attempt} produced same query, skipping")
+                    continue
+
+                current_query = broader_query
+
+                # Try fetching with the new query (reset offset)
+                try:
+                    documents = list(find_abstracts(
+                        ts_query_str=current_query,
+                        max_rows=batch_size,
+                        offset=0,
+                        plain=False,  # We're using to_tsquery format
+                        **search_kwargs
+                    ))
+                except Exception as e:
+                    logger.error(f"Failed to fetch with modified query: {e}")
+                    continue
+
+                if not documents:
+                    logger.info(f"No documents found with modified query: {current_query}")
+                    continue
+
+                # Score the new batch
+                _score_and_track(documents, f"Modified Query {modification_attempt}/{total_query_attempts}")
+
+                # Check if we have enough now
+                high_scoring_count = len([s for d, s in all_scored_documents if s['score'] >= score_threshold])
+                if high_scoring_count >= min_relevant:
+                    logger.info(f"Found {high_scoring_count} high-scoring documents after query modification")
+                    if progress_callback:
+                        progress_callback(f"✓ Success! Found {high_scoring_count} documents above threshold")
+                    return all_documents, all_scored_documents
+
+        # Final count
+        high_scoring_count = len([s for d, s in all_scored_documents if s['score'] >= score_threshold])
+        logger.warning(
+            f"Exhausted all search strategies. Found {high_scoring_count}/{min_relevant} "
+            f"high-scoring documents from {len(all_documents)} total documents."
+        )
+
+        if progress_callback:
+            if high_scoring_count < min_relevant:
+                progress_callback(
+                    f"⚠ Search complete: Found {high_scoring_count}/{min_relevant} documents "
+                    f"above threshold (database may have limited relevant content)"
+                )
+            else:
+                progress_callback(f"✓ Search complete: Found {high_scoring_count} documents above threshold")
+
+        return all_documents, all_scored_documents

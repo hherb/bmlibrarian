@@ -16,8 +16,8 @@ from .tab_manager import TabManager
 from .event_handlers import EventHandlers
 from .data_updaters import DataUpdaters
 from .ui_builder import (
-    create_header, create_question_field, create_toggle_switch, 
-    create_start_button, create_max_results_field, create_controls_section
+    create_header, create_question_field, create_toggle_switch,
+    create_start_button, create_max_results_field, create_min_relevant_field, create_controls_section
 )
 from ..cli.workflow_steps import WorkflowStep
 from ..cli import CLIConfig, UserInterface, QueryProcessor, ReportFormatter, WorkflowOrchestrator
@@ -41,14 +41,16 @@ class ResearchGUI:
         # GUI components (will be initialized in _build_ui)
         self.question_field = None
         self.max_results_field = None
+        self.min_relevant_field = None
         self.human_loop_toggle = None
         self.counterfactual_toggle = None
         self.start_button = None
         self.step_cards: Dict[WorkflowStep, StepCard] = {}
         self.status_text = None
-        
-        # Default max results value
+
+        # Default max results and min relevant values
         self.max_results = 100
+        self.min_relevant = 10
         
         # Managers and handlers (initialized in main())
         self.tab_manager = None
@@ -134,16 +136,22 @@ class ResearchGUI:
         try:
             from ..config import get_search_config
             search_config = get_search_config()
-            
+
             # Load max_results from config if not already set by command line
             if 'max_results' not in self.config_overrides:
                 self.max_results = search_config.get('max_results', 100)
-            
+
+            # Load min_relevant from config
+            if 'min_relevant' not in self.config_overrides:
+                self.min_relevant = search_config.get('min_relevant', 10)
+
         except Exception as e:
             print(f"Warning: Could not load config defaults: {e}")
             # Use fallback defaults
             if 'max_results' not in self.config_overrides:
                 self.max_results = 100
+            if 'min_relevant' not in self.config_overrides:
+                self.min_relevant = 10
     
     def _apply_config_overrides(self):
         """Apply command-line overrides to configuration."""
@@ -170,25 +178,29 @@ class ResearchGUI:
         """Build the main user interface using modular components."""
         # Create header
         header = create_header()
-        
+
         # Create input components
         self.question_field = create_question_field(self.event_handlers.on_question_change)
         self.max_results_field = create_max_results_field(
             self.max_results,
             self.event_handlers.on_max_results_change
         )
+        self.min_relevant_field = create_min_relevant_field(
+            self.min_relevant,
+            self.event_handlers.on_min_relevant_change
+        )
         self.human_loop_toggle = create_toggle_switch(
-            "Interactive mode", 
-            self.human_in_loop, 
+            "Interactive mode",
+            self.human_in_loop,
             self.event_handlers.on_human_loop_toggle_change
         )
         self.counterfactual_toggle = create_toggle_switch(
-            "Comprehensive counterfactual analysis", 
+            "Comprehensive counterfactual analysis",
             self.comprehensive_counterfactual,
             self.event_handlers.on_counterfactual_toggle_change
         )
         self.start_button = create_start_button(self.event_handlers.on_start_research)
-        
+
         # Create status text (hidden by default)
         self.status_text = ft.Text(
             "Enter a research question to begin",
@@ -196,11 +208,12 @@ class ResearchGUI:
             color=ft.Colors.GREY_600,
             visible=False
         )
-        
+
         # Create controls section with new layout
         controls_section = create_controls_section(
             self.question_field,
             self.max_results_field,
+            self.min_relevant_field,
             self.human_loop_toggle,
             self.counterfactual_toggle,
             self.start_button

@@ -51,6 +51,14 @@ class EventHandlers:
         if self.app.page:
             self.app.page.update()
 
+    def on_min_relevant_change(self, e):
+        """Handle min relevant input when field loses focus."""
+        value = self._validate_and_update_min_relevant(e.control.value.strip(), e.control)
+        self._apply_min_relevant_config(value)
+
+        if self.app.page:
+            self.app.page.update()
+
     def on_step_expand(self, card: StepCard, expanded: bool):
         """Handle step card expansion change."""
         if self.app.page:
@@ -192,6 +200,31 @@ class EventHandlers:
         self.app.config_overrides['max_results'] = value
         if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
             self.app.workflow_executor.config_overrides['max_results'] = value
+
+    def _validate_and_update_min_relevant(self, raw_value: str, control) -> int:
+        """Validate and return a valid min_relevant value."""
+        if not raw_value:
+            value = 10
+            control.value = str(value)
+        else:
+            try:
+                value = int(raw_value)
+                # Clamp to valid range (1-100)
+                value = max(1, min(100, value))
+                control.value = str(value)
+            except ValueError:
+                # Reset to current valid value if invalid input
+                value = self.app.min_relevant
+                control.value = str(value)
+
+        return value
+
+    def _apply_min_relevant_config(self, value: int):
+        """Apply min_relevant value to all relevant configuration locations."""
+        self.app.min_relevant = value
+        self.app.config_overrides['min_relevant'] = value
+        if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
+            self.app.workflow_executor.config_overrides['min_relevant'] = value
 
     def _start_workflow_execution(self):
         """Prepare and start workflow execution in a thread."""

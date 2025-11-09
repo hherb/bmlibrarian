@@ -26,8 +26,16 @@ def fix_tsquery_syntax(query: str) -> str:
     """
     # Basic cleanup - remove function prefixes
     query = query.strip()
+
+    # Remove function prefixes at the start
     if query.startswith(('to_tsquery:', 'tsquery:')):
         query = re.sub(r'^[a-z_]+:\s*', '', query, flags=re.IGNORECASE)
+
+    # Also handle cases where the LLM mistakenly includes "to_tsquery:" in the middle
+    # Example: 'phrase' to_tsquery: 'phrase'&...
+    # Remove everything up to and including "to_tsquery:" or "tsquery:"
+    if ' to_tsquery:' in query.lower() or ' tsquery:' in query.lower():
+        query = re.sub(r'^.*?\s+(?:to_)?tsquery:\s*', '', query, flags=re.IGNORECASE)
 
     # Remove markdown code blocks (``` or ```sql, etc.) - LLMs sometimes wrap queries
     if query.startswith('```') and query.endswith('```'):
@@ -141,6 +149,65 @@ def fix_tsquery_syntax(query: str) -> str:
 
     # Clean up extra spaces
     query = re.sub(r'\s+', ' ', query).strip()
+
+    # FINAL FIX: Balance unmatched quotes
+    # Count single quotes outside of valid escaped apostrophes (''s pattern)
+    # Replace escaped apostrophes with placeholder to exclude from count
+    ESCAPED_APOSTROPHE = '\x01ESCAPED\x01'
+    temp_query = query.replace("''", ESCAPED_APOSTROPHE)
+
+    # Count single quotes
+    quote_count = temp_query.count("'")
+
+    # If odd number of quotes, we have an unbalanced quote
+    if quote_count % 2 != 0:
+        # Find and remove orphaned quotes (quotes not part of a phrase)
+        # Strategy: Remove quotes that don't have a matching pair
+        parts = []
+        in_quote = False
+        current_part = []
+
+        for i, char in enumerate(query):
+            if char == "'":
+                # Check if this is part of an escaped apostrophe ''
+                if i + 1 < len(query) and query[i + 1] == "'":
+                    current_part.append("''")
+                    continue
+                elif i > 0 and query[i - 1] == "'":
+                    # Already handled as part of ''
+                    continue
+
+                # This is a real quote - toggle state
+                if in_quote:
+                    # Closing quote
+                    current_part.append(char)
+                    parts.append(''.join(current_part))
+                    current_part = []
+                    in_quote = False
+                else:
+                    # Opening quote
+                    if current_part:
+                        parts.append(''.join(current_part))
+                        current_part = []
+                    current_part.append(char)
+                    in_quote = True
+            else:
+                current_part.append(char)
+
+        # If we're still in quote at the end, we have an unbalanced quote
+        if in_quote:
+            # Remove the opening quote from the last part
+            final_part = ''.join(current_part)
+            if final_part.startswith("'"):
+                final_part = final_part[1:]
+            parts.append(final_part)
+        elif current_part:
+            parts.append(''.join(current_part))
+
+        query = ''.join(parts)
+
+        # Clean up any double spaces that may have been created
+        query = re.sub(r'\s+', ' ', query).strip()
 
     return query
 
