@@ -319,7 +319,9 @@ class UnifiedDocumentCard:
                 f"Title: {title}",
                 size=11,
                 weight=ft.FontWeight.BOLD,
-                color=ft.Colors.BLUE_900
+                color=ft.Colors.BLUE_900,
+                no_wrap=False,  # Allow text wrapping
+                selectable=True  # Allow text selection
             ),
             padding=ft.padding.only(bottom=8)
         )
@@ -335,7 +337,9 @@ class UnifiedDocumentCard:
             content=ft.Text(
                 f"Authors: {authors_str}",
                 size=10,
-                color=ft.Colors.GREY_700
+                color=ft.Colors.GREY_700,
+                no_wrap=False,  # Allow text wrapping
+                selectable=True  # Allow text selection
             ),
             padding=ft.padding.only(bottom=8)
         )
@@ -647,7 +651,8 @@ class UnifiedDocumentCard:
                 abstract,
                 size=10,
                 color=ft.Colors.GREY_800,
-                selectable=True
+                selectable=True,
+                no_wrap=False  # Allow text wrapping - CRITICAL for full display
             )
             title = "Abstract:"
 
