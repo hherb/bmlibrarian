@@ -170,11 +170,10 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
                     content.append(f"- *Relevance Score*: {score}")
                     content.append(f"- *Reasoning*: {reasoning}")
                     
-                    # Add abstract excerpt if available
+                    # Add full abstract (no truncation for auditability)
                     abstract = doc.get('abstract', '')
                     if abstract:
-                        abstract_excerpt = abstract[:300] + "..." if len(abstract) > 300 else abstract
-                        content.append(f"- *Abstract*: {abstract_excerpt}")
+                        content.append(f"- *Abstract*: {abstract}")
                     
                     # Add reference information
                     pmid = doc.get('pmid')
