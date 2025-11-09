@@ -617,15 +617,15 @@ def search_with_bm25(
 
     # Build source filter
     source_filters = []
-    if use_pubmed and 'pubmed' in db_manager.source_ids:
-        source_filters.append(f"source_id = {db_manager.source_ids['pubmed']}")
-    if use_medrxiv and 'medrxiv' in db_manager.source_ids:
-        source_filters.append(f"source_id = {db_manager.source_ids['medrxiv']}")
-    if use_others and 'other_sources' in db_manager.source_ids:
-        others = db_manager.source_ids['other_sources']
-        if isinstance(others, list):
+    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
+    if use_others and 'others' in DatabaseManager._source_ids:
+        others = DatabaseManager._source_ids['others']
+        if isinstance(others, list) and len(others) > 0:
             source_filters.append(f"source_id = ANY(ARRAY{others})")
-        else:
+        elif not isinstance(others, list):
             source_filters.append(f"source_id = {others}")
 
     source_filter = ""
@@ -739,15 +739,15 @@ def search_with_fulltext_function(
 
     # Build source filter
     source_filters = []
-    if use_pubmed and 'pubmed' in db_manager.source_ids:
-        source_filters.append(f"source_id = {db_manager.source_ids['pubmed']}")
-    if use_medrxiv and 'medrxiv' in db_manager.source_ids:
-        source_filters.append(f"source_id = {db_manager.source_ids['medrxiv']}")
-    if use_others and 'other_sources' in db_manager.source_ids:
-        others = db_manager.source_ids['other_sources']
-        if isinstance(others, list):
+    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
+    if use_others and 'others' in DatabaseManager._source_ids:
+        others = DatabaseManager._source_ids['others']
+        if isinstance(others, list) and len(others) > 0:
             source_filters.append(f"source_id = ANY(ARRAY{others})")
-        else:
+        elif not isinstance(others, list):
             source_filters.append(f"source_id = {others}")
 
     source_filter = ""
