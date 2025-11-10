@@ -22,13 +22,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Module logger
 logger = logging.getLogger(__name__)
 
+# HyDE Configuration Constants
+# Based on established research and best practices
+DEFAULT_RRF_K = 60  # Standard RRF constant from literature (Cormack et al., 2009)
+DEFAULT_GENERATION_TEMPERATURE = 0.3  # Low temperature for consistent hypothetical documents
+DEFAULT_ABSTRACT_LENGTH = 300  # Typical abstract length in tokens
+DEFAULT_NUM_HYPOTHETICAL_DOCS = 3  # Number of hypothetical documents to generate
+DEFAULT_EMBEDDING_MODEL_ID = 1  # snowflake-arctic-embed2:latest in database
+
 
 def generate_hypothetical_documents(
     question: str,
     client: Any,  # ollama.Client
     model: str,
-    num_docs: int = 3,
-    temperature: float = 0.3,
+    num_docs: int = DEFAULT_NUM_HYPOTHETICAL_DOCS,
+    temperature: float = DEFAULT_GENERATION_TEMPERATURE,
     callback: Optional[Callable[[str, str], None]] = None
 ) -> List[str]:
     """
@@ -91,7 +99,7 @@ Do NOT include titles, author names, or metadata - only the abstract text.
                 system=system_prompt,
                 options={
                     'temperature': temperature,
-                    'num_predict': 300  # Typical abstract length
+                    'num_predict': DEFAULT_ABSTRACT_LENGTH
                 }
             )
 
@@ -200,7 +208,7 @@ def search_with_embedding(
     results_dicts = search_by_embedding(
         embedding=embedding,
         max_results=max_results,
-        model_id=1  # Default embedding model ID
+        model_id=DEFAULT_EMBEDDING_MODEL_ID  # snowflake-arctic-embed2:latest
     )
 
     # Convert from dict format to tuple format for compatibility
@@ -214,7 +222,7 @@ def search_with_embedding(
 
 def reciprocal_rank_fusion(
     ranked_lists: List[List[Tuple[int, str, float]]],
-    k: int = 60
+    k: int = DEFAULT_RRF_K
 ) -> List[Tuple[int, str, float]]:
     """
     Fuse multiple ranked result lists using Reciprocal Rank Fusion (RRF).
@@ -259,7 +267,7 @@ def hyde_search(
     generation_model: str,
     embedding_model: str,
     max_results: int = 100,
-    num_hypothetical_docs: int = 3,
+    num_hypothetical_docs: int = DEFAULT_NUM_HYPOTHETICAL_DOCS,
     similarity_threshold: float = 0.7,
     callback: Optional[Callable[[str, str], None]] = None
 ) -> List[Dict[str, Any]]:
@@ -308,7 +316,7 @@ def hyde_search(
         client=client,
         model=generation_model,
         num_docs=num_hypothetical_docs,
-        temperature=0.3,
+        temperature=DEFAULT_GENERATION_TEMPERATURE,
         callback=callback
     )
 
@@ -340,7 +348,7 @@ def hyde_search(
     if callback:
         callback("hyde_search", "Fusing results with RRF...")
 
-    fused_results = reciprocal_rank_fusion(all_results, k=60)
+    fused_results = reciprocal_rank_fusion(all_results, k=DEFAULT_RRF_K)
 
     # Step 5: Filter and format results
     # Normalize RRF scores to 0-1 range for threshold filtering
