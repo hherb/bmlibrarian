@@ -631,14 +631,14 @@ def search_by_embedding(
         JOIN chunks c ON e.chunk_id = c.id
         JOIN document d ON c.document_id = d.id
         WHERE e.model_id = %s
-        ORDER BY e.embedding <=> %s::vector
+        ORDER BY similarity DESC
         LIMIT %s
     """
 
     results = []
     with db_manager.get_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(sql, (embedding, model_id, embedding, max_results))
+            cur.execute(sql, (embedding, model_id, max_results))
             results = cur.fetchall()
 
     logger.info(f"Vector search found {len(results)} documents")
