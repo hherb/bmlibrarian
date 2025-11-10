@@ -590,6 +590,61 @@ def fetch_documents_by_ids(
     return documents
 
 
+def search_by_embedding(
+    embedding: List[float],
+    max_results: int = 100,
+    model_id: int = 1
+) -> List[Dict[str, Any]]:
+    """
+    Search for documents using vector similarity (cosine distance).
+
+    Uses pgvector's cosine distance operator (<=>) to find documents
+    with chunks similar to the provided embedding vector.
+
+    Args:
+        embedding: The query embedding vector (list of floats)
+        max_results: Maximum number of documents to return (default: 100)
+        model_id: Embedding model ID in emb_1024 table (default: 1)
+
+    Returns:
+        List of document dictionaries with keys:
+        - id: Document ID
+        - title: Document title
+        - similarity: Cosine similarity score (1 - distance)
+
+    Example:
+        >>> embedding = [0.1, 0.2, 0.3, ...]  # 1024-dim vector
+        >>> results = search_by_embedding(embedding, max_results=50)
+        >>> for doc in results:
+        ...     print(f"{doc['title']}: {doc['similarity']:.3f}")
+    """
+    db_manager = get_db_manager()
+
+    # Query using pgvector cosine distance
+    # <=> operator returns cosine distance (0 = identical, 2 = opposite)
+    # So similarity = 1 - distance gives us a 0-1 score
+    sql = """
+        SELECT DISTINCT c.document_id AS id,
+               d.title,
+               1 - (e.embedding <=> %s::vector) AS similarity
+        FROM emb_1024 e
+        JOIN chunks c ON e.chunk_id = c.id
+        JOIN document d ON c.document_id = d.id
+        WHERE e.model_id = %s
+        ORDER BY e.embedding <=> %s::vector
+        LIMIT %s
+    """
+
+    results = []
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, (embedding, model_id, embedding, max_results))
+            results = cur.fetchall()
+
+    logger.info(f"Vector search found {len(results)} documents")
+    return results
+
+
 def close_database():
     """Close the database connection pool."""
     global _db_manager

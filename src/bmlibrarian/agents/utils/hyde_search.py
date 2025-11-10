@@ -10,13 +10,14 @@ Instead of directly embedding the user's question, HyDE:
 
 This approach often yields better results because hypothetical documents
 are more similar to the actual documents in the database than raw questions.
+
+IMPORTANT: All database interaction goes through the database manager
+(no direct psycopg usage). All LLM interaction uses the ollama library.
 """
 
-import os
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
-import psycopg
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,12 @@ def generate_hypothetical_documents(
     """
     Generate hypothetical biomedical documents that would answer the question.
 
+    Uses the ollama library's client.generate() method to create realistic
+    research abstracts.
+
     Args:
         question: The user's research question
-        client: Ollama client instance
+        client: Ollama client instance (ollama.Client)
         model: Model name for generation (e.g., medgemma-27b-text-it-Q8_0:latest)
         num_docs: Number of hypothetical documents to generate
         temperature: Temperature for generation (higher = more diversity)
@@ -44,6 +48,8 @@ def generate_hypothetical_documents(
         List of hypothetical document strings (abstracts)
 
     Example:
+        >>> import ollama
+        >>> client = ollama.Client(host="http://localhost:11434")
         >>> docs = generate_hypothetical_documents(
         ...     "What are the effects of aspirin on cardiovascular disease?",
         ...     client, "medgemma-27b-text-it-Q8_0:latest", num_docs=3
@@ -120,9 +126,11 @@ def embed_documents(
     """
     Generate embeddings for multiple documents.
 
+    Uses the ollama library's client.embeddings() method for vector generation.
+
     Args:
         documents: List of text documents to embed
-        client: Ollama client instance
+        client: Ollama client instance (ollama.Client)
         embedding_model: Embedding model name (e.g., nomic-embed-text:latest)
         callback: Optional callback for progress updates
 
@@ -164,16 +172,17 @@ def embed_documents(
 
 def search_with_embedding(
     embedding: List[float],
-    max_results: int,
-    db_params: Dict[str, Any]
+    max_results: int
 ) -> List[Tuple[int, str, float]]:
     """
     Search database using a single embedding vector.
 
+    Uses the database manager's search_by_embedding function for
+    vector similarity search via pgvector (NO direct psycopg usage).
+
     Args:
         embedding: The query embedding vector
         max_results: Maximum number of results to return
-        db_params: Database connection parameters
 
     Returns:
         List of (document_id, title, similarity_score) tuples
@@ -181,28 +190,23 @@ def search_with_embedding(
     Example:
         >>> results = search_with_embedding(
         ...     embedding=[0.1, 0.2, ...],
-        ...     max_results=100,
-        ...     db_params={'dbname': 'knowledgebase', ...}
+        ...     max_results=100
         ... )
     """
-    with psycopg.connect(**db_params) as conn:
-        with conn.cursor() as cur:
-            # Cosine similarity search using pgvector
-            # <=> is cosine distance operator, so 1 - distance = similarity
-            sql = """
-                SELECT DISTINCT c.document_id,
-                       d.title,
-                       1 - (e.embedding <=> %s::vector) AS similarity
-                FROM emb_1024 e
-                JOIN chunks c ON e.chunk_id = c.id
-                JOIN document d ON c.document_id = d.id
-                WHERE e.model_id = 1
-                ORDER BY e.embedding <=> %s::vector
-                LIMIT %s
-            """
+    from ...database import search_by_embedding
 
-            cur.execute(sql, (embedding, embedding, max_results))
-            results = cur.fetchall()
+    # Use database manager's vector search function
+    results_dicts = search_by_embedding(
+        embedding=embedding,
+        max_results=max_results,
+        model_id=1  # Default embedding model ID
+    )
+
+    # Convert from dict format to tuple format for compatibility
+    results = [
+        (doc['id'], doc['title'], doc['similarity'])
+        for doc in results_dicts
+    ]
 
     return results
 
@@ -262,15 +266,15 @@ def hyde_search(
     Perform HyDE (Hypothetical Document Embeddings) search.
 
     Main entry point for HyDE search. Orchestrates the full pipeline:
-    1. Generate hypothetical documents
-    2. Embed hypothetical documents
-    3. Search with each embedding
+    1. Generate hypothetical documents (via ollama library)
+    2. Embed hypothetical documents (via ollama library)
+    3. Search with each embedding (via database manager)
     4. Fuse results using RRF
     5. Filter by similarity threshold
 
     Args:
         question: The user's research question
-        client: Ollama client instance
+        client: Ollama client instance (ollama.Client)
         generation_model: Model for generating hypothetical docs
         embedding_model: Model for generating embeddings
         max_results: Maximum documents to return
@@ -293,19 +297,10 @@ def hyde_search(
         ...     num_hypothetical_docs=3
         ... )
     """
-    # Database connection parameters
-    db_params = {
-        "dbname": os.getenv("POSTGRES_DB", "knowledgebase"),
-        "user": os.getenv("POSTGRES_USER"),
-        "password": os.getenv("POSTGRES_PASSWORD"),
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "port": os.getenv("POSTGRES_PORT", "5432")
-    }
-
     if callback:
         callback("hyde_search", f"Starting HyDE search with {num_hypothetical_docs} hypothetical documents")
 
-    # Step 1: Generate hypothetical documents
+    # Step 1: Generate hypothetical documents (ollama library)
     logger.info(f"Generating {num_hypothetical_docs} hypothetical documents...")
     hypothetical_docs = generate_hypothetical_documents(
         question=question,
@@ -316,7 +311,7 @@ def hyde_search(
         callback=callback
     )
 
-    # Step 2: Generate embeddings for hypothetical documents
+    # Step 2: Generate embeddings for hypothetical documents (ollama library)
     logger.info(f"Generating embeddings for {len(hypothetical_docs)} documents...")
     embeddings = embed_documents(
         documents=hypothetical_docs,
@@ -325,7 +320,7 @@ def hyde_search(
         callback=callback
     )
 
-    # Step 3: Search with each embedding
+    # Step 3: Search with each embedding (database manager)
     logger.info(f"Searching database with {len(embeddings)} embeddings...")
     if callback:
         callback("hyde_search", f"Searching with {len(embeddings)} embeddings...")
@@ -334,8 +329,7 @@ def hyde_search(
     for i, embedding in enumerate(embeddings):
         results = search_with_embedding(
             embedding=embedding,
-            max_results=max_results,
-            db_params=db_params
+            max_results=max_results
         )
         all_results.append(results)
         logger.info(f"Search {i+1}/{len(embeddings)}: found {len(results)} documents")
