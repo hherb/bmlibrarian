@@ -16,9 +16,10 @@ IMPORTANT: All database interaction goes through the database manager
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# Module logger
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +29,7 @@ def generate_hypothetical_documents(
     model: str,
     num_docs: int = 3,
     temperature: float = 0.3,
-    callback: Optional[callable] = None
+    callback: Optional[Callable[[str, str], None]] = None
 ) -> List[str]:
     """
     Generate hypothetical biomedical documents that would answer the question.
@@ -121,7 +122,7 @@ def embed_documents(
     documents: List[str],
     client: Any,  # ollama.Client
     embedding_model: str,
-    callback: Optional[callable] = None
+    callback: Optional[Callable[[str, str], None]] = None
 ) -> List[List[float]]:
     """
     Generate embeddings for multiple documents.
@@ -260,7 +261,7 @@ def hyde_search(
     max_results: int = 100,
     num_hypothetical_docs: int = 3,
     similarity_threshold: float = 0.7,
-    callback: Optional[callable] = None
+    callback: Optional[Callable[[str, str], None]] = None
 ) -> List[Dict[str, Any]]:
     """
     Perform HyDE (Hypothetical Document Embeddings) search.
