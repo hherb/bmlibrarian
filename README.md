@@ -26,6 +26,7 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 - **ReportingAgent**: Synthesizes citations into medical publication-style reports
 - **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
 - **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
+- **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
 
 ### 🔄 Advanced Workflow Orchestration
 - **Enum-Based Workflow**: Flexible step orchestration with meaningful names
@@ -146,6 +147,31 @@ uv run python bmlibrarian_config_gui.py
 # - Multi-model query generation configuration tab
 # - Connection testing and validation
 # - Visual value displays for all configuration parameters
+```
+
+#### Fact Checker for LLM Training Data Auditing
+```bash
+# Check biomedical statements against literature evidence
+uv run python fact_checker_cli.py input.json -o results.json
+
+# Input format (input.json):
+# [
+#   {"statement": "All cases of childhood UC require colectomy", "answer": "no"},
+#   {"statement": "Vitamin D deficiency is common in IBD", "answer": "yes"}
+# ]
+
+# Quick mode for faster testing
+uv run python fact_checker_cli.py input.json -o results.json --quick
+
+# Custom thresholds
+uv run python fact_checker_cli.py input.json -o results.json \
+  --score-threshold 3.0 --max-search-results 100
+
+# Verbose mode with detailed output
+uv run python fact_checker_cli.py input.json -o results.json -v --detailed
+
+# Run demo
+uv run python examples/fact_checker_demo.py
 ```
 
 #### Browser-Based PDF Download (Optional)

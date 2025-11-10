@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "models": {
         "counterfactual_agent": "medgemma-27b-text-it-Q8_0:latest",
-        "query_agent": "medgemma-27b-text-it-Q8_0:latest", 
+        "query_agent": "medgemma-27b-text-it-Q8_0:latest",
         "scoring_agent": "medgemma-27b-text-it-Q8_0:latest",
         "citation_agent": "medgemma-27b-text-it-Q8_0:latest",
         "reporting_agent": "gpt-oss:20b",  # Keep larger model for complex report generation
         "editor_agent": "gpt-oss:20b",     # Use larger model for comprehensive editing
-        
+        "fact_checker_agent": "gpt-oss:20b",  # Use larger model for statement evaluation
+
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
         "complex_model": "gpt-oss:20b",
@@ -67,6 +68,14 @@ DEFAULT_CONFIG = {
             "top_p": 0.8,
             "max_tokens": 6000,
             "comprehensive_format": True
+        },
+        "fact_checker": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": 2000,
+            "score_threshold": 2.5,
+            "max_search_results": 50,
+            "max_citations": 10
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
