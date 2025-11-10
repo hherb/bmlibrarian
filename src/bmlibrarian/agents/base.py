@@ -292,7 +292,7 @@ class BaseAgent(ABC):
 
         Args:
             text: The text to embed
-            model: Optional embedding model name (defaults to nomic-embed-text:latest)
+            model: Optional embedding model name (defaults to snowflake-arctic-embed2:latest)
 
         Returns:
             List of floats representing the embedding vector
@@ -309,8 +309,8 @@ class BaseAgent(ABC):
         start_time = time.time()
         agent_logger = logging.getLogger('bmlibrarian.agents')
 
-        # Default to nomic-embed-text if no model specified
-        embedding_model = model or "nomic-embed-text:latest"
+        # Default to snowflake-arctic-embed2 (model_id=1 in database)
+        embedding_model = model or "snowflake-arctic-embed2:latest"
 
         # Log the request
         agent_logger.info(f"Ollama embedding request to {embedding_model}", extra={'structured_data': {
