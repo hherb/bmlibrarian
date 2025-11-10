@@ -62,6 +62,7 @@ class FactCheckResult:
     neutral_citations: int = 0
     expected_answer: Optional[str] = None
     matches_expected: Optional[bool] = None
+    input_statement_id: Optional[str] = None  # Original ID from input file (e.g., PMID)
     timestamp: str = None
 
     def __post_init__(self):
@@ -85,6 +86,9 @@ class FactCheckResult:
                 "timestamp": self.timestamp
             }
         }
+
+        if self.input_statement_id is not None:
+            result["input_statement_id"] = self.input_statement_id
 
         if self.expected_answer is not None:
             result["expected_answer"] = self.expected_answer
@@ -197,8 +201,13 @@ class FactCheckerAgent(BaseAgent):
             )
 
     def _filter_agent_params(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Filter agent configuration to only include supported parameters."""
-        supported_params = {'temperature', 'top_p', 'max_tokens', 'callback', 'orchestrator'}
+        """
+        Filter agent configuration to only include supported parameters.
+
+        Note: QueryAgent, DocumentScoringAgent, and CitationFinderAgent only support
+        temperature and top_p from the config. They don't accept max_tokens.
+        """
+        supported_params = {'temperature', 'top_p'}
         return {k: v for k, v in config.items() if k in supported_params}
 
     def check_statement(
@@ -301,11 +310,14 @@ class FactCheckerAgent(BaseAgent):
             search_question = self._statement_to_question(statement)
             self._call_callback("query", f"Query: {search_question}")
 
-            # Use QueryAgent to search
-            documents = self.query_agent.search_documents(
-                user_question=search_question,
-                max_results=max_results
+            # Use QueryAgent to search (find_abstracts returns a generator)
+            documents_generator = self.query_agent.find_abstracts(
+                question=search_question,
+                max_rows=max_results
             )
+
+            # Convert generator to list
+            documents = list(documents_generator)
 
             return documents
         except Exception as e:
@@ -344,34 +356,48 @@ class FactCheckerAgent(BaseAgent):
         statement: str,
         documents: List[Dict[str, Any]],
         threshold: float
-    ) -> List[tuple[Dict[str, Any], float]]:
-        """Score documents for relevance to the statement."""
+    ) -> List[tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Score documents for relevance to the statement.
+
+        Returns:
+            List of (document, scoring_result) tuples where scoring_result is a dict
+            with 'score' and 'reasoning' keys
+        """
         scored_docs = []
 
         for doc in documents:
             try:
-                score = self.scoring_agent.evaluate_document(
+                scoring_result = self.scoring_agent.evaluate_document(
                     user_question=statement,
                     document=doc
                 )
 
-                if score and score >= threshold:
-                    scored_docs.append((doc, score))
+                # Extract numeric score for threshold check
+                score = scoring_result['score']
+
+                if score >= threshold:
+                    # Store the full scoring_result dict, not just the score
+                    scored_docs.append((doc, scoring_result))
             except Exception as e:
                 logger.warning(f"Error scoring document {doc.get('id', 'unknown')}: {e}")
                 continue
 
-        # Sort by score descending
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        # Sort by score descending (access score from dict)
+        scored_docs.sort(key=lambda x: x[1]['score'], reverse=True)
 
         return scored_docs
 
     def _extract_citations(
         self,
         statement: str,
-        scored_documents: List[tuple[Dict[str, Any], float]]
+        scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]]
     ) -> List[Citation]:
-        """Extract relevant citations from scored documents."""
+        """Extract relevant citations from scored documents.
+
+        Args:
+            statement: The statement to fact-check
+            scored_documents: List of (document, scoring_result) tuples
+        """
         try:
             # Limit to top documents
             top_docs = scored_documents[:self.max_citations]
@@ -391,7 +417,7 @@ class FactCheckerAgent(BaseAgent):
         self,
         statement: str,
         citations: List[Citation],
-        scored_documents: List[tuple[Dict[str, Any], float]],
+        scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]],
         expected_answer: Optional[str] = None
     ) -> FactCheckResult:
         """
@@ -399,6 +425,12 @@ class FactCheckerAgent(BaseAgent):
 
         Uses LLM to analyze citations and determine if they support,
         contradict, or are neutral regarding the statement.
+
+        Args:
+            statement: The statement to fact-check
+            citations: Extracted citations
+            scored_documents: List of (document, scoring_result) tuples
+            expected_answer: Optional expected answer for validation
         """
         # Prepare evidence summary for LLM
         evidence_summary = self._prepare_evidence_summary(citations)
@@ -547,16 +579,24 @@ Respond ONLY with the JSON object, no additional text."""
     def _citations_to_evidence_refs(
         self,
         citations: List[Citation],
-        scored_documents: List[tuple[Dict[str, Any], float]],
+        scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]],
         citation_stances: Dict[str, str]
     ) -> List[EvidenceReference]:
-        """Convert Citation objects to EvidenceReference objects."""
+        """Convert Citation objects to EvidenceReference objects.
+
+        Args:
+            citations: List of Citation objects
+            scored_documents: List of (document, scoring_result) tuples
+            citation_stances: Dict mapping citation index to stance
+        """
         evidence_refs = []
 
         # Create document ID to score mapping (handle both int and str IDs)
+        # Extract numeric score from scoring_result dict
         doc_scores = {}
-        for doc, score in scored_documents:
+        for doc, scoring_result in scored_documents:
             doc_id = doc['id']
+            score = scoring_result['score']  # Extract numeric score from dict
             doc_scores[str(doc_id)] = score
             doc_scores[doc_id] = score
 
@@ -623,11 +663,17 @@ Respond ONLY with the JSON object, no additional text."""
         output_file: Optional[str] = None
     ) -> List[FactCheckResult]:
         """
-        Check multiple statements in batch.
+        Check multiple statements in batch with incremental file writing.
+
+        Results are written to the output file after each statement is processed
+        to prevent data loss in case of interruption. The summary statistics are
+        only added once all statements have been processed.
 
         Args:
-            statements: List of dicts with 'statement' and optional 'answer' keys
-            output_file: Optional file path to save results as JSON
+            statements: List of dicts with either:
+                - 'statement' and optional 'answer' keys (legacy format), OR
+                - 'id', 'question', and 'answer' keys (extracted format)
+            output_file: Optional file path to save results as JSON (incremental)
 
         Returns:
             List of FactCheckResult objects
@@ -637,9 +683,22 @@ Respond ONLY with the JSON object, no additional text."""
 
         self._call_callback("batch_start", f"Processing {total} statements...")
 
+        # Initialize output file if specified (create empty results array)
+        if output_file:
+            self._initialize_results_file(output_file)
+
         for i, item in enumerate(statements, 1):
-            statement = item.get('statement', '')
-            expected = item.get('answer')
+            # Support both formats: legacy ('statement'/'answer') and new ('id'/'question'/'answer')
+            if 'question' in item:
+                # New format from extract_qa.py
+                statement = item.get('question', '')
+                expected = item.get('answer')
+                item_id = item.get('id')
+            else:
+                # Legacy format
+                statement = item.get('statement', '')
+                expected = item.get('answer')
+                item_id = None
 
             self._call_callback("batch_progress", f"Processing {i}/{total}: {statement[:60]}...")
 
@@ -648,36 +707,154 @@ Respond ONLY with the JSON object, no additional text."""
                     statement=statement,
                     expected_answer=expected
                 )
+
+                # Store the original ID if provided
+                if item_id:
+                    result.input_statement_id = item_id
+
                 results.append(result)
             except Exception as e:
                 logger.error(f"Error checking statement '{statement}': {e}")
                 # Add error result
-                results.append(FactCheckResult(
+                error_result = FactCheckResult(
                     statement=statement,
                     evaluation="error",
                     reason=f"Error during fact-checking: {str(e)}",
                     evidence_list=[],
                     confidence="low",
-                    expected_answer=expected
-                ))
+                    expected_answer=expected,
+                    input_statement_id=item_id
+                )
+                results.append(error_result)
 
-        # Save to file if requested
+            # Write result incrementally after each statement
+            if output_file:
+                self._append_result_to_file(results[-1], output_file)
+
+        # Add summary statistics now that all statements are processed
         if output_file:
-            self._save_results(results, output_file)
+            self._finalize_results_file(results, output_file)
 
         self._call_callback("batch_complete", f"Completed {total} statements")
 
         return results
 
+    def check_batch_from_file(
+        self,
+        input_file: str,
+        output_file: Optional[str] = None
+    ) -> List[FactCheckResult]:
+        """
+        Check multiple statements from a JSON file.
+
+        Args:
+            input_file: Path to JSON file with statements (supports both legacy and extracted formats)
+            output_file: Optional file path to save results as JSON
+
+        Returns:
+            List of FactCheckResult objects
+        """
+        try:
+            with open(input_file, 'r', encoding='utf-8') as f:
+                statements = json.load(f)
+
+            if not isinstance(statements, list):
+                raise ValueError("Input file must contain a JSON array of statement objects")
+
+            self._call_callback("file_loaded", f"Loaded {len(statements)} statements from {input_file}")
+
+            return self.check_batch(statements, output_file)
+
+        except Exception as e:
+            logger.error(f"Error loading statements from file: {e}")
+            raise
+
+    def _initialize_results_file(self, output_file: str) -> None:
+        """Initialize the results file with an empty results array.
+
+        Args:
+            output_file: Path to the output JSON file
+        """
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump({"results": []}, f, indent=2)
+            logger.info(f"Initialized results file: {output_file}")
+        except Exception as e:
+            logger.error(f"Error initializing results file: {e}")
+            raise
+
+    def _append_result_to_file(self, result: FactCheckResult, output_file: str) -> None:
+        """Append a single result to the results file.
+
+        Reads the existing file, appends the new result, and writes back.
+        This ensures data is saved incrementally to prevent loss on interruption.
+
+        Args:
+            result: FactCheckResult to append
+            output_file: Path to the output JSON file
+        """
+        try:
+            # Read existing results
+            with open(output_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Append new result
+            if 'results' not in data:
+                data['results'] = []
+            data['results'].append(result.to_dict())
+
+            # Write back to file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+
+            logger.debug(f"Appended result to {output_file} (total: {len(data['results'])})")
+
+        except Exception as e:
+            logger.error(f"Error appending result to file: {e}")
+            # Don't raise - continue processing even if file write fails
+
+    def _finalize_results_file(self, results: List[FactCheckResult], output_file: str) -> None:
+        """Add summary statistics to the results file after all processing is complete.
+
+        Args:
+            results: List of all FactCheckResults
+            output_file: Path to the output JSON file
+        """
+        try:
+            # Read existing results from file
+            with open(output_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Add summary
+            data['summary'] = self._generate_summary(results)
+
+            # Write back to file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+
+            logger.info(f"Finalized results file with summary: {output_file}")
+            self._call_callback("save", f"Results saved to {output_file}")
+
+        except Exception as e:
+            logger.error(f"Error finalizing results file: {e}")
+
     def _save_results(self, results: List[FactCheckResult], output_file: str) -> None:
-        """Save results to JSON file."""
+        """Save results to JSON file (legacy method for compatibility).
+
+        Note: For batch processing, use check_batch which writes incrementally.
+        This method is kept for backward compatibility with direct calls.
+
+        Args:
+            results: List of FactCheckResults
+            output_file: Path to the output JSON file
+        """
         try:
             output_data = {
                 "results": [result.to_dict() for result in results],
                 "summary": self._generate_summary(results)
             }
 
-            with open(output_file, 'w') as f:
+            with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=2)
 
             logger.info(f"Results saved to {output_file}")

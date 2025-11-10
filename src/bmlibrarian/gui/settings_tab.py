@@ -370,18 +370,20 @@ class SettingsTab:
             print("🔧 Reinitializing agents with new configuration...")
 
             # Get orchestrator from existing agents if available
+            # Note: self.app.agents is a dictionary, not an object with attributes
             orchestrator = None
-            if hasattr(self.app.agents, 'query_agent') and hasattr(self.app.agents.query_agent, 'orchestrator'):
-                orchestrator = self.app.agents.query_agent.orchestrator
+            if isinstance(self.app.agents, dict) and 'query_agent' in self.app.agents:
+                if hasattr(self.app.agents['query_agent'], 'orchestrator'):
+                    orchestrator = self.app.agents['query_agent'].orchestrator
 
             # Reinitialize each agent with new config
             # Note: Using the same orchestrator to maintain queue system
-            self.app.agents.query_agent = QueryAgent(orchestrator=orchestrator)
-            self.app.agents.scoring_agent = DocumentScoringAgent(orchestrator=orchestrator)
-            self.app.agents.citation_agent = CitationFinderAgent(orchestrator=orchestrator)
-            self.app.agents.reporting_agent = ReportingAgent(orchestrator=orchestrator)
-            self.app.agents.counterfactual_agent = CounterfactualAgent(orchestrator=orchestrator)
-            self.app.agents.editor_agent = EditorAgent(orchestrator=orchestrator)
+            self.app.agents['query_agent'] = QueryAgent(orchestrator=orchestrator)
+            self.app.agents['scoring_agent'] = DocumentScoringAgent(orchestrator=orchestrator)
+            self.app.agents['citation_agent'] = CitationFinderAgent(orchestrator=orchestrator)
+            self.app.agents['reporting_agent'] = ReportingAgent(orchestrator=orchestrator)
+            self.app.agents['counterfactual_agent'] = CounterfactualAgent(orchestrator=orchestrator)
+            self.app.agents['editor_agent'] = EditorAgent(orchestrator=orchestrator)
 
             print("✅ Agents reinitialized successfully")
 

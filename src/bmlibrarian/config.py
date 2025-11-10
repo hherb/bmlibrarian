@@ -215,16 +215,19 @@ class BMLibrarianConfig:
                 current[config_path[-1]] = value
                 logger.info(f"Environment override: {env_var} = {value}")
     
-    def get_model(self, agent_type: str) -> str:
+    def get_model(self, agent_type: str, default: Optional[str] = None) -> str:
         """
         Get the model name for a specific agent type.
-        
+
         Args:
             agent_type: Type of agent (counterfactual_agent, query_agent, etc.)
-            
+            default: Optional default model to use if agent_type not found
+
         Returns:
             Model name string
         """
+        if default is not None:
+            return self._config["models"].get(agent_type, default)
         return self._config["models"].get(agent_type, self._config["models"]["medical_model"])
     
     def get_agent_config(self, agent_type: str) -> Dict[str, Any]:
@@ -370,9 +373,17 @@ def reload_config():
     _config_instance = BMLibrarianConfig()
 
 # Convenience functions for common operations
-def get_model(agent_type: str) -> str:
-    """Get model name for an agent type."""
-    return get_config().get_model(agent_type)
+def get_model(agent_type: str, default: Optional[str] = None) -> str:
+    """Get model name for an agent type.
+
+    Args:
+        agent_type: Type of agent (counterfactual_agent, query_agent, etc.)
+        default: Optional default model to use if agent_type not found
+
+    Returns:
+        Model name string
+    """
+    return get_config().get_model(agent_type, default=default)
 
 def get_agent_config(agent_type: str) -> Dict[str, Any]:
     """Get agent configuration."""
