@@ -22,3 +22,4 @@ src/bmlibrarian/gui/research_app_refactored.py
 .coverage
 *.db
 logs/
+PR_DESCRIPTION.md
