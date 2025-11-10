@@ -1,0 +1,22 @@
+[
+  {
+    "statement": "All cases of childhood ulcerative colitis require colectomy",
+    "answer": "no"
+  },
+  {
+    "statement": "Vitamin D deficiency is common in patients with inflammatory bowel disease",
+    "answer": "yes"
+  },
+  {
+    "statement": "Probiotics are effective for all forms of inflammatory bowel disease",
+    "answer": "maybe"
+  },
+  {
+    "statement": "Methotrexate is first-line therapy for Crohn's disease",
+    "answer": "no"
+  },
+  {
+    "statement": "Fecal microbiota transplantation can be effective for recurrent C. difficile infection",
+    "answer": "yes"
+  }
+]
