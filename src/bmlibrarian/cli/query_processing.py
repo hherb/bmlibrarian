@@ -11,17 +11,22 @@ from bmlibrarian.agents.utils.query_syntax import fix_tsquery_syntax
 
 class QueryProcessor:
     """Handles query generation, validation, editing, and search execution."""
-    
+
     def __init__(self, config, ui):
         self.config = config
         self.ui = ui
         self.query_agent: Optional[QueryAgent] = None
         self.current_question: Optional[str] = None
         self.current_query: Optional[str] = None
+        self.last_search_metadata: Optional[Dict[str, Any]] = None  # Store search strategy metadata
     
     def set_query_agent(self, query_agent: QueryAgent) -> None:
         """Set the query agent for database operations."""
         self.query_agent = query_agent
+
+    def get_last_search_metadata(self) -> Optional[Dict[str, Any]]:
+        """Get metadata about the last search performed."""
+        return self.last_search_metadata
     
     def search_documents_with_review(self, question: str) -> List[Dict[str, Any]]:
         """Use QueryAgent to search documents with human-in-the-loop query editing."""
@@ -139,22 +144,27 @@ class QueryProcessor:
             return []
     
     def _execute_database_search(self, query: str) -> List[Dict[str, Any]]:
-        """Execute database search with the given query."""
+        """Execute database search with the given query using hybrid search."""
         try:
-            from bmlibrarian.database import find_abstracts
+            from bmlibrarian.database import search_hybrid
 
             # Pre-process query to fix malformed quotes from LLM
             query = fix_tsquery_syntax(query)
 
-            documents = []
-            results_generator = find_abstracts(
-                query,
-                max_rows=self.config.max_search_results,
-                plain=False  # Use to_tsquery format
+            # Use hybrid search which combines semantic, BM25, and fulltext strategies
+            # Note: search_hybrid expects both search_text (for semantic) and query_text (for BM25/fulltext)
+            documents, strategy_metadata = search_hybrid(
+                search_text=self.current_question if self.current_question else query,  # Original question for semantic
+                query_text=query,  # Generated tsquery for BM25/fulltext
+                search_config=None  # Will read from config.json
             )
 
-            for doc in results_generator:
-                documents.append(doc)
+            # Store metadata for audit trail
+            self.last_search_metadata = strategy_metadata
+
+            # Apply max_rows limit if specified
+            if self.config.max_search_results > 0:
+                documents = documents[:self.config.max_search_results]
 
             return documents
 

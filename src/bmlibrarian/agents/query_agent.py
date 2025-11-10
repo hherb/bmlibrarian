@@ -11,7 +11,7 @@ from typing import Generator, Dict, Optional, Callable, TYPE_CHECKING, Any, List
 from datetime import date
 
 from .base import BaseAgent
-from ..database import find_abstracts
+from ..database import find_abstracts, search_hybrid
 from .utils.query_syntax import fix_tsquery_syntax
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class QueryAgent(BaseAgent):
     ):
         """
         Initialize the QueryAgent.
-        
+
         Args:
             model: The name of the Ollama model to use (default: medgemma4B_it_q8:latest)
             host: The Ollama server host URL (default: http://localhost:11434)
@@ -53,6 +53,9 @@ class QueryAgent(BaseAgent):
             show_model_info: Whether to display model information on initialization
         """
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
+
+        # Store last search strategy metadata for audit trail
+        self.last_search_metadata: Optional[Dict[str, Any]] = None
         
         # System prompt for biomedical query conversion
         self.system_prompt = """You are a biomedical literature search expert. Your task is to convert natural language questions into PostgreSQL to_tsquery format for searching biomedical publication abstracts.
@@ -92,6 +95,21 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "query_agent"
+
+    def get_last_search_metadata(self) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata about the last search performed.
+
+        Returns dictionary with search strategy information:
+        - strategies_used: List of strategies used ['semantic', 'bm25', 'fulltext']
+        - semantic_search_params: Dict with model, threshold, max_results, documents_found
+        - bm25_search_params: Dict with k1, b, max_results, query_expression, documents_found
+        - fulltext_search_params: Dict with query_expression, max_results, documents_found
+
+        Returns:
+            Dictionary with search strategy metadata, or None if no search performed yet
+        """
+        return self.last_search_metadata
     
     def convert_question(self, question: str) -> str:
         """
@@ -372,26 +390,38 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         if ts_query_str != ts_query_str_before:
             logger.info(f"Query syntax fixed: '{ts_query_str_before}' -> '{ts_query_str}'")
 
-        # Step 3: Search database with the final query
+        # Step 3: Search database with the final query using hybrid search
         try:
             self._call_callback("search_started", ts_query_str)
 
-            # Call the database find_abstracts function with plain=False since we generated to_tsquery format
-            yield from find_abstracts(
-                ts_query_str=ts_query_str,
-                max_rows=max_rows,
+            # Use hybrid search which combines semantic, BM25, and fulltext strategies
+            # Note: search_hybrid expects both search_text (for semantic) and query_text (for BM25/fulltext)
+            documents, strategy_metadata = search_hybrid(
+                search_text=question,  # Original question for semantic search
+                query_text=ts_query_str,  # Generated tsquery for BM25/fulltext
+                search_config=None,  # Will read from config.json
                 use_pubmed=use_pubmed,
                 use_medrxiv=use_medrxiv,
-                use_others=use_others,
-                plain=False,  # We generated to_tsquery format, not plain text
-                from_date=from_date,
-                to_date=to_date,
-                batch_size=batch_size,
-                use_ranking=use_ranking,
-                offset=offset
+                use_others=use_others
             )
 
-            self._call_callback("search_completed", ts_query_str)
+            # Store metadata for audit trail
+            self.last_search_metadata = strategy_metadata
+
+            # Apply max_rows limit if specified
+            if max_rows > 0:
+                documents = documents[:max_rows]
+
+            # Apply offset if specified
+            if offset > 0:
+                documents = documents[offset:]
+
+            # Yield documents
+            for doc in documents:
+                yield doc
+
+            self._call_callback("search_completed",
+                f"{len(documents)} docs via {', '.join(strategy_metadata.get('strategies_used', []))}")
 
         except Exception as e:
             self._call_callback("search_failed", str(e))

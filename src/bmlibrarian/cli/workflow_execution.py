@@ -26,11 +26,16 @@ class WorkflowExecutionManager:
         logger.info(f"Executing document search for: {question}")
         
         documents = self.query_processor.search_documents_with_review(question)
-        
+
         # Transfer the generated query to state manager for methodology tracking
         current_query = self.query_processor.get_current_query()
         if current_query:
             self.state_manager.update_query(current_query)
+
+        # Transfer search strategy metadata to state manager for audit trail
+        search_metadata = self.query_processor.get_last_search_metadata()
+        if search_metadata:
+            self.state_manager.update_search_strategies_metadata(search_metadata)
         
         if documents:
             logger.info(f"Document search successful: {len(documents)} documents found")

@@ -98,11 +98,10 @@ def display_results(results: List[Dict], max_display: int = 5):
             print(f"   Date: {doc.get('publication_date', 'N/A')}")
             print(f"   Source: {doc.get('source_name', 'N/A')}")
             
-            # Show abstract preview
+            # Show full abstract (no truncation for auditability)
             abstract = doc.get('abstract', '')
             if abstract:
-                preview = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                print(f"   Abstract: {preview}")
+                print(f"   Abstract: {abstract}")
             
             if doc.get('doi'):
                 print(f"   DOI: {doc['doi']}")

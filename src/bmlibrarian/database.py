@@ -645,6 +645,360 @@ def search_by_embedding(
     return results
 
 
+def search_with_bm25(
+    query_text: str,
+    max_results: int = 100,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using BM25 ranked full-text search.
+
+    Uses the PostgreSQL bm25() function for superior relevance ranking
+    with length normalization (approximates BM25 k1=1.2, b=0.75).
+
+    Args:
+        query_text: PostgreSQL tsquery expression (e.g., "diabetes & treatment")
+        max_results: Maximum number of results to return
+        use_pubmed: Include PubMed results
+        use_medrxiv: Include medRxiv results
+        use_others: Include other sources
+
+    Yields:
+        Document dictionaries ordered by BM25 rank (highest relevance first)
+    """
+    db_manager = get_db_manager()
+
+    # Build source filter
+    source_filters = []
+    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
+    if use_others and 'others' in DatabaseManager._source_ids:
+        others = DatabaseManager._source_ids['others']
+        if isinstance(others, list) and len(others) > 0:
+            source_filters.append(f"source_id = ANY(ARRAY{others})")
+        elif not isinstance(others, list):
+            source_filters.append(f"source_id = {others}")
+
+    source_filter = ""
+    if source_filters:
+        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+
+    logger.info(f"BM25 search: '{query_text}', max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use BM25 function with source filtering
+            sql = f"""
+                SELECT b.*, s.name as source_name
+                FROM bm25(%s, %s) b
+                LEFT JOIN sources s ON b.source_id = s.id
+                WHERE 1=1 {source_filter}
+            """
+
+            cur.execute(sql, (query_text, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"BM25 search completed for: '{query_text}'")
+
+
+def search_with_semantic(
+    search_text: str,
+    threshold: float = 0.7,
+    max_results: int = 100
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using semantic search with vector embeddings.
+
+    Uses the PostgreSQL semantic_search() function which calls ollama_embedding()
+    to generate embeddings and performs cosine similarity search on chunk embeddings.
+
+    Args:
+        search_text: Natural language search query
+        threshold: Minimum similarity score (0.0 to 1.0, default: 0.7)
+        max_results: Maximum number of results to return
+
+    Yields:
+        Document dictionaries with semantic similarity scores
+
+    Note:
+        - Uses snowflake-arctic-embed2:latest embedding model
+        - Returns chunk-level results, so documents may appear multiple times
+        - Embedding generation takes ~2-5 seconds per query
+    """
+    db_manager = get_db_manager()
+
+    logger.info(f"Semantic search: '{search_text}', threshold={threshold}, max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use semantic_search function, then join with document table
+            # Group by document to get unique documents with their best score
+            sql = """
+                WITH semantic_results AS (
+                    SELECT
+                        document_id,
+                        MAX(score) as best_score,
+                        COUNT(*) as matching_chunks
+                    FROM semantic_search(%s, %s, %s)
+                    GROUP BY document_id
+                )
+                SELECT
+                    d.*,
+                    s.name as source_name,
+                    sr.best_score as semantic_score,
+                    sr.matching_chunks
+                FROM semantic_results sr
+                JOIN document d ON sr.document_id = d.id
+                LEFT JOIN sources s ON d.source_id = s.id
+                ORDER BY sr.best_score DESC
+            """
+
+            cur.execute(sql, (search_text, threshold, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"Semantic search completed for: '{search_text}'")
+
+
+def search_with_fulltext_function(
+    query_text: str,
+    max_results: int = 100,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True
+) -> Generator[Dict, None, None]:
+    """
+    Search documents using the fulltext_search PostgreSQL function.
+
+    Uses the PostgreSQL fulltext_search() function for basic full-text search
+    with ts_rank scoring.
+
+    Args:
+        query_text: PostgreSQL tsquery expression (e.g., "diabetes & treatment")
+        max_results: Maximum number of results to return
+        use_pubmed: Include PubMed results
+        use_medrxiv: Include medRxiv results
+        use_others: Include other sources
+
+    Yields:
+        Document dictionaries ordered by ts_rank (highest relevance first)
+    """
+    db_manager = get_db_manager()
+
+    # Build source filter
+    source_filters = []
+    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
+    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
+        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
+    if use_others and 'others' in DatabaseManager._source_ids:
+        others = DatabaseManager._source_ids['others']
+        if isinstance(others, list) and len(others) > 0:
+            source_filters.append(f"source_id = ANY(ARRAY{others})")
+        elif not isinstance(others, list):
+            source_filters.append(f"source_id = {others}")
+
+    source_filter = ""
+    if source_filters:
+        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+
+    logger.info(f"Fulltext search: '{query_text}', max_results={max_results}")
+
+    with db_manager.get_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use fulltext_search function with source filtering
+            sql = f"""
+                SELECT f.*, s.name as source_name
+                FROM fulltext_search(%s, %s) f
+                LEFT JOIN sources s ON f.source_id = s.id
+                WHERE 1=1 {source_filter}
+            """
+
+            cur.execute(sql, (query_text, max_results))
+
+            for row in cur:
+                yield dict(row)
+
+    logger.info(f"Fulltext search completed for: '{query_text}'")
+
+
+def search_hybrid(
+    search_text: str,
+    query_text: str,
+    search_config: Optional[Dict[str, Any]] = None,
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True
+) -> tuple[List[Dict], Dict[str, Any]]:
+    """
+    Orchestrate hybrid search combining multiple search strategies.
+
+    Executes enabled search strategies (semantic, BM25, fulltext) based on
+    configuration, merges results, deduplicates by document ID, and returns
+    both the merged document list and metadata about which strategies were used.
+
+    Args:
+        search_text: Original natural language question
+        query_text: Generated PostgreSQL tsquery expression
+        search_config: Search strategy configuration dict (from config.json)
+        use_pubmed: Include PubMed results
+        use_medrxiv: Include medRxiv results
+        use_others: Include other sources
+
+    Returns:
+        Tuple of (documents, strategy_metadata):
+            - documents: List of unique documents with scores from each strategy
+            - strategy_metadata: Dict containing strategies used and their parameters
+    """
+    from .config import get_config
+
+    # Get search strategy configuration
+    if search_config is None:
+        search_config = get_config().get("search_strategy", {})
+
+    # Initialize result tracking
+    all_documents = {}  # document_id -> document dict with scores
+    strategies_used = []
+    strategy_metadata = {
+        'strategies_used': [],
+        'semantic_search_params': None,
+        'bm25_search_params': None,
+        'fulltext_search_params': None
+    }
+
+    logger.info("Starting hybrid search")
+    logger.info(f"  Search text: '{search_text}'")
+    logger.info(f"  Query text: '{query_text}'")
+
+    # Priority order: semantic -> BM25 -> fulltext
+    # 1. Semantic Search (if enabled)
+    semantic_config = search_config.get('semantic', {})
+    if semantic_config.get('enabled', False):
+        try:
+            threshold = semantic_config.get('similarity_threshold', 0.7)
+            max_results = semantic_config.get('max_results', 100)
+            embedding_model = semantic_config.get('embedding_model', 'snowflake-arctic-embed2:latest')
+
+            logger.info(f"Executing semantic search (threshold={threshold}, max={max_results})")
+
+            semantic_count = 0
+            for doc in search_with_semantic(search_text, threshold, max_results):
+                doc_id = doc['id']
+                if doc_id not in all_documents:
+                    all_documents[doc_id] = doc
+                    all_documents[doc_id]['_search_scores'] = {}
+                all_documents[doc_id]['_search_scores']['semantic'] = doc.get('semantic_score', 0)
+                semantic_count += 1
+
+            strategies_used.append('semantic')
+            strategy_metadata['semantic_search_params'] = {
+                'model': embedding_model,
+                'threshold': threshold,
+                'max_results': max_results,
+                'documents_found': semantic_count
+            }
+
+            logger.info(f"  Semantic search found {semantic_count} documents")
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}", exc_info=True)
+
+    # 2. BM25 Search (if enabled)
+    bm25_config = search_config.get('bm25', {})
+    if bm25_config.get('enabled', False):
+        try:
+            max_results = bm25_config.get('max_results', 100)
+            k1 = bm25_config.get('k1', 1.2)
+            b = bm25_config.get('b', 0.75)
+
+            logger.info(f"Executing BM25 search (k1={k1}, b={b}, max={max_results})")
+
+            bm25_count = 0
+            for doc in search_with_bm25(query_text, max_results, use_pubmed, use_medrxiv, use_others):
+                doc_id = doc['id']
+                if doc_id not in all_documents:
+                    all_documents[doc_id] = doc
+                    all_documents[doc_id]['_search_scores'] = {}
+                all_documents[doc_id]['_search_scores']['bm25'] = doc.get('rank', 0)
+                bm25_count += 1
+
+            strategies_used.append('bm25')
+            strategy_metadata['bm25_search_params'] = {
+                'k1': k1,
+                'b': b,
+                'max_results': max_results,
+                'query_expression': query_text,
+                'documents_found': bm25_count
+            }
+
+            logger.info(f"  BM25 search found {bm25_count} documents")
+
+        except Exception as e:
+            logger.error(f"BM25 search failed: {e}", exc_info=True)
+
+    # 3. Fulltext Search (if enabled) - fallback to keyword if neither semantic nor BM25
+    fulltext_config = search_config.get('keyword', {})  # Using 'keyword' for backward compatibility
+    fulltext_enabled = fulltext_config.get('enabled', False)
+
+    # Enable fulltext as fallback if no other strategies are enabled
+    if not strategies_used:
+        fulltext_enabled = True
+        logger.info("No search strategies enabled - using fulltext as fallback")
+
+    if fulltext_enabled:
+        try:
+            max_results = fulltext_config.get('max_results', 100)
+
+            logger.info(f"Executing fulltext search (max={max_results})")
+
+            fulltext_count = 0
+            for doc in search_with_fulltext_function(query_text, max_results, use_pubmed, use_medrxiv, use_others):
+                doc_id = doc['id']
+                if doc_id not in all_documents:
+                    all_documents[doc_id] = doc
+                    all_documents[doc_id]['_search_scores'] = {}
+                all_documents[doc_id]['_search_scores']['fulltext'] = doc.get('rank', 0)
+                fulltext_count += 1
+
+            strategies_used.append('fulltext')
+            strategy_metadata['fulltext_search_params'] = {
+                'max_results': max_results,
+                'query_expression': query_text,
+                'documents_found': fulltext_count
+            }
+
+            logger.info(f"  Fulltext search found {fulltext_count} documents")
+
+        except Exception as e:
+            logger.error(f"Fulltext search failed: {e}", exc_info=True)
+
+    # Update strategy metadata
+    strategy_metadata['strategies_used'] = strategies_used
+
+    # Convert to list and sort by combined score
+    documents = list(all_documents.values())
+
+    # Calculate combined scores (simple sum for now)
+    for doc in documents:
+        scores = doc.get('_search_scores', {})
+        doc['_combined_score'] = sum(scores.values())
+
+    # Sort by combined score (highest first)
+    documents.sort(key=lambda d: d.get('_combined_score', 0), reverse=True)
+
+    total_unique = len(documents)
+    logger.info(f"Hybrid search complete: {total_unique} unique documents from {len(strategies_used)} strategies")
+
+    return documents, strategy_metadata
+
+
 def close_database():
     """Close the database connection pool."""
     global _db_manager

@@ -47,6 +47,12 @@ class MethodologyMetadata:
     iterative_processing_used: bool = True
     context_window_management: bool = True
 
+    # Search strategy information (NEW)
+    search_strategies_used: Optional[List[str]] = None  # ['semantic', 'bm25', 'fulltext']
+    semantic_search_params: Optional[Dict[str, Any]] = None  # {model, threshold, max_results, documents_found}
+    bm25_search_params: Optional[Dict[str, Any]] = None  # {k1, b, max_results, query_expression, documents_found}
+    fulltext_search_params: Optional[Dict[str, Any]] = None  # {query_expression, max_results, documents_found}
+
     # AI Model Audit Trail
     query_model: Optional[str] = None
     scoring_model: Optional[str] = None
@@ -251,10 +257,47 @@ class ReportingAgent(BaseAgent):
         sections = []
         
         # Query Generation Section
-        sections.append("**Search Strategy:**")
-        sections.append(f"The research question '{metadata.human_question}' was converted into a database query: '{metadata.generated_query}'. ")
-        sections.append(f"This query identified {metadata.total_documents_found:,} potentially relevant documents from the biomedical literature database.")
+        sections.append("**Query Generation:**")
+        sections.append(f"The research question '{metadata.human_question}' was converted into a database query: '{metadata.generated_query}'.")
         sections.append("")
+
+        # Search Strategy Section (NEW)
+        if metadata.search_strategies_used:
+            sections.append("**Search Methods:**")
+
+            strategies = metadata.search_strategies_used
+            search_methods = []
+
+            if 'semantic' in strategies and metadata.semantic_search_params:
+                params = metadata.semantic_search_params
+                search_methods.append(
+                    f"Semantic search using {params['model']} embedding model "
+                    f"(threshold: {params['threshold']}, found: {params['documents_found']} documents)"
+                )
+
+            if 'bm25' in strategies and metadata.bm25_search_params:
+                params = metadata.bm25_search_params
+                search_methods.append(
+                    f"BM25 ranking search with query '{params['query_expression']}' "
+                    f"(k1={params['k1']}, b={params['b']}, found: {params['documents_found']} documents)"
+                )
+
+            if 'fulltext' in strategies and metadata.fulltext_search_params:
+                params = metadata.fulltext_search_params
+                search_methods.append(
+                    f"Full-text search with query '{params['query_expression']}' "
+                    f"(found: {params['documents_found']} documents)"
+                )
+
+            for method in search_methods:
+                sections.append(f"- {method}")
+
+            sections.append(f"Combined search across {len(strategies)} methods yielded {metadata.total_documents_found:,} unique documents after deduplication.")
+            sections.append("")
+        else:
+            # Fallback for when no search strategy metadata is available
+            sections.append(f"This query identified {metadata.total_documents_found:,} potentially relevant documents from the biomedical literature database.")
+            sections.append("")
         
         # Document Scoring Section
         sections.append("**Document Relevance Assessment:**")
