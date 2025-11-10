@@ -283,6 +283,92 @@ class BaseAgent(ABC):
             }})
             raise
 
+    def _generate_embedding(self, text: str, model: Optional[str] = None) -> list[float]:
+        """
+        Generate embedding vector for text using Ollama.
+
+        Uses the ollama library's native embeddings() method for generating
+        vector embeddings. Useful for semantic search and similarity tasks.
+
+        Args:
+            text: The text to embed
+            model: Optional embedding model name (defaults to nomic-embed-text:latest)
+
+        Returns:
+            List of floats representing the embedding vector
+
+        Raises:
+            ConnectionError: If unable to connect to Ollama
+            ValueError: If the response is invalid
+
+        Examples:
+            >>> embedding = self._generate_embedding("What is cardiovascular disease?")
+            >>> len(embedding)
+            768  # or 1024 depending on model
+        """
+        start_time = time.time()
+        agent_logger = logging.getLogger('bmlibrarian.agents')
+
+        # Default to nomic-embed-text if no model specified
+        embedding_model = model or "nomic-embed-text:latest"
+
+        # Log the request
+        agent_logger.info(f"Ollama embedding request to {embedding_model}", extra={'structured_data': {
+            'event_type': 'agent_ollama_embedding',
+            'agent_type': self.get_agent_type(),
+            'model': embedding_model,
+            'text_length': len(text),
+            'timestamp': start_time
+        }})
+
+        try:
+            response = self.client.embeddings(
+                model=embedding_model,
+                prompt=text
+            )
+
+            embedding = response['embedding']
+            if not embedding:
+                raise ValueError("Empty embedding from model")
+
+            # Log successful response
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.info(f"Ollama embedding received in {response_time:.2f}ms", extra={'structured_data': {
+                'event_type': 'agent_ollama_embedding_response',
+                'agent_type': self.get_agent_type(),
+                'model': embedding_model,
+                'embedding_dim': len(embedding),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+
+            return embedding
+
+        except ollama.ResponseError as e:
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Ollama embedding error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': embedding_model,
+                'error_type': 'ResponseError',
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+            raise ConnectionError(f"Failed to get embedding from Ollama: {e}")
+        except Exception as e:
+            response_time = (time.time() - start_time) * 1000
+            agent_logger.error(f"Unexpected embedding error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                'event_type': 'agent_ollama_error',
+                'agent_type': self.get_agent_type(),
+                'model': embedding_model,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'response_time_ms': response_time,
+                'timestamp': time.time()
+            }})
+            raise
+
     def test_connection(self) -> bool:
         """
         Test the connection to Ollama server and verify model availability.

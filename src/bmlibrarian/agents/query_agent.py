@@ -826,6 +826,100 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
             logger.error(f"Failed to generate broader query: {e}")
             return original_query
 
+    def find_abstracts_hyde(
+        self,
+        question: str,
+        max_results: int = 100,
+        num_hypothetical_docs: int = 3,
+        similarity_threshold: float = 0.7,
+        generation_model: Optional[str] = None,
+        embedding_model: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Find biomedical abstracts using HyDE (Hypothetical Document Embeddings) search.
+
+        HyDE improves semantic search by:
+        1. Generating hypothetical documents that would answer the question
+        2. Embedding these hypothetical documents
+        3. Searching for similar real documents in the database
+        4. Fusing results using Reciprocal Rank Fusion
+
+        This approach often yields better results than direct question embedding
+        because hypothetical documents are more similar to actual documents.
+
+        Args:
+            question: Natural language research question
+            max_results: Maximum number of documents to return (default: 100)
+            num_hypothetical_docs: Number of hypothetical documents to generate (default: 3)
+            similarity_threshold: Minimum similarity score threshold (0-1, default: 0.7)
+            generation_model: Optional model for generating hypothetical docs (uses config if None)
+            embedding_model: Optional model for embeddings (uses config if None)
+
+        Returns:
+            List of document dictionaries with keys: id, title, score, rrf_score
+
+        Raises:
+            ValueError: If question is empty
+            ConnectionError: If unable to connect to Ollama or database
+
+        Example:
+            >>> agent = QueryAgent()
+            >>> results = agent.find_abstracts_hyde(
+            ...     "What are the cardiovascular benefits of exercise?",
+            ...     max_results=50,
+            ...     num_hypothetical_docs=3
+            ... )
+            >>> for doc in results:
+            ...     print(f"{doc['title']} (score: {doc['score']:.3f})")
+        """
+        if not question or not question.strip():
+            raise ValueError("Question cannot be empty")
+
+        from bmlibrarian.config import get_config
+        from .utils.hyde_search import hyde_search
+
+        self._call_callback("hyde_search_started", question)
+
+        # Get models from config if not provided
+        config = get_config()
+        if generation_model is None:
+            # Use hyde config if available, otherwise fall back to query_agent model
+            hyde_config = config.get('search_strategy.hyde', {})
+            generation_model = hyde_config.get('generation_model', self.model)
+
+        if embedding_model is None:
+            # Use hyde config if available, otherwise fall back to default
+            hyde_config = config.get('search_strategy.hyde', {})
+            embedding_model = hyde_config.get('embedding_model', 'nomic-embed-text:latest')
+
+        logger.info(
+            f"Starting HyDE search with {num_hypothetical_docs} hypothetical docs, "
+            f"generation_model={generation_model}, embedding_model={embedding_model}"
+        )
+
+        try:
+            # Perform HyDE search using the utility module
+            results = hyde_search(
+                question=question,
+                client=self.client,  # Use QueryAgent's Ollama client
+                generation_model=generation_model,
+                embedding_model=embedding_model,
+                max_results=max_results,
+                num_hypothetical_docs=num_hypothetical_docs,
+                similarity_threshold=similarity_threshold,
+                callback=self.callback
+            )
+
+            logger.info(f"HyDE search complete: {len(results)} documents found")
+            self._call_callback("hyde_search_completed", f"{len(results)} documents found")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"HyDE search failed: {e}")
+            self._call_callback("hyde_search_failed", str(e))
+            raise
+
     def find_abstracts_iterative(
         self,
         question: str,
