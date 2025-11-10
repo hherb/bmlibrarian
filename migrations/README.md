@@ -200,6 +200,7 @@ BMLibrarian migrations don't include automatic rollback. For rollback:
 | 003 | 003_create_audit_schema.sql | Create audit schema for research workflow tracking | 2025-11-05 |
 | 004 | 004_update_audit_for_evaluators.sql | Update audit schema for evaluators | 2025-11-05 |
 | 005 | 005_create_fulltext_search_function.sql | Create fulltext_search() function | 2025-11-08 |
+| 006 | 006_create_search_functions.sql | Create bm25() and semantic_search() functions | 2025-11-09 |
 
 ## Environment Variables
 
@@ -236,4 +237,4 @@ POSTGRES_DB=knowledgebase
 
 - [Migration Manager Code](../src/bmlibrarian/migrations.py)
 - [Migration Tests](../tests/test_migrations.py)
-- [Full-Text Search Function Documentation](../doc/developers/fulltext_search_function.md)
+- [PostgreSQL Search Functions Documentation](../doc/developers/postgres_search_functions.md)

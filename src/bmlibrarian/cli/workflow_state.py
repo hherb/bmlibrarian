@@ -32,6 +32,9 @@ class WorkflowStateManager:
         self.counterfactual_documents_found: int = 0
         self.counterfactual_citations_extracted: int = 0
 
+        # Search strategy tracking (for audit trail)
+        self.search_strategies_metadata: Optional[Dict[str, Any]] = None
+
         # Audit tracking IDs
         self.research_question_id: Optional[int] = None
         self.session_id: Optional[int] = None
@@ -71,6 +74,9 @@ class WorkflowStateManager:
         self.documents_by_score = {}
         self.counterfactual_documents_found = 0
         self.counterfactual_citations_extracted = 0
+
+        # Reset search strategy tracking
+        self.search_strategies_metadata = None
 
         # Reset audit tracking IDs
         self.research_question_id = None
@@ -127,6 +133,10 @@ class WorkflowStateManager:
         """Update counterfactual analysis metrics."""
         self.counterfactual_documents_found = documents_found
         self.counterfactual_citations_extracted = citations_extracted
+
+    def update_search_strategies_metadata(self, metadata: Dict[str, Any]):
+        """Update search strategies metadata from QueryAgent."""
+        self.search_strategies_metadata = metadata
     
     def generate_methodology_metadata(self) -> Optional[MethodologyMetadata]:
         """Generate methodology metadata from current workflow state."""
@@ -149,7 +159,19 @@ class WorkflowStateManager:
         counterfactual_queries = 0
         if self.counterfactual_analysis and hasattr(self.counterfactual_analysis, 'research_queries'):
             counterfactual_queries = len(self.counterfactual_analysis.research_queries)
-        
+
+        # Extract search strategy metadata
+        search_strategies_used = None
+        semantic_params = None
+        bm25_params = None
+        fulltext_params = None
+
+        if self.search_strategies_metadata:
+            search_strategies_used = self.search_strategies_metadata.get('strategies_used')
+            semantic_params = self.search_strategies_metadata.get('semantic_search_params')
+            bm25_params = self.search_strategies_metadata.get('bm25_search_params')
+            fulltext_params = self.search_strategies_metadata.get('fulltext_search_params')
+
         return MethodologyMetadata(
             human_question=self.current_question,
             generated_query=self.current_query,
@@ -164,5 +186,10 @@ class WorkflowStateManager:
             counterfactual_documents_found=self.counterfactual_documents_found,
             counterfactual_citations_extracted=self.counterfactual_citations_extracted,
             iterative_processing_used=True,  # Always true for our workflow
-            context_window_management=True   # Always true for our workflow
+            context_window_management=True,   # Always true for our workflow
+            # Search strategy information (NEW)
+            search_strategies_used=search_strategies_used,
+            semantic_search_params=semantic_params,
+            bm25_search_params=bm25_params,
+            fulltext_search_params=fulltext_params
         )

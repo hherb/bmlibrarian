@@ -134,11 +134,10 @@ class UserInterface:
             print(f"   Authors: {authors_str}")
             print(f"   Date: {doc.get('publication_date', 'Unknown')}")
             
-            # Show abstract preview
+            # Show full abstract (no truncation for auditability)
             abstract = doc.get('abstract', '')
             if abstract:
-                preview = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                print(f"   Abstract: {preview}")
+                print(f"   Abstract: {abstract}")
             else:
                 print("   Abstract: Not available")
             
@@ -738,10 +737,10 @@ class UserInterface:
                     print(f"   Relevance Score: {doc_info['document_score']}/5")
                     print(f"   Target Claim: {doc_info['original_claim']}")
 
-                    # Show abstract
+                    # Show full abstract (no truncation for auditability)
                     abstract = doc.get('abstract', '')
                     if abstract:
-                        print(f"   Abstract: {abstract[:300]}{'...' if len(abstract) > 300 else ''}")
+                        print(f"   Abstract: {abstract}")
 
             # Update analysis summary
             summary = contradictory_results.get('summary', {})
