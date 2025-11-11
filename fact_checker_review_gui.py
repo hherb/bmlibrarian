@@ -38,6 +38,13 @@ try:
 except ImportError:
     DB_AVAILABLE = False
 
+# Fact-checker database imports
+try:
+    from bmlibrarian.agents.fact_checker_db import FactCheckerDB, HumanAnnotation, Annotator
+    FACT_CHECKER_DB_AVAILABLE = True
+except ImportError:
+    FACT_CHECKER_DB_AVAILABLE = False
+
 
 # Fallback helper functions if GUI utils not available
 def _truncate_text_fallback(text: str, max_length: int) -> str:
@@ -67,7 +74,16 @@ class FactCheckerReviewGUI:
         self.reviews: List[Dict[str, Any]] = []
         self.input_file_path: str = ""
         self.initial_input_file: Optional[str] = input_file  # File provided via command line
-        self.db_manager = None  # Database manager for fetching abstracts
+        self.db_manager = None  # PostgreSQL database manager for fetching abstracts
+
+        # Fact-checker database (SQLite)
+        self.fact_checker_db: Optional[FactCheckerDB] = None
+        self.db_path: Optional[str] = None
+        self.using_database: bool = False
+
+        # Annotator information
+        self.annotator_id: Optional[int] = None
+        self.annotator_username: Optional[str] = None
 
         # UI components
         self.file_path_text = None
@@ -83,6 +99,7 @@ class FactCheckerReviewGUI:
         self.next_button = None
         self.save_button = None
         self.progress_bar = None
+        self.annotator_label = None  # Display current annotator
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -94,17 +111,113 @@ class FactCheckerReviewGUI:
         if DB_AVAILABLE:
             self._init_database_manager()
 
-        # If input file was provided via command line, load it automatically
+        # Show annotator dialog at startup
+        self._show_annotator_dialog()
+
+        # If input file was provided via command line, load it after annotator is set
         if self.initial_input_file:
-            self._load_fact_check_results(self.initial_input_file)
+            # Delay loading until annotator is set
+            pass  # Will be loaded after annotator dialog is closed
+
+    def _show_annotator_dialog(self):
+        """Show dialog to enter annotator information at startup."""
+        username_field = ft.TextField(
+            label="Your Username/ID *",
+            hint_text="e.g., jsmith",
+            width=300,
+            autofocus=True
+        )
+
+        full_name_field = ft.TextField(
+            label="Full Name (optional)",
+            hint_text="e.g., John Smith",
+            width=300
+        )
+
+        email_field = ft.TextField(
+            label="Email (optional)",
+            hint_text="e.g., john@example.com",
+            width=300
+        )
+
+        expertise_dropdown = ft.Dropdown(
+            label="Expertise Level (optional)",
+            options=[
+                ft.dropdown.Option("expert", "Expert"),
+                ft.dropdown.Option("intermediate", "Intermediate"),
+                ft.dropdown.Option("novice", "Novice")
+            ],
+            width=300
+        )
+
+        def on_continue(e):
+            if not username_field.value:
+                username_field.error_text = "Username is required"
+                self.page.update()
+                return
+
+            self.annotator_username = username_field.value
+
+            # Store annotator info (will be saved to database when loading a database)
+            self.annotator_info = {
+                'username': username_field.value,
+                'full_name': full_name_field.value or None,
+                'email': email_field.value or None,
+                'expertise_level': expertise_dropdown.value or None
+            }
+
+            # Update UI to show annotator
+            if self.annotator_label:
+                self.annotator_label.value = f"Annotator: {self.annotator_username}"
+                self.page.update()
+
+            dialog.open = False
+            self.page.update()
+
+            # Load initial file if provided
+            if self.initial_input_file:
+                self._load_fact_check_results(self.initial_input_file)
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Annotator Information", size=20, weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "Please enter your information for annotation tracking:",
+                        size=13,
+                        color=ft.Colors.GREY_700
+                    ),
+                    ft.Container(height=15),
+                    username_field,
+                    full_name_field,
+                    email_field,
+                    expertise_dropdown
+                ], tight=True),
+                padding=ft.padding.all(10),
+                width=400
+            ),
+            actions=[
+                ft.ElevatedButton(
+                    "Continue",
+                    on_click=on_continue,
+                    bgcolor=ft.Colors.BLUE_700,
+                    color=ft.Colors.WHITE
+                )
+            ],
+            modal=True
+        )
+
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
 
     def _init_database_manager(self):
-        """Initialize database manager for fetching full abstracts."""
+        """Initialize PostgreSQL database manager for fetching full abstracts."""
         try:
             self.db_manager = get_db_manager()
-            print("✓ Database manager initialized successfully")
+            print("✓ PostgreSQL database manager initialized successfully")
         except Exception as e:
-            print(f"Warning: Could not initialize database manager: {e}")
+            print(f"Warning: Could not initialize PostgreSQL database manager: {e}")
             self.db_manager = None
 
     def _fetch_document_abstract(self, document_id: str) -> Optional[str]:
@@ -536,46 +649,131 @@ class FactCheckerReviewGUI:
 
         # Open file picker dialog
         file_picker.pick_files(
-            dialog_title="Select Fact-Check Results JSON",
-            allowed_extensions=["json"],
+            dialog_title="Select Fact-Check Results (Database or JSON)",
+            allowed_extensions=["db", "json"],
             allow_multiple=False
         )
 
     def _load_fact_check_results(self, file_path: str):
-        """Load fact-check results from JSON file."""
+        """Load fact-check results from database (.db) or JSON file (.json)."""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            file_path_obj = Path(file_path)
 
-            # Extract results array
-            if isinstance(data, dict) and 'results' in data:
-                self.results = data['results']
-            elif isinstance(data, list):
-                self.results = data
+            # Check if it's a database file
+            if file_path_obj.suffix.lower() == '.db':
+                if not FACT_CHECKER_DB_AVAILABLE:
+                    raise ValueError("Fact-checker database module not available")
+                self._load_from_database(file_path)
+            elif file_path_obj.suffix.lower() == '.json':
+                self._load_from_json(file_path)
             else:
-                raise ValueError("Invalid JSON format: expected 'results' array or direct array")
-
-            if not self.results:
-                raise ValueError("No results found in file")
-
-            # Initialize reviews list
-            self.reviews = [{}] * len(self.results)
-
-            # Store file path
-            self.input_file_path = file_path
-            self.file_path_text.value = f"Loaded: {Path(file_path).name} ({len(self.results)} statements)"
-            self.file_path_text.italic = False
-            self.file_path_text.color = ft.Colors.GREEN_700
-
-            # Show review interface
-            self.current_index = 0
-            self.review_content.visible = True
-            self._display_current_statement()
-
-            self.page.update()
+                raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .db or .json")
 
         except Exception as ex:
             self._show_error_dialog(f"Error loading file: {str(ex)}")
+
+    def _load_from_database(self, db_path: str):
+        """Load results from SQLite database."""
+        self.fact_checker_db = FactCheckerDB(db_path)
+        self.db_path = db_path
+        self.using_database = True
+
+        # Register or get annotator ID
+        if hasattr(self, 'annotator_info'):
+            annotator = Annotator(**self.annotator_info)
+            self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+            print(f"✓ Annotator registered: {self.annotator_username} (ID: {self.annotator_id})")
+
+        # Load all statements with evaluations
+        all_data = self.fact_checker_db.get_all_statements_with_evaluations()
+
+        if not all_data:
+            raise ValueError("No statements found in database")
+
+        # Convert database format to display format
+        self.results = []
+        for row in all_data:
+            result = {
+                'statement_id': row['id'],
+                'statement': row['statement_text'],
+                'expected_answer': row['expected_answer'],
+                'evaluation': row.get('evaluation'),
+                'reason': row.get('reason'),
+                'confidence': row.get('confidence'),
+                'evidence_list': [],
+                'human_annotations': row.get('human_annotations', [])
+            }
+
+            # Convert evidence to expected format
+            for ev in row.get('evidence', []):
+                result['evidence_list'].append({
+                    'citation': ev.get('citation_text', ''),
+                    'pmid': f"PMID:{ev.get('pmid')}" if ev.get('pmid') else '',
+                    'doi': f"DOI:{ev.get('doi')}" if ev.get('doi') else '',
+                    'document_id': ev.get('document_id'),
+                    'relevance_score': ev.get('relevance_score'),
+                    'stance': ev.get('supports_statement', 'neutral')
+                })
+
+            self.results.append(result)
+
+        # Initialize reviews list (load existing annotations)
+        self.reviews = [{}] * len(self.results)
+        for i, result in enumerate(self.results):
+            # Find this annotator's existing annotation if any
+            for annot in result.get('human_annotations', []):
+                if annot.get('annotator_id') == self.annotator_id:
+                    self.reviews[i] = {
+                        'human_annotation': annot.get('annotation'),
+                        'human_explanation': annot.get('explanation', '')
+                    }
+                    break
+
+        # Update UI
+        self.input_file_path = db_path
+        self.file_path_text.value = f"Database: {Path(db_path).name} ({len(self.results)} statements)"
+        self.file_path_text.italic = False
+        self.file_path_text.color = ft.Colors.BLUE_700
+
+        # Show review interface
+        self.current_index = 0
+        self.review_content.visible = True
+        self._display_current_statement()
+
+        self.page.update()
+
+    def _load_from_json(self, json_path: str):
+        """Load results from legacy JSON file."""
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Extract results array
+        if isinstance(data, dict) and 'results' in data:
+            self.results = data['results']
+        elif isinstance(data, list):
+            self.results = data
+        else:
+            raise ValueError("Invalid JSON format: expected 'results' array or direct array")
+
+        if not self.results:
+            raise ValueError("No results found in file")
+
+        # Initialize reviews list
+        self.reviews = [{}] * len(self.results)
+        self.using_database = False
+
+        # Update UI
+        self.input_file_path = json_path
+        self.file_path_text.value = f"JSON: {Path(json_path).name} ({len(self.results)} statements)"
+        self.file_path_text.italic = False
+        self.file_path_text.color = ft.Colors.GREEN_700
+
+        # Show review interface
+        self.current_index = 0
+        self.review_content.visible = True
+        self._display_current_statement()
+
+        self.page.update()
 
     def _display_current_statement(self):
         """Display the current statement and its annotations."""
@@ -925,6 +1123,10 @@ class FactCheckerReviewGUI:
 
         self.reviews[self.current_index]['human_annotation'] = self.human_annotation_dropdown.value
 
+        # Save to database immediately if using database mode
+        if self.using_database:
+            self._save_current_annotation_to_database()
+
     def _on_explanation_change(self, e):
         """Handle human explanation text change."""
         if not self.reviews:
@@ -934,6 +1136,42 @@ class FactCheckerReviewGUI:
             self.reviews[self.current_index] = {}
 
         self.reviews[self.current_index]['human_explanation'] = self.human_explanation.value
+
+        # Save to database immediately if using database mode
+        if self.using_database:
+            self._save_current_annotation_to_database()
+
+    def _save_current_annotation_to_database(self):
+        """Save the current annotation to the database."""
+        if not self.fact_checker_db or not self.annotator_id:
+            return
+
+        try:
+            result = self.results[self.current_index]
+            review = self.reviews[self.current_index]
+
+            # Only save if there's an annotation
+            if not review.get('human_annotation'):
+                return
+
+            statement_id = result.get('statement_id')
+            if not statement_id:
+                return
+
+            annotation = HumanAnnotation(
+                statement_id=statement_id,
+                annotator_id=self.annotator_id,
+                annotation=review.get('human_annotation', ''),
+                explanation=review.get('human_explanation', ''),
+                confidence=None,  # Could add confidence selection in future
+                session_id=f"gui_session_{datetime.now().strftime('%Y%m%d')}"
+            )
+
+            self.fact_checker_db.insert_human_annotation(annotation)
+            print(f"✓ Saved annotation for statement {statement_id}")
+
+        except Exception as e:
+            print(f"Error saving annotation to database: {e}")
 
     def _on_previous(self, e):
         """Navigate to previous statement."""
@@ -948,49 +1186,59 @@ class FactCheckerReviewGUI:
             self._display_current_statement()
 
     def _on_save_reviews(self, e):
-        """Save human reviews to a new JSON file."""
+        """Save human reviews - to database or JSON file."""
         if not self.results:
             self._show_error_dialog("No results to save")
             return
 
-        # Create dialog for file save
-        save_path_field = ft.TextField(
-            label="Output file path",
-            value=self._get_default_output_path(),
-            width=500
-        )
+        if self.using_database:
+            # Database mode - annotations are saved automatically, just show confirmation
+            reviewed_count = sum(1 for r in self.reviews if r.get('human_annotation'))
+            self._show_success_dialog(
+                f"✓ All annotations saved to database\n\n"
+                f"Total statements: {len(self.results)}\n"
+                f"Reviewed by you: {reviewed_count}\n"
+                f"Database: {Path(self.db_path).name}"
+            )
+        else:
+            # JSON mode - show save dialog
+            save_path_field = ft.TextField(
+                label="Output file path",
+                value=self._get_default_output_path(),
+                width=500
+            )
 
-        def on_save_confirm(e):
-            output_path = save_path_field.value
-            if output_path:
-                self._save_reviews_to_file(output_path)
+            def on_save_confirm(e):
+                output_path = save_path_field.value
+                if output_path:
+                    self._save_reviews_to_file(output_path)
+                    dialog.open = False
+                    self.page.update()
+
+            def on_cancel(e):
                 dialog.open = False
                 self.page.update()
 
-        def on_cancel(e):
-            dialog.open = False
+            dialog = ft.AlertDialog(
+                title=ft.Text("Save Reviewed Annotations"),
+                content=ft.Container(
+                    content=save_path_field,
+                    padding=ft.padding.all(10)
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=on_cancel),
+                    ft.ElevatedButton(
+                        "Save",
+                        on_click=on_save_confirm,
+                        bgcolor=ft.Colors.GREEN_700,
+                        color=ft.Colors.WHITE
+                    )
+                ]
+            )
+
+            self.page.overlay.append(dialog)
+            dialog.open = True
             self.page.update()
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Save Reviewed Annotations"),
-            content=ft.Container(
-                content=save_path_field,
-                padding=ft.padding.all(10)
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=on_cancel),
-                ft.ElevatedButton(
-                    "Save",
-                    on_click=on_save_confirm,
-                    bgcolor=ft.Colors.GREEN_700,
-                    color=ft.Colors.WHITE
-                )
-            ]
-        )
-
-        self.page.overlay.append(dialog)
-        dialog.open = True
-        self.page.update()
 
     def _get_default_output_path(self) -> str:
         """Generate default output file path."""

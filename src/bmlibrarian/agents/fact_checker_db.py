@@ -620,6 +620,141 @@ class FactCheckerDB:
         return str(output_path)
 
 
+    def import_json_results(self, json_file: str, skip_existing: bool = True) -> Dict[str, int]:
+        """
+        Import fact-check results from legacy JSON format.
+
+        Intelligently merges data:
+        - Skips statements that already have AI evaluations (no overwrite)
+        - Skips statements that already have human annotations (no overwrite)
+        - Only imports new/unprocessed statements
+
+        Args:
+            json_file: Path to JSON file with results
+            skip_existing: If True, skip statements with existing evaluations
+
+        Returns:
+            Dictionary with import statistics
+        """
+        stats = {
+            'total_in_file': 0,
+            'new_statements': 0,
+            'skipped_existing': 0,
+            'imported_evaluations': 0,
+            'imported_evidence': 0,
+            'errors': 0
+        }
+
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Handle both formats: {"results": [...]} or direct array
+            if isinstance(data, dict) and 'results' in data:
+                results = data['results']
+            elif isinstance(data, list):
+                results = data
+            else:
+                raise ValueError("Invalid JSON format")
+
+            stats['total_in_file'] = len(results)
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                for result in results:
+                    try:
+                        statement_text = result.get('statement', '')
+                        if not statement_text:
+                            stats['errors'] += 1
+                            continue
+
+                        # Check if statement already exists
+                        cursor.execute(
+                            "SELECT id FROM statements WHERE statement_text = ?",
+                            (statement_text,)
+                        )
+                        existing_stmt = cursor.fetchone()
+
+                        if existing_stmt and skip_existing:
+                            statement_id = existing_stmt[0]
+
+                            # Check if it has AI evaluation
+                            cursor.execute(
+                                "SELECT COUNT(*) FROM ai_evaluations WHERE statement_id = ?",
+                                (statement_id,)
+                            )
+                            has_evaluation = cursor.fetchone()[0] > 0
+
+                            # Check if it has human annotations
+                            cursor.execute(
+                                "SELECT COUNT(*) FROM human_annotations WHERE statement_id = ?",
+                                (statement_id,)
+                            )
+                            has_annotations = cursor.fetchone()[0] > 0
+
+                            if has_evaluation or has_annotations:
+                                stats['skipped_existing'] += 1
+                                logger.debug(f"Skipping existing statement: {statement_text[:50]}")
+                                continue
+
+                        # Import new statement
+                        stmt = Statement(
+                            statement_text=statement_text,
+                            input_statement_id=result.get('input_statement_id'),
+                            expected_answer=result.get('expected_answer'),
+                            source_file=json_file,
+                            review_status='pending'
+                        )
+                        statement_id = self.insert_statement(stmt)
+                        stats['new_statements'] += 1
+
+                        # Import AI evaluation if present
+                        if result.get('evaluation'):
+                            ai_eval = AIEvaluation(
+                                statement_id=statement_id,
+                                evaluation=result['evaluation'],
+                                reason=result.get('reason', ''),
+                                confidence=result.get('confidence'),
+                                documents_reviewed=result.get('metadata', {}).get('documents_reviewed', 0),
+                                supporting_citations=result.get('metadata', {}).get('supporting_citations', 0),
+                                contradicting_citations=result.get('metadata', {}).get('contradicting_citations', 0),
+                                neutral_citations=result.get('metadata', {}).get('neutral_citations', 0),
+                                matches_expected=result.get('matches_expected'),
+                                model_used='imported',
+                                session_id='json_import',
+                                version=1
+                            )
+                            eval_id = self.insert_ai_evaluation(ai_eval)
+                            stats['imported_evaluations'] += 1
+
+                            # Import evidence
+                            for evidence_data in result.get('evidence_list', []):
+                                evidence = Evidence(
+                                    ai_evaluation_id=eval_id,
+                                    citation_text=evidence_data.get('citation', ''),
+                                    pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
+                                    doi=evidence_data.get('doi', '').replace('DOI:', ''),
+                                    document_id=evidence_data.get('document_id'),
+                                    relevance_score=evidence_data.get('relevance_score'),
+                                    supports_statement=evidence_data.get('stance')
+                                )
+                                self.insert_evidence(evidence)
+                                stats['imported_evidence'] += 1
+
+                    except Exception as e:
+                        logger.error(f"Error importing result: {e}")
+                        stats['errors'] += 1
+                        continue
+
+            logger.info(f"JSON import complete: {stats}")
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error reading JSON file: {e}")
+            raise
+
+
 def create_database_from_input_file(input_file: str) -> str:
     """
     Create a SQLite database based on the input filename.
