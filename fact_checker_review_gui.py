@@ -48,7 +48,7 @@ def main():
             return 1
 
     # Create and run app
-    app = FactCheckerReviewApp(input_file=args.input_file)
+    app = FactCheckerReviewApp(input_file=args.input_file, incremental=args.incremental)
     ft.app(target=app.main)
 
     return 0

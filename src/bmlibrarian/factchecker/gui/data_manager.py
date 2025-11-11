@@ -17,11 +17,17 @@ from ..db.database import FactCheckerDB, Annotator, HumanAnnotation
 class FactCheckDataManager:
     """Manages data loading and saving for fact-check review GUI."""
 
-    def __init__(self):
-        """Initialize data manager."""
+    def __init__(self, incremental: bool = False):
+        """
+        Initialize data manager.
+
+        Args:
+            incremental: If True, only load statements without AI evaluations
+        """
         self.results: List[Dict[str, Any]] = []
         self.reviews: List[Dict[str, Any]] = []
         self.input_file_path: str = ""
+        self.incremental: bool = incremental
 
         # Database mode
         self.using_database: bool = False
@@ -70,6 +76,13 @@ class FactCheckDataManager:
 
         if not all_data:
             raise ValueError("No statements found in database")
+
+        # Filter for incremental mode (only show statements without AI evaluations)
+        if self.incremental:
+            all_data = [row for row in all_data if not row.get('evaluation')]
+            if not all_data:
+                raise ValueError("No unevaluated statements found in database (all statements have AI evaluations)")
+            print(f"ℹ️  Incremental mode: Showing {len(all_data)} unevaluated statements")
 
         # Convert database format to display format
         self.results = []
@@ -132,6 +145,13 @@ class FactCheckDataManager:
 
         if not self.results:
             raise ValueError("No results found in file")
+
+        # Filter for incremental mode (only show statements without AI evaluations)
+        if self.incremental:
+            self.results = [r for r in self.results if not r.get('evaluation')]
+            if not self.results:
+                raise ValueError("No unevaluated statements found in JSON file (all statements have AI evaluations)")
+            print(f"ℹ️  Incremental mode: Showing {len(self.results)} unevaluated statements")
 
         # Initialize reviews list
         self.reviews = [{}] * len(self.results)

@@ -18,19 +18,21 @@ from .citation_display import CitationDisplay
 class FactCheckerReviewApp:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self, input_file: Optional[str] = None):
+    def __init__(self, input_file: Optional[str] = None, incremental: bool = False):
         """
         Initialize the review application.
 
         Args:
             input_file: Optional input file path provided via command line
+            incremental: If True, only show unevaluated statements
         """
         self.page: Optional[ft.Page] = None
         self.initial_input_file = input_file
+        self.incremental = incremental
         self.current_index = 0
 
         # Initialize components
-        self.data_manager = FactCheckDataManager()
+        self.data_manager = FactCheckDataManager(incremental=incremental)
         self.statement_display = StatementDisplay()
         self.annotation_manager = AnnotationManager(on_annotation_change=self._on_annotation_change)
         self.citation_display = CitationDisplay()
@@ -265,7 +267,8 @@ class FactCheckerReviewApp:
                 raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .db or .json")
 
             # Update UI
-            self.file_path_text.value = f"{file_type}: {file_path_obj.name} ({len(self.data_manager.results)} statements)"
+            mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
+            self.file_path_text.value = f"{file_type}: {file_path_obj.name} ({len(self.data_manager.results)} statements){mode_indicator}"
             self.file_path_text.italic = False
             self.file_path_text.color = file_color
 
