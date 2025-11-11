@@ -32,7 +32,12 @@ def main():
     parser.add_argument(
         "--incremental",
         action="store_true",
-        help="Incremental mode: only show unevaluated statements"
+        help="Incremental mode: only show statements you haven't annotated yet"
+    )
+    parser.add_argument(
+        "--user",
+        type=str,
+        help="Username to use (suppresses login dialog)"
     )
 
     args = parser.parse_args()
@@ -48,7 +53,11 @@ def main():
             return 1
 
     # Create and run app
-    app = FactCheckerReviewApp(input_file=args.input_file, incremental=args.incremental)
+    app = FactCheckerReviewApp(
+        input_file=args.input_file,
+        incremental=args.incremental,
+        default_username=args.user
+    )
     ft.app(target=app.main)
 
     return 0

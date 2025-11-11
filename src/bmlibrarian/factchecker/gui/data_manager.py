@@ -55,12 +55,13 @@ class FactCheckDataManager:
             self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
             print(f"✓ Annotator registered: {self.annotator_username} (ID: {self.annotator_id})")
 
-    def load_from_database(self, db_path: str):
+    def load_from_database(self, db_path: str, skip_incremental_filter: bool = False):
         """
         Load results from SQLite database.
 
         Args:
             db_path: Path to SQLite database file
+            skip_incremental_filter: If True, don't apply incremental filtering even if incremental mode is on
         """
         self.fact_checker_db = FactCheckerDB(db_path)
         self.db_path = db_path
@@ -77,12 +78,8 @@ class FactCheckDataManager:
         if not all_data:
             raise ValueError("No statements found in database")
 
-        # Filter for incremental mode (only show statements without AI evaluations)
-        if self.incremental:
-            all_data = [row for row in all_data if not row.get('evaluation')]
-            if not all_data:
-                raise ValueError("No unevaluated statements found in database (all statements have AI evaluations)")
-            print(f"ℹ️  Incremental mode: Showing {len(all_data)} unevaluated statements")
+        # Note: Incremental filtering happens AFTER loading human annotations
+        # so we can check which statements this user has already annotated
 
         # Convert database format to display format
         self.results = []
@@ -123,40 +120,112 @@ class FactCheckDataManager:
                     }
                     break
 
+        # Apply incremental mode filtering (only show statements without human annotations by this user)
+        # BUT: Skip filtering if explicitly disabled (e.g., when loading from JSON import)
+        if self.incremental and not skip_incremental_filter:
+            filtered_results = []
+            filtered_reviews = []
+            for i, result in enumerate(self.results):
+                # Check if this user has annotated this statement
+                has_user_annotation = bool(self.reviews[i].get('human_annotation'))
+                if not has_user_annotation:
+                    filtered_results.append(result)
+                    filtered_reviews.append(self.reviews[i])
+
+            if not filtered_results:
+                raise ValueError(f"No unannotated statements found in database (you have already annotated all {len(self.results)} statements)")
+
+            self.results = filtered_results
+            self.reviews = filtered_reviews
+            print(f"ℹ️  Incremental mode: Showing {len(self.results)} statements without your annotations (out of {len(all_data)} total)")
+
         self.input_file_path = db_path
 
-    def load_from_json(self, json_path: str):
+    def load_from_json(self, json_path: str, auto_create_db: bool = True):
         """
-        Load results from legacy JSON file.
+        Load results from JSON file, optionally creating/updating a database.
+
+        When auto_create_db is True (default for GUI):
+        1. Check if corresponding .db file exists (same name as JSON)
+        2. If .db exists: Load from DB and import new statements from JSON
+        3. If .db doesn't exist: Create new DB and import all JSON data
+        4. Always use database mode after this process
 
         Args:
             json_path: Path to JSON file
+            auto_create_db: If True, automatically create/update database (default: True)
         """
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        json_file = Path(json_path)
+        db_path = json_file.parent / f"{json_file.stem}.db"
 
-        # Extract results array
-        if isinstance(data, dict) and 'results' in data:
-            self.results = data['results']
-        elif isinstance(data, list):
-            self.results = data
+        if auto_create_db:
+            # Determine if database already exists
+            db_exists = db_path.exists()
+
+            if db_exists:
+                print(f"ℹ️  Found existing database: {db_path.name}")
+                print(f"ℹ️  Importing new statements from JSON into database...")
+            else:
+                print(f"ℹ️  Creating new database: {db_path.name}")
+
+            # Create/open database
+            self.fact_checker_db = FactCheckerDB(str(db_path))
+            self.db_path = str(db_path)
+            self.using_database = True
+
+            # Import JSON data (intelligently merges with existing data)
+            import_stats = self.fact_checker_db.import_json_results(
+                json_file=str(json_path),
+                skip_existing=True  # Don't overwrite existing evaluations/annotations
+            )
+
+            # Report import statistics
+            if db_exists:
+                print(f"✓ JSON import complete:")
+                print(f"  - New statements added: {import_stats['new_statements']}")
+                print(f"  - Existing statements skipped: {import_stats['skipped_existing']}")
+                print(f"  - Total in JSON file: {import_stats['total_in_file']}")
+                if import_stats['errors'] > 0:
+                    print(f"  - Errors: {import_stats['errors']}")
+            else:
+                print(f"✓ Database created with {import_stats['new_statements']} statements")
+
+            # Now load from the database (which has all the data)
+            # IMPORTANT: Skip incremental filtering when loading from JSON import
+            # The user wants to see ALL statements (including ones they already annotated)
+            # to verify the import worked correctly
+            self.load_from_database(str(db_path), skip_incremental_filter=True)
+
+            if self.incremental:
+                print(f"ℹ️  Incremental mode: Showing ALL {len(self.results)} statements from JSON import (incremental filtering disabled for imports)")
+
         else:
-            raise ValueError("Invalid JSON format: expected 'results' array or direct array")
+            # Legacy JSON-only mode (no database)
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
 
-        if not self.results:
-            raise ValueError("No results found in file")
+            # Extract results array
+            if isinstance(data, dict) and 'results' in data:
+                self.results = data['results']
+            elif isinstance(data, list):
+                self.results = data
+            else:
+                raise ValueError("Invalid JSON format: expected 'results' array or direct array")
 
-        # Filter for incremental mode (only show statements without AI evaluations)
-        if self.incremental:
-            self.results = [r for r in self.results if not r.get('evaluation')]
             if not self.results:
-                raise ValueError("No unevaluated statements found in JSON file (all statements have AI evaluations)")
-            print(f"ℹ️  Incremental mode: Showing {len(self.results)} unevaluated statements")
+                raise ValueError("No results found in file")
 
-        # Initialize reviews list
-        self.reviews = [{}] * len(self.results)
-        self.using_database = False
-        self.input_file_path = json_path
+            # Filter for incremental mode (only show statements without AI evaluations)
+            if self.incremental:
+                self.results = [r for r in self.results if not r.get('evaluation')]
+                if not self.results:
+                    raise ValueError("No unevaluated statements found in JSON file (all statements have AI evaluations)")
+                print(f"ℹ️  Incremental mode: Showing {len(self.results)} unevaluated statements")
+
+            # Initialize reviews list
+            self.reviews = [{}] * len(self.results)
+            self.using_database = False
+            self.input_file_path = json_path
 
     def save_annotation(self, index: int, annotation: str, explanation: str = ""):
         """
@@ -182,6 +251,7 @@ class FactCheckDataManager:
                 result = self.results[index]
                 statement_id = result.get('statement_id')
 
+                # Don't save if no statement_id or if annotation is empty/None (N/A selection)
                 if not statement_id or not annotation:
                     return
 

@@ -18,17 +18,19 @@ from .citation_display import CitationDisplay
 class FactCheckerReviewApp:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self, input_file: Optional[str] = None, incremental: bool = False):
+    def __init__(self, input_file: Optional[str] = None, incremental: bool = False, default_username: Optional[str] = None):
         """
         Initialize the review application.
 
         Args:
             input_file: Optional input file path provided via command line
-            incremental: If True, only show unevaluated statements
+            incremental: If True, only show statements you haven't annotated yet
+            default_username: If provided, use this username and skip login dialog
         """
         self.page: Optional[ft.Page] = None
         self.initial_input_file = input_file
         self.incremental = incremental
+        self.default_username = default_username
         self.current_index = 0
 
         # Initialize components
@@ -51,9 +53,20 @@ class FactCheckerReviewApp:
         self._setup_page()
         self._build_ui()
 
-        # Show annotator dialog at startup
-        annotator_dialog = AnnotatorDialog(self.page, self._on_annotator_complete)
-        annotator_dialog.show()
+        # Show annotator dialog or use default username
+        if self.default_username:
+            # Skip dialog, use default username
+            annotator_info = {
+                'username': self.default_username,
+                'full_name': self.default_username,
+                'email': None,
+                'expertise_level': None
+            }
+            self._on_annotator_complete(annotator_info)
+        else:
+            # Show annotator dialog at startup
+            annotator_dialog = AnnotatorDialog(self.page, self._on_annotator_complete)
+            annotator_dialog.show()
 
     def _setup_page(self):
         """Configure the main page settings."""
@@ -260,15 +273,20 @@ class FactCheckerReviewApp:
                 file_type = "Database"
                 file_color = ft.Colors.BLUE_700
             elif file_path_obj.suffix.lower() == '.json':
-                self.data_manager.load_from_json(file_path)
-                file_type = "JSON"
-                file_color = ft.Colors.GREEN_700
+                # Auto-create/update database from JSON
+                self.data_manager.load_from_json(file_path, auto_create_db=True)
+                file_type = "Database"  # Now using database backend
+                file_color = ft.Colors.BLUE_700
             else:
                 raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .db or .json")
 
-            # Update UI
+            # Update UI with actual database path
             mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
-            self.file_path_text.value = f"{file_type}: {file_path_obj.name} ({len(self.data_manager.results)} statements){mode_indicator}"
+            if self.data_manager.using_database and self.data_manager.db_path:
+                db_name = Path(self.data_manager.db_path).name
+                self.file_path_text.value = f"{file_type}: {db_name} ({len(self.data_manager.results)} statements){mode_indicator}"
+            else:
+                self.file_path_text.value = f"{file_type}: {file_path_obj.name} ({len(self.data_manager.results)} statements){mode_indicator}"
             self.file_path_text.italic = False
             self.file_path_text.color = file_color
 

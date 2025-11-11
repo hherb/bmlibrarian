@@ -31,24 +31,52 @@ The Fact-Checker Review GUI is included with BMLibrarian. No additional installa
 # Start the Fact-Checker Review GUI
 uv run python fact_checker_review_gui.py
 
-# Or specify an input file directly (workaround for macOS file picker bug)
+# Load a specific file directly (JSON or database)
 uv run python fact_checker_review_gui.py --input-file path/to/results.json
+uv run python fact_checker_review_gui.py --input-file path/to/results.db
+
+# Import JSON and show ALL statements (verify import)
+uv run python fact_checker_review_gui.py --input-file results.json --incremental
+
+# Load database and filter to only unannotated statements
+uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice
+
+# Skip login dialog with username
+uv run python fact_checker_review_gui.py --input-file results.db --user alice
 ```
 
 The application will open in a desktop window. If you provide an input file via the command line, it will be automatically loaded on startup.
+
+**Incremental Mode Behavior**:
+- **With JSON files** (`--input-file file.json --incremental`): Shows ALL statements from the JSON import (no filtering). This lets you verify what was imported, including statements you've already annotated.
+- **With DB files** (`--input-file file.db --incremental`): Shows ONLY statements you haven't annotated yet (filtered by user).
+
+**Database Auto-Creation**: When you load a JSON file, the GUI automatically creates a SQLite database (e.g., `results.json` → `results.db`) to store your annotations. If the database already exists, the GUI intelligently merges new statements from the JSON file without overwriting existing annotations.
 
 ## Using the Review Interface
 
 ### 1. Load Fact-Check Results
 
 1. Click the **"Load Fact-Check Results"** button
-2. Select a JSON file containing fact-check results
-3. The file must contain a `results` array with fact-check evaluations
+2. Select a JSON or database file containing fact-check results
+3. If you select a JSON file, a SQLite database will be automatically created
 
-**Supported JSON Formats:**
-- Output from `FactCheckerAgent.check_batch()` or `check_batch_from_file()`
-- JSON files with a `results` array at the root level
-- Direct JSON arrays of fact-check results
+**Supported File Formats:**
+- **JSON files** (`.json`):
+  - Output from `FactCheckerAgent.check_batch()` or `check_batch_from_file()`
+  - JSON files with a `results` array at the root level
+  - Direct JSON arrays of fact-check results
+  - **Automatically creates a `.db` file** for storing annotations
+- **Database files** (`.db`):
+  - SQLite databases created by the FactCheckerAgent or this GUI
+  - Allows persistent storage of human annotations
+  - Can be updated with new statements from JSON files
+
+**Database Workflow** (same as CLI):
+- When you load `results.json`, the GUI checks if `results.db` exists
+- If database exists: Merges new statements from JSON (skips existing ones)
+- If database doesn't exist: Creates new database and imports all JSON data
+- All your annotations are saved directly to the database in real-time
 
 ### 2. Review Each Statement
 

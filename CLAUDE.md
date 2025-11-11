@@ -50,7 +50,9 @@ Since this project uses `uv` for package management:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
   - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results
-  - `uv run python fact_checker_review_gui.py --input-file results.json` - Load fact-check results directly (macOS file picker workaround)
+  - `uv run python fact_checker_review_gui.py --input-file results.json` - Load JSON file (auto-creates SQLite database)
+  - `uv run python fact_checker_review_gui.py --input-file results.db` - Load existing database directly
+  - `uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice` - Incremental mode (only your unannotated statements) with username
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
@@ -392,6 +394,42 @@ The GUI provides:
 - **File Operations**: Save/load configuration files with JSON format
 - **Connection Testing**: Verify Ollama server connectivity and list available models
 - **Dual Mode**: Can run as desktop app or web interface
+
+### Fact-Checker Review GUI Application
+
+BMLibrarian includes a human review and annotation interface for fact-checking results:
+
+```bash
+# Start the Fact-Checker Review GUI
+uv run python fact_checker_review_gui.py
+
+# Load JSON file (auto-creates SQLite database for annotations)
+uv run python fact_checker_review_gui.py --input-file results.json
+
+# Load existing database directly
+uv run python fact_checker_review_gui.py --input-file results.db
+
+# Incremental mode: only show statements without AI evaluations
+uv run python fact_checker_review_gui.py --input-file results.json --incremental
+```
+
+The Fact-Checker Review GUI provides:
+- **Database Auto-Creation**: Automatically creates SQLite database from JSON files (e.g., `results.json` → `results.db`)
+- **Intelligent Merging**: If database exists, imports new statements from JSON without overwriting existing annotations
+- **CLI-Consistent Behavior**: Same database workflow as the fact-checker CLI for seamless integration
+- **Real-Time Persistence**: All annotations saved directly to database as you review
+- **Incremental Mode**: Filter to show only unevaluated statements (consistent with CLI)
+- **Multi-User Support**: Track annotations by different reviewers with annotator metadata
+- **Evidence Review**: Examine supporting citations with expandable cards showing full abstracts
+- **Annotation Comparison**: View original, AI, and human annotations side-by-side
+
+**Database Workflow** (matches CLI):
+1. Load `results.json`: Checks if `results.db` exists
+2. If DB exists: Merges new statements from JSON (skips existing with evaluations/annotations)
+3. If DB doesn't exist: Creates new database and imports all JSON data
+4. All annotations are saved to the database in real-time
+
+This ensures that the GUI and CLI provide identical database management behavior, making it easy to switch between interfaces or use both for different tasks.
 
 ### Enum-Based Workflow System
 ```python

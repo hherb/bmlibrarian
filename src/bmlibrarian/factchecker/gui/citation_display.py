@@ -178,12 +178,15 @@ class CitationDisplay:
         if stance == 'supports':
             stance_badge_color = ft.Colors.GREEN_700
             stance_icon = "✓"
+            stance_display = "SUPPORTS"
         elif stance == 'contradicts':
             stance_badge_color = ft.Colors.RED_700
             stance_icon = "✗"
+            stance_display = "CONTRADICTS"
         else:
             stance_badge_color = ft.Colors.GREY_600
             stance_icon = "?"
+            stance_display = "NEUTRAL" if stance else "UNKNOWN"
 
         # Create title
         truncated_citation = truncate_text(citation_text, 80)
@@ -192,7 +195,7 @@ class CitationDisplay:
         # Create stance badge
         stance_badge = ft.Container(
             content=ft.Text(
-                f"{stance_icon} {stance.upper()}",
+                f"{stance_icon} {stance_display}",
                 size=10,
                 weight=ft.FontWeight.BOLD,
                 color=ft.Colors.WHITE,
@@ -221,7 +224,7 @@ class CitationDisplay:
 
         # Metadata section
         metadata_items = [
-            ("Stance", stance.capitalize()),
+            ("Stance", stance_display),
             ("Relevance Score", f"{relevance_score:.3f}" if relevance_score else "N/A"),
         ]
         if pmid:
@@ -281,17 +284,20 @@ class CitationDisplay:
         if stance == 'supports':
             stance_color = ft.Colors.GREEN_100
             stance_border = ft.Colors.GREEN_500
+            stance_display = "SUPPORTS"
         elif stance == 'contradicts':
             stance_color = ft.Colors.RED_100
             stance_border = ft.Colors.RED_500
+            stance_display = "CONTRADICTS"
         else:
             stance_color = ft.Colors.GREY_100
             stance_border = ft.Colors.GREY_400
+            stance_display = "NEUTRAL" if stance else "UNKNOWN"
 
         return ft.Container(
             content=ft.Column([
                 ft.Text(
-                    f"Citation {index}: {stance.upper()}",
+                    f"Citation {index}: {stance_display}",
                     size=13,
                     weight=ft.FontWeight.BOLD
                 ),

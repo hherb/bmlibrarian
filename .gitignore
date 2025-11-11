@@ -25,3 +25,5 @@ logs/
 PR_DESCRIPTION.md
 pubmedqa_checked.json
 pubmedqa_extracted.json
+input.json
+input_annotated.json

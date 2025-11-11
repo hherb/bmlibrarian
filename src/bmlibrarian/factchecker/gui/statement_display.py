@@ -109,7 +109,7 @@ class StatementDisplay:
         badge_text = badge_container.content
 
         # Update text and color based on value
-        value_lower = str(value).lower()
+        value_lower = str(value).lower() if value else ''
 
         if value_lower == 'yes':
             badge_text.value = "YES ✓"
@@ -121,7 +121,7 @@ class StatementDisplay:
             badge_text.value = "MAYBE ?"
             badge_container.bgcolor = ft.Colors.ORANGE_700
         else:
-            badge_text.value = str(value).upper()
+            badge_text.value = str(value).upper() if value else "N/A"
             badge_container.bgcolor = ft.Colors.GREY_600
 
     def update_annotations(self, original: str, ai_eval: str, ai_reason: str):
@@ -192,4 +192,4 @@ class StatementDisplay:
                 content=human_annotation_section,
                 expand=1
             )
-        ], spacing=15)
+        ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
