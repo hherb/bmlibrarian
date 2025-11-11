@@ -12,7 +12,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from bmlibrarian.agents import FactCheckerAgent
+from bmlibrarian.factchecker import FactCheckerAgent
 from bmlibrarian.config import get_model, get_agent_config
 
 

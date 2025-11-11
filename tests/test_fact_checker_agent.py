@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from bmlibrarian.agents.fact_checker_agent import (
+from bmlibrarian.factchecker.agent.fact_checker_agent import (
     FactCheckerAgent,
     FactCheckResult,
     EvidenceReference
@@ -30,9 +30,9 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.mock_orchestrator = Mock()
 
         # Create agent with mocked sub-agents
-        with patch('bmlibrarian.agents.fact_checker_agent.QueryAgent'), \
-             patch('bmlibrarian.agents.fact_checker_agent.DocumentScoringAgent'), \
-             patch('bmlibrarian.agents.fact_checker_agent.CitationFinderAgent'):
+        with patch('bmlibrarian.factchecker.agent.fact_checker_agent.QueryAgent'), \
+             patch('bmlibrarian.factchecker.agent.fact_checker_agent.DocumentScoringAgent'), \
+             patch('bmlibrarian.factchecker.agent.fact_checker_agent.CitationFinderAgent'):
 
             self.agent = FactCheckerAgent(
                 model="test-model",
