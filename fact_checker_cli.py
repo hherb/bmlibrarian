@@ -3,8 +3,8 @@
 Fact Checker CLI - Audit biomedical statements in LLM training data
 
 Takes JSON input files with biomedical statements and evaluates their veracity
-against the BMLibrarian literature database. Outputs structured JSON results with
-evidence references.
+against the BMLibrarian literature database. Stores results in SQLite database
+with optional JSON export.
 
 Input JSON format:
 [
@@ -247,6 +247,10 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         if args.verbose:
             print(f"  [{step}] {message}")
 
+    # Determine database mode
+    use_database = not args.json_only if hasattr(args, 'json_only') else True
+    db_path = getattr(args, 'db_path', None)
+
     # Create agent
     agent = FactCheckerAgent(
         model=model,
@@ -257,7 +261,9 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         show_model_info=True,
         score_threshold=score_threshold,
         max_search_results=max_search_results,
-        max_citations=max_citations
+        max_citations=max_citations,
+        db_path=db_path,
+        use_database=use_database
     )
 
     return agent
@@ -299,8 +305,25 @@ Input file format:
     parser.add_argument(
         '-o', '--output',
         type=str,
-        required=True,
-        help='Output JSON file for results'
+        help='Output file (optional JSON export from database)'
+    )
+
+    parser.add_argument(
+        '--db-path',
+        type=str,
+        help='SQLite database path (default: auto-generated from input filename)'
+    )
+
+    parser.add_argument(
+        '--json-only',
+        action='store_true',
+        help='Use legacy JSON-only mode (no database)'
+    )
+
+    parser.add_argument(
+        '--export-json',
+        action='store_true',
+        help='Export database to JSON after processing'
     )
 
     # Agent configuration
@@ -367,10 +390,10 @@ Input file format:
             args.score_threshold = 2.0
 
     try:
-        # Load input file
-        print(f"Loading statements from: {args.input_file}")
-        statements = load_input_file(args.input_file)
-        print(f"Loaded {len(statements)} statements")
+        # Validate input file
+        if not Path(args.input_file).exists():
+            print(f"\n✗ Error: Input file not found: {args.input_file}")
+            return 1
 
         # Create agent
         print(f"\nInitializing Fact Checker Agent...")
@@ -382,35 +405,30 @@ Input file format:
             print("  Please ensure Ollama is running on http://localhost:11434")
             return 1
 
-        # Process statements
-        print(f"\nProcessing {len(statements)} statements...")
+        # Process statements using batch mode
+        print(f"\nProcessing statements from: {args.input_file}")
         print("=" * 80)
 
-        results = []
-        for i, item in enumerate(statements, 1):
-            statement = item['statement']
-            expected = item.get('answer')
+        results = agent.check_batch_from_file(
+            input_file=args.input_file,
+            output_file=args.output if args.json_only else None
+        )
 
-            print(f"\n[{i}/{len(statements)}] {statement[:70]}...")
+        # Print results information
+        print("=" * 80)
+        if agent.use_database and agent.db_path:
+            print(f"\n✓ Results stored in database: {agent.db_path}")
+            print(f"  Total statements processed: {len(results)}")
 
-            result = agent.check_statement(
-                statement=statement,
-                expected_answer=expected
-            )
-
-            results.append(result)
-
-            # Show quick result
-            match_str = ""
-            if result.expected_answer:
-                match_str = " ✓" if result.matches_expected else " ✗"
-            print(f"  → {result.evaluation.upper()} (confidence: {result.confidence}){match_str}")
-
-        # Generate summary
-        summary = agent._generate_summary(results)
-
-        # Save results
-        save_output_file(results, args.output, summary)
+            # Export to JSON if requested
+            if args.export_json or args.output:
+                output_file = args.output or str(Path(args.input_file).parent / f"{Path(args.input_file).stem}_results.json")
+                print(f"\nExporting results to JSON...")
+                export_path = agent.export_database_to_json(output_file, export_type="full")
+                if export_path:
+                    print(f"✓ JSON export saved to: {export_path}")
+        else:
+            print(f"\n✓ Results saved to: {args.output}")
 
         # Print summary
         print_result_summary(results)
