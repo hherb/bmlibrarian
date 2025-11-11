@@ -174,6 +174,21 @@ uv run python fact_checker_cli.py input.json -o results.json -v --detailed
 uv run python examples/fact_checker_demo.py
 ```
 
+#### Fact-Checker Review GUI
+```bash
+# Human review and annotation of fact-checking results
+uv run python fact_checker_review_gui.py
+
+# Features:
+# - Load fact-check results from JSON files
+# - Statement-by-statement review interface
+# - Compare original, AI, and human annotations side-by-side
+# - Review supporting citations with stance indicators
+# - Provide human annotations with explanations
+# - Export reviewed annotations to new JSON file
+# - Perfect for quality control and training data validation
+```
+
 #### Browser-Based PDF Download (Optional)
 
 For PDFs protected by Cloudflare or anti-bot measures:
