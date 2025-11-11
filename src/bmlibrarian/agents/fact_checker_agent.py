@@ -10,6 +10,8 @@ Takes biomedical statements and evaluates their veracity (yes/no/maybe) by:
 
 import json
 import logging
+import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -18,6 +20,10 @@ from .base import BaseAgent
 from .query_agent import QueryAgent
 from .scoring_agent import DocumentScoringAgent, ScoringResult
 from .citation_agent import CitationFinderAgent, Citation
+from .fact_checker_db import (
+    FactCheckerDB, Statement, AIEvaluation, Evidence,
+    create_database_from_input_file
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +128,10 @@ class FactCheckerAgent(BaseAgent):
         show_model_info: bool = True,
         score_threshold: float = 2.5,
         max_search_results: int = 50,
-        max_citations: int = 10
+        max_citations: int = 10,
+        db_path: Optional[str] = None,
+        use_database: bool = True,
+        incremental: bool = False
     ):
         """
         Initialize the FactCheckerAgent.
@@ -139,6 +148,9 @@ class FactCheckerAgent(BaseAgent):
             score_threshold: Minimum relevance score for documents
             max_search_results: Maximum number of documents to retrieve
             max_citations: Maximum number of citations to extract
+            db_path: Optional path to SQLite database (auto-generated if None)
+            use_database: Whether to use database storage (default: True)
+            incremental: If True, skip statements that already have AI evaluations
         """
         super().__init__(
             model=model,
@@ -154,6 +166,11 @@ class FactCheckerAgent(BaseAgent):
         self.score_threshold = score_threshold
         self.max_search_results = max_search_results
         self.max_citations = max_citations
+        self.use_database = use_database
+        self.db_path = db_path
+        self.db: Optional[FactCheckerDB] = None
+        self.current_session_id: Optional[str] = None
+        self.incremental = incremental
 
         # Initialize sub-agents (will be set up during fact-checking)
         self.query_agent = None
@@ -662,20 +679,21 @@ Respond ONLY with the JSON object, no additional text."""
     def check_batch(
         self,
         statements: List[Dict[str, str]],
-        output_file: Optional[str] = None
+        output_file: Optional[str] = None,
+        source_file: Optional[str] = None
     ) -> List[FactCheckResult]:
         """
-        Check multiple statements in batch with incremental file writing.
+        Check multiple statements in batch with incremental database storage.
 
-        Results are written to the output file after each statement is processed
-        to prevent data loss in case of interruption. The summary statistics are
-        only added once all statements have been processed.
+        Results are stored in the database after each statement is processed
+        to prevent data loss in case of interruption.
 
         Args:
             statements: List of dicts with either:
                 - 'statement' and optional 'answer' keys (legacy format), OR
                 - 'id', 'question', and 'answer' keys (extracted format)
-            output_file: Optional file path to save results as JSON (incremental)
+            output_file: Optional file path for database or JSON export
+            source_file: Source filename for metadata
 
         Returns:
             List of FactCheckResult objects
@@ -685,8 +703,13 @@ Respond ONLY with the JSON object, no additional text."""
 
         self._call_callback("batch_start", f"Processing {total} statements...")
 
-        # Initialize output file if specified (create empty results array)
-        if output_file:
+        # Initialize database or JSON output
+        if self.use_database:
+            # Initialize session
+            self.current_session_id = str(uuid.uuid4())
+            self._initialize_database_session(total, source_file or output_file)
+        elif output_file:
+            # Legacy JSON mode
             self._initialize_results_file(output_file)
 
         for i, item in enumerate(statements, 1):
@@ -729,12 +752,16 @@ Respond ONLY with the JSON object, no additional text."""
                 )
                 results.append(error_result)
 
-            # Write result incrementally after each statement
-            if output_file:
+            # Store result incrementally
+            if self.use_database and self.db:
+                self._store_result_in_database(results[-1], source_file)
+            elif output_file:
                 self._append_result_to_file(results[-1], output_file)
 
-        # Add summary statistics now that all statements are processed
-        if output_file:
+        # Finalize storage
+        if self.use_database and self.db:
+            self._finalize_database_session(len(results))
+        elif output_file:
             self._finalize_results_file(results, output_file)
 
         self._call_callback("batch_complete", f"Completed {total} statements")
@@ -751,7 +778,8 @@ Respond ONLY with the JSON object, no additional text."""
 
         Args:
             input_file: Path to JSON file with statements (supports both legacy and extracted formats)
-            output_file: Optional file path to save results as JSON
+            output_file: Optional file path for output (database or JSON)
+                        If None and use_database=True, generates database path from input filename
 
         Returns:
             List of FactCheckResult objects
@@ -765,11 +793,183 @@ Respond ONLY with the JSON object, no additional text."""
 
             self._call_callback("file_loaded", f"Loaded {len(statements)} statements from {input_file}")
 
-            return self.check_batch(statements, output_file)
+            # Initialize database if using database mode
+            if self.use_database:
+                if not self.db_path:
+                    # Auto-generate database path from input file
+                    self.db_path = create_database_from_input_file(input_file)
+
+                if not self.db:
+                    self.db = FactCheckerDB(self.db_path)
+                    self._call_callback("database", f"Database initialized: {self.db_path}")
+
+            # Filter statements if incremental mode is enabled
+            if self.incremental and self.use_database and self.db:
+                original_count = len(statements)
+
+                # Extract statement texts (support both formats)
+                statement_texts = []
+                for item in statements:
+                    if 'question' in item:
+                        statement_texts.append(item.get('question', ''))
+                    else:
+                        statement_texts.append(item.get('statement', ''))
+
+                # Get statements needing evaluation
+                texts_needing_eval = set(self.db.get_statements_needing_evaluation(statement_texts))
+
+                # Filter statements list
+                filtered_statements = []
+                for item in statements:
+                    if 'question' in item:
+                        text = item.get('question', '')
+                    else:
+                        text = item.get('statement', '')
+
+                    if text in texts_needing_eval:
+                        filtered_statements.append(item)
+
+                skipped_count = original_count - len(filtered_statements)
+                statements = filtered_statements
+
+                if skipped_count > 0:
+                    self._call_callback("incremental",
+                        f"Incremental mode: Skipping {skipped_count} already-evaluated statements, "
+                        f"processing {len(statements)} new/unevaluated statements")
+                else:
+                    self._call_callback("incremental",
+                        f"Incremental mode: All {len(statements)} statements need evaluation")
+
+            return self.check_batch(statements, output_file, source_file=input_file)
 
         except Exception as e:
             logger.error(f"Error loading statements from file: {e}")
             raise
+
+    # ========== Database Operations ==========
+
+    def _initialize_database_session(self, total_statements: int, source_file: Optional[str]):
+        """Initialize a new processing session in the database."""
+        if not self.db:
+            return
+
+        session_data = {
+            'session_id': self.current_session_id,
+            'input_file': source_file or 'unknown',
+            'total_statements': total_statements,
+            'start_time': datetime.now(timezone.utc).isoformat(),
+            'status': 'running',
+            'config_snapshot': json.dumps({
+                'model': self.model,
+                'temperature': self.temperature,
+                'top_p': self.top_p,
+                'score_threshold': self.score_threshold,
+                'max_search_results': self.max_search_results,
+                'max_citations': self.max_citations
+            })
+        }
+
+        try:
+            self.db.insert_processing_session(session_data)
+            logger.info(f"Started session {self.current_session_id}")
+        except Exception as e:
+            logger.error(f"Error initializing database session: {e}")
+
+    def _store_result_in_database(self, result: FactCheckResult, source_file: Optional[str]):
+        """Store a FactCheckResult in the database."""
+        if not self.db:
+            return
+
+        try:
+            # Insert or get statement
+            stmt = Statement(
+                statement_text=result.statement,
+                input_statement_id=result.input_statement_id,
+                expected_answer=result.expected_answer,
+                source_file=source_file or 'unknown',
+                review_status='pending'
+            )
+            statement_id = self.db.insert_statement(stmt)
+
+            # Insert AI evaluation
+            ai_eval = AIEvaluation(
+                statement_id=statement_id,
+                evaluation=result.evaluation,
+                reason=result.reason,
+                confidence=result.confidence,
+                documents_reviewed=result.documents_reviewed,
+                supporting_citations=result.supporting_citations,
+                contradicting_citations=result.contradicting_citations,
+                neutral_citations=result.neutral_citations,
+                matches_expected=result.matches_expected,
+                model_used=self.model,
+                session_id=self.current_session_id,
+                version=1
+            )
+            eval_id = self.db.insert_ai_evaluation(ai_eval)
+
+            # Insert evidence citations
+            for evidence_ref in result.evidence_list:
+                evidence = Evidence(
+                    ai_evaluation_id=eval_id,
+                    citation_text=evidence_ref.citation_text,
+                    pmid=evidence_ref.pmid,
+                    doi=evidence_ref.doi,
+                    document_id=evidence_ref.document_id,
+                    relevance_score=evidence_ref.relevance_score,
+                    supports_statement="supports" if evidence_ref.supports_statement is True else
+                                      "contradicts" if evidence_ref.supports_statement is False else
+                                      "neutral"
+                )
+                self.db.insert_evidence(evidence)
+
+            logger.debug(f"Stored result for statement {statement_id} in database")
+
+        except Exception as e:
+            logger.error(f"Error storing result in database: {e}")
+
+    def _finalize_database_session(self, processed_count: int):
+        """Finalize the processing session in the database."""
+        if not self.db or not self.current_session_id:
+            return
+
+        try:
+            updates = {
+                'processed_statements': processed_count,
+                'end_time': datetime.now(timezone.utc).isoformat(),
+                'status': 'completed'
+            }
+            self.db.update_processing_session(self.current_session_id, updates)
+            logger.info(f"Finalized session {self.current_session_id}")
+        except Exception as e:
+            logger.error(f"Error finalizing database session: {e}")
+
+    def export_database_to_json(self, output_file: str, export_type: str = "full",
+                                requested_by: str = "system") -> Optional[str]:
+        """
+        Export database contents to JSON file.
+
+        Args:
+            output_file: Path to output JSON file
+            export_type: Type of export (full/ai_only/human_annotated/summary)
+            requested_by: Username of requester
+
+        Returns:
+            Path to exported file or None if database not initialized
+        """
+        if not self.db:
+            logger.error("Database not initialized, cannot export")
+            return None
+
+        try:
+            export_path = self.db.export_to_json(output_file, export_type, requested_by)
+            self._call_callback("export", f"Exported to {export_path}")
+            return export_path
+        except Exception as e:
+            logger.error(f"Error exporting database to JSON: {e}")
+            return None
+
+    # ========== Legacy JSON File Operations ==========
 
     def _initialize_results_file(self, output_file: str) -> None:
         """Initialize the results file with an empty results array.
