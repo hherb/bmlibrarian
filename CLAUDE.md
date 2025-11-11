@@ -46,9 +46,10 @@ Since this project uses `uv` for package management:
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
 - **CLI Applications**: 
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
-- **GUI Applications**: 
+- **GUI Applications**:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
+  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
@@ -75,6 +76,7 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 4. **ReportingAgent**: Synthesizes citations into medical publication-style reports
 5. **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
 6. **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
+7. **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
 
 ### Multi-Model Query Generation
 
@@ -211,16 +213,21 @@ bmlibrarian/
 │   │   ├── citation_guide.md
 │   │   ├── reporting_guide.md
 │   │   ├── counterfactual_guide.md
+│   │   ├── fact_checker_guide.md
+│   │   ├── fact_checker_review_guide.md  # Fact-checker review GUI guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
 │       ├── citation_system.md
 │       ├── reporting_system.md
 │       ├── counterfactual_system.md
+│       ├── fact_checker_system.md
 │       └── multi_model_architecture.md  # Multi-model architecture docs
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
 ├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
+├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
+├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
