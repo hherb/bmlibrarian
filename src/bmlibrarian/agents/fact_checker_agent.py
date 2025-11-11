@@ -130,7 +130,8 @@ class FactCheckerAgent(BaseAgent):
         max_search_results: int = 50,
         max_citations: int = 10,
         db_path: Optional[str] = None,
-        use_database: bool = True
+        use_database: bool = True,
+        incremental: bool = False
     ):
         """
         Initialize the FactCheckerAgent.
@@ -149,6 +150,7 @@ class FactCheckerAgent(BaseAgent):
             max_citations: Maximum number of citations to extract
             db_path: Optional path to SQLite database (auto-generated if None)
             use_database: Whether to use database storage (default: True)
+            incremental: If True, skip statements that already have AI evaluations
         """
         super().__init__(
             model=model,
@@ -168,6 +170,7 @@ class FactCheckerAgent(BaseAgent):
         self.db_path = db_path
         self.db: Optional[FactCheckerDB] = None
         self.current_session_id: Optional[str] = None
+        self.incremental = incremental
 
         # Initialize sub-agents (will be set up during fact-checking)
         self.query_agent = None
@@ -799,6 +802,43 @@ Respond ONLY with the JSON object, no additional text."""
                 if not self.db:
                     self.db = FactCheckerDB(self.db_path)
                     self._call_callback("database", f"Database initialized: {self.db_path}")
+
+            # Filter statements if incremental mode is enabled
+            if self.incremental and self.use_database and self.db:
+                original_count = len(statements)
+
+                # Extract statement texts (support both formats)
+                statement_texts = []
+                for item in statements:
+                    if 'question' in item:
+                        statement_texts.append(item.get('question', ''))
+                    else:
+                        statement_texts.append(item.get('statement', ''))
+
+                # Get statements needing evaluation
+                texts_needing_eval = set(self.db.get_statements_needing_evaluation(statement_texts))
+
+                # Filter statements list
+                filtered_statements = []
+                for item in statements:
+                    if 'question' in item:
+                        text = item.get('question', '')
+                    else:
+                        text = item.get('statement', '')
+
+                    if text in texts_needing_eval:
+                        filtered_statements.append(item)
+
+                skipped_count = original_count - len(filtered_statements)
+                statements = filtered_statements
+
+                if skipped_count > 0:
+                    self._call_callback("incremental",
+                        f"Incremental mode: Skipping {skipped_count} already-evaluated statements, "
+                        f"processing {len(statements)} new/unevaluated statements")
+                else:
+                    self._call_callback("incremental",
+                        f"Incremental mode: All {len(statements)} statements need evaluation")
 
             return self.check_batch(statements, output_file, source_file=input_file)
 

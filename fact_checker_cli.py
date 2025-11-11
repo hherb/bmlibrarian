@@ -250,6 +250,7 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
     # Determine database mode
     use_database = not args.json_only if hasattr(args, 'json_only') else True
     db_path = getattr(args, 'db_path', None)
+    incremental = getattr(args, 'incremental', False)
 
     # Create agent
     agent = FactCheckerAgent(
@@ -263,7 +264,8 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         max_search_results=max_search_results,
         max_citations=max_citations,
         db_path=db_path,
-        use_database=use_database
+        use_database=use_database,
+        incremental=incremental
     )
 
     return agent
@@ -276,17 +278,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Check statements in input file
-  python fact_checker_cli.py input.json -o results.json
+  # Check statements in input file (creates input.db)
+  python fact_checker_cli.py input.json
+
+  # Incremental mode: only process new/unevaluated statements
+  python fact_checker_cli.py input.json --incremental
 
   # Use custom thresholds
-  python fact_checker_cli.py input.json -o results.json --score-threshold 3.0 --max-search-results 100
+  python fact_checker_cli.py input.json --score-threshold 3.0 --max-search-results 100
 
   # Verbose mode with detailed output
-  python fact_checker_cli.py input.json -o results.json -v --detailed
+  python fact_checker_cli.py input.json -v --detailed
 
   # Quick test mode (fewer documents)
-  python fact_checker_cli.py input.json -o results.json --quick
+  python fact_checker_cli.py input.json --quick
+
+  # Export database to JSON
+  python fact_checker_cli.py input.json --export-json -o results.json
+
+  # Legacy JSON-only mode (no database)
+  python fact_checker_cli.py input.json -o results.json --json-only
 
 Input file format:
   [
@@ -318,6 +329,12 @@ Input file format:
         '--json-only',
         action='store_true',
         help='Use legacy JSON-only mode (no database)'
+    )
+
+    parser.add_argument(
+        '--incremental',
+        action='store_true',
+        help='Incremental mode: skip statements that already have AI evaluations'
     )
 
     parser.add_argument(

@@ -531,6 +531,49 @@ class FactCheckerDB:
 
             return results
 
+    def get_statements_needing_evaluation(self, statement_texts: List[str]) -> List[str]:
+        """
+        Check which statements from the list need AI evaluation.
+
+        Args:
+            statement_texts: List of statement texts to check
+
+        Returns:
+            List of statement texts that don't have AI evaluations yet
+        """
+        if not statement_texts:
+            return []
+
+        needing_evaluation = []
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            for text in statement_texts:
+                # Check if statement exists
+                cursor.execute(
+                    "SELECT id FROM statements WHERE statement_text = ?",
+                    (text,)
+                )
+                stmt_row = cursor.fetchone()
+
+                if stmt_row:
+                    statement_id = stmt_row[0]
+                    # Check if it has AI evaluation
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM ai_evaluations WHERE statement_id = ?",
+                        (statement_id,)
+                    )
+                    has_evaluation = cursor.fetchone()[0] > 0
+
+                    if not has_evaluation:
+                        needing_evaluation.append(text)
+                else:
+                    # Statement doesn't exist, needs evaluation
+                    needing_evaluation.append(text)
+
+        return needing_evaluation
+
     def get_inter_annotator_agreement(self) -> Dict[str, Any]:
         """
         Calculate inter-annotator agreement statistics.
