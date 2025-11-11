@@ -50,6 +50,7 @@ Since this project uses `uv` for package management:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
   - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results
+  - `uv run python fact_checker_review_gui.py --input-file results.json` - Load fact-check results directly (macOS file picker workaround)
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 

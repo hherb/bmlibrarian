@@ -11,6 +11,7 @@ Built using the Flet framework, this application allows reviewers to:
 - Export reviewed annotations to a new JSON file
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -22,12 +23,13 @@ import flet as ft
 class FactCheckerReviewGUI:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self):
+    def __init__(self, input_file: Optional[str] = None):
         self.page: Optional[ft.Page] = None
         self.results: List[Dict[str, Any]] = []
         self.current_index: int = 0
         self.reviews: List[Dict[str, Any]] = []
         self.input_file_path: str = ""
+        self.initial_input_file: Optional[str] = input_file  # File provided via command line
 
         # UI components
         self.file_path_text = None
@@ -49,6 +51,10 @@ class FactCheckerReviewGUI:
         self.page = page
         self._setup_page()
         self._build_ui()
+
+        # If input file was provided via command line, load it automatically
+        if self.initial_input_file:
+            self._load_fact_check_results(self.initial_input_file)
 
     def _setup_page(self):
         """Configure the main page settings."""
@@ -631,10 +637,10 @@ class FactCheckerReviewGUI:
         """Generate default output file path."""
         if self.input_file_path:
             input_path = Path(self.input_file_path)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            return str(input_path.parent / f"{input_path.stem}_reviewed_{timestamp}.json")
+            return str(input_path.parent / f"{input_path.stem}_annotated.json")
         else:
-            return f"fact_check_reviewed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            return f"fact_check_annotated_{timestamp}.json"
 
     def _save_reviews_to_file(self, output_path: str):
         """Save reviews to JSON file."""
@@ -713,7 +719,28 @@ class FactCheckerReviewGUI:
 
 def main():
     """Main entry point for the application."""
-    app = FactCheckerReviewGUI()
+    parser = argparse.ArgumentParser(
+        description="BMLibrarian Fact-Checker Review GUI - Human annotation interface for fact-checking results"
+    )
+    parser.add_argument(
+        "--input-file",
+        type=str,
+        help="Path to the input fact-check results JSON file (workaround for macOS file picker bug)"
+    )
+
+    args = parser.parse_args()
+
+    # Validate input file if provided
+    if args.input_file:
+        input_path = Path(args.input_file)
+        if not input_path.exists():
+            print(f"Error: Input file not found: {args.input_file}")
+            return
+        if not input_path.suffix.lower() == '.json':
+            print(f"Error: Input file must be a JSON file: {args.input_file}")
+            return
+
+    app = FactCheckerReviewGUI(input_file=args.input_file)
     ft.app(target=app.main)
 
 

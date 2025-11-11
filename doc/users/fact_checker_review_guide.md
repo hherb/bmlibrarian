@@ -30,9 +30,12 @@ The Fact-Checker Review GUI is included with BMLibrarian. No additional installa
 ```bash
 # Start the Fact-Checker Review GUI
 uv run python fact_checker_review_gui.py
+
+# Or specify an input file directly (workaround for macOS file picker bug)
+uv run python fact_checker_review_gui.py --input-file path/to/results.json
 ```
 
-The application will open in a desktop window.
+The application will open in a desktop window. If you provide an input file via the command line, it will be automatically loaded on startup.
 
 ## Using the Review Interface
 
@@ -103,8 +106,10 @@ For each statement:
 ### 4. Save Reviews
 
 1. Click the **"Save Reviews"** button
-2. Edit the output file path if desired (default: `<original>_reviewed_<timestamp>.json`)
+2. Edit the output file path if desired (default: `<original>_annotated.json`)
 3. Click **"Save"** to export your annotations
+
+**Note:** When using `--input-file` from the command line, the default output filename automatically appends `_annotated.json` to the input filename (without timestamp).
 
 **Output JSON Format:**
 ```json
@@ -176,6 +181,12 @@ Evaluate the quality and relevance of citations extracted by the system.
 - **Solution**: Check file path permissions and ensure directory exists
 - **Tip**: Use absolute paths for reliability
 
+### macOS File Picker Issues
+- **Symptom**: File picker dialog doesn't work on macOS
+- **Cause**: Known Flet framework bug on macOS
+- **Workaround**: Use `--input-file` command-line argument to specify the input file directly
+- **Example**: `uv run python fact_checker_review_gui.py --input-file results.json`
+
 ## Integration with Fact-Checking Workflow
 
 The review GUI integrates with BMLibrarian's fact-checking workflow:
@@ -189,12 +200,12 @@ The review GUI integrates with BMLibrarian's fact-checking workflow:
 # Step 1: Generate fact-check results
 uv run python fact_checker_cli.py --input statements.json --output results.json
 
-# Step 2: Review with GUI
-uv run python fact_checker_review_gui.py
-# (Load results.json, review, save as results_reviewed.json)
+# Step 2: Review with GUI (macOS-compatible method)
+uv run python fact_checker_review_gui.py --input-file results.json
+# (Review statements, save as results_annotated.json)
 
 # Step 3: Analyze reviews
-uv run python analyze_factcheck_progress.py results_reviewed.json
+uv run python analyze_factcheck_progress.py results_annotated.json
 ```
 
 ## Technical Details
@@ -233,6 +244,12 @@ Built using Flet framework:
 - **Progress Analysis**: `analyze_factcheck_progress.py`
 
 ## Version History
+
+- **v1.1.0** (2025-11-11): macOS File Picker Workaround
+  - Added `--input-file` command-line argument for direct file loading
+  - Changed default output naming to `_annotated.json` (without timestamp)
+  - Automatic file loading on startup when using command-line argument
+  - Workaround for known Flet file picker bug on macOS
 
 - **v1.0.0** (2025-11-11): Initial release
   - Statement-by-statement review interface
