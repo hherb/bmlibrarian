@@ -14,10 +14,47 @@ Built using the Flet framework, this application allows reviewers to:
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import flet as ft
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+try:
+    from bmlibrarian.gui.citation_card_utils import extract_citation_data, create_citation_metadata, create_citation_publication_info
+    from bmlibrarian.gui.text_highlighting import create_highlighted_abstract
+    from bmlibrarian.gui.ui_builder import create_expandable_card, create_relevance_badge, create_metadata_section, create_text_content_section, truncate_text, format_authors_list
+    GUI_UTILS_AVAILABLE = True
+except ImportError:
+    GUI_UTILS_AVAILABLE = False
+
+# Database imports for fetching full abstracts
+try:
+    from bmlibrarian.database import get_db_manager
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+
+
+# Fallback helper functions if GUI utils not available
+def _truncate_text_fallback(text: str, max_length: int) -> str:
+    """Fallback text truncation function."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length - 3] + "..."
+
+
+def _create_simple_badge_fallback(text: str, color: str) -> ft.Container:
+    """Fallback badge creation function."""
+    return ft.Container(
+        content=ft.Text(text, size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE, selectable=True),
+        bgcolor=color,
+        padding=ft.padding.symmetric(horizontal=8, vertical=4),
+        border_radius=12
+    )
 
 
 class FactCheckerReviewGUI:
@@ -30,6 +67,7 @@ class FactCheckerReviewGUI:
         self.reviews: List[Dict[str, Any]] = []
         self.input_file_path: str = ""
         self.initial_input_file: Optional[str] = input_file  # File provided via command line
+        self.db_manager = None  # Database manager for fetching abstracts
 
         # UI components
         self.file_path_text = None
@@ -52,9 +90,144 @@ class FactCheckerReviewGUI:
         self._setup_page()
         self._build_ui()
 
+        # Initialize database manager if available
+        if DB_AVAILABLE:
+            self._init_database_manager()
+
         # If input file was provided via command line, load it automatically
         if self.initial_input_file:
             self._load_fact_check_results(self.initial_input_file)
+
+    def _init_database_manager(self):
+        """Initialize database manager for fetching full abstracts."""
+        try:
+            self.db_manager = get_db_manager()
+            print("✓ Database manager initialized successfully")
+        except Exception as e:
+            print(f"Warning: Could not initialize database manager: {e}")
+            self.db_manager = None
+
+    def _fetch_document_abstract(self, document_id: str) -> Optional[str]:
+        """Fetch full abstract from database by document ID."""
+        if not self.db_manager or not document_id:
+            return None
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT abstract FROM document WHERE id = %s",
+                        (document_id,)
+                    )
+                    result = cursor.fetchone()
+                    return result[0] if result else None
+        except Exception as e:
+            print(f"Error fetching abstract for document {document_id}: {e}")
+            return None
+
+    def _fetch_abstract_by_pmid(self, pmid: str) -> Optional[str]:
+        """Fetch full abstract from database using PMID (stored as external_id)."""
+        if not self.db_manager:
+            print(f"DEBUG: No database manager available")
+            return None
+
+        if not pmid:
+            print(f"DEBUG: No PMID provided")
+            return None
+
+        # Clean PMID (remove 'PMID:' prefix if present)
+        clean_pmid = pmid.replace('PMID:', '').replace('pmid:', '').strip()
+        print(f"DEBUG: Fetching abstract for PMID: {pmid} -> cleaned: {clean_pmid}")
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # PMID is stored in external_id for PubMed documents
+                    cursor.execute(
+                        "SELECT abstract FROM document WHERE external_id = %s",
+                        (clean_pmid,)
+                    )
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        print(f"DEBUG: Abstract found for {clean_pmid}: {len(result[0])} chars")
+                        return result[0]
+                    else:
+                        print(f"DEBUG: No abstract found for PMID {clean_pmid}")
+                        return None
+        except Exception as e:
+            print(f"Error fetching abstract for PMID {pmid}: {e}")
+            return None
+
+    def _fetch_abstract_by_doi(self, doi: str) -> Optional[str]:
+        """Fetch full abstract from database using DOI (stored in doi column for PubMed)."""
+        if not self.db_manager:
+            print(f"DEBUG: No database manager available")
+            return None
+
+        if not doi:
+            print(f"DEBUG: No DOI provided")
+            return None
+
+        # Clean DOI (remove 'DOI:' prefix if present)
+        clean_doi = doi.replace('DOI:', '').replace('doi:', '').strip()
+        print(f"DEBUG: Fetching abstract for DOI: {doi} -> cleaned: {clean_doi}")
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # DOI is stored in the 'doi' column for PubMed articles
+                    cursor.execute(
+                        "SELECT abstract FROM document WHERE doi = %s",
+                        (clean_doi,)
+                    )
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        print(f"DEBUG: Abstract found for {clean_doi}: {len(result[0])} chars")
+                        return result[0]
+                    else:
+                        print(f"DEBUG: No abstract found for DOI {clean_doi}")
+                        return None
+        except Exception as e:
+            print(f"Error fetching abstract for DOI {doi}: {e}")
+            return None
+
+    def _enrich_evidence_with_identifiers(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich evidence with missing identifiers by looking up in database.
+
+        For legacy data that only has DOI, fetch the PMID and document_id from database.
+        This allows abstract fetching to work with older fact-check results.
+        """
+        if not self.db_manager:
+            return evidence
+
+        # If we already have document_id and pmid, no need to enrich
+        if evidence.get('document_id') and evidence.get('pmid'):
+            return evidence
+
+        # Try to enrich using DOI
+        doi = evidence.get('doi', '')
+        if doi:
+            clean_doi = doi.replace('DOI:', '').replace('doi:', '').strip()
+            try:
+                with self.db_manager.get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT id, external_id FROM document WHERE doi = %s",
+                            (clean_doi,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            # Add document_id and pmid to evidence
+                            if not evidence.get('document_id'):
+                                evidence['document_id'] = str(result[0])
+                                print(f"DEBUG: Enriched evidence with document_id: {result[0]}")
+                            if not evidence.get('pmid') and result[1]:
+                                evidence['pmid'] = f"PMID:{result[1]}"
+                                print(f"DEBUG: Enriched evidence with PMID: {result[1]}")
+            except Exception as e:
+                print(f"Warning: Could not enrich evidence with identifiers: {e}")
+
+        return evidence
 
     def _setup_page(self):
         """Configure the main page settings."""
@@ -466,7 +639,7 @@ class FactCheckerReviewGUI:
             badge_container.bgcolor = ft.Colors.GREY_600
 
     def _display_citations(self, evidence_list: List[Dict[str, Any]]):
-        """Display citations in the scrollable list."""
+        """Display citations in the scrollable list with expandable cards."""
         self.citations_list.controls.clear()
 
         if not evidence_list:
@@ -475,11 +648,197 @@ class FactCheckerReviewGUI:
             )
             return
 
-        for i, evidence in enumerate(evidence_list, 1):
-            citation_card = self._create_citation_card(i, evidence)
+        for i, evidence in enumerate(evidence_list):
+            # Enrich evidence with missing identifiers from database
+            enriched_evidence = self._enrich_evidence_with_identifiers(evidence)
+
+            if GUI_UTILS_AVAILABLE:
+                # Use expandable citation cards with full abstract highlighting
+                citation_card = self._create_expandable_citation_card(i, enriched_evidence)
+            else:
+                # Fallback to simple cards if GUI utils not available
+                citation_card = self._create_simple_citation_card(i + 1, enriched_evidence)
             self.citations_list.controls.append(citation_card)
 
-    def _create_citation_card(self, index: int, evidence: Dict[str, Any]) -> ft.Container:
+    def _create_expandable_citation_card(self, index: int, evidence: Dict[str, Any]) -> ft.ExpansionTile:
+        """Create an expandable card for citation with full abstract and highlighting."""
+        # Extract basic citation info
+        citation_text = evidence.get('citation', 'No citation text available')
+        pmid = evidence.get('pmid', '')
+        doi = evidence.get('doi', '')
+        document_id = evidence.get('document_id', '')
+        relevance_score = evidence.get('relevance_score', 0)
+        stance = evidence.get('stance', 'neutral')
+
+        # Fetch full abstract from database
+        # Try document_id first, then PMID, then DOI
+        abstract = None
+        if self.db_manager:
+            if document_id:
+                abstract = self._fetch_document_abstract(document_id)
+            elif pmid:
+                abstract = self._fetch_abstract_by_pmid(pmid)
+            elif doi:
+                abstract = self._fetch_abstract_by_doi(doi)
+
+        # Determine stance styling
+        if stance == 'supports':
+            stance_badge_color = ft.Colors.GREEN_700
+            stance_icon = "✓"
+        elif stance == 'contradicts':
+            stance_badge_color = ft.Colors.RED_700
+            stance_icon = "✗"
+        else:
+            stance_badge_color = ft.Colors.GREY_600
+            stance_icon = "?"
+
+        # Create title with stance and relevance (use fallback if needed)
+        truncated_citation = truncate_text(citation_text, 80) if GUI_UTILS_AVAILABLE else _truncate_text_fallback(citation_text, 80)
+        title_text = f"{index + 1}. {truncated_citation}"
+
+        # Create stance badge
+        stance_badge = ft.Container(
+            content=ft.Text(
+                f"{stance_icon} {stance.upper()}",
+                size=10,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.WHITE,
+                selectable=True
+            ),
+            bgcolor=stance_badge_color,
+            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+            border_radius=12
+        )
+
+        # Create relevance badge
+        if GUI_UTILS_AVAILABLE:
+            relevance_badge = create_relevance_badge(relevance_score)
+        else:
+            relevance_badge = _create_simple_badge_fallback(f"{relevance_score:.2f}", ft.Colors.BLUE_600)
+
+        # Create subtitle with identifiers
+        identifier_parts = []
+        if pmid:
+            identifier_parts.append(pmid)
+        if doi:
+            identifier_parts.append(doi)
+        if document_id:
+            identifier_parts.append(f"Doc: {document_id}")
+        subtitle_text = " | ".join(identifier_parts) if identifier_parts else "No identifier"
+
+        # Create content sections
+        content_sections = []
+
+        # Metadata section
+        metadata_items = [
+            ("Stance", stance.capitalize()),
+            ("Relevance Score", f"{relevance_score:.3f}" if relevance_score else "N/A"),
+        ]
+        if pmid:
+            metadata_items.append(("PMID", pmid))
+        if doi:
+            metadata_items.append(("DOI", doi))
+        if document_id:
+            metadata_items.append(("Document ID", document_id))
+
+        if GUI_UTILS_AVAILABLE:
+            content_sections.append(create_metadata_section(metadata_items, ft.Colors.BLUE_50))
+        else:
+            # Fallback metadata display
+            metadata_text = "\n".join([f"{k}: {v}" for k, v in metadata_items])
+            content_sections.append(ft.Container(
+                content=ft.Text(metadata_text, size=10, selectable=True),
+                padding=ft.padding.all(10),
+                bgcolor=ft.Colors.BLUE_50,
+                border_radius=5
+            ))
+
+        # Citation passage section
+        if GUI_UTILS_AVAILABLE:
+            content_sections.append(create_text_content_section(
+                "Extracted Citation:",
+                citation_text,
+                ft.Colors.YELLOW_100
+            ))
+        else:
+            # Fallback citation display
+            content_sections.append(ft.Container(
+                content=ft.Column([
+                    ft.Text("Extracted Citation:", size=10, weight=ft.FontWeight.BOLD),
+                    ft.Text(citation_text, size=11, selectable=True)
+                ], spacing=5),
+                padding=ft.padding.all(10),
+                bgcolor=ft.Colors.YELLOW_100,
+                border_radius=5
+            ))
+
+        # Abstract with highlighting if available
+        if abstract:
+            if GUI_UTILS_AVAILABLE:
+                content_sections.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Full Abstract with Highlighted Citation:",
+                                   size=10, weight=ft.FontWeight.BOLD),
+                            create_highlighted_abstract(abstract, citation_text)
+                        ], spacing=5),
+                        padding=ft.padding.all(10),
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=5,
+                        border=ft.border.all(1, ft.Colors.GREY_300)
+                    )
+                )
+            else:
+                # Fallback: show abstract without highlighting
+                content_sections.append(ft.Container(
+                    content=ft.Column([
+                        ft.Text("Full Abstract:", size=10, weight=ft.FontWeight.BOLD),
+                        ft.Text(abstract, size=11, selectable=True)
+                    ], spacing=5),
+                    padding=ft.padding.all(10),
+                    bgcolor=ft.Colors.GREY_50,
+                    border_radius=5
+                ))
+        else:
+            # Show info about missing abstract
+            content_sections.append(
+                ft.Container(
+                    content=ft.Text(
+                        "ℹ️ Full abstract not available" + (" (database not connected)" if not self.db_manager else ""),
+                        size=10,
+                        color=ft.Colors.GREY_600,
+                        italic=True
+                    ),
+                    padding=ft.padding.all(10)
+                )
+            )
+
+        # Create expandable card
+        if GUI_UTILS_AVAILABLE:
+            return create_expandable_card(
+                title_text,
+                subtitle_text,
+                content_sections,
+                [stance_badge, relevance_badge]
+            )
+        else:
+            # Fallback: create simple ExpansionTile
+            return ft.ExpansionTile(
+                title=ft.Row([
+                    ft.Text(title_text, size=12, weight=ft.FontWeight.W_500),
+                    stance_badge,
+                    relevance_badge
+                ], spacing=10),
+                subtitle=ft.Text(subtitle_text, size=11, color=ft.Colors.GREY_600),
+                controls=[
+                    ft.Container(
+                        content=ft.Column(content_sections, spacing=10),
+                        padding=ft.padding.all(10)
+                    )
+                ]
+            )
+
+    def _create_simple_citation_card(self, index: int, evidence: Dict[str, Any]) -> ft.Container:
         """Create a card for displaying a single citation."""
         # Get stance color
         stance = evidence.get('stance', 'neutral')

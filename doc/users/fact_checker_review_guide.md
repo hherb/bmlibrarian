@@ -79,14 +79,18 @@ The review interface displays:
 - Green section highlights this is your input
 
 #### Citations Section
-- Scrollable list of supporting evidence
+- Scrollable list of supporting evidence with **expandable citation cards**
 - Each citation card shows:
-  - **Stance icon and badge**:
-    - ✓ Green = Supports the statement
-    - ✗ Red = Contradicts the statement
-    - ? Grey = Neutral/unclear
-  - **Identifiers**: PMID, DOI, relevance score
-  - **Citation text**: The relevant passage from the literature
+  - **Collapsed view**:
+    - Citation number and truncated text
+    - **Stance badge**: ✓ Supports | ✗ Contradicts | ? Neutral
+    - **Relevance score badge**: Color-coded relevance rating
+    - **Identifiers**: PMID, DOI, Document ID
+  - **Expanded view** (click to expand):
+    - **Metadata**: Full stance, relevance score, PMID, DOI, Document ID
+    - **Extracted Citation**: The specific passage cited (highlighted in yellow)
+    - **Full Abstract with Highlighted Citation**: Complete abstract from the database with the cited passage highlighted in yellow (like a text marker)
+    - Text highlighting helps verify context and accuracy of citations
 
 ### 3. Provide Human Annotations
 
@@ -221,19 +225,33 @@ uv run python analyze_factcheck_progress.py results_annotated.json
 - Contains `reviewed_statements` array with human annotations
 - Includes `metadata` with review statistics and source information
 
-### Citation Stance Indicators
+### Citation Display Features
 
-Citations are color-coded by stance:
-- **Green border/background**: Supports the statement
-- **Red border/background**: Contradicts the statement
-- **Grey border/background**: Neutral or unclear stance
+**Expandable Citation Cards:**
+- Citations use expandable cards (similar to main research GUI)
+- Click any citation to expand and see full details
+- Collapsible design saves screen space while reviewing
+
+**Citation Stance Indicators:**
+- **Green badge (✓)**: Supports the statement
+- **Red badge (✗)**: Contradicts the statement
+- **Grey badge (?)**: Neutral or unclear stance
+
+**Abstract Highlighting:**
+- Full abstracts fetched from database automatically
+- Cited passages highlighted in yellow (like text marker)
+- Helps verify citations are used in proper context
+- 📌 markers indicate exact citation location in abstract
+- ⚠️ markers indicate approximate/fuzzy matches
 
 ### UI Components
 
 Built using Flet framework:
-- **ExpansionTiles**: Collapsible sections for space efficiency
-- **DataTables**: Structured display of evidence
+- **ExpansionTiles**: Collapsible citation cards for space efficiency
+- **Text Highlighting**: Yellow-highlighted passages in abstracts
+- **Badges**: Color-coded stance and relevance indicators
 - **Dialogs**: File selection and save operations
+- **Database Integration**: Automatic abstract fetching from PostgreSQL
 - **Responsive Layout**: Adapts to different screen sizes
 
 ## See Also
@@ -244,6 +262,15 @@ Built using Flet framework:
 - **Progress Analysis**: `analyze_factcheck_progress.py`
 
 ## Version History
+
+- **v1.2.0** (2025-11-11): Enhanced Citation Display
+  - **Expandable citation cards** with full abstract display (matching main research GUI)
+  - **Automatic abstract fetching** from PostgreSQL database
+  - **Yellow highlighting** of cited passages within full abstracts
+  - **Fuzzy matching** support with visual indicators (📌 exact, ⚠️ approximate)
+  - **Database connection** integration for real-time abstract retrieval
+  - Collapsible cards for improved space efficiency during review
+  - Fallback support for environments without database access
 
 - **v1.1.0** (2025-11-11): macOS File Picker Workaround
   - Added `--input-file` command-line argument for direct file loading

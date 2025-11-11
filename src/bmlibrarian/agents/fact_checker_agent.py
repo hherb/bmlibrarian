@@ -41,6 +41,8 @@ class EvidenceReference:
             result["pmid"] = f"PMID:{self.pmid}"
         if self.doi:
             result["doi"] = f"DOI:{self.doi}"
+        if self.document_id:
+            result["document_id"] = self.document_id
         if self.relevance_score is not None:
             result["relevance_score"] = self.relevance_score
         if self.supports_statement is not None:

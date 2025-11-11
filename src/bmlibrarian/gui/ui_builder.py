@@ -210,13 +210,14 @@ def create_relevance_badge(relevance: float) -> ft.Container:
             return ft.Colors.ORANGE_700
         else:
             return ft.Colors.RED_700
-    
+
     return ft.Container(
         content=ft.Text(
             f"{relevance:.2f}",
             size=12,
             weight=ft.FontWeight.BOLD,
-            color=ft.Colors.WHITE
+            color=ft.Colors.WHITE,
+            selectable=True
         ),
         bgcolor=get_relevance_color(relevance),
         padding=ft.padding.symmetric(horizontal=8, vertical=4),
@@ -257,10 +258,11 @@ def create_metadata_section(items: List[tuple], bg_color: str = ft.Colors.GREY_5
                 ft.Text(
                     f"{key}: {value}",
                     size=10,
-                    color=ft.Colors.GREY_600
+                    color=ft.Colors.GREY_600,
+                    selectable=True
                 )
             )
-    
+
     return ft.Container(
         content=ft.Column(metadata_items, spacing=4),
         padding=ft.padding.only(bottom=8),
@@ -369,18 +371,20 @@ def create_expandable_card(
         title_text,
         size=12,
         weight=ft.FontWeight.W_500,
-        color=ft.Colors.BLUE_800
+        color=ft.Colors.BLUE_800,
+        selectable=True
     )]
-    
+
     if badges:
         title_row.extend(badges)
-    
+
     return ft.ExpansionTile(
         title=ft.Row(title_row, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         subtitle=ft.Text(
             subtitle_text,
             size=11,
-            color=ft.Colors.GREY_600
+            color=ft.Colors.GREY_600,
+            selectable=True
         ),
         controls=[
             ft.Container(
