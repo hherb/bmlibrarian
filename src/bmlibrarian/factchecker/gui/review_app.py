@@ -18,7 +18,7 @@ from .citation_display import CitationDisplay
 class FactCheckerReviewApp:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self, input_file: Optional[str] = None, incremental: bool = False, default_username: Optional[str] = None):
+    def __init__(self, input_file: Optional[str] = None, incremental: bool = False, default_username: Optional[str] = None, blind_mode: bool = False):
         """
         Initialize the review application.
 
@@ -26,16 +26,18 @@ class FactCheckerReviewApp:
             input_file: Optional input file path provided via command line
             incremental: If True, only show statements you haven't annotated yet
             default_username: If provided, use this username and skip login dialog
+            blind_mode: If True, hide original and AI annotations from human annotator
         """
         self.page: Optional[ft.Page] = None
         self.initial_input_file = input_file
         self.incremental = incremental
         self.default_username = default_username
+        self.blind_mode = blind_mode
         self.current_index = 0
 
         # Initialize components
         self.data_manager = FactCheckDataManager(incremental=incremental)
-        self.statement_display = StatementDisplay()
+        self.statement_display = StatementDisplay(blind_mode=blind_mode)
         self.annotation_manager = AnnotationManager(on_annotation_change=self._on_annotation_change)
         self.citation_display = CitationDisplay()
 

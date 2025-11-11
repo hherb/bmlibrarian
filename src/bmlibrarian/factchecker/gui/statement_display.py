@@ -11,8 +11,15 @@ import flet as ft
 class StatementDisplay:
     """Manages statement display UI components."""
 
-    def __init__(self):
-        """Initialize statement display components."""
+    def __init__(self, blind_mode: bool = False):
+        """
+        Initialize statement display components.
+
+        Args:
+            blind_mode: If True, hide original and AI annotations from display
+        """
+        self.blind_mode = blind_mode
+
         # Progress components
         self.statement_counter = ft.Text(
             "Statement 0 of 0",
@@ -165,31 +172,41 @@ class StatementDisplay:
             human_annotation_section: Human annotation input section
 
         Returns:
-            Row containing all annotation sections
+            Row containing all annotation sections (or just human section in blind mode)
         """
-        return ft.Row([
-            ft.Container(
-                content=self.original_annotation,
-                expand=1
-            ),
-            ft.Container(
-                content=ft.Column([
-                    self.ai_annotation,
-                    ft.Container(height=10),
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("AI Rationale:", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                            self.ai_rationale
-                        ], spacing=5),
-                        padding=ft.padding.all(10),
-                        bgcolor=ft.Colors.GREY_50,
-                        border_radius=5
-                    )
-                ], spacing=0),
-                expand=1
-            ),
-            ft.Container(
-                content=human_annotation_section,
-                expand=1
-            )
-        ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
+        if self.blind_mode:
+            # In blind mode, only show the human annotation section
+            return ft.Row([
+                ft.Container(
+                    content=human_annotation_section,
+                    expand=1
+                )
+            ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
+        else:
+            # Normal mode: show all annotations
+            return ft.Row([
+                ft.Container(
+                    content=self.original_annotation,
+                    expand=1
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        self.ai_annotation,
+                        ft.Container(height=10),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("AI Rationale:", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+                                self.ai_rationale
+                            ], spacing=5),
+                            padding=ft.padding.all(10),
+                            bgcolor=ft.Colors.GREY_50,
+                            border_radius=5
+                        )
+                    ], spacing=0),
+                    expand=1
+                ),
+                ft.Container(
+                    content=human_annotation_section,
+                    expand=1
+                )
+            ], spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)

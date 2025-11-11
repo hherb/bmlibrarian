@@ -39,6 +39,11 @@ def main():
         type=str,
         help="Username to use (suppresses login dialog)"
     )
+    parser.add_argument(
+        "--blind",
+        action="store_true",
+        help="Blind mode: hide original and AI annotations from human annotator"
+    )
 
     args = parser.parse_args()
 
@@ -56,7 +61,8 @@ def main():
     app = FactCheckerReviewApp(
         input_file=args.input_file,
         incremental=args.incremental,
-        default_username=args.user
+        default_username=args.user,
+        blind_mode=args.blind
     )
     ft.app(target=app.main)
 
