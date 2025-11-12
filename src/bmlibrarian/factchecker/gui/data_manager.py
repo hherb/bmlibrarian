@@ -61,7 +61,9 @@ class FactCheckDataManager:
         Args:
             skip_incremental_filter: If True, don't apply incremental filtering even if incremental mode is on
         """
+        print(f"DEBUG: load_from_database called, incremental={self.incremental}, skip_filter={skip_incremental_filter}")
         self.fact_checker_db = FactCheckerDB()
+        print(f"DEBUG: FactCheckerDB initialized")
         self.using_database = True
 
         # Register annotator if info is available
@@ -136,7 +138,7 @@ class FactCheckDataManager:
             self.reviews = filtered_reviews
             print(f"ℹ️  Incremental mode: Showing {len(self.results)} statements without your annotations (out of {len(all_data)} total)")
 
-        self.input_file_path = db_path
+        self.input_file_path = "PostgreSQL Database"
 
     def load_from_json(self, json_path: str):
         """
@@ -182,7 +184,7 @@ class FactCheckDataManager:
 
         Args:
             index: Statement index
-            annotation: Annotation value (yes/no/maybe)
+            annotation: Annotation value (yes/no/maybe/unclear) or n/a to skip saving
             explanation: Optional explanation text
         """
         if index >= len(self.reviews):
@@ -200,8 +202,9 @@ class FactCheckDataManager:
                 result = self.results[index]
                 statement_id = result.get('statement_id')
 
-                # Don't save if no statement_id or if annotation is empty/None (N/A selection)
-                if not statement_id or not annotation:
+                # Don't save if no statement_id or if annotation is empty/None/N/A
+                # Valid annotations: 'yes', 'no', 'maybe', 'unclear' (per database constraint)
+                if not statement_id or not annotation or annotation.lower() in ('n/a', 'na'):
                     return
 
                 human_annotation = HumanAnnotation(

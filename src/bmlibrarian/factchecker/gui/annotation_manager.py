@@ -22,16 +22,18 @@ class AnnotationManager:
 
         # Create input components
         # IMPORTANT: Using "n/a" as key instead of "" because Flet has issues with empty string keys
+        # Valid annotations per database constraint: 'yes', 'no', 'maybe', 'unclear'
         self.annotation_dropdown = ft.Dropdown(
             label="Your Annotation",
             options=[
-                ft.dropdown.Option(key="n/a", text="N/A"),
+                ft.dropdown.Option(key="n/a", text="N/A (Not Yet Annotated)"),
                 ft.dropdown.Option(key="yes", text="Yes"),
                 ft.dropdown.Option(key="no", text="No"),
-                ft.dropdown.Option(key="maybe", text="Maybe")
+                ft.dropdown.Option(key="maybe", text="Maybe"),
+                ft.dropdown.Option(key="unclear", text="Unclear")
             ],
             value="n/a",  # Default to n/a
-            width=200,
+            width=250,
             on_change=self._handle_annotation_change,
             filled=True
         )

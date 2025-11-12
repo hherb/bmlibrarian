@@ -104,12 +104,26 @@ class DatabaseManager:
     
     @contextmanager
     def get_connection(self):
-        """Get a database connection from the pool."""
+        """
+        Get a database connection from the pool with automatic transaction management.
+
+        Yields a connection that automatically commits on success or rolls back on error.
+        """
         if not self._pool:
             raise RuntimeError("Database pool not initialized")
-        
+
         with self._pool.connection() as conn:
-            yield conn
+            try:
+                yield conn
+                # Commit is automatic on successful exit from context manager
+            except Exception as e:
+                # Rollback on any error to prevent "transaction aborted" state
+                try:
+                    conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"Error during rollback: {rollback_error}")
+                # Re-raise the original exception
+                raise e
     
     def refresh_source_cache(self):
         """Refresh the cached source IDs."""

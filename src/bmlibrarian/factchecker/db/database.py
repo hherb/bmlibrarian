@@ -185,21 +185,22 @@ class FactCheckerDB:
         """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Try insert
-                try:
-                    cur.execute("""
-                        INSERT INTO factcheck.annotators (username, full_name, email, expertise_level, institution)
-                        VALUES (%s, %s, %s, %s, %s)
-                        RETURNING annotator_id
-                    """, (annotator.username, annotator.full_name, annotator.email,
-                          annotator.expertise_level, annotator.institution))
-                    return cur.fetchone()[0]
-                except Exception:
-                    # Already exists, fetch ID
-                    cur.execute("""
-                        SELECT annotator_id FROM factcheck.annotators WHERE username = %s
-                    """, (annotator.username,))
-                    return cur.fetchone()[0]
+                # Use ON CONFLICT to handle duplicates atomically without transaction errors
+                cur.execute("""
+                    INSERT INTO factcheck.annotators (username, full_name, email, expertise_level, institution)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        full_name = EXCLUDED.full_name,
+                        email = EXCLUDED.email,
+                        expertise_level = EXCLUDED.expertise_level,
+                        institution = EXCLUDED.institution
+                    RETURNING annotator_id
+                """, (annotator.username, annotator.full_name, annotator.email,
+                      annotator.expertise_level, annotator.institution))
+                result = cur.fetchone()
+                if result:
+                    return result[0]
+                raise RuntimeError(f"Failed to insert or get annotator: {annotator.username}")
 
     def get_annotator(self, username: str) -> Optional[Annotator]:
         """Get an annotator by username."""

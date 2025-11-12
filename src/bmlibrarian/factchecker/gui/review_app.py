@@ -114,8 +114,8 @@ class FactCheckerReviewApp:
             content=ft.Column([
                 ft.Row([
                     ft.ElevatedButton(
-                        "Load Fact-Check Results",
-                        icon=ft.Icons.FOLDER_OPEN,
+                        "Import from JSON File",
+                        icon=ft.Icons.UPLOAD_FILE,
                         on_click=self._on_load_file,
                         bgcolor=ft.Colors.BLUE_600,
                         color=ft.Colors.WHITE
@@ -241,9 +241,12 @@ class FactCheckerReviewApp:
         """
         self.data_manager.set_annotator(annotator_info)
 
-        # Load initial file if provided
+        # Load initial file if provided, otherwise load from PostgreSQL database
         if self.initial_input_file:
             self._load_fact_check_results(self.initial_input_file)
+        else:
+            # No input file specified - load directly from PostgreSQL database
+            self._load_from_database()
 
     def _on_load_file(self, e):
         """Handle load file button click."""
@@ -259,36 +262,53 @@ class FactCheckerReviewApp:
 
         # Open file picker dialog
         file_picker.pick_files(
-            dialog_title="Select Fact-Check Results (Database or JSON)",
-            allowed_extensions=["db", "json"],
+            dialog_title="Import Fact-Check Results from JSON",
+            allowed_extensions=["json"],
             allow_multiple=False
         )
 
+    def _load_from_database(self):
+        """Load fact-check results directly from PostgreSQL database."""
+        try:
+            self.data_manager.load_from_database()
+
+            # Update UI
+            mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
+            self.file_path_text.value = f"PostgreSQL Database ({len(self.data_manager.results)} statements){mode_indicator}"
+            self.file_path_text.italic = False
+            self.file_path_text.color = ft.Colors.GREEN_700
+
+            # Show review interface
+            self.current_index = 0
+            self.review_content.visible = True
+            self._display_current_statement()
+
+            self.page.update()
+
+        except Exception as ex:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"ERROR in _load_from_database:")
+            print(error_details)
+            show_error_dialog(self.page, f"Error loading from database:\n\n{str(ex)}\n\nCheck console for details.")
+
     def _load_fact_check_results(self, file_path: str):
-        """Load fact-check results from database or JSON file."""
+        """Load fact-check results from JSON file (imports into PostgreSQL)."""
         try:
             file_path_obj = Path(file_path)
 
-            # Check if it's a database file
-            if file_path_obj.suffix.lower() == '.db':
-                self.data_manager.load_from_database(file_path)
-                file_type = "Database"
-                file_color = ft.Colors.BLUE_700
-            elif file_path_obj.suffix.lower() == '.json':
+            # Check if it's JSON file for import
+            if file_path_obj.suffix.lower() == '.json':
                 # Auto-create/update database from JSON
-                self.data_manager.load_from_json(file_path, auto_create_db=True)
-                file_type = "Database"  # Now using database backend
-                file_color = ft.Colors.BLUE_700
+                self.data_manager.load_from_json(file_path)
+                file_type = "PostgreSQL Database (imported from JSON)"
+                file_color = ft.Colors.GREEN_700
             else:
-                raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .db or .json")
+                raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .json files for import")
 
-            # Update UI with actual database path
+            # Update UI
             mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
-            if self.data_manager.using_database and self.data_manager.db_path:
-                db_name = Path(self.data_manager.db_path).name
-                self.file_path_text.value = f"{file_type}: {db_name} ({len(self.data_manager.results)} statements){mode_indicator}"
-            else:
-                self.file_path_text.value = f"{file_type}: {file_path_obj.name} ({len(self.data_manager.results)} statements){mode_indicator}"
+            self.file_path_text.value = f"{file_type} ({len(self.data_manager.results)} statements){mode_indicator}"
             self.file_path_text.italic = False
             self.file_path_text.color = file_color
 
@@ -372,10 +392,9 @@ class FactCheckerReviewApp:
             reviewed_count = self.data_manager.get_reviewed_count()
             show_success_dialog(
                 self.page,
-                f"✓ All annotations saved to database\n\n"
+                f"✓ All annotations saved to PostgreSQL database\n\n"
                 f"Total statements: {len(self.data_manager.results)}\n"
-                f"Reviewed by you: {reviewed_count}\n"
-                f"Database: {Path(self.data_manager.db_path).name}"
+                f"Reviewed by you: {reviewed_count}"
             )
         else:
             # JSON mode - show save dialog

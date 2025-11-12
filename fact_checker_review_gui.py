@@ -27,7 +27,7 @@ def main():
     parser.add_argument(
         "--input-file",
         type=str,
-        help="Path to the input fact-check results file (database or JSON)"
+        help="Path to JSON file to import (optional - will load from PostgreSQL database if omitted)"
     )
     parser.add_argument(
         "--incremental",
@@ -47,14 +47,14 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate input file if provided
+    # Validate input file if provided (optional now - will load from PostgreSQL if omitted)
     if args.input_file:
         input_path = Path(args.input_file)
         if not input_path.exists():
             print(f"Error: Input file not found: {args.input_file}")
             return 1
-        if input_path.suffix.lower() not in ['.json', '.db']:
-            print(f"Error: Input file must be a JSON or database file: {args.input_file}")
+        if input_path.suffix.lower() != '.json':
+            print(f"Error: Input file must be a JSON file: {args.input_file}")
             return 1
 
     # Create and run app
