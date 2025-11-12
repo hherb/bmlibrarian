@@ -15,7 +15,6 @@ from .database import (
     AIEvaluation,
     Evidence,
     HumanAnnotation,
-    create_database_from_input_file,
     SCHEMA_VERSION
 )
 
@@ -26,6 +25,5 @@ __all__ = [
     'AIEvaluation',
     'Evidence',
     'HumanAnnotation',
-    'create_database_from_input_file',
     'SCHEMA_VERSION'
 ]

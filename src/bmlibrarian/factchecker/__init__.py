@@ -15,8 +15,7 @@ from .db.database import (
     Annotator,
     AIEvaluation,
     Evidence,
-    HumanAnnotation,
-    create_database_from_input_file
+    HumanAnnotation
 )
 
 __all__ = [
@@ -26,6 +25,5 @@ __all__ = [
     'Annotator',
     'AIEvaluation',
     'Evidence',
-    'HumanAnnotation',
-    'create_database_from_input_file'
+    'HumanAnnotation'
 ]
