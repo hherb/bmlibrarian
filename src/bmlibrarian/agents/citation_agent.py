@@ -92,10 +92,148 @@ class CitationFinderAgent(BaseAgent):
                 top_p=top_p
             )
             logger.info(f"CitationAgent initialized with evaluator_id={self._evaluator_id}")
-    
+
+        # Initialize validation statistics tracking
+        self._validation_stats = {
+            'total_extractions': 0,
+            'validations_passed': 0,
+            'validations_failed': 0,
+            'exact_matches': 0,
+            'fuzzy_matches': 0,
+            'failed_citations': []
+        }
+
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "citation_finder_agent"
+
+    def _validate_and_extract_exact_match(
+        self,
+        llm_passage: str,
+        abstract: str,
+        min_similarity: float = 0.95
+    ) -> tuple[bool, float, Optional[str]]:
+        """
+        Verify citation passage exists in abstract and extract exact matching text.
+
+        If LLM paraphrased or slightly modified the text, this finds the closest
+        matching substring in the original abstract and returns it. This ensures
+        we always use EXACT text from the source, never LLM-generated paraphrases.
+
+        Args:
+            llm_passage: Text extracted by LLM (may be modified/paraphrased)
+            abstract: Source abstract to search
+            min_similarity: Minimum similarity threshold (0.0-1.0, default 0.95)
+
+        Returns:
+            (is_valid, similarity_score, exact_text_from_abstract)
+            - is_valid: Whether a good match was found
+            - similarity_score: Best match similarity (1.0 = perfect)
+            - exact_text_from_abstract: The actual text from abstract (None if invalid)
+        """
+        from difflib import SequenceMatcher
+
+        # Normalize whitespace for comparison
+        passage_norm = ' '.join(llm_passage.lower().split())
+        abstract_norm = ' '.join(abstract.lower().split())
+
+        # Check for exact substring match first (fastest path)
+        if passage_norm in abstract_norm:
+            # Find the original text with preserved formatting
+            # Search case-insensitively but preserve original case
+            abstract_lower = abstract.lower()
+            passage_lower = llm_passage.lower()
+            start_pos = abstract_lower.find(passage_lower)
+
+            if start_pos != -1:
+                exact_text = abstract[start_pos:start_pos + len(llm_passage)]
+                logger.debug(f"Found exact match in abstract (similarity=1.0)")
+                return True, 1.0, exact_text
+
+        # Fuzzy match with sliding window to find best matching substring
+        best_match_score = 0.0
+        best_match_start = 0
+        best_match_len = len(llm_passage)
+
+        passage_len_chars = len(passage_norm)
+
+        # Try different window sizes (±20% of passage length)
+        for window_len in range(
+            int(passage_len_chars * 0.8),
+            int(passage_len_chars * 1.2) + 1
+        ):
+            if window_len > len(abstract_norm):
+                continue
+
+            # Slide window across abstract
+            for i in range(len(abstract_norm) - window_len + 1):
+                window = abstract_norm[i:i + window_len]
+                similarity = SequenceMatcher(None, passage_norm, window).ratio()
+
+                if similarity > best_match_score:
+                    best_match_score = similarity
+                    best_match_start = i
+                    best_match_len = window_len
+
+        # If we found a good match, extract the original text from abstract
+        if best_match_score >= min_similarity:
+            # Map normalized position back to original abstract
+            # We need to find where character N in normalized text appears in original
+            char_count = 0
+            orig_start = 0
+
+            for orig_pos, char in enumerate(abstract):
+                if char.strip():  # Count non-whitespace characters
+                    if char_count == best_match_start:
+                        orig_start = orig_pos
+                        break
+                    char_count += 1
+
+            # Estimate length in original text (account for whitespace)
+            # Use a generous buffer to capture full sentences
+            extract_len = min(len(llm_passage) + 200, len(abstract) - orig_start)
+            candidate = abstract[orig_start:orig_start + extract_len]
+
+            # Find best sentence boundaries
+            # Try to extract complete sentences
+            sentences = candidate.split('. ')
+            if len(sentences) > 1:
+                # Take first N sentences that approximately match length
+                best_extract = sentences[0]
+                for sent in sentences[1:]:
+                    if len(best_extract) < len(llm_passage) * 1.3:
+                        best_extract += '. ' + sent
+                    else:
+                        break
+                # Clean up and ensure proper ending
+                exact_text = best_extract.strip()
+                if not exact_text.endswith('.') and len(sentences) > 1:
+                    exact_text += '.'
+            else:
+                exact_text = candidate.strip()
+
+            logger.debug(
+                f"Found fuzzy match in abstract (similarity={best_match_score:.3f}). "
+                f"Extracted exact text ({len(exact_text)} chars)"
+            )
+            return True, best_match_score, exact_text
+
+        logger.debug(f"No valid match found (best similarity={best_match_score:.3f})")
+        return False, best_match_score, None
+
+    def get_validation_stats(self) -> Dict[str, Any]:
+        """Get citation validation statistics."""
+        total = self._validation_stats['total_extractions']
+        if total == 0:
+            return self._validation_stats
+
+        return {
+            **self._validation_stats,
+            'pass_rate': self._validation_stats['validations_passed'] / total,
+            'fail_rate': self._validation_stats['validations_failed'] / total,
+            'exact_match_rate': self._validation_stats['exact_matches'] / total,
+            'fuzzy_match_rate': self._validation_stats['fuzzy_matches'] / total
+        }
 
     def extract_citation_from_document(self, user_question: str, document: Dict[str, Any], 
                                      min_relevance: float = 0.7) -> Optional[Citation]:
@@ -138,9 +276,18 @@ Your task:
 3. Rate the relevance on a scale of 0.0 to 1.0 (where 1.0 is perfectly relevant)
 4. Only extract passages with relevance >= 0.7
 
+⚠️ CRITICAL REQUIREMENTS:
+- Extract ONLY exact text that appears VERBATIM in the abstract above
+- Copy the text CHARACTER-FOR-CHARACTER, preserving punctuation and capitalization
+- Do NOT paraphrase, summarize, rephrase, or modify the text in ANY way
+- Do NOT combine fragments from different parts of the abstract
+- Do NOT add interpretations or explanations to the extracted text
+- If no single exact passage is sufficiently relevant, respond with has_relevant_content: false
+- Extract complete sentences when possible (don't cut off mid-sentence)
+
 Response format (JSON):
 {{
-    "relevant_passage": "exact text from the abstract that is most relevant",
+    "relevant_passage": "EXACT verbatim text copied character-for-character from the abstract",
     "summary": "brief summary of how this passage answers the question",
     "relevance_score": 0.8,
     "has_relevant_content": true
@@ -176,10 +323,46 @@ Respond only with valid JSON."""
             if relevance_score < min_relevance:
                 logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
                 return None
-            
-            # Create citation with verified document ID and abstract for review
+
+            # VALIDATE citation text and extract exact match from abstract
+            self._validation_stats['total_extractions'] += 1
+
+            is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
+                citation_data['relevant_passage'],
+                abstract
+            )
+
+            if not is_valid:
+                self._validation_stats['validations_failed'] += 1
+                self._validation_stats['failed_citations'].append({
+                    'document_id': document.get('id'),
+                    'similarity': similarity,
+                    'llm_passage': citation_data['relevant_passage'][:200],
+                    'question': user_question
+                })
+
+                logger.warning(
+                    f"🚫 CITATION VALIDATION FAILED (document {document.get('id')}): "
+                    f"similarity={similarity:.3f} < threshold=0.95. "
+                    f"LLM generated text that doesn't match abstract. REJECTING. "
+                    f"LLM output: {citation_data['relevant_passage'][:100]}..."
+                )
+                return None  # Reject hallucinated citations
+
+            # Track validation success
+            self._validation_stats['validations_passed'] += 1
+            if similarity == 1.0:
+                self._validation_stats['exact_matches'] += 1
+            else:
+                self._validation_stats['fuzzy_matches'] += 1
+                logger.info(
+                    f"✓ Citation fuzzy-matched (similarity={similarity:.3f}). "
+                    f"Replaced LLM text with exact abstract text (doc {document.get('id')})"
+                )
+
+            # Create citation with EXACT text from abstract (not LLM-generated)
             citation = Citation(
-                passage=citation_data['relevant_passage'],
+                passage=exact_text,  # ← Use extracted exact text, not LLM's version!
                 summary=citation_data['summary'],
                 relevance_score=relevance_score,
                 document_id=str(document['id']),  # Ensure string format
@@ -431,20 +614,61 @@ Respond only with valid JSON."""
                 
                 yield doc, citation
     
-    def verify_document_exists(self, document_id: str) -> bool:
+    def verify_document_exists(
+        self,
+        document_id: str,
+        expected_title: Optional[str] = None
+    ) -> tuple[bool, Optional[str]]:
         """
-        Verify that a document ID exists in the database.
-        
+        Verify that a document ID exists in the database and optionally check title match.
+
         Args:
             document_id: Document ID to verify
-            
+            expected_title: Optional FULL title to verify (not truncated)
+
         Returns:
-            True if document exists, False otherwise
+            (exists, actual_title): Tuple of existence status and actual title from DB
+            - exists: True if document exists and title matches (if provided)
+            - actual_title: The full title from database (None if not found)
         """
-        # This would connect to the actual database to verify
-        # For now, we assume all document IDs in our queue are valid
-        # since they come from database queries
-        return True
+        from bmlibrarian.database import get_db_manager
+
+        try:
+            db_manager = get_db_manager()
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get FULL title (not truncated) from database
+                    cur.execute(
+                        "SELECT id, title FROM document WHERE id = %s LIMIT 1",
+                        (document_id,)
+                    )
+                    result = cur.fetchone()
+
+                    if not result:
+                        logger.warning(f"Document ID {document_id} not found in database")
+                        return False, None
+
+                    db_id, db_title = result
+
+                    # If title verification requested, check it matches
+                    if expected_title:
+                        # Normalize titles for comparison (case-insensitive, whitespace-normalized)
+                        expected_norm = ' '.join(expected_title.lower().split())
+                        actual_norm = ' '.join(db_title.lower().split())
+
+                        if expected_norm != actual_norm:
+                            logger.warning(
+                                f"Document ID {document_id} exists but title mismatch:\n"
+                                f"  Expected: {expected_title}\n"
+                                f"  Actual:   {db_title}"
+                            )
+                            return False, db_title
+
+                    return True, db_title
+
+        except Exception as e:
+            logger.error(f"Error verifying document {document_id}: {e}")
+            return False, None
     
     def get_citation_stats(self, citations: List[Citation]) -> Dict[str, Any]:
         """

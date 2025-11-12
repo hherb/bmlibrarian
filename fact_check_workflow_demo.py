@@ -33,7 +33,7 @@ def run_fact_check(input_file: str, output_file: str, max_statements: Optional[i
         output_file: Path to save fact-check results
         max_statements: Optional limit on number of statements to process
     """
-    from bmlibrarian.agents import FactCheckerAgent
+    from bmlibrarian.factchecker.agent import FactCheckerAgent
     from bmlibrarian.config import get_model, get_agent_config
 
     print(f"Loading statements from {input_file}...")

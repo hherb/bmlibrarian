@@ -187,7 +187,7 @@ class FactCheckerAgent(BaseAgent):
             self._call_callback("init", "Initializing sub-agents...")
 
             # Import configuration system
-            from ..config import get_model, get_agent_config
+            from bmlibrarian.config import get_model, get_agent_config
 
             # Initialize QueryAgent
             query_model = get_model("query_agent")
@@ -413,21 +413,54 @@ class FactCheckerAgent(BaseAgent):
     ) -> List[Citation]:
         """Extract relevant citations from scored documents.
 
+        CRITICAL FIX: Filter by score threshold FIRST, then limit count.
+        This prevents the bug where we processed low-scoring documents that
+        caused LLM hallucination due to insufficient real citations.
+
         Args:
             statement: The statement to fact-check
             scored_documents: List of (document, scoring_result) tuples
         """
         try:
-            # Limit to top documents if max_citations is set, otherwise use all scored documents
-            if self.max_citations is None:
-                top_docs = scored_documents  # Use ALL scored documents (no artificial limit)
-            else:
-                top_docs = scored_documents[:self.max_citations]
+            # Step 1: Filter by threshold FIRST (most important fix)
+            qualifying_docs = [
+                (doc, score_result) for doc, score_result in scored_documents
+                if score_result.get('score', 0) >= self.score_threshold
+            ]
 
+            logger.info(
+                f"Filtered to {len(qualifying_docs)} documents above threshold "
+                f"{self.score_threshold} (from {len(scored_documents)} total)"
+            )
+
+            # Step 2: Apply max_citations limit AFTER filtering (if set)
+            if self.max_citations is None:
+                top_docs = qualifying_docs  # Use ALL qualifying documents (recommended)
+                logger.info(f"Processing all {len(top_docs)} qualifying documents")
+            else:
+                top_docs = qualifying_docs[:self.max_citations]
+                logger.info(
+                    f"Limited to top {len(top_docs)} citations "
+                    f"(max_citations={self.max_citations})"
+                )
+
+            if not top_docs:
+                logger.warning(
+                    f"No documents above threshold {self.score_threshold} after filtering. "
+                    f"Consider lowering threshold or improving query."
+                )
+                return []
+
+            # Step 3: Extract citations (with new validation)
             citations = self.citation_agent.process_scored_documents_for_citations(
                 user_question=statement,
                 scored_documents=top_docs,
                 score_threshold=self.score_threshold
+            )
+
+            logger.info(
+                f"Extracted {len(citations)} validated citations from "
+                f"{len(top_docs)} documents"
             )
 
             return citations
@@ -766,6 +799,25 @@ Respond ONLY with the JSON object, no additional text."""
             self._finalize_database_session(len(results))
         elif output_file:
             self._finalize_results_file(results, output_file)
+
+        # Report citation validation statistics
+        if hasattr(self.citation_agent, 'get_validation_stats'):
+            stats = self.citation_agent.get_validation_stats()
+            if stats['total_extractions'] > 0:
+                self._call_callback("validation_stats",
+                    f"Citation validation: {stats['validations_passed']}/{stats['total_extractions']} passed "
+                    f"({stats['pass_rate']:.1%}), "
+                    f"{stats['exact_matches']} exact matches, "
+                    f"{stats['fuzzy_matches']} fuzzy matches, "
+                    f"{stats['validations_failed']} rejected"
+                )
+
+                if stats['validations_failed'] > 0:
+                    logger.warning(
+                        f"⚠️  {stats['validations_failed']} citations were REJECTED due to validation failures. "
+                        f"This suggests LLM hallucination or paraphrasing. "
+                        f"See detailed logs for rejected citation text."
+                    )
 
         self._call_callback("batch_complete", f"Completed {total} statements")
 
