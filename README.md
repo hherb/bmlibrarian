@@ -1,16 +1,23 @@
 # BMLibrarian
 
-A comprehensive Python library providing AI-powered access to biomedical literature databases. BMLibrarian features a sophisticated multi-agent architecture with specialized agents for query processing, document scoring, citation extraction, report generation, and counterfactual analysis, all coordinated through an advanced task queue orchestration system.
+A Python library and app providing AI-powered access to biomedical literature databases. BMLibrarian features a multi-agent multi-model architecture with specialized agents for query processing, document scoring, citation extraction, report generation, and counterfactual analysis, all coordinated through an advanced task queue orchestration system. 
+
+A specialised submodule can be used as a fact checker on biomdeical statements. It will systematically search available literature (via BMLibrarian) that supports or contradicts the statement. Prime use case will be automated validation of machine generated training data sets.
+
+BMLibrarian is able to run entirely with local models, and does not need any network connection other than for periodic synchronisation with data from PubMed and MedXiv. 
+
+BMLibrarian does not require any API keys nor any proprietary libraries or services.
 
 ## What's New 🎉
 
-**Latest Features (2025):**
-- 🔍 **Fact Checker System**: Comprehensive LLM training data auditing with literature validation
-  - **CLI & Desktop GUI**: Batch processing and interactive human review interfaces
-  - **Blind Mode**: Review statements without AI bias for unbiased human annotation
-  - **Incremental Mode**: Smart filtering to show only unannotated statements
-  - **SQLite Integration**: Persistent database storage with intelligent JSON import/merge
-  - **Citation Hallucination Prevention**: Validation system ensures all citations reference real documents
+**Latest Features (11/2025):**
+- 🔍 **Fact Checker System**: LLM training data auditing with literature validation
+      - **CLI & Desktop GUI**: Batch processing and interactive human review interfaces
+      - **Blind Mode**: Review statements without AI bias for unbiased human annotation
+      - **Incremental Mode**: Smart filtering to show only unannotated statements
+      - **SQLite Integration**: Persistent database storage with intelligent JSON import/merge
+
+- **Citation Hallucination Prevention**: Validation system ensures all citations reference real documents
 - 🚀 **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
 - 📊 **Query Performance Tracking**: Real-time analysis showing which models find the best documents
 - 🗄️ **PostgreSQL Audit Trail**: Complete persistent tracking of research workflow sessions
