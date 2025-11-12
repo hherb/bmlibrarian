@@ -10,6 +10,8 @@ Takes biomedical statements and evaluates their veracity (yes/no/maybe) by:
 
 import json
 import logging
+import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
@@ -841,7 +843,7 @@ Respond ONLY with the JSON object, no additional text."""
                 self.db = FactCheckerDB()
                 self._call_callback("database", "Database initialized (PostgreSQL factcheck schema)")
 
-            # Filter statements if incremental mode is enabled
+            # In incremental mode, only import NEW statements (not already in database)
             if self.incremental and self.db:
                 original_count = len(statements)
 
@@ -853,10 +855,46 @@ Respond ONLY with the JSON object, no additional text."""
                     else:
                         statement_texts.append(item.get('statement', ''))
 
-                # Get statements needing evaluation
+                # Get existing statements from database (batch query)
+                existing_statements = set(self.db.get_existing_statements(statement_texts))
+
+                # Filter to only NEW statements for import
+                new_statements = []
+                for item in statements:
+                    if 'question' in item:
+                        text = item.get('question', '')
+                    else:
+                        text = item.get('statement', '')
+
+                    if text not in existing_statements:
+                        new_statements.append(item)
+
+                new_count = len(new_statements)
+                existing_count = original_count - new_count
+
+                if new_count > 0:
+                    # Import only NEW statements
+                    self._call_callback("import", f"Importing {new_count} new statements into database...")
+
+                    # Create temporary JSON file with only new statements
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as tmp:
+                        json.dump(new_statements, tmp)
+                        tmp_file = tmp.name
+
+                    try:
+                        import_stats = self.db.import_json_results(tmp_file, skip_existing=False)
+                        self._call_callback("import",
+                            f"Import complete: {import_stats['new_statements']} imported, "
+                            f"{existing_count} already in database")
+                    finally:
+                        os.unlink(tmp_file)
+                else:
+                    self._call_callback("import", f"All {original_count} statements already in database")
+
+                # Now check which statements need evaluation
                 texts_needing_eval = set(self.db.get_statements_needing_evaluation(statement_texts))
 
-                # Filter statements list
+                # Filter statements list to only those needing evaluation
                 filtered_statements = []
                 for item in statements:
                     if 'question' in item:
@@ -877,6 +915,13 @@ Respond ONLY with the JSON object, no additional text."""
                 else:
                     self._call_callback("incremental",
                         f"Incremental mode: All {len(statements)} statements need evaluation")
+            else:
+                # Non-incremental mode: import all statements
+                self._call_callback("import", f"Importing {len(statements)} statements into database...")
+                import_stats = self.db.import_json_results(input_file, skip_existing=True)
+                self._call_callback("import",
+                    f"Import complete: {import_stats['new_statements']} new, "
+                    f"{import_stats['skipped_existing']} already in database")
 
             return self.check_batch(statements, output_file, source_file=input_file)
 

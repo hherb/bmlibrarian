@@ -569,6 +569,29 @@ class FactCheckerDB:
                 """, (statement_texts,))
                 return [row[0] for row in cur.fetchall()]
 
+    def get_existing_statements(self, statement_texts: List[str]) -> List[str]:
+        """
+        Check which statements from the list already exist in the database.
+
+        Args:
+            statement_texts: List of statement texts to check
+
+        Returns:
+            List of statement texts that already exist in database
+        """
+        if not statement_texts:
+            return []
+
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Batch query to check which statements exist
+                cur.execute("""
+                    SELECT statement_text
+                    FROM factcheck.statements
+                    WHERE statement_text = ANY(%s)
+                """, (statement_texts,))
+                return [row[0] for row in cur.fetchall()]
+
     def get_inter_annotator_agreement(self) -> Dict[str, Any]:
         """
         Calculate inter-annotator agreement statistics.
@@ -677,7 +700,8 @@ class FactCheckerDB:
                 with conn.cursor() as cur:
                     for result in results:
                         try:
-                            statement_text = result.get('statement', '')
+                            # Support both 'statement' and 'question' keys
+                            statement_text = result.get('statement') or result.get('question', '')
                             if not statement_text:
                                 stats['errors'] += 1
                                 continue
@@ -699,10 +723,12 @@ class FactCheckerDB:
                                 continue
 
                             # Import new statement
+                            # Support both 'answer' and 'expected_answer' keys
+                            # Support both 'id' and 'input_statement_id' keys
                             stmt = Statement(
                                 statement_text=statement_text,
-                                input_statement_id=result.get('input_statement_id'),
-                                expected_answer=result.get('expected_answer'),
+                                input_statement_id=result.get('input_statement_id') or result.get('id'),
+                                expected_answer=result.get('expected_answer') or result.get('answer'),
                                 source_file=json_file,
                                 review_status='pending'
                             )
