@@ -44,15 +44,18 @@ Since this project uses `uv` for package management:
 - `uv sync` - Install/sync dependencies
 - `uv run python -m [module]` - Run Python modules in the virtual environment
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
-- **CLI Applications**: 
+- **CLI Applications**:
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
+  - `uv run python fact_checker_cli.py statements.json` - Batch fact-checker for biomedical statements (stores in PostgreSQL factcheck schema)
+  - `uv run python fact_checker_cli.py statements.json --incremental` - Incremental mode (resume processing, skip already-evaluated statements)
+  - `uv run python fact_checker_cli.py statements.json -o results.json` - Export results to JSON file (PostgreSQL is always used)
 - **GUI Applications**:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
-  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results
-  - `uv run python fact_checker_review_gui.py --input-file results.json` - Load JSON file (auto-creates SQLite database)
-  - `uv run python fact_checker_review_gui.py --input-file results.db` - Load existing database directly
-  - `uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice` - Incremental mode (only your unannotated statements) with username
+  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results (PostgreSQL-based)
+  - `uv run python fact_checker_review_gui.py --user alice` - Launch review GUI with username (skip login dialog)
+  - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
+  - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
@@ -199,6 +202,27 @@ bmlibrarian/
 │   └── lab/                   # Experimental tools and interfaces
 │       ├── __init__.py        # Lab module exports
 │       └── query_lab.py       # QueryAgent experimental GUI
+│   └── factchecker/           # Fact-checker module (PostgreSQL-based)
+│       ├── __init__.py        # Fact-checker module exports
+│       ├── agent/             # Fact-checker agent
+│       │   ├── __init__.py
+│       │   └── fact_checker_agent.py  # FactCheckerAgent (orchestrates multi-agent workflow)
+│       ├── db/                # Database operations
+│       │   ├── __init__.py
+│       │   └── database.py    # FactCheckerDB (PostgreSQL factcheck schema)
+│       ├── cli/               # CLI application
+│       │   ├── __init__.py
+│       │   ├── app.py         # Main CLI entry point
+│       │   ├── commands.py    # Command handlers
+│       │   └── formatters.py  # Output formatting
+│       └── gui/               # Review GUI application
+│           ├── __init__.py
+│           ├── review_app.py  # Main review application
+│           ├── data_manager.py    # Database queries
+│           ├── annotation_manager.py  # Annotation logic
+│           ├── statement_display.py   # Statement UI
+│           ├── citation_display.py    # Citation cards
+│           └── dialogs.py     # Login/export dialogs
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
