@@ -18,18 +18,16 @@ from .citation_display import CitationDisplay
 class FactCheckerReviewApp:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self, input_file: Optional[str] = None, incremental: bool = False, default_username: Optional[str] = None, blind_mode: bool = False):
+    def __init__(self, incremental: bool = False, default_username: Optional[str] = None, blind_mode: bool = False):
         """
         Initialize the review application.
 
         Args:
-            input_file: Optional input file path provided via command line
             incremental: If True, only show statements you haven't annotated yet
             default_username: If provided, use this username and skip login dialog
             blind_mode: If True, hide original and AI annotations from human annotator
         """
         self.page: Optional[ft.Page] = None
-        self.initial_input_file = input_file
         self.incremental = incremental
         self.default_username = default_username
         self.blind_mode = blind_mode
@@ -42,11 +40,10 @@ class FactCheckerReviewApp:
         self.citation_display = CitationDisplay()
 
         # UI components
-        self.file_path_text = None
+        self.status_text = None
         self.citations_list = None
         self.prev_button = None
         self.next_button = None
-        self.save_button = None
         self.review_content = None
 
     def main(self, page: ft.Page):
@@ -94,7 +91,7 @@ class FactCheckerReviewApp:
                     color=ft.Colors.BLUE_900
                 ),
                 ft.Text(
-                    "Review and annotate AI-generated fact-checking results",
+                    "Review and annotate AI-generated fact-checking results from PostgreSQL database",
                     size=14,
                     color=ft.Colors.GREY_700
                 )
@@ -102,27 +99,16 @@ class FactCheckerReviewApp:
             padding=ft.padding.only(bottom=20)
         )
 
-        # File selection section
-        self.file_path_text = ft.Text(
-            "No file loaded",
+        # Database status section
+        self.status_text = ft.Text(
+            "Loading from database...",
             size=12,
             color=ft.Colors.GREY_600,
             italic=True
         )
 
-        file_section = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.ElevatedButton(
-                        "Import from JSON File",
-                        icon=ft.Icons.UPLOAD_FILE,
-                        on_click=self._on_load_file,
-                        bgcolor=ft.Colors.BLUE_600,
-                        color=ft.Colors.WHITE
-                    ),
-                    self.file_path_text
-                ], spacing=15, alignment=ft.MainAxisAlignment.START)
-            ]),
+        status_section = ft.Container(
+            content=self.status_text,
             padding=ft.padding.all(15),
             bgcolor=ft.Colors.BLUE_50,
             border_radius=10
@@ -135,7 +121,7 @@ class FactCheckerReviewApp:
         # Main layout
         main_content = ft.Column([
             header,
-            file_section,
+            status_section,
             ft.Container(height=20),
             self.review_content
         ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO)
@@ -198,19 +184,19 @@ class FactCheckerReviewApp:
             disabled=True
         )
 
-        self.save_button = ft.ElevatedButton(
-            "Save Reviews",
-            icon=ft.Icons.SAVE,
-            on_click=self._on_save_reviews,
-            bgcolor=ft.Colors.GREEN_700,
-            color=ft.Colors.WHITE
+        # Auto-save indicator
+        auto_save_text = ft.Text(
+            "✓ Annotations saved automatically to database",
+            size=12,
+            color=ft.Colors.GREEN_700,
+            italic=True
         )
 
         navigation_section = ft.Row([
             self.prev_button,
             self.next_button,
             ft.Container(expand=True),
-            self.save_button
+            auto_save_text
         ], spacing=10, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         # Combine all sections
@@ -241,31 +227,8 @@ class FactCheckerReviewApp:
         """
         self.data_manager.set_annotator(annotator_info)
 
-        # Load initial file if provided, otherwise load from PostgreSQL database
-        if self.initial_input_file:
-            self._load_fact_check_results(self.initial_input_file)
-        else:
-            # No input file specified - load directly from PostgreSQL database
-            self._load_from_database()
-
-    def _on_load_file(self, e):
-        """Handle load file button click."""
-        def on_file_result(file_picker_result: ft.FilePickerResultEvent):
-            if file_picker_result.files and len(file_picker_result.files) > 0:
-                file_path = file_picker_result.files[0].path
-                self._load_fact_check_results(file_path)
-
-        # Create file picker
-        file_picker = ft.FilePicker(on_result=on_file_result)
-        self.page.overlay.append(file_picker)
-        self.page.update()
-
-        # Open file picker dialog
-        file_picker.pick_files(
-            dialog_title="Import Fact-Check Results from JSON",
-            allowed_extensions=["json"],
-            allow_multiple=False
-        )
+        # Always load from PostgreSQL database (input files should be imported via CLI)
+        self._load_from_database()
 
     def _load_from_database(self):
         """Load fact-check results directly from PostgreSQL database."""
@@ -274,9 +237,9 @@ class FactCheckerReviewApp:
 
             # Update UI
             mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
-            self.file_path_text.value = f"PostgreSQL Database ({len(self.data_manager.results)} statements){mode_indicator}"
-            self.file_path_text.italic = False
-            self.file_path_text.color = ft.Colors.GREEN_700
+            self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from PostgreSQL{mode_indicator}"
+            self.status_text.italic = False
+            self.status_text.color = ft.Colors.GREEN_700
 
             # Show review interface
             self.current_index = 0
@@ -291,36 +254,6 @@ class FactCheckerReviewApp:
             print(f"ERROR in _load_from_database:")
             print(error_details)
             show_error_dialog(self.page, f"Error loading from database:\n\n{str(ex)}\n\nCheck console for details.")
-
-    def _load_fact_check_results(self, file_path: str):
-        """Load fact-check results from JSON file (imports into PostgreSQL)."""
-        try:
-            file_path_obj = Path(file_path)
-
-            # Check if it's JSON file for import
-            if file_path_obj.suffix.lower() == '.json':
-                # Auto-create/update database from JSON
-                self.data_manager.load_from_json(file_path)
-                file_type = "PostgreSQL Database (imported from JSON)"
-                file_color = ft.Colors.GREEN_700
-            else:
-                raise ValueError(f"Unsupported file type: {file_path_obj.suffix}. Use .json files for import")
-
-            # Update UI
-            mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
-            self.file_path_text.value = f"{file_type} ({len(self.data_manager.results)} statements){mode_indicator}"
-            self.file_path_text.italic = False
-            self.file_path_text.color = file_color
-
-            # Show review interface
-            self.current_index = 0
-            self.review_content.visible = True
-            self._display_current_statement()
-
-            self.page.update()
-
-        except Exception as ex:
-            show_error_dialog(self.page, f"Error loading file: {str(ex)}")
 
     def _display_current_statement(self):
         """Display the current statement and its annotations."""
@@ -381,30 +314,3 @@ class FactCheckerReviewApp:
             self.current_index += 1
             self._display_current_statement()
 
-    def _on_save_reviews(self, e):
-        """Save human reviews - to database or JSON file."""
-        if not self.data_manager.results:
-            show_error_dialog(self.page, "No results to save")
-            return
-
-        if self.data_manager.using_database:
-            # Database mode - annotations are saved automatically
-            reviewed_count = self.data_manager.get_reviewed_count()
-            show_success_dialog(
-                self.page,
-                f"✓ All annotations saved to PostgreSQL database\n\n"
-                f"Total statements: {len(self.data_manager.results)}\n"
-                f"Reviewed by you: {reviewed_count}"
-            )
-        else:
-            # JSON mode - show save dialog
-            default_path = self.data_manager.get_default_output_path()
-
-            def do_save(output_path: str):
-                try:
-                    self.data_manager.export_to_json(output_path)
-                    show_success_dialog(self.page, f"Reviews saved successfully to:\n{output_path}")
-                except Exception as ex:
-                    show_error_dialog(self.page, f"Error saving reviews: {str(ex)}")
-
-            show_save_dialog(self.page, default_path, do_save)

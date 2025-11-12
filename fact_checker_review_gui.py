@@ -22,12 +22,7 @@ from bmlibrarian.factchecker.gui.review_app import FactCheckerReviewApp
 def main():
     """Main entry point for the application."""
     parser = argparse.ArgumentParser(
-        description="BMLibrarian Fact-Checker Review GUI - Human annotation interface for fact-checking results"
-    )
-    parser.add_argument(
-        "--input-file",
-        type=str,
-        help="Path to JSON file to import (optional - will load from PostgreSQL database if omitted)"
+        description="BMLibrarian Fact-Checker Review GUI - Human annotation interface for fact-checking results from PostgreSQL database"
     )
     parser.add_argument(
         "--incremental",
@@ -47,19 +42,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate input file if provided (optional now - will load from PostgreSQL if omitted)
-    if args.input_file:
-        input_path = Path(args.input_file)
-        if not input_path.exists():
-            print(f"Error: Input file not found: {args.input_file}")
-            return 1
-        if input_path.suffix.lower() != '.json':
-            print(f"Error: Input file must be a JSON file: {args.input_file}")
-            return 1
-
     # Create and run app
     app = FactCheckerReviewApp(
-        input_file=args.input_file,
         incremental=args.incremental,
         default_username=args.user,
         blind_mode=args.blind
