@@ -48,6 +48,12 @@ Since this project uses `uv` for package management:
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
   - `uv run python fact_checker_cli.py statements.json` - Batch fact-checker for biomedical statements (stores in PostgreSQL factcheck schema)
   - `uv run python fact_checker_cli.py statements.json --incremental` - Incremental mode (resume processing, skip already-evaluated statements)
+  - `uv run python medrxiv_import_cli.py update --download-pdfs` - Import medRxiv preprints with PDFs
+  - `uv run python medrxiv_import_cli.py fetch-pdfs --limit 100` - Download missing PDFs for existing records
+  - `uv run python medrxiv_import_cli.py status` - Show medRxiv import statistics
+  - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
+  - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
+  - `uv run python embed_documents_cli.py status` - Show embedding statistics
   - `uv run python fact_checker_cli.py statements.json -o results.json` - Export results to JSON file (PostgreSQL is always used)
 - **GUI Applications**:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
@@ -180,6 +186,13 @@ bmlibrarian/
 │   │       ├── __init__.py    # Query generation module exports
 │   │       ├── data_types.py  # Type-safe dataclasses for query results
 │   │       └── generator.py   # Multi-model query generator
+│   ├── importers/             # External data source importers
+│   │   ├── __init__.py        # Importer module exports
+│   │   ├── medrxiv_importer.py # MedRxiv preprint importer
+│   │   └── README.md          # Importer documentation
+│   ├── embeddings/            # Document embedding generation
+│   │   ├── __init__.py        # Embeddings module exports
+│   │   └── document_embedder.py # Document embedder (uses Ollama)
 │   └── cli/                   # Modular CLI architecture
 │       ├── __init__.py        # CLI module exports
 │       ├── config.py          # Configuration management
@@ -242,6 +255,8 @@ bmlibrarian/
 │   │   ├── counterfactual_guide.md
 │   │   ├── fact_checker_guide.md
 │   │   ├── fact_checker_review_guide.md  # Fact-checker review GUI guide
+│   │   ├── medrxiv_import_guide.md  # MedRxiv import guide
+│   │   ├── document_embedding_guide.md  # Document embedding guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -255,6 +270,8 @@ bmlibrarian/
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
+├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
+├── embed_documents_cli.py     # Document embedding generation CLI
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
