@@ -994,7 +994,7 @@ Respond ONLY with the JSON object, no additional text."""
             # Insert evidence citations
             for evidence_ref in result.evidence_list:
                 evidence = Evidence(
-                    ai_evaluation_id=eval_id,
+                    evaluation_id=eval_id,
                     citation_text=evidence_ref.citation_text,
                     pmid=evidence_ref.pmid,
                     doi=evidence_ref.doi,
