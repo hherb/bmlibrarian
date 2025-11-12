@@ -5,6 +5,12 @@ A comprehensive Python library providing AI-powered access to biomedical literat
 ## What's New 🎉
 
 **Latest Features (2025):**
+- 🔍 **Fact Checker System**: Comprehensive LLM training data auditing with literature validation
+  - **CLI & Desktop GUI**: Batch processing and interactive human review interfaces
+  - **Blind Mode**: Review statements without AI bias for unbiased human annotation
+  - **Incremental Mode**: Smart filtering to show only unannotated statements
+  - **SQLite Integration**: Persistent database storage with intelligent JSON import/merge
+  - **Citation Hallucination Prevention**: Validation system ensures all citations reference real documents
 - 🚀 **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
 - 📊 **Query Performance Tracking**: Real-time analysis showing which models find the best documents
 - 🗄️ **PostgreSQL Audit Trail**: Complete persistent tracking of research workflow sessions
@@ -16,6 +22,79 @@ A comprehensive Python library providing AI-powered access to biomedical literat
 ## Overview
 
 BMLibrarian transforms how researchers interact with biomedical literature by combining AI-powered natural language processing with robust database infrastructure. The system employs multiple specialized AI agents that work together to convert research questions into comprehensive, evidence-based medical reports with proper citations and balanced analysis of contradictory evidence.
+
+## Fact Checker System 🔍
+
+The **BMLibrarian Fact Checker** is a specialized tool for auditing biomedical statements in LLM training datasets, medical knowledge bases, and research claims. It evaluates statement veracity by searching literature databases and comparing claims against published evidence.
+
+### Core Capabilities
+
+- **Automated Verification**: Evaluates biomedical statements as yes/no/maybe based on literature evidence
+- **Evidence Extraction**: Provides specific citations with stance indicators (supports/contradicts/neutral)
+- **Batch Processing**: Process hundreds of statements from JSON input files
+- **Confidence Assessment**: Rates confidence (high/medium/low) based on evidence strength and consistency
+- **Citation Validation**: Prevents hallucination by validating all citations reference real database documents
+- **Human Review Interface**: Desktop GUI for annotation, comparison, and quality control
+
+### Key Features
+
+#### CLI Tool (`fact_checker_cli.py`)
+- **Batch fact-checking** from JSON input files
+- **Incremental processing** - smart detection of previously evaluated statements
+- **SQLite database storage** for persistent results and annotations
+- **Flexible thresholds** for relevance scoring and citation extraction
+- **Quick mode** for faster testing with reduced document sets
+- **Detailed output** with evidence metadata and validation statistics
+
+#### Review GUI (`fact_checker_review_gui.py`)
+- **Interactive human review** with statement-by-statement navigation
+- **Blind mode** - hide AI evaluations to prevent bias during human annotation
+- **Incremental mode** - filter to show only unannotated statements for efficient review
+- **Database integration** - automatic SQLite database creation from JSON files
+- **Intelligent merging** - import new statements without overwriting existing annotations
+- **Citation inspection** - expandable cards with full abstracts and highlighted passages
+- **Multi-user support** - track annotations by different reviewers
+- **Export functionality** - save human-annotated results for analysis
+
+### Use Cases
+
+1. **LLM Training Data Auditing**: Verify factual accuracy of biomedical statements in training datasets
+2. **Medical Knowledge Validation**: Check medical claims against current literature
+3. **Dataset Quality Control**: Identify potentially incorrect statements in medical corpora
+4. **Evidence-Based Verification**: Validate medical facts with specific literature references
+5. **Research Claim Verification**: Evaluate research statements before publication
+
+### Database Workflow
+
+The fact checker uses SQLite databases for persistent storage:
+
+1. **First run with JSON**: Creates `.db` file alongside input JSON (e.g., `results.json` → `results.db`)
+2. **Subsequent runs**: Intelligently merges new statements from JSON without overwriting existing evaluations/annotations
+3. **Real-time persistence**: All AI evaluations and human annotations saved immediately to database
+4. **Incremental processing**: Skip already-evaluated statements with `--incremental` flag
+5. **Cross-tool compatibility**: CLI and GUI share the same database format
+
+### Example Workflow
+
+```bash
+# Step 1: Generate fact-check results from statements
+uv run python fact_checker_cli.py statements.json -o results.json
+# Creates: results.json (JSON output) and results.db (SQLite database)
+
+# Step 2: Review with GUI in blind mode (no AI bias)
+uv run python fact_checker_review_gui.py --input-file results.db --blind --user alice
+# Human reviewer annotates statements without seeing AI evaluations
+
+# Step 3: Review remaining statements in normal mode
+uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice
+# Shows only statements not yet annotated by alice
+
+# Step 4: Export annotated results
+# Use GUI "Save Reviews" button → results_annotated.json
+
+# Step 5: Analyze results
+uv run python analyze_factcheck_progress.py results_annotated.json
+```
 
 ## Key Features
 
@@ -149,7 +228,7 @@ uv run python bmlibrarian_config_gui.py
 # - Visual value displays for all configuration parameters
 ```
 
-#### Fact Checker for LLM Training Data Auditing
+#### Fact Checker CLI for LLM Training Data Auditing
 ```bash
 # Check biomedical statements against literature evidence
 uv run python fact_checker_cli.py input.json -o results.json
@@ -160,17 +239,29 @@ uv run python fact_checker_cli.py input.json -o results.json
 #   {"statement": "Vitamin D deficiency is common in IBD", "answer": "yes"}
 # ]
 
+# This creates TWO outputs:
+#   - results.json: JSON file with fact-check results
+#   - results.db: SQLite database for persistent storage
+
+# Incremental mode - skip already-evaluated statements
+uv run python fact_checker_cli.py input.json -o results.json --incremental
+# Only processes new statements, preserves existing evaluations
+
 # Quick mode for faster testing
 uv run python fact_checker_cli.py input.json -o results.json --quick
 
-# Custom thresholds
+# Custom thresholds for precision control
 uv run python fact_checker_cli.py input.json -o results.json \
-  --score-threshold 3.0 --max-search-results 100
+  --score-threshold 3.0 --max-search-results 100 --max-citations 15
 
 # Verbose mode with detailed output
 uv run python fact_checker_cli.py input.json -o results.json -v --detailed
 
-# Run demo
+# Custom model selection
+uv run python fact_checker_cli.py input.json -o results.json \
+  --model medgemma-27b-text-it-Q8_0:latest --temperature 0.15
+
+# Run demonstration
 uv run python examples/fact_checker_demo.py
 ```
 
@@ -179,13 +270,36 @@ uv run python examples/fact_checker_demo.py
 # Human review and annotation of fact-checking results
 uv run python fact_checker_review_gui.py
 
+# Load JSON file (auto-creates SQLite database for annotations)
+uv run python fact_checker_review_gui.py --input-file results.json
+
+# Load existing database directly
+uv run python fact_checker_review_gui.py --input-file results.db
+
+# BLIND MODE - hide AI evaluations to prevent annotation bias
+uv run python fact_checker_review_gui.py --input-file results.db --blind --user alice
+# Perfect for unbiased human annotation without AI influence
+
+# INCREMENTAL MODE - show only unannotated statements
+uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice
+# Efficiently review only statements you haven't annotated yet
+
+# Multi-user workflow with user tracking
+uv run python fact_checker_review_gui.py --input-file results.db --user bob
+# Track annotations by different reviewers
+
 # Features:
-# - Load fact-check results from JSON files
-# - Statement-by-statement review interface
+# - Automatic SQLite database creation from JSON files
+# - Intelligent merging: import new statements without overwriting existing annotations
+# - Real-time persistence: all annotations saved immediately to database
+# - Statement-by-statement review with progress tracking
 # - Compare original, AI, and human annotations side-by-side
-# - Review supporting citations with stance indicators
-# - Provide human annotations with explanations
-# - Export reviewed annotations to new JSON file
+# - Expandable citation cards with full abstracts and highlighted passages
+# - Color-coded stance indicators (supports/contradicts/neutral)
+# - Blind mode for unbiased annotation (hide AI evaluations)
+# - Incremental mode for efficient review (filter unannotated statements)
+# - Multi-user support with annotator metadata
+# - Export reviewed annotations to JSON file
 # - Perfect for quality control and training data validation
 ```
 
@@ -294,6 +408,30 @@ The interactive medical research CLI (`bmlibrarian_cli.py`) provides:
 - Query refinement and threshold adjustment capabilities
 - Counterfactual analysis for comprehensive evidence evaluation
 - Enhanced markdown export with proper citation formatting
+
+### Fact-Checker CLI
+The fact-checking command-line tool (`fact_checker_cli.py`) provides:
+- **Batch processing** of biomedical statements from JSON files
+- **Literature validation** with AI-powered yes/no/maybe evaluations
+- **SQLite database storage** for persistent results and incremental processing
+- **Evidence extraction** with citation stance indicators and confidence assessment
+- **Incremental mode** - skip already-evaluated statements for efficient processing
+- **Flexible thresholds** - control relevance scoring and citation extraction
+- **Validation support** - compare AI evaluations against expected answers
+- **Detailed output** - comprehensive metadata, statistics, and evidence lists
+
+### Fact-Checker Review GUI
+The human review desktop application (`fact_checker_review_gui.py`) provides:
+- **Interactive review interface** with statement-by-statement navigation
+- **Blind mode** - hide AI evaluations to prevent annotation bias for unbiased human judgments
+- **Incremental mode** - filter to show only unannotated statements for efficient review
+- **Database integration** - automatic SQLite database creation and intelligent JSON import/merge
+- **Citation inspection** - expandable cards with full abstracts and highlighted passages
+- **Multi-user support** - track annotations by different reviewers with metadata
+- **Comparison view** - see original annotations, AI evaluations, and human annotations side-by-side
+- **Real-time persistence** - all annotations saved immediately to database
+- **Export functionality** - save human-annotated results to JSON for analysis
+- **Quality control** - perfect for training data validation and model evaluation
 
 ### Desktop Research Application
 The GUI research application (`bmlibrarian_research_gui.py`) offers:
@@ -422,6 +560,8 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[CLI Guide](doc/users/cli_guide.md)** - Command-line interface usage
 - **[Research GUI Guide](doc/users/research_gui_guide.md)** - Desktop research application
 - **[Config GUI Guide](doc/users/config_gui_guide.md)** - Configuration interface
+- **[Fact Checker Guide](doc/users/fact_checker_guide.md)** - LLM training data auditing and statement verification
+- **[Fact Checker Review Guide](doc/users/fact_checker_review_guide.md)** - Human annotation and review GUI
 - **[Query Agent Guide](doc/users/query_agent_guide.md)** - Natural language query processing
 - **[Multi-Model Query Guide](doc/users/multi_model_query_guide.md)** - Multi-model query generation
 - **[Query Performance Tracking](doc/users/query_performance_tracking.md)** - Performance analysis
@@ -437,6 +577,7 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[Citation System](doc/developers/citation_system.md)** - Citation processing internals
 - **[Reporting System](doc/developers/reporting_system.md)** - Report generation system
 - **[Counterfactual System](doc/developers/counterfactual_system.md)** - Evidence analysis framework
+- **[Fact Checker System](doc/developers/fact_checker_system.md)** - Fact-checking architecture and internals
 
 ## Development
 
@@ -589,7 +730,19 @@ BMLibrarian is a **production-ready** system with:
 
 ### Recent Major Updates
 
-#### Database Migration System & Automatic Startup (Latest)
+#### Fact Checker System for LLM Training Data Auditing (Latest)
+- **Complete fact-checking infrastructure**: CLI tool and desktop GUI for biomedical statement verification
+- **Blind mode review**: Hide AI evaluations during human annotation to prevent bias
+- **Incremental processing**: Smart filtering to show only unannotated statements for efficient review
+- **SQLite database integration**: Persistent storage with intelligent JSON import/merge workflow
+- **Citation hallucination prevention**: Validation system ensures all citations reference real database documents
+- **Multi-user support**: Track annotations by different reviewers with user metadata
+- **Expandable citation cards**: Full abstract display with highlighted passages for context verification
+- **Database workflow**: Automatic `.db` creation from JSON files with seamless merging on subsequent imports
+- **Confidence assessment**: High/medium/low confidence ratings based on evidence strength and consistency
+- **Validation support**: Compare AI evaluations against expected answers for accuracy testing
+
+#### Database Migration System & Automatic Startup
 - **Automatic schema initialization**: Database migrations run automatically on application startup
 - **Incremental updates**: Smart migration system tracks completed migrations and only applies new ones
 - **Zero-downtime upgrades**: Seamless schema updates without manual intervention
