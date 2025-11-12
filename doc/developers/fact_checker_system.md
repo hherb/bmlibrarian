@@ -4,37 +4,77 @@
 
 The Fact Checker system provides automated verification of biomedical statements against literature evidence. It's designed for auditing LLM training data, validating medical claims, and ensuring factual accuracy in biomedical corpora.
 
+**Architecture**: Modular PostgreSQL-based system with multi-agent orchestration and multi-user annotation support.
+
 ## Architecture
 
 ### System Components
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    FactCheckerAgent                         │
-│  (Orchestrates fact-checking workflow)                      │
-└────────────┬────────────────────────────────────────────────┘
-             │
-             ├─► QueryAgent
-             │   (Search for relevant documents)
-             │
-             ├─► DocumentScoringAgent
-             │   (Score document relevance)
-             │
-             ├─► CitationFinderAgent
-             │   (Extract supporting/contradicting evidence)
-             │
-             └─► LLM Evaluation
-                 (Synthesize evaluation with reasoning)
+│                BMLibrarian Fact Checker                     │
+└─────────────────────────────────────────────────────────────┘
+           │
+           ├─► src/bmlibrarian/factchecker/
+           │   │
+           │   ├─► agent/
+           │   │   └─► fact_checker_agent.py (FactCheckerAgent)
+           │   │       - Orchestrates multi-agent workflow
+           │   │       - Coordinates query, scoring, citation agents
+           │   │       - LLM evaluation synthesis
+           │   │
+           │   ├─► db/
+           │   │   └─► database.py (FactCheckerDB)
+           │   │       - PostgreSQL operations (factcheck schema)
+           │   │       - Multi-user annotation support
+           │   │       - No data duplication (FK to public.document)
+           │   │
+           │   ├─► cli/
+           │   │   ├─► app.py (main CLI entry point)
+           │   │   ├─► commands.py (CLI command handlers)
+           │   │   └─► formatters.py (output formatting)
+           │   │
+           │   └─► gui/
+           │       ├─► review_app.py (main GUI application)
+           │       ├─► data_manager.py (database queries)
+           │       ├─► annotation_manager.py (annotation logic)
+           │       ├─► statement_display.py (statement UI)
+           │       ├─► citation_display.py (citation cards)
+           │       └─► dialogs.py (login, export dialogs)
+           │
+           ├─► fact_checker_cli.py (thin entry point)
+           └─► fact_checker_review_gui.py (thin entry point)
 ```
 
 ### Data Flow
 
-1. **Input**: Biomedical statement + optional expected answer
-2. **Search**: Convert statement to query, search literature
-3. **Scoring**: Evaluate document relevance to statement
-4. **Extraction**: Extract relevant passages as citations
-5. **Evaluation**: Analyze evidence and determine yes/no/maybe
-6. **Output**: Structured result with evidence references
+```
+1. INPUT: JSON file with biomedical statements
+   ↓
+2. FactCheckerAgent orchestrates:
+   - QueryAgent: Convert statement to database query
+   - DocumentScoringAgent: Score document relevance
+   - CitationFinderAgent: Extract evidence passages
+   - LLM Evaluation: Synthesize yes/no/maybe with reasoning
+   ↓
+3. STORAGE: PostgreSQL factcheck schema
+   - statements table (biomedical statements)
+   - ai_evaluations table (AI fact-check results)
+   - evidence table (literature citations, FK to public.document)
+   - human_annotations table (multi-user annotations)
+   - annotators table (user profiles)
+   ↓
+4. REVIEW: Human annotation via GUI
+   - Login with user profile
+   - Review AI evaluations and evidence
+   - Provide human annotations
+   - Save directly to PostgreSQL
+   ↓
+5. OUTPUT: JSON export or SQL queries
+   - Export to JSON for analysis
+   - Query database for statistics
+   - Calculate inter-annotator agreement
+```
 
 ## Core Classes
 
@@ -42,7 +82,7 @@ The Fact Checker system provides automated verification of biomedical statements
 
 Main orchestration agent that coordinates the fact-checking workflow.
 
-**Location**: `src/bmlibrarian/agents/fact_checker_agent.py`
+**Location**: `src/bmlibrarian/factchecker/agent/fact_checker_agent.py`
 
 **Inheritance**: `BaseAgent`
 
@@ -71,20 +111,25 @@ def check_statement(
 ```
 
 ```python
-def check_batch(
+def check_batch_from_file(
     self,
-    statements: List[Dict[str, str]],
+    input_file: str,
     output_file: Optional[str] = None
 ) -> List[FactCheckResult]:
     """
-    Check multiple statements in batch.
+    Check multiple statements from JSON file.
 
     Args:
-        statements: List of statement dicts with 'statement' and 'answer' keys
-        output_file: Optional JSON output file
+        input_file: Path to JSON file with statements
+        output_file: Optional JSON export file
 
     Returns:
         List of FactCheckResult objects
+
+    Notes:
+        - Always stores results in PostgreSQL
+        - Supports incremental mode (skip evaluated statements)
+        - Supports both legacy and extracted JSON formats
     """
 ```
 
@@ -102,66 +147,302 @@ agent = FactCheckerAgent(
     max_citations=10,                   # Max citations to extract
     callback=progress_callback,         # Progress updates
     orchestrator=orchestrator,          # Queue orchestrator
-    show_model_info=True                # Display model info
+    show_model_info=True,               # Display model info
+    use_database=True,                  # Use PostgreSQL storage (default)
+    db_path=None,                       # Auto-managed (not used)
+    incremental=False                   # Skip evaluated statements
 )
 ```
 
-### FactCheckResult
+### FactCheckerDB
 
-Dataclass representing the fact-check evaluation result.
+Database manager for PostgreSQL operations using centralized DatabaseManager.
 
-**Location**: `src/bmlibrarian/agents/fact_checker_agent.py`
+**Location**: `src/bmlibrarian/factchecker/db/database.py`
 
-**Fields**:
+**Connection Management**: Uses `bmlibrarian.database.get_db_manager()` for connection pooling
+
+**Key Methods**:
+
+```python
+def insert_statement(self, statement: Statement) -> int:
+    """Insert statement or return existing ID if duplicate."""
+
+def insert_ai_evaluation(self, evaluation: AIEvaluation) -> int:
+    """Insert AI evaluation for a statement."""
+
+def insert_evidence(self, evidence: Evidence) -> int:
+    """
+    Insert evidence citation.
+
+    Note: document_id is FK to public.document(id) - NO DUPLICATION!
+    """
+
+def insert_human_annotation(self, annotation: HumanAnnotation) -> int:
+    """
+    Insert or update human annotation.
+
+    Uses UPSERT (ON CONFLICT) for idempotent updates.
+    """
+
+def insert_or_get_annotator(self, annotator: Annotator) -> int:
+    """Insert annotator profile or return existing ID."""
+
+def get_all_statements_with_evaluations(self) -> List[Dict[str, Any]]:
+    """
+    Get all statements with their latest AI evaluations and evidence.
+
+    Returns complete fact-check data for export or analysis.
+    """
+
+def get_statements_needing_evaluation(self, statement_texts: List[str]) -> List[str]:
+    """
+    Check which statements need AI evaluation (incremental mode).
+
+    Returns list of statement texts without evaluations.
+    """
+
+def export_to_json(self, output_file: str, export_type: str = "full",
+                  requested_by: str = "system") -> str:
+    """
+    Export database contents to JSON file.
+
+    Args:
+        output_file: Path to output JSON file
+        export_type: full/ai_only/human_annotated/summary
+        requested_by: Username for audit trail
+    """
+
+def import_json_results(self, json_file: str, skip_existing: bool = True) -> Dict[str, int]:
+    """
+    Import fact-check results from legacy JSON format.
+
+    Supports incremental import (skip existing statements with evaluations).
+    """
+
+def get_inter_annotator_agreement(self) -> Dict[str, Any]:
+    """
+    Calculate inter-annotator agreement statistics.
+
+    Uses factcheck.calculate_inter_annotator_agreement() SQL function.
+    """
+```
+
+### Database Schema (PostgreSQL)
+
+**Schema**: `factcheck` (separate from main `public` schema)
+
+**Tables**:
+
+```sql
+-- Biomedical statements to be fact-checked
+CREATE TABLE factcheck.statements (
+    statement_id SERIAL PRIMARY KEY,
+    statement_text TEXT NOT NULL UNIQUE,  -- Indexed for fast lookup
+    input_statement_id TEXT,              -- Original ID (e.g., PMID)
+    expected_answer TEXT CHECK (expected_answer IN ('yes', 'no', 'maybe')),
+    created_at TIMESTAMP DEFAULT NOW(),
+    source_file TEXT,
+    review_status TEXT DEFAULT 'pending'
+);
+
+-- AI-generated evaluations
+CREATE TABLE factcheck.ai_evaluations (
+    evaluation_id SERIAL PRIMARY KEY,
+    statement_id INTEGER REFERENCES factcheck.statements(statement_id),
+    evaluation TEXT NOT NULL CHECK (evaluation IN ('yes', 'no', 'maybe', 'error')),
+    reason TEXT NOT NULL,
+    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
+    documents_reviewed INTEGER DEFAULT 0,
+    supporting_citations INTEGER DEFAULT 0,
+    contradicting_citations INTEGER DEFAULT 0,
+    neutral_citations INTEGER DEFAULT 0,
+    matches_expected BOOLEAN,
+    evaluated_at TIMESTAMP DEFAULT NOW(),
+    model_used TEXT,
+    model_version TEXT,
+    agent_config JSONB,                   -- Configuration snapshot
+    session_id TEXT,
+    version INTEGER DEFAULT 1             -- Version tracking
+);
+
+-- Literature evidence citations (NO DATA DUPLICATION!)
+CREATE TABLE factcheck.evidence (
+    evidence_id SERIAL PRIMARY KEY,
+    evaluation_id INTEGER REFERENCES factcheck.ai_evaluations(evaluation_id),
+    citation_text TEXT NOT NULL,
+    document_id INTEGER NOT NULL REFERENCES public.document(id),  -- FK to main table!
+    pmid TEXT,
+    doi TEXT,
+    relevance_score FLOAT,
+    supports_statement TEXT CHECK (supports_statement IN ('supports', 'contradicts', 'neutral')),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Human annotations (multi-user support)
+CREATE TABLE factcheck.human_annotations (
+    annotation_id SERIAL PRIMARY KEY,
+    statement_id INTEGER REFERENCES factcheck.statements(statement_id),
+    annotator_id INTEGER REFERENCES factcheck.annotators(annotator_id),
+    annotation TEXT NOT NULL CHECK (annotation IN ('yes', 'no', 'maybe')),
+    explanation TEXT,
+    confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
+    review_duration_seconds INTEGER,
+    review_date TIMESTAMP DEFAULT NOW(),
+    session_id TEXT,
+    UNIQUE (statement_id, annotator_id)   -- One annotation per user per statement
+);
+
+-- Annotator profiles
+CREATE TABLE factcheck.annotators (
+    annotator_id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT,
+    email TEXT,
+    expertise_level TEXT CHECK (expertise_level IN ('expert', 'intermediate', 'novice')),
+    institution TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Processing metadata
+CREATE TABLE factcheck.processing_metadata (
+    metadata_id SERIAL PRIMARY KEY,
+    session_id TEXT UNIQUE NOT NULL,
+    input_file TEXT,
+    total_statements INTEGER,
+    processed_statements INTEGER DEFAULT 0,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    status TEXT DEFAULT 'running',
+    config_snapshot JSONB
+);
+
+-- Export audit trail
+CREATE TABLE factcheck.export_history (
+    export_id SERIAL PRIMARY KEY,
+    export_date TIMESTAMP DEFAULT NOW(),
+    export_type TEXT,
+    output_file TEXT,
+    statement_count INTEGER,
+    requested_by TEXT
+);
+```
+
+**Helper Functions**:
+
+```sql
+-- Get or create statement (atomic upsert)
+CREATE OR REPLACE FUNCTION factcheck.get_or_create_statement(
+    p_statement_text TEXT,
+    p_input_statement_id TEXT,
+    p_expected_answer TEXT,
+    p_source_file TEXT
+) RETURNS INTEGER AS $$
+    -- Implementation handles INSERT ON CONFLICT
+$$ LANGUAGE plpgsql;
+
+-- Get statements needing evaluation (incremental mode)
+CREATE OR REPLACE FUNCTION factcheck.get_statements_needing_evaluation(
+    p_statement_texts TEXT[]
+) RETURNS SETOF TEXT AS $$
+    -- Returns statements without AI evaluations
+$$ LANGUAGE plpgsql;
+
+-- Calculate inter-annotator agreement
+CREATE OR REPLACE FUNCTION factcheck.calculate_inter_annotator_agreement()
+RETURNS TABLE (total_pairs BIGINT, agreements BIGINT, disagreements BIGINT, agreement_percentage NUMERIC) AS $$
+    -- Cohen's kappa or simple agreement percentage
+$$ LANGUAGE plpgsql;
+```
+
+## Dataclasses
+
+### Statement
 
 ```python
 @dataclass
-class FactCheckResult:
-    statement: str                      # Original statement
-    evaluation: str                     # "yes", "no", or "maybe"
-    reason: str                         # Explanation (1-3 sentences)
-    evidence_list: List[EvidenceReference]  # Supporting evidence
-    confidence: str                     # "high", "medium", or "low"
-    documents_reviewed: int             # Total documents analyzed
-    supporting_citations: int           # Count of supporting evidence
-    contradicting_citations: int        # Count of contradicting evidence
-    neutral_citations: int              # Count of neutral evidence
-    expected_answer: Optional[str]      # Expected answer (if provided)
-    matches_expected: Optional[bool]    # Match with expected answer
-    timestamp: str                      # ISO 8601 timestamp
+class Statement:
+    """Represents a biomedical statement to be fact-checked."""
+    statement_id: Optional[int] = None
+    statement_text: str = ""
+    input_statement_id: Optional[str] = None
+    expected_answer: Optional[str] = None
+    created_at: Optional[str] = None
+    source_file: Optional[str] = None
+    review_status: str = "pending"
 ```
 
-**Methods**:
-
-```python
-def to_dict(self) -> Dict[str, Any]:
-    """Convert to dictionary for JSON serialization."""
-```
-
-### EvidenceReference
-
-Dataclass representing a literature reference supporting the evaluation.
-
-**Location**: `src/bmlibrarian/agents/fact_checker_agent.py`
-
-**Fields**:
+### AIEvaluation
 
 ```python
 @dataclass
-class EvidenceReference:
-    citation_text: str                  # Extracted passage
-    pmid: Optional[str]                 # PubMed ID
-    doi: Optional[str]                  # DOI
-    document_id: Optional[str]          # Database document ID
-    relevance_score: Optional[float]    # Document relevance (1-5)
-    supports_statement: Optional[bool]  # True=supports, False=contradicts
+class AIEvaluation:
+    """Represents an AI-generated fact-check evaluation."""
+    evaluation_id: Optional[int] = None
+    statement_id: int = 0
+    evaluation: str = ""                  # "yes", "no", "maybe"
+    reason: str = ""
+    confidence: Optional[str] = None      # "high", "medium", "low"
+    documents_reviewed: int = 0
+    supporting_citations: int = 0
+    contradicting_citations: int = 0
+    neutral_citations: int = 0
+    matches_expected: Optional[bool] = None
+    evaluated_at: Optional[str] = None
+    model_used: Optional[str] = None
+    model_version: Optional[str] = None
+    agent_config: Optional[str] = None    # JSONB in database
+    session_id: Optional[str] = None
+    version: int = 1
 ```
 
-**Methods**:
+### Evidence
 
 ```python
-def to_dict(self) -> Dict[str, Any]:
-    """Convert to dictionary for JSON serialization."""
+@dataclass
+class Evidence:
+    """Represents a literature citation supporting an evaluation."""
+    evidence_id: Optional[int] = None
+    evaluation_id: int = 0
+    citation_text: str = ""
+    document_id: int = 0                  # FK to public.document(id) - NO DUPLICATION!
+    pmid: Optional[str] = None
+    doi: Optional[str] = None
+    relevance_score: Optional[float] = None
+    supports_statement: Optional[str] = None  # 'supports', 'contradicts', 'neutral'
+    created_at: Optional[str] = None
+```
+
+### HumanAnnotation
+
+```python
+@dataclass
+class HumanAnnotation:
+    """Represents a human reviewer's annotation."""
+    annotation_id: Optional[int] = None
+    statement_id: int = 0
+    annotator_id: int = 0
+    annotation: str = ""                  # "yes", "no", "maybe"
+    explanation: Optional[str] = None
+    confidence: Optional[str] = None      # "high", "medium", "low"
+    review_duration_seconds: Optional[int] = None
+    review_date: Optional[str] = None
+    session_id: Optional[str] = None
+```
+
+### Annotator
+
+```python
+@dataclass
+class Annotator:
+    """Represents a human annotator."""
+    annotator_id: Optional[int] = None
+    username: str = ""
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    expertise_level: Optional[str] = None  # "expert", "intermediate", "novice"
+    institution: Optional[str] = None
+    created_at: Optional[str] = None
 ```
 
 ## Workflow Details
@@ -194,151 +475,94 @@ def check_statement(statement, expected_answer=None):
     return result
 ```
 
-### Statement to Question Conversion
-
-The agent converts statements to questions for better search results:
+### Batch Processing with Incremental Mode
 
 ```python
-def _statement_to_question(statement: str) -> str:
-    """Convert statement to question format."""
-    # Already a question?
-    if statement.endswith('?'):
-        return statement
+def check_batch_from_file(input_file, output_file=None):
+    # 1. Load statements from JSON file
+    with open(input_file, 'r') as f:
+        statements = json.load(f)
 
-    # Yes/no statement?
-    if contains_yes_no_indicators(statement):
-        if starts_with_quantifier(statement):
-            return f"Is it true that {statement}?"
-        else:
-            return f"{statement}?"
+    # 2. Initialize database (PostgreSQL factcheck schema)
+    if self.use_database and not self.db:
+        self.db = FactCheckerDB()
 
-    # General topic
-    return f"What does the literature say about: {statement}"
-```
+    # 3. Incremental mode: filter already-evaluated statements
+    if self.incremental and self.db:
+        # Extract statement texts
+        statement_texts = [s.get('statement') or s.get('question', '') for s in statements]
 
-### Evidence Evaluation
+        # Get statements needing evaluation
+        texts_needing_eval = set(self.db.get_statements_needing_evaluation(statement_texts))
 
-The LLM analyzes citations to determine their stance:
+        # Filter statements list
+        statements = [s for s in statements
+                     if (s.get('statement') or s.get('question', '')) in texts_needing_eval]
 
-```python
-def _evaluate_statement(statement, citations, scored_docs, expected_answer):
-    # 1. Prepare evidence summary
-    evidence_summary = _prepare_evidence_summary(citations)
-
-    # 2. Create evaluation prompt
-    prompt = _create_evaluation_prompt(statement, evidence_summary)
-
-    # 3. Get LLM evaluation
-    response = _make_ollama_request(messages=[{'role': 'user', 'content': prompt}])
-
-    # 4. Parse response
-    evaluation_data = _parse_evaluation_response(response)
-    # Returns: {
-    #     "evaluation": "yes|no|maybe",
-    #     "reason": "explanation",
-    #     "citation_stances": {"1": "supports", "2": "contradicts", ...}
-    # }
-
-    # 5. Convert citations to evidence references
-    evidence_refs = _citations_to_evidence_refs(citations, scored_docs, stances)
-
-    # 6. Determine confidence
-    confidence = _determine_confidence(evaluation, supporting, contradicting, neutral, total_docs)
-
-    # 7. Create result
-    return FactCheckResult(...)
-```
-
-### Confidence Determination
-
-Confidence is based on evidence quantity and consistency:
-
-```python
-def _determine_confidence(evaluation, supporting, contradicting, neutral, total_docs):
-    total_citations = supporting + contradicting + neutral
-
-    # Low confidence: insufficient evidence
-    if total_citations == 0 or total_docs < 3:
-        return "low"
-
-    # High confidence: clear majority with multiple sources
-    if evaluation in ['yes', 'no']:
-        dominant = supporting if evaluation == 'yes' else contradicting
-        ratio = dominant / total_citations
-
-        if dominant >= 3 and ratio >= 0.7 and total_docs >= 5:
-            return "high"
-        elif dominant >= 2 and ratio >= 0.6:
-            return "medium"
-
-    # Maybe: mixed evidence
-    if evaluation == 'maybe':
-        if total_citations >= 4 and total_docs >= 5:
-            return "medium"
-
-    return "low"
-```
-
-## Sub-Agent Integration
-
-### QueryAgent Integration
-
-Converts statements to database queries:
-
-```python
-def _search_documents(statement, max_results):
-    # Convert statement to question
-    search_question = _statement_to_question(statement)
-
-    # Use QueryAgent to search
-    documents = query_agent.search_documents(
-        user_question=search_question,
-        max_results=max_results
-    )
-
-    return documents
-```
-
-### DocumentScoringAgent Integration
-
-Scores document relevance:
-
-```python
-def _score_documents(statement, documents, threshold):
-    scored_docs = []
-
-    for doc in documents:
-        score = scoring_agent.evaluate_document(
-            user_question=statement,
-            document=doc
+    # 4. Process statements
+    results = []
+    for item in statements:
+        result = self.check_statement(
+            statement=item.get('statement') or item.get('question', ''),
+            expected_answer=item.get('answer') or item.get('expected_answer')
         )
+        results.append(result)
 
-        if score and score >= threshold:
-            scored_docs.append((doc, score))
+        # Store incrementally in database
+        if self.db:
+            self._store_result_in_database(result, input_file)
 
-    # Sort by score descending
-    scored_docs.sort(key=lambda x: x[1], reverse=True)
+    # 5. Optional JSON export
+    if output_file:
+        self.db.export_to_json(output_file)
 
-    return scored_docs
+    return results
 ```
 
-### CitationFinderAgent Integration
-
-Extracts relevant passages:
+### Database Storage Workflow
 
 ```python
-def _extract_citations(statement, scored_documents):
-    # Limit to top documents
-    top_docs = scored_documents[:max_citations]
-
-    # Extract citations
-    citations = citation_agent.process_scored_documents_for_citations(
-        user_question=statement,
-        scored_documents=top_docs,
-        score_threshold=score_threshold
+def _store_result_in_database(result: FactCheckResult, source_file: str):
+    # 1. Insert or get statement
+    stmt = Statement(
+        statement_text=result.statement,
+        input_statement_id=result.input_statement_id,
+        expected_answer=result.expected_answer,
+        source_file=source_file
     )
+    statement_id = db.insert_statement(stmt)
 
-    return citations
+    # 2. Insert AI evaluation
+    ai_eval = AIEvaluation(
+        statement_id=statement_id,
+        evaluation=result.evaluation,
+        reason=result.reason,
+        confidence=result.confidence,
+        documents_reviewed=result.documents_reviewed,
+        supporting_citations=result.supporting_citations,
+        contradicting_citations=result.contradicting_citations,
+        neutral_citations=result.neutral_citations,
+        matches_expected=result.matches_expected,
+        model_used=self.model,
+        session_id=self.current_session_id,
+        version=1
+    )
+    eval_id = db.insert_ai_evaluation(ai_eval)
+
+    # 3. Insert evidence citations
+    for evidence_ref in result.evidence_list:
+        evidence = Evidence(
+            evaluation_id=eval_id,
+            citation_text=evidence_ref.citation_text,
+            document_id=evidence_ref.document_id,  # FK to public.document!
+            pmid=evidence_ref.pmid,
+            doi=evidence_ref.doi,
+            relevance_score=evidence_ref.relevance_score,
+            supports_statement="supports" if evidence_ref.supports_statement is True
+                              else "contradicts" if evidence_ref.supports_statement is False
+                              else "neutral"
+        )
+        db.insert_evidence(evidence)
 ```
 
 ## CLI Tool
@@ -347,29 +571,120 @@ def _extract_citations(statement, scored_documents):
 
 Command-line interface for batch processing.
 
-**Location**: `fact_checker_cli.py`
+**Location**: `src/bmlibrarian/factchecker/cli/app.py`
 
 **Key Functions**:
 
 ```python
-def load_input_file(file_path: str) -> List[Dict[str, str]]:
-    """Load statements from JSON file."""
+def main():
+    """Main entry point for fact checker CLI."""
+    parser = argparse.ArgumentParser(...)
 
-def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
-    """Create and configure agent from CLI args."""
+    # Parse arguments
+    args = parser.parse_args()
 
-def save_output_file(results: List[FactCheckResult], output_path: str):
-    """Save results to JSON file."""
+    # Create agent
+    agent = create_agent(args)
 
-def print_result_summary(results: List[FactCheckResult]):
-    """Print summary statistics to console."""
+    # Test connection
+    if not agent.test_connection():
+        print("Cannot connect to Ollama server")
+        return 1
+
+    # Process statements
+    results = agent.check_batch_from_file(
+        input_file=args.input_file,
+        output_file=args.output
+    )
+
+    # Print summary
+    print_result_summary(results)
+
+    if args.detailed:
+        print_detailed_results(results)
+
+    return 0
 ```
 
-**Usage**:
+**Command-Line Arguments**:
 
-```bash
-python fact_checker_cli.py input.json -o output.json [OPTIONS]
+- `input_file`: JSON file with statements (required)
+- `-o, --output`: JSON export file (optional, database always used)
+- `--incremental`: Skip already-evaluated statements
+- `--model`: Ollama model name
+- `--temperature`: Model temperature
+- `--score-threshold`: Min relevance score
+- `--max-search-results`: Max documents to search
+- `--max-citations`: Max citations to extract
+- `--quick`: Quick mode (fewer documents)
+- `-v, --verbose`: Verbose output
+- `--detailed`: Detailed results
+
+## GUI Tool
+
+### fact_checker_review_gui.py
+
+Graphical interface for human annotation.
+
+**Location**: `src/bmlibrarian/factchecker/gui/review_app.py`
+
+**Architecture**:
+
 ```
+FactCheckerReviewApp (main application)
+│
+├─► DataManager (database queries)
+│   ├─ Load statements from PostgreSQL
+│   ├─ Filter by annotator (incremental mode)
+│   └─ Fetch evidence with abstracts
+│
+├─► AnnotationManager (annotation logic)
+│   ├─ Save annotations to database
+│   ├─ Track review progress
+│   └─ Calculate review duration
+│
+├─► StatementDisplay (statement UI)
+│   ├─ Display statement and annotations
+│   ├─ Handle blind mode
+│   └─ Navigation controls
+│
+├─► CitationDisplay (citation cards)
+│   ├─ Expandable citation cards
+│   ├─ Abstract fetching from database
+│   └─ Citation highlighting
+│
+└─► Dialogs (login, export)
+    ├─ Login dialog with user profile
+    ├─ Export dialog
+    └─ Error notifications
+```
+
+**Key Classes**:
+
+```python
+class FactCheckerReviewApp:
+    """Main review GUI application."""
+
+    def __init__(self, incremental=False, default_username=None, blind_mode=False):
+        self.incremental = incremental
+        self.default_username = default_username
+        self.blind_mode = blind_mode
+        self.db = FactCheckerDB()
+        self.data_manager = DataManager(self.db)
+        self.annotation_manager = AnnotationManager(self.db)
+
+    def main(self, page: ft.Page):
+        """Main entry point for Flet app."""
+        # Initialize UI
+        # Load statements from database
+        # Display review interface
+```
+
+**Command-Line Arguments**:
+
+- `--user USERNAME`: Skip login dialog
+- `--incremental`: Show only unannotated statements
+- `--blind`: Hide AI and original annotations
 
 ## Testing
 
@@ -388,6 +703,8 @@ python fact_checker_cli.py input.json -o output.json [OPTIONS]
 - Confidence determination
 - Workflow integration (mocked sub-agents)
 - Batch processing
+- Incremental mode
+- Database operations
 - Error handling
 
 **Running Tests**:
@@ -400,7 +717,7 @@ uv run python -m pytest tests/test_fact_checker_agent.py -v
 uv run python -m pytest tests/test_*_agent.py -v
 
 # Run with coverage
-uv run python -m pytest tests/test_fact_checker_agent.py --cov=bmlibrarian.agents.fact_checker_agent
+uv run python -m pytest tests/test_fact_checker_agent.py --cov=bmlibrarian.factchecker
 ```
 
 ### Test Example
@@ -428,6 +745,22 @@ def test_check_statement_success(self):
         # Verify
         self.assertEqual(result.evaluation, "no")
         self.assertTrue(result.matches_expected)
+
+def test_incremental_mode(self):
+    """Test incremental mode skips evaluated statements."""
+    agent = FactCheckerAgent(
+        model="gpt-oss:20b",
+        incremental=True,
+        use_database=True
+    )
+
+    # Process first batch
+    results1 = agent.check_batch_from_file("statements.json")
+
+    # Process again (should skip all)
+    results2 = agent.check_batch_from_file("statements.json")
+
+    self.assertEqual(len(results2), 0)  # All skipped
 ```
 
 ## Configuration
@@ -450,6 +783,13 @@ DEFAULT_CONFIG = {
             "max_search_results": 50,
             "max_citations": 10
         }
+    },
+    "database": {
+        "host": "localhost",
+        "port": 5432,
+        "database": "knowledgebase",
+        "user": "your_username",
+        "password": "your_password"
     }
 }
 ```
@@ -481,7 +821,7 @@ Users can override defaults:
 ### Programmatic Usage
 
 ```python
-from bmlibrarian.agents import FactCheckerAgent
+from bmlibrarian.factchecker import FactCheckerAgent, FactCheckerDB
 from bmlibrarian.config import get_model, get_agent_config
 
 # Create agent
@@ -490,6 +830,8 @@ config = get_agent_config('fact_checker')
 
 agent = FactCheckerAgent(
     model=model,
+    use_database=True,
+    incremental=False,
     **config
 )
 
@@ -504,16 +846,14 @@ print(f"Confidence: {result.confidence}")
 print(f"Reason: {result.reason}")
 print(f"Evidence: {len(result.evidence_list)} citations")
 
-# Check batch
-statements = [
-    {"statement": "Statement 1", "answer": "yes"},
-    {"statement": "Statement 2", "answer": "no"}
-]
+# Check batch from file
+results = agent.check_batch_from_file(
+    input_file="statements.json"
+)
 
-results = agent.check_batch(statements, output_file="results.json")
-
-for result in results:
-    print(f"{result.statement}: {result.evaluation}")
+# Export to JSON
+db = FactCheckerDB()
+db.export_to_json("results.json", export_type="full", requested_by="developer")
 ```
 
 ### Custom Progress Callback
@@ -536,23 +876,51 @@ agent = FactCheckerAgent(
 # [COMPLETE] Fact-check complete: yes
 ```
 
-### Integration with Orchestrator
+### Database Queries
 
 ```python
-from bmlibrarian.agents import AgentOrchestrator
+db = FactCheckerDB()
 
-# Create orchestrator
-orchestrator = AgentOrchestrator(max_workers=4)
+# Get all statements with evaluations
+statements = db.get_all_statements_with_evaluations()
 
-# Create agent with orchestrator
-agent = FactCheckerAgent(
-    model=model,
-    orchestrator=orchestrator,
-    **config
+# Get statements needing evaluation
+to_evaluate = db.get_statements_needing_evaluation([
+    "Statement 1",
+    "Statement 2",
+    "Statement 3"
+])
+
+# Get inter-annotator agreement
+agreement = db.get_inter_annotator_agreement()
+print(f"Agreement: {agreement['agreement_percentage']:.1f}%")
+
+# Export to JSON
+db.export_to_json("results.json", export_type="human_annotated")
+```
+
+### Multi-User Annotation Workflow
+
+```python
+# Annotator 1
+app1 = FactCheckerReviewApp(
+    incremental=True,
+    default_username="alice",
+    blind_mode=True
 )
+ft.app(target=app1.main)
 
-# Sub-agents will use orchestrator for queue-based processing
-result = agent.check_statement(statement)
+# Annotator 2 (same statements)
+app2 = FactCheckerReviewApp(
+    incremental=True,
+    default_username="bob",
+    blind_mode=True
+)
+ft.app(target=app2.main)
+
+# Calculate agreement
+db = FactCheckerDB()
+agreement = db.get_inter_annotator_agreement()
 ```
 
 ## Extension Points
@@ -565,6 +933,7 @@ Override `_evaluate_statement` for custom evaluation logic:
 class CustomFactCheckerAgent(FactCheckerAgent):
     def _evaluate_statement(self, statement, citations, scored_docs, expected_answer):
         # Custom evaluation logic
+        # Consider publication dates, journal impact factors, etc.
         # ...
         return FactCheckResult(...)
 ```
@@ -582,67 +951,88 @@ class DomainFactCheckerAgent(FactCheckerAgent):
         return confidence
 ```
 
-### Custom Statement Preprocessing
+### Custom Database Queries
 
-Override `_statement_to_question` for specialized conversion:
+Extend `FactCheckerDB` for custom queries:
 
 ```python
-class SpecializedFactCheckerAgent(FactCheckerAgent):
-    def _statement_to_question(self, statement):
-        # Domain-specific statement processing
-        # Add medical terminology normalization
-        # Handle specialty-specific phrasing
-        # ...
-        return processed_question
+class ExtendedFactCheckerDB(FactCheckerDB):
+    def get_statements_by_model(self, model_name: str) -> List[Dict]:
+        """Get all statements evaluated by specific model."""
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT s.*, ae.*
+                    FROM factcheck.statements s
+                    JOIN factcheck.ai_evaluations ae ON s.statement_id = ae.statement_id
+                    WHERE ae.model_used = %s
+                """, (model_name,))
+                return [dict(row) for row in cur.fetchall()]
 ```
 
 ## Performance Optimization
 
+### Connection Pooling
+
+The system uses centralized DatabaseManager for connection pooling:
+
+```python
+from bmlibrarian.database import get_db_manager
+
+# Automatic connection pooling (min=2, max=10 connections)
+db_manager = get_db_manager()
+
+# Connections automatically reused
+with db_manager.get_connection() as conn:
+    # Use connection
+    pass
+# Connection returned to pool
+```
+
 ### Batch Processing
 
-For large datasets, use batch processing with progress tracking:
+For large datasets, process in chunks:
 
 ```python
 # Process in chunks
 chunk_size = 100
 for i in range(0, len(all_statements), chunk_size):
     chunk = all_statements[i:i+chunk_size]
-    results = agent.check_batch(chunk, output_file=f"results_chunk_{i}.json")
+    # Write chunk to temp file
+    with open(f"chunk_{i}.json", 'w') as f:
+        json.dump(chunk, f)
+
+    # Process chunk
+    results = agent.check_batch_from_file(f"chunk_{i}.json")
     print(f"Processed {i+chunk_size}/{len(all_statements)} statements")
 ```
 
-### Parallel Processing
+### Incremental Mode
 
-For independent statements, use multiprocessing:
+Use incremental mode for resume functionality:
 
 ```python
-from multiprocessing import Pool
-from functools import partial
+# Initial run
+agent = FactCheckerAgent(model="gpt-oss:20b", incremental=False)
+agent.check_batch_from_file("statements.json")
 
-def check_statement_wrapper(statement_dict, agent_config):
-    agent = FactCheckerAgent(**agent_config)
-    return agent.check_statement(
-        statement=statement_dict['statement'],
-        expected_answer=statement_dict.get('answer')
-    )
-
-# Create process pool
-with Pool(processes=4) as pool:
-    check_func = partial(check_statement_wrapper, agent_config=config)
-    results = pool.map(check_func, statements)
+# Later: add more statements to same file
+agent2 = FactCheckerAgent(model="gpt-oss:20b", incremental=True)
+agent2.check_batch_from_file("statements_updated.json")
+# Only processes NEW statements
 ```
 
-### Caching Results
+### Lazy Loading
 
-Cache intermediate results for repeated queries:
+GUI uses lazy loading for abstracts:
 
 ```python
-from functools import lru_cache
-
-class CachedFactCheckerAgent(FactCheckerAgent):
-    @lru_cache(maxsize=1000)
-    def _search_documents(self, statement, max_results):
-        return super()._search_documents(statement, max_results)
+# Abstracts fetched only when citations are expanded
+def on_citation_expand(evidence_id):
+    # Fetch abstract from database
+    evidence = db.get_evidence_with_abstract(evidence_id)
+    # Display in UI
+    display_abstract(evidence.abstract)
 ```
 
 ## Troubleshooting
@@ -663,15 +1053,23 @@ class CachedFactCheckerAgent(FactCheckerAgent):
 - Use faster model (medgemma4B_it_q8:latest)
 - Reduce max_search_results
 - Reduce max_citations
-- Enable result caching
+- Use incremental mode for resume
+- Enable connection pooling
 
-**Issue**: Low accuracy vs expected answers
+**Issue**: Database connection errors
 
 **Solution**:
-- Review mismatched results
-- Adjust score threshold
-- Verify expected answers are correct
-- Check evidence quality
+- Verify PostgreSQL is running
+- Check credentials in config
+- Ensure factcheck schema exists
+- Run database migrations if needed
+
+**Issue**: Incremental mode not working
+
+**Solution**:
+- Verify statements exist with AI evaluations
+- Check statement text matches exactly (whitespace sensitive)
+- Use verbose mode to see which statements are processed
 
 ### Debug Mode
 
@@ -681,7 +1079,7 @@ Enable verbose logging for debugging:
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger('bmlibrarian.agents')
+logger = logging.getLogger('bmlibrarian.factchecker')
 logger.setLevel(logging.DEBUG)
 
 # Now agent operations will log detailed information
@@ -696,10 +1094,11 @@ result = agent.check_statement(statement)
 2. **Temporal Analysis**: Track claim evolution over time
 3. **Domain Specialization**: Fine-tuned models for specific medical domains
 4. **Confidence Calibration**: Learn from validation data to improve confidence scores
-5. **External Database Integration**: Connect to PubMed, clinical trials databases
+5. **External Database Integration**: Connect to PubMed API, clinical trials databases
 6. **Citation Quality Scoring**: Assess publication quality, impact factors
 7. **Claim Decomposition**: Break complex statements into sub-claims
 8. **Interactive Refinement**: Allow human feedback to improve evaluations
+9. **Real-Time Updates**: Auto-update fact-checks as new literature is published
 
 ### API Considerations
 
@@ -709,21 +1108,31 @@ For future API integration:
 # RESTful API endpoint example
 @app.post("/api/fact-check")
 def fact_check_endpoint(statement: str, expected_answer: Optional[str] = None):
+    agent = get_cached_agent()
     result = agent.check_statement(statement, expected_answer)
     return result.to_dict()
 
 @app.post("/api/fact-check/batch")
 def fact_check_batch_endpoint(statements: List[Dict[str, str]]):
+    agent = get_cached_agent()
     results = agent.check_batch(statements)
     return {
         "results": [r.to_dict() for r in results],
         "summary": agent._generate_summary(results)
     }
+
+@app.get("/api/annotations/{username}")
+def get_user_annotations(username: str):
+    db = FactCheckerDB()
+    # Get all annotations by user
+    annotations = db.get_annotations_by_user(username)
+    return annotations
 ```
 
 ## Related Documentation
 
 - [User Guide](../users/fact_checker_guide.md)
+- [Review GUI Guide](../users/fact_checker_review_guide.md)
 - [Citation System](citation_system.md)
 - [Query Agent](../users/query_agent_guide.md)
 - [Agent Module Overview](agent_module.md)
@@ -735,3 +1144,4 @@ For technical questions or contributions:
 - GitHub Issues: https://github.com/hherb/bmlibrarian/issues
 - Developer Docs: `doc/developers/`
 - Test Examples: `tests/test_fact_checker_agent.py`
+- Database Schema: `src/bmlibrarian/factchecker/db/database.py`
