@@ -19,10 +19,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Check statements in input file (creates input.db)
+  # Check statements in input file (stores in PostgreSQL factcheck schema)
   python fact_checker_cli.py input.json
 
-  # Incremental mode: only process new/unevaluated statements
+  # Incremental mode: resume processing, skip already-evaluated statements
   python fact_checker_cli.py input.json --incremental
 
   # Use custom thresholds
@@ -34,11 +34,8 @@ Examples:
   # Quick test mode (fewer documents)
   python fact_checker_cli.py input.json --quick
 
-  # Export database to JSON
-  python fact_checker_cli.py input.json --export-json -o results.json
-
-  # Legacy JSON-only mode (no database)
-  python fact_checker_cli.py input.json -o results.json --json-only
+  # Export PostgreSQL results to JSON file
+  python fact_checker_cli.py input.json -o results.json
 
 Input file format:
   [
@@ -57,31 +54,13 @@ Input file format:
     parser.add_argument(
         '-o', '--output',
         type=str,
-        help='Output file (optional JSON export from database)'
-    )
-
-    parser.add_argument(
-        '--db-path',
-        type=str,
-        help='SQLite database path (default: auto-generated from input filename)'
-    )
-
-    parser.add_argument(
-        '--json-only',
-        action='store_true',
-        help='Use legacy JSON-only mode (no database)'
+        help='Output file for JSON export (database is always used)'
     )
 
     parser.add_argument(
         '--incremental',
         action='store_true',
-        help='Incremental mode: skip statements that already have AI evaluations'
-    )
-
-    parser.add_argument(
-        '--export-json',
-        action='store_true',
-        help='Export database to JSON after processing'
+        help='Incremental mode: skip statements that already have AI evaluations (resume functionality)'
     )
 
     # Agent configuration
@@ -169,24 +148,16 @@ Input file format:
 
         results = agent.check_batch_from_file(
             input_file=args.input_file,
-            output_file=args.output if args.json_only else None
+            output_file=args.output
         )
 
         # Print results information
         print("=" * 80)
-        if agent.use_database and agent.db_path:
-            print(f"\n✓ Results stored in database: {agent.db_path}")
-            print(f"  Total statements processed: {len(results)}")
+        print(f"\n✓ Results stored in PostgreSQL (factcheck schema)")
+        print(f"  Total statements processed: {len(results)}")
 
-            # Export to JSON if requested
-            if args.export_json or args.output:
-                output_file = args.output or str(Path(args.input_file).parent / f"{Path(args.input_file).stem}_results.json")
-                print(f"\nExporting results to JSON...")
-                export_path = agent.export_database_to_json(output_file, export_type="full")
-                if export_path:
-                    print(f"✓ JSON export saved to: {export_path}")
-        else:
-            print(f"\n✓ Results saved to: {args.output}")
+        if args.output:
+            print(f"✓ JSON export saved to: {args.output}")
 
         # Print summary
         print_result_summary(results)

@@ -29,10 +29,9 @@ class FactCheckDataManager:
         self.input_file_path: str = ""
         self.incremental: bool = incremental
 
-        # Database mode
-        self.using_database: bool = False
+        # Database mode (always use PostgreSQL now)
+        self.using_database: bool = True
         self.fact_checker_db: Optional[FactCheckerDB] = None
-        self.db_path: Optional[str] = None
 
         # Annotator information
         self.annotator_id: Optional[int] = None
@@ -49,22 +48,20 @@ class FactCheckDataManager:
         self.annotator_info = annotator_info
         self.annotator_username = annotator_info.get('username')
 
-        # Register annotator in database if using database mode
-        if self.using_database and self.fact_checker_db:
+        # Register annotator in database
+        if self.fact_checker_db:
             annotator = Annotator(**annotator_info)
             self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
             print(f"✓ Annotator registered: {self.annotator_username} (ID: {self.annotator_id})")
 
-    def load_from_database(self, db_path: str, skip_incremental_filter: bool = False):
+    def load_from_database(self, skip_incremental_filter: bool = False):
         """
-        Load results from SQLite database.
+        Load results from PostgreSQL database.
 
         Args:
-            db_path: Path to SQLite database file
             skip_incremental_filter: If True, don't apply incremental filtering even if incremental mode is on
         """
-        self.fact_checker_db = FactCheckerDB(db_path)
-        self.db_path = db_path
+        self.fact_checker_db = FactCheckerDB()
         self.using_database = True
 
         # Register annotator if info is available
@@ -141,91 +138,43 @@ class FactCheckDataManager:
 
         self.input_file_path = db_path
 
-    def load_from_json(self, json_path: str, auto_create_db: bool = True):
+    def load_from_json(self, json_path: str):
         """
-        Load results from JSON file, optionally creating/updating a database.
-
-        When auto_create_db is True (default for GUI):
-        1. Check if corresponding .db file exists (same name as JSON)
-        2. If .db exists: Load from DB and import new statements from JSON
-        3. If .db doesn't exist: Create new DB and import all JSON data
-        4. Always use database mode after this process
+        Load results from JSON file and import into PostgreSQL database.
 
         Args:
             json_path: Path to JSON file
-            auto_create_db: If True, automatically create/update database (default: True)
         """
         json_file = Path(json_path)
-        db_path = json_file.parent / f"{json_file.stem}.db"
 
-        if auto_create_db:
-            # Determine if database already exists
-            db_exists = db_path.exists()
+        print(f"ℹ️  Importing JSON data into PostgreSQL database...")
 
-            if db_exists:
-                print(f"ℹ️  Found existing database: {db_path.name}")
-                print(f"ℹ️  Importing new statements from JSON into database...")
-            else:
-                print(f"ℹ️  Creating new database: {db_path.name}")
+        # Create/connect to database
+        self.fact_checker_db = FactCheckerDB()
+        self.using_database = True
 
-            # Create/open database
-            self.fact_checker_db = FactCheckerDB(str(db_path))
-            self.db_path = str(db_path)
-            self.using_database = True
+        # Import JSON data (intelligently merges with existing data)
+        import_stats = self.fact_checker_db.import_json_results(
+            json_file=str(json_path),
+            skip_existing=True  # Don't overwrite existing evaluations/annotations
+        )
 
-            # Import JSON data (intelligently merges with existing data)
-            import_stats = self.fact_checker_db.import_json_results(
-                json_file=str(json_path),
-                skip_existing=True  # Don't overwrite existing evaluations/annotations
-            )
+        # Report import statistics
+        print(f"✓ JSON import complete:")
+        print(f"  - New statements added: {import_stats['new_statements']}")
+        print(f"  - Existing statements skipped: {import_stats['skipped_existing']}")
+        print(f"  - Total in JSON file: {import_stats['total_in_file']}")
+        if import_stats['errors'] > 0:
+            print(f"  - Errors: {import_stats['errors']}")
 
-            # Report import statistics
-            if db_exists:
-                print(f"✓ JSON import complete:")
-                print(f"  - New statements added: {import_stats['new_statements']}")
-                print(f"  - Existing statements skipped: {import_stats['skipped_existing']}")
-                print(f"  - Total in JSON file: {import_stats['total_in_file']}")
-                if import_stats['errors'] > 0:
-                    print(f"  - Errors: {import_stats['errors']}")
-            else:
-                print(f"✓ Database created with {import_stats['new_statements']} statements")
+        # Now load from the database (which has all the data)
+        # IMPORTANT: Skip incremental filtering when loading from JSON import
+        # The user wants to see ALL statements (including ones they already annotated)
+        # to verify the import worked correctly
+        self.load_from_database(skip_incremental_filter=True)
 
-            # Now load from the database (which has all the data)
-            # IMPORTANT: Skip incremental filtering when loading from JSON import
-            # The user wants to see ALL statements (including ones they already annotated)
-            # to verify the import worked correctly
-            self.load_from_database(str(db_path), skip_incremental_filter=True)
-
-            if self.incremental:
-                print(f"ℹ️  Incremental mode: Showing ALL {len(self.results)} statements from JSON import (incremental filtering disabled for imports)")
-
-        else:
-            # Legacy JSON-only mode (no database)
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Extract results array
-            if isinstance(data, dict) and 'results' in data:
-                self.results = data['results']
-            elif isinstance(data, list):
-                self.results = data
-            else:
-                raise ValueError("Invalid JSON format: expected 'results' array or direct array")
-
-            if not self.results:
-                raise ValueError("No results found in file")
-
-            # Filter for incremental mode (only show statements without AI evaluations)
-            if self.incremental:
-                self.results = [r for r in self.results if not r.get('evaluation')]
-                if not self.results:
-                    raise ValueError("No unevaluated statements found in JSON file (all statements have AI evaluations)")
-                print(f"ℹ️  Incremental mode: Showing {len(self.results)} unevaluated statements")
-
-            # Initialize reviews list
-            self.reviews = [{}] * len(self.results)
-            self.using_database = False
-            self.input_file_path = json_path
+        if self.incremental:
+            print(f"ℹ️  Incremental mode: Showing ALL {len(self.results)} statements from JSON import (incremental filtering disabled for imports)")
 
     def save_annotation(self, index: int, annotation: str, explanation: str = ""):
         """

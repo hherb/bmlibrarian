@@ -1,21 +1,23 @@
 """
-Database manager for Fact Checker using SQLite.
+Database manager for Fact Checker using PostgreSQL.
 
-Provides database schema creation and CRUD operations for storing:
+Provides database operations for storing:
 - Biomedical statements for fact-checking
 - AI-generated evaluations with evidence
 - Human annotations from multiple reviewers
 - Processing metadata and export history
+
+Uses the centralized DatabaseManager and factcheck schema (no data duplication).
 """
 
-import sqlite3
 import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
-from contextlib import contextmanager
 from dataclasses import dataclass, asdict
+
+from bmlibrarian.database import get_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ SCHEMA_VERSION = 1
 @dataclass
 class Statement:
     """Represents a biomedical statement to be fact-checked."""
-    id: Optional[int] = None
+    statement_id: Optional[int] = None
     statement_text: str = ""
     input_statement_id: Optional[str] = None
     expected_answer: Optional[str] = None
@@ -39,7 +41,7 @@ class Statement:
 @dataclass
 class Annotator:
     """Represents a human annotator."""
-    id: Optional[int] = None
+    annotator_id: Optional[int] = None
     username: str = ""
     full_name: Optional[str] = None
     email: Optional[str] = None
@@ -51,7 +53,7 @@ class Annotator:
 @dataclass
 class AIEvaluation:
     """Represents an AI-generated fact-check evaluation."""
-    id: Optional[int] = None
+    evaluation_id: Optional[int] = None
     statement_id: int = 0
     evaluation: str = ""
     reason: str = ""
@@ -64,7 +66,7 @@ class AIEvaluation:
     evaluated_at: Optional[str] = None
     model_used: Optional[str] = None
     model_version: Optional[str] = None
-    agent_config: Optional[str] = None
+    agent_config: Optional[str] = None  # Will be converted to JSONB
     session_id: Optional[str] = None
     version: int = 1
 
@@ -72,21 +74,21 @@ class AIEvaluation:
 @dataclass
 class Evidence:
     """Represents a literature citation supporting an evaluation."""
-    id: Optional[int] = None
-    ai_evaluation_id: int = 0
+    evidence_id: Optional[int] = None
+    evaluation_id: int = 0
     citation_text: str = ""
+    document_id: int = 0  # FK to public.document(id) - NO DUPLICATION!
     pmid: Optional[str] = None
     doi: Optional[str] = None
-    document_id: Optional[str] = None
     relevance_score: Optional[float] = None
-    supports_statement: Optional[str] = None
+    supports_statement: Optional[str] = None  # 'supports', 'contradicts', 'neutral'
     created_at: Optional[str] = None
 
 
 @dataclass
 class HumanAnnotation:
     """Represents a human reviewer's annotation."""
-    id: Optional[int] = None
+    annotation_id: Optional[int] = None
     statement_id: int = 0
     annotator_id: int = 0
     annotation: str = ""
@@ -99,169 +101,20 @@ class HumanAnnotation:
 
 class FactCheckerDB:
     """
-    Database manager for fact-checker SQLite database.
+    Database manager for fact-checker PostgreSQL operations.
 
-    Handles schema creation, CRUD operations, and queries for
-    fact-checking workflow with AI evaluations and human annotations.
+    Handles CRUD operations using the centralized DatabaseManager
+    and factcheck schema with NO data duplication.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self):
         """
         Initialize the database manager.
 
-        Args:
-            db_path: Path to SQLite database file
+        Uses the centralized DatabaseManager for connection pooling.
         """
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize_database()
-
-    @contextmanager
-    def get_connection(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row  # Enable column access by name
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Database error: {e}")
-            raise
-        finally:
-            conn.close()
-
-    def _initialize_database(self):
-        """Create database schema if it doesn't exist."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Create statements table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS statements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    statement_text TEXT NOT NULL,
-                    input_statement_id TEXT,
-                    expected_answer TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    source_file TEXT,
-                    review_status TEXT DEFAULT 'pending',
-                    UNIQUE(statement_text)
-                )
-            """)
-
-            # Create annotators table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS annotators (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    full_name TEXT,
-                    email TEXT,
-                    expertise_level TEXT,
-                    institution TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            # Create ai_evaluations table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ai_evaluations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    statement_id INTEGER NOT NULL,
-                    evaluation TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    confidence TEXT,
-                    documents_reviewed INTEGER,
-                    supporting_citations INTEGER,
-                    contradicting_citations INTEGER,
-                    neutral_citations INTEGER,
-                    matches_expected BOOLEAN,
-                    evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    model_used TEXT,
-                    model_version TEXT,
-                    agent_config TEXT,
-                    session_id TEXT,
-                    version INTEGER DEFAULT 1,
-                    FOREIGN KEY (statement_id) REFERENCES statements(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Create evidence table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS evidence (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ai_evaluation_id INTEGER NOT NULL,
-                    citation_text TEXT NOT NULL,
-                    pmid TEXT,
-                    doi TEXT,
-                    document_id TEXT,
-                    relevance_score REAL,
-                    supports_statement TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ai_evaluation_id) REFERENCES ai_evaluations(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Create human_annotations table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS human_annotations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    statement_id INTEGER NOT NULL,
-                    annotator_id INTEGER NOT NULL,
-                    annotation TEXT NOT NULL,
-                    explanation TEXT,
-                    confidence TEXT,
-                    review_duration_seconds INTEGER,
-                    review_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    session_id TEXT,
-                    FOREIGN KEY (statement_id) REFERENCES statements(id) ON DELETE CASCADE,
-                    FOREIGN KEY (annotator_id) REFERENCES annotators(id) ON DELETE CASCADE,
-                    UNIQUE(statement_id, annotator_id)
-                )
-            """)
-
-            # Create processing_metadata table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS processing_metadata (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT UNIQUE NOT NULL,
-                    input_file TEXT NOT NULL,
-                    output_file TEXT,
-                    total_statements INTEGER,
-                    processed_statements INTEGER,
-                    start_time TIMESTAMP,
-                    end_time TIMESTAMP,
-                    status TEXT,
-                    error_message TEXT,
-                    config_snapshot TEXT
-                )
-            """)
-
-            # Create export_history table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS export_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    export_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    export_type TEXT,
-                    output_file TEXT,
-                    statement_count INTEGER,
-                    requested_by TEXT,
-                    filters_applied TEXT
-                )
-            """)
-
-            # Create indexes
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_statements_input_id ON statements(input_statement_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_statements_review_status ON statements(review_status)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_eval_statement ON ai_evaluations(statement_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_eval_session ON ai_evaluations(session_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_eval_version ON ai_evaluations(statement_id, version)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_evidence_ai_eval ON evidence(ai_evaluation_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_human_annotation_statement ON human_annotations(statement_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_human_annotation_annotator ON human_annotations(annotator_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_annotators_username ON annotators(username)")
-
-            logger.info(f"Database initialized: {self.db_path}")
+        self.db_manager = get_db_manager()
+        logger.info("FactCheckerDB initialized with centralized DatabaseManager")
 
     # ========== Statement Operations ==========
 
@@ -275,33 +128,48 @@ class FactCheckerDB:
         Returns:
             Statement ID
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO statements (statement_text, input_statement_id, expected_answer, source_file, review_status)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (statement.statement_text, statement.input_statement_id, statement.expected_answer,
-                      statement.source_file, statement.review_status))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Statement already exists, return its ID
-                cursor.execute("SELECT id FROM statements WHERE statement_text = ?", (statement.statement_text,))
-                return cursor.fetchone()[0]
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Use helper function for upsert
+                cur.execute("""
+                    SELECT factcheck.get_or_create_statement(%s, %s, %s, %s)
+                """, (statement.statement_text, statement.input_statement_id,
+                      statement.expected_answer, statement.source_file))
+                statement_id = cur.fetchone()[0]
+                return statement_id
 
     def get_statement(self, statement_id: int) -> Optional[Statement]:
         """Get a statement by ID."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM statements WHERE id = ?", (statement_id,))
-            row = cursor.fetchone()
-            return Statement(**dict(row)) if row else None
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT statement_id, statement_text, input_statement_id, expected_answer,
+                           created_at, source_file, review_status
+                    FROM factcheck.statements
+                    WHERE statement_id = %s
+                """, (statement_id,))
+                row = cur.fetchone()
+                if row:
+                    return Statement(
+                        statement_id=row[0],
+                        statement_text=row[1],
+                        input_statement_id=row[2],
+                        expected_answer=row[3],
+                        created_at=row[4].isoformat() if row[4] else None,
+                        source_file=row[5],
+                        review_status=row[6]
+                    )
+                return None
 
     def update_statement_review_status(self, statement_id: int, status: str):
         """Update the review status of a statement."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE statements SET review_status = ? WHERE id = ?", (status, statement_id))
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE factcheck.statements
+                    SET review_status = %s
+                    WHERE statement_id = %s
+                """, (status, statement_id))
 
     # ========== Annotator Operations ==========
 
@@ -315,27 +183,45 @@ class FactCheckerDB:
         Returns:
             Annotator ID
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO annotators (username, full_name, email, expertise_level, institution)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (annotator.username, annotator.full_name, annotator.email,
-                      annotator.expertise_level, annotator.institution))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Annotator exists, return ID
-                cursor.execute("SELECT id FROM annotators WHERE username = ?", (annotator.username,))
-                return cursor.fetchone()[0]
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Try insert
+                try:
+                    cur.execute("""
+                        INSERT INTO factcheck.annotators (username, full_name, email, expertise_level, institution)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING annotator_id
+                    """, (annotator.username, annotator.full_name, annotator.email,
+                          annotator.expertise_level, annotator.institution))
+                    return cur.fetchone()[0]
+                except Exception:
+                    # Already exists, fetch ID
+                    cur.execute("""
+                        SELECT annotator_id FROM factcheck.annotators WHERE username = %s
+                    """, (annotator.username,))
+                    return cur.fetchone()[0]
 
     def get_annotator(self, username: str) -> Optional[Annotator]:
         """Get an annotator by username."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM annotators WHERE username = ?", (username,))
-            row = cursor.fetchone()
-            return Annotator(**dict(row)) if row else None
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT annotator_id, username, full_name, email, expertise_level, institution, created_at
+                    FROM factcheck.annotators
+                    WHERE username = %s
+                """, (username,))
+                row = cur.fetchone()
+                if row:
+                    return Annotator(
+                        annotator_id=row[0],
+                        username=row[1],
+                        full_name=row[2],
+                        email=row[3],
+                        expertise_level=row[4],
+                        institution=row[5],
+                        created_at=row[6].isoformat() if row[6] else None
+                    )
+                return None
 
     # ========== AI Evaluation Operations ==========
 
@@ -349,65 +235,139 @@ class FactCheckerDB:
         Returns:
             Evaluation ID
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO ai_evaluations (
-                    statement_id, evaluation, reason, confidence, documents_reviewed,
-                    supporting_citations, contradicting_citations, neutral_citations,
-                    matches_expected, model_used, model_version, agent_config, session_id, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (evaluation.statement_id, evaluation.evaluation, evaluation.reason, evaluation.confidence,
-                  evaluation.documents_reviewed, evaluation.supporting_citations, evaluation.contradicting_citations,
-                  evaluation.neutral_citations, evaluation.matches_expected, evaluation.model_used,
-                  evaluation.model_version, evaluation.agent_config, evaluation.session_id, evaluation.version))
-            return cursor.lastrowid
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Convert agent_config to JSONB if it's a string
+                agent_config_jsonb = None
+                if evaluation.agent_config:
+                    if isinstance(evaluation.agent_config, str):
+                        agent_config_jsonb = json.loads(evaluation.agent_config)
+                    else:
+                        agent_config_jsonb = evaluation.agent_config
+
+                cur.execute("""
+                    INSERT INTO factcheck.ai_evaluations (
+                        statement_id, evaluation, reason, confidence, documents_reviewed,
+                        supporting_citations, contradicting_citations, neutral_citations,
+                        matches_expected, model_used, model_version, agent_config, session_id, version
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING evaluation_id
+                """, (evaluation.statement_id, evaluation.evaluation, evaluation.reason, evaluation.confidence,
+                      evaluation.documents_reviewed, evaluation.supporting_citations, evaluation.contradicting_citations,
+                      evaluation.neutral_citations, evaluation.matches_expected, evaluation.model_used,
+                      evaluation.model_version, json.dumps(agent_config_jsonb) if agent_config_jsonb else None,
+                      evaluation.session_id, evaluation.version))
+                return cur.fetchone()[0]
 
     def get_latest_ai_evaluation(self, statement_id: int) -> Optional[AIEvaluation]:
         """Get the latest AI evaluation for a statement."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ai_evaluations
-                WHERE statement_id = ?
-                ORDER BY version DESC, evaluated_at DESC
-                LIMIT 1
-            """, (statement_id,))
-            row = cursor.fetchone()
-            return AIEvaluation(**dict(row)) if row else None
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT evaluation_id, statement_id, evaluation, reason, confidence,
+                           documents_reviewed, supporting_citations, contradicting_citations, neutral_citations,
+                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version
+                    FROM factcheck.ai_evaluations
+                    WHERE statement_id = %s
+                    ORDER BY version DESC, evaluated_at DESC
+                    LIMIT 1
+                """, (statement_id,))
+                row = cur.fetchone()
+                if row:
+                    return AIEvaluation(
+                        evaluation_id=row[0],
+                        statement_id=row[1],
+                        evaluation=row[2],
+                        reason=row[3],
+                        confidence=row[4],
+                        documents_reviewed=row[5],
+                        supporting_citations=row[6],
+                        contradicting_citations=row[7],
+                        neutral_citations=row[8],
+                        matches_expected=row[9],
+                        evaluated_at=row[10].isoformat() if row[10] else None,
+                        model_used=row[11],
+                        model_version=row[12],
+                        agent_config=row[13],  # Already JSONB
+                        session_id=row[14],
+                        version=row[15]
+                    )
+                return None
 
     def get_all_ai_evaluations(self, statement_id: int) -> List[AIEvaluation]:
         """Get all AI evaluations for a statement (all versions)."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ai_evaluations
-                WHERE statement_id = ?
-                ORDER BY version DESC, evaluated_at DESC
-            """, (statement_id,))
-            return [AIEvaluation(**dict(row)) for row in cursor.fetchall()]
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT evaluation_id, statement_id, evaluation, reason, confidence,
+                           documents_reviewed, supporting_citations, contradicting_citations, neutral_citations,
+                           matches_expected, evaluated_at, model_used, model_version, agent_config, session_id, version
+                    FROM factcheck.ai_evaluations
+                    WHERE statement_id = %s
+                    ORDER BY version DESC, evaluated_at DESC
+                """, (statement_id,))
+                results = []
+                for row in cur.fetchall():
+                    results.append(AIEvaluation(
+                        evaluation_id=row[0],
+                        statement_id=row[1],
+                        evaluation=row[2],
+                        reason=row[3],
+                        confidence=row[4],
+                        documents_reviewed=row[5],
+                        supporting_citations=row[6],
+                        contradicting_citations=row[7],
+                        neutral_citations=row[8],
+                        matches_expected=row[9],
+                        evaluated_at=row[10].isoformat() if row[10] else None,
+                        model_used=row[11],
+                        model_version=row[12],
+                        agent_config=row[13],
+                        session_id=row[14],
+                        version=row[15]
+                    ))
+                return results
 
     # ========== Evidence Operations ==========
 
     def insert_evidence(self, evidence: Evidence) -> int:
         """Insert a new evidence citation."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO evidence (
-                    ai_evaluation_id, citation_text, pmid, doi, document_id,
-                    relevance_score, supports_statement
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (evidence.ai_evaluation_id, evidence.citation_text, evidence.pmid, evidence.doi,
-                  evidence.document_id, evidence.relevance_score, evidence.supports_statement))
-            return cursor.lastrowid
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO factcheck.evidence (
+                        evaluation_id, citation_text, document_id, pmid, doi,
+                        relevance_score, supports_statement
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING evidence_id
+                """, (evidence.evaluation_id, evidence.citation_text, evidence.document_id,
+                      evidence.pmid, evidence.doi, evidence.relevance_score, evidence.supports_statement))
+                return cur.fetchone()[0]
 
     def get_evidence_for_evaluation(self, evaluation_id: int) -> List[Evidence]:
         """Get all evidence citations for an AI evaluation."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM evidence WHERE ai_evaluation_id = ?", (evaluation_id,))
-            return [Evidence(**dict(row)) for row in cursor.fetchall()]
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT evidence_id, evaluation_id, citation_text, document_id, pmid, doi,
+                           relevance_score, supports_statement, created_at
+                    FROM factcheck.evidence
+                    WHERE evaluation_id = %s
+                """, (evaluation_id,))
+                results = []
+                for row in cur.fetchall():
+                    results.append(Evidence(
+                        evidence_id=row[0],
+                        evaluation_id=row[1],
+                        citation_text=row[2],
+                        document_id=row[3],
+                        pmid=row[4],
+                        doi=row[5],
+                        relevance_score=row[6],
+                        supports_statement=row[7],
+                        created_at=row[8].isoformat() if row[8] else None
+                    ))
+                return results
 
     # ========== Human Annotation Operations ==========
 
@@ -421,62 +381,94 @@ class FactCheckerDB:
         Returns:
             Annotation ID
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO human_annotations (
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Upsert using ON CONFLICT
+                cur.execute("""
+                    INSERT INTO factcheck.human_annotations (
                         statement_id, annotator_id, annotation, explanation, confidence,
                         review_duration_seconds, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (statement_id, annotator_id)
+                    DO UPDATE SET
+                        annotation = EXCLUDED.annotation,
+                        explanation = EXCLUDED.explanation,
+                        confidence = EXCLUDED.confidence,
+                        review_duration_seconds = EXCLUDED.review_duration_seconds,
+                        review_date = NOW(),
+                        session_id = EXCLUDED.session_id
+                    RETURNING annotation_id
                 """, (annotation.statement_id, annotation.annotator_id, annotation.annotation,
                       annotation.explanation, annotation.confidence, annotation.review_duration_seconds,
                       annotation.session_id))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Update existing annotation
-                cursor.execute("""
-                    UPDATE human_annotations
-                    SET annotation = ?, explanation = ?, confidence = ?,
-                        review_duration_seconds = ?, review_date = CURRENT_TIMESTAMP, session_id = ?
-                    WHERE statement_id = ? AND annotator_id = ?
-                """, (annotation.annotation, annotation.explanation, annotation.confidence,
-                      annotation.review_duration_seconds, annotation.session_id,
-                      annotation.statement_id, annotation.annotator_id))
-                cursor.execute("""
-                    SELECT id FROM human_annotations
-                    WHERE statement_id = ? AND annotator_id = ?
-                """, (annotation.statement_id, annotation.annotator_id))
-                return cursor.fetchone()[0]
+                return cur.fetchone()[0]
 
     def get_human_annotations(self, statement_id: int) -> List[HumanAnnotation]:
         """Get all human annotations for a statement."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM human_annotations WHERE statement_id = ?", (statement_id,))
-            return [HumanAnnotation(**dict(row)) for row in cursor.fetchall()]
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT annotation_id, statement_id, annotator_id, annotation, explanation,
+                           confidence, review_duration_seconds, review_date, session_id
+                    FROM factcheck.human_annotations
+                    WHERE statement_id = %s
+                """, (statement_id,))
+                results = []
+                for row in cur.fetchall():
+                    results.append(HumanAnnotation(
+                        annotation_id=row[0],
+                        statement_id=row[1],
+                        annotator_id=row[2],
+                        annotation=row[3],
+                        explanation=row[4],
+                        confidence=row[5],
+                        review_duration_seconds=row[6],
+                        review_date=row[7].isoformat() if row[7] else None,
+                        session_id=row[8]
+                    ))
+                return results
 
     # ========== Processing Metadata Operations ==========
 
     def insert_processing_session(self, session_data: Dict[str, Any]) -> int:
         """Insert a new processing session."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO processing_metadata (
-                    session_id, input_file, total_statements, start_time, status, config_snapshot
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """, (session_data['session_id'], session_data['input_file'], session_data['total_statements'],
-                  session_data['start_time'], session_data['status'], session_data.get('config_snapshot')))
-            return cursor.lastrowid
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Convert config_snapshot to JSONB
+                config_jsonb = None
+                if session_data.get('config_snapshot'):
+                    if isinstance(session_data['config_snapshot'], str):
+                        config_jsonb = json.loads(session_data['config_snapshot'])
+                    else:
+                        config_jsonb = session_data['config_snapshot']
+
+                cur.execute("""
+                    INSERT INTO factcheck.processing_metadata (
+                        session_id, input_file, total_statements, start_time, status, config_snapshot
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING metadata_id
+                """, (session_data['session_id'], session_data['input_file'], session_data['total_statements'],
+                      session_data['start_time'], session_data['status'], json.dumps(config_jsonb) if config_jsonb else None))
+                return cur.fetchone()[0]
 
     def update_processing_session(self, session_id: str, updates: Dict[str, Any]):
         """Update a processing session."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-            values = list(updates.values()) + [session_id]
-            cursor.execute(f"UPDATE processing_metadata SET {set_clause} WHERE session_id = ?", values)
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Build dynamic UPDATE query
+                set_clauses = []
+                values = []
+                for key, value in updates.items():
+                    set_clauses.append(f"{key} = %s")
+                    values.append(value)
+                values.append(session_id)
+
+                query = f"""
+                    UPDATE factcheck.processing_metadata
+                    SET {', '.join(set_clauses)}
+                    WHERE session_id = %s
+                """
+                cur.execute(query, values)
 
     # ========== Query Operations ==========
 
@@ -487,49 +479,73 @@ class FactCheckerDB:
         Returns:
             List of dictionaries containing statement, evaluation, and evidence data
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    s.*,
-                    ae.id as eval_id,
-                    ae.evaluation,
-                    ae.reason,
-                    ae.confidence,
-                    ae.documents_reviewed,
-                    ae.supporting_citations,
-                    ae.contradicting_citations,
-                    ae.neutral_citations,
-                    ae.matches_expected,
-                    ae.model_used
-                FROM statements s
-                LEFT JOIN ai_evaluations ae ON s.id = ae.statement_id
-                LEFT JOIN (
-                    SELECT statement_id, MAX(version) as max_version
-                    FROM ai_evaluations
-                    GROUP BY statement_id
-                ) latest ON ae.statement_id = latest.statement_id AND ae.version = latest.max_version
-                ORDER BY s.id
-            """)
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        s.statement_id as id,
+                        s.statement_text,
+                        s.input_statement_id,
+                        s.expected_answer,
+                        s.created_at,
+                        s.source_file,
+                        s.review_status,
+                        ae.evaluation_id as eval_id,
+                        ae.evaluation,
+                        ae.reason,
+                        ae.confidence,
+                        ae.documents_reviewed,
+                        ae.supporting_citations,
+                        ae.contradicting_citations,
+                        ae.neutral_citations,
+                        ae.matches_expected,
+                        ae.model_used
+                    FROM factcheck.statements s
+                    LEFT JOIN factcheck.ai_evaluations ae ON s.statement_id = ae.statement_id
+                    LEFT JOIN (
+                        SELECT statement_id, MAX(version) as max_version
+                        FROM factcheck.ai_evaluations
+                        GROUP BY statement_id
+                    ) latest ON ae.statement_id = latest.statement_id AND ae.version = latest.max_version
+                    ORDER BY s.statement_id
+                """)
 
-            results = []
-            for row in cursor.fetchall():
-                row_dict = dict(row)
+                results = []
+                for row in cur.fetchall():
+                    row_dict = {
+                        'id': row[0],
+                        'statement_text': row[1],
+                        'input_statement_id': row[2],
+                        'expected_answer': row[3],
+                        'created_at': row[4].isoformat() if row[4] else None,
+                        'source_file': row[5],
+                        'review_status': row[6],
+                        'eval_id': row[7],
+                        'evaluation': row[8],
+                        'reason': row[9],
+                        'confidence': row[10],
+                        'documents_reviewed': row[11],
+                        'supporting_citations': row[12],
+                        'contradicting_citations': row[13],
+                        'neutral_citations': row[14],
+                        'matches_expected': row[15],
+                        'model_used': row[16]
+                    }
 
-                # Get evidence if evaluation exists
-                if row_dict['eval_id']:
-                    evidence = self.get_evidence_for_evaluation(row_dict['eval_id'])
-                    row_dict['evidence'] = [asdict(e) for e in evidence]
-                else:
-                    row_dict['evidence'] = []
+                    # Get evidence if evaluation exists
+                    if row_dict['eval_id']:
+                        evidence = self.get_evidence_for_evaluation(row_dict['eval_id'])
+                        row_dict['evidence'] = [asdict(e) for e in evidence]
+                    else:
+                        row_dict['evidence'] = []
 
-                # Get human annotations
-                annotations = self.get_human_annotations(row_dict['id'])
-                row_dict['human_annotations'] = [asdict(a) for a in annotations]
+                    # Get human annotations
+                    annotations = self.get_human_annotations(row_dict['id'])
+                    row_dict['human_annotations'] = [asdict(a) for a in annotations]
 
-                results.append(row_dict)
+                    results.append(row_dict)
 
-            return results
+                return results
 
     def get_statements_needing_evaluation(self, statement_texts: List[str]) -> List[str]:
         """
@@ -544,35 +560,13 @@ class FactCheckerDB:
         if not statement_texts:
             return []
 
-        needing_evaluation = []
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            for text in statement_texts:
-                # Check if statement exists
-                cursor.execute(
-                    "SELECT id FROM statements WHERE statement_text = ?",
-                    (text,)
-                )
-                stmt_row = cursor.fetchone()
-
-                if stmt_row:
-                    statement_id = stmt_row[0]
-                    # Check if it has AI evaluation
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM ai_evaluations WHERE statement_id = ?",
-                        (statement_id,)
-                    )
-                    has_evaluation = cursor.fetchone()[0] > 0
-
-                    if not has_evaluation:
-                        needing_evaluation.append(text)
-                else:
-                    # Statement doesn't exist, needs evaluation
-                    needing_evaluation.append(text)
-
-        return needing_evaluation
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Use helper function
+                cur.execute("""
+                    SELECT * FROM factcheck.get_statements_needing_evaluation(%s)
+                """, (statement_texts,))
+                return [row[0] for row in cur.fetchall()]
 
     def get_inter_annotator_agreement(self) -> Dict[str, Any]:
         """
@@ -581,37 +575,19 @@ class FactCheckerDB:
         Returns:
             Dictionary with agreement metrics
         """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Get all annotation pairs
-            cursor.execute("""
-                SELECT
-                    ha1.statement_id,
-                    ha1.annotation as ann1,
-                    ha2.annotation as ann2,
-                    a1.username as annotator1,
-                    a2.username as annotator2
-                FROM human_annotations ha1
-                JOIN human_annotations ha2 ON ha1.statement_id = ha2.statement_id
-                JOIN annotators a1 ON ha1.annotator_id = a1.id
-                JOIN annotators a2 ON ha2.annotator_id = a2.id
-                WHERE ha1.annotator_id < ha2.annotator_id
-            """)
-
-            pairs = cursor.fetchall()
-            total_pairs = len(pairs)
-
-            if total_pairs == 0:
-                return {"total_pairs": 0, "agreements": 0, "agreement_percentage": 0}
-
-            agreements = sum(1 for row in pairs if row[1] == row[2])
-
-            return {
-                "total_pairs": total_pairs,
-                "agreements": agreements,
-                "agreement_percentage": round(100.0 * agreements / total_pairs, 2)
-            }
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Use helper function
+                cur.execute("SELECT * FROM factcheck.calculate_inter_annotator_agreement()")
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "total_pairs": row[0],
+                        "agreements": row[1],
+                        "disagreements": row[2],
+                        "agreement_percentage": float(row[3])
+                    }
+                return {"total_pairs": 0, "agreements": 0, "disagreements": 0, "agreement_percentage": 0.0}
 
     def export_to_json(self, output_file: str, export_type: str = "full",
                       requested_by: str = "system") -> str:
@@ -641,7 +617,7 @@ class FactCheckerDB:
                 "export_date": datetime.now(timezone.utc).isoformat(),
                 "export_type": export_type,
                 "total_statements": len(data),
-                "database_file": str(self.db_path)
+                "database": "PostgreSQL factcheck schema"
             }
         }
 
@@ -652,25 +628,19 @@ class FactCheckerDB:
             json.dump(export_data, f, indent=2)
 
         # Record export in history
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO export_history (export_type, output_file, statement_count, requested_by)
-                VALUES (?, ?, ?, ?)
-            """, (export_type, str(output_path), len(data), requested_by))
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO factcheck.export_history (export_type, output_file, statement_count, requested_by)
+                    VALUES (%s, %s, %s, %s)
+                """, (export_type, str(output_path), len(data), requested_by))
 
         logger.info(f"Exported {len(data)} statements to {output_path}")
         return str(output_path)
 
-
     def import_json_results(self, json_file: str, skip_existing: bool = True) -> Dict[str, int]:
         """
         Import fact-check results from legacy JSON format.
-
-        Intelligently merges data:
-        - Skips statements that already have AI evaluations (no overwrite)
-        - Skips statements that already have human annotations (no overwrite)
-        - Only imports new/unprocessed statements
 
         Args:
             json_file: Path to JSON file with results
@@ -692,7 +662,7 @@ class FactCheckerDB:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # Handle both formats: {"results": [...]} or direct array
+            # Handle both formats
             if isinstance(data, dict) and 'results' in data:
                 results = data['results']
             elif isinstance(data, list):
@@ -702,93 +672,88 @@ class FactCheckerDB:
 
             stats['total_in_file'] = len(results)
 
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    for result in results:
+                        try:
+                            statement_text = result.get('statement', '')
+                            if not statement_text:
+                                stats['errors'] += 1
+                                continue
 
-                for result in results:
-                    try:
-                        statement_text = result.get('statement', '')
-                        if not statement_text:
-                            stats['errors'] += 1
-                            continue
+                            # Check if statement exists and has evaluation
+                            cur.execute("""
+                                SELECT s.statement_id, ae.evaluation_id
+                                FROM factcheck.statements s
+                                LEFT JOIN factcheck.ai_evaluations ae ON s.statement_id = ae.statement_id
+                                WHERE s.statement_text = %s
+                                LIMIT 1
+                            """, (statement_text,))
+                            existing = cur.fetchone()
 
-                        # Check if statement already exists
-                        cursor.execute(
-                            "SELECT id FROM statements WHERE statement_text = ?",
-                            (statement_text,)
-                        )
-                        existing_stmt = cursor.fetchone()
-
-                        if existing_stmt and skip_existing:
-                            statement_id = existing_stmt[0]
-
-                            # Check if it has AI evaluation
-                            cursor.execute(
-                                "SELECT COUNT(*) FROM ai_evaluations WHERE statement_id = ?",
-                                (statement_id,)
-                            )
-                            has_evaluation = cursor.fetchone()[0] > 0
-
-                            # Check if it has human annotations
-                            cursor.execute(
-                                "SELECT COUNT(*) FROM human_annotations WHERE statement_id = ?",
-                                (statement_id,)
-                            )
-                            has_annotations = cursor.fetchone()[0] > 0
-
-                            if has_evaluation or has_annotations:
+                            if existing and existing[1] and skip_existing:
+                                # Statement exists with evaluation - skip
                                 stats['skipped_existing'] += 1
                                 logger.debug(f"Skipping existing statement: {statement_text[:50]}")
                                 continue
 
-                        # Import new statement
-                        stmt = Statement(
-                            statement_text=statement_text,
-                            input_statement_id=result.get('input_statement_id'),
-                            expected_answer=result.get('expected_answer'),
-                            source_file=json_file,
-                            review_status='pending'
-                        )
-                        statement_id = self.insert_statement(stmt)
-                        stats['new_statements'] += 1
-
-                        # Import AI evaluation if present
-                        if result.get('evaluation'):
-                            ai_eval = AIEvaluation(
-                                statement_id=statement_id,
-                                evaluation=result['evaluation'],
-                                reason=result.get('reason', ''),
-                                confidence=result.get('confidence'),
-                                documents_reviewed=result.get('metadata', {}).get('documents_reviewed', 0),
-                                supporting_citations=result.get('metadata', {}).get('supporting_citations', 0),
-                                contradicting_citations=result.get('metadata', {}).get('contradicting_citations', 0),
-                                neutral_citations=result.get('metadata', {}).get('neutral_citations', 0),
-                                matches_expected=result.get('matches_expected'),
-                                model_used='imported',
-                                session_id='json_import',
-                                version=1
+                            # Import new statement
+                            stmt = Statement(
+                                statement_text=statement_text,
+                                input_statement_id=result.get('input_statement_id'),
+                                expected_answer=result.get('expected_answer'),
+                                source_file=json_file,
+                                review_status='pending'
                             )
-                            eval_id = self.insert_ai_evaluation(ai_eval)
-                            stats['imported_evaluations'] += 1
+                            statement_id = self.insert_statement(stmt)
+                            stats['new_statements'] += 1
 
-                            # Import evidence
-                            for evidence_data in result.get('evidence_list', []):
-                                evidence = Evidence(
-                                    ai_evaluation_id=eval_id,
-                                    citation_text=evidence_data.get('citation', ''),
-                                    pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
-                                    doi=evidence_data.get('doi', '').replace('DOI:', ''),
-                                    document_id=evidence_data.get('document_id'),
-                                    relevance_score=evidence_data.get('relevance_score'),
-                                    supports_statement=evidence_data.get('stance')
+                            # Import AI evaluation if present
+                            if result.get('evaluation'):
+                                ai_eval = AIEvaluation(
+                                    statement_id=statement_id,
+                                    evaluation=result['evaluation'],
+                                    reason=result.get('reason', ''),
+                                    confidence=result.get('confidence'),
+                                    documents_reviewed=result.get('metadata', {}).get('documents_reviewed', 0),
+                                    supporting_citations=result.get('metadata', {}).get('supporting_citations', 0),
+                                    contradicting_citations=result.get('metadata', {}).get('contradicting_citations', 0),
+                                    neutral_citations=result.get('metadata', {}).get('neutral_citations', 0),
+                                    matches_expected=result.get('matches_expected'),
+                                    model_used='imported',
+                                    session_id='json_import',
+                                    version=1
                                 )
-                                self.insert_evidence(evidence)
-                                stats['imported_evidence'] += 1
+                                eval_id = self.insert_ai_evaluation(ai_eval)
+                                stats['imported_evaluations'] += 1
 
-                    except Exception as e:
-                        logger.error(f"Error importing result: {e}")
-                        stats['errors'] += 1
-                        continue
+                                # Import evidence
+                                for evidence_data in result.get('evidence_list', []):
+                                    # Extract document_id (convert to int if needed)
+                                    doc_id_str = evidence_data.get('document_id')
+                                    if doc_id_str:
+                                        try:
+                                            doc_id = int(doc_id_str) if isinstance(doc_id_str, str) else doc_id_str
+                                        except (ValueError, TypeError):
+                                            logger.warning(f"Invalid document_id: {doc_id_str}")
+                                            continue
+
+                                        evidence = Evidence(
+                                            evaluation_id=eval_id,
+                                            citation_text=evidence_data.get('citation', ''),
+                                            document_id=doc_id,
+                                            pmid=evidence_data.get('pmid', '').replace('PMID:', ''),
+                                            doi=evidence_data.get('doi', '').replace('DOI:', ''),
+                                            relevance_score=evidence_data.get('relevance_score'),
+                                            supports_statement=evidence_data.get('stance')
+                                        )
+                                        self.insert_evidence(evidence)
+                                        stats['imported_evidence'] += 1
+
+                        except Exception as e:
+                            logger.error(f"Error importing result: {e}")
+                            stats['errors'] += 1
+                            continue
 
             logger.info(f"JSON import complete: {stats}")
             return stats
@@ -796,22 +761,3 @@ class FactCheckerDB:
         except Exception as e:
             logger.error(f"Error reading JSON file: {e}")
             raise
-
-
-def create_database_from_input_file(input_file: str) -> str:
-    """
-    Create a SQLite database based on the input filename.
-
-    Args:
-        input_file: Path to input JSON file
-
-    Returns:
-        Path to created database file
-    """
-    input_path = Path(input_file)
-    db_path = input_path.parent / f"{input_path.stem}.db"
-
-    db = FactCheckerDB(str(db_path))
-    logger.info(f"Created database: {db_path}")
-
-    return str(db_path)
