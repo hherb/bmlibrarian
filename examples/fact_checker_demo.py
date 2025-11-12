@@ -34,7 +34,7 @@ def demo_single_statement():
         max_tokens=config.get('max_tokens', 2000),
         score_threshold=config.get('score_threshold', 2.5),
         max_search_results=config.get('max_search_results', 50),
-        max_citations=config.get('max_citations', 10),
+        max_citations=config.get('max_citations', None),  # None = no limit
         show_model_info=True
     )
 

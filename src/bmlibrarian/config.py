@@ -75,7 +75,7 @@ DEFAULT_CONFIG = {
             "max_tokens": 2000,
             "score_threshold": 2.5,
             "max_search_results": 50,
-            "max_citations": 10
+            "max_citations": None  # None = no limit, use all scored documents
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"

@@ -107,7 +107,7 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
     if args.max_citations is not None:
         max_citations = args.max_citations
     else:
-        max_citations = agent_config.get('max_citations', 10)
+        max_citations = agent_config.get('max_citations', None)  # Default to None (no limit)
 
     # Progress callback
     def progress_callback(step: str, message: str):

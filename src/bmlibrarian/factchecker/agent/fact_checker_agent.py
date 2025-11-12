@@ -128,7 +128,7 @@ class FactCheckerAgent(BaseAgent):
         show_model_info: bool = True,
         score_threshold: float = 2.5,
         max_search_results: int = 50,
-        max_citations: int = 10,
+        max_citations: Optional[int] = None,
         db_path: Optional[str] = None,
         use_database: bool = True,
         incremental: bool = False
@@ -147,7 +147,7 @@ class FactCheckerAgent(BaseAgent):
             show_model_info: Whether to display model information
             score_threshold: Minimum relevance score for documents
             max_search_results: Maximum number of documents to retrieve
-            max_citations: Maximum number of citations to extract
+            max_citations: Maximum number of citations to extract (None = no limit, use all scored documents)
             db_path: Optional path to SQLite database (auto-generated if None)
             use_database: Whether to use database storage (default: True)
             incremental: If True, skip statements that already have AI evaluations
@@ -418,8 +418,11 @@ class FactCheckerAgent(BaseAgent):
             scored_documents: List of (document, scoring_result) tuples
         """
         try:
-            # Limit to top documents
-            top_docs = scored_documents[:self.max_citations]
+            # Limit to top documents if max_citations is set, otherwise use all scored documents
+            if self.max_citations is None:
+                top_docs = scored_documents  # Use ALL scored documents (no artificial limit)
+            else:
+                top_docs = scored_documents[:self.max_citations]
 
             citations = self.citation_agent.process_scored_documents_for_citations(
                 user_question=statement,

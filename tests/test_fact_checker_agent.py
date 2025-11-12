@@ -41,7 +41,7 @@ class TestFactCheckerAgent(unittest.TestCase):
                 show_model_info=False,
                 score_threshold=2.5,
                 max_search_results=50,
-                max_citations=10
+                max_citations=None  # None = no limit, use all scored documents
             )
 
         # Sample documents for testing
@@ -100,7 +100,7 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.assertEqual(self.agent.model, "test-model")
         self.assertEqual(self.agent.score_threshold, 2.5)
         self.assertEqual(self.agent.max_search_results, 50)
-        self.assertEqual(self.agent.max_citations, 10)
+        self.assertIsNone(self.agent.max_citations)  # None = no limit
 
     def test_evidence_reference_creation(self):
         """Test EvidenceReference dataclass creation."""
