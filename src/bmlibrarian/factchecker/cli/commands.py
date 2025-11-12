@@ -114,9 +114,7 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         if args.verbose:
             print(f"  [{step}] {message}")
 
-    # Determine database mode
-    use_database = not args.json_only if hasattr(args, 'json_only') else True
-    db_path = getattr(args, 'db_path', None)
+    # Get incremental mode setting
     incremental = getattr(args, 'incremental', False)
 
     # Create agent
@@ -130,8 +128,6 @@ def create_agent(args: argparse.Namespace) -> FactCheckerAgent:
         score_threshold=score_threshold,
         max_search_results=max_search_results,
         max_citations=max_citations,
-        db_path=db_path,
-        use_database=use_database,
         incremental=incremental
     )
 

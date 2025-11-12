@@ -21,8 +21,7 @@ from bmlibrarian.agents.query_agent import QueryAgent
 from bmlibrarian.agents.scoring_agent import DocumentScoringAgent, ScoringResult
 from bmlibrarian.agents.citation_agent import CitationFinderAgent, Citation
 from ..db.database import (
-    FactCheckerDB, Statement, AIEvaluation, Evidence,
-    create_database_from_input_file
+    FactCheckerDB, Statement, AIEvaluation, Evidence
 )
 
 logger = logging.getLogger(__name__)
@@ -129,8 +128,6 @@ class FactCheckerAgent(BaseAgent):
         score_threshold: float = 2.5,
         max_search_results: int = 50,
         max_citations: Optional[int] = None,
-        db_path: Optional[str] = None,
-        use_database: bool = True,
         incremental: bool = False
     ):
         """
@@ -148,8 +145,6 @@ class FactCheckerAgent(BaseAgent):
             score_threshold: Minimum relevance score for documents
             max_search_results: Maximum number of documents to retrieve
             max_citations: Maximum number of citations to extract (None = no limit, use all scored documents)
-            db_path: Optional path to SQLite database (auto-generated if None)
-            use_database: Whether to use database storage (default: True)
             incremental: If True, skip statements that already have AI evaluations
         """
         super().__init__(
@@ -166,8 +161,6 @@ class FactCheckerAgent(BaseAgent):
         self.score_threshold = score_threshold
         self.max_search_results = max_search_results
         self.max_citations = max_citations
-        self.use_database = use_database
-        self.db_path = db_path
         self.db: Optional[FactCheckerDB] = None
         self.current_session_id: Optional[str] = None
         self.incremental = incremental
@@ -728,7 +721,7 @@ Respond ONLY with the JSON object, no additional text."""
             statements: List of dicts with either:
                 - 'statement' and optional 'answer' keys (legacy format), OR
                 - 'id', 'question', and 'answer' keys (extracted format)
-            output_file: Optional file path for database or JSON export
+            output_file: Optional file path for JSON export
             source_file: Source filename for metadata
 
         Returns:
@@ -739,14 +732,9 @@ Respond ONLY with the JSON object, no additional text."""
 
         self._call_callback("batch_start", f"Processing {total} statements...")
 
-        # Initialize database or JSON output
-        if self.use_database:
-            # Initialize session
-            self.current_session_id = str(uuid.uuid4())
-            self._initialize_database_session(total, source_file or output_file)
-        elif output_file:
-            # Legacy JSON mode
-            self._initialize_results_file(output_file)
+        # Initialize database session
+        self.current_session_id = str(uuid.uuid4())
+        self._initialize_database_session(total, source_file or output_file)
 
         for i, item in enumerate(statements, 1):
             # Support both formats: legacy ('statement'/'answer') and new ('id'/'question'/'answer')
@@ -788,17 +776,18 @@ Respond ONLY with the JSON object, no additional text."""
                 )
                 results.append(error_result)
 
-            # Store result incrementally
-            if self.use_database and self.db:
+            # Store result incrementally in database
+            if self.db:
                 self._store_result_in_database(results[-1], source_file)
-            elif output_file:
-                self._append_result_to_file(results[-1], output_file)
 
-        # Finalize storage
-        if self.use_database and self.db:
+        # Finalize database session
+        if self.db:
             self._finalize_database_session(len(results))
-        elif output_file:
-            self._finalize_results_file(results, output_file)
+
+        # Export to JSON if requested
+        if output_file:
+            self._call_callback("export", f"Exporting results to {output_file}...")
+            self.export_database_to_json(output_file, export_type="full")
 
         # Report citation validation statistics
         if hasattr(self.citation_agent, 'get_validation_stats'):
@@ -833,8 +822,7 @@ Respond ONLY with the JSON object, no additional text."""
 
         Args:
             input_file: Path to JSON file with statements (supports both legacy and extracted formats)
-            output_file: Optional file path for output (database or JSON)
-                        If None and use_database=True, generates database path from input filename
+            output_file: Optional file path for JSON export
 
         Returns:
             List of FactCheckResult objects
@@ -848,18 +836,13 @@ Respond ONLY with the JSON object, no additional text."""
 
             self._call_callback("file_loaded", f"Loaded {len(statements)} statements from {input_file}")
 
-            # Initialize database if using database mode
-            if self.use_database:
-                if not self.db_path:
-                    # Auto-generate database path from input file
-                    self.db_path = create_database_from_input_file(input_file)
-
-                if not self.db:
-                    self.db = FactCheckerDB(self.db_path)
-                    self._call_callback("database", f"Database initialized: {self.db_path}")
+            # Initialize database
+            if not self.db:
+                self.db = FactCheckerDB()
+                self._call_callback("database", "Database initialized (PostgreSQL factcheck schema)")
 
             # Filter statements if incremental mode is enabled
-            if self.incremental and self.use_database and self.db:
+            if self.incremental and self.db:
                 original_count = len(statements)
 
                 # Extract statement texts (support both formats)
@@ -1024,134 +1007,3 @@ Respond ONLY with the JSON object, no additional text."""
             logger.error(f"Error exporting database to JSON: {e}")
             return None
 
-    # ========== Legacy JSON File Operations ==========
-
-    def _initialize_results_file(self, output_file: str) -> None:
-        """Initialize the results file with an empty results array.
-
-        Args:
-            output_file: Path to the output JSON file
-        """
-        try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump({"results": []}, f, indent=2)
-            logger.info(f"Initialized results file: {output_file}")
-        except Exception as e:
-            logger.error(f"Error initializing results file: {e}")
-            raise
-
-    def _append_result_to_file(self, result: FactCheckResult, output_file: str) -> None:
-        """Append a single result to the results file.
-
-        Reads the existing file, appends the new result, and writes back.
-        This ensures data is saved incrementally to prevent loss on interruption.
-
-        Args:
-            result: FactCheckResult to append
-            output_file: Path to the output JSON file
-        """
-        try:
-            # Read existing results
-            with open(output_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Append new result
-            if 'results' not in data:
-                data['results'] = []
-            data['results'].append(result.to_dict())
-
-            # Write back to file
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-
-            logger.debug(f"Appended result to {output_file} (total: {len(data['results'])})")
-
-        except Exception as e:
-            logger.error(f"Error appending result to file: {e}")
-            # Don't raise - continue processing even if file write fails
-
-    def _finalize_results_file(self, results: List[FactCheckResult], output_file: str) -> None:
-        """Add summary statistics to the results file after all processing is complete.
-
-        Args:
-            results: List of all FactCheckResults
-            output_file: Path to the output JSON file
-        """
-        try:
-            # Read existing results from file
-            with open(output_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Add summary
-            data['summary'] = self._generate_summary(results)
-
-            # Write back to file
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-
-            logger.info(f"Finalized results file with summary: {output_file}")
-            self._call_callback("save", f"Results saved to {output_file}")
-
-        except Exception as e:
-            logger.error(f"Error finalizing results file: {e}")
-
-    def _save_results(self, results: List[FactCheckResult], output_file: str) -> None:
-        """Save results to JSON file (legacy method for compatibility).
-
-        Note: For batch processing, use check_batch which writes incrementally.
-        This method is kept for backward compatibility with direct calls.
-
-        Args:
-            results: List of FactCheckResults
-            output_file: Path to the output JSON file
-        """
-        try:
-            output_data = {
-                "results": [result.to_dict() for result in results],
-                "summary": self._generate_summary(results)
-            }
-
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2)
-
-            logger.info(f"Results saved to {output_file}")
-            self._call_callback("save", f"Results saved to {output_file}")
-
-        except Exception as e:
-            logger.error(f"Error saving results: {e}")
-
-    def _generate_summary(self, results: List[FactCheckResult]) -> Dict[str, Any]:
-        """Generate summary statistics for batch results."""
-        total = len(results)
-
-        evaluations = {'yes': 0, 'no': 0, 'maybe': 0, 'error': 0}
-        confidences = {'high': 0, 'medium': 0, 'low': 0}
-
-        matches = 0
-        mismatches = 0
-
-        for result in results:
-            evaluations[result.evaluation] = evaluations.get(result.evaluation, 0) + 1
-            if result.confidence:
-                confidences[result.confidence] = confidences.get(result.confidence, 0) + 1
-
-            if result.matches_expected is not None:
-                if result.matches_expected:
-                    matches += 1
-                else:
-                    mismatches += 1
-
-        summary = {
-            "total_statements": total,
-            "evaluations": evaluations,
-            "confidences": confidences
-        }
-
-        if matches + mismatches > 0:
-            summary["validation"] = {
-                "matches": matches,
-                "mismatches": mismatches,
-                "accuracy": round(matches / (matches + mismatches), 3)
-            }
-
-        return summary
