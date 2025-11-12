@@ -105,6 +105,36 @@ class CitationDisplay:
             print(f"Error fetching abstract for document {document_id}: {e}")
             return None
 
+    def _fetch_document_metadata(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch document metadata (title, pmid, doi) from database by document ID."""
+        if not self.db_manager or not document_id:
+            return None
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """SELECT id, title, external_id, doi, source_id
+                           FROM document WHERE id = %s""",
+                        (document_id,)
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        doc_id, title, external_id, doi, source_id = result
+                        # For PubMed (source_id=1), external_id is the PMID
+                        pmid = external_id if source_id == 1 else None
+                        return {
+                            'id': doc_id,
+                            'title': title,
+                            'pmid': f"PMID:{pmid}" if pmid else '',
+                            'doi': f"DOI:{doi}" if doi else '',
+                            'external_id': external_id
+                        }
+                    return None
+        except Exception as e:
+            print(f"Error fetching metadata for document {document_id}: {e}")
+            return None
+
     def _enrich_evidence_with_identifiers(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich evidence with missing identifiers by looking up in database."""
         if not self.db_manager:
@@ -164,12 +194,25 @@ class CitationDisplay:
         relevance_score = evidence.get('relevance_score', 0)
         stance = evidence.get('stance', 'neutral')
 
-        # Fetch full abstract from database
+        # Fetch full document metadata (title, pmid, doi) and abstract from database
         abstract = None
-        if self.db_manager:
-            if document_id:
-                abstract = self._fetch_document_abstract(document_id)
-            elif pmid:
+        doc_title = None
+        if self.db_manager and document_id:
+            # Fetch metadata (includes corrected pmid/doi if missing in evidence)
+            metadata = self._fetch_document_metadata(document_id)
+            if metadata:
+                doc_title = metadata['title']
+                # Use database pmid/doi if evidence is missing them
+                if not pmid and metadata['pmid']:
+                    pmid = metadata['pmid']
+                if not doi and metadata['doi']:
+                    doi = metadata['doi']
+
+            # Fetch abstract
+            abstract = self._fetch_document_abstract(document_id)
+        elif self.db_manager:
+            # Fallback to fetching by pmid or doi if no document_id
+            if pmid:
                 abstract = self._fetch_abstract_by_pmid(pmid)
             elif doi:
                 abstract = self._fetch_abstract_by_doi(doi)
@@ -188,9 +231,13 @@ class CitationDisplay:
             stance_icon = "?"
             stance_display = "NEUTRAL" if stance else "UNKNOWN"
 
-        # Create title
-        truncated_citation = truncate_text(citation_text, 80)
-        title_text = f"{index + 1}. {truncated_citation}"
+        # Create title - use document title if available, otherwise citation preview
+        if doc_title:
+            truncated_title = truncate_text(doc_title, 80)
+            title_text = f"{index + 1}. {truncated_title}"
+        else:
+            truncated_citation = truncate_text(citation_text, 80)
+            title_text = f"{index + 1}. {truncated_citation}"
 
         # Create stance badge
         stance_badge = ft.Container(
