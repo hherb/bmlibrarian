@@ -488,16 +488,22 @@ class FactCheckerAgent(BaseAgent):
         # Create evaluation prompt
         prompt = self._create_evaluation_prompt(statement, evidence_summary)
 
-        # Get LLM evaluation
+        # Get LLM evaluation with automatic JSON parse retry
         try:
-            response = self._make_ollama_request(
+            response_data = self._chat_and_parse_json(
                 messages=[{'role': 'user', 'content': prompt}],
+                max_retries=3,
+                retry_context="statement evaluation",
                 num_predict=self.max_tokens
             )
 
-            # Parse LLM response
-            evaluation_data = self._parse_evaluation_response(response)
+            # Validate and normalize the parsed response
+            evaluation_data = self._validate_evaluation_response(response_data)
 
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing evaluation response: {e}")
+            # Fallback to simple heuristic evaluation
+            evaluation_data = self._fallback_evaluation(statement, citations)
         except Exception as e:
             logger.error(f"Error getting LLM evaluation: {e}")
             # Fallback to simple heuristic evaluation
@@ -590,32 +596,25 @@ RESPONSE FORMAT (JSON):
 
 Respond ONLY with the JSON object, no additional text."""
 
-    def _parse_evaluation_response(self, response: str) -> Dict[str, Any]:
-        """Parse the LLM's evaluation response."""
-        try:
-            data = self._parse_json_response(response)
+    def _validate_evaluation_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize the LLM's evaluation response."""
+        # Validate required fields
+        if 'evaluation' not in data or 'reason' not in data:
+            raise ValueError("Missing required fields in evaluation response")
 
-            # Validate required fields
-            if 'evaluation' not in data or 'reason' not in data:
-                raise ValueError("Missing required fields in evaluation response")
+        # Normalize evaluation value
+        eval_value = data['evaluation'].lower().strip()
+        if eval_value not in ['yes', 'no', 'maybe']:
+            logger.warning(f"Invalid evaluation value '{eval_value}', defaulting to 'maybe'")
+            eval_value = 'maybe'
 
-            # Normalize evaluation value
-            eval_value = data['evaluation'].lower().strip()
-            if eval_value not in ['yes', 'no', 'maybe']:
-                logger.warning(f"Invalid evaluation value '{eval_value}', defaulting to 'maybe'")
-                eval_value = 'maybe'
+        data['evaluation'] = eval_value
 
-            data['evaluation'] = eval_value
+        # Ensure citation_stances exists
+        if 'citation_stances' not in data:
+            data['citation_stances'] = {}
 
-            # Ensure citation_stances exists
-            if 'citation_stances' not in data:
-                data['citation_stances'] = {}
-
-            return data
-
-        except Exception as e:
-            logger.error(f"Error parsing evaluation response: {e}")
-            raise
+        return data
 
     def _fallback_evaluation(self, statement: str, citations: List[Citation]) -> Dict[str, Any]:
         """Provide fallback evaluation when LLM fails."""

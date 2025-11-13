@@ -315,19 +315,18 @@ If no sufficiently relevant content is found, respond with:
 
 Respond only with valid JSON."""
 
-                # Make request to Ollama using BaseAgent method
+                # Make request to Ollama and parse JSON (with automatic retry on parse failures)
                 try:
-                    llm_response = self._generate_from_prompt(prompt)
+                    citation_data = self._generate_and_parse_json(
+                        prompt,
+                        max_retries=self.max_retries,
+                        retry_context=f"citation extraction (doc {doc_id})"
+                    )
+                except json.JSONDecodeError as e:
+                    logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
+                    return None
                 except (ConnectionError, ValueError) as e:
                     logger.error(f"Ollama request failed for document {doc_id}: {e}")
-                    return None
-
-                # Parse JSON response using inherited robust method from BaseAgent
-                try:
-                    citation_data = self._parse_json_response(llm_response)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Could not parse JSON from LLM response: {e}")
-                    # Don't retry on JSON parse errors - likely a model issue
                     return None
 
                 # Check if relevant content was found
