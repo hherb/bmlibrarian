@@ -26,8 +26,9 @@ class TestCitationFinderAgent(unittest.TestCase):
         self.mock_orchestrator = Mock()
         self.agent = CitationFinderAgent(
             orchestrator=self.mock_orchestrator,
-            ollama_url="http://test:11434",
-            model="test-model"
+            host="http://test:11434",
+            model="test-model",
+            show_model_info=False
         )
         
         # Sample document for testing (using realistic database ID)
@@ -79,38 +80,36 @@ class TestCitationFinderAgent(unittest.TestCase):
         result = self.agent.test_connection()
         self.assertFalse(result)
     
-    @patch('requests.post')
-    @patch('requests.get')
-    def test_extract_citation_success(self, mock_get, mock_post):
+    def test_extract_citation_success(self):
         """Test successful citation extraction."""
-        # Mock connection test
-        mock_get.return_value.status_code = 200
-        
-        # Mock Ollama response
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'relevant_passage': 'COVID-19 vaccines are 95% effective',
-                'summary': 'Study demonstrates high vaccine effectiveness',
-                'relevance_score': 0.9,
-                'has_relevant_content': True
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        result = self.agent.extract_citation_from_document(
-            self.sample_question, 
-            self.sample_document,
-            min_relevance=0.7
-        )
-        
-        self.assertIsNotNone(result)
-        self.assertIsInstance(result, Citation)
-        self.assertEqual(result.passage, 'COVID-19 vaccines are 95% effective')
-        self.assertEqual(result.relevance_score, 0.9)
-        self.assertEqual(result.document_id, 'test_doc_001')
-        self.assertEqual(result.document_title, self.sample_document['title'])
+        # Mock connection and Ollama client response
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch.object(self.agent.client, 'generate') as mock_generate:
+
+            # Mock Ollama response with EXACT text from abstract
+            # Abstract: 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease. We studied 10,000 participants over 6 months.'
+            mock_generate.return_value = {
+                'response': json.dumps({
+                    'relevant_passage': 'COVID-19 vaccines are 95% effective in preventing severe disease.',
+                    'summary': 'Study demonstrates high vaccine effectiveness',
+                    'relevance_score': 0.9,
+                    'has_relevant_content': True
+                })
+            }
+
+            result = self.agent.extract_citation_from_document(
+                self.sample_question,
+                self.sample_document,
+                min_relevance=0.7
+            )
+
+            self.assertIsNotNone(result)
+            self.assertIsInstance(result, Citation)
+            # Validation should extract exact text from abstract
+            self.assertIn('vaccines are 95% effective', result.passage)
+            self.assertEqual(result.relevance_score, 0.9)
+            self.assertEqual(result.document_id, '12345678')
+            self.assertEqual(result.document_title, self.sample_document['title'])
     
     @patch('requests.post')
     @patch('requests.get')
@@ -256,37 +255,36 @@ class TestCitationFinderAgent(unittest.TestCase):
         
         self.assertIsNone(task_ids)
     
-    @patch('requests.post')
-    @patch('requests.get')
-    def test_extract_citation_from_queue(self, mock_get, mock_post):
+    def test_extract_citation_from_queue(self):
         """Test queue-compatible citation extraction method."""
-        mock_get.return_value.status_code = 200
-        
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'relevant_passage': 'Test passage',
-                'summary': 'Test summary',
-                'relevance_score': 0.8,
-                'has_relevant_content': True
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        result = self.agent.extract_citation_from_queue(
-            user_question=self.sample_question,
-            document=self.sample_document,
-            score_result={'score': 4.0, 'reasoning': 'Test'},
-            score_threshold=2.0,
-            min_relevance=0.7
-        )
-        
-        self.assertTrue(result['has_citation'])
-        self.assertEqual(result['passage'], 'Test passage')
-        self.assertEqual(result['summary'], 'Test summary')
-        self.assertEqual(result['relevance_score'], 0.8)
-        self.assertEqual(result['document_id'], '12345678')
+        # Mock connection and Ollama client response
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch.object(self.agent.client, 'generate') as mock_generate:
+
+            # Mock Ollama response with EXACT text from abstract
+            mock_generate.return_value = {
+                'response': json.dumps({
+                    'relevant_passage': 'We studied 10,000 participants over 6 months.',
+                    'summary': 'Large study with long follow-up',
+                    'relevance_score': 0.8,
+                    'has_relevant_content': True
+                })
+            }
+
+            result = self.agent.extract_citation_from_queue(
+                user_question=self.sample_question,
+                document=self.sample_document,
+                score_result={'score': 4.0, 'reasoning': 'Test'},
+                score_threshold=2.0,
+                min_relevance=0.7
+            )
+
+            self.assertTrue(result['has_citation'])
+            # Validation should extract exact text from abstract
+            self.assertIn('10,000 participants', result['passage'])
+            self.assertEqual(result['summary'], 'Large study with long follow-up')
+            self.assertEqual(result['relevance_score'], 0.8)
+            self.assertEqual(result['document_id'], '12345678')
     
     def test_extract_citation_from_queue_no_citation(self):
         """Test queue method when no citation found."""
