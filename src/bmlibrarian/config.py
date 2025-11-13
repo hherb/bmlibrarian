@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
         "query": {
             "temperature": 0.1,
             "top_p": 0.9,
-            "max_tokens": 100
+            "max_tokens": 500  # Minimum 400 required for models like gpt-oss:20b
         },
         "citation": {
             "temperature": 0.2,

@@ -33,7 +33,7 @@ class DialogManager:
         self.page.update()
     
     def show_error_dialog(self, message: str):
-        """Show error dialog."""
+        """Show error dialog with selectable text."""
         def close_error(e):
             self.page.dialog.open = False
             self.page.dialog = None
@@ -42,7 +42,7 @@ class DialogManager:
         self.page.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Error", color=ft.Colors.RED_700),
-            content=ft.Text(message),
+            content=ft.Text(message, selectable=True),
             actions=[ft.TextButton("OK", on_click=close_error)]
         )
         self.page.dialog.open = True

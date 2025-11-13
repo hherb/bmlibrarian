@@ -143,7 +143,7 @@ class WorkflowStepsHandler:
 
     def execute_query_generation(self, research_question: str,
                                update_callback: Callable) -> str:
-        """Execute the query generation step.
+        """Execute the query generation step with error handling.
 
         Args:
             research_question: The research question to convert
@@ -151,87 +151,120 @@ class WorkflowStepsHandler:
 
         Returns:
             Generated PostgreSQL query string
+
+        Raises:
+            Exception: If query generation fails after retries
         """
         update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "running",
                       "Generating database query...")
 
-        # Check if multi-model query generation is enabled
-        from ..config import get_query_generation_config
-        qg_config = get_query_generation_config()
+        try:
+            # Check if multi-model query generation is enabled
+            from ..config import get_query_generation_config
+            qg_config = get_query_generation_config()
 
-        if qg_config.get('multi_model_enabled', False):
-            # Use multi-model query generation
-            num_models = len(qg_config.get('models', []))
-            queries_per = qg_config.get('queries_per_model', 1)
-            total_queries = num_models * queries_per
-            print(f"🔍 Using multi-model query generation with {num_models} models, {queries_per} queries each = {total_queries} total")
+            if qg_config.get('multi_model_enabled', False):
+                # Use multi-model query generation
+                num_models = len(qg_config.get('models', []))
+                queries_per = qg_config.get('queries_per_model', 1)
+                total_queries = num_models * queries_per
+                print(f"🔍 Using multi-model query generation with {num_models} models, {queries_per} queries each = {total_queries} total")
 
-            # Set up callback to update GUI progress
-            queries_generated = [0]  # Use list to allow modification in nested function
+                # Set up callback to update GUI progress
+                queries_generated = [0]  # Use list to allow modification in nested function
 
-            def progress_callback(event_type: str, data):
-                """Update GUI with query generation progress."""
-                if event_type == "query_generated":
-                    queries_generated[0] += 1
-                    if isinstance(data, dict):
-                        model_short = data.get('model', '').split(':')[0]
-                        attempt = data.get('attempt', '?')
-                        query = data.get('query', '')[:60]
-                        progress_msg = f"Generated query {queries_generated[0]}/{total_queries}: {model_short} attempt {attempt}"
-                        print(f"   ✓ {progress_msg}")
-                        if self.tab_manager:
-                            self.tab_manager.update_search_progress(progress_msg, show_bar=True)
+                def progress_callback(event_type: str, data):
+                    """Update GUI with query generation progress."""
+                    if event_type == "query_generated":
+                        queries_generated[0] += 1
+                        if isinstance(data, dict):
+                            model_short = data.get('model', '').split(':')[0]
+                            attempt = data.get('attempt', '?')
+                            query = data.get('query', '')[:60]
+                            progress_msg = f"Generated query {queries_generated[0]}/{total_queries}: {model_short} attempt {attempt}"
+                            print(f"   ✓ {progress_msg}")
+                            if self.tab_manager:
+                                self.tab_manager.update_search_progress(progress_msg, show_bar=True)
 
-            # Temporarily set callback
-            original_callback = self.agents['query_agent'].callback
-            self.agents['query_agent'].callback = progress_callback
+                # Temporarily set callback
+                original_callback = self.agents['query_agent'].callback
+                self.agents['query_agent'].callback = progress_callback
 
-            try:
-                multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
-            finally:
-                self.agents['query_agent'].callback = original_callback
-                # Clear progress
-                if self.tab_manager:
-                    self.tab_manager.update_search_progress("", show_bar=False)
+                try:
+                    multi_result = self.agents['query_agent'].convert_question_multi_model(research_question)
+                finally:
+                    self.agents['query_agent'].callback = original_callback
+                    # Clear progress
+                    if self.tab_manager:
+                        self.tab_manager.update_search_progress("", show_bar=False)
 
-            # Store for later linking with search results
-            self.multi_query_generation_result = multi_result
+                # Store for later linking with search results
+                self.multi_query_generation_result = multi_result
 
-            # Log queries to audit if tracking is enabled
-            if self.research_question_id and self.session_id:
-                self.query_ids = self._log_generated_queries_to_audit(multi_result)
+                # Log queries to audit if tracking is enabled
+                if self.research_question_id and self.session_id:
+                    self.query_ids = self._log_generated_queries_to_audit(multi_result)
 
-            # For GUI, we'll use all unique queries (user can't review them in non-interactive mode)
-            # In the future, could add interactive query selection UI here
-            if multi_result.unique_queries:
-                # Sanitize queries for display (same sanitization that will be applied during execution)
-                from ..agents.utils.query_syntax import fix_tsquery_syntax
-                sanitized_queries = [fix_tsquery_syntax(q) for q in multi_result.unique_queries]
+                # For GUI, we'll use all unique queries (user can't review them in non-interactive mode)
+                # In the future, could add interactive query selection UI here
+                if multi_result.unique_queries:
+                    # Sanitize queries for display (same sanitization that will be applied during execution)
+                    from ..agents.utils.query_syntax import fix_tsquery_syntax
+                    sanitized_queries = [fix_tsquery_syntax(q) for q in multi_result.unique_queries]
 
-                # For now, use the first sanitized query for display/editing
-                # But all queries will be used in the search step
-                query_text = sanitized_queries[0]
-                print(f"📊 Generated {len(sanitized_queries)} unique queries (sanitized)")
+                    # For now, use the first sanitized query for display/editing
+                    # But all queries will be used in the search step
+                    query_text = sanitized_queries[0]
+                    print(f"📊 Generated {len(sanitized_queries)} unique queries (sanitized)")
 
-                # Display each query with model and attempt info
-                for query_result in multi_result.all_queries:
-                    if not query_result.error:
-                        sanitized_q = fix_tsquery_syntax(query_result.query)
-                        print(f"   model {query_result.model} attempt {query_result.attempt_number}: {sanitized_q}")
+                    # Display each query with model and attempt info
+                    for query_result in multi_result.all_queries:
+                        if not query_result.error:
+                            sanitized_q = fix_tsquery_syntax(query_result.query)
+                            print(f"   model {query_result.model} attempt {query_result.attempt_number}: {sanitized_q}")
+                else:
+                    query_text = ""
             else:
-                query_text = ""
-        else:
-            # Use single-model query generation (original behavior)
-            query_text = self.agents['query_agent'].convert_question(research_question)
+                # Use single-model query generation (original behavior)
+                query_text = self.agents['query_agent'].convert_question(research_question)
 
-            # Log single query to audit if tracking is enabled
-            if self.research_question_id and self.session_id and query_text:
-                model_name = self.agents['query_agent'].model
-                query_id = self._log_single_query_to_audit(query_text, model_name)
-                if query_id:
-                    self.query_ids = [query_id]
+                # Display the generated query
+                if query_text:
+                    model_name = self.agents['query_agent'].model
+                    print(f"📊 Generated query using model {model_name}:")
+                    print(f"   {query_text}")
 
-        return query_text
+                # Log single query to audit if tracking is enabled
+                if self.research_question_id and self.session_id and query_text:
+                    model_name = self.agents['query_agent'].model
+                    query_id = self._log_single_query_to_audit(query_text, model_name)
+                    if query_id:
+                        self.query_ids = [query_id]
+
+            return query_text
+
+        except ValueError as e:
+            # Empty response or invalid model output after retries
+            error_msg = f"Query generation failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            print(f"💡 Suggestion: Check if the model '{self.agents['query_agent'].model}' is working correctly")
+            print(f"   You can test it with: ollama run {self.agents['query_agent'].model}")
+            raise Exception(error_msg)
+
+        except ConnectionError as e:
+            # Connection issues with Ollama after retries
+            error_msg = f"Failed to connect to Ollama: {str(e)}"
+            print(f"❌ {error_msg}")
+            print(f"💡 Suggestion: Ensure Ollama is running and accessible at {self.agents['query_agent'].host}")
+            raise Exception(error_msg)
+
+        except Exception as e:
+            # Unexpected error
+            error_msg = f"Unexpected error during query generation: {str(e)}"
+            print(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
+            raise Exception(error_msg)
     
     def execute_document_search(self, research_question: str, query_text: str,
                               update_callback: Callable, interactive_mode: bool = False) -> List[Dict]:

@@ -107,181 +107,310 @@ class BaseAgent(ABC):
         self,
         messages: list,
         system_prompt: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
         **ollama_options
     ) -> str:
         """
-        Make a request to Ollama with standardized error handling.
-        
+        Make a request to Ollama with standardized error handling and retry logic.
+
         Args:
             messages: List of message dictionaries for the conversation
             system_prompt: Optional system prompt to prepend
+            max_retries: Maximum number of retry attempts for transient failures (default: 3)
+            retry_delay: Initial delay between retries in seconds (default: 1.0, doubles each retry)
             **ollama_options: Additional Ollama options
-            
+
         Returns:
             The model's response content
-            
+
         Raises:
-            ConnectionError: If unable to connect to Ollama
-            ValueError: If the response is invalid
+            ConnectionError: If unable to connect to Ollama after retries
+            ValueError: If the response is invalid after retries
         """
-        start_time = time.time()
         agent_logger = logging.getLogger('bmlibrarian.agents')
-        
-        # Log the request
-        agent_logger.info(f"Ollama request to {self.model}", extra={'structured_data': {
-            'event_type': 'agent_ollama_request',
-            'agent_type': self.get_agent_type(),
-            'model': self.model,
-            'message_count': len(messages),
-            'has_system_prompt': system_prompt is not None,
-            'options': self._get_ollama_options(**ollama_options),
-            'timestamp': start_time
-        }})
-        
-        try:
-            # Prepend system message if provided
-            if system_prompt:
-                messages = [{'role': 'system', 'content': system_prompt}] + messages
-            
-            # Get options with any overrides
-            options = self._get_ollama_options(**ollama_options)
-            
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,
-                options=options
-            )
-            
-            content = response['message']['content']
-            if not content or not content.strip():
-                raise ValueError("Empty response from model")
-            
-            # Log successful response
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.info(f"Ollama response received in {response_time:.2f}ms", extra={'structured_data': {
-                'event_type': 'agent_ollama_response',
+
+        last_exception = None
+        current_delay = retry_delay
+
+        for attempt in range(max_retries):
+            start_time = time.time()
+
+            # Log the request (include attempt number if retrying)
+            log_msg = f"Ollama request to {self.model}"
+            if attempt > 0:
+                log_msg += f" (retry {attempt}/{max_retries - 1})"
+
+            agent_logger.info(log_msg, extra={'structured_data': {
+                'event_type': 'agent_ollama_request',
                 'agent_type': self.get_agent_type(),
                 'model': self.model,
-                'response_length': len(content),
-                'response_time_ms': response_time,
-                'response_content': content[:500] + '...' if len(content) > 500 else content,  # First 500 chars for debugging
-                'timestamp': time.time()
+                'message_count': len(messages),
+                'has_system_prompt': system_prompt is not None,
+                'options': self._get_ollama_options(**ollama_options),
+                'attempt': attempt + 1,
+                'max_retries': max_retries,
+                'timestamp': start_time
             }})
-            
-            return content.strip()
-            
-        except ollama.ResponseError as e:
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.error(f"Ollama response error after {response_time:.2f}ms: {e}", extra={'structured_data': {
-                'event_type': 'agent_ollama_error',
-                'agent_type': self.get_agent_type(),
-                'model': self.model,
-                'error_type': 'ResponseError',
-                'error_message': str(e),
-                'response_time_ms': response_time,
-                'timestamp': time.time()
-            }})
-            raise ConnectionError(f"Failed to get response from Ollama: {e}")
-        except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.error(f"Unexpected error in Ollama request after {response_time:.2f}ms: {e}", extra={'structured_data': {
-                'event_type': 'agent_ollama_error',
-                'agent_type': self.get_agent_type(),
-                'model': self.model,
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'response_time_ms': response_time,
-                'timestamp': time.time()
-            }})
-            raise
+
+            try:
+                # Prepend system message if provided
+                request_messages = messages
+                if system_prompt:
+                    request_messages = [{'role': 'system', 'content': system_prompt}] + messages
+
+                # Get options with any overrides
+                options = self._get_ollama_options(**ollama_options)
+
+                response = self.client.chat(
+                    model=self.model,
+                    messages=request_messages,
+                    options=options
+                )
+
+                content = response['message']['content']
+                if not content or not content.strip():
+                    # Empty response is a transient failure - retry
+                    raise ValueError("Empty response from model")
+
+                # Log successful response
+                response_time = (time.time() - start_time) * 1000
+                success_msg = f"Ollama response received in {response_time:.2f}ms"
+                if attempt > 0:
+                    success_msg += f" (succeeded on retry {attempt})"
+
+                agent_logger.info(success_msg, extra={'structured_data': {
+                    'event_type': 'agent_ollama_response',
+                    'agent_type': self.get_agent_type(),
+                    'model': self.model,
+                    'response_length': len(content),
+                    'response_time_ms': response_time,
+                    'response_content': content[:500] + '...' if len(content) > 500 else content,
+                    'attempt': attempt + 1,
+                    'timestamp': time.time()
+                }})
+
+                return content.strip()
+
+            except (ollama.ResponseError, ValueError) as e:
+                response_time = (time.time() - start_time) * 1000
+                last_exception = e
+
+                # Determine if we should retry
+                is_retryable = isinstance(e, ValueError) or 'timeout' in str(e).lower() or 'connection' in str(e).lower()
+
+                if attempt < max_retries - 1 and is_retryable:
+                    # Transient failure - will retry
+                    agent_logger.warning(
+                        f"Transient error in Ollama request after {response_time:.2f}ms, retrying in {current_delay:.1f}s: {e}",
+                        extra={'structured_data': {
+                            'event_type': 'agent_ollama_retry',
+                            'agent_type': self.get_agent_type(),
+                            'model': self.model,
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'response_time_ms': response_time,
+                            'attempt': attempt + 1,
+                            'retry_delay_s': current_delay,
+                            'timestamp': time.time()
+                        }}
+                    )
+
+                    # Wait before retrying (exponential backoff)
+                    time.sleep(current_delay)
+                    current_delay *= 2  # Double the delay for next retry
+
+                else:
+                    # Final attempt failed or non-retryable error
+                    agent_logger.error(
+                        f"Ollama request failed after {response_time:.2f}ms (attempt {attempt + 1}/{max_retries}): {e}",
+                        extra={'structured_data': {
+                            'event_type': 'agent_ollama_error',
+                            'agent_type': self.get_agent_type(),
+                            'model': self.model,
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'response_time_ms': response_time,
+                            'attempt': attempt + 1,
+                            'max_retries': max_retries,
+                            'timestamp': time.time()
+                        }}
+                    )
+
+                    if isinstance(e, ValueError):
+                        raise  # Re-raise ValueError as-is
+                    else:
+                        raise ConnectionError(f"Failed to get response from Ollama after {max_retries} attempts: {e}")
+
+            except Exception as e:
+                response_time = (time.time() - start_time) * 1000
+                agent_logger.error(f"Unexpected error in Ollama request after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                    'event_type': 'agent_ollama_error',
+                    'agent_type': self.get_agent_type(),
+                    'model': self.model,
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'response_time_ms': response_time,
+                    'attempt': attempt + 1,
+                    'timestamp': time.time()
+                }})
+                raise
+
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
+        raise ConnectionError(f"Failed to get response from Ollama after {max_retries} attempts")
     
-    def _generate_from_prompt(self, prompt: str, **ollama_options) -> str:
+    def _generate_from_prompt(self, prompt: str, max_retries: int = 3, retry_delay: float = 1.0, **ollama_options) -> str:
         """
-        Simple generation from a single prompt string using ollama.generate().
+        Simple generation from a single prompt string using ollama.generate() with retry logic.
 
         Uses the ollama library's native generate() method for simple prompt-based generation.
         Useful for agents that don't need complex chat conversations.
 
         Args:
             prompt: The prompt string
+            max_retries: Maximum number of retry attempts for transient failures (default: 3)
+            retry_delay: Initial delay between retries in seconds (default: 1.0, doubles each retry)
             **ollama_options: Additional Ollama options (overrides defaults)
 
         Returns:
             The model's response content
 
         Raises:
-            ConnectionError: If unable to connect to Ollama
-            ValueError: If the response is invalid
+            ConnectionError: If unable to connect to Ollama after retries
+            ValueError: If the response is invalid after retries
 
         Examples:
             >>> response = self._generate_from_prompt("What is 2+2?")
             >>> print(response)
             "4"
         """
-        start_time = time.time()
         agent_logger = logging.getLogger('bmlibrarian.agents')
 
-        # Log the request
-        agent_logger.info(f"Ollama generate request to {self.model}", extra={'structured_data': {
-            'event_type': 'agent_ollama_generate',
-            'agent_type': self.get_agent_type(),
-            'model': self.model,
-            'prompt_length': len(prompt),
-            'options': self._get_ollama_options(**ollama_options),
-            'timestamp': start_time
-        }})
+        last_exception = None
+        current_delay = retry_delay
 
-        try:
-            # Get options with any overrides
-            options = self._get_ollama_options(**ollama_options)
+        for attempt in range(max_retries):
+            start_time = time.time()
 
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt,
-                options=options
-            )
+            # Log the request (include attempt number if retrying)
+            log_msg = f"Ollama generate request to {self.model}"
+            if attempt > 0:
+                log_msg += f" (retry {attempt}/{max_retries - 1})"
 
-            content = response['response']
-            if not content or not content.strip():
-                raise ValueError("Empty response from model")
-
-            # Log successful response
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.info(f"Ollama response received in {response_time:.2f}ms", extra={'structured_data': {
-                'event_type': 'agent_ollama_response',
+            agent_logger.info(log_msg, extra={'structured_data': {
+                'event_type': 'agent_ollama_generate',
                 'agent_type': self.get_agent_type(),
                 'model': self.model,
-                'response_length': len(content),
-                'response_time_ms': response_time,
-                'timestamp': time.time()
+                'prompt_length': len(prompt),
+                'options': self._get_ollama_options(**ollama_options),
+                'attempt': attempt + 1,
+                'max_retries': max_retries,
+                'timestamp': start_time
             }})
 
-            return content.strip()
+            try:
+                # Get options with any overrides
+                options = self._get_ollama_options(**ollama_options)
 
-        except ollama.ResponseError as e:
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.error(f"Ollama response error after {response_time:.2f}ms: {e}", extra={'structured_data': {
-                'event_type': 'agent_ollama_error',
-                'agent_type': self.get_agent_type(),
-                'model': self.model,
-                'error_type': 'ResponseError',
-                'error_message': str(e),
-                'response_time_ms': response_time,
-                'timestamp': time.time()
-            }})
-            raise ConnectionError(f"Failed to get response from Ollama: {e}")
-        except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            agent_logger.error(f"Unexpected error after {response_time:.2f}ms: {e}", extra={'structured_data': {
-                'event_type': 'agent_ollama_error',
-                'agent_type': self.get_agent_type(),
-                'model': self.model,
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'response_time_ms': response_time,
-                'timestamp': time.time()
-            }})
-            raise
+                response = self.client.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    options=options
+                )
+
+                content = response['response']
+                if not content or not content.strip():
+                    # Empty response is a transient failure - retry
+                    raise ValueError("Empty response from model")
+
+                # Log successful response
+                response_time = (time.time() - start_time) * 1000
+                success_msg = f"Ollama response received in {response_time:.2f}ms"
+                if attempt > 0:
+                    success_msg += f" (succeeded on retry {attempt})"
+
+                agent_logger.info(success_msg, extra={'structured_data': {
+                    'event_type': 'agent_ollama_response',
+                    'agent_type': self.get_agent_type(),
+                    'model': self.model,
+                    'response_length': len(content),
+                    'response_time_ms': response_time,
+                    'attempt': attempt + 1,
+                    'timestamp': time.time()
+                }})
+
+                return content.strip()
+
+            except (ollama.ResponseError, ValueError) as e:
+                response_time = (time.time() - start_time) * 1000
+                last_exception = e
+
+                # Determine if we should retry
+                is_retryable = isinstance(e, ValueError) or 'timeout' in str(e).lower() or 'connection' in str(e).lower()
+
+                if attempt < max_retries - 1 and is_retryable:
+                    # Transient failure - will retry
+                    agent_logger.warning(
+                        f"Transient error in generate request after {response_time:.2f}ms, retrying in {current_delay:.1f}s: {e}",
+                        extra={'structured_data': {
+                            'event_type': 'agent_ollama_retry',
+                            'agent_type': self.get_agent_type(),
+                            'model': self.model,
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'response_time_ms': response_time,
+                            'attempt': attempt + 1,
+                            'retry_delay_s': current_delay,
+                            'timestamp': time.time()
+                        }}
+                    )
+
+                    # Wait before retrying (exponential backoff)
+                    time.sleep(current_delay)
+                    current_delay *= 2
+
+                else:
+                    # Final attempt failed or non-retryable error
+                    agent_logger.error(
+                        f"Generate request failed after {response_time:.2f}ms (attempt {attempt + 1}/{max_retries}): {e}",
+                        extra={'structured_data': {
+                            'event_type': 'agent_ollama_error',
+                            'agent_type': self.get_agent_type(),
+                            'model': self.model,
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'response_time_ms': response_time,
+                            'attempt': attempt + 1,
+                            'max_retries': max_retries,
+                            'timestamp': time.time()
+                        }}
+                    )
+
+                    if isinstance(e, ValueError):
+                        raise
+                    else:
+                        raise ConnectionError(f"Failed to get response from Ollama after {max_retries} attempts: {e}")
+
+            except Exception as e:
+                response_time = (time.time() - start_time) * 1000
+                agent_logger.error(f"Unexpected error after {response_time:.2f}ms: {e}", extra={'structured_data': {
+                    'event_type': 'agent_ollama_error',
+                    'agent_type': self.get_agent_type(),
+                    'model': self.model,
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'response_time_ms': response_time,
+                    'attempt': attempt + 1,
+                    'timestamp': time.time()
+                }})
+                raise
+
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
+        raise ConnectionError(f"Failed to get response from Ollama after {max_retries} attempts")
 
     def _generate_embedding(self, text: str, model: Optional[str] = None) -> list[float]:
         """

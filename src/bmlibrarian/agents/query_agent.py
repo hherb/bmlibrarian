@@ -36,6 +36,7 @@ class QueryAgent(BaseAgent):
         host: str = "http://localhost:11434",
         temperature: float = 0.1,
         top_p: float = 0.9,
+        max_tokens: int = 500,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
         show_model_info: bool = True
@@ -48,11 +49,17 @@ class QueryAgent(BaseAgent):
             host: The Ollama server host URL (default: http://localhost:11434)
             temperature: Model temperature for response consistency (default: 0.1)
             top_p: Model top-p sampling parameter (default: 0.9)
+            max_tokens: Maximum tokens for query generation (default: 500, min 400 required for gpt-oss:20b)
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
         """
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
+
+        # Store max_tokens for query generation
+        # Note: Minimum 400 required for models like gpt-oss:20b to avoid empty response bugs
+        # The bug threshold varies by question - some work at 200, others need 400+
+        self.max_tokens = max(400, max_tokens)  # Enforce minimum of 400
 
         # Store last search strategy metadata for audit trail
         self.last_search_metadata: Optional[Dict[str, Any]] = None
@@ -132,11 +139,13 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         
         try:
             messages = [{'role': 'user', 'content': question}]
-            
+
+            # Use configured max_tokens (stored with minimum 400 enforcement in __init__)
+            # Note: gpt-oss:20b needs at least 400 tokens to avoid empty response bugs
             query = self._make_ollama_request(
                 messages,
-                system_prompt=self.system_prompt,
-                num_predict=100
+                system_prompt=self.system_prompt
+                # num_predict will be set from self.max_tokens via _get_ollama_options()
             )
             
             # Clean up quotation marks, remove duplicates, and validate
@@ -1005,6 +1014,7 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
 
         # Phase 1: Offset-based pagination
         offset = 0
+        initial_search_returned_zero = False
         for retry in range(max_retry):
             if progress_callback:
                 progress_callback(f"Phase 1: Offset-based fetch {retry + 1}/{max_retry}")
@@ -1024,6 +1034,12 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
             # If no documents returned, we've exhausted the database
             if not documents:
                 logger.info(f"No more documents available at offset {offset}")
+                # Track if initial search (offset=0) returned zero documents
+                if offset == 0:
+                    initial_search_returned_zero = True
+                    logger.info("Initial search returned 0 documents - skipping offset-based pagination")
+                    if progress_callback:
+                        progress_callback("⚠️ Initial search returned 0 documents - proceeding to query modification")
                 break
 
             # Score the batch

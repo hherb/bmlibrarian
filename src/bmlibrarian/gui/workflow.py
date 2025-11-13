@@ -277,10 +277,26 @@ class WorkflowExecutor:
             
             # Store the final query for export
             self.last_query_text = query_text
-            
+
             # Always show the full query (not truncated)
-            update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed",
-                          f"Final query: {query_text}")
+            # If multi-model was used, show all queries
+            if hasattr(self.steps_handler, 'multi_query_generation_result') and self.steps_handler.multi_query_generation_result:
+                multi_result = self.steps_handler.multi_query_generation_result
+                from ..agents.utils.query_syntax import fix_tsquery_syntax
+
+                # Build display message showing all queries
+                query_display = f"Generated {len(multi_result.unique_queries)} unique queries:\n\n"
+                for i, query_result in enumerate(multi_result.all_queries, 1):
+                    if not query_result.error:
+                        sanitized = fix_tsquery_syntax(query_result.query)
+                        model_short = query_result.model.split(':')[0]
+                        query_display += f"{i}. [{model_short} #{query_result.attempt_number}] {sanitized}\n"
+
+                update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed", query_display.rstrip())
+            else:
+                # Single query - show as before
+                update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed",
+                              f"Final query: {query_text}")
             
             # Step 3: Search Documents
             documents = self.steps_handler.execute_document_search(
@@ -570,7 +586,34 @@ class WorkflowExecutor:
         except Exception as e:
             # Complete audit session with failed status
             self._complete_audit_session(status='failed')
-            raise Exception(f"Workflow execution failed: {str(e)}")
+
+            # Provide more user-friendly error message
+            error_msg = str(e)
+
+            # Add contextual information based on error type
+            if "Empty response from model" in error_msg:
+                error_msg += "\n\n💡 The AI model returned an empty response after multiple retries."
+                error_msg += f"\n   Model: {self.agents.get('query_agent', {}).model if 'query_agent' in self.agents else 'Unknown'}"
+                error_msg += "\n   Suggestions:"
+                error_msg += "\n   • Check if Ollama is running and not overloaded"
+                error_msg += "\n   • Try using a different model in the configuration"
+                error_msg += "\n   • Restart Ollama if the issue persists"
+            elif "Failed to connect to Ollama" in error_msg or "Connection" in error_msg:
+                error_msg += "\n\n💡 Unable to connect to the Ollama service."
+                error_msg += f"\n   Host: {self.agents.get('query_agent', {}).host if 'query_agent' in self.agents else 'Unknown'}"
+                error_msg += "\n   Suggestions:"
+                error_msg += "\n   • Ensure Ollama is running (check with 'ollama list')"
+                error_msg += "\n   • Check the host URL in your configuration"
+                error_msg += "\n   • Verify there are no network/firewall issues"
+            elif "Query generation failed" in error_msg:
+                error_msg += "\n\n💡 The query generation step failed."
+                error_msg += "\n   This usually means the AI model couldn't convert your question to a database query."
+                error_msg += "\n   Suggestions:"
+                error_msg += "\n   • Try simplifying your research question"
+                error_msg += "\n   • Check the model is properly loaded in Ollama"
+                error_msg += "\n   • Try a different model that's known to work well"
+
+            raise Exception(f"Workflow execution failed: {error_msg}")
     
     def _create_document_summary(self, documents: List[Dict]) -> str:
         """Create a summary of documents for display in auto mode.
