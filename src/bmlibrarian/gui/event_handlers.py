@@ -304,8 +304,11 @@ class EventHandlers:
 
     def _update_step_status(self, step: WorkflowStep, status: str, content: str = None):
         """Update a step's status and content."""
+        print(f"📝 _update_step_status called: step={step.name}, status={status}, content_length={len(content) if content else 0}")
+
         if step in self.app.step_cards:
             self.app.step_cards[step].update_status(status, content)
+            print(f"   ✓ Step card updated for {step.name}")
 
             # Auto-switch to relevant tab when step starts or is running
             if status in ["running", "waiting"]:
@@ -321,6 +324,9 @@ class EventHandlers:
 
             if self.app.page:
                 self.app.page.update()
+                print(f"   ✓ Page updated for {step.name}")
+        else:
+            print(f"   ⚠️ Step {step.name} not found in step_cards!")
 
     def _show_progress_bar_for_step(self, step: WorkflowStep, status: str):
         """Show the appropriate progress bar when a step starts running."""

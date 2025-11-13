@@ -292,9 +292,11 @@ class WorkflowExecutor:
                         model_short = query_result.model.split(':')[0]
                         query_display += f"{i}. [{model_short} #{query_result.attempt_number}] {sanitized}\n"
 
+                print(f"🔄 Setting GENERATE_AND_EDIT_QUERY step to 'completed' with multi-model queries")
                 update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed", query_display.rstrip())
             else:
                 # Single query - show as before
+                print(f"🔄 Setting GENERATE_AND_EDIT_QUERY step to 'completed' with single query")
                 update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "completed",
                               f"Final query: {query_text}")
             

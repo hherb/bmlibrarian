@@ -777,7 +777,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
 
         return "\n".join(lines)
 
-    def _generate_broader_query(self, original_query: str, user_question: str, attempt: int) -> str:
+    def _generate_broader_query(self, original_query: str, user_question: str, attempt: int,
+                               failed_queries: list = None, successful_queries: list = None) -> str:
         """
         Generate a broader version of the query using LLM.
 
@@ -785,23 +786,40 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             original_query: The original PostgreSQL tsquery string
             user_question: The original user question
             attempt: The attempt number (1-based) for progressive broadening
+            failed_queries: List of queries that failed (syntax error or returned 0 results)
+            successful_queries: List of queries that succeeded (returned results)
 
         Returns:
             Broader version of the query as PostgreSQL tsquery string
         """
+        # Build context from previous attempts
+        context_lines = []
+        if failed_queries:
+            context_lines.append("\nPrevious FAILED queries (syntax errors or 0 results) - DO NOT repeat these patterns:")
+            for i, q in enumerate(failed_queries[-3:], 1):  # Show last 3 failures
+                context_lines.append(f"  Failed {i}: {q}")
+
+        if successful_queries:
+            context_lines.append("\nPrevious SUCCESSFUL queries (returned results) - use similar patterns:")
+            for i, q in enumerate(successful_queries[-2:], 1):  # Show last 2 successes
+                context_lines.append(f"  Success {i}: {q}")
+
+        context_section = "\n".join(context_lines) if context_lines else ""
+
         # Create a prompt asking the LLM to broaden the query
         prompt = f"""Given the following medical research question and PostgreSQL to_tsquery string, generate a BROADER version of the query that will find more documents while staying relevant to the topic.
 
 Original Question: {user_question}
 Current Query: {original_query}
 Broadening Attempt: {attempt}
+{context_section}
 
 Instructions for broadening (attempt {attempt}):
 {"1. Add synonyms and related medical terms" if attempt == 1 else ""}
 {"2. Replace some AND operators with OR to be less restrictive" if attempt == 2 else ""}
 {"3. Remove some specific terms and keep only the core concepts" if attempt >= 3 else ""}
 
-Return ONLY the broader to_tsquery string, no explanation.
+Return ONLY the broader to_tsquery string, no explanation. Ensure all quotes are properly closed.
 
 Example:
 Original: "aspirin & myocardial infarction & prevention"
@@ -811,10 +829,12 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
         try:
             # Call Ollama LLM to generate broader query
             messages = [{'role': 'user', 'content': prompt}]
+            # Use self.max_tokens (minimum 400) instead of hardcoded 200
+            # Note: gpt-oss:20b needs at least 400 tokens to avoid empty response bugs
             response = self._make_ollama_request(
                 messages,
-                system_prompt="You are an expert at creating PostgreSQL to_tsquery search strings for medical literature. Return only the query, no explanation.",
-                num_predict=200  # Allow longer response for complex queries
+                system_prompt="You are an expert at creating PostgreSQL to_tsquery search strings for medical literature. Return only the query, no explanation."
+                # num_predict will be set from self.max_tokens via _get_ollama_options()
             )
 
             # Clean up the response
@@ -1068,14 +1088,22 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
             total_query_attempts = max_retry * max_retry
             current_query = tsquery
 
+            # Track successful and failed queries for few-shot learning
+            failed_queries = []
+            successful_queries = []
+
             for modification_attempt in range(1, total_query_attempts + 1):
                 if progress_callback:
                     progress_callback(
                         f"Phase 2: Query modification {modification_attempt}/{total_query_attempts}"
                     )
 
-                # Generate broader query
-                broader_query = self._generate_broader_query(current_query, question, modification_attempt)
+                # Generate broader query with context from previous attempts
+                broader_query = self._generate_broader_query(
+                    current_query, question, modification_attempt,
+                    failed_queries=failed_queries,
+                    successful_queries=successful_queries
+                )
 
                 # If query didn't change, skip
                 if broader_query == current_query:
@@ -1095,11 +1123,16 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
                     ))
                 except Exception as e:
                     logger.error(f"Failed to fetch with modified query: {e}")
+                    failed_queries.append(current_query)  # Track syntax errors
                     continue
 
                 if not documents:
                     logger.info(f"No documents found with modified query: {current_query}")
+                    failed_queries.append(current_query)  # Track queries that return 0 results
                     continue
+
+                # Query succeeded - track it
+                successful_queries.append(current_query)
 
                 # Score the new batch
                 _score_and_track(documents, f"Modified Query {modification_attempt}/{total_query_attempts}")
