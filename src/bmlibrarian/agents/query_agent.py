@@ -1105,9 +1105,13 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
                     successful_queries=successful_queries
                 )
 
+                # Log the generated query
+                print(f"   📝 Generated broader query #{modification_attempt}: {broader_query}")
+
                 # If query didn't change, skip
                 if broader_query == current_query:
                     logger.warning(f"Query modification {modification_attempt} produced same query, skipping")
+                    print(f"   ⚠️ Query unchanged, skipping")
                     continue
 
                 current_query = broader_query
@@ -1121,17 +1125,21 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
                         plain=False,  # We're using to_tsquery format
                         **search_kwargs
                     ))
+                    print(f"   ✓ Query executed successfully, found {len(documents)} documents")
                 except Exception as e:
                     logger.error(f"Failed to fetch with modified query: {e}")
+                    print(f"   ❌ Query failed with error: {str(e)[:100]}")
                     failed_queries.append(current_query)  # Track syntax errors
                     continue
 
                 if not documents:
                     logger.info(f"No documents found with modified query: {current_query}")
+                    print(f"   ⚠️ Query returned 0 documents")
                     failed_queries.append(current_query)  # Track queries that return 0 results
                     continue
 
                 # Query succeeded - track it
+                print(f"   ✅ Query succeeded! Found {len(documents)} documents, tracking as successful")
                 successful_queries.append(current_query)
 
                 # Score the new batch
