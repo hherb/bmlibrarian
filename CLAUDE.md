@@ -44,15 +44,24 @@ Since this project uses `uv` for package management:
 - `uv sync` - Install/sync dependencies
 - `uv run python -m [module]` - Run Python modules in the virtual environment
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
-- **CLI Applications**: 
+- **CLI Applications**:
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
+  - `uv run python fact_checker_cli.py statements.json` - Batch fact-checker for biomedical statements (stores in PostgreSQL factcheck schema)
+  - `uv run python fact_checker_cli.py statements.json --incremental` - Incremental mode (resume processing, skip already-evaluated statements)
+  - `uv run python medrxiv_import_cli.py update --download-pdfs` - Import medRxiv preprints with PDFs
+  - `uv run python medrxiv_import_cli.py fetch-pdfs --limit 100` - Download missing PDFs for existing records
+  - `uv run python medrxiv_import_cli.py status` - Show medRxiv import statistics
+  - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
+  - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
+  - `uv run python embed_documents_cli.py status` - Show embedding statistics
+  - `uv run python fact_checker_cli.py statements.json -o results.json` - Export results to JSON file (PostgreSQL is always used)
 - **GUI Applications**:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
-  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results
-  - `uv run python fact_checker_review_gui.py --input-file results.json` - Load JSON file (auto-creates SQLite database)
-  - `uv run python fact_checker_review_gui.py --input-file results.db` - Load existing database directly
-  - `uv run python fact_checker_review_gui.py --input-file results.db --incremental --user alice` - Incremental mode (only your unannotated statements) with username
+  - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results (PostgreSQL-based)
+  - `uv run python fact_checker_review_gui.py --user alice` - Launch review GUI with username (skip login dialog)
+  - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
+  - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
@@ -177,6 +186,13 @@ bmlibrarian/
 │   │       ├── __init__.py    # Query generation module exports
 │   │       ├── data_types.py  # Type-safe dataclasses for query results
 │   │       └── generator.py   # Multi-model query generator
+│   ├── importers/             # External data source importers
+│   │   ├── __init__.py        # Importer module exports
+│   │   ├── medrxiv_importer.py # MedRxiv preprint importer
+│   │   └── README.md          # Importer documentation
+│   ├── embeddings/            # Document embedding generation
+│   │   ├── __init__.py        # Embeddings module exports
+│   │   └── document_embedder.py # Document embedder (uses Ollama)
 │   └── cli/                   # Modular CLI architecture
 │       ├── __init__.py        # CLI module exports
 │       ├── config.py          # Configuration management
@@ -199,6 +215,27 @@ bmlibrarian/
 │   └── lab/                   # Experimental tools and interfaces
 │       ├── __init__.py        # Lab module exports
 │       └── query_lab.py       # QueryAgent experimental GUI
+│   └── factchecker/           # Fact-checker module (PostgreSQL-based)
+│       ├── __init__.py        # Fact-checker module exports
+│       ├── agent/             # Fact-checker agent
+│       │   ├── __init__.py
+│       │   └── fact_checker_agent.py  # FactCheckerAgent (orchestrates multi-agent workflow)
+│       ├── db/                # Database operations
+│       │   ├── __init__.py
+│       │   └── database.py    # FactCheckerDB (PostgreSQL factcheck schema)
+│       ├── cli/               # CLI application
+│       │   ├── __init__.py
+│       │   ├── app.py         # Main CLI entry point
+│       │   ├── commands.py    # Command handlers
+│       │   └── formatters.py  # Output formatting
+│       └── gui/               # Review GUI application
+│           ├── __init__.py
+│           ├── review_app.py  # Main review application
+│           ├── data_manager.py    # Database queries
+│           ├── annotation_manager.py  # Annotation logic
+│           ├── statement_display.py   # Statement UI
+│           ├── citation_display.py    # Citation cards
+│           └── dialogs.py     # Login/export dialogs
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
@@ -218,6 +255,8 @@ bmlibrarian/
 │   │   ├── counterfactual_guide.md
 │   │   ├── fact_checker_guide.md
 │   │   ├── fact_checker_review_guide.md  # Fact-checker review GUI guide
+│   │   ├── medrxiv_import_guide.md  # MedRxiv import guide
+│   │   ├── document_embedding_guide.md  # Document embedding guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -231,6 +270,8 @@ bmlibrarian/
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
+├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
+├── embed_documents_cli.py     # Document embedding generation CLI
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
