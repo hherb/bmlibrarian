@@ -743,6 +743,26 @@ class WorkflowStepsHandler:
                 print(f"\n⚠️  Found only {high_scoring_count}/{min_relevant} documents above threshold")
                 print(f"    Triggering iterative search for more relevant documents...")
 
+                # CRITICAL: Update the scoring tab with current documents BEFORE starting iterative search
+                # This allows users to see what's been found so far, even if more searching is needed
+                print(f"📊 Updating scoring tab with {len(all_scored_documents)} current documents before iterative search...")
+                if hasattr(self, 'data_updaters') and self.data_updaters:
+                    # Temporarily store in workflow executor so tab update can access them
+                    app = self.data_updaters.app
+                    if app and hasattr(app, 'workflow_executor') and app.workflow_executor:
+                        old_scored = getattr(app.workflow_executor, 'scored_documents', None)
+                        app.workflow_executor.scored_documents = all_scored_documents
+                        print(f"   - Stored {len(all_scored_documents)} scored documents in workflow_executor")
+                        self.data_updaters.update_scored_documents_if_available()
+                        print(f"✅ Scoring tab updated with initial results")
+                        # Restore old value (will be updated again after iterative search)
+                        if old_scored is not None:
+                            app.workflow_executor.scored_documents = old_scored
+                    else:
+                        print(f"⚠️ Could not update scoring tab: workflow_executor not available")
+                else:
+                    print(f"⚠️ Could not update scoring tab: data_updaters not available")
+
                 try:
                     # Execute iterative search using the research_question parameter
                     additional_docs, additional_scored = self._execute_iterative_search_gui(

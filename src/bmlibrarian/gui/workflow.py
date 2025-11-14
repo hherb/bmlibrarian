@@ -359,6 +359,7 @@ class WorkflowExecutor:
             print(f"📊 Workflow stored {len(scored_documents)} scored documents for tab access")
 
             # Force a manual update callback to trigger tab updates since scored documents are now stored
+            # This MUST happen before checking for high-scoring docs, so users can see low-scoring docs
             print(f"🔄 Triggering manual tab update for SCORE_DOCUMENTS")
             update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
                           f"Tab update: {len(scored_documents)} scored documents available")
@@ -482,8 +483,14 @@ class WorkflowExecutor:
                     self.scored_documents = scored_documents
 
                     print(f"📊 Applied {len(score_overrides)} override(s) and logged {len(score_approvals)} approval(s)")
-            
+            else:
+                print(f"📍 Interactive mode: False - skipping user approval step")
+
             # Step 6: Extract Citations
+            print(f"\n🔍 CITATION EXTRACTION STEP:")
+            print(f"   About to extract citations from {len(scored_documents)} scored documents")
+            print(f"   High-scoring (>={score_threshold}): {len([d for d, s in scored_documents if s.get('score', 0) >= score_threshold])}")
+
             # Track time and document info for enhanced progress feedback
             import time
             citation_start_time = time.time()
@@ -521,11 +528,13 @@ class WorkflowExecutor:
                 if self.dialog_manager and hasattr(self.dialog_manager, 'page'):
                     self.dialog_manager.page.update()
             
+            print(f"🚀 Calling execute_citation_extraction()...")
             citations = self.steps_handler.execute_citation_extraction(
                 research_question, scored_documents, update_callback,
                 progress_callback=citation_progress_callback
             )
-            
+            print(f"✅ execute_citation_extraction() returned {len(citations) if citations else 0} citations")
+
             # Store citations for tab access IMMEDIATELY after getting them
             self.citations = citations
             print(f"📝 Workflow stored {len(citations)} citations for tab access")

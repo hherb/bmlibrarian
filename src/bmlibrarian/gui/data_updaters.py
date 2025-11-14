@@ -381,10 +381,18 @@ class DataUpdaters:
     
     def update_scored_documents(self, scored_documents: List[tuple]):
         """Update the scored documents and refresh the scoring tab."""
+        print(f"📊 update_scored_documents called with {len(scored_documents)} documents")
         self.app.scored_documents = scored_documents
+        print(f"   - Stored in app.scored_documents")
+        print(f"   - Calling _update_scoring_tab()...")
         self._update_scoring_tab()
+        print(f"   - Back from _update_scoring_tab()")
         if self.app.page:
+            print(f"   - Calling page.update()...")
             self.app.page.update()
+            print(f"   - Page updated")
+        else:
+            print(f"   - No page to update!")
     
     def update_citations(self, citations: List[Any]):
         """Update the citations and refresh the citations tab."""
@@ -582,6 +590,9 @@ class DataUpdaters:
     
     def update_scored_documents_if_available(self):
         """Update scored documents tab if data is available."""
+        print(f"🔍 update_scored_documents_if_available called")
+        print(f"   - workflow_executor exists: {hasattr(self.app, 'workflow_executor')}")
+
         if hasattr(self.app.workflow_executor, 'scored_documents'):
             scored_docs = self.app.workflow_executor.scored_documents
             print(f"📈 Found {len(scored_docs) if scored_docs else 0} scored documents in workflow_executor")
@@ -721,20 +732,35 @@ class DataUpdaters:
         from ..config import get_search_config
         import flet as ft
 
+        print(f"📊 _update_scoring_tab called")
+        print(f"🔢 Scored documents count: {len(self.app.scored_documents) if self.app.scored_documents else 0}")
+
         if not self.app.scored_documents:
+            print(f"❌ No scored documents - exiting _update_scoring_tab")
             return
 
         # Get score threshold from configuration
         search_config = get_search_config()
         score_threshold = search_config.get('score_threshold', 2.5)
 
+        print(f"📏 Score threshold: {score_threshold}")
+
         # Sort documents by score (highest first)
         sorted_docs = sorted(self.app.scored_documents,
                            key=lambda x: x[1].get('score', 0), reverse=True)
 
+        print(f"📊 Score distribution:")
+        for i, (doc, score) in enumerate(sorted_docs[:5]):  # Show first 5
+            print(f"   {i+1}. {doc.get('title', 'Untitled')[:50]}... Score: {score.get('score', 0)}")
+        if len(sorted_docs) > 5:
+            print(f"   ... and {len(sorted_docs) - 5} more documents")
+
         # Separate into high-scoring and low-scoring
         high_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) > score_threshold]
         low_scoring_docs = [(doc, score) for doc, score in sorted_docs if score.get('score', 0) <= score_threshold]
+
+        print(f"✅ High-scoring documents (> {score_threshold}): {len(high_scoring_docs)}")
+        print(f"📉 Low-scoring documents (<= {score_threshold}): {len(low_scoring_docs)}")
 
         # Create document cards with edit functionality using CardFactory
         pdf_manager = PDFManager()
@@ -808,6 +834,7 @@ class DataUpdaters:
 
         # High-scoring documents section
         if high_scoring_docs:
+            print(f"📝 Adding {len(high_scoring_docs)} high-scoring document cards")
             all_components.append(ft.Container(
                 content=ft.Text(
                     f"🎯 HIGH-SCORING DOCUMENTS (Above threshold {score_threshold}): {len(high_scoring_docs)}",
@@ -820,9 +847,13 @@ class DataUpdaters:
             # Create editable scoring cards
             high_scoring_cards = self._create_editable_scoring_cards(high_scoring_docs, 0)
             all_components.extend(high_scoring_cards)
+            print(f"   ✅ Added {len(high_scoring_cards)} high-scoring cards")
+        else:
+            print(f"⚠️ No high-scoring documents to display")
 
         # Low-scoring documents section
         if low_scoring_docs:
+            print(f"📝 Adding {len(low_scoring_docs)} low-scoring document cards")
             all_components.append(ft.Container(
                 content=ft.Text(
                     f"📉 LOW-SCORING DOCUMENTS (At or below threshold {score_threshold}): {len(low_scoring_docs)}",
@@ -835,14 +866,26 @@ class DataUpdaters:
             # Create editable scoring cards
             low_scoring_cards = self._create_editable_scoring_cards(low_scoring_docs, len(high_scoring_docs))
             all_components.extend(low_scoring_cards)
+            print(f"   ✅ Added {len(low_scoring_cards)} low-scoring cards")
+        else:
+            print(f"⚠️ No low-scoring documents to display")
 
         # Update the scoring tab content
         if self.app.tab_manager and self.app.tab_manager.get_tab_content('scoring'):
+            print(f"📝 Updating scoring tab content with {len(all_components)} components")
             self.app.tab_manager.update_tab_content('scoring', ft.Column(
                 all_components,
                 spacing=10,
                 scroll=ft.ScrollMode.AUTO
             ))
+            print(f"✅ Scoring tab content updated successfully")
+
+            # Force page update
+            if self.app.page:
+                self.app.page.update()
+                print(f"📱 Page updated after scoring tab update")
+        else:
+            print(f"❌ tab_manager or scoring tab content not available - cannot update!")
     
     def _update_citations_tab(self):
         """Update the citations tab with extracted citations."""
