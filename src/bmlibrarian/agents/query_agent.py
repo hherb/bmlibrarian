@@ -814,16 +814,24 @@ Current Query: {original_query}
 Broadening Attempt: {attempt}
 {context_section}
 
+CRITICAL RULE for failed queries:
+If a query with single-word terms in AND clauses returns 0 results or syntax errors, you MUST expand those terms into OR clauses with synonyms/broader terms.
+
+Example of FIXING a failed query:
+Failed Query: "methylprednisolone & prophylactic & 'acute mountain sickness'"
+Problem: "methylprednisolone" is too specific and has zero matches
+Fixed Query: "(methylprednisolone | prednisolone | steroid | corticoid | corticosteroid) & (prophylactic | preventative | prevention) & ('acute mountain sickness' | AMS | 'altitude sickness')"
+
 Instructions for broadening (attempt {attempt}):
-{"1. Add synonyms and related medical terms" if attempt == 1 else ""}
-{"2. Replace some AND operators with OR to be less restrictive" if attempt == 2 else ""}
-{"3. Remove some specific terms and keep only the core concepts" if attempt >= 3 else ""}
+{"1. Expand single-word terms to OR clauses with synonyms and related medical terms\n2. Add alternative phrasing for multi-word medical terms" if attempt == 1 else ""}
+{"2. Replace some AND operators with OR to be less restrictive\n3. Use broader category terms (e.g., 'steroid' instead of specific drug names)" if attempt == 2 else ""}
+{"3. Remove very specific terms and keep only core medical concepts\n4. Use general medical categories rather than specific drugs or procedures" if attempt >= 3 else ""}
 
 Return ONLY the broader to_tsquery string, no explanation. Ensure all quotes are properly closed.
 
 Example:
 Original: "aspirin & myocardial infarction & prevention"
-Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI | AMI | cardiac event) & (prevention | prophylaxis)"
+Broader: "(aspirin | antiplatelet | anticoagulant) & (myocardial infarction | heart attack | MI | AMI | cardiac event | coronary) & (prevention | prophylaxis | preventative)"
 """
 
         try:
@@ -958,6 +966,7 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
         batch_size: int = 100,
         scoring_agent = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        max_below_threshold: int = 25,
         **search_kwargs
     ):
         """
@@ -970,6 +979,10 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
         The method scores documents as they are fetched and stops early when min_relevant
         documents above score_threshold have been found.
 
+        Early failure detection: If a query returns documents but the first max_below_threshold
+        documents all score below the threshold, the query is considered too broad/irrelevant
+        and the system moves on to try a different query.
+
         Args:
             question: Natural language research question
             min_relevant: Minimum number of high-scoring documents to find (default: 10)
@@ -978,6 +991,7 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
             batch_size: Number of documents to fetch per iteration (default: 100)
             scoring_agent: DocumentScoringAgent instance for scoring documents
             progress_callback: Optional callback for progress updates (receives status string)
+            max_below_threshold: Maximum consecutive low-scoring documents before marking query as failed (default: 25)
             **search_kwargs: Additional arguments to pass to find_abstracts()
 
         Returns:
@@ -1000,13 +1014,24 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
         all_scored_documents = []
         seen_doc_ids = set()
 
-        def _score_and_track(docs, phase_name: str):
-            """Helper to score a batch of documents and track results."""
+        def _score_and_track(docs, phase_name: str, enable_early_failure: bool = False):
+            """Helper to score a batch of documents and track results.
+
+            Args:
+                docs: List of documents to score
+                phase_name: Name of the current phase for logging
+                enable_early_failure: If True, return -1 if first max_below_threshold docs are all low-scoring
+
+            Returns:
+                Number of high-scoring documents found, or -1 if early failure detected
+            """
             if not docs:
                 return 0
 
             high_scoring_count = 0
-            for doc in docs:
+            consecutive_low_scores = 0
+
+            for idx, doc in enumerate(docs):
                 doc_id = doc.get('id')
                 if doc_id in seen_doc_ids:
                     continue
@@ -1020,6 +1045,22 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
 
                     if score_result['score'] >= score_threshold:
                         high_scoring_count += 1
+                        consecutive_low_scores = 0  # Reset counter on high score
+                    else:
+                        consecutive_low_scores += 1
+
+                        # Early failure detection: if first max_below_threshold docs are all low-scoring
+                        if enable_early_failure and consecutive_low_scores >= max_below_threshold:
+                            logger.warning(
+                                f"Early failure: {consecutive_low_scores} consecutive documents below "
+                                f"threshold {score_threshold}. Query appears too broad/irrelevant."
+                            )
+                            if progress_callback:
+                                progress_callback(
+                                    f"   ⚠️ Query too broad: {consecutive_low_scores} consecutive low-scoring documents, "
+                                    f"aborting and trying next query"
+                                )
+                            return -1  # Signal early failure
 
                     if progress_callback:
                         progress_callback(
@@ -1108,6 +1149,16 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
                 # Log the generated query
                 print(f"   📝 Generated broader query #{modification_attempt}: {broader_query}")
 
+                # Notify GUI via callback if available (for query cards)
+                if hasattr(progress_callback, 'on_query_generated'):
+                    try:
+                        progress_callback.on_query_generated(broader_query, modification_attempt)
+                        print(f"   ✓ Notified GUI of new query card")
+                    except Exception as e:
+                        logger.warning(f"Failed to notify GUI of new query: {e}")
+                        import traceback
+                        traceback.print_exc()
+
                 # If query didn't change, skip
                 if broader_query == current_query:
                     logger.warning(f"Query modification {modification_attempt} produced same query, skipping")
@@ -1138,12 +1189,24 @@ Broader: "(aspirin | antiplatelet) & (myocardial infarction | heart attack | MI 
                     failed_queries.append(current_query)  # Track queries that return 0 results
                     continue
 
-                # Query succeeded - track it
-                print(f"   ✅ Query succeeded! Found {len(documents)} documents, tracking as successful")
-                successful_queries.append(current_query)
+                # Score the new batch with early failure detection enabled
+                print(f"   ⚙️  Scoring documents to check relevance (early failure detection enabled)...")
+                result = _score_and_track(
+                    documents,
+                    f"Modified Query {modification_attempt}/{total_query_attempts}",
+                    enable_early_failure=True
+                )
 
-                # Score the new batch
-                _score_and_track(documents, f"Modified Query {modification_attempt}/{total_query_attempts}")
+                # Check for early failure (too broad query)
+                if result == -1:
+                    logger.warning(f"Query {modification_attempt} failed early failure detection (too broad)")
+                    print(f"   ❌ Query too broad - all documents irrelevant, marking as failed")
+                    failed_queries.append(current_query)  # Track as failed despite returning documents
+                    continue
+
+                # Query succeeded and found relevant documents - track it
+                print(f"   ✅ Query succeeded! Found {len(documents)} documents with {result} above threshold")
+                successful_queries.append(current_query)
 
                 # Check if we have enough now
                 high_scoring_count = len([s for d, s in all_scored_documents if s['score'] >= score_threshold])

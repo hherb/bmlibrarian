@@ -418,9 +418,40 @@ class WorkflowStepsHandler:
             if min_relevant > 0:
                 print(f"\n🔍 Attempting iterative search to find at least {min_relevant} documents...")
 
-                # Create a simple progress callback for the search phase
-                def search_progress_callback(status: str):
-                    print(f"   {status}")
+                # Create a callback wrapper that handles both progress and query generation
+                # Use self.data_updaters which is set by research_app.py after initialization
+                data_updaters_instance = getattr(self, 'data_updaters', None)
+                print(f"   🔧 Using data_updaters: {'available' if data_updaters_instance else 'None'}")
+
+                class IterativeSearchCallback:
+                    def __init__(self, data_updaters_ref):
+                        self.data_updaters = data_updaters_ref
+                        print(f"   🔧 Created IterativeSearchCallback with data_updaters={'available' if data_updaters_ref else 'None'}")
+
+                    def __call__(self, status: str):
+                        """Handle progress messages."""
+                        print(f"   {status}")
+
+                    def on_query_generated(self, query_text: str, attempt_number: int):
+                        """Handle new query generation - add query card."""
+                        print(f"   🎯 on_query_generated called: attempt={attempt_number}, query={query_text[:60]}...")
+                        if self.data_updaters:
+                            try:
+                                self.data_updaters.add_query_card(
+                                    query_text=query_text,
+                                    attempt_number=attempt_number,
+                                    source="broader"
+                                )
+                                print(f"   ✓ Query card added successfully")
+                            except Exception as e:
+                                print(f"   ⚠️  Failed to add query card: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        else:
+                            print(f"   ⚠️  No data_updaters available to add query card")
+
+                search_callback = IterativeSearchCallback(data_updaters_instance)
+                print(f"   🔧 search_callback created, has on_query_generated: {hasattr(search_callback, 'on_query_generated')}")
 
                 try:
                     # Use iterative search starting from scratch
@@ -431,7 +462,7 @@ class WorkflowStepsHandler:
                         max_retry=search_config.get('max_retry', 3),
                         batch_size=search_config.get('batch_size', 100),
                         scoring_agent=self.agents['scoring_agent'],
-                        progress_callback=search_progress_callback
+                        progress_callback=search_callback
                     )
 
                     if all_documents:
@@ -682,6 +713,11 @@ class WorkflowStepsHandler:
                     if self.tab_manager:
                         self.tab_manager.update_search_performance_stats(stats, score_threshold=threshold)
                         print("🔍 DEBUG: GUI update complete")
+
+                    # Also update query cards with scoring statistics
+                    if hasattr(self, 'data_updaters') and self.data_updaters:
+                        self.data_updaters.update_query_cards_with_scoring_stats(stats)
+                        print("🔍 DEBUG: Query cards updated with scoring stats")
                 else:
                     print("🔍 DEBUG: No statistics to display")
 

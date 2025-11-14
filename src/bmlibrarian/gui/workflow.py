@@ -357,12 +357,65 @@ class WorkflowExecutor:
             # Store scored documents for tab access IMMEDIATELY after getting them
             self.scored_documents = scored_documents
             print(f"📊 Workflow stored {len(scored_documents)} scored documents for tab access")
-            
+
             # Force a manual update callback to trigger tab updates since scored documents are now stored
             print(f"🔄 Triggering manual tab update for SCORE_DOCUMENTS")
             update_callback(WorkflowStep.SCORE_DOCUMENTS, "tab_update",
                           f"Tab update: {len(scored_documents)} scored documents available")
-            
+
+            # Check if we have any high-scoring documents (above threshold)
+            from ..config import get_search_config
+            search_config = get_search_config()
+            score_threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
+            high_scoring_docs = [(doc, score) for doc, score in scored_documents if score.get('score', 0) >= score_threshold]
+
+            print(f"\n🔍 SCORING VALIDATION:")
+            print(f"   Total scored documents: {len(scored_documents)}")
+            print(f"   Score threshold: {score_threshold}")
+            print(f"   Documents above threshold: {len(high_scoring_docs)}")
+            print(f"   Interactive mode: {self.interactive_mode}")
+
+            if len(high_scoring_docs) == 0:
+                print(f"\n⚠️  CRITICAL: No documents scored above threshold {score_threshold}")
+                print(f"    Cannot proceed to citation extraction without relevant documents")
+
+                # Update the scoring step card with warning status
+                update_callback(WorkflowStep.SCORE_DOCUMENTS, "warning",
+                              f"⚠️ 0 documents above threshold {score_threshold} - workflow cannot continue")
+
+                # In interactive mode, ask user if they want to retry with different queries
+                if self.interactive_mode and self.dialog_manager:
+                    retry_decision = self.dialog_manager.show_insufficient_scoring_dialog(
+                        scored_count=len(high_scoring_docs),
+                        threshold=score_threshold,
+                        total_docs=len(documents)
+                    )
+
+                    if retry_decision == "retry":
+                        print("🔄 User chose to retry with different queries - restarting from query generation")
+                        # Clear document cache and restart from query generation
+                        self.documents = []
+                        self.scored_documents = []
+                        self.citations = []
+                        # Set workflow to restart from GENERATE_AND_EDIT_QUERY
+                        update_callback(WorkflowStep.GENERATE_AND_EDIT_QUERY, "pending",
+                                      "Restarting query generation...")
+                        # Recursively call run_workflow to restart
+                        return self.run_workflow(research_question, update_callback)
+                    else:
+                        print("❌ User chose to halt - workflow cannot continue")
+                        update_callback(WorkflowStep.EXTRACT_CITATIONS, "blocked",
+                                      "⛔ Blocked: No high-scoring documents available")
+                        return  # Halt workflow
+                else:
+                    # In auto mode, halt the workflow
+                    print("❌ Auto mode: Halting workflow due to insufficient scoring results")
+                    update_callback(WorkflowStep.EXTRACT_CITATIONS, "blocked",
+                                  "⛔ Blocked: No high-scoring documents available")
+                    return  # Halt workflow
+
+            print(f"✓ Found {len(high_scoring_docs)} documents above threshold - proceeding to citation extraction")
+
             # Interactive review of scored documents with potential human overrides/approvals
             score_data = {}
             if self.interactive_mode:

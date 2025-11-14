@@ -118,6 +118,10 @@ class ResearchGUI:
         self.workflow_executor = WorkflowExecutor(self.agents, self.config_overrides, self.tab_manager)  # Pass tab_manager
         self.event_handlers = EventHandlers(self)
         self.data_updaters = DataUpdaters(self)
+
+        # Pass data_updaters reference to workflow components that need it
+        if self.workflow_executor and hasattr(self.workflow_executor, 'steps_handler'):
+            self.workflow_executor.steps_handler.data_updaters = self.data_updaters
     
     def _initialize_config(self):
         """Initialize BMLibrarian configuration and components."""

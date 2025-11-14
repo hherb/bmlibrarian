@@ -27,10 +27,45 @@ class DataUpdaters:
         if hasattr(self.app.tab_manager, 'search_question_text'):
             self.app.tab_manager.search_question_text.value = question
 
-        # Update query if provided
+        # Update query if provided - create query card even for single-model mode
         if query and hasattr(self.app.tab_manager, 'search_query_text'):
-            self.app.tab_manager.search_query_text.value = query
+            from .query_cards import QueryCard
+
+            # Get model name from query agent if available
+            model_name = "Unknown Model"
+            if hasattr(self.app, 'agents') and 'query_agent' in self.app.agents:
+                model_name = self.app.agents['query_agent'].model
+
+            # Create or retrieve query card storage
+            if not hasattr(self.app, 'query_cards'):
+                self.app.query_cards = {}
+
+            # Create single query card for single-model mode
+            card_key = "query_0"
+            if card_key not in self.app.query_cards:
+                card = QueryCard(
+                    query_index=1,
+                    model_name=model_name,
+                    attempt_number=1,
+                    query_text=query,
+                    has_error=False
+                )
+                self.app.query_cards[card_key] = card
+            else:
+                # Update existing card
+                card = self.app.query_cards[card_key]
+                card.query_text = query
+                card._build()
+
+            # Update the display
+            self.app.tab_manager.search_query_text.value = "1 query generated"
             self.app.tab_manager.search_query_text.visible = True
+
+            # Show the card in the details section
+            if hasattr(self.app.tab_manager, 'search_queries_detail'):
+                self.app.tab_manager.search_queries_detail.controls = [card.get_control()]
+                self.app.tab_manager.search_queries_detail.visible = True
+                print(f"📊 Updated GUI search tab with single query card")
 
         # Show edit button in interactive mode
         if show_edit_button and hasattr(self.app.tab_manager, 'search_edit_button'):
@@ -54,65 +89,170 @@ class DataUpdaters:
         if hasattr(self.app.tab_manager, 'search_question_text'):
             self.app.tab_manager.search_question_text.value = question
 
-        # Replace single query text with multiple query display
+        # Replace single query text with multiple query cards
         if hasattr(self.app.tab_manager, 'search_query_text') and query_generation_result:
             from ..agents.utils.query_syntax import fix_tsquery_syntax
+            from .query_cards import QueryCard
 
-            # Create a column to hold multiple query entries
-            query_entries = []
+            # Create or retrieve query cards storage
+            if not hasattr(self.app, 'query_cards'):
+                self.app.query_cards = {}
+
+            query_card_controls = []
 
             for i, query_result in enumerate(query_generation_result.all_queries):
                 # Sanitize the query for display (even if it has an error)
                 sanitized_query = fix_tsquery_syntax(query_result.query) if query_result.query else ""
 
-                # Find matching execution stats if available (match by query text, not index)
-                result_count = None
-                if query_stats and sanitized_query:
+                # Create query card if it doesn't exist
+                card_key = f"query_{i}"
+                if card_key not in self.app.query_cards:
+                    card = QueryCard(
+                        query_index=i + 1,
+                        model_name=query_result.model,
+                        attempt_number=query_result.attempt_number,
+                        query_text=sanitized_query,
+                        has_error=bool(query_result.error),
+                        error_message=query_result.error
+                    )
+                    self.app.query_cards[card_key] = card
+                else:
+                    card = self.app.query_cards[card_key]
+
+                # Update statistics if available
+                if query_stats and sanitized_query and not query_result.error:
                     for stat in query_stats:
-                        # Match by query text content since indices may not align due to filtering
+                        # Match by query text content
                         if stat['query_text'] == sanitized_query:
-                            result_count = stat['result_count'] if stat['success'] else "ERROR"
-                            print(f"📊 Matched query {i+1}: '{sanitized_query[:50]}...' -> {result_count} results")
+                            if stat['success']:
+                                card.update_stats(
+                                    total_documents=stat['result_count'],
+                                    execution_time=stat.get('execution_time')
+                                )
+                                print(f"📊 Updated card {i+1}: {stat['result_count']} documents")
+                            else:
+                                # Query execution failed
+                                card.has_error = True
+                                card.error_message = stat.get('error', 'Execution failed')
                             break
 
-                    # Debug: if no match found, log it
-                    if result_count is None:
-                        print(f"⚠️  No stats match for query {i+1}: '{sanitized_query[:50]}...'")
-                        print(f"   Available stats queries: {[s['query_text'][:50] for s in query_stats]}")
+                query_card_controls.append(card.get_control())
 
-                # Build query display string
-                model_name = query_result.model.split(':')[0]  # Shorten model name
-
-                # Show error status if query failed during generation
-                if query_result.error:
-                    query_display = f"model {model_name} attempt {query_result.attempt_number}: GENERATION FAILED"
-                else:
-                    query_display = f"model {model_name} attempt {query_result.attempt_number}: {sanitized_query}"
-                    if result_count is not None:
-                        query_display += f"  results: {result_count}"
-
-                # Create text widget for this query
-                query_text = ft.Text(
-                    query_display,
-                    size=11,
-                    selectable=True,
-                    color=ft.Colors.GREY_800 if not query_result.error and result_count != "ERROR" else ft.Colors.RED_700
-                )
-                query_entries.append(query_text)
-
-            # Replace the single text widget with a column
-            if query_entries:
-                self.app.tab_manager.search_query_text.value = f"{len(query_entries)} queries generated"
+            # Update summary text
+            if query_card_controls:
+                self.app.tab_manager.search_query_text.value = f"{len(query_card_controls)} queries generated"
                 self.app.tab_manager.search_query_text.visible = True
 
                 # Update the detailed query list
                 if hasattr(self.app.tab_manager, 'search_queries_detail'):
-                    self.app.tab_manager.search_queries_detail.controls = query_entries
+                    self.app.tab_manager.search_queries_detail.controls = query_card_controls
                     self.app.tab_manager.search_queries_detail.visible = True
-                    print(f"📊 Updated GUI search tab with {len(query_entries)} queries, stats={'available' if query_stats else 'not yet'}")
+                    print(f"📊 Updated GUI search tab with {len(query_card_controls)} query cards, stats={'available' if query_stats else 'pending'}")
 
         if self.app.page:
             self.app.page.update()
+
+    def add_query_card(self, query_text: str, model_name: str = None, attempt_number: int = 1,
+                       source: str = "broader", total_documents: int = None):
+        """Add a new query card dynamically (for iteratively generated queries).
+
+        Args:
+            query_text: The PostgreSQL tsquery string
+            model_name: Name of the model (defaults to query agent's model)
+            attempt_number: Attempt number for this query
+            source: Source of the query ("initial", "broader", "retry")
+            total_documents: Number of documents found (if known)
+        """
+        from .query_cards import QueryCard
+
+        # Get model name if not provided
+        if model_name is None and hasattr(self.app, 'agents') and 'query_agent' in self.app.agents:
+            model_name = self.app.agents['query_agent'].model
+
+        # Create or retrieve query card storage
+        if not hasattr(self.app, 'query_cards'):
+            self.app.query_cards = {}
+
+        # Determine next card index
+        next_index = len(self.app.query_cards) + 1
+        card_key = f"query_{len(self.app.query_cards)}"
+
+        # Create new card
+        card = QueryCard(
+            query_index=next_index,
+            model_name=model_name or "Unknown",
+            attempt_number=attempt_number,
+            query_text=query_text,
+            has_error=False
+        )
+
+        # Set initial stats if provided
+        if total_documents is not None:
+            card.update_stats(total_documents=total_documents)
+
+        self.app.query_cards[card_key] = card
+
+        # Update the display
+        if hasattr(self.app.tab_manager, 'search_query_text'):
+            self.app.tab_manager.search_query_text.value = f"{len(self.app.query_cards)} queries generated"
+
+        # Refresh cards display
+        if hasattr(self.app.tab_manager, 'search_queries_detail'):
+            # Sort cards by index to maintain order
+            sorted_cards = sorted(self.app.query_cards.items(), key=lambda x: int(x[0].split('_')[1]))
+            query_card_controls = [card.get_control() for _, card in sorted_cards]
+            self.app.tab_manager.search_queries_detail.controls = query_card_controls
+            self.app.tab_manager.search_queries_detail.visible = True
+
+        if self.app.page:
+            self.app.page.update()
+
+        print(f"📊 Added query card #{next_index}: {query_text[:60]}...")
+        return card
+
+    def update_query_cards_with_scoring_stats(self, performance_stats: List[Any]):
+        """Update query cards with scoring statistics (high-scoring, unique counts).
+
+        Args:
+            performance_stats: List of QueryPerformanceStats from performance tracker
+        """
+        if not hasattr(self.app, 'query_cards') or not self.app.query_cards:
+            print("⚠️  No query cards to update")
+            return
+
+        if not performance_stats:
+            print("⚠️  No performance stats provided")
+            return
+
+        from ..agents.utils.query_syntax import fix_tsquery_syntax
+
+        print(f"📊 Updating {len(self.app.query_cards)} query cards with scoring statistics")
+
+        # Update each card with its performance stats
+        for i, stat in enumerate(performance_stats):
+            card_key = f"query_{i}"
+            if card_key in self.app.query_cards:
+                card = self.app.query_cards[card_key]
+
+                # Update card with scoring statistics
+                card.update_stats(
+                    high_scoring_documents=stat.high_scoring_documents,
+                    unique_high_scoring=stat.unique_high_scoring
+                )
+
+                print(f"   Card {i+1}: {stat.high_scoring_documents} high-scoring, {stat.unique_high_scoring} unique")
+
+        # Refresh the display
+        if hasattr(self.app.tab_manager, 'search_queries_detail'):
+            # Sort cards by index
+            sorted_cards = sorted(self.app.query_cards.items(), key=lambda x: int(x[0].split('_')[1]))
+            query_card_controls = [card.get_control() for _, card in sorted_cards]
+            self.app.tab_manager.search_queries_detail.controls = query_card_controls
+
+        if self.app.page:
+            self.app.page.update()
+
+        print("✓ Query cards updated with scoring statistics")
 
     def show_search_progress(self, visible: bool = True):
         """Show or hide the search progress bar."""

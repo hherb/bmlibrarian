@@ -89,7 +89,119 @@ class DialogManager:
         )
         self.page.dialog.open = True
         self.page.update()
-    
+
+    def show_insufficient_scoring_dialog(self, scored_count: int, threshold: float, total_docs: int) -> str:
+        """Show dialog when no documents score above threshold.
+
+        Args:
+            scored_count: Number of documents above threshold (should be 0)
+            threshold: The score threshold that was used
+            total_docs: Total number of documents that were scored
+
+        Returns:
+            "retry" if user wants to retry with different queries
+            "halt" if user wants to stop the workflow
+        """
+        decision = {"value": "halt"}  # Default to halt
+
+        def handle_retry(e):
+            decision["value"] = "retry"
+            self.page.dialog.open = False
+            self.page.dialog = None
+            self.page.update()
+
+        def handle_halt(e):
+            decision["value"] = "halt"
+            self.page.dialog.open = False
+            self.page.dialog = None
+            self.page.update()
+
+        # Create message with detailed information
+        message = ft.Column(
+            [
+                ft.Text(
+                    f"❌ No documents scored above threshold {threshold}",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.RED_700
+                ),
+                ft.Container(height=10),
+                ft.Text(
+                    f"Scored {total_docs} documents total, but 0 were relevant enough to continue.",
+                    size=12
+                ),
+                ft.Container(height=10),
+                ft.Text(
+                    "This usually means:",
+                    size=12,
+                    weight=ft.FontWeight.BOLD
+                ),
+                ft.Text("  • The query didn't match relevant literature", size=11),
+                ft.Text("  • The database has limited content on this topic", size=11),
+                ft.Text("  • The query was too specific or too broad", size=11),
+                ft.Container(height=15),
+                ft.Text(
+                    "What would you like to do?",
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_900
+                ),
+                ft.Container(height=5),
+                ft.Text(
+                    "• Retry: Generate new queries and search again",
+                    size=11,
+                    color=ft.Colors.GREEN_700
+                ),
+                ft.Text(
+                    "• Stop: Halt the workflow (you can adjust the research question and try again)",
+                    size=11,
+                    color=ft.Colors.ORANGE_700
+                ),
+            ],
+            tight=True,
+            spacing=2
+        )
+
+        self.page.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                [
+                    ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.ORANGE_700, size=30),
+                    ft.Text("Insufficient Scoring Results", color=ft.Colors.ORANGE_700)
+                ],
+                spacing=10
+            ),
+            content=ft.Container(
+                content=message,
+                width=500
+            ),
+            actions=[
+                ft.TextButton(
+                    "Stop Workflow",
+                    icon=ft.Icons.STOP,
+                    on_click=handle_halt
+                ),
+                ft.ElevatedButton(
+                    "Retry with New Queries",
+                    icon=ft.Icons.REFRESH,
+                    bgcolor=ft.Colors.GREEN_600,
+                    color=ft.Colors.WHITE,
+                    on_click=handle_retry
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+        )
+
+        self.page.dialog.open = True
+        self.page.update()
+
+        # Wait for user decision (blocking)
+        import time
+        while self.page.dialog and self.page.dialog.open:
+            time.sleep(0.1)
+
+        return decision["value"]
+
     def show_preview_dialog(self, report_content: str):
         """Show report preview dialog."""
         if not report_content:
