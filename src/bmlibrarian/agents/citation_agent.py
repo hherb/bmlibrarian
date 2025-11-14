@@ -56,7 +56,8 @@ class CitationFinderAgent(BaseAgent):
                  callback: Optional[Callable[[str, str], None]] = None,
                  orchestrator=None,
                  show_model_info: bool = True,
-                 audit_conn: Optional[psycopg.Connection] = None):
+                 audit_conn: Optional[psycopg.Connection] = None,
+                 max_retries: int = 3):
         """
         Initialize the CitationFinderAgent.
 
@@ -69,10 +70,12 @@ class CitationFinderAgent(BaseAgent):
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
             audit_conn: Optional PostgreSQL connection for audit tracking
+            max_retries: Maximum number of retry attempts for failed citation extractions (default: 3)
         """
         super().__init__(model=model, host=host, temperature=temperature, top_p=top_p,
                         callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "citation_finder_agent"
+        self.max_retries = max_retries
 
         # Initialize audit tracking components if connection provided
         self._citation_tracker = None
@@ -235,33 +238,44 @@ class CitationFinderAgent(BaseAgent):
             'fuzzy_match_rate': self._validation_stats['fuzzy_matches'] / total
         }
 
-    def extract_citation_from_document(self, user_question: str, document: Dict[str, Any], 
+    def extract_citation_from_document(self, user_question: str, document: Dict[str, Any],
                                      min_relevance: float = 0.7) -> Optional[Citation]:
         """
-        Extract relevant citation from a single document.
-        
+        Extract relevant citation from a single document with retry on validation failure.
+
         Args:
             user_question: The original user question
             document: Document with abstract/content and metadata
             min_relevance: Minimum relevance score to accept citation
-            
+
         Returns:
             Citation object if relevant passage found, None otherwise
         """
         if not self.test_connection():
             logger.error("Cannot connect to Ollama - citation extraction unavailable")
             return None
-        
-        try:
-            # Build prompt for citation extraction
-            abstract = document.get('abstract', '')
-            title = document.get('title', 'Untitled')
-            
-            if not abstract:
-                logger.warning(f"No abstract found for document {document.get('id', 'unknown')}")
-                return None
-            
-            prompt = f"""You are a research assistant tasked with extracting relevant citations from scientific papers.
+
+        # Get document metadata for logging
+        doc_id = document.get('id', 'unknown')
+        abstract = document.get('abstract', '')
+        title = document.get('title', 'Untitled')
+
+        if not abstract:
+            logger.warning(f"No abstract found for document {doc_id}")
+            return None
+
+        # Retry loop: initial attempt + retries
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Log retry attempts (skip for first attempt)
+                if attempt > 0:
+                    logger.info(
+                        f"🔄 RETRY {attempt}/{self.max_retries} for document {doc_id} "
+                        f"(previous validation failed)"
+                    )
+
+                # Build prompt for citation extraction
+                prompt = f"""You are a research assistant tasked with extracting relevant citations from scientific papers.
 
 Given the user question and document abstract below, extract the most relevant passage that directly answers or significantly contributes to answering the question.
 
@@ -301,85 +315,111 @@ If no sufficiently relevant content is found, respond with:
 
 Respond only with valid JSON."""
 
-            # Make request to Ollama using BaseAgent method
-            try:
-                llm_response = self._generate_from_prompt(prompt)
-            except (ConnectionError, ValueError) as e:
-                logger.error(f"Ollama request failed for document {document.get('id', 'unknown')}: {e}")
-                return None
-            
-            # Parse JSON response using inherited robust method from BaseAgent
-            try:
-                citation_data = self._parse_json_response(llm_response)
-            except json.JSONDecodeError as e:
-                logger.error(f"Could not parse JSON from LLM response: {e}")
-                return None
-            
-            # Check if relevant content was found
-            if not citation_data.get('has_relevant_content', False):
-                return None
-            
-            relevance_score = float(citation_data.get('relevance_score', 0.0))
-            if relevance_score < min_relevance:
-                logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
-                return None
+                # Make request to Ollama and parse JSON (with automatic retry on parse failures)
+                try:
+                    citation_data = self._generate_and_parse_json(
+                        prompt,
+                        max_retries=self.max_retries,
+                        retry_context=f"citation extraction (doc {doc_id})"
+                    )
+                except json.JSONDecodeError as e:
+                    logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
+                    return None
+                except (ConnectionError, ValueError) as e:
+                    logger.error(f"Ollama request failed for document {doc_id}: {e}")
+                    return None
 
-            # VALIDATE citation text and extract exact match from abstract
-            self._validation_stats['total_extractions'] += 1
+                # Check if relevant content was found
+                if not citation_data.get('has_relevant_content', False):
+                    return None
 
-            is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
-                citation_data['relevant_passage'],
-                abstract
-            )
+                relevance_score = float(citation_data.get('relevance_score', 0.0))
+                if relevance_score < min_relevance:
+                    logger.debug(f"Relevance score {relevance_score} below threshold {min_relevance}")
+                    return None
 
-            if not is_valid:
-                self._validation_stats['validations_failed'] += 1
-                self._validation_stats['failed_citations'].append({
-                    'document_id': document.get('id'),
-                    'similarity': similarity,
-                    'llm_passage': citation_data['relevant_passage'][:200],
-                    'question': user_question
-                })
-
-                logger.warning(
-                    f"🚫 CITATION VALIDATION FAILED (document {document.get('id')}): "
-                    f"similarity={similarity:.3f} < threshold=0.95. "
-                    f"LLM generated text that doesn't match abstract. REJECTING. "
-                    f"LLM output: {citation_data['relevant_passage'][:100]}..."
-                )
-                return None  # Reject hallucinated citations
-
-            # Track validation success
-            self._validation_stats['validations_passed'] += 1
-            if similarity == 1.0:
-                self._validation_stats['exact_matches'] += 1
-            else:
-                self._validation_stats['fuzzy_matches'] += 1
-                logger.info(
-                    f"✓ Citation fuzzy-matched (similarity={similarity:.3f}). "
-                    f"Replaced LLM text with exact abstract text (doc {document.get('id')})"
+                # VALIDATE citation text and extract exact match from abstract
+                is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
+                    citation_data['relevant_passage'],
+                    abstract
                 )
 
-            # Create citation with EXACT text from abstract (not LLM-generated)
-            citation = Citation(
-                passage=exact_text,  # ← Use extracted exact text, not LLM's version!
-                summary=citation_data['summary'],
-                relevance_score=relevance_score,
-                document_id=str(document['id']),  # Ensure string format
-                document_title=title,
-                authors=document.get('authors', []),
-                publication_date=document.get('publication_date', 'Unknown'),
-                pmid=document.get('pmid'),
-                doi=document.get('doi'),
-                publication=document.get('publication'),
-                abstract=abstract  # Include full abstract for citation review
-            )
-            
-            return citation
-            
-        except Exception as e:
-            logger.error(f"Error extracting citation from document {document.get('id')}: {e}")
-            return None
+                if not is_valid:
+                    # Validation failed - check if we should retry
+                    is_final_attempt = (attempt == self.max_retries)
+
+                    if is_final_attempt:
+                        # Final attempt failed - track statistics and reject
+                        self._validation_stats['total_extractions'] += 1
+                        self._validation_stats['validations_failed'] += 1
+                        self._validation_stats['failed_citations'].append({
+                            'document_id': doc_id,
+                            'similarity': similarity,
+                            'llm_passage': citation_data['relevant_passage'][:200],
+                            'question': user_question,
+                            'attempts': attempt + 1
+                        })
+
+                        logger.warning(
+                            f"🚫 CITATION VALIDATION FAILED (document {doc_id}): "
+                            f"similarity={similarity:.3f} < threshold=0.95. "
+                            f"All {self.max_retries + 1} attempts exhausted. REJECTING. "
+                            f"LLM output: {citation_data['relevant_passage'][:100]}..."
+                        )
+                        return None
+                    else:
+                        # Not final attempt - log and retry
+                        logger.warning(
+                            f"⚠️  CITATION VALIDATION FAILED (document {doc_id}, attempt {attempt + 1}): "
+                            f"similarity={similarity:.3f} < threshold=0.95. "
+                            f"Will retry ({self.max_retries - attempt} attempts remaining)..."
+                        )
+                        continue  # Retry
+
+                # Validation succeeded! Track statistics and return citation
+                self._validation_stats['total_extractions'] += 1
+                self._validation_stats['validations_passed'] += 1
+
+                if similarity == 1.0:
+                    self._validation_stats['exact_matches'] += 1
+                else:
+                    self._validation_stats['fuzzy_matches'] += 1
+                    logger.info(
+                        f"✓ Citation fuzzy-matched (similarity={similarity:.3f}). "
+                        f"Replaced LLM text with exact abstract text (doc {doc_id})"
+                    )
+
+                # Log successful retry if this wasn't the first attempt
+                if attempt > 0:
+                    logger.info(
+                        f"✅ RETRY SUCCESS (document {doc_id}): "
+                        f"Validation passed on attempt {attempt + 1}/{self.max_retries + 1}"
+                    )
+
+                # Create citation with EXACT text from abstract (not LLM-generated)
+                citation = Citation(
+                    passage=exact_text,  # ← Use extracted exact text, not LLM's version!
+                    summary=citation_data['summary'],
+                    relevance_score=relevance_score,
+                    document_id=str(document['id']),  # Ensure string format
+                    document_title=title,
+                    authors=document.get('authors', []),
+                    publication_date=document.get('publication_date', 'Unknown'),
+                    pmid=document.get('pmid'),
+                    doi=document.get('doi'),
+                    publication=document.get('publication'),
+                    abstract=abstract  # Include full abstract for citation review
+                )
+
+                return citation
+
+            except Exception as e:
+                logger.error(f"Error extracting citation from document {doc_id} (attempt {attempt + 1}): {e}")
+                # Don't retry on unexpected exceptions
+                return None
+
+        # Should never reach here, but just in case
+        return None
     
     def process_scored_documents_for_citations(self, user_question: str,
                                              scored_documents: List[Tuple[Dict, Dict]],
