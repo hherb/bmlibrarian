@@ -674,6 +674,202 @@ class BaseAgent(ABC):
         # If all attempts fail, raise the original error
         raise json.JSONDecodeError("Could not parse JSON response", response, 0)
 
+    def _generate_and_parse_json(
+        self,
+        prompt: str,
+        max_retries: int = 3,
+        retry_context: str = "LLM generation",
+        **ollama_options
+    ) -> Dict:
+        """
+        Generate LLM response and parse as JSON with automatic retry on parse failures.
+
+        When JSON parsing fails, regenerates the response (the LLM likely didn't follow
+        instructions). This is more effective than retrying parse on the same bad response.
+
+        Args:
+            prompt: The prompt string
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_context: Description for logging (e.g., "citation extraction", "evaluation")
+            **ollama_options: Additional Ollama options
+
+        Returns:
+            Parsed JSON dictionary
+
+        Raises:
+            json.JSONDecodeError: If JSON cannot be parsed after all retries
+            ConnectionError: If unable to connect to Ollama
+
+        Example:
+            >>> result = self._generate_and_parse_json(
+            ...     prompt="Return JSON with field 'answer'",
+            ...     max_retries=3,
+            ...     retry_context="question answering"
+            ... )
+        """
+        agent_logger = logging.getLogger('bmlibrarian.agents')
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Log retry attempts (skip for first attempt)
+                if attempt > 0:
+                    agent_logger.info(
+                        f"🔄 JSON PARSE RETRY {attempt}/{max_retries} for {retry_context} "
+                        f"(previous parse failed)"
+                    )
+
+                # Generate response from LLM
+                llm_response = self._generate_from_prompt(prompt, **ollama_options)
+
+                # Try to parse as JSON
+                try:
+                    parsed = self._parse_json_response(llm_response)
+
+                    # Success! Log if this was a retry
+                    if attempt > 0:
+                        agent_logger.info(
+                            f"✅ JSON PARSE RETRY SUCCESS for {retry_context}: "
+                            f"Valid JSON received on attempt {attempt + 1}/{max_retries + 1}"
+                        )
+
+                    return parsed
+
+                except json.JSONDecodeError as parse_error:
+                    is_final_attempt = (attempt == max_retries)
+
+                    if is_final_attempt:
+                        # Final attempt failed - log and raise
+                        agent_logger.error(
+                            f"🚫 JSON PARSE FAILED for {retry_context}: "
+                            f"All {max_retries + 1} attempts exhausted. "
+                            f"Last response: {llm_response[:200]}..."
+                        )
+                        raise json.JSONDecodeError(
+                            f"Could not parse JSON response after {max_retries + 1} attempts",
+                            llm_response,
+                            0
+                        )
+                    else:
+                        # Not final attempt - log and retry with new generation
+                        agent_logger.warning(
+                            f"⚠️  JSON PARSE FAILED for {retry_context} (attempt {attempt + 1}): "
+                            f"{str(parse_error)}. Will retry ({max_retries - attempt} attempts remaining)..."
+                        )
+                        continue  # Retry with new generation
+
+            except (ConnectionError, ValueError) as e:
+                # Don't retry on connection errors - these need user intervention
+                agent_logger.error(f"LLM connection error during {retry_context}: {e}")
+                raise
+
+        # Should never reach here, but just in case
+        raise json.JSONDecodeError(
+            f"Could not parse JSON response for {retry_context}",
+            "",
+            0
+        )
+
+    def _chat_and_parse_json(
+        self,
+        messages: list,
+        system_prompt: Optional[str] = None,
+        max_retries: int = 3,
+        retry_context: str = "LLM chat",
+        **ollama_options
+    ) -> Dict:
+        """
+        Send chat messages and parse response as JSON with automatic retry on parse failures.
+
+        Similar to _generate_and_parse_json but uses chat-based API instead of simple generation.
+        When JSON parsing fails, regenerates the response (the LLM likely didn't follow instructions).
+
+        Args:
+            messages: List of message dictionaries for the conversation
+            system_prompt: Optional system prompt to prepend
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_context: Description for logging (e.g., "evaluation", "analysis")
+            **ollama_options: Additional Ollama options
+
+        Returns:
+            Parsed JSON dictionary
+
+        Raises:
+            json.JSONDecodeError: If JSON cannot be parsed after all retries
+            ConnectionError: If unable to connect to Ollama
+
+        Example:
+            >>> result = self._chat_and_parse_json(
+            ...     messages=[{'role': 'user', 'content': 'Analyze this'}],
+            ...     max_retries=3,
+            ...     retry_context="statement evaluation"
+            ... )
+        """
+        agent_logger = logging.getLogger('bmlibrarian.agents')
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Log retry attempts (skip for first attempt)
+                if attempt > 0:
+                    agent_logger.info(
+                        f"🔄 JSON PARSE RETRY {attempt}/{max_retries} for {retry_context} "
+                        f"(previous parse failed)"
+                    )
+
+                # Generate chat response from LLM
+                llm_response = self._make_ollama_request(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    **ollama_options
+                )
+
+                # Try to parse as JSON
+                try:
+                    parsed = self._parse_json_response(llm_response)
+
+                    # Success! Log if this was a retry
+                    if attempt > 0:
+                        agent_logger.info(
+                            f"✅ JSON PARSE RETRY SUCCESS for {retry_context}: "
+                            f"Valid JSON received on attempt {attempt + 1}/{max_retries + 1}"
+                        )
+
+                    return parsed
+
+                except json.JSONDecodeError as parse_error:
+                    is_final_attempt = (attempt == max_retries)
+
+                    if is_final_attempt:
+                        # Final attempt failed - log and raise
+                        agent_logger.error(
+                            f"🚫 JSON PARSE FAILED for {retry_context}: "
+                            f"All {max_retries + 1} attempts exhausted. "
+                            f"Last response: {llm_response[:200]}..."
+                        )
+                        raise json.JSONDecodeError(
+                            f"Could not parse JSON response after {max_retries + 1} attempts",
+                            llm_response,
+                            0
+                        )
+                    else:
+                        # Not final attempt - log and retry with new generation
+                        agent_logger.warning(
+                            f"⚠️  JSON PARSE FAILED for {retry_context} (attempt {attempt + 1}): "
+                            f"{str(parse_error)}. Will retry ({max_retries - attempt} attempts remaining)..."
+                        )
+                        continue  # Retry with new generation
+
+            except (ConnectionError, ValueError) as e:
+                # Don't retry on connection errors - these need user intervention
+                agent_logger.error(f"LLM connection error during {retry_context}: {e}")
+                raise
+
+        # Should never reach here, but just in case
+        raise json.JSONDecodeError(
+            f"Could not parse JSON response for {retry_context}",
+            "",
+            0
+        )
+
     @abstractmethod
     def get_agent_type(self) -> str:
         """
