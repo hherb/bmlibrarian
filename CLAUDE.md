@@ -44,6 +44,11 @@ Since this project uses `uv` for package management:
 - `uv sync` - Install/sync dependencies
 - `uv run python -m [module]` - Run Python modules in the virtual environment
 - **Testing**: `uv run python -m pytest tests/` - Run comprehensive test suite
+- **Database Setup & Battle Testing**:
+  - `uv run python initial_setup_and_download.py test_database.env` - Complete database setup and import testing
+  - `uv run python initial_setup_and_download.py test.env --skip-medrxiv --skip-pubmed` - Schema setup only
+  - `uv run python initial_setup_and_download.py test.env --medrxiv-days 1 --pubmed-max-results 10` - Quick validation test
+  - See [SETUP_GUIDE.md](SETUP_GUIDE.md) for comprehensive documentation
 - **CLI Applications**:
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
   - `uv run python fact_checker_cli.py statements.json` - Batch fact-checker for biomedical statements (stores in PostgreSQL factcheck schema)
@@ -285,6 +290,11 @@ bmlibrarian/
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
 ├── embed_documents_cli.py     # Document embedding generation CLI
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
+├── initial_setup_and_download.py  # Database setup and battle-testing script
+├── baseline_schema.sql        # Base PostgreSQL schema definition
+├── migrations/                # Database migration scripts
+├── test_database.env.example  # Example environment file for testing
+├── SETUP_GUIDE.md            # Comprehensive setup and testing guide
 ├── pyproject.toml             # Project configuration and dependencies
 ├── uv.lock                    # Locked dependency versions
 ├── .env                       # Environment configuration
