@@ -11,27 +11,30 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import asdict
 
-from ..db.database import FactCheckerDB, Annotator, HumanAnnotation
+from ..db import get_fact_checker_db, Annotator, HumanAnnotation, AbstractFactCheckerDB
 
 
 class FactCheckDataManager:
     """Manages data loading and saving for fact-check review GUI."""
 
-    def __init__(self, incremental: bool = False):
+    def __init__(self, incremental: bool = False, db_file: Optional[str] = None):
         """
         Initialize data manager.
 
         Args:
             incremental: If True, only load statements without AI evaluations
+            db_file: Path to SQLite database file (None for PostgreSQL)
         """
         self.results: List[Dict[str, Any]] = []
         self.reviews: List[Dict[str, Any]] = []
         self.input_file_path: str = ""
         self.incremental: bool = incremental
+        self.db_file: Optional[str] = db_file
 
-        # Database mode (always use PostgreSQL now)
+        # Database instance (PostgreSQL or SQLite via abstraction layer)
         self.using_database: bool = True
-        self.fact_checker_db: Optional[FactCheckerDB] = None
+        self.fact_checker_db: Optional[AbstractFactCheckerDB] = None
+        self.db_type: str = "sqlite" if db_file else "postgresql"
 
         # Annotator information
         self.annotator_id: Optional[int] = None
@@ -56,14 +59,17 @@ class FactCheckDataManager:
 
     def load_from_database(self, skip_incremental_filter: bool = False):
         """
-        Load results from PostgreSQL database.
+        Load results from database (PostgreSQL or SQLite).
 
         Args:
             skip_incremental_filter: If True, don't apply incremental filtering even if incremental mode is on
         """
         print(f"DEBUG: load_from_database called, incremental={self.incremental}, skip_filter={skip_incremental_filter}")
-        self.fact_checker_db = FactCheckerDB()
-        print(f"DEBUG: FactCheckerDB initialized")
+        print(f"DEBUG: Database type={self.db_type}, db_file={self.db_file}")
+
+        # Use factory function to get appropriate database instance
+        self.fact_checker_db = get_fact_checker_db(self.db_file)
+        print(f"DEBUG: Database instance created: {type(self.fact_checker_db).__name__}")
         self.using_database = True
 
         # Register annotator if info is available
@@ -138,7 +144,11 @@ class FactCheckDataManager:
             self.reviews = filtered_reviews
             print(f"ℹ️  Incremental mode: Showing {len(self.results)} statements without your annotations (out of {len(all_data)} total)")
 
-        self.input_file_path = "PostgreSQL Database"
+        # Set input file path based on database type
+        if self.db_type == "sqlite":
+            self.input_file_path = f"SQLite Package: {self.db_file}"
+        else:
+            self.input_file_path = "PostgreSQL Database"
 
     def load_from_json(self, json_path: str):
         """
