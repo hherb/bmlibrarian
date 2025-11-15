@@ -5,5 +5,6 @@ Experimental interfaces and tools for testing and developing BMLibrarian compone
 """
 
 from .query_lab import QueryAgentLab
+from .citation_lab import CitationAgentLab
 
-__all__ = ['QueryAgentLab']
+__all__ = ['QueryAgentLab', 'CitationAgentLab']
