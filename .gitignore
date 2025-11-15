@@ -24,6 +24,7 @@ src/bmlibrarian/gui/research_app_refactored.py
 *.db
 logs/
 PR_DESCRIPTION.md
+PR_MESSAGE.md
 pubmedqa_checked.json
 pubmedqa_extracted.json
 input.json
