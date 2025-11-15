@@ -39,6 +39,7 @@ class QueryCard:
 
         # Statistics (updated later)
         self.total_documents = None
+        self.unique_documents = None  # Total unique documents (not just high-scoring)
         self.high_scoring_documents = None
         self.unique_high_scoring = None
         self.execution_time = None
@@ -177,6 +178,17 @@ class QueryCard:
             )
         )
 
+        # Unique documents (total unique, not just high-scoring)
+        if self.unique_documents is not None:
+            stat_items.append(
+                self._create_stat_chip(
+                    "🔹",
+                    f"{self.unique_documents} unique",
+                    ft.Colors.CYAN_100,
+                    ft.Colors.CYAN_900
+                )
+            )
+
         # High-scoring documents (only if scoring is complete)
         if self.high_scoring_documents is not None:
             stat_items.append(
@@ -193,7 +205,7 @@ class QueryCard:
             stat_items.append(
                 self._create_stat_chip(
                     "✨",
-                    f"{self.unique_high_scoring} unique",
+                    f"{self.unique_high_scoring} unique high",
                     ft.Colors.GREEN_100,
                     ft.Colors.GREEN_900
                 )
@@ -239,6 +251,7 @@ class QueryCard:
     def update_stats(
         self,
         total_documents: int = None,
+        unique_documents: int = None,
         high_scoring_documents: int = None,
         unique_high_scoring: int = None,
         execution_time: float = None
@@ -247,12 +260,15 @@ class QueryCard:
 
         Args:
             total_documents: Total number of documents found by this query
+            unique_documents: Number of documents unique to this query (not found by other queries)
             high_scoring_documents: Number of high-scoring documents
             unique_high_scoring: Number of unique high-scoring documents
             execution_time: Query execution time in seconds
         """
         if total_documents is not None:
             self.total_documents = total_documents
+        if unique_documents is not None:
+            self.unique_documents = unique_documents
         if high_scoring_documents is not None:
             self.high_scoring_documents = high_scoring_documents
         if unique_high_scoring is not None:

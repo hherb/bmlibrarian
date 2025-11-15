@@ -234,13 +234,16 @@ class DataUpdaters:
             if card_key in self.app.query_cards:
                 card = self.app.query_cards[card_key]
 
-                # Update card with scoring statistics
+                # Update card with ALL scoring statistics
                 card.update_stats(
+                    total_documents=stat.total_documents,
+                    unique_documents=stat.unique_documents,
                     high_scoring_documents=stat.high_scoring_documents,
-                    unique_high_scoring=stat.unique_high_scoring
+                    unique_high_scoring=stat.unique_high_scoring,
+                    execution_time=stat.execution_time
                 )
 
-                print(f"   Card {i+1}: {stat.high_scoring_documents} high-scoring, {stat.unique_high_scoring} unique")
+                print(f"   Card {i+1}: {stat.total_documents} total, {stat.unique_documents} unique, {stat.high_scoring_documents} high-scoring, {stat.unique_high_scoring} unique high, {stat.execution_time:.2f}s")
 
         # Refresh the display
         if hasattr(self.app.tab_manager, 'search_queries_detail'):
