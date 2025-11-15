@@ -276,8 +276,15 @@ class QueryCard:
         if execution_time is not None:
             self.execution_time = execution_time
 
-        # Rebuild the entire card to reflect new stats
-        self._build()
+        # Rebuild ONLY the stats row and update the existing card
+        # This is much more efficient than rebuilding the entire card
+        new_stats_row = self._build_stats_row()
+
+        # Update the stats row in the existing card's content
+        if self.card_container and self.card_container.content:
+            # card_container.content is a Column with [header, spacer, query_display, spacer, stats_row]
+            self.card_container.content.controls[4] = new_stats_row
+            self.stats_row = new_stats_row
 
     def get_control(self) -> ft.Container:
         """Get the Flet control for this card."""

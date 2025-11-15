@@ -483,6 +483,35 @@ class WorkflowStepsHandler:
         # Store documents in the calling workflow BEFORE completing the step
         # This ensures documents are available when the completion callback fires
 
+        # CRITICAL: Update query cards with initial statistics (total/unique docs) IMMEDIATELY
+        # after search completes, BEFORE scoring begins. This prevents cards from being stuck
+        # in "Executing query..." state while scoring runs.
+        print(f"🔍 DEBUG: Updating query cards with initial statistics after search completes")
+        if self.performance_tracker and self.session_id and hasattr(self, 'data_updaters') and self.data_updaters:
+            try:
+                from ..config import get_search_config
+                search_config = get_search_config()
+                threshold = self.config_overrides.get('score_threshold', search_config.get('score_threshold', 2.5))
+
+                # Get query statistics (without document scores yet, so high_scoring will be 0)
+                stats = self.performance_tracker.get_query_statistics(
+                    session_id=self.session_id,
+                    score_threshold=threshold
+                )
+
+                if stats:
+                    print(f"🔍 DEBUG: Got {len(stats)} query statistics, updating query cards")
+                    # Update query cards with initial stats (total_documents, unique_documents)
+                    # high_scoring_documents will be 0 until scoring completes
+                    self.data_updaters.update_query_cards_with_scoring_stats(stats)
+                    print(f"✅ Query cards updated with initial statistics (total/unique docs)")
+                else:
+                    print(f"⚠️  No query statistics available yet")
+            except Exception as e:
+                print(f"⚠️  Failed to update query cards with initial statistics: {e}")
+                import traceback
+                traceback.print_exc()
+
         update_callback(WorkflowStep.SEARCH_DOCUMENTS, "completed",
                       f"Found {len(documents)} documents")
 
@@ -714,10 +743,10 @@ class WorkflowStepsHandler:
                         self.tab_manager.update_search_performance_stats(stats, score_threshold=threshold)
                         print("🔍 DEBUG: GUI update complete")
 
-                    # Also update query cards with scoring statistics
+                    # Also update query cards with COMPLETE statistics (including high-scoring)
                     if hasattr(self, 'data_updaters') and self.data_updaters:
                         self.data_updaters.update_query_cards_with_scoring_stats(stats)
-                        print("🔍 DEBUG: Query cards updated with scoring stats")
+                        print("✅ Query cards updated with COMPLETE statistics (including high-scoring docs)")
                 else:
                     print("🔍 DEBUG: No statistics to display")
 
