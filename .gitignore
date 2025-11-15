@@ -9,8 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-#environment variables 
+#environment variables
 .env
+*.env
 
 #generated files
 bmlibrarian_report*
