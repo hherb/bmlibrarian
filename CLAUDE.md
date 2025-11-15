@@ -75,6 +75,11 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_review_gui.py --user alice` - Launch review GUI with username (skip login dialog)
   - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
   - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
+  - `uv run python fact_checker_review_gui.py --user alice --db-file review_package.db` - Review with SQLite package (no PostgreSQL needed)
+- **Fact-Checker Distribution Tools** (for inter-rater reliability analysis):
+  - `uv run python export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
+  - `uv run python export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
+  - `uv run python import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
 - **Demonstrations**: 
@@ -493,6 +498,85 @@ The Fact-Checker Review GUI provides:
 4. All annotations are saved to the database in real-time
 
 This ensures that the GUI and CLI provide identical database management behavior, making it easy to switch between interfaces or use both for different tasks.
+
+### Fact-Checker Distribution System for Inter-Rater Reliability
+
+BMLibrarian includes a complete distribution system for sending fact-check results to external reviewers without requiring PostgreSQL installation. This enables inter-rater reliability analysis with multiple independent human annotators.
+
+**Complete Workflow**:
+
+1. **Export Review Package** (PostgreSQL → SQLite):
+   ```bash
+   uv run python export_review_package.py --output review_package.db --exported-by username
+   ```
+   - Creates self-contained SQLite database with:
+     - All statements and AI evaluations
+     - Evidence citations with full document abstracts
+     - Document metadata (titles, PMIDs, DOIs)
+     - NO human annotations from other reviewers
+   - Typical size: 100-500 MB for 1000 statements
+   - Ready for distribution via file sharing
+
+2. **Distribute to External Reviewers**:
+   - Send `.db` file + `fact_checker_review_gui.py` to reviewers
+   - No PostgreSQL installation required
+   - Works offline with full functionality
+
+3. **Reviewer Annotation** (SQLite):
+   ```bash
+   uv run python fact_checker_review_gui.py --user alice --db-file review_package.db
+   ```
+   - Read-write mode: Annotations saved to SQLite in real-time
+   - Full abstract display for all citations
+   - Same interface as PostgreSQL version
+   - Supports blind mode and incremental mode
+
+4. **Export Human Evaluations** (SQLite → JSON):
+   ```bash
+   uv run python export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
+   ```
+   - Lightweight JSON export (1-10 KB per statement)
+   - Contains: statement_id, statement_text, annotation, explanation
+   - Reviewer sends back only the small JSON file
+
+5. **Re-import to PostgreSQL** (JSON → PostgreSQL):
+   ```bash
+   uv run python import_human_evaluations.py alice.json bob.json charlie.json
+   ```
+   - Creates/updates annotator records with username tagging
+   - Validates statements match by ID and text
+   - Inserts/updates annotations (one per annotator per statement)
+   - Reports statistics (inserted, updated, errors)
+   - Update/overwrite behavior for duplicate annotations
+
+6. **Analyze Inter-Rater Agreement**:
+   ```sql
+   -- PostgreSQL query
+   SELECT * FROM factcheck.calculate_inter_annotator_agreement();
+   SELECT * FROM factcheck.v_inter_annotator_agreement;
+   ```
+
+**Key Features**:
+- **Database Abstraction**: Unified interface supporting both PostgreSQL and SQLite backends
+- **Self-Contained Packages**: All data needed for review in single `.db` file
+- **No Dependencies**: Reviewers don't need PostgreSQL, just Python + Flet
+- **Validation**: Statement text matching prevents mismatches during import
+- **Multi-Reviewer Support**: Track annotations by username for inter-rater analysis
+- **Security**: Audit trail via export_history, encrypted distribution recommended
+
+**Documentation**:
+- Quick Start Guide: `FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`
+- Implementation Plan: `FACT_CHECKER_DISTRIBUTION_PLAN.md`
+- User Guide: `doc/users/fact_checker_distribution_guide.md` (if exists)
+
+**Architecture**:
+- `src/bmlibrarian/factchecker/db/abstract_db.py`: Abstract database interface
+- `src/bmlibrarian/factchecker/db/sqlite_db.py`: SQLite implementation
+- `src/bmlibrarian/factchecker/db/postgresql_db.py`: PostgreSQL wrapper
+- `src/bmlibrarian/factchecker/db/sqlite_schema.sql`: Complete SQLite schema
+- `export_review_package.py`: Review package export script
+- `export_human_evaluations.py`: Human annotations export script
+- `import_human_evaluations.py`: PostgreSQL import script
 
 ### Enum-Based Workflow System
 ```python
