@@ -422,20 +422,33 @@ class PubMedBulkImporter:
         return downloaded
 
     def _get_element_text(self, elem: Optional[ET.Element]) -> str:
-        """Get complete text from XML element including nested elements."""
+        """
+        Get complete text from XML element including nested elements.
+
+        This properly extracts text from elements that contain both text and
+        child elements (like subscripts, superscripts, etc.) by combining:
+        - Element text (before first child)
+        - Recursive child element text
+        - Child tail text (after each child)
+
+        Critical for avoiding truncation of titles/abstracts with special formatting.
+        """
         if elem is None:
             return ''
 
-        text_parts = []
-        if elem.text:
-            text_parts.append(elem.text)
+        # Optimization for leaf nodes (no children)
+        if not list(elem):
+            return elem.text or ''
 
+        # Handle mixed content (text + nested elements)
+        text = elem.text or ''
         for child in elem:
-            text_parts.append(self._get_element_text(child))
+            child_text = self._get_element_text(child)
+            text += child_text
             if child.tail:
-                text_parts.append(child.tail)
+                text += child.tail
 
-        return ''.join(text_parts)
+        return text
 
     def _extract_date(self, pub_date_elem: Optional[ET.Element]) -> Optional[str]:
         """Extract publication date from PubDate element."""
@@ -486,16 +499,15 @@ class PubMedBulkImporter:
             # Extract basic fields
             title = self._get_element_text(article.find('.//ArticleTitle'))
 
-            # Abstract
+            # Abstract - use proper text extraction to handle mixed content
+            # Use .//AbstractText (not .//Abstract/AbstractText) to be more robust
             abstract_parts = []
-            for abstract_text in article.findall('.//Abstract/AbstractText'):
-                label = abstract_text.get('Label')
-                text = self._get_element_text(abstract_text)
-                if label and text:
-                    abstract_parts.append(f"{label}: {text}")
-                elif text:
-                    abstract_parts.append(text)
-            abstract = '\n\n'.join(abstract_parts) if abstract_parts else None
+            for abstract_text in article.findall('.//AbstractText'):
+                if abstract_text is not None:
+                    text = self._get_element_text(abstract_text)
+                    if text:
+                        abstract_parts.append(text)
+            abstract = ' '.join(abstract_parts) if abstract_parts else ''
 
             # Authors
             authors = []
@@ -572,6 +584,12 @@ class PubMedBulkImporter:
 
                     if existing:
                         # Update existing record (metadata may have changed)
+                        # Convert empty strings to None for proper NULL handling
+                        abstract = article.get('abstract') or None
+                        doi = article.get('doi') or None
+                        publication = article.get('publication') or None
+                        pub_date = article.get('publication_date') or None
+
                         cur.execute("""
                             UPDATE document SET
                                 doi = COALESCE(%s, doi),
@@ -585,12 +603,12 @@ class PubMedBulkImporter:
                                 updated_date = CURRENT_TIMESTAMP
                             WHERE id = %s
                         """, (
-                            article.get('doi'),
+                            doi,
                             article['title'],
-                            article.get('abstract'),
+                            abstract,
                             article.get('authors', []),
-                            article.get('publication'),
-                            article.get('publication_date'),
+                            publication,
+                            pub_date,
                             article.get('mesh_terms', []),
                             article.get('keywords', []),
                             existing[0]
@@ -598,6 +616,12 @@ class PubMedBulkImporter:
                         updated += 1
                     else:
                         # Insert new record
+                        # Convert empty strings to None for proper NULL handling
+                        abstract = article.get('abstract') or None
+                        doi = article.get('doi') or None
+                        publication = article.get('publication') or None
+                        pub_date = article.get('publication_date') or None
+
                         cur.execute("""
                             INSERT INTO document (
                                 source_id, external_id, doi, title, abstract,
@@ -607,12 +631,12 @@ class PubMedBulkImporter:
                         """, (
                             self.source_id,
                             pmid,
-                            article.get('doi'),
+                            doi,
                             article['title'],
-                            article.get('abstract'),
+                            abstract,
                             article.get('authors', []),
-                            article.get('publication'),
-                            article.get('publication_date'),
+                            publication,
+                            pub_date,
                             article.get('url'),
                             article.get('mesh_terms', []),
                             article.get('keywords', [])
