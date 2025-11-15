@@ -276,3 +276,111 @@ class FactCheckDataManager:
     def get_reviewed_count(self) -> int:
         """Get count of reviewed statements."""
         return sum(1 for r in self.reviews if r.get('human_annotation'))
+
+    def calculate_statistics(self) -> Dict[str, Any]:
+        """
+        Calculate agreement statistics between original, AI, and human evaluations.
+
+        Returns:
+            Dictionary with statistics including:
+            - total_statements: Total number of statements
+            - ai_vs_original_agreement: % agreement between AI and original evaluations
+            - ai_vs_original_count: Number of statements compared
+            - human_annotated_count: Number of statements with human annotations
+            - human_vs_original_agreement: % agreement between human and original (for human-annotated)
+            - human_vs_ai_agreement: % agreement between human and AI (for human-annotated)
+            - all_three_agreement: % agreement among all three (for human-annotated)
+            - all_three_disagree: % where all three evaluations are different (for human-annotated)
+        """
+        stats = {
+            'total_statements': len(self.results),
+            'ai_vs_original_agreement': 0.0,
+            'ai_vs_original_count': 0,
+            'human_annotated_count': 0,
+            'human_vs_original_agreement': 0.0,
+            'human_vs_ai_agreement': 0.0,
+            'all_three_agreement': 0.0,
+            'all_three_disagree': 0.0,
+            'human_vs_original_count': 0,
+            'human_vs_ai_count': 0,
+            'all_three_count': 0,
+            'all_three_disagree_count': 0
+        }
+
+        # Calculate AI vs Original agreement (all statements with both values)
+        ai_original_matches = 0
+        ai_original_total = 0
+
+        for result in self.results:
+            original = (result.get('expected_answer') or '').lower().strip()
+            ai_eval = (result.get('evaluation') or '').lower().strip()
+
+            if original and ai_eval:
+                ai_original_total += 1
+                if original == ai_eval:
+                    ai_original_matches += 1
+
+        if ai_original_total > 0:
+            stats['ai_vs_original_agreement'] = (ai_original_matches / ai_original_total) * 100
+            stats['ai_vs_original_count'] = ai_original_total
+
+        # Calculate human-related statistics (only for statements with human annotations)
+        human_original_matches = 0
+        human_ai_matches = 0
+        all_three_matches = 0
+        all_three_all_disagree = 0
+        human_annotated = 0
+        human_original_total = 0
+        human_ai_total = 0
+        all_three_total = 0
+
+        for i, result in enumerate(self.results):
+            review = self.reviews[i] if i < len(self.reviews) else {}
+            human_annot = (review.get('human_annotation') or '').lower().strip()
+
+            if not human_annot:
+                continue
+
+            human_annotated += 1
+
+            original = (result.get('expected_answer') or '').lower().strip()
+            ai_eval = (result.get('evaluation') or '').lower().strip()
+
+            # Human vs Original
+            if original and human_annot:
+                human_original_total += 1
+                if original == human_annot:
+                    human_original_matches += 1
+
+            # Human vs AI
+            if ai_eval and human_annot:
+                human_ai_total += 1
+                if ai_eval == human_annot:
+                    human_ai_matches += 1
+
+            # All three agree or all three disagree
+            if original and ai_eval and human_annot:
+                all_three_total += 1
+                if original == ai_eval == human_annot:
+                    all_three_matches += 1
+                elif original != ai_eval and ai_eval != human_annot and original != human_annot:
+                    # All three are different
+                    all_three_all_disagree += 1
+
+        stats['human_annotated_count'] = human_annotated
+
+        if human_original_total > 0:
+            stats['human_vs_original_agreement'] = (human_original_matches / human_original_total) * 100
+            stats['human_vs_original_count'] = human_original_total
+
+        if human_ai_total > 0:
+            stats['human_vs_ai_agreement'] = (human_ai_matches / human_ai_total) * 100
+            stats['human_vs_ai_count'] = human_ai_total
+
+        if all_three_total > 0:
+            stats['all_three_agreement'] = (all_three_matches / all_three_total) * 100
+            stats['all_three_count'] = all_three_total
+            stats['all_three_disagree'] = (all_three_all_disagree / all_three_total) * 100
+            stats['all_three_disagree_count'] = all_three_all_disagree
+
+        return stats

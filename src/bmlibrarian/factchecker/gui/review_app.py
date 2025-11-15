@@ -8,7 +8,10 @@ from typing import Optional
 from pathlib import Path
 import flet as ft
 
-from .dialogs import AnnotatorDialog, show_error_dialog, show_success_dialog, show_save_dialog
+from .dialogs import (
+    AnnotatorDialog, show_error_dialog, show_success_dialog,
+    show_save_dialog, show_statistics_dialog
+)
 from .data_manager import FactCheckDataManager
 from .statement_display import StatementDisplay
 from .annotation_manager import AnnotationManager
@@ -81,20 +84,34 @@ class FactCheckerReviewApp:
 
     def _build_ui(self):
         """Build the main user interface."""
+        # Statistics button
+        statistics_button = ft.ElevatedButton(
+            "Statistics",
+            icon=ft.Icons.ANALYTICS,
+            on_click=self._on_show_statistics,
+            bgcolor=ft.Colors.BLUE_700,
+            color=ft.Colors.WHITE
+        )
+
         # Header
         header = ft.Container(
             content=ft.Column([
-                ft.Text(
-                    "Fact-Checker Review Interface",
-                    size=28,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.Colors.BLUE_900
-                ),
-                ft.Text(
-                    "Review and annotate AI-generated fact-checking results from PostgreSQL database",
-                    size=14,
-                    color=ft.Colors.GREY_700
-                )
+                ft.Row([
+                    ft.Column([
+                        ft.Text(
+                            "Fact-Checker Review Interface",
+                            size=28,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.BLUE_900
+                        ),
+                        ft.Text(
+                            "Review and annotate AI-generated fact-checking results from PostgreSQL database",
+                            size=14,
+                            color=ft.Colors.GREY_700
+                        )
+                    ], expand=True),
+                    statistics_button
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
             ], spacing=5),
             padding=ft.padding.only(bottom=20)
         )
@@ -313,4 +330,16 @@ class FactCheckerReviewApp:
         if self.current_index < len(self.data_manager.results) - 1:
             self.current_index += 1
             self._display_current_statement()
+
+    def _on_show_statistics(self, e):
+        """Display statistics dialog."""
+        try:
+            stats = self.data_manager.calculate_statistics()
+            show_statistics_dialog(self.page, stats)
+        except Exception as ex:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"ERROR in _on_show_statistics:")
+            print(error_details)
+            show_error_dialog(self.page, f"Error calculating statistics:\n\n{str(ex)}")
 

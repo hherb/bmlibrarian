@@ -203,3 +203,141 @@ def show_save_dialog(page: ft.Page, default_path: str, on_save: Callable):
     page.overlay.append(dialog)
     dialog.open = True
     page.update()
+
+
+def show_statistics_dialog(page: ft.Page, stats: dict):
+    """
+    Show statistics dialog with agreement percentages.
+
+    Args:
+        page: Flet page instance
+        stats: Statistics dictionary from calculate_statistics()
+    """
+    def close_dialog(e):
+        dialog.open = False
+        page.update()
+
+    # Create statistics display
+    def stat_row(label: str, percentage: float, count: int, color: str = ft.Colors.BLUE_700) -> ft.Container:
+        """Helper to create a formatted statistic row."""
+        return ft.Container(
+            content=ft.Row([
+                ft.Text(label, size=13, weight=ft.FontWeight.W_500, expand=True),
+                ft.Text(
+                    f"{percentage:.1f}%",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=color
+                ),
+                ft.Text(
+                    f"({count})",
+                    size=12,
+                    color=ft.Colors.GREY_600
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.symmetric(vertical=8, horizontal=10),
+            bgcolor=ft.Colors.GREY_50,
+            border_radius=5
+        )
+
+    # Build statistics content
+    content_items = [
+        ft.Text("Agreement Statistics", size=16, weight=ft.FontWeight.BOLD),
+        ft.Divider(height=10),
+
+        # Overall statistics
+        ft.Text(
+            f"Total Statements: {stats['total_statements']}",
+            size=13,
+            color=ft.Colors.GREY_700
+        ),
+        ft.Text(
+            f"Human Annotated: {stats['human_annotated_count']}",
+            size=13,
+            color=ft.Colors.GREY_700
+        ),
+        ft.Container(height=10),
+
+        # AI vs Original (all statements)
+        ft.Text("All Statements:", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+        stat_row(
+            "AI vs Original Agreement",
+            stats['ai_vs_original_agreement'],
+            stats['ai_vs_original_count'],
+            ft.Colors.BLUE_700
+        ),
+        ft.Container(height=10),
+    ]
+
+    # Only show human statistics if there are any human annotations
+    if stats['human_annotated_count'] > 0:
+        content_items.extend([
+            ft.Text(
+                f"Human-Annotated Statements ({stats['human_annotated_count']}):",
+                size=14,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREEN_900
+            ),
+            stat_row(
+                "Human vs Original Agreement",
+                stats['human_vs_original_agreement'],
+                stats['human_vs_original_count'],
+                ft.Colors.GREEN_700
+            ),
+            stat_row(
+                "Human vs AI Agreement",
+                stats['human_vs_ai_agreement'],
+                stats['human_vs_ai_count'],
+                ft.Colors.PURPLE_700
+            ),
+            stat_row(
+                "All Three Agree",
+                stats['all_three_agreement'],
+                stats['all_three_count'],
+                ft.Colors.ORANGE_700
+            ),
+            stat_row(
+                "All Three Disagree (3 different answers)",
+                stats['all_three_disagree'],
+                stats['all_three_disagree_count'],
+                ft.Colors.RED_700
+            ),
+        ])
+    else:
+        content_items.append(
+            ft.Text(
+                "No human annotations yet. Start reviewing to see human vs AI/original agreement.",
+                size=13,
+                color=ft.Colors.GREY_600,
+                italic=True
+            )
+        )
+
+    dialog = ft.AlertDialog(
+        title=ft.Row([
+            ft.Icon(ft.Icons.ANALYTICS, color=ft.Colors.BLUE_700),
+            ft.Text("Statistics", size=20, weight=ft.FontWeight.BOLD)
+        ]),
+        content=ft.Container(
+            content=ft.Column(
+                content_items,
+                tight=True,
+                scroll=ft.ScrollMode.AUTO
+            ),
+            padding=ft.padding.all(10),
+            width=500,
+            height=450
+        ),
+        actions=[
+            ft.ElevatedButton(
+                "Close",
+                on_click=close_dialog,
+                bgcolor=ft.Colors.BLUE_700,
+                color=ft.Colors.WHITE
+            )
+        ]
+    )
+
+    page.overlay.append(dialog)
+    dialog.open = True
+    page.update()
