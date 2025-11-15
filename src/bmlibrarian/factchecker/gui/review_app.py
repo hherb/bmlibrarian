@@ -21,7 +21,7 @@ from .citation_display import CitationDisplay
 class FactCheckerReviewApp:
     """Main application for reviewing fact-check results."""
 
-    def __init__(self, incremental: bool = False, default_username: Optional[str] = None, blind_mode: bool = False):
+    def __init__(self, incremental: bool = False, default_username: Optional[str] = None, blind_mode: bool = False, db_file: Optional[str] = None):
         """
         Initialize the review application.
 
@@ -29,18 +29,21 @@ class FactCheckerReviewApp:
             incremental: If True, only show statements you haven't annotated yet
             default_username: If provided, use this username and skip login dialog
             blind_mode: If True, hide original and AI annotations from human annotator
+            db_file: Path to SQLite database file (None for PostgreSQL)
         """
         self.page: Optional[ft.Page] = None
         self.incremental = incremental
         self.default_username = default_username
         self.blind_mode = blind_mode
+        self.db_file = db_file
         self.current_index = 0
 
         # Initialize components
-        self.data_manager = FactCheckDataManager(incremental=incremental)
+        self.data_manager = FactCheckDataManager(incremental=incremental, db_file=db_file)
         self.statement_display = StatementDisplay(blind_mode=blind_mode)
         self.annotation_manager = AnnotationManager(on_annotation_change=self._on_annotation_change)
-        self.citation_display = CitationDisplay()
+        # CitationDisplay will receive database instance after data_manager loads it
+        self.citation_display = None
 
         # UI components
         self.status_text = None
@@ -105,7 +108,8 @@ class FactCheckerReviewApp:
                             color=ft.Colors.BLUE_900
                         ),
                         ft.Text(
-                            "Review and annotate AI-generated fact-checking results from PostgreSQL database",
+                            "Review and annotate AI-generated fact-checking results" +
+                            (" (SQLite Package)" if self.db_file else " (PostgreSQL Database)"),
                             size=14,
                             color=ft.Colors.GREY_700
                         )
@@ -248,13 +252,31 @@ class FactCheckerReviewApp:
         self._load_from_database()
 
     def _load_from_database(self):
-        """Load fact-check results directly from PostgreSQL database."""
+        """Load fact-check results from database (PostgreSQL or SQLite)."""
         try:
             self.data_manager.load_from_database()
 
-            # Update UI
+            # Initialize citation display with database instance now that it's loaded
+            if self.citation_display is None:
+                self.citation_display = CitationDisplay(self.data_manager.fact_checker_db)
+
+            # Update UI with database info
             mode_indicator = " [INCREMENTAL MODE]" if self.incremental else ""
-            self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from PostgreSQL{mode_indicator}"
+            db_source = self.data_manager.db_type.upper()
+
+            # For SQLite, add package metadata
+            extra_info = ""
+            if self.data_manager.db_type == "sqlite" and self.data_manager.fact_checker_db:
+                try:
+                    db_info = self.data_manager.fact_checker_db.get_database_info()
+                    metadata = db_info.get('metadata', {})
+                    if metadata.get('export_date'):
+                        export_date = metadata['export_date'][:10]  # Just the date part
+                        extra_info = f" (exported {export_date})"
+                except Exception:
+                    pass
+
+            self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from {db_source}{extra_info}{mode_indicator}"
             self.status_text.italic = False
             self.status_text.color = ft.Colors.GREEN_700
 

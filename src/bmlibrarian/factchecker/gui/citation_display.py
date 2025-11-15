@@ -23,9 +23,9 @@ except ImportError:
     GUI_UTILS_AVAILABLE = False
 
 
-# Import PostgreSQL database manager for fetching abstracts
+# Import database abstraction for fetching abstracts
 try:
-    from bmlibrarian.database import get_db_manager
+    from ..db import AbstractFactCheckerDB
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
@@ -34,18 +34,27 @@ except ImportError:
 class CitationDisplay:
     """Manages citation display with abstract fetching and highlighting."""
 
-    def __init__(self):
-        """Initialize citation display."""
-        self.db_manager = None
+    def __init__(self, fact_checker_db: Optional['AbstractFactCheckerDB'] = None):
+        """
+        Initialize citation display.
 
-        # Initialize database manager if available
-        if DB_AVAILABLE:
+        Args:
+            fact_checker_db: Database instance (PostgreSQL or SQLite). If None,
+                             will try to initialize PostgreSQL.
+        """
+        self.fact_checker_db = fact_checker_db
+
+        # If no database provided, try to initialize PostgreSQL (backward compatibility)
+        if self.fact_checker_db is None and DB_AVAILABLE:
             try:
+                from bmlibrarian.database import get_db_manager
                 self.db_manager = get_db_manager()
-                print("✓ PostgreSQL database manager initialized successfully")
+                print("✓ PostgreSQL database manager initialized for citation display")
             except Exception as e:
-                print(f"Warning: Could not initialize PostgreSQL database manager: {e}")
+                print(f"Warning: Could not initialize database for citation display: {e}")
                 self.db_manager = None
+        else:
+            self.db_manager = None
 
     def _fetch_abstract_by_pmid(self, pmid: str) -> Optional[str]:
         """Fetch full abstract from database using PMID."""
@@ -89,7 +98,19 @@ class CitationDisplay:
 
     def _fetch_document_abstract(self, document_id: str) -> Optional[str]:
         """Fetch full abstract from database by document ID."""
-        if not self.db_manager or not document_id:
+        if not document_id:
+            return None
+
+        # Use abstraction layer if available
+        if self.fact_checker_db:
+            try:
+                return self.fact_checker_db.get_document_abstract(int(document_id))
+            except Exception as e:
+                print(f"Error fetching abstract for document {document_id}: {e}")
+                return None
+
+        # Fallback to direct PostgreSQL query (backward compatibility)
+        if not self.db_manager:
             return None
 
         try:
@@ -107,7 +128,19 @@ class CitationDisplay:
 
     def _fetch_document_metadata(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Fetch document metadata (title, pmid, doi) from database by document ID."""
-        if not self.db_manager or not document_id:
+        if not document_id:
+            return None
+
+        # Use abstraction layer if available
+        if self.fact_checker_db:
+            try:
+                return self.fact_checker_db.get_document_metadata(int(document_id))
+            except Exception as e:
+                print(f"Error fetching metadata for document {document_id}: {e}")
+                return None
+
+        # Fallback to direct PostgreSQL query (backward compatibility)
+        if not self.db_manager:
             return None
 
         try:
