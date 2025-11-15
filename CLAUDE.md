@@ -51,6 +51,14 @@ Since this project uses `uv` for package management:
   - `uv run python medrxiv_import_cli.py update --download-pdfs` - Import medRxiv preprints with PDFs
   - `uv run python medrxiv_import_cli.py fetch-pdfs --limit 100` - Download missing PDFs for existing records
   - `uv run python medrxiv_import_cli.py status` - Show medRxiv import statistics
+  - `uv run python pubmed_import_cli.py search "COVID-19 vaccine" --max-results 100` - Import PubMed articles by search query (targeted import)
+  - `uv run python pubmed_import_cli.py pmids 12345678 23456789` - Import PubMed articles by PMID list
+  - `uv run python pubmed_import_cli.py status` - Show PubMed import statistics
+  - `uv run python pubmed_bulk_cli.py download-baseline` - Download complete PubMed baseline (~38M articles, ~400GB, for offline mirroring)
+  - `uv run python pubmed_bulk_cli.py download-updates` - Download PubMed daily update files (new articles + metadata updates)
+  - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database
+  - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
+  - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
@@ -189,6 +197,8 @@ bmlibrarian/
 │   ├── importers/             # External data source importers
 │   │   ├── __init__.py        # Importer module exports
 │   │   ├── medrxiv_importer.py # MedRxiv preprint importer
+│   │   ├── pubmed_importer.py # PubMed E-utilities importer (targeted imports)
+│   │   ├── pubmed_bulk_importer.py # PubMed FTP bulk importer (complete mirror)
 │   │   └── README.md          # Importer documentation
 │   ├── embeddings/            # Document embedding generation
 │   │   ├── __init__.py        # Embeddings module exports
@@ -271,6 +281,8 @@ bmlibrarian/
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
+├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
+├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
 ├── embed_documents_cli.py     # Document embedding generation CLI
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pyproject.toml             # Project configuration and dependencies
