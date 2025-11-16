@@ -64,6 +64,10 @@ class QtWorkflowExecutor(QObject):
     workflow_error = Signal(Exception)
     status_message = Signal(str)
 
+    # Step-specific signals for UI updates
+    query_generated = Signal(str)  # Emitted when query is generated
+    documents_found = Signal(list)  # Emitted when documents are retrieved
+
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
         """
         Initialize Qt workflow executor.
@@ -185,9 +189,8 @@ class QtWorkflowExecutor(QObject):
             # Emit started signal
             self.workflow_started.emit()
 
-            # Phase 2: Just confirm agents are working
-            # Don't actually run the workflow yet (that's Phase 3)
-            self._test_agent_connection()
+            # Phase 3: Execute the actual workflow
+            self.execute_workflow()
 
         except Exception as e:
             self.logger.error(f"Error starting workflow: {e}", exc_info=True)
@@ -206,7 +209,7 @@ class QtWorkflowExecutor(QObject):
             # Test QueryAgent
             if self.query_agent:
                 # Just check the agent has required methods
-                assert hasattr(self.query_agent, 'generate_query'), "QueryAgent missing generate_query method"
+                assert hasattr(self.query_agent, 'convert_question'), "QueryAgent missing convert_question method"
                 self.status_message.emit("✓ QueryAgent ready")
             else:
                 raise RuntimeError("QueryAgent not initialized")
@@ -271,19 +274,117 @@ class QtWorkflowExecutor(QObject):
     # ========================================================================
 
     def execute_workflow(self) -> None:
-        """Execute the full workflow in a background thread (Phase 3)."""
-        # TODO Phase 3: Implement full workflow execution
-        pass
+        """
+        Execute the workflow (Milestone 1: Query generation and search only).
 
-    def generate_query(self) -> None:
-        """Generate SQL query from research question (Phase 3)."""
-        # TODO Phase 3: Call query_agent.generate_query()
-        pass
+        This method orchestrates the workflow steps in sequence.
+        For Milestone 1, we implement:
+        1. Query generation
+        2. Document search
+        3. Display results
 
-    def search_documents(self, query: str) -> None:
-        """Execute database search (Phase 3)."""
-        # TODO Phase 3: Execute SQL query against database
-        pass
+        Later milestones will add scoring, citations, and reports.
+        """
+        try:
+            # Step 1: Generate query
+            self.status_message.emit("🔍 Generating database query from your question...")
+            query = self.generate_query()
+
+            if not query:
+                raise ValueError("Query generation failed - no query returned")
+
+            # Step 2: Search for documents
+            self.status_message.emit(f"📚 Searching database with query: {query[:100]}...")
+            documents = self.search_documents(query)
+
+            # Step 3: Emit results
+            self.status_message.emit(f"✅ Found {len(documents)} documents")
+
+            # Emit completion with results
+            self.workflow_completed.emit({
+                'phase': 3,
+                'milestone': 1,
+                'status': 'search_completed',
+                'question': self.current_question,
+                'query': query,
+                'documents': documents,
+                'document_count': len(documents)
+            })
+
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {e}", exc_info=True)
+            self.workflow_error.emit(e)
+
+    def generate_query(self) -> str:
+        """
+        Generate PostgreSQL tsquery from research question.
+
+        Returns:
+            str: The generated tsquery string
+
+        Raises:
+            RuntimeError: If QueryAgent is not initialized
+            Exception: If query generation fails
+        """
+        if not self.query_agent:
+            raise RuntimeError("QueryAgent not initialized")
+
+        try:
+            # Call the query agent to convert natural language to tsquery
+            query = self.query_agent.convert_question(self.current_question)
+
+            self.logger.info(f"Generated query: {query}")
+
+            # Emit query_generated signal for UI update
+            self.query_generated.emit(query)
+
+            return query
+
+        except Exception as e:
+            self.logger.error(f"Query generation failed: {e}", exc_info=True)
+            raise
+
+    def search_documents(self, query: str) -> list:
+        """
+        Execute database search with the generated query.
+
+        Args:
+            query: PostgreSQL tsquery string
+
+        Returns:
+            list: List of document dictionaries
+
+        Raises:
+            RuntimeError: If QueryAgent is not initialized
+            Exception: If search fails
+        """
+        if not self.query_agent:
+            raise RuntimeError("QueryAgent not initialized")
+
+        try:
+            # Use find_abstracts to execute the search
+            # This returns a generator, so we convert to list
+            documents = list(self.query_agent.find_abstracts(
+                question=self.current_question,
+                max_rows=self.max_results,
+                use_pubmed=True,
+                use_medrxiv=True,
+                use_others=True
+            ))
+
+            self.logger.info(f"Found {len(documents)} documents")
+
+            # Store documents in workflow state
+            self.documents = documents
+
+            # Emit documents_found signal for UI update
+            self.documents_found.emit(documents)
+
+            return documents
+
+        except Exception as e:
+            self.logger.error(f"Document search failed: {e}", exc_info=True)
+            raise
 
     def score_documents(self, documents: list) -> None:
         """Score documents for relevance (Phase 3)."""
@@ -308,4 +409,54 @@ class QtWorkflowExecutor(QObject):
     def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
         """Generate final comprehensive report (Phase 3)."""
         # TODO Phase 3: Call editor_agent.edit_comprehensive_report()
+        pass
+
+    def cleanup(self) -> None:
+        """
+        Cleanup workflow executor resources.
+
+        This method:
+        - Clears workflow state (documents, citations, reports)
+        - Clears agent references
+        - Should be called when the plugin is unloaded or the workflow is reset
+        """
+        try:
+            self.logger.info("Cleaning up workflow executor resources...")
+
+            # Clear workflow state
+            self.current_question = ""
+            self.documents = []
+            self.scored_documents = []
+            self.citations = []
+            self.preliminary_report = ""
+            self.counterfactual_analysis = None
+            self.final_report = ""
+
+            # Clear agent references (but don't destroy agents - they're managed elsewhere)
+            # Agents dictionary is kept for potential reuse, but individual references cleared
+            self.query_agent = None
+            self.scoring_agent = None
+            self.citation_agent = None
+            self.reporting_agent = None
+            self.counterfactual_agent = None
+            self.editor_agent = None
+            self.orchestrator = None
+
+            self.logger.info("✅ Workflow executor cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during workflow executor cleanup: {e}", exc_info=True)
+
+    def cancel_workflow(self) -> None:
+        """
+        Cancel ongoing workflow execution.
+
+        This method will be implemented in Phase 3 when workflow threading is added.
+        For now, it's a placeholder for future cancellation logic.
+        """
+        # TODO Phase 3: Implement workflow cancellation
+        # - Set cancellation flag
+        # - Stop background threads/workers
+        # - Emit workflow_error signal with cancellation exception
+        self.logger.warning("Workflow cancellation not yet implemented (Phase 3)")
         pass

@@ -51,6 +51,9 @@ class UIConstants:
     MAIN_LAYOUT_SPACING = 10
     CONTROLS_SPACING = 10
     ROW2_SPACING = 15
+    HEADER_BOTTOM_MARGIN = 10
+    HEADER_SPACING = 5
+    TAB_WIDGET_MARGIN = 15
 
     # Widget Sizes
     QUESTION_INPUT_MIN_HEIGHT = 70
@@ -158,6 +161,11 @@ class ResearchTabWidget(QWidget):
             self.workflow_executor.workflow_completed.connect(self._on_workflow_completed)
             self.workflow_executor.workflow_error.connect(self._on_workflow_error)
             self.workflow_executor.status_message.connect(self._on_workflow_status)
+
+            # Connect step-specific signals (Milestone 1)
+            self.workflow_executor.query_generated.connect(self._on_query_generated)
+            self.workflow_executor.documents_found.connect(self._on_documents_found)
+
             self.logger.info("✅ Workflow executor initialized with agents")
         else:
             self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
@@ -206,8 +214,8 @@ class ResearchTabWidget(QWidget):
         """
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 10)
-        header_layout.setSpacing(5)
+        header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
+        header_layout.setSpacing(UIConstants.HEADER_SPACING)
 
         # Title
         title = QLabel("BMLibrarian Research Assistant")
@@ -297,6 +305,7 @@ class ResearchTabWidget(QWidget):
         self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
         self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
+        self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
         row2.addWidget(self.max_results_spin)
 
         # Min Relevant
@@ -402,7 +411,12 @@ class ResearchTabWidget(QWidget):
         """
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN
+        )
 
         # Header
         label = QLabel(f"{icon} {title}")
@@ -422,17 +436,67 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_search_tab(self) -> QWidget:
-        """Create Search tab (query generation and display)."""
-        return self._create_placeholder_tab(
-            "🔍",
-            "Search Query Generation",
-            "This tab will display:\n"
-            "• Research question\n"
-            "• Generated PostgreSQL query\n"
-            "• Multi-model query details (if enabled)\n"
-            "• Query performance statistics\n"
-            "• Interactive query editing (in interactive mode)"
+        """
+        Create Search tab (query generation and display).
+
+        Shows the generated PostgreSQL tsquery and search results summary.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN
         )
+
+        # Header
+        header = QLabel("🔍 Search Query Generation")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        # Query section
+        query_label = QLabel("Generated PostgreSQL Query:")
+        query_label_font = QFont()
+        query_label_font.setBold(True)
+        query_label.setFont(query_label_font)
+        layout.addWidget(query_label)
+
+        # Query text display
+        self.query_text_display = QTextEdit()
+        self.query_text_display.setReadOnly(True)
+        self.query_text_display.setMaximumHeight(100)
+        self.query_text_display.setPlaceholderText("Query will appear here after clicking 'Start Research'...")
+        self.query_text_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #F5F5F5;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: 'Courier New', monospace;
+            }
+        """)
+        layout.addWidget(self.query_text_display)
+
+        # Results summary section
+        results_label = QLabel("Search Results:")
+        results_label_font = QFont()
+        results_label_font.setBold(True)
+        results_label.setFont(results_label_font)
+        layout.addWidget(results_label)
+
+        # Document count display
+        self.document_count_label = QLabel("No search performed yet")
+        self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.document_count_label)
+
+        # Add stretch to push everything to the top
+        layout.addStretch()
+
+        return widget
 
     def _create_literature_tab(self) -> QWidget:
         """Create Literature tab (document list)."""
@@ -537,6 +601,26 @@ class ResearchTabWidget(QWidget):
             self.start_button.setEnabled(has_text and not self.workflow_running)
         except Exception as e:
             self.logger.error(f"Error in _on_question_changed: {e}", exc_info=True)
+
+    @Slot(int)
+    def _on_max_results_changed(self, value: int) -> None:
+        """
+        Handle max results value changes with validation.
+
+        Args:
+            value: New max results value
+        """
+        try:
+            # Validate: max_results should not be less than min_relevant
+            min_relevant = self.min_relevant_spin.value()
+            if value < min_relevant:
+                self.logger.warning(
+                    f"Max results ({value}) is less than min relevant ({min_relevant}). "
+                    "Adjusting min relevant."
+                )
+                self.min_relevant_spin.setValue(value)
+        except Exception as e:
+            self.logger.error(f"Error in _on_max_results_changed: {e}", exc_info=True)
 
     @Slot(int)
     def _on_min_relevant_changed(self, value: int) -> None:
@@ -650,9 +734,12 @@ class ResearchTabWidget(QWidget):
         self.current_results = results
         self.workflow_completed.emit(results)
 
-        # Phase 2: Show success message
+        # Check which phase/milestone completed
         phase = results.get('phase', 'unknown')
+        milestone = results.get('milestone', None)
+
         if phase == 2:
+            # Phase 2: Agent connection test
             QMessageBox.information(
                 self,
                 "Phase 2 Complete - Agents Connected!",
@@ -666,6 +753,20 @@ class ResearchTabWidget(QWidget):
                 "• EditorAgent\n"
                 "• CounterfactualAgent (optional)\n\n"
                 "Phase 3 will implement full workflow execution."
+            )
+        elif phase == 3 and milestone == 1:
+            # Milestone 1: Query generation and search complete
+            document_count = results.get('document_count', 0)
+            query = results.get('query', 'N/A')
+
+            QMessageBox.information(
+                self,
+                "Milestone 1 Complete - Search Successful!",
+                f"Research question: {results.get('question', 'N/A')}\n\n"
+                f"✅ Search completed successfully!\n\n"
+                f"Query: {query[:100]}{'...' if len(query) > 100 else ''}\n\n"
+                f"Found {document_count} documents\n\n"
+                "Check the 'Search' tab to see the query and results summary."
             )
 
     @Slot(Exception)
@@ -687,3 +788,124 @@ class ResearchTabWidget(QWidget):
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
         self.status_message.emit(message)
+
+    # ========================================================================
+    # Step-Specific Signal Handlers (Milestone 1)
+    # ========================================================================
+
+    @Slot(str)
+    def _on_query_generated(self, query: str) -> None:
+        """
+        Handle query generated signal.
+
+        Updates the Search tab to display the generated query.
+
+        Args:
+            query: The generated PostgreSQL tsquery string
+        """
+        self.logger.info(f"Query generated: {query}")
+
+        # Update the query display in the Search tab
+        if hasattr(self, 'query_text_display'):
+            self.query_text_display.setPlainText(query)
+
+        self.status_message.emit(f"Query generated: {query[:50]}...")
+
+    @Slot(list)
+    def _on_documents_found(self, documents: list) -> None:
+        """
+        Handle documents found signal.
+
+        Updates the Search tab to display the document count.
+
+        Args:
+            documents: List of document dictionaries
+        """
+        doc_count = len(documents)
+        self.logger.info(f"Documents found: {doc_count}")
+
+        # Update the document count display in the Search tab
+        if hasattr(self, 'document_count_label'):
+            self.document_count_label.setText(
+                f"✅ Found {doc_count} documents matching your query"
+            )
+            self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
+
+        self.status_message.emit(f"Found {doc_count} documents")
+
+    # ========================================================================
+    # Cleanup
+    # ========================================================================
+
+    def cleanup(self) -> None:
+        """
+        Cleanup resources and disconnect signals.
+
+        This method should be called when the widget is being destroyed
+        to prevent memory leaks from signal connections.
+        """
+        try:
+            self.logger.info("Cleaning up research tab widget...")
+
+            # Disconnect UI element signals
+            try:
+                self.question_input.textChanged.disconnect(self._on_question_changed)
+            except RuntimeError:
+                pass
+
+            try:
+                self.start_button.clicked.disconnect(self._on_start_research)
+            except RuntimeError:
+                pass
+
+            try:
+                self.max_results_spin.valueChanged.disconnect(self._on_max_results_changed)
+            except RuntimeError:
+                pass
+
+            try:
+                self.min_relevant_spin.valueChanged.disconnect(self._on_min_relevant_changed)
+            except RuntimeError:
+                pass
+
+            # Disconnect workflow executor signals
+            if self.workflow_executor:
+                try:
+                    self.workflow_executor.workflow_started.disconnect(self._on_workflow_started)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.workflow_completed.disconnect(self._on_workflow_completed)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.workflow_error.disconnect(self._on_workflow_error)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.status_message.disconnect(self._on_workflow_status)
+                except RuntimeError:
+                    pass
+
+                # Disconnect step-specific signals (Milestone 1)
+                try:
+                    self.workflow_executor.query_generated.disconnect(self._on_query_generated)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.documents_found.disconnect(self._on_documents_found)
+                except RuntimeError:
+                    pass
+
+                # Cleanup workflow executor resources
+                if hasattr(self.workflow_executor, 'cleanup'):
+                    self.workflow_executor.cleanup()
+
+            self.logger.info("✅ Research tab widget cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during research tab widget cleanup: {e}", exc_info=True)

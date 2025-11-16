@@ -89,8 +89,17 @@ class BMLibrarianMainWindow(QMainWindow):
             else:
                 self.logger.warning("⚠️ Agent initialization returned None")
 
+        except ImportError as e:
+            self.logger.error(f"Failed to import required modules: {e}", exc_info=True)
+            self.agents = None
+        except ConnectionError as e:
+            self.logger.error(f"Failed to connect to database or Ollama: {e}", exc_info=True)
+            self.agents = None
+        except (FileNotFoundError, ValueError) as e:
+            self.logger.error(f"Configuration error: {e}", exc_info=True)
+            self.agents = None
         except Exception as e:
-            self.logger.error(f"Failed to initialize agents: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error during agent initialization: {e}", exc_info=True)
             self.agents = None
 
     def _setup_ui(self):
