@@ -107,6 +107,9 @@ class QtWorkflowExecutor(QObject):
         self.interactive_mode: bool = False
         self.counterfactual_enabled: bool = True
 
+        # Lifecycle state tracking
+        self._is_active: bool = True  # False after cleanup() is called
+
         # Log agent status
         self._log_agent_status()
 
@@ -349,15 +352,32 @@ class QtWorkflowExecutor(QObject):
             str: The generated tsquery string
 
         Raises:
-            RuntimeError: If QueryAgent is not initialized
+            RuntimeError: If QueryAgent is not initialized or executor has been cleaned up
+            ValueError: If query generation returns empty/invalid result
             Exception: If query generation fails
         """
+        if not self._is_active:
+            raise RuntimeError("Workflow executor has been cleaned up - cannot generate query")
+
         if not self.query_agent:
             raise RuntimeError("QueryAgent not initialized")
 
+        if not self.current_question or not self.current_question.strip():
+            raise ValueError("Cannot generate query from empty research question")
+
         try:
             # Call the query agent to convert natural language to tsquery
-            query = self.query_agent.convert_question(self.current_question)
+            query: Optional[str] = self.query_agent.convert_question(self.current_question)
+
+            # Validate query result
+            if query is None:
+                raise ValueError("QueryAgent returned None - query generation failed")
+
+            if not isinstance(query, str):
+                raise TypeError(f"QueryAgent returned invalid type: {type(query)}, expected str")
+
+            if not query.strip():
+                raise ValueError("QueryAgent returned empty query string")
 
             self.logger.info(f"Generated query: {query}")
 
@@ -496,12 +516,16 @@ class QtWorkflowExecutor(QObject):
         Cleanup workflow executor resources.
 
         This method:
+        - Marks executor as inactive (prevents further method calls)
         - Clears workflow state (documents, citations, reports)
         - Clears agent references
         - Should be called when the plugin is unloaded or the workflow is reset
         """
         try:
             self.logger.info("Cleaning up workflow executor resources...")
+
+            # Mark as inactive to prevent further method calls
+            self._is_active = False
 
             # Clear workflow state
             self.current_question = ""

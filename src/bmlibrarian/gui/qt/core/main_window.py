@@ -19,6 +19,14 @@ from .config_manager import GUIConfigManager
 from .event_bus import EventBus
 from ..plugins.base_tab import BaseTabPlugin
 
+# Import for agent cleanup
+try:
+    from ...workflow import cleanup_agents
+    CLEANUP_AGENTS_AVAILABLE = True
+except ImportError:
+    CLEANUP_AGENTS_AVAILABLE = False
+    cleanup_agents = None
+
 
 class BMLibrarianMainWindow(QMainWindow):
     """Main application window with plugin-based tabs.
@@ -632,13 +640,14 @@ class BMLibrarianMainWindow(QMainWindow):
                 )
 
         # Cleanup agents (return audit connection to pool)
-        if self.agents:
+        if self.agents and CLEANUP_AGENTS_AVAILABLE:
             try:
-                from ...workflow import cleanup_agents
                 cleanup_agents(self.agents)
                 self.logger.info("✅ Agents cleaned up")
             except Exception as e:
                 self.logger.error(f"Error cleaning up agents: {e}", exc_info=True)
+        elif self.agents and not CLEANUP_AGENTS_AVAILABLE:
+            self.logger.warning("cleanup_agents not available - skipping agent cleanup")
 
         self.logger.info("Application closing")
         event.accept()

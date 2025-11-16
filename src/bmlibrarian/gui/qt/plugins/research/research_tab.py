@@ -148,6 +148,9 @@ class ResearchTabWidget(QWidget):
         self.current_results: dict = {}
         self.workflow_running: bool = False
 
+        # Validation state (prevent infinite spinbox adjustment loops)
+        self._validation_in_progress: bool = False
+
         # Agents and workflow executor
         self.agents: Optional[dict] = agents
         self.workflow_executor: Optional['QtWorkflowExecutor'] = None
@@ -673,6 +676,10 @@ class ResearchTabWidget(QWidget):
             value: New max results value
         """
         try:
+            # Prevent infinite validation loops
+            if self._validation_in_progress:
+                return
+
             # Validate: max_results should not be less than min_relevant
             min_relevant = self.min_relevant_spin.value()
             if value < min_relevant:
@@ -680,7 +687,11 @@ class ResearchTabWidget(QWidget):
                     f"Max results ({value}) is less than min relevant ({min_relevant}). "
                     "Adjusting min relevant."
                 )
-                self.min_relevant_spin.setValue(value)
+                self._validation_in_progress = True
+                try:
+                    self.min_relevant_spin.setValue(value)
+                finally:
+                    self._validation_in_progress = False
         except Exception as e:
             self.logger.error(f"Error in _on_max_results_changed: {e}", exc_info=True)
 
@@ -693,6 +704,10 @@ class ResearchTabWidget(QWidget):
             value: New min relevant value
         """
         try:
+            # Prevent infinite validation loops
+            if self._validation_in_progress:
+                return
+
             # Validate: min_relevant should not exceed max_results
             max_results = self.max_results_spin.value()
             if value > max_results:
@@ -700,7 +715,11 @@ class ResearchTabWidget(QWidget):
                     f"Min relevant ({value}) exceeds max results ({max_results}). "
                     "Adjusting max results."
                 )
-                self.max_results_spin.setValue(value)
+                self._validation_in_progress = True
+                try:
+                    self.max_results_spin.setValue(value)
+                finally:
+                    self._validation_in_progress = False
         except Exception as e:
             self.logger.error(f"Error in _on_min_relevant_changed: {e}", exc_info=True)
 
@@ -1089,67 +1108,81 @@ class ResearchTabWidget(QWidget):
             # Disconnect UI element signals
             try:
                 self.question_input.textChanged.disconnect(self._on_question_changed)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                # Expected: signal already disconnected or was never connected
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting question_input signal: {e}")
 
             try:
                 self.start_button.clicked.disconnect(self._on_start_research)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting start_button signal: {e}")
 
             try:
                 self.max_results_spin.valueChanged.disconnect(self._on_max_results_changed)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting max_results_spin signal: {e}")
 
             try:
                 self.min_relevant_spin.valueChanged.disconnect(self._on_min_relevant_changed)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting min_relevant_spin signal: {e}")
 
             # Disconnect workflow executor signals
+            # Note: RuntimeError is expected if signal was never connected or already disconnected
             if self.workflow_executor:
                 try:
                     self.workflow_executor.workflow_started.disconnect(self._on_workflow_started)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_started: {e}")
 
                 try:
                     self.workflow_executor.workflow_completed.disconnect(self._on_workflow_completed)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_completed: {e}")
 
                 try:
                     self.workflow_executor.workflow_error.disconnect(self._on_workflow_error)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_error: {e}")
 
                 try:
                     self.workflow_executor.status_message.disconnect(self._on_workflow_status)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting status_message: {e}")
 
                 # Disconnect step-specific signals (Milestone 1)
                 try:
                     self.workflow_executor.query_generated.disconnect(self._on_query_generated)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting query_generated: {e}")
 
                 try:
                     self.workflow_executor.documents_found.disconnect(self._on_documents_found)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting documents_found: {e}")
 
                 # Disconnect Milestone 2 signals
                 try:
                     self.workflow_executor.scoring_progress.disconnect(self._on_scoring_progress)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting scoring_progress: {e}")
 
                 try:
                     self.workflow_executor.documents_scored.disconnect(self._on_documents_scored)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting documents_scored: {e}")
 
                 # Cleanup workflow executor resources
                 if hasattr(self.workflow_executor, 'cleanup'):
