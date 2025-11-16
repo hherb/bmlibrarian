@@ -69,6 +69,8 @@ class QtWorkflowExecutor(QObject):
     documents_found = Signal(list)  # Emitted when documents are retrieved
     scoring_progress = Signal(int, int)  # Emitted during scoring (current, total)
     documents_scored = Signal(list)  # Emitted when all documents are scored
+    citations_extracted = Signal(list)  # Emitted when citations are extracted
+    preliminary_report_generated = Signal(str)  # Emitted when preliminary report is generated
 
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
         """
@@ -213,39 +215,41 @@ class QtWorkflowExecutor(QObject):
 
             # Test QueryAgent
             if self.query_agent:
-                # Just check the agent has required methods
-                assert hasattr(self.query_agent, 'convert_question'), "QueryAgent missing convert_question method"
+                # Use explicit runtime checks instead of assertions
+                if not hasattr(self.query_agent, 'convert_question'):
+                    raise RuntimeError("QueryAgent missing convert_question method")
                 self.status_message.emit("✓ QueryAgent ready")
             else:
                 raise RuntimeError("QueryAgent not initialized")
 
             # Test ScoringAgent
             if self.scoring_agent:
-                assert hasattr(self.scoring_agent, 'evaluate_document'), "ScoringAgent missing evaluate_document method"
+                if not hasattr(self.scoring_agent, 'evaluate_document'):
+                    raise RuntimeError("ScoringAgent missing evaluate_document method")
                 self.status_message.emit("✓ ScoringAgent ready")
             else:
                 raise RuntimeError("ScoringAgent not initialized")
 
             # Test CitationAgent
             if self.citation_agent:
-                assert hasattr(self.citation_agent, 'process_scored_documents_for_citations'), \
-                    "CitationAgent missing citation method"
+                if not hasattr(self.citation_agent, 'process_scored_documents_for_citations'):
+                    raise RuntimeError("CitationAgent missing citation method")
                 self.status_message.emit("✓ CitationAgent ready")
             else:
                 raise RuntimeError("CitationAgent not initialized")
 
             # Test ReportingAgent
             if self.reporting_agent:
-                assert hasattr(self.reporting_agent, 'generate_citation_based_report'), \
-                    "ReportingAgent missing report method"
+                if not hasattr(self.reporting_agent, 'generate_citation_based_report'):
+                    raise RuntimeError("ReportingAgent missing report method")
                 self.status_message.emit("✓ ReportingAgent ready")
             else:
                 raise RuntimeError("ReportingAgent not initialized")
 
             # Test EditorAgent
             if self.editor_agent:
-                assert hasattr(self.editor_agent, 'edit_comprehensive_report'), \
-                    "EditorAgent missing edit method"
+                if not hasattr(self.editor_agent, 'edit_comprehensive_report'):
+                    raise RuntimeError("EditorAgent missing edit method")
                 self.status_message.emit("✓ EditorAgent ready")
             else:
                 raise RuntimeError("EditorAgent not initialized")
@@ -253,8 +257,8 @@ class QtWorkflowExecutor(QObject):
             # Test CounterfactualAgent (optional)
             if self.counterfactual_enabled:
                 if self.counterfactual_agent:
-                    assert hasattr(self.counterfactual_agent, 'generate_counterfactual_questions'), \
-                        "CounterfactualAgent missing counterfactual method"
+                    if not hasattr(self.counterfactual_agent, 'generate_counterfactual_questions'):
+                        raise RuntimeError("CounterfactualAgent missing counterfactual method")
                     self.status_message.emit("✓ CounterfactualAgent ready")
                 else:
                     self.logger.warning("CounterfactualAgent not initialized (optional)")
@@ -280,16 +284,18 @@ class QtWorkflowExecutor(QObject):
 
     def execute_workflow(self) -> None:
         """
-        Execute the workflow (Milestone 2: Add document scoring).
+        Execute the workflow (Milestone 3: Add citations and preliminary report).
 
         This method orchestrates the workflow steps in sequence.
-        For Milestone 2, we implement:
+        For Milestone 3, we implement:
         1. Query generation
         2. Document search
-        3. Document scoring (NEW)
-        4. Display results
+        3. Document scoring
+        4. Citation extraction (NEW)
+        5. Preliminary report generation (NEW)
+        6. Display results
 
-        Later milestones will add citations and reports.
+        Later milestones will add counterfactual analysis and final report.
         """
         try:
             # Step 1: Generate query
@@ -307,37 +313,97 @@ class QtWorkflowExecutor(QObject):
                 self.status_message.emit("⚠️ No documents found")
                 self.workflow_completed.emit({
                     'phase': 3,
-                    'milestone': 2,
+                    'milestone': 3,
                     'status': 'no_documents',
                     'question': self.current_question,
                     'query': query,
                     'documents': [],
                     'scored_documents': [],
+                    'citations': [],
+                    'preliminary_report': '',
                     'document_count': 0
                 })
                 return
 
-            # Step 3: Score documents for relevance (NEW in Milestone 2)
+            # Step 3: Score documents for relevance
             self.status_message.emit(f"📊 Scoring {len(documents)} documents for relevance...")
             scored_documents = self.score_documents(documents)
 
-            # Step 4: Emit results
-            high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+            if not scored_documents:
+                self.status_message.emit("⚠️ No documents could be scored")
+                self.workflow_completed.emit({
+                    'phase': 3,
+                    'milestone': 3,
+                    'status': 'no_scores',
+                    'question': self.current_question,
+                    'query': query,
+                    'documents': documents,
+                    'scored_documents': [],
+                    'citations': [],
+                    'preliminary_report': '',
+                    'document_count': len(documents)
+                })
+                return
+
+            # Step 4: Extract citations from high-scoring documents (NEW in Milestone 3)
+            high_scoring = len([
+                d for d, s in scored_documents
+                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= 3.0
+            ])
             self.status_message.emit(
-                f"✅ Scored {len(scored_documents)} documents ({high_scoring} highly relevant)"
+                f"💬 Extracting citations from {high_scoring} high-scoring documents..."
+            )
+            citations = self.extract_citations(scored_documents, score_threshold=3.0)
+
+            # Emit citations signal for UI update
+            self.citations_extracted.emit(citations)
+
+            if not citations:
+                self.status_message.emit("⚠️ No citations could be extracted")
+                self.workflow_completed.emit({
+                    'phase': 3,
+                    'milestone': 3,
+                    'status': 'no_citations',
+                    'question': self.current_question,
+                    'query': query,
+                    'documents': documents,
+                    'scored_documents': scored_documents,
+                    'citations': [],
+                    'preliminary_report': '',
+                    'document_count': len(documents),
+                    'high_scoring_count': high_scoring
+                })
+                return
+
+            # Step 5: Generate preliminary report (NEW in Milestone 3)
+            self.status_message.emit(
+                f"📄 Generating preliminary report from {len(citations)} citations..."
+            )
+            preliminary_report = self.generate_preliminary_report(citations)
+
+            # Emit preliminary report signal for UI update
+            self.preliminary_report_generated.emit(preliminary_report)
+
+            # Step 6: Emit completion with all results
+            self.status_message.emit(
+                f"✅ Workflow complete! {len(citations)} citations, "
+                f"{len(preliminary_report)} character report"
             )
 
-            # Emit completion with results including scores
             self.workflow_completed.emit({
                 'phase': 3,
-                'milestone': 2,
-                'status': 'scoring_completed',
+                'milestone': 3,
+                'status': 'preliminary_report_completed',
                 'question': self.current_question,
                 'query': query,
                 'documents': documents,
                 'scored_documents': scored_documents,
+                'citations': citations,
+                'preliminary_report': preliminary_report,
                 'document_count': len(documents),
-                'high_scoring_count': high_scoring
+                'high_scoring_count': high_scoring,
+                'citation_count': len(citations),
+                'report_length': len(preliminary_report)
             })
 
         except Exception as e:
@@ -491,15 +557,105 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Document scoring failed: {e}", exc_info=True)
             raise
 
-    def extract_citations(self, scored_documents: list) -> None:
-        """Extract citations from high-scoring documents (Phase 3)."""
-        # TODO Phase 3: Call citation_agent.process_scored_documents_for_citations()
-        pass
+    def extract_citations(self, scored_documents: list, score_threshold: float = 3.0) -> list:
+        """
+        Extract citations from high-scoring documents.
 
-    def generate_preliminary_report(self, citations: list) -> None:
-        """Generate preliminary report (Phase 3)."""
-        # TODO Phase 3: Call reporting_agent.generate_citation_based_report()
-        pass
+        Args:
+            scored_documents: List of (document, score_result) tuples
+            score_threshold: Minimum score to include for citation extraction
+
+        Returns:
+            list: List of citations extracted from documents
+
+        Raises:
+            RuntimeError: If CitationAgent is not initialized
+            Exception: If citation extraction fails
+        """
+        if not self.citation_agent:
+            raise RuntimeError("CitationAgent not initialized")
+
+        if not scored_documents:
+            self.logger.warning("No scored documents to extract citations from")
+            return []
+
+        try:
+            # Filter documents above threshold
+            high_scoring = [
+                (doc, score_result) for doc, score_result in scored_documents
+                if isinstance(score_result.get('score'), (int, float)) and score_result.get('score', 0) >= score_threshold
+            ]
+
+            self.logger.info(
+                f"Extracting citations from {len(high_scoring)} documents (score >= {score_threshold})"
+            )
+
+            if not high_scoring:
+                self.logger.warning(f"No documents meet the threshold of {score_threshold}")
+                return []
+
+            # Call citation agent to extract citations
+            citations = self.citation_agent.process_scored_documents_for_citations(
+                user_question=self.current_question,
+                scored_documents=high_scoring,
+                score_threshold=score_threshold
+            )
+
+            self.logger.info(f"Successfully extracted {len(citations)} citations")
+
+            # Store in workflow state
+            self.citations = citations
+
+            return citations
+
+        except Exception as e:
+            self.logger.error(f"Citation extraction failed: {e}", exc_info=True)
+            raise
+
+    def generate_preliminary_report(self, citations: list) -> str:
+        """
+        Generate preliminary report from citations.
+
+        Args:
+            citations: List of citations to include in report
+
+        Returns:
+            str: Markdown-formatted preliminary report
+
+        Raises:
+            RuntimeError: If ReportingAgent is not initialized
+            Exception: If report generation fails
+        """
+        if not self.reporting_agent:
+            raise RuntimeError("ReportingAgent not initialized")
+
+        if not citations:
+            self.logger.warning("No citations available for report generation")
+            return "# Preliminary Report\n\nNo citations available.\n"
+
+        try:
+            self.logger.info(f"Generating preliminary report from {len(citations)} citations")
+
+            # Call reporting agent to generate report
+            report = self.reporting_agent.generate_citation_based_report(
+                user_question=self.current_question,
+                citations=citations,
+                format_output=True  # Get markdown formatted output
+            )
+
+            if not report or not isinstance(report, str):
+                raise ValueError("Report generation returned invalid result")
+
+            self.logger.info(f"Successfully generated preliminary report ({len(report)} characters)")
+
+            # Store in workflow state
+            self.preliminary_report = report
+
+            return report
+
+        except Exception as e:
+            self.logger.error(f"Preliminary report generation failed: {e}", exc_info=True)
+            raise
 
     def perform_counterfactual_analysis(self, report: str) -> None:
         """Perform counterfactual analysis (Phase 3)."""

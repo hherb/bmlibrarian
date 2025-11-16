@@ -24,6 +24,9 @@ from PySide6.QtGui import QFont
 from typing import Optional
 import logging
 
+# Import markdown viewer for report display
+from ...widgets.markdown_viewer import MarkdownViewer
+
 
 # ============================================================================
 # UI Constants
@@ -73,6 +76,17 @@ class UIConstants:
     MIN_RELEVANT_MIN = 1
     MIN_RELEVANT_MAX = 100
     MIN_RELEVANT_DEFAULT = 10
+
+    # Document Score Thresholds
+    SCORE_THRESHOLD_HIGH_RELEVANCE = 4.0
+    SCORE_THRESHOLD_RELEVANT = 3.0
+    SCORE_THRESHOLD_SOMEWHAT_RELEVANT = 2.0
+
+    # Document Score Colors
+    SCORE_COLOR_HIGH = "#4CAF50"  # Green
+    SCORE_COLOR_RELEVANT = "#2196F3"  # Blue
+    SCORE_COLOR_SOMEWHAT = "#FF9800"  # Orange
+    SCORE_COLOR_LOW = "#9E9E9E"  # Grey
 
 
 class StyleSheets:
@@ -172,6 +186,10 @@ class ResearchTabWidget(QWidget):
             # Connect Milestone 2 signals
             self.workflow_executor.scoring_progress.connect(self._on_scoring_progress)
             self.workflow_executor.documents_scored.connect(self._on_documents_scored)
+
+            # Connect Milestone 3 signals
+            self.workflow_executor.citations_extracted.connect(self._on_citations_extracted)
+            self.workflow_executor.preliminary_report_generated.connect(self._on_preliminary_report_generated)
 
             self.logger.info("✅ Workflow executor initialized with agents")
         else:
@@ -590,29 +608,85 @@ class ResearchTabWidget(QWidget):
 
     def _create_citations_tab(self) -> QWidget:
         """Create Citations tab (extracted citations)."""
-        return self._create_placeholder_tab(
-            "💬",
-            "Citations",
-            "This tab will display:\n"
-            "• Extracted citations from high-scoring documents\n"
-            "• Citation cards with document title and relevant passage\n"
-            "• Relevance scores for each citation\n"
-            "• Grouped by document\n"
-            "• Interactive citation requests (in interactive mode)"
-        )
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
+                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+
+        # Header
+        header_label = QLabel("💬 Extracted Citations")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header_label.setFont(header_font)
+        layout.addWidget(header_label)
+
+        # Subtitle
+        subtitle_label = QLabel("Relevant passages from high-scoring documents (score ≥ 3.0)")
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(subtitle_label)
+
+        # Citation count summary
+        self.citations_summary_label = QLabel("No citations extracted yet")
+        self.citations_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.citations_summary_label)
+
+        # Scroll area for citation list
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Container widget for citation cards
+        self.citations_container = QWidget()
+        self.citations_layout = QVBoxLayout(self.citations_container)
+        self.citations_layout.setSpacing(8)
+        self.citations_layout.setContentsMargins(0, 10, 0, 0)
+
+        # Empty state message
+        self.citations_empty_label = QLabel("No citations to display")
+        self.citations_empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        self.citations_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.citations_layout.addWidget(self.citations_empty_label)
+
+        # Add stretch at bottom
+        self.citations_layout.addStretch()
+
+        scroll_area.setWidget(self.citations_container)
+        layout.addWidget(scroll_area)
+
+        return widget
 
     def _create_preliminary_tab(self) -> QWidget:
         """Create Preliminary Report tab."""
-        return self._create_placeholder_tab(
-            "📄",
-            "Preliminary Report",
-            "This tab will display:\n"
-            "• Preliminary report (before counterfactual analysis)\n"
-            "• Markdown-rendered content\n"
-            "• Word count and citation statistics\n"
-            "• Interactive report editing (in interactive mode)\n"
-            "• Export options"
-        )
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
+                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+
+        # Header
+        header_label = QLabel("📄 Preliminary Report")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header_label.setFont(header_font)
+        layout.addWidget(header_label)
+
+        # Subtitle
+        subtitle_label = QLabel("Report generated from extracted citations (before counterfactual analysis)")
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(subtitle_label)
+
+        # Report statistics summary
+        self.preliminary_report_summary_label = QLabel("No report generated yet")
+        self.preliminary_report_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.preliminary_report_summary_label)
+
+        # Markdown viewer for report
+        self.preliminary_report_viewer = MarkdownViewer()
+        self.preliminary_report_viewer.set_markdown("_No report available yet. Please run a research workflow first._")
+        layout.addWidget(self.preliminary_report_viewer)
+
+        return widget
 
     def _create_counterfactual_tab(self) -> QWidget:
         """Create Counterfactual Analysis tab."""
@@ -727,6 +801,17 @@ class ResearchTabWidget(QWidget):
     def _on_start_research(self) -> None:
         """Handle Start Research button click with error handling."""
         try:
+            # Prevent concurrent workflow execution
+            if self.workflow_running:
+                self.logger.warning("Workflow already running - ignoring duplicate start request")
+                QMessageBox.warning(
+                    self,
+                    "Workflow Running",
+                    "A research workflow is already in progress.\n\n"
+                    "Please wait for it to complete before starting a new one."
+                )
+                return
+
             question = self.question_input.toPlainText().strip()
 
             if not question:
@@ -849,6 +934,27 @@ class ResearchTabWidget(QWidget):
                 f"Found {document_count} documents\n\n"
                 "Check the 'Search' tab to see the query and results summary."
             )
+        elif phase == 3 and milestone == 3:
+            # Milestone 3: Citations and preliminary report complete
+            document_count = results.get('document_count', 0)
+            citation_count = results.get('citation_count', 0)
+            report_length = results.get('report_length', 0)
+            word_count = len(results.get('preliminary_report', '').split())
+
+            QMessageBox.information(
+                self,
+                "Milestone 3 Complete - Report Generated!",
+                f"Research question: {results.get('question', 'N/A')}\n\n"
+                f"✅ Research workflow completed successfully!\n\n"
+                f"Results:\n"
+                f"• {document_count} documents found and scored\n"
+                f"• {citation_count} citations extracted\n"
+                f"• Preliminary report generated (~{word_count} words)\n\n"
+                "Check the tabs:\n"
+                "• 'Citations' tab - Extracted citations\n"
+                "• 'Preliminary' tab - Generated report\n\n"
+                "Next milestone will add counterfactual analysis."
+            )
 
     @Slot(Exception)
     def _on_workflow_error(self, error: Exception) -> None:
@@ -955,14 +1061,66 @@ class ResearchTabWidget(QWidget):
 
         # Update summary label
         total = len(scored_documents)
-        high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+        # Type-safe score extraction with validation
+        high_scoring = len([
+            d for d, s in scored_documents
+            if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= UIConstants.SCORE_THRESHOLD_RELEVANT
+        ])
 
         if hasattr(self, 'literature_summary_label'):
             self.literature_summary_label.setText(
-                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ 3)"
+                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ {UIConstants.SCORE_THRESHOLD_RELEVANT})"
             )
 
         self.status_message.emit(f"Scored {total} documents ({high_scoring} highly relevant)")
+
+    @Slot(list)
+    def _on_citations_extracted(self, citations: list) -> None:
+        """
+        Handle citations extracted signal (Milestone 3).
+
+        Updates the Citations tab to display extracted citations.
+
+        Args:
+            citations: List of citation dictionaries
+        """
+        self.logger.info(f"Citations extracted: {len(citations)}")
+
+        # Update the Citations tab with citations
+        self._update_citations_tab(citations)
+
+        # Update summary label
+        if hasattr(self, 'citations_summary_label'):
+            self.citations_summary_label.setText(
+                f"✅ {len(citations)} citations extracted from high-scoring documents"
+            )
+
+        self.status_message.emit(f"Extracted {len(citations)} citations")
+
+    @Slot(str)
+    def _on_preliminary_report_generated(self, report: str) -> None:
+        """
+        Handle preliminary report generated signal (Milestone 3).
+
+        Updates the Preliminary Report tab to display the generated report.
+
+        Args:
+            report: Markdown-formatted preliminary report
+        """
+        self.logger.info(f"Preliminary report generated ({len(report)} characters)")
+
+        # Update the Preliminary Report tab with markdown
+        if hasattr(self, 'preliminary_report_viewer'):
+            self.preliminary_report_viewer.set_markdown(report)
+
+        # Update summary label (word count approximation)
+        word_count = len(report.split())
+        if hasattr(self, 'preliminary_report_summary_label'):
+            self.preliminary_report_summary_label.setText(
+                f"✅ Report generated | ~{word_count} words | {len(report)} characters"
+            )
+
+        self.status_message.emit(f"Generated preliminary report ({word_count} words)")
 
     def _update_literature_tab(self, scored_documents: list) -> None:
         """
@@ -972,11 +1130,17 @@ class ResearchTabWidget(QWidget):
             scored_documents: List of (document, score_result) tuples
         """
         try:
-            # Clear existing widgets
+            # Clear existing widgets with proper cleanup
             while self.literature_layout.count():
                 child = self.literature_layout.takeAt(0)
                 if child.widget():
-                    child.widget().deleteLater()
+                    widget = child.widget()
+                    # Disconnect any signals to prevent lingering references
+                    widget.disconnect()
+                    # Set parent to None to ensure immediate cleanup
+                    widget.setParent(None)
+                    # Schedule deletion
+                    widget.deleteLater()
 
             if not scored_documents:
                 # Show empty state
@@ -1002,6 +1166,103 @@ class ResearchTabWidget(QWidget):
 
         except Exception as e:
             self.logger.error(f"Error updating literature tab: {e}", exc_info=True)
+
+    def _update_citations_tab(self, citations: list) -> None:
+        """
+        Update the Citations tab with extracted citations.
+
+        Args:
+            citations: List of citation dictionaries
+        """
+        try:
+            # Clear existing widgets with proper cleanup
+            while self.citations_layout.count():
+                child = self.citations_layout.takeAt(0)
+                if child.widget():
+                    widget = child.widget()
+                    # Disconnect any signals to prevent lingering references
+                    widget.disconnect()
+                    # Set parent to None to ensure immediate cleanup
+                    widget.setParent(None)
+                    # Schedule deletion
+                    widget.deleteLater()
+
+            if not citations:
+                # Show empty state
+                empty_label = QLabel("No citations to display")
+                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.citations_layout.addWidget(empty_label)
+                self.citations_layout.addStretch()
+                return
+
+            # Create citation cards
+            for i, citation in enumerate(citations):
+                card = self._create_citation_card(i + 1, citation)
+                self.citations_layout.addWidget(card)
+
+            # Add stretch at the end
+            self.citations_layout.addStretch()
+
+            self.logger.info(f"Citations tab updated with {len(citations)} citations")
+
+        except Exception as e:
+            self.logger.error(f"Error updating citations tab: {e}", exc_info=True)
+
+    def _create_citation_card(self, index: int, citation: dict) -> QFrame:
+        """
+        Create a citation card showing document info and relevant passage.
+
+        Args:
+            index: Citation number (for display)
+            citation: Citation dictionary
+
+        Returns:
+            QFrame containing the citation card
+        """
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                padding: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setSpacing(5)
+
+        # Row 1: Citation number and document title
+        title = citation.get('document_title', 'Untitled Document')
+        title_label = QLabel(f"<b>{index}. {title}</b>")
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        # Row 2: Authors and Year
+        authors = citation.get('authors', 'Unknown authors')
+        year = citation.get('year', 'Unknown year')
+        meta_label = QLabel(f"{authors} ({year})")
+        meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
+        layout.addWidget(meta_label)
+
+        # Row 3: Relevant passage
+        passage = citation.get('passage', 'No passage extracted')
+        passage_label = QLabel(f'<i>"{passage}"</i>')
+        passage_label.setWordWrap(True)
+        passage_label.setStyleSheet("color: #333; font-size: 10pt; padding: 5px 0; background-color: #F9F9F9; border-left: 3px solid #2196F3; padding-left: 10px;")
+        layout.addWidget(passage_label)
+
+        # Row 4: Relevance note (if available)
+        relevance_note = citation.get('relevance_note', '')
+        if relevance_note:
+            note_label = QLabel(f"<i>Note: {relevance_note}</i>")
+            note_label.setWordWrap(True)
+            note_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+            layout.addWidget(note_label)
+
+        return frame
 
     def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
         """
@@ -1045,15 +1306,15 @@ class ResearchTabWidget(QWidget):
         score_badge = QLabel(f"⭐ {score:.1f}")
         score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Color based on score
-        if score >= 4:
-            bgcolor = "#4CAF50"  # Green
-        elif score >= 3:
-            bgcolor = "#2196F3"  # Blue
-        elif score >= 2:
-            bgcolor = "#FF9800"  # Orange
+        # Color based on score (using constants)
+        if score >= UIConstants.SCORE_THRESHOLD_HIGH_RELEVANCE:
+            bgcolor = UIConstants.SCORE_COLOR_HIGH
+        elif score >= UIConstants.SCORE_THRESHOLD_RELEVANT:
+            bgcolor = UIConstants.SCORE_COLOR_RELEVANT
+        elif score >= UIConstants.SCORE_THRESHOLD_SOMEWHAT_RELEVANT:
+            bgcolor = UIConstants.SCORE_COLOR_SOMEWHAT
         else:
-            bgcolor = "#9E9E9E"  # Grey
+            bgcolor = UIConstants.SCORE_COLOR_LOW
 
         score_badge.setStyleSheet(f"""
             QLabel {{
@@ -1092,6 +1353,29 @@ class ResearchTabWidget(QWidget):
         return frame
 
     # ========================================================================
+    # Cleanup Utilities
+    # ========================================================================
+
+    @staticmethod
+    def _safe_disconnect(signal, slot) -> None:
+        """
+        Safely disconnect a signal from a slot.
+
+        This method handles the case where the signal was never connected
+        or has already been disconnected.
+
+        Args:
+            signal: Qt signal to disconnect
+            slot: Slot function to disconnect from the signal
+        """
+        try:
+            signal.disconnect(slot)
+        except (RuntimeError, TypeError):
+            # RuntimeError: Signal not connected or already disconnected
+            # TypeError: Signal doesn't have disconnect method or invalid slot
+            pass
+
+    # ========================================================================
     # Cleanup
     # ========================================================================
 
@@ -1105,88 +1389,30 @@ class ResearchTabWidget(QWidget):
         try:
             self.logger.info("Cleaning up research tab widget...")
 
-            # Disconnect UI element signals
-            try:
-                self.question_input.textChanged.disconnect(self._on_question_changed)
-            except RuntimeError as e:
-                # Expected: signal already disconnected or was never connected
-                if "disconnect" not in str(e).lower():
-                    self.logger.warning(f"Unexpected error disconnecting question_input signal: {e}")
-
-            try:
-                self.start_button.clicked.disconnect(self._on_start_research)
-            except RuntimeError as e:
-                if "disconnect" not in str(e).lower():
-                    self.logger.warning(f"Unexpected error disconnecting start_button signal: {e}")
-
-            try:
-                self.max_results_spin.valueChanged.disconnect(self._on_max_results_changed)
-            except RuntimeError as e:
-                if "disconnect" not in str(e).lower():
-                    self.logger.warning(f"Unexpected error disconnecting max_results_spin signal: {e}")
-
-            try:
-                self.min_relevant_spin.valueChanged.disconnect(self._on_min_relevant_changed)
-            except RuntimeError as e:
-                if "disconnect" not in str(e).lower():
-                    self.logger.warning(f"Unexpected error disconnecting min_relevant_spin signal: {e}")
-
-            # Disconnect workflow executor signals
-            # Note: RuntimeError is expected if signal was never connected or already disconnected
+            # Disconnect workflow executor signals FIRST (before cleanup)
+            # This prevents signals being processed after executor is cleaned up
             if self.workflow_executor:
-                try:
-                    self.workflow_executor.workflow_started.disconnect(self._on_workflow_started)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting workflow_started: {e}")
+                self._safe_disconnect(self.workflow_executor.workflow_started, self._on_workflow_started)
+                self._safe_disconnect(self.workflow_executor.workflow_completed, self._on_workflow_completed)
+                self._safe_disconnect(self.workflow_executor.workflow_error, self._on_workflow_error)
+                self._safe_disconnect(self.workflow_executor.status_message, self._on_workflow_status)
+                self._safe_disconnect(self.workflow_executor.query_generated, self._on_query_generated)
+                self._safe_disconnect(self.workflow_executor.documents_found, self._on_documents_found)
+                self._safe_disconnect(self.workflow_executor.scoring_progress, self._on_scoring_progress)
+                self._safe_disconnect(self.workflow_executor.documents_scored, self._on_documents_scored)
+                # Milestone 3 signals
+                self._safe_disconnect(self.workflow_executor.citations_extracted, self._on_citations_extracted)
+                self._safe_disconnect(self.workflow_executor.preliminary_report_generated, self._on_preliminary_report_generated)
 
-                try:
-                    self.workflow_executor.workflow_completed.disconnect(self._on_workflow_completed)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting workflow_completed: {e}")
-
-                try:
-                    self.workflow_executor.workflow_error.disconnect(self._on_workflow_error)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting workflow_error: {e}")
-
-                try:
-                    self.workflow_executor.status_message.disconnect(self._on_workflow_status)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting status_message: {e}")
-
-                # Disconnect step-specific signals (Milestone 1)
-                try:
-                    self.workflow_executor.query_generated.disconnect(self._on_query_generated)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting query_generated: {e}")
-
-                try:
-                    self.workflow_executor.documents_found.disconnect(self._on_documents_found)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting documents_found: {e}")
-
-                # Disconnect Milestone 2 signals
-                try:
-                    self.workflow_executor.scoring_progress.disconnect(self._on_scoring_progress)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting scoring_progress: {e}")
-
-                try:
-                    self.workflow_executor.documents_scored.disconnect(self._on_documents_scored)
-                except RuntimeError as e:
-                    if "disconnect" not in str(e).lower():
-                        self.logger.warning(f"Unexpected error disconnecting documents_scored: {e}")
-
-                # Cleanup workflow executor resources
+                # Now cleanup workflow executor resources
                 if hasattr(self.workflow_executor, 'cleanup'):
                     self.workflow_executor.cleanup()
+
+            # Disconnect UI element signals
+            self._safe_disconnect(self.question_input.textChanged, self._on_question_changed)
+            self._safe_disconnect(self.start_button.clicked, self._on_start_research)
+            self._safe_disconnect(self.max_results_spin.valueChanged, self._on_max_results_changed)
+            self._safe_disconnect(self.min_relevant_spin.valueChanged, self._on_min_relevant_changed)
 
             self.logger.info("✅ Research tab widget cleanup complete")
 
