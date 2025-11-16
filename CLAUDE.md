@@ -68,6 +68,9 @@ Since this project uses `uv` for package management:
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
   - `uv run python fact_checker_cli.py statements.json -o results.json` - Export results to JSON file (PostgreSQL is always used)
+  - `uv run python fact_checker_stats.py` - Generate comprehensive statistical analysis report (console output)
+  - `uv run python fact_checker_stats.py --export-csv stats_output/` - Export statistics to CSV files
+  - `uv run python fact_checker_stats.py --export-csv stats_output/ --plot` - Create visualization plots
 - **GUI Applications**:
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
@@ -290,6 +293,10 @@ bmlibrarian/
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
+├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
+├── export_review_package.py   # Export SQLite review packages for distribution
+├── export_human_evaluations.py # Export human annotations to JSON
+├── import_human_evaluations.py # Re-import human evaluations to PostgreSQL
 ├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
@@ -577,6 +584,62 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 - `export_review_package.py`: Review package export script
 - `export_human_evaluations.py`: Human annotations export script
 - `import_human_evaluations.py`: PostgreSQL import script
+
+### Fact-Checker Statistical Analysis
+
+BMLibrarian includes a comprehensive statistical analysis tool (`fact_checker_stats.py`) for evaluating fact-checker performance and inter-rater reliability. The tool calculates multiple metrics with proper statistical rigor.
+
+**Statistical Metrics Calculated**:
+- **Concordance rates**: Agreement between AI evaluations and expected answers or human annotations with 95% confidence intervals using Wilson score interval (binomial proportions)
+- **Cohen's kappa**: Inter-rater reliability coefficient with standard errors and 95% confidence intervals
+- **Confusion matrices**: Cross-tabulation of evaluations with accuracy, precision, recall, and F1-scores
+- **Confidence calibration**: Relationship between AI confidence levels (low/medium/high) and actual accuracy
+- **Chi-square tests**: Statistical significance testing for categorical data (p < 0.05)
+- **Category-specific transitions**: Analysis of evaluation changes:
+  - Yes → No transitions: Percentage of statements where evaluations changed from "yes" to "no"
+  - No → Yes transitions: Percentage of statements where evaluations changed from "no" to "yes"
+  - Certainty changes: Percentage moving to "maybe" (increased uncertainty)
+  - Stability: Percentage with unchanged evaluations
+
+**Usage**:
+```bash
+# Console output only
+uv run python fact_checker_stats.py
+
+# Export to CSV files
+uv run python fact_checker_stats.py --export-csv stats_output/
+
+# Create visualization plots (confusion matrices, calibration curves, transition charts)
+uv run python fact_checker_stats.py --export-csv stats_output/ --plot
+```
+
+**Output Files**:
+- `ai_vs_expected.csv`: Raw data for AI evaluations vs expected answers
+- `ai_vs_human.csv`: Raw data for AI evaluations vs human annotations
+- `human_pairs.csv`: Paired human annotations for inter-rater analysis
+- `summary_statistics.json`: Complete statistical results in JSON format
+- `confusion_matrix_ai_vs_expected.png`: Heatmap visualization
+- `confidence_calibration.png`: Calibration curve with error bars
+- `transition_analysis.png`: Bar charts showing category transitions
+
+**Key Features**:
+- **Rigorous Statistics**: Uses Wilson score intervals for binomial proportions, Fleiss standard errors for kappa
+- **Three Comparisons**: AI vs Expected, AI vs Human, Human vs Human inter-rater agreement
+- **Significance Testing**: Chi-square tests for independence with p-value interpretation
+- **Confidence Assessment**: Evaluates whether AI confidence levels correlate with actual accuracy
+- **Transition Analysis**: Identifies patterns in evaluation changes for temporal validity studies
+- **Publication-Ready**: Generates formatted reports and high-resolution plots (300 DPI)
+
+**Statistical Methods**:
+- Wilson score interval for concordance rate confidence intervals (better coverage than normal approximation)
+- Fleiss et al. (1969) formula for Cohen's kappa standard errors
+- Pearson chi-square test for categorical independence
+- Landis & Koch (1977) interpretation scale for kappa values
+
+**Documentation**:
+- Complete guide: `FACT_CHECKER_STATS_GUIDE.md`
+- Statistical methods and interpretation guidelines included
+- Example output with real-world interpretation
 
 ### Enum-Based Workflow System
 ```python
