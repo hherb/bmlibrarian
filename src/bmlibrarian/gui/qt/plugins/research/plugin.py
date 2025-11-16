@@ -80,11 +80,24 @@ class ResearchPlugin(BaseTabPlugin):
         pass
 
     def cleanup(self):
-        """Cleanup resources."""
-        # Cancel any ongoing workflows
-        if self.research_widget:
-            # Could cancel workflows, cleanup threads, etc.
-            pass
+        """Cleanup resources and disconnect signals."""
+        try:
+            # Disconnect widget signal connections
+            if self.research_widget:
+                try:
+                    self.research_widget.status_message.disconnect()
+                except RuntimeError:
+                    pass  # Already disconnected
+
+                # Call widget's cleanup method
+                if hasattr(self.research_widget, 'cleanup'):
+                    self.research_widget.cleanup()
+
+            # Call parent cleanup to disconnect base plugin signals
+            super().cleanup()
+
+        except Exception as e:
+            self.logger.error(f"Error during research plugin cleanup: {e}", exc_info=True)
 
 
 def create_plugin() -> BaseTabPlugin:

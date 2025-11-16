@@ -51,6 +51,9 @@ class UIConstants:
     MAIN_LAYOUT_SPACING = 10
     CONTROLS_SPACING = 10
     ROW2_SPACING = 15
+    HEADER_BOTTOM_MARGIN = 10
+    HEADER_SPACING = 5
+    TAB_WIDGET_MARGIN = 15
 
     # Widget Sizes
     QUESTION_INPUT_MIN_HEIGHT = 70
@@ -145,6 +148,9 @@ class ResearchTabWidget(QWidget):
         self.current_results: dict = {}
         self.workflow_running: bool = False
 
+        # Validation state (prevent infinite spinbox adjustment loops)
+        self._validation_in_progress: bool = False
+
         # Agents and workflow executor
         self.agents: Optional[dict] = agents
         self.workflow_executor: Optional['QtWorkflowExecutor'] = None
@@ -158,6 +164,15 @@ class ResearchTabWidget(QWidget):
             self.workflow_executor.workflow_completed.connect(self._on_workflow_completed)
             self.workflow_executor.workflow_error.connect(self._on_workflow_error)
             self.workflow_executor.status_message.connect(self._on_workflow_status)
+
+            # Connect step-specific signals (Milestone 1)
+            self.workflow_executor.query_generated.connect(self._on_query_generated)
+            self.workflow_executor.documents_found.connect(self._on_documents_found)
+
+            # Connect Milestone 2 signals
+            self.workflow_executor.scoring_progress.connect(self._on_scoring_progress)
+            self.workflow_executor.documents_scored.connect(self._on_documents_scored)
+
             self.logger.info("✅ Workflow executor initialized with agents")
         else:
             self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
@@ -206,8 +221,8 @@ class ResearchTabWidget(QWidget):
         """
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 10)
-        header_layout.setSpacing(5)
+        header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
+        header_layout.setSpacing(UIConstants.HEADER_SPACING)
 
         # Title
         title = QLabel("BMLibrarian Research Assistant")
@@ -297,6 +312,7 @@ class ResearchTabWidget(QWidget):
         self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
         self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
+        self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
         row2.addWidget(self.max_results_spin)
 
         # Min Relevant
@@ -402,7 +418,12 @@ class ResearchTabWidget(QWidget):
         """
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN
+        )
 
         # Header
         label = QLabel(f"{icon} {title}")
@@ -422,29 +443,137 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_search_tab(self) -> QWidget:
-        """Create Search tab (query generation and display)."""
-        return self._create_placeholder_tab(
-            "🔍",
-            "Search Query Generation",
-            "This tab will display:\n"
-            "• Research question\n"
-            "• Generated PostgreSQL query\n"
-            "• Multi-model query details (if enabled)\n"
-            "• Query performance statistics\n"
-            "• Interactive query editing (in interactive mode)"
+        """
+        Create Search tab (query generation and display).
+
+        Shows the generated PostgreSQL tsquery and search results summary.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN
         )
 
+        # Header
+        header = QLabel("🔍 Search Query Generation")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        # Query section
+        query_label = QLabel("Generated PostgreSQL Query:")
+        query_label_font = QFont()
+        query_label_font.setBold(True)
+        query_label.setFont(query_label_font)
+        layout.addWidget(query_label)
+
+        # Query text display
+        self.query_text_display = QTextEdit()
+        self.query_text_display.setReadOnly(True)
+        self.query_text_display.setMaximumHeight(100)
+        self.query_text_display.setPlaceholderText("Query will appear here after clicking 'Start Research'...")
+        self.query_text_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #F5F5F5;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: 'Courier New', monospace;
+            }
+        """)
+        layout.addWidget(self.query_text_display)
+
+        # Results summary section
+        results_label = QLabel("Search Results:")
+        results_label_font = QFont()
+        results_label_font.setBold(True)
+        results_label.setFont(results_label_font)
+        layout.addWidget(results_label)
+
+        # Document count display
+        self.document_count_label = QLabel("No search performed yet")
+        self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.document_count_label)
+
+        # Add stretch to push everything to the top
+        layout.addStretch()
+
+        return widget
+
     def _create_literature_tab(self) -> QWidget:
-        """Create Literature tab (document list)."""
-        return self._create_placeholder_tab(
-            "📚",
-            "Literature Documents",
-            "This tab will display:\n"
-            "• List of all documents found by search\n"
-            "• Document cards with title, authors, journal, year\n"
-            "• Expandable abstracts\n"
-            "• Document metadata (DOI, PMID, etc.)"
-        )
+        """Create Literature tab (document list with scores)."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
+                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+
+        # Header
+        header_label = QLabel("📚 Literature Documents")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header_label.setFont(header_font)
+        layout.addWidget(header_label)
+
+        # Subtitle
+        subtitle_label = QLabel("Documents retrieved from search with AI relevance scores")
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(subtitle_label)
+
+        # Document count and score summary
+        self.literature_summary_label = QLabel("No documents scored yet")
+        self.literature_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.literature_summary_label)
+
+        # Progress bar for scoring (hidden by default)
+        from PySide6.QtWidgets import QProgressBar
+        self.literature_progress_bar = QProgressBar()
+        self.literature_progress_bar.setTextVisible(True)
+        self.literature_progress_bar.setFormat("Scoring document %v/%m")
+        self.literature_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #2196F3;
+                border-radius: 3px;
+            }
+        """)
+        self.literature_progress_bar.setVisible(False)
+        layout.addWidget(self.literature_progress_bar)
+
+        # Scroll area for document list
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Container widget for document cards
+        self.literature_container = QWidget()
+        self.literature_layout = QVBoxLayout(self.literature_container)
+        self.literature_layout.setSpacing(8)
+        self.literature_layout.setContentsMargins(0, 10, 0, 0)
+
+        # Empty state message
+        self.literature_empty_label = QLabel("No documents to display")
+        self.literature_empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        self.literature_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.literature_layout.addWidget(self.literature_empty_label)
+
+        # Add stretch at bottom
+        self.literature_layout.addStretch()
+
+        scroll_area.setWidget(self.literature_container)
+        layout.addWidget(scroll_area)
+
+        return widget
 
     def _create_scoring_tab(self) -> QWidget:
         """Create Scoring tab (document relevance scoring)."""
@@ -539,6 +668,34 @@ class ResearchTabWidget(QWidget):
             self.logger.error(f"Error in _on_question_changed: {e}", exc_info=True)
 
     @Slot(int)
+    def _on_max_results_changed(self, value: int) -> None:
+        """
+        Handle max results value changes with validation.
+
+        Args:
+            value: New max results value
+        """
+        try:
+            # Prevent infinite validation loops
+            if self._validation_in_progress:
+                return
+
+            # Validate: max_results should not be less than min_relevant
+            min_relevant = self.min_relevant_spin.value()
+            if value < min_relevant:
+                self.logger.warning(
+                    f"Max results ({value}) is less than min relevant ({min_relevant}). "
+                    "Adjusting min relevant."
+                )
+                self._validation_in_progress = True
+                try:
+                    self.min_relevant_spin.setValue(value)
+                finally:
+                    self._validation_in_progress = False
+        except Exception as e:
+            self.logger.error(f"Error in _on_max_results_changed: {e}", exc_info=True)
+
+    @Slot(int)
     def _on_min_relevant_changed(self, value: int) -> None:
         """
         Handle min relevant value changes with validation.
@@ -547,6 +704,10 @@ class ResearchTabWidget(QWidget):
             value: New min relevant value
         """
         try:
+            # Prevent infinite validation loops
+            if self._validation_in_progress:
+                return
+
             # Validate: min_relevant should not exceed max_results
             max_results = self.max_results_spin.value()
             if value > max_results:
@@ -554,7 +715,11 @@ class ResearchTabWidget(QWidget):
                     f"Min relevant ({value}) exceeds max results ({max_results}). "
                     "Adjusting max results."
                 )
-                self.max_results_spin.setValue(value)
+                self._validation_in_progress = True
+                try:
+                    self.max_results_spin.setValue(value)
+                finally:
+                    self._validation_in_progress = False
         except Exception as e:
             self.logger.error(f"Error in _on_min_relevant_changed: {e}", exc_info=True)
 
@@ -650,9 +815,12 @@ class ResearchTabWidget(QWidget):
         self.current_results = results
         self.workflow_completed.emit(results)
 
-        # Phase 2: Show success message
+        # Check which phase/milestone completed
         phase = results.get('phase', 'unknown')
+        milestone = results.get('milestone', None)
+
         if phase == 2:
+            # Phase 2: Agent connection test
             QMessageBox.information(
                 self,
                 "Phase 2 Complete - Agents Connected!",
@@ -666,6 +834,20 @@ class ResearchTabWidget(QWidget):
                 "• EditorAgent\n"
                 "• CounterfactualAgent (optional)\n\n"
                 "Phase 3 will implement full workflow execution."
+            )
+        elif phase == 3 and milestone == 1:
+            # Milestone 1: Query generation and search complete
+            document_count = results.get('document_count', 0)
+            query = results.get('query', 'N/A')
+
+            QMessageBox.information(
+                self,
+                "Milestone 1 Complete - Search Successful!",
+                f"Research question: {results.get('question', 'N/A')}\n\n"
+                f"✅ Search completed successfully!\n\n"
+                f"Query: {query[:100]}{'...' if len(query) > 100 else ''}\n\n"
+                f"Found {document_count} documents\n\n"
+                "Check the 'Search' tab to see the query and results summary."
             )
 
     @Slot(Exception)
@@ -687,3 +869,326 @@ class ResearchTabWidget(QWidget):
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
         self.status_message.emit(message)
+
+    # ========================================================================
+    # Step-Specific Signal Handlers (Milestone 1)
+    # ========================================================================
+
+    @Slot(str)
+    def _on_query_generated(self, query: str) -> None:
+        """
+        Handle query generated signal.
+
+        Updates the Search tab to display the generated query.
+
+        Args:
+            query: The generated PostgreSQL tsquery string
+        """
+        self.logger.info(f"Query generated: {query}")
+
+        # Update the query display in the Search tab
+        if hasattr(self, 'query_text_display'):
+            self.query_text_display.setPlainText(query)
+
+        self.status_message.emit(f"Query generated: {query[:50]}...")
+
+    @Slot(list)
+    def _on_documents_found(self, documents: list) -> None:
+        """
+        Handle documents found signal.
+
+        Updates the Search tab to display the document count.
+
+        Args:
+            documents: List of document dictionaries
+        """
+        doc_count = len(documents)
+        self.logger.info(f"Documents found: {doc_count}")
+
+        # Update the document count display in the Search tab
+        if hasattr(self, 'document_count_label'):
+            self.document_count_label.setText(
+                f"✅ Found {doc_count} documents matching your query"
+            )
+            self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
+
+        self.status_message.emit(f"Found {doc_count} documents")
+
+    @Slot(int, int)
+    def _on_scoring_progress(self, current: int, total: int) -> None:
+        """
+        Handle scoring progress signal (Milestone 2).
+
+        Updates the progress bar in the Literature tab.
+
+        Args:
+            current: Current document number being scored
+            total: Total number of documents to score
+        """
+        if hasattr(self, 'literature_progress_bar'):
+            # Show progress bar if it's hidden
+            if not self.literature_progress_bar.isVisible():
+                self.literature_progress_bar.setVisible(True)
+
+            # Update progress
+            self.literature_progress_bar.setMaximum(total)
+            self.literature_progress_bar.setValue(current)
+
+    @Slot(list)
+    def _on_documents_scored(self, scored_documents: list) -> None:
+        """
+        Handle documents scored signal (Milestone 2).
+
+        Updates the Literature tab to display scored documents.
+
+        Args:
+            scored_documents: List of (document, score_result) tuples
+        """
+        self.logger.info(f"Documents scored: {len(scored_documents)}")
+
+        # Hide progress bar
+        if hasattr(self, 'literature_progress_bar'):
+            self.literature_progress_bar.setVisible(False)
+
+        # Update the Literature tab with scored documents
+        self._update_literature_tab(scored_documents)
+
+        # Update summary label
+        total = len(scored_documents)
+        high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+
+        if hasattr(self, 'literature_summary_label'):
+            self.literature_summary_label.setText(
+                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ 3)"
+            )
+
+        self.status_message.emit(f"Scored {total} documents ({high_scoring} highly relevant)")
+
+    def _update_literature_tab(self, scored_documents: list) -> None:
+        """
+        Update the Literature tab with scored documents.
+
+        Args:
+            scored_documents: List of (document, score_result) tuples
+        """
+        try:
+            # Clear existing widgets
+            while self.literature_layout.count():
+                child = self.literature_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            if not scored_documents:
+                # Show empty state
+                empty_label = QLabel("No documents to display")
+                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.literature_layout.addWidget(empty_label)
+                self.literature_layout.addStretch()
+                return
+
+            # Sort by score (highest first)
+            sorted_docs = sorted(scored_documents, key=lambda x: x[1].get('score', 0), reverse=True)
+
+            # Create document cards
+            for i, (doc, score_result) in enumerate(sorted_docs):
+                card = self._create_document_score_card(i + 1, doc, score_result)
+                self.literature_layout.addWidget(card)
+
+            # Add stretch at the end
+            self.literature_layout.addStretch()
+
+            self.logger.info(f"Literature tab updated with {len(scored_documents)} documents")
+
+        except Exception as e:
+            self.logger.error(f"Error updating literature tab: {e}", exc_info=True)
+
+    def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
+        """
+        Create a document card showing score and metadata.
+
+        Args:
+            index: Document number (for display)
+            doc: Document dictionary
+            score_result: Scoring result dictionary
+
+        Returns:
+            QFrame containing the document card
+        """
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                padding: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setSpacing(5)
+
+        # Row 1: Index, Title, and Score Badge
+        title_row = QHBoxLayout()
+
+        # Index and Title
+        title = doc.get('title', 'Untitled Document')
+        title_label = QLabel(f"<b>{index}. {title}</b>")
+        title_label.setWordWrap(True)
+        title_row.addWidget(title_label, 1)
+
+        # Score badge
+        score = score_result.get('score', 0)
+        confidence = score_result.get('confidence', 1.0)
+
+        score_badge = QLabel(f"⭐ {score:.1f}")
+        score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Color based on score
+        if score >= 4:
+            bgcolor = "#4CAF50"  # Green
+        elif score >= 3:
+            bgcolor = "#2196F3"  # Blue
+        elif score >= 2:
+            bgcolor = "#FF9800"  # Orange
+        else:
+            bgcolor = "#9E9E9E"  # Grey
+
+        score_badge.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bgcolor};
+                color: white;
+                font-weight: bold;
+                padding: 4px 8px;
+                border-radius: 4px;
+                min-width: 40px;
+            }}
+        """)
+        title_row.addWidget(score_badge)
+
+        layout.addLayout(title_row)
+
+        # Row 2: Authors and Year
+        authors = doc.get('authors', 'Unknown authors')
+        year = doc.get('year', 'Unknown year')
+        meta_label = QLabel(f"{authors} ({year})")
+        meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
+        layout.addWidget(meta_label)
+
+        # Row 3: Journal
+        journal = doc.get('journal', 'Unknown journal')
+        journal_label = QLabel(f"📖 {journal}")
+        journal_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+        layout.addWidget(journal_label)
+
+        # Row 4: Score Reasoning (collapsed by default)
+        reasoning = score_result.get('reasoning', 'No reasoning provided')
+        reasoning_label = QLabel(f"<i>Reasoning: {reasoning}</i>")
+        reasoning_label.setWordWrap(True)
+        reasoning_label.setStyleSheet("color: #666; font-size: 9pt; padding: 5px 0;")
+        layout.addWidget(reasoning_label)
+
+        return frame
+
+    # ========================================================================
+    # Cleanup
+    # ========================================================================
+
+    def cleanup(self) -> None:
+        """
+        Cleanup resources and disconnect signals.
+
+        This method should be called when the widget is being destroyed
+        to prevent memory leaks from signal connections.
+        """
+        try:
+            self.logger.info("Cleaning up research tab widget...")
+
+            # Disconnect UI element signals
+            try:
+                self.question_input.textChanged.disconnect(self._on_question_changed)
+            except RuntimeError as e:
+                # Expected: signal already disconnected or was never connected
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting question_input signal: {e}")
+
+            try:
+                self.start_button.clicked.disconnect(self._on_start_research)
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting start_button signal: {e}")
+
+            try:
+                self.max_results_spin.valueChanged.disconnect(self._on_max_results_changed)
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting max_results_spin signal: {e}")
+
+            try:
+                self.min_relevant_spin.valueChanged.disconnect(self._on_min_relevant_changed)
+            except RuntimeError as e:
+                if "disconnect" not in str(e).lower():
+                    self.logger.warning(f"Unexpected error disconnecting min_relevant_spin signal: {e}")
+
+            # Disconnect workflow executor signals
+            # Note: RuntimeError is expected if signal was never connected or already disconnected
+            if self.workflow_executor:
+                try:
+                    self.workflow_executor.workflow_started.disconnect(self._on_workflow_started)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_started: {e}")
+
+                try:
+                    self.workflow_executor.workflow_completed.disconnect(self._on_workflow_completed)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_completed: {e}")
+
+                try:
+                    self.workflow_executor.workflow_error.disconnect(self._on_workflow_error)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting workflow_error: {e}")
+
+                try:
+                    self.workflow_executor.status_message.disconnect(self._on_workflow_status)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting status_message: {e}")
+
+                # Disconnect step-specific signals (Milestone 1)
+                try:
+                    self.workflow_executor.query_generated.disconnect(self._on_query_generated)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting query_generated: {e}")
+
+                try:
+                    self.workflow_executor.documents_found.disconnect(self._on_documents_found)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting documents_found: {e}")
+
+                # Disconnect Milestone 2 signals
+                try:
+                    self.workflow_executor.scoring_progress.disconnect(self._on_scoring_progress)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting scoring_progress: {e}")
+
+                try:
+                    self.workflow_executor.documents_scored.disconnect(self._on_documents_scored)
+                except RuntimeError as e:
+                    if "disconnect" not in str(e).lower():
+                        self.logger.warning(f"Unexpected error disconnecting documents_scored: {e}")
+
+                # Cleanup workflow executor resources
+                if hasattr(self.workflow_executor, 'cleanup'):
+                    self.workflow_executor.cleanup()
+
+            self.logger.info("✅ Research tab widget cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during research tab widget cleanup: {e}", exc_info=True)

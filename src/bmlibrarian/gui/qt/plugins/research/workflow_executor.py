@@ -64,6 +64,12 @@ class QtWorkflowExecutor(QObject):
     workflow_error = Signal(Exception)
     status_message = Signal(str)
 
+    # Step-specific signals for UI updates
+    query_generated = Signal(str)  # Emitted when query is generated
+    documents_found = Signal(list)  # Emitted when documents are retrieved
+    scoring_progress = Signal(int, int)  # Emitted during scoring (current, total)
+    documents_scored = Signal(list)  # Emitted when all documents are scored
+
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
         """
         Initialize Qt workflow executor.
@@ -100,6 +106,9 @@ class QtWorkflowExecutor(QObject):
         self.min_relevant: int = 10
         self.interactive_mode: bool = False
         self.counterfactual_enabled: bool = True
+
+        # Lifecycle state tracking
+        self._is_active: bool = True  # False after cleanup() is called
 
         # Log agent status
         self._log_agent_status()
@@ -185,9 +194,8 @@ class QtWorkflowExecutor(QObject):
             # Emit started signal
             self.workflow_started.emit()
 
-            # Phase 2: Just confirm agents are working
-            # Don't actually run the workflow yet (that's Phase 3)
-            self._test_agent_connection()
+            # Phase 3: Execute the actual workflow
+            self.execute_workflow()
 
         except Exception as e:
             self.logger.error(f"Error starting workflow: {e}", exc_info=True)
@@ -206,7 +214,7 @@ class QtWorkflowExecutor(QObject):
             # Test QueryAgent
             if self.query_agent:
                 # Just check the agent has required methods
-                assert hasattr(self.query_agent, 'generate_query'), "QueryAgent missing generate_query method"
+                assert hasattr(self.query_agent, 'convert_question'), "QueryAgent missing convert_question method"
                 self.status_message.emit("✓ QueryAgent ready")
             else:
                 raise RuntimeError("QueryAgent not initialized")
@@ -271,24 +279,217 @@ class QtWorkflowExecutor(QObject):
     # ========================================================================
 
     def execute_workflow(self) -> None:
-        """Execute the full workflow in a background thread (Phase 3)."""
-        # TODO Phase 3: Implement full workflow execution
-        pass
+        """
+        Execute the workflow (Milestone 2: Add document scoring).
 
-    def generate_query(self) -> None:
-        """Generate SQL query from research question (Phase 3)."""
-        # TODO Phase 3: Call query_agent.generate_query()
-        pass
+        This method orchestrates the workflow steps in sequence.
+        For Milestone 2, we implement:
+        1. Query generation
+        2. Document search
+        3. Document scoring (NEW)
+        4. Display results
 
-    def search_documents(self, query: str) -> None:
-        """Execute database search (Phase 3)."""
-        # TODO Phase 3: Execute SQL query against database
-        pass
+        Later milestones will add citations and reports.
+        """
+        try:
+            # Step 1: Generate query
+            self.status_message.emit("🔍 Generating database query from your question...")
+            query = self.generate_query()
 
-    def score_documents(self, documents: list) -> None:
-        """Score documents for relevance (Phase 3)."""
-        # TODO Phase 3: Call scoring_agent.evaluate_document() for each doc
-        pass
+            if not query:
+                raise ValueError("Query generation failed - no query returned")
+
+            # Step 2: Search for documents
+            self.status_message.emit(f"📚 Searching database with query: {query[:100]}...")
+            documents = self.search_documents(query)
+
+            if not documents:
+                self.status_message.emit("⚠️ No documents found")
+                self.workflow_completed.emit({
+                    'phase': 3,
+                    'milestone': 2,
+                    'status': 'no_documents',
+                    'question': self.current_question,
+                    'query': query,
+                    'documents': [],
+                    'scored_documents': [],
+                    'document_count': 0
+                })
+                return
+
+            # Step 3: Score documents for relevance (NEW in Milestone 2)
+            self.status_message.emit(f"📊 Scoring {len(documents)} documents for relevance...")
+            scored_documents = self.score_documents(documents)
+
+            # Step 4: Emit results
+            high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+            self.status_message.emit(
+                f"✅ Scored {len(scored_documents)} documents ({high_scoring} highly relevant)"
+            )
+
+            # Emit completion with results including scores
+            self.workflow_completed.emit({
+                'phase': 3,
+                'milestone': 2,
+                'status': 'scoring_completed',
+                'question': self.current_question,
+                'query': query,
+                'documents': documents,
+                'scored_documents': scored_documents,
+                'document_count': len(documents),
+                'high_scoring_count': high_scoring
+            })
+
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {e}", exc_info=True)
+            self.workflow_error.emit(e)
+
+    def generate_query(self) -> str:
+        """
+        Generate PostgreSQL tsquery from research question.
+
+        Returns:
+            str: The generated tsquery string
+
+        Raises:
+            RuntimeError: If QueryAgent is not initialized or executor has been cleaned up
+            ValueError: If query generation returns empty/invalid result
+            Exception: If query generation fails
+        """
+        if not self._is_active:
+            raise RuntimeError("Workflow executor has been cleaned up - cannot generate query")
+
+        if not self.query_agent:
+            raise RuntimeError("QueryAgent not initialized")
+
+        if not self.current_question or not self.current_question.strip():
+            raise ValueError("Cannot generate query from empty research question")
+
+        try:
+            # Call the query agent to convert natural language to tsquery
+            query: Optional[str] = self.query_agent.convert_question(self.current_question)
+
+            # Validate query result
+            if query is None:
+                raise ValueError("QueryAgent returned None - query generation failed")
+
+            if not isinstance(query, str):
+                raise TypeError(f"QueryAgent returned invalid type: {type(query)}, expected str")
+
+            if not query.strip():
+                raise ValueError("QueryAgent returned empty query string")
+
+            self.logger.info(f"Generated query: {query}")
+
+            # Emit query_generated signal for UI update
+            self.query_generated.emit(query)
+
+            return query
+
+        except Exception as e:
+            self.logger.error(f"Query generation failed: {e}", exc_info=True)
+            raise
+
+    def search_documents(self, query: str) -> list:
+        """
+        Execute database search with the generated query.
+
+        Args:
+            query: PostgreSQL tsquery string
+
+        Returns:
+            list: List of document dictionaries
+
+        Raises:
+            RuntimeError: If QueryAgent is not initialized
+            Exception: If search fails
+        """
+        if not self.query_agent:
+            raise RuntimeError("QueryAgent not initialized")
+
+        try:
+            # Use find_abstracts to execute the search
+            # This returns a generator, so we convert to list
+            documents = list(self.query_agent.find_abstracts(
+                question=self.current_question,
+                max_rows=self.max_results,
+                use_pubmed=True,
+                use_medrxiv=True,
+                use_others=True
+            ))
+
+            self.logger.info(f"Found {len(documents)} documents")
+
+            # Store documents in workflow state
+            self.documents = documents
+
+            # Emit documents_found signal for UI update
+            self.documents_found.emit(documents)
+
+            return documents
+
+        except Exception as e:
+            self.logger.error(f"Document search failed: {e}", exc_info=True)
+            raise
+
+    def score_documents(self, documents: list) -> list:
+        """
+        Score documents for relevance using DocumentScoringAgent.
+
+        Args:
+            documents: List of document dictionaries to score
+
+        Returns:
+            list: List of (document, score_result) tuples
+
+        Raises:
+            RuntimeError: If ScoringAgent is not initialized
+            Exception: If scoring fails
+        """
+        if not self.scoring_agent:
+            raise RuntimeError("ScoringAgent not initialized")
+
+        if not documents:
+            self.logger.warning("No documents to score")
+            return []
+
+        try:
+            self.logger.info(f"Scoring {len(documents)} documents for relevance...")
+
+            scored_documents = []
+            total = len(documents)
+
+            for i, doc in enumerate(documents, 1):
+                # Score this document
+                score_result = self.scoring_agent.evaluate_document(
+                    user_question=self.current_question,
+                    document=doc
+                )
+
+                if score_result:
+                    scored_documents.append((doc, score_result))
+
+                    # Emit progress for every document
+                    self.scoring_progress.emit(i, total)
+
+                    # Log progress every 10 documents or at end
+                    if i % 10 == 0 or i == total:
+                        self.status_message.emit(f"📊 Scored {i}/{total} documents...")
+                        self.logger.debug(f"Progress: {i}/{total} documents scored")
+
+            self.logger.info(f"Successfully scored {len(scored_documents)} documents")
+
+            # Store in workflow state
+            self.scored_documents = scored_documents
+
+            # Emit signal for UI update
+            self.documents_scored.emit(scored_documents)
+
+            return scored_documents
+
+        except Exception as e:
+            self.logger.error(f"Document scoring failed: {e}", exc_info=True)
+            raise
 
     def extract_citations(self, scored_documents: list) -> None:
         """Extract citations from high-scoring documents (Phase 3)."""
@@ -308,4 +509,58 @@ class QtWorkflowExecutor(QObject):
     def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
         """Generate final comprehensive report (Phase 3)."""
         # TODO Phase 3: Call editor_agent.edit_comprehensive_report()
+        pass
+
+    def cleanup(self) -> None:
+        """
+        Cleanup workflow executor resources.
+
+        This method:
+        - Marks executor as inactive (prevents further method calls)
+        - Clears workflow state (documents, citations, reports)
+        - Clears agent references
+        - Should be called when the plugin is unloaded or the workflow is reset
+        """
+        try:
+            self.logger.info("Cleaning up workflow executor resources...")
+
+            # Mark as inactive to prevent further method calls
+            self._is_active = False
+
+            # Clear workflow state
+            self.current_question = ""
+            self.documents = []
+            self.scored_documents = []
+            self.citations = []
+            self.preliminary_report = ""
+            self.counterfactual_analysis = None
+            self.final_report = ""
+
+            # Clear agent references (but don't destroy agents - they're managed elsewhere)
+            # Agents dictionary is kept for potential reuse, but individual references cleared
+            self.query_agent = None
+            self.scoring_agent = None
+            self.citation_agent = None
+            self.reporting_agent = None
+            self.counterfactual_agent = None
+            self.editor_agent = None
+            self.orchestrator = None
+
+            self.logger.info("✅ Workflow executor cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during workflow executor cleanup: {e}", exc_info=True)
+
+    def cancel_workflow(self) -> None:
+        """
+        Cancel ongoing workflow execution.
+
+        This method will be implemented in Phase 3 when workflow threading is added.
+        For now, it's a placeholder for future cancellation logic.
+        """
+        # TODO Phase 3: Implement workflow cancellation
+        # - Set cancellation flag
+        # - Stop background threads/workers
+        # - Emit workflow_error signal with cancellation exception
+        self.logger.warning("Workflow cancellation not yet implemented (Phase 3)")
         pass
