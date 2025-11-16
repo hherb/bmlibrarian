@@ -1,0 +1,460 @@
+"""Main application window for BMLibrarian Qt GUI.
+
+This module provides the BMLibrarianMainWindow class which serves as the
+main application window with plugin-based tabbed interface.
+"""
+
+from PySide6.QtWidgets import (
+    QMainWindow, QTabWidget, QWidget, QVBoxLayout,
+    QStatusBar, QMenuBar, QMenu, QMessageBox, QApplication
+)
+from PySide6.QtCore import Qt, Slot, QTimer
+from PySide6.QtGui import QAction, QCloseEvent
+from typing import Dict
+import logging
+
+from .plugin_manager import PluginManager, PluginLoadError
+from .tab_registry import TabRegistry
+from .config_manager import GUIConfigManager
+from .event_bus import EventBus
+from ..plugins.base_tab import BaseTabPlugin
+
+
+class BMLibrarianMainWindow(QMainWindow):
+    """Main application window with plugin-based tabs.
+
+    This class provides:
+    - Plugin-based tab system
+    - Window geometry persistence
+    - Menu bar with File/View/Help menus
+    - Status bar for plugin messages
+    - Tab navigation and management
+    - Proper cleanup on close
+
+    The window loads plugins specified in the configuration file and
+    creates tabs for each plugin in the specified order.
+    """
+
+    def __init__(self):
+        """Initialize the main window."""
+        super().__init__()
+
+        self.logger = logging.getLogger("bmlibrarian.gui.qt.core.MainWindow")
+
+        # Initialize core components
+        self.config_manager = GUIConfigManager()
+        self.tab_registry = TabRegistry()
+        self.plugin_manager = PluginManager(self.tab_registry)
+        self.event_bus = EventBus()
+
+        # Plugin tracking
+        self.tabs: Dict[str, QWidget] = {}  # plugin_id -> widget
+        self.tab_indices: Dict[str, int] = {}  # plugin_id -> tab index
+
+        # Setup UI
+        self._setup_ui()
+        self._create_menu_bar()
+        self._create_status_bar()
+
+        # Load plugins
+        self._load_plugins()
+
+        # Restore window geometry
+        self._restore_geometry()
+
+        # Connect event bus signals
+        self.event_bus.navigation_requested.connect(self._navigate_to_tab)
+        self.event_bus.status_updated.connect(self._update_status)
+
+        self.logger.info("Main window initialized")
+
+    def _setup_ui(self):
+        """Setup the main window UI."""
+        self.setWindowTitle("BMLibrarian - Biomedical Literature Research")
+
+        # Set minimum size
+        self.setMinimumSize(800, 600)
+
+        # Create central widget with tab container
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(False)
+        self.tab_widget.setMovable(True)
+        self.tab_widget.setDocumentMode(True)  # More native appearance
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        layout.addWidget(self.tab_widget)
+
+        self.logger.debug("UI setup complete")
+
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("&File")
+
+        # Export action (will be enabled by plugins as needed)
+        self.export_action = QAction("&Export...", self)
+        self.export_action.setShortcut("Ctrl+E")
+        self.export_action.setEnabled(False)
+        file_menu.addAction(self.export_action)
+
+        file_menu.addSeparator()
+
+        # Exit action
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # View menu
+        view_menu = menubar.addMenu("&View")
+
+        # Tab navigation submenu
+        self.tabs_menu = view_menu.addMenu("&Tabs")
+        # Will be populated after plugins are loaded
+
+        view_menu.addSeparator()
+
+        # Reload plugins action (for development)
+        reload_action = QAction("&Reload Plugins", self)
+        reload_action.setShortcut("Ctrl+R")
+        reload_action.triggered.connect(self._reload_plugins)
+        view_menu.addAction(reload_action)
+
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+
+        config_action = QAction("&Configuration...", self)
+        config_action.setShortcut("Ctrl+,")
+        config_action.triggered.connect(self._show_configuration)
+        tools_menu.addAction(config_action)
+
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+
+        about_action = QAction("&About BMLibrarian", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+        about_qt_action = QAction("About &Qt", self)
+        about_qt_action.triggered.connect(QApplication.aboutQt)
+        help_menu.addAction(about_qt_action)
+
+        self.logger.debug("Menu bar created")
+
+    def _create_status_bar(self):
+        """Create the status bar."""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Ready")
+        self.logger.debug("Status bar created")
+
+    def _load_plugins(self):
+        """Load enabled plugins and create tabs."""
+        config = self.config_manager.get_config()
+        enabled_plugins = config.get("gui", {}).get("tabs", {}).get(
+            "enabled_plugins", []
+        )
+        tab_order = config.get("gui", {}).get("tabs", {}).get(
+            "tab_order", enabled_plugins
+        )
+
+        if not enabled_plugins:
+            self.logger.warning("No plugins enabled in configuration")
+            self.status_bar.showMessage("No plugins configured", 5000)
+            return
+
+        self.logger.info(f"Loading {len(enabled_plugins)} enabled plugins...")
+
+        # Load all enabled plugins
+        loaded_plugins = self.plugin_manager.load_enabled_plugins(
+            enabled_plugins,
+            continue_on_error=True
+        )
+
+        if not loaded_plugins:
+            self.logger.error("No plugins loaded successfully")
+            QMessageBox.warning(
+                self,
+                "No Plugins Loaded",
+                "Failed to load any plugins. Check logs for details."
+            )
+            return
+
+        # Create tabs in specified order
+        for plugin_id in tab_order:
+            if plugin_id in loaded_plugins:
+                plugin = loaded_plugins[plugin_id]
+                self._add_plugin_tab(plugin)
+
+        # Set default tab
+        default_tab = config.get("gui", {}).get("tabs", {}).get("default_tab", None)
+        if default_tab and default_tab in self.tabs:
+            index = self.tab_indices.get(default_tab, 0)
+            self.tab_widget.setCurrentIndex(index)
+
+        # Update tabs menu
+        self._update_tabs_menu()
+
+        # Show load summary
+        failed_plugins = self.plugin_manager.get_failed_plugins()
+        if failed_plugins:
+            self.status_bar.showMessage(
+                f"Loaded {len(loaded_plugins)} plugins "
+                f"({len(failed_plugins)} failed)",
+                5000
+            )
+        else:
+            self.status_bar.showMessage(
+                f"Loaded {len(loaded_plugins)} plugins",
+                3000
+            )
+
+        self.logger.info(
+            f"Plugin loading complete: {len(loaded_plugins)} loaded, "
+            f"{len(failed_plugins)} failed"
+        )
+
+    def _add_plugin_tab(self, plugin: BaseTabPlugin):
+        """Add a tab from a plugin.
+
+        Args:
+            plugin: Plugin instance to add as tab
+        """
+        metadata = plugin.get_metadata()
+        plugin_id = metadata.plugin_id
+
+        try:
+            # Create widget
+            widget = plugin.create_widget(self)
+
+            # Connect plugin signals
+            plugin.status_changed.connect(self._on_plugin_status_changed)
+            plugin.request_navigation.connect(self._navigate_to_tab)
+
+            # Add tab
+            index = self.tab_widget.addTab(widget, metadata.display_name)
+
+            # Store references
+            self.tabs[plugin_id] = widget
+            self.tab_indices[plugin_id] = index
+
+            # Register with event bus
+            self.event_bus.register_plugin(plugin_id)
+
+            self.logger.info(f"Added tab for plugin '{plugin_id}'")
+
+        except Exception as e:
+            self.logger.error(
+                f"Error adding tab for plugin '{plugin_id}': {e}",
+                exc_info=True
+            )
+            QMessageBox.warning(
+                self,
+                "Plugin Error",
+                f"Failed to create tab for plugin '{metadata.display_name}':\n{e}"
+            )
+
+    def _update_tabs_menu(self):
+        """Update the tabs navigation menu."""
+        self.tabs_menu.clear()
+
+        for plugin_id, index in sorted(
+            self.tab_indices.items(),
+            key=lambda x: x[1]
+        ):
+            plugin = self.plugin_manager.loaded_plugins.get(plugin_id)
+            if plugin:
+                metadata = plugin.get_metadata()
+                action = QAction(metadata.display_name, self)
+                action.setShortcut(f"Alt+{index + 1}")
+                action.triggered.connect(
+                    lambda checked, pid=plugin_id: self._navigate_to_tab(pid)
+                )
+                self.tabs_menu.addAction(action)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int):
+        """Handle tab change events.
+
+        Args:
+            index: Index of newly activated tab
+        """
+        if index < 0 or index >= self.tab_widget.count():
+            return
+
+        # Find plugin_id for this index
+        current_plugin_id = None
+        for plugin_id, tab_index in self.tab_indices.items():
+            if tab_index == index:
+                current_plugin_id = plugin_id
+                break
+
+        if not current_plugin_id:
+            return
+
+        # Deactivate all plugins
+        for plugin_id, plugin in self.plugin_manager.loaded_plugins.items():
+            if plugin_id != current_plugin_id:
+                try:
+                    plugin.on_tab_deactivated()
+                except Exception as e:
+                    self.logger.error(
+                        f"Error deactivating plugin '{plugin_id}': {e}",
+                        exc_info=True
+                    )
+
+        # Activate current plugin
+        current_plugin = self.plugin_manager.loaded_plugins.get(current_plugin_id)
+        if current_plugin:
+            try:
+                current_plugin.on_tab_activated()
+            except Exception as e:
+                self.logger.error(
+                    f"Error activating plugin '{current_plugin_id}': {e}",
+                    exc_info=True
+                )
+
+        self.logger.debug(f"Tab changed to '{current_plugin_id}'")
+
+    @Slot(str)
+    def _navigate_to_tab(self, plugin_id: str):
+        """Navigate to a specific tab by plugin ID.
+
+        Args:
+            plugin_id: ID of plugin/tab to navigate to
+        """
+        if plugin_id in self.tab_indices:
+            index = self.tab_indices[plugin_id]
+            self.tab_widget.setCurrentIndex(index)
+            self.logger.debug(f"Navigated to tab '{plugin_id}'")
+        else:
+            self.logger.warning(f"Cannot navigate to unknown tab '{plugin_id}'")
+
+    @Slot(str)
+    def _on_plugin_status_changed(self, message: str):
+        """Update status bar with plugin messages.
+
+        Args:
+            message: Status message from plugin
+        """
+        self.status_bar.showMessage(message, 5000)
+
+    @Slot(str)
+    def _update_status(self, message: str):
+        """Update status bar (from event bus).
+
+        Args:
+            message: Status message
+        """
+        self.status_bar.showMessage(message, 5000)
+
+    def _restore_geometry(self):
+        """Restore window geometry from config."""
+        window_config = self.config_manager.get_window_config()
+
+        width = window_config.get("width", 1400)
+        height = window_config.get("height", 900)
+        self.resize(width, height)
+
+        # Restore position if saved
+        if window_config.get("remember_geometry", True):
+            x = window_config.get("x")
+            y = window_config.get("y")
+            if x is not None and y is not None:
+                self.move(x, y)
+
+            # Restore maximized state
+            if window_config.get("maximized", False):
+                self.showMaximized()
+
+        self.logger.debug("Window geometry restored")
+
+    def _save_geometry(self):
+        """Save current window geometry to config."""
+        window_config = self.config_manager.get_window_config()
+
+        if window_config.get("remember_geometry", True):
+            window_config["width"] = self.width()
+            window_config["height"] = self.height()
+            window_config["x"] = self.x()
+            window_config["y"] = self.y()
+            window_config["maximized"] = self.isMaximized()
+
+            self.config_manager.set_window_config(window_config)
+            self.logger.debug("Window geometry saved")
+
+    @Slot()
+    def _reload_plugins(self):
+        """Reload all plugins (for development)."""
+        reply = QMessageBox.question(
+            self,
+            "Reload Plugins",
+            "This will reload all plugins. Unsaved data may be lost. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.logger.info("Reloading plugins...")
+            # TODO: Implement full plugin reload
+            self.status_bar.showMessage("Plugin reload not yet implemented", 3000)
+
+    @Slot()
+    def _show_configuration(self):
+        """Show configuration dialog or navigate to configuration tab."""
+        # Try to navigate to configuration tab first
+        if "configuration" in self.tabs:
+            self._navigate_to_tab("configuration")
+        else:
+            # TODO: Show standalone configuration dialog
+            self.status_bar.showMessage(
+                "Configuration tab not loaded",
+                3000
+            )
+
+    @Slot()
+    def _show_about(self):
+        """Show about dialog."""
+        about_text = """
+        <h2>BMLibrarian</h2>
+        <p><b>Biomedical Literature Research Platform</b></p>
+        <p>Version 0.1.0</p>
+        <p>A comprehensive Python library providing AI-powered access to
+        biomedical literature databases.</p>
+        <p>Built with PySide6 and PostgreSQL.</p>
+        """
+
+        QMessageBox.about(self, "About BMLibrarian", about_text)
+
+    def closeEvent(self, event: QCloseEvent):
+        """Handle window close event.
+
+        Args:
+            event: Close event
+        """
+        # Save geometry
+        self._save_geometry()
+
+        # Cleanup all plugins
+        self.logger.info("Cleaning up plugins...")
+        for plugin_id, plugin in self.plugin_manager.loaded_plugins.items():
+            try:
+                plugin.cleanup()
+                self.event_bus.unregister_plugin(plugin_id)
+                self.logger.debug(f"Cleaned up plugin '{plugin_id}'")
+            except Exception as e:
+                self.logger.error(
+                    f"Error cleaning up plugin '{plugin_id}': {e}",
+                    exc_info=True
+                )
+
+        self.logger.info("Application closing")
+        event.accept()
