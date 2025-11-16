@@ -51,6 +51,10 @@ class BMLibrarianMainWindow(QMainWindow):
         self.tabs: Dict[str, QWidget] = {}  # plugin_id -> widget
         self.tab_indices: Dict[str, int] = {}  # plugin_id -> tab index
 
+        # Initialize BMLibrarian agents (for research workflow)
+        self.agents = None
+        self._initialize_agents()
+
         # Setup UI
         self._setup_ui()
         self._create_menu_bar()
@@ -68,6 +72,26 @@ class BMLibrarianMainWindow(QMainWindow):
         self.event_bus.status_updated.connect(self._update_status)
 
         self.logger.info("Main window initialized")
+
+    def _initialize_agents(self):
+        """Initialize BMLibrarian agents in main thread (for research workflow)."""
+        try:
+            self.logger.info("Initializing BMLibrarian agents...")
+
+            # Import initialize function from Flet GUI (framework-agnostic)
+            from ...workflow import initialize_agents_in_main_thread
+
+            # Initialize all agents
+            self.agents = initialize_agents_in_main_thread()
+
+            if self.agents:
+                self.logger.info("✅ Agents initialized successfully")
+            else:
+                self.logger.warning("⚠️ Agent initialization returned None")
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize agents: {e}", exc_info=True)
+            self.agents = None
 
     def _setup_ui(self):
         """Setup the main window UI."""
@@ -597,6 +621,15 @@ class BMLibrarianMainWindow(QMainWindow):
                     f"Error cleaning up plugin '{plugin_id}': {e}",
                     exc_info=True
                 )
+
+        # Cleanup agents (return audit connection to pool)
+        if self.agents:
+            try:
+                from ...workflow import cleanup_agents
+                cleanup_agents(self.agents)
+                self.logger.info("✅ Agents cleaned up")
+            except Exception as e:
+                self.logger.error(f"Error cleaning up agents: {e}", exc_info=True)
 
         self.logger.info("Application closing")
         event.accept()

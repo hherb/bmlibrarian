@@ -128,12 +128,13 @@ class ResearchTabWidget(QWidget):
     workflow_completed: Signal = Signal(dict)  # Workflow completed with results
     workflow_error: Signal = Signal(Exception)  # Workflow error occurred
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, agents: Optional[dict] = None) -> None:
         """
         Initialize research tab.
 
         Args:
             parent: Optional parent widget
+            agents: Optional dictionary of initialized BMLibrarian agents
         """
         super().__init__(parent)
 
@@ -143,6 +144,23 @@ class ResearchTabWidget(QWidget):
         # Workflow state
         self.current_results: dict = {}
         self.workflow_running: bool = False
+
+        # Agents and workflow executor
+        self.agents: Optional[dict] = agents
+        self.workflow_executor: Optional['QtWorkflowExecutor'] = None
+
+        # Initialize workflow executor if agents available
+        if self.agents:
+            from .workflow_executor import QtWorkflowExecutor
+            self.workflow_executor = QtWorkflowExecutor(self.agents, parent=self)
+            # Connect workflow signals
+            self.workflow_executor.workflow_started.connect(self._on_workflow_started)
+            self.workflow_executor.workflow_completed.connect(self._on_workflow_completed)
+            self.workflow_executor.workflow_error.connect(self._on_workflow_error)
+            self.workflow_executor.status_message.connect(self._on_workflow_status)
+            self.logger.info("✅ Workflow executor initialized with agents")
+        else:
+            self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
 
         # UI Components (initialized in _setup_ui)
         self.question_input: Optional[QTextEdit] = None
@@ -567,10 +585,22 @@ class ResearchTabWidget(QWidget):
                 )
                 return
 
-            # Phase 1: Just show a message
-            # Phase 2+: Will connect to real workflow
+            # Check if workflow executor is available
+            if not self.workflow_executor:
+                QMessageBox.critical(
+                    self,
+                    "Agents Not Initialized",
+                    "BMLibrarian agents are not initialized.\n\n"
+                    "The application may have failed to start properly.\n"
+                    "Please check the logs and restart the application."
+                )
+                return
+
+            # Phase 2: Call workflow executor (just test agent connection)
+            # Phase 3+: Will execute full workflow
             self.status_message.emit(f"Research started: {question[:50]}...")
             self.start_button.setEnabled(False)
+            self.workflow_running = True
 
             self.logger.info(f"Research started: {question[:100]}")
             self.logger.debug(
@@ -579,31 +609,81 @@ class ResearchTabWidget(QWidget):
                 f"counterfactual={self.counterfactual_checkbox.isChecked()}"
             )
 
-            # TODO Phase 2: Connect to real workflow executor
-            # TODO Phase 3: Execute workflow in background thread
-
-            # For now, just show a placeholder message
-            QMessageBox.information(
-                self,
-                "Phase 1 - Layout Complete",
-                f"Research question received:\n\n{question}\n\n"
-                f"Parameters:\n"
-                f"• Max Results: {max_results}\n"
-                f"• Min Relevant: {min_relevant}\n"
-                f"• Interactive: {self.interactive_checkbox.isChecked()}\n"
-                f"• Counterfactual: {self.counterfactual_checkbox.isChecked()}\n\n"
-                "This is Phase 1 (layout only).\n"
-                "Phase 2 will connect to real agents and execute the workflow."
+            # Start workflow (Phase 2: agent connection test)
+            self.workflow_executor.start_workflow(
+                question=question,
+                max_results=max_results,
+                min_relevant=min_relevant,
+                interactive=self.interactive_checkbox.isChecked(),
+                counterfactual=self.counterfactual_checkbox.isChecked()
             )
-
-            self.start_button.setEnabled(True)
 
         except Exception as e:
             self.logger.error(f"Error in _on_start_research: {e}", exc_info=True)
             self.start_button.setEnabled(True)
+            self.workflow_running = False
             QMessageBox.critical(
                 self,
                 "Error",
                 f"An error occurred while starting research:\n\n{str(e)}"
             )
             self.workflow_error.emit(e)
+
+    # ========================================================================
+    # Workflow Signal Handlers
+    # ========================================================================
+
+    @Slot()
+    def _on_workflow_started(self) -> None:
+        """Handle workflow started signal."""
+        self.logger.info("Workflow started")
+        self.workflow_running = True
+        self.start_button.setEnabled(False)
+        self.workflow_started.emit()
+
+    @Slot(dict)
+    def _on_workflow_completed(self, results: dict) -> None:
+        """Handle workflow completed signal."""
+        self.logger.info(f"Workflow completed: {results.get('status', 'unknown')}")
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.current_results = results
+        self.workflow_completed.emit(results)
+
+        # Phase 2: Show success message
+        phase = results.get('phase', 'unknown')
+        if phase == 2:
+            QMessageBox.information(
+                self,
+                "Phase 2 Complete - Agents Connected!",
+                f"Research question: {results.get('question', 'N/A')}\n\n"
+                "✅ All agents are initialized and ready!\n\n"
+                "Agent connection test successful:\n"
+                "• QueryAgent\n"
+                "• ScoringAgent\n"
+                "• CitationAgent\n"
+                "• ReportingAgent\n"
+                "• EditorAgent\n"
+                "• CounterfactualAgent (optional)\n\n"
+                "Phase 3 will implement full workflow execution."
+            )
+
+    @Slot(Exception)
+    def _on_workflow_error(self, error: Exception) -> None:
+        """Handle workflow error signal."""
+        self.logger.error(f"Workflow error: {error}", exc_info=True)
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.workflow_error.emit(error)
+
+        QMessageBox.critical(
+            self,
+            "Workflow Error",
+            f"An error occurred during workflow execution:\n\n{str(error)}"
+        )
+
+    @Slot(str)
+    def _on_workflow_status(self, message: str) -> None:
+        """Handle workflow status message signal."""
+        self.logger.debug(f"Workflow status: {message}")
+        self.status_message.emit(message)
