@@ -46,12 +46,17 @@ class ResearchPlugin(BaseTabPlugin):
         Create the research tab widget.
 
         Args:
-            parent: Optional parent widget
+            parent: Optional parent widget (should be main window with agents)
 
         Returns:
             Research tab widget instance
         """
-        self.research_widget = ResearchTabWidget(parent)
+        # Get agents from parent (main window)
+        agents = None
+        if parent and hasattr(parent, 'agents'):
+            agents = parent.agents
+
+        self.research_widget = ResearchTabWidget(parent=parent, agents=agents)
 
         # Connect widget signals to plugin signals
         self.research_widget.status_message.connect(

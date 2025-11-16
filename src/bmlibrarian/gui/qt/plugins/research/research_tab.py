@@ -17,11 +17,99 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QSizePolicy,
+    QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QFont, QPalette
+from PySide6.QtGui import QFont
 from typing import Optional
+import logging
 
+
+# ============================================================================
+# UI Constants
+# ============================================================================
+
+class UIConstants:
+    """UI layout and styling constants."""
+
+    # Fonts
+    TITLE_FONT_SIZE = 18
+    SUBTITLE_FONT_SIZE = 10
+    TAB_HEADER_FONT_SIZE = 12
+
+    # Colors
+    COLOR_PRIMARY_BLUE = "#1976D2"
+    COLOR_PRIMARY_BLUE_HOVER = "#1565C0"
+    COLOR_DISABLED_GREY = "#BDBDBD"
+    COLOR_TEXT_GREY = "#666666"
+    COLOR_BACKGROUND_GREY = "#F5F5F5"
+    COLOR_BORDER_GREY = "#E0E0E0"
+    COLOR_WHITE = "white"
+
+    # Spacing
+    MAIN_LAYOUT_MARGIN = 15
+    MAIN_LAYOUT_SPACING = 10
+    CONTROLS_SPACING = 10
+    ROW2_SPACING = 15
+
+    # Widget Sizes
+    QUESTION_INPUT_MIN_HEIGHT = 70
+    QUESTION_INPUT_MAX_HEIGHT = 100
+    START_BUTTON_MIN_HEIGHT = 45
+    START_BUTTON_MIN_WIDTH = 140
+    SPINBOX_WIDTH = 80
+
+    # Border Radii
+    CONTROLS_BORDER_RADIUS = 8
+    BUTTON_BORDER_RADIUS = 4
+
+    # Spinbox Ranges
+    MAX_RESULTS_MIN = 10
+    MAX_RESULTS_MAX = 1000
+    MAX_RESULTS_DEFAULT = 100
+    MIN_RELEVANT_MIN = 1
+    MIN_RELEVANT_MAX = 100
+    MIN_RELEVANT_DEFAULT = 10
+
+
+class StyleSheets:
+    """Centralized stylesheet definitions."""
+
+    @staticmethod
+    def controls_frame() -> str:
+        """Stylesheet for controls section frame."""
+        return f"""
+            QFrame {{
+                background-color: {UIConstants.COLOR_BACKGROUND_GREY};
+                border: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: {UIConstants.CONTROLS_BORDER_RADIUS}px;
+                padding: 10px;
+            }}
+        """
+
+    @staticmethod
+    def start_button() -> str:
+        """Stylesheet for Start Research button."""
+        return f"""
+            QPushButton {{
+                background-color: {UIConstants.COLOR_PRIMARY_BLUE};
+                color: {UIConstants.COLOR_WHITE};
+                font-weight: bold;
+                border-radius: {UIConstants.BUTTON_BORDER_RADIUS}px;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {UIConstants.COLOR_PRIMARY_BLUE_HOVER};
+            }}
+            QPushButton:disabled {{
+                background-color: {UIConstants.COLOR_DISABLED_GREY};
+            }}
+        """
+
+
+# ============================================================================
+# Main Research Tab Widget
+# ============================================================================
 
 class ResearchTabWidget(QWidget):
     """
@@ -35,32 +123,67 @@ class ResearchTabWidget(QWidget):
     """
 
     # Signals for plugin integration
-    status_message = Signal(str)  # Status updates
-    workflow_started = Signal()  # Workflow execution started
-    workflow_completed = Signal(dict)  # Workflow completed with results
-    workflow_error = Signal(Exception)  # Workflow error occurred
+    status_message: Signal = Signal(str)  # Status updates
+    workflow_started: Signal = Signal()  # Workflow execution started
+    workflow_completed: Signal = Signal(dict)  # Workflow completed with results
+    workflow_error: Signal = Signal(Exception)  # Workflow error occurred
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, agents: Optional[dict] = None) -> None:
         """
         Initialize research tab.
 
         Args:
             parent: Optional parent widget
+            agents: Optional dictionary of initialized BMLibrarian agents
         """
         super().__init__(parent)
 
+        # Logger
+        self.logger = logging.getLogger("bmlibrarian.gui.qt.plugins.research.ResearchTabWidget")
+
         # Workflow state
-        self.current_results = {}
-        self.workflow_running = False
+        self.current_results: dict = {}
+        self.workflow_running: bool = False
+
+        # Agents and workflow executor
+        self.agents: Optional[dict] = agents
+        self.workflow_executor: Optional['QtWorkflowExecutor'] = None
+
+        # Initialize workflow executor if agents available
+        if self.agents:
+            from .workflow_executor import QtWorkflowExecutor
+            self.workflow_executor = QtWorkflowExecutor(self.agents, parent=self)
+            # Connect workflow signals
+            self.workflow_executor.workflow_started.connect(self._on_workflow_started)
+            self.workflow_executor.workflow_completed.connect(self._on_workflow_completed)
+            self.workflow_executor.workflow_error.connect(self._on_workflow_error)
+            self.workflow_executor.status_message.connect(self._on_workflow_status)
+            self.logger.info("✅ Workflow executor initialized with agents")
+        else:
+            self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
+
+        # UI Components (initialized in _setup_ui)
+        self.question_input: Optional[QTextEdit] = None
+        self.start_button: Optional[QPushButton] = None
+        self.max_results_spin: Optional[QSpinBox] = None
+        self.min_relevant_spin: Optional[QSpinBox] = None
+        self.interactive_checkbox: Optional[QCheckBox] = None
+        self.counterfactual_checkbox: Optional[QCheckBox] = None
+        self.research_tabs: Optional[QTabWidget] = None
 
         # Initialize UI
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Setup the user interface with Qt-native design."""
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(
+            UIConstants.MAIN_LAYOUT_MARGIN,
+            UIConstants.MAIN_LAYOUT_MARGIN,
+            UIConstants.MAIN_LAYOUT_MARGIN,
+            UIConstants.MAIN_LAYOUT_MARGIN
+        )
+        main_layout.setSpacing(UIConstants.MAIN_LAYOUT_SPACING)
 
         # 1. Header section
         header = self._create_header_section()
@@ -89,18 +212,18 @@ class ResearchTabWidget(QWidget):
         # Title
         title = QLabel("BMLibrarian Research Assistant")
         title_font = QFont()
-        title_font.setPointSize(18)
+        title_font.setPointSize(UIConstants.TITLE_FONT_SIZE)
         title_font.setBold(True)
         title.setFont(title_font)
-        title.setStyleSheet("color: #1976D2;")  # Blue color
+        title.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
         header_layout.addWidget(title)
 
         # Subtitle
         subtitle = QLabel("AI-Powered Evidence-Based Medical Literature Research")
         subtitle_font = QFont()
-        subtitle_font.setPointSize(10)
+        subtitle_font.setPointSize(UIConstants.SUBTITLE_FONT_SIZE)
         subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet("color: #666666;")  # Grey color
+        subtitle.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
         header_layout.addWidget(subtitle)
 
         return header_widget
@@ -120,21 +243,14 @@ class ResearchTabWidget(QWidget):
         controls_frame = QFrame()
         controls_frame.setFrameShape(QFrame.StyledPanel)
         controls_frame.setFrameShadow(QFrame.Raised)
-        controls_frame.setStyleSheet("""
-            QFrame {
-                background-color: #F5F5F5;
-                border: 1px solid #E0E0E0;
-                border-radius: 8px;
-                padding: 10px;
-            }
-        """)
+        controls_frame.setStyleSheet(StyleSheets.controls_frame())
 
         controls_layout = QVBoxLayout(controls_frame)
-        controls_layout.setSpacing(10)
+        controls_layout.setSpacing(UIConstants.CONTROLS_SPACING)
 
         # Row 1: Question input + Start button
         row1 = QHBoxLayout()
-        row1.setSpacing(10)
+        row1.setSpacing(UIConstants.CONTROLS_SPACING)
 
         # Question input
         question_container = QVBoxLayout()
@@ -147,8 +263,8 @@ class ResearchTabWidget(QWidget):
             "Enter your biomedical research question here...\n\n"
             "Example: What are the cardiovascular benefits of regular exercise in adults?"
         )
-        self.question_input.setMaximumHeight(100)
-        self.question_input.setMinimumHeight(70)
+        self.question_input.setMaximumHeight(UIConstants.QUESTION_INPUT_MAX_HEIGHT)
+        self.question_input.setMinimumHeight(UIConstants.QUESTION_INPUT_MIN_HEIGHT)
         self.question_input.textChanged.connect(self._on_question_changed)
         question_container.addWidget(self.question_input)
         row1.addLayout(question_container, stretch=1)
@@ -158,24 +274,10 @@ class ResearchTabWidget(QWidget):
         self.start_button.setIcon(self.start_button.style().standardIcon(
             self.start_button.style().StandardPixmap.SP_MediaPlay
         ))
-        self.start_button.setMinimumHeight(45)
-        self.start_button.setMinimumWidth(140)
+        self.start_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
+        self.start_button.setMinimumWidth(UIConstants.START_BUTTON_MIN_WIDTH)
         self.start_button.setEnabled(False)
-        self.start_button.setStyleSheet("""
-            QPushButton {
-                background-color: #1976D2;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover {
-                background-color: #1565C0;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-            }
-        """)
+        self.start_button.setStyleSheet(StyleSheets.start_button())
         self.start_button.clicked.connect(self._on_start_research)
         row1.addWidget(self.start_button, alignment=Qt.AlignmentFlag.AlignBottom)
 
@@ -183,17 +285,17 @@ class ResearchTabWidget(QWidget):
 
         # Row 2: Parameters and toggles
         row2 = QHBoxLayout()
-        row2.setSpacing(15)
+        row2.setSpacing(UIConstants.ROW2_SPACING)
 
         # Max Results
         max_results_label = QLabel("Max Results:")
         row2.addWidget(max_results_label)
 
         self.max_results_spin = QSpinBox()
-        self.max_results_spin.setMinimum(10)
-        self.max_results_spin.setMaximum(1000)
-        self.max_results_spin.setValue(100)
-        self.max_results_spin.setFixedWidth(80)
+        self.max_results_spin.setMinimum(UIConstants.MAX_RESULTS_MIN)
+        self.max_results_spin.setMaximum(UIConstants.MAX_RESULTS_MAX)
+        self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
+        self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
         row2.addWidget(self.max_results_spin)
 
@@ -202,13 +304,14 @@ class ResearchTabWidget(QWidget):
         row2.addWidget(min_relevant_label)
 
         self.min_relevant_spin = QSpinBox()
-        self.min_relevant_spin.setMinimum(1)
-        self.min_relevant_spin.setMaximum(100)
-        self.min_relevant_spin.setValue(10)
-        self.min_relevant_spin.setFixedWidth(80)
+        self.min_relevant_spin.setMinimum(UIConstants.MIN_RELEVANT_MIN)
+        self.min_relevant_spin.setMaximum(UIConstants.MIN_RELEVANT_MAX)
+        self.min_relevant_spin.setValue(UIConstants.MIN_RELEVANT_DEFAULT)
+        self.min_relevant_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
         self.min_relevant_spin.setToolTip(
             "Minimum high-scoring documents to find (triggers iterative search)"
         )
+        self.min_relevant_spin.valueChanged.connect(self._on_min_relevant_changed)
         row2.addWidget(self.min_relevant_spin)
 
         # Spacer
@@ -285,20 +388,44 @@ class ResearchTabWidget(QWidget):
     # Tab Creation Methods (Empty placeholders for Phase 1)
     # ========================================================================
 
-    def _create_search_tab(self) -> QWidget:
-        """Create Search tab (query generation and display)."""
+    def _create_placeholder_tab(self, icon: str, title: str, description: str) -> QWidget:
+        """
+        Create a placeholder tab with consistent formatting.
+
+        Args:
+            icon: Emoji icon for the tab
+            title: Tab title
+            description: Bulleted list of what will be displayed
+
+        Returns:
+            Placeholder tab widget
+        """
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(15, 15, 15, 15)
 
-        label = QLabel("🔍 Search Query Generation")
+        # Header
+        label = QLabel(f"{icon} {title}")
         label_font = QFont()
-        label_font.setPointSize(12)
+        label_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
         label_font.setBold(True)
         label.setFont(label_font)
         layout.addWidget(label)
 
-        description = QLabel(
+        # Description
+        desc_label = QLabel(description)
+        desc_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; margin-top: 10px;")
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        layout.addStretch()
+        return widget
+
+    def _create_search_tab(self) -> QWidget:
+        """Create Search tab (query generation and display)."""
+        return self._create_placeholder_tab(
+            "🔍",
+            "Search Query Generation",
             "This tab will display:\n"
             "• Research question\n"
             "• Generated PostgreSQL query\n"
@@ -306,52 +433,24 @@ class ResearchTabWidget(QWidget):
             "• Query performance statistics\n"
             "• Interactive query editing (in interactive mode)"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_literature_tab(self) -> QWidget:
         """Create Literature tab (document list)."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("📚 Literature Documents")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "📚",
+            "Literature Documents",
             "This tab will display:\n"
             "• List of all documents found by search\n"
             "• Document cards with title, authors, journal, year\n"
             "• Expandable abstracts\n"
             "• Document metadata (DOI, PMID, etc.)"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_scoring_tab(self) -> QWidget:
         """Create Scoring tab (document relevance scoring)."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("📊 Document Scoring")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "📊",
+            "Document Scoring",
             "This tab will display:\n"
             "• Interactive scoring interface (in interactive mode)\n"
             "• Automated scoring results (in auto mode)\n"
@@ -359,26 +458,12 @@ class ResearchTabWidget(QWidget):
             "• Color-coded score badges\n"
             "• Scoring progress and statistics"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_citations_tab(self) -> QWidget:
         """Create Citations tab (extracted citations)."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("💬 Citations")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "💬",
+            "Citations",
             "This tab will display:\n"
             "• Extracted citations from high-scoring documents\n"
             "• Citation cards with document title and relevant passage\n"
@@ -386,26 +471,12 @@ class ResearchTabWidget(QWidget):
             "• Grouped by document\n"
             "• Interactive citation requests (in interactive mode)"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_preliminary_tab(self) -> QWidget:
         """Create Preliminary Report tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("📄 Preliminary Report")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "📄",
+            "Preliminary Report",
             "This tab will display:\n"
             "• Preliminary report (before counterfactual analysis)\n"
             "• Markdown-rendered content\n"
@@ -413,26 +484,12 @@ class ResearchTabWidget(QWidget):
             "• Interactive report editing (in interactive mode)\n"
             "• Export options"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_counterfactual_tab(self) -> QWidget:
         """Create Counterfactual Analysis tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("🧠 Counterfactual Analysis")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "🧠",
+            "Counterfactual Analysis",
             "This tab will display:\n"
             "• Research questions for finding contradictory evidence\n"
             "• Search results for contradictory documents\n"
@@ -440,26 +497,12 @@ class ResearchTabWidget(QWidget):
             "• Evidence assessment\n"
             "• Interactive controls (skip, regenerate)"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_report_tab(self) -> QWidget:
         """Create Final Report tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("📋 Final Report")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "📋",
+            "Final Report",
             "This tab will display:\n"
             "• Final comprehensive report (with counterfactual evidence)\n"
             "• Markdown-rendered content\n"
@@ -467,26 +510,12 @@ class ResearchTabWidget(QWidget):
             "• Word count, citation count, metadata\n"
             "• Export options (Markdown, PDF)"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     def _create_settings_tab(self) -> QWidget:
         """Create Settings tab."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        label = QLabel("⚙️ Settings")
-        label_font = QFont()
-        label_font.setPointSize(12)
-        label_font.setBold(True)
-        label.setFont(label_font)
-        layout.addWidget(label)
-
-        description = QLabel(
+        return self._create_placeholder_tab(
+            "⚙️",
+            "Settings",
             "This tab will display:\n"
             "• Agent configuration options\n"
             "• Model selection dropdowns\n"
@@ -495,46 +524,166 @@ class ResearchTabWidget(QWidget):
             "• Database and Ollama connection status\n"
             "• Reset to defaults button"
         )
-        description.setStyleSheet("color: #666666; margin-top: 10px;")
-        layout.addWidget(description)
-
-        layout.addStretch()
-        return widget
 
     # ========================================================================
     # Event Handlers
     # ========================================================================
 
     @Slot()
-    def _on_question_changed(self):
+    def _on_question_changed(self) -> None:
         """Handle research question text changes."""
-        has_text = len(self.question_input.toPlainText().strip()) > 0
-        self.start_button.setEnabled(has_text and not self.workflow_running)
+        try:
+            has_text = len(self.question_input.toPlainText().strip()) > 0
+            self.start_button.setEnabled(has_text and not self.workflow_running)
+        except Exception as e:
+            self.logger.error(f"Error in _on_question_changed: {e}", exc_info=True)
+
+    @Slot(int)
+    def _on_min_relevant_changed(self, value: int) -> None:
+        """
+        Handle min relevant value changes with validation.
+
+        Args:
+            value: New min relevant value
+        """
+        try:
+            # Validate: min_relevant should not exceed max_results
+            max_results = self.max_results_spin.value()
+            if value > max_results:
+                self.logger.warning(
+                    f"Min relevant ({value}) exceeds max results ({max_results}). "
+                    "Adjusting max results."
+                )
+                self.max_results_spin.setValue(value)
+        except Exception as e:
+            self.logger.error(f"Error in _on_min_relevant_changed: {e}", exc_info=True)
 
     @Slot()
-    def _on_start_research(self):
-        """Handle Start Research button click."""
-        question = self.question_input.toPlainText().strip()
+    def _on_start_research(self) -> None:
+        """Handle Start Research button click with error handling."""
+        try:
+            question = self.question_input.toPlainText().strip()
 
-        if not question:
-            return
+            if not question:
+                QMessageBox.warning(
+                    self,
+                    "No Question",
+                    "Please enter a research question before starting."
+                )
+                return
 
-        # Phase 1: Just show a message
-        # Phase 2+: Will connect to real workflow
-        self.status_message.emit(f"Research started: {question[:50]}...")
+            # Validate parameters
+            max_results = self.max_results_spin.value()
+            min_relevant = self.min_relevant_spin.value()
+
+            if min_relevant > max_results:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Parameters",
+                    f"Min relevant ({min_relevant}) cannot exceed max results ({max_results}).\n\n"
+                    "Please adjust the values."
+                )
+                return
+
+            # Check if workflow executor is available
+            if not self.workflow_executor:
+                QMessageBox.critical(
+                    self,
+                    "Agents Not Initialized",
+                    "BMLibrarian agents are not initialized.\n\n"
+                    "The application may have failed to start properly.\n"
+                    "Please check the logs and restart the application."
+                )
+                return
+
+            # Phase 2: Call workflow executor (just test agent connection)
+            # Phase 3+: Will execute full workflow
+            self.status_message.emit(f"Research started: {question[:50]}...")
+            self.start_button.setEnabled(False)
+            self.workflow_running = True
+
+            self.logger.info(f"Research started: {question[:100]}")
+            self.logger.debug(
+                f"Parameters: max_results={max_results}, min_relevant={min_relevant}, "
+                f"interactive={self.interactive_checkbox.isChecked()}, "
+                f"counterfactual={self.counterfactual_checkbox.isChecked()}"
+            )
+
+            # Start workflow (Phase 2: agent connection test)
+            self.workflow_executor.start_workflow(
+                question=question,
+                max_results=max_results,
+                min_relevant=min_relevant,
+                interactive=self.interactive_checkbox.isChecked(),
+                counterfactual=self.counterfactual_checkbox.isChecked()
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in _on_start_research: {e}", exc_info=True)
+            self.start_button.setEnabled(True)
+            self.workflow_running = False
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"An error occurred while starting research:\n\n{str(e)}"
+            )
+            self.workflow_error.emit(e)
+
+    # ========================================================================
+    # Workflow Signal Handlers
+    # ========================================================================
+
+    @Slot()
+    def _on_workflow_started(self) -> None:
+        """Handle workflow started signal."""
+        self.logger.info("Workflow started")
+        self.workflow_running = True
         self.start_button.setEnabled(False)
+        self.workflow_started.emit()
 
-        # TODO Phase 2: Connect to real workflow executor
-        # TODO Phase 3: Execute workflow in background thread
+    @Slot(dict)
+    def _on_workflow_completed(self, results: dict) -> None:
+        """Handle workflow completed signal."""
+        self.logger.info(f"Workflow completed: {results.get('status', 'unknown')}")
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.current_results = results
+        self.workflow_completed.emit(results)
 
-        # For now, just show a placeholder message
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(
+        # Phase 2: Show success message
+        phase = results.get('phase', 'unknown')
+        if phase == 2:
+            QMessageBox.information(
+                self,
+                "Phase 2 Complete - Agents Connected!",
+                f"Research question: {results.get('question', 'N/A')}\n\n"
+                "✅ All agents are initialized and ready!\n\n"
+                "Agent connection test successful:\n"
+                "• QueryAgent\n"
+                "• ScoringAgent\n"
+                "• CitationAgent\n"
+                "• ReportingAgent\n"
+                "• EditorAgent\n"
+                "• CounterfactualAgent (optional)\n\n"
+                "Phase 3 will implement full workflow execution."
+            )
+
+    @Slot(Exception)
+    def _on_workflow_error(self, error: Exception) -> None:
+        """Handle workflow error signal."""
+        self.logger.error(f"Workflow error: {error}", exc_info=True)
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.workflow_error.emit(error)
+
+        QMessageBox.critical(
             self,
-            "Phase 1 - Layout Complete",
-            f"Research question received:\n\n{question}\n\n"
-            "This is Phase 1 (layout only).\n"
-            "Phase 2 will connect to real agents and execute the workflow."
+            "Workflow Error",
+            f"An error occurred during workflow execution:\n\n{str(error)}"
         )
 
-        self.start_button.setEnabled(True)
+    @Slot(str)
+    def _on_workflow_status(self, message: str) -> None:
+        """Handle workflow status message signal."""
+        self.logger.debug(f"Workflow status: {message}")
+        self.status_message.emit(message)
