@@ -121,7 +121,9 @@ class FactCheckDataManager:
                 if annot.get('annotator_id') == self.annotator_id:
                     self.reviews[i] = {
                         'human_annotation': annot.get('annotation'),
-                        'human_explanation': annot.get('explanation', '')
+                        'human_explanation': annot.get('explanation', ''),
+                        'confidence': annot.get('confidence', ''),
+                        'review_duration_seconds': annot.get('review_duration_seconds')
                     }
                     break
 
@@ -188,7 +190,7 @@ class FactCheckDataManager:
         if self.incremental:
             print(f"ℹ️  Incremental mode: Showing ALL {len(self.results)} statements from JSON import (incremental filtering disabled for imports)")
 
-    def save_annotation(self, index: int, annotation: str, explanation: str = ""):
+    def save_annotation(self, index: int, annotation: str, explanation: str = "", confidence: str = "", review_duration: int = None):
         """
         Save annotation for a statement.
 
@@ -196,6 +198,8 @@ class FactCheckDataManager:
             index: Statement index
             annotation: Annotation value (yes/no/maybe/unclear) or n/a to skip saving
             explanation: Optional explanation text
+            confidence: Confidence level (high/medium/low or empty)
+            review_duration: Review duration in seconds (None if no annotation selected)
         """
         if index >= len(self.reviews):
             return
@@ -203,7 +207,9 @@ class FactCheckDataManager:
         # Update in-memory reviews
         self.reviews[index] = {
             'human_annotation': annotation,
-            'human_explanation': explanation
+            'human_explanation': explanation,
+            'confidence': confidence,
+            'review_duration_seconds': review_duration
         }
 
         # Save to database immediately if in database mode
@@ -217,17 +223,21 @@ class FactCheckDataManager:
                 if not statement_id or not annotation or annotation.lower() in ('n/a', 'na'):
                     return
 
+                # Convert "n/a" confidence to None for database
+                db_confidence = None if (not confidence or confidence == "n/a") else confidence
+
                 human_annotation = HumanAnnotation(
                     statement_id=statement_id,
                     annotator_id=self.annotator_id,
                     annotation=annotation,
                     explanation=explanation,
-                    confidence=None,
+                    confidence=db_confidence,
+                    review_duration_seconds=review_duration,
                     session_id=f"gui_session_{datetime.now().strftime('%Y%m%d')}"
                 )
 
                 self.fact_checker_db.insert_human_annotation(human_annotation)
-                print(f"✓ Saved annotation for statement {statement_id}")
+                print(f"✓ Saved annotation for statement {statement_id} (time: {review_duration}s, confidence: {db_confidence})")
 
             except Exception as e:
                 print(f"Error saving annotation to database: {e}")
