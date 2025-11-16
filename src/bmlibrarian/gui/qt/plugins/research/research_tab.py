@@ -235,13 +235,14 @@ class ResearchTabWidget(QWidget):
         self.threadpool.start(worker)
         self.workflow_started.emit()
 
-    def _execute_workflow_mock(self, progress_signal, status_signal):
+    def _execute_workflow_mock(self, progress_signal, status_signal, question):
         """
         Mock workflow execution (to be replaced with real implementation).
 
         Args:
             progress_signal: Signal for progress updates
             status_signal: Signal for status updates
+            question: Research question
 
         Returns:
             Mock results dictionary
@@ -264,7 +265,7 @@ class ResearchTabWidget(QWidget):
 
         # Return mock results
         return {
-            "question": "What are the cardiovascular benefits of exercise?",
+            "question": question,
             "documents": [
                 {
                     "title": "Exercise and Heart Health: A Meta-Analysis",

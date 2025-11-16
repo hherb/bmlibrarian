@@ -58,11 +58,12 @@ class SearchWorker(QThread):
                     'id': row[0],
                     'title': row[1],
                     'authors': row[2],
-                    'journal': row[3],
-                    'year': row[4],
-                    'pmid': row[5],
+                    'journal': row[3],  # publication
+                    'year': row[4],  # extracted year from publication_date
+                    'pmid': row[5],  # external_id
                     'doi': row[6],
-                    'abstract': row[7] if len(row) > 7 else None
+                    'abstract': row[7] if len(row) > 7 else None,
+                    'source': row[8] if len(row) > 8 else None  # source name
                 }
                 results.append(doc)
 
@@ -76,33 +77,36 @@ class SearchWorker(QThread):
 
     def _build_query(self) -> str:
         """Build SQL query based on search parameters."""
-        # Base query
+        # Base query with joins to get source name
         query = """
-            SELECT id, title, authors, journal, pub_year, pmid, doi, abstract
-            FROM documents
+            SELECT d.id, d.title, d.authors, d.publication,
+                   EXTRACT(YEAR FROM d.publication_date)::integer as pub_year,
+                   d.external_id, d.doi, d.abstract, s.name as source_name
+            FROM document d
+            LEFT JOIN sources s ON d.source_id = s.id
             WHERE 1=1
         """
 
         # Add text search filter
         if self.search_params.get('text_query'):
-            query += " AND (title ILIKE %s OR abstract ILIKE %s)"
+            query += " AND (d.title ILIKE %s OR d.abstract ILIKE %s)"
 
         # Add year range filter
         if self.search_params.get('year_from'):
-            query += " AND pub_year >= %s"
+            query += " AND EXTRACT(YEAR FROM d.publication_date) >= %s"
         if self.search_params.get('year_to'):
-            query += " AND pub_year <= %s"
+            query += " AND EXTRACT(YEAR FROM d.publication_date) <= %s"
 
-        # Add journal filter
+        # Add publication (journal) filter
         if self.search_params.get('journal'):
-            query += " AND journal ILIKE %s"
+            query += " AND d.publication ILIKE %s"
 
         # Add source filter
         if self.search_params.get('source'):
-            query += " AND source = %s"
+            query += " AND s.name = %s"
 
         # Order by
-        query += " ORDER BY pub_year DESC, id DESC"
+        query += " ORDER BY d.publication_date DESC NULLS LAST, d.id DESC"
 
         # Limit
         query += f" LIMIT {self.search_params.get('limit', 100)}"
