@@ -93,10 +93,10 @@ class GUIConfigManager:
 
         Args:
             config_path: Optional path to configuration file.
-                        If None, uses ~/.bmlibrarian/gui_config.json
+                        If None, uses ~/.bmlibrarian/bmlibrarian_qt_config.json
         """
         if config_path is None:
-            config_path = Path.home() / ".bmlibrarian" / "gui_config.json"
+            config_path = Path.home() / ".bmlibrarian" / "bmlibrarian_qt_config.json"
 
         self.config_path = config_path
         self.logger = logging.getLogger("bmlibrarian.gui.qt.core.GUIConfigManager")
