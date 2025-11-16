@@ -430,3 +430,27 @@ The Qt Research tab will be considered complete when:
 **Status**: Design Phase Complete, Ready for Implementation
 **Last Updated**: 2025-11-16
 **Next Action**: Implement Phase 1 - Layout Structure
+
+## Design Philosophy Decision
+
+**CONFIRMED: Qt-Native Approach ✅**
+
+Based on user feedback (2025-11-16), we will use a Qt-native design philosophy:
+
+### Approach
+- Same functionality as Flet, but optimized for Qt
+- Use Qt design patterns and widgets naturally
+- Focus on **functionality first**, polish layout later
+- User will provide **visual feedback between phases**
+
+### Implementation Strategy
+- ✅ Use Qt layouts and spacing conventions (not Flet's)
+- ✅ Use standard Qt styling (QPalette, default themes)
+- ✅ Don't try to pixel-match Flet colors/spacing
+- ✅ Functionality > exact visual match initially
+- ✅ Refine design iteratively based on user testing
+
+### Phased Testing
+- User will visually test after each phase
+- Adjustments made based on user feedback
+- Final polish happens in Phase 6
