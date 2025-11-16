@@ -16,6 +16,7 @@ from .data_manager import FactCheckDataManager
 from .statement_display import StatementDisplay
 from .annotation_manager import AnnotationManager
 from .citation_display import CitationDisplay
+from .timer_component import ReviewTimer
 
 
 class FactCheckerReviewApp:
@@ -42,6 +43,7 @@ class FactCheckerReviewApp:
         self.data_manager = FactCheckDataManager(incremental=incremental, db_file=db_file)
         self.statement_display = StatementDisplay(blind_mode=blind_mode)
         self.annotation_manager = AnnotationManager(on_annotation_change=self._on_annotation_change)
+        self.timer = ReviewTimer()
         # CitationDisplay will receive database instance after data_manager loads it
         self.citation_display = None
 
@@ -151,8 +153,13 @@ class FactCheckerReviewApp:
 
     def _build_review_content(self) -> ft.Container:
         """Build the statement review interface."""
-        # Progress section
-        progress_section = self.statement_display.build_progress_section()
+        # Progress section with timer
+        progress_section = ft.Row([
+            ft.Column([
+                self.statement_display.build_progress_section()
+            ], expand=True),
+            self.timer.build_section()
+        ], spacing=20, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         # Statement section
         statement_section = self.statement_display.build_statement_section()
@@ -318,7 +325,8 @@ class FactCheckerReviewApp:
         saved_review = self.data_manager.reviews[self.current_index]
         self.annotation_manager.set_annotation(
             saved_review.get('human_annotation', ''),
-            saved_review.get('human_explanation', '')
+            saved_review.get('human_explanation', ''),
+            saved_review.get('confidence', '')
         )
 
         # Update citations
@@ -327,6 +335,10 @@ class FactCheckerReviewApp:
         # Update navigation buttons
         self.prev_button.disabled = (self.current_index == 0)
         self.next_button.disabled = (self.current_index == len(self.data_manager.results) - 1)
+
+        # Start timer with any previously accumulated time
+        previous_time = saved_review.get('review_duration_seconds', 0) or 0
+        self.timer.start(previous_seconds=previous_time)
 
         self.page.update()
 
@@ -337,19 +349,40 @@ class FactCheckerReviewApp:
         citations_column = self.citation_display.create_citations_list(evidence_list)
         self.citations_list.controls = citations_column.controls
 
-    def _on_annotation_change(self, annotation: str, explanation: str):
+    def _on_annotation_change(self, annotation: str, explanation: str, confidence: str):
         """Handle annotation change event."""
-        self.data_manager.save_annotation(self.current_index, annotation, explanation)
+        # Only record time if an evaluation (yes/no/maybe) has been selected
+        review_duration = None
+        if annotation and annotation != "n/a":
+            review_duration = self.timer.get_elapsed_seconds()
+
+        self.data_manager.save_annotation(
+            self.current_index,
+            annotation,
+            explanation,
+            confidence,
+            review_duration
+        )
 
     def _on_previous(self, e):
         """Navigate to previous statement."""
         if self.current_index > 0:
+            # Check if current statement has annotation - if not, reset timer (don't save time)
+            current_review = self.data_manager.reviews[self.current_index]
+            if not current_review.get('human_annotation'):
+                self.timer.reset()
+
             self.current_index -= 1
             self._display_current_statement()
 
     def _on_next(self, e):
         """Navigate to next statement."""
         if self.current_index < len(self.data_manager.results) - 1:
+            # Check if current statement has annotation - if not, reset timer (don't save time)
+            current_review = self.data_manager.reviews[self.current_index]
+            if not current_review.get('human_annotation'):
+                self.timer.reset()
+
             self.current_index += 1
             self._display_current_statement()
 

@@ -46,12 +46,27 @@ class AnnotationManager:
             on_change=self._handle_explanation_change
         )
 
+        self.confidence_dropdown = ft.Dropdown(
+            label="Confidence Level",
+            options=[
+                ft.dropdown.Option(key="n/a", text="Not Selected"),
+                ft.dropdown.Option(key="high", text="High"),
+                ft.dropdown.Option(key="medium", text="Medium"),
+                ft.dropdown.Option(key="low", text="Low")
+            ],
+            value="n/a",  # Default to not selected
+            width=200,
+            on_change=self._handle_confidence_change,
+            filled=True
+        )
+
     def _handle_annotation_change(self, e):
         """Handle annotation dropdown change."""
         if self.on_annotation_change:
             self.on_annotation_change(
                 self.annotation_dropdown.value,
-                self.explanation_field.value
+                self.explanation_field.value,
+                self.confidence_dropdown.value
             )
 
     def _handle_explanation_change(self, e):
@@ -59,16 +74,27 @@ class AnnotationManager:
         if self.on_annotation_change:
             self.on_annotation_change(
                 self.annotation_dropdown.value,
-                self.explanation_field.value
+                self.explanation_field.value,
+                self.confidence_dropdown.value
             )
 
-    def set_annotation(self, annotation: str, explanation: str = ""):
+    def _handle_confidence_change(self, e):
+        """Handle confidence dropdown change."""
+        if self.on_annotation_change:
+            self.on_annotation_change(
+                self.annotation_dropdown.value,
+                self.explanation_field.value,
+                self.confidence_dropdown.value
+            )
+
+    def set_annotation(self, annotation: str, explanation: str = "", confidence: str = ""):
         """
         Set annotation values programmatically.
 
         Args:
             annotation: Annotation value (yes/no/maybe or None/empty for N/A)
             explanation: Explanation text
+            confidence: Confidence level (high/medium/low or None/empty for N/A)
         """
         # Handle None or empty string as no annotation
         # Using "n/a" instead of empty string because Flet has issues with empty string keys
@@ -79,11 +105,18 @@ class AnnotationManager:
 
         self.explanation_field.value = explanation if explanation else ""
 
+        # Handle confidence - also use "n/a" for empty
+        if confidence is None or confidence == "":
+            self.confidence_dropdown.value = "n/a"
+        else:
+            self.confidence_dropdown.value = str(confidence).lower()
+
         # Trigger explicit update to force Flet to re-render
         if hasattr(self.annotation_dropdown, 'update'):
             try:
                 self.annotation_dropdown.update()
                 self.explanation_field.update()
+                self.confidence_dropdown.update()
             except:
                 pass  # Not yet added to page, update will happen on page.update()
 
@@ -97,10 +130,17 @@ class AnnotationManager:
         """Get current explanation text."""
         return self.explanation_field.value
 
+    def get_confidence(self) -> str:
+        """Get current confidence level, converting 'n/a' to empty string."""
+        value = self.confidence_dropdown.value
+        # Convert "n/a" back to empty string for database storage
+        return "" if value == "n/a" else value
+
     def clear(self):
         """Clear annotation inputs."""
         self.annotation_dropdown.value = "n/a"  # Use "n/a" instead of empty string
         self.explanation_field.value = ""
+        self.confidence_dropdown.value = "n/a"  # Clear confidence too
 
     def build_section(self) -> ft.Container:
         """Build annotation input section UI."""
@@ -108,6 +148,7 @@ class AnnotationManager:
             content=ft.Column([
                 ft.Text("Human Review", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_700),
                 self.annotation_dropdown,
+                self.confidence_dropdown,
                 self.explanation_field
             ], spacing=10),
             padding=ft.padding.all(15),
