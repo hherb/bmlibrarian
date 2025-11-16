@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QMenuBar, QMenu, QMessageBox, QApplication
 )
 from PySide6.QtCore import Qt, Slot, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from typing import Dict
 import logging
 
@@ -55,6 +55,7 @@ class BMLibrarianMainWindow(QMainWindow):
         self._setup_ui()
         self._create_menu_bar()
         self._create_status_bar()
+        self._setup_keyboard_shortcuts()
 
         # Load plugins
         self._load_plugins()
@@ -123,6 +124,36 @@ class BMLibrarianMainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
+        # Theme submenu
+        theme_menu = view_menu.addMenu("&Theme")
+
+        # Default theme action
+        default_theme_action = QAction("&Light Theme", self)
+        default_theme_action.setCheckable(True)
+        default_theme_action.triggered.connect(lambda: self._change_theme("default"))
+        theme_menu.addAction(default_theme_action)
+
+        # Dark theme action
+        dark_theme_action = QAction("&Dark Theme", self)
+        dark_theme_action.setCheckable(True)
+        dark_theme_action.triggered.connect(lambda: self._change_theme("dark"))
+        theme_menu.addAction(dark_theme_action)
+
+        # Set current theme as checked
+        current_theme = self.config_manager.get_theme()
+        if current_theme == "dark":
+            dark_theme_action.setChecked(True)
+        else:
+            default_theme_action.setChecked(True)
+
+        # Store theme actions for updating
+        self.theme_actions = {
+            "default": default_theme_action,
+            "dark": dark_theme_action
+        }
+
+        view_menu.addSeparator()
+
         # Reload plugins action (for development)
         reload_action = QAction("&Reload Plugins", self)
         reload_action.setShortcut("Ctrl+R")
@@ -156,6 +187,30 @@ class BMLibrarianMainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
         self.logger.debug("Status bar created")
+
+    def _setup_keyboard_shortcuts(self):
+        """Setup global keyboard shortcuts."""
+        # Next tab (Ctrl+Tab)
+        next_tab_shortcut = QShortcut(QKeySequence("Ctrl+Tab"), self)
+        next_tab_shortcut.activated.connect(self._next_tab)
+
+        # Previous tab (Ctrl+Shift+Tab)
+        prev_tab_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Tab"), self)
+        prev_tab_shortcut.activated.connect(self._previous_tab)
+
+        # Help (F1)
+        help_shortcut = QShortcut(QKeySequence.StandardKey.HelpContents, self)
+        help_shortcut.activated.connect(self._show_about)
+
+        # Refresh current tab (F5)
+        refresh_shortcut = QShortcut(QKeySequence.StandardKey.Refresh, self)
+        refresh_shortcut.activated.connect(self._refresh_current_tab)
+
+        # Quick theme toggle (Ctrl+Shift+T)
+        theme_toggle_shortcut = QShortcut(QKeySequence("Ctrl+Shift+T"), self)
+        theme_toggle_shortcut.activated.connect(self._toggle_theme)
+
+        self.logger.debug("Keyboard shortcuts setup complete")
 
     def _load_plugins(self):
         """Load enabled plugins and create tabs."""
@@ -433,6 +488,93 @@ class BMLibrarianMainWindow(QMainWindow):
         """
 
         QMessageBox.about(self, "About BMLibrarian", about_text)
+
+    @Slot(str)
+    def _change_theme(self, theme: str):
+        """Change the application theme.
+
+        Args:
+            theme: Theme name ("default" or "dark")
+        """
+        # Save theme to configuration
+        self.config_manager.set_theme(theme)
+
+        # Update checked state of theme actions
+        for theme_name, action in self.theme_actions.items():
+            action.setChecked(theme_name == theme)
+
+        # Show message about restart
+        reply = QMessageBox.question(
+            self,
+            "Theme Changed",
+            f"Theme changed to {theme}. Would you like to restart the application now to apply the new theme?\n\n"
+            f"(You can continue using the current session, but the theme will be fully applied on next restart.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Restart application
+            self.logger.info("Restarting application to apply theme change...")
+            QApplication.quit()
+            # Note: The user will need to manually restart the application
+            # A full auto-restart would require platform-specific code
+
+        self.logger.info(f"Theme changed to '{theme}'")
+
+    @Slot()
+    def _next_tab(self):
+        """Navigate to the next tab."""
+        current_index = self.tab_widget.currentIndex()
+        next_index = (current_index + 1) % self.tab_widget.count()
+        self.tab_widget.setCurrentIndex(next_index)
+        self.logger.debug(f"Navigated to next tab (index {next_index})")
+
+    @Slot()
+    def _previous_tab(self):
+        """Navigate to the previous tab."""
+        current_index = self.tab_widget.currentIndex()
+        prev_index = (current_index - 1) % self.tab_widget.count()
+        self.tab_widget.setCurrentIndex(prev_index)
+        self.logger.debug(f"Navigated to previous tab (index {prev_index})")
+
+    @Slot()
+    def _refresh_current_tab(self):
+        """Refresh the current tab."""
+        current_index = self.tab_widget.currentIndex()
+
+        # Find plugin_id for current tab
+        current_plugin_id = None
+        for plugin_id, tab_index in self.tab_indices.items():
+            if tab_index == current_index:
+                current_plugin_id = plugin_id
+                break
+
+        if not current_plugin_id:
+            self.logger.warning("No plugin found for current tab")
+            return
+
+        # Get the plugin
+        plugin = self.plugin_manager.loaded_plugins.get(current_plugin_id)
+        if plugin:
+            try:
+                # Deactivate and reactivate to refresh
+                plugin.on_tab_deactivated()
+                plugin.on_tab_activated()
+                self.status_bar.showMessage(f"Refreshed {current_plugin_id} tab", 2000)
+                self.logger.debug(f"Refreshed tab '{current_plugin_id}'")
+            except Exception as e:
+                self.logger.error(
+                    f"Error refreshing plugin '{current_plugin_id}': {e}",
+                    exc_info=True
+                )
+                self.status_bar.showMessage(f"Error refreshing tab", 3000)
+
+    @Slot()
+    def _toggle_theme(self):
+        """Toggle between light and dark themes."""
+        current_theme = self.config_manager.get_theme()
+        new_theme = "dark" if current_theme == "default" else "default"
+        self._change_theme(new_theme)
 
     def closeEvent(self, event: QCloseEvent):
         """Handle window close event.
