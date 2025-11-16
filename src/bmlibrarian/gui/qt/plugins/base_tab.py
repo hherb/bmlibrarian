@@ -4,11 +4,21 @@ This module provides the abstract base class that all tab plugins must inherit f
 It defines the standard interface for plugin lifecycle, configuration, and communication.
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, ABCMeta
 from typing import Optional, Dict, Any, List
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Signal, QObject
 import logging
+
+
+# Create a combined metaclass to resolve QObject + ABC conflict
+class QABCMeta(type(QObject), ABCMeta):
+    """Combined metaclass for classes that need both QObject and ABC functionality.
+
+    This resolves the metaclass conflict that occurs when a class tries to inherit
+    from both QObject (which has Qt's meta-object system) and ABC (which uses ABCMeta).
+    """
+    pass
 
 
 class TabPluginMetadata:
@@ -45,7 +55,7 @@ class TabPluginMetadata:
         self.requires = requires or []
 
 
-class BaseTabPlugin(QObject, ABC):
+class BaseTabPlugin(QObject, ABC, metaclass=QABCMeta):
     """Abstract base class for all tab plugins.
 
     This class defines the standard interface that all tab plugins must implement.
