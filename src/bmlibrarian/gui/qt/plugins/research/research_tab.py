@@ -51,6 +51,9 @@ class UIConstants:
     MAIN_LAYOUT_SPACING = 10
     CONTROLS_SPACING = 10
     ROW2_SPACING = 15
+    HEADER_BOTTOM_MARGIN = 10
+    HEADER_SPACING = 5
+    TAB_WIDGET_MARGIN = 15
 
     # Widget Sizes
     QUESTION_INPUT_MIN_HEIGHT = 70
@@ -206,8 +209,8 @@ class ResearchTabWidget(QWidget):
         """
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, 10)
-        header_layout.setSpacing(5)
+        header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
+        header_layout.setSpacing(UIConstants.HEADER_SPACING)
 
         # Title
         title = QLabel("BMLibrarian Research Assistant")
@@ -297,6 +300,7 @@ class ResearchTabWidget(QWidget):
         self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
         self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
+        self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
         row2.addWidget(self.max_results_spin)
 
         # Min Relevant
@@ -402,7 +406,12 @@ class ResearchTabWidget(QWidget):
         """
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN,
+            UIConstants.TAB_WIDGET_MARGIN
+        )
 
         # Header
         label = QLabel(f"{icon} {title}")
@@ -537,6 +546,26 @@ class ResearchTabWidget(QWidget):
             self.start_button.setEnabled(has_text and not self.workflow_running)
         except Exception as e:
             self.logger.error(f"Error in _on_question_changed: {e}", exc_info=True)
+
+    @Slot(int)
+    def _on_max_results_changed(self, value: int) -> None:
+        """
+        Handle max results value changes with validation.
+
+        Args:
+            value: New max results value
+        """
+        try:
+            # Validate: max_results should not be less than min_relevant
+            min_relevant = self.min_relevant_spin.value()
+            if value < min_relevant:
+                self.logger.warning(
+                    f"Max results ({value}) is less than min relevant ({min_relevant}). "
+                    "Adjusting min relevant."
+                )
+                self.min_relevant_spin.setValue(value)
+        except Exception as e:
+            self.logger.error(f"Error in _on_max_results_changed: {e}", exc_info=True)
 
     @Slot(int)
     def _on_min_relevant_changed(self, value: int) -> None:
@@ -687,3 +716,65 @@ class ResearchTabWidget(QWidget):
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
         self.status_message.emit(message)
+
+    def cleanup(self) -> None:
+        """
+        Cleanup resources and disconnect signals.
+
+        This method should be called when the widget is being destroyed
+        to prevent memory leaks from signal connections.
+        """
+        try:
+            self.logger.info("Cleaning up research tab widget...")
+
+            # Disconnect UI element signals
+            try:
+                self.question_input.textChanged.disconnect(self._on_question_changed)
+            except RuntimeError:
+                pass
+
+            try:
+                self.start_button.clicked.disconnect(self._on_start_research)
+            except RuntimeError:
+                pass
+
+            try:
+                self.max_results_spin.valueChanged.disconnect(self._on_max_results_changed)
+            except RuntimeError:
+                pass
+
+            try:
+                self.min_relevant_spin.valueChanged.disconnect(self._on_min_relevant_changed)
+            except RuntimeError:
+                pass
+
+            # Disconnect workflow executor signals
+            if self.workflow_executor:
+                try:
+                    self.workflow_executor.workflow_started.disconnect(self._on_workflow_started)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.workflow_completed.disconnect(self._on_workflow_completed)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.workflow_error.disconnect(self._on_workflow_error)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.status_message.disconnect(self._on_workflow_status)
+                except RuntimeError:
+                    pass
+
+                # Cleanup workflow executor resources
+                if hasattr(self.workflow_executor, 'cleanup'):
+                    self.workflow_executor.cleanup()
+
+            self.logger.info("✅ Research tab widget cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during research tab widget cleanup: {e}", exc_info=True)

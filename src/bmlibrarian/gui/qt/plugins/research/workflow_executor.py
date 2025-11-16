@@ -206,7 +206,7 @@ class QtWorkflowExecutor(QObject):
             # Test QueryAgent
             if self.query_agent:
                 # Just check the agent has required methods
-                assert hasattr(self.query_agent, 'generate_query'), "QueryAgent missing generate_query method"
+                assert hasattr(self.query_agent, 'convert_question'), "QueryAgent missing convert_question method"
                 self.status_message.emit("✓ QueryAgent ready")
             else:
                 raise RuntimeError("QueryAgent not initialized")
@@ -308,4 +308,54 @@ class QtWorkflowExecutor(QObject):
     def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
         """Generate final comprehensive report (Phase 3)."""
         # TODO Phase 3: Call editor_agent.edit_comprehensive_report()
+        pass
+
+    def cleanup(self) -> None:
+        """
+        Cleanup workflow executor resources.
+
+        This method:
+        - Clears workflow state (documents, citations, reports)
+        - Clears agent references
+        - Should be called when the plugin is unloaded or the workflow is reset
+        """
+        try:
+            self.logger.info("Cleaning up workflow executor resources...")
+
+            # Clear workflow state
+            self.current_question = ""
+            self.documents = []
+            self.scored_documents = []
+            self.citations = []
+            self.preliminary_report = ""
+            self.counterfactual_analysis = None
+            self.final_report = ""
+
+            # Clear agent references (but don't destroy agents - they're managed elsewhere)
+            # Agents dictionary is kept for potential reuse, but individual references cleared
+            self.query_agent = None
+            self.scoring_agent = None
+            self.citation_agent = None
+            self.reporting_agent = None
+            self.counterfactual_agent = None
+            self.editor_agent = None
+            self.orchestrator = None
+
+            self.logger.info("✅ Workflow executor cleanup complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during workflow executor cleanup: {e}", exc_info=True)
+
+    def cancel_workflow(self) -> None:
+        """
+        Cancel ongoing workflow execution.
+
+        This method will be implemented in Phase 3 when workflow threading is added.
+        For now, it's a placeholder for future cancellation logic.
+        """
+        # TODO Phase 3: Implement workflow cancellation
+        # - Set cancellation flag
+        # - Stop background threads/workers
+        # - Emit workflow_error signal with cancellation exception
+        self.logger.warning("Workflow cancellation not yet implemented (Phase 3)")
         pass
