@@ -314,30 +314,30 @@ class ConfigurationTabWidget(QWidget):
         self.status_message.emit("Testing Ollama connection...")
 
         try:
-            import requests
+            import ollama
 
             ollama_url = self.general_widget.get_ollama_url()
-            response = requests.get(f"{ollama_url}/api/tags", timeout=5)
 
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                model_count = len(models)
+            # Create client with configured URL
+            client = ollama.Client(host=ollama_url)
 
-                QMessageBox.information(
-                    self,
-                    "Connection Successful",
-                    f"Connected to Ollama server!\n\n"
-                    f"Available models: {model_count}\n"
-                    f"Server: {ollama_url}",
-                )
-                self.status_message.emit(
-                    f"Ollama connection successful ({model_count} models)"
-                )
+            # List models to test connection
+            models = client.list()
+            model_count = len(models.get('models', []))
 
-                # Refresh models in agent widgets
-                self.refresh_models()
-            else:
-                raise ConnectionError(f"Server returned status {response.status_code}")
+            QMessageBox.information(
+                self,
+                "Connection Successful",
+                f"Connected to Ollama server!\n\n"
+                f"Available models: {model_count}\n"
+                f"Server: {ollama_url}",
+            )
+            self.status_message.emit(
+                f"Ollama connection successful ({model_count} models)"
+            )
+
+            # Refresh models in agent widgets
+            self.refresh_models()
 
         except Exception as e:
             QMessageBox.critical(
@@ -350,23 +350,26 @@ class ConfigurationTabWidget(QWidget):
     def refresh_models(self):
         """Refresh available models from Ollama server."""
         try:
-            import requests
+            import ollama
 
             ollama_url = self.general_widget.get_ollama_url()
-            response = requests.get(f"{ollama_url}/api/tags", timeout=5)
 
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                model_names = [model.get('name', '') for model in models]
+            # Create client with configured URL
+            client = ollama.Client(host=ollama_url)
 
-                # Update agent config widgets with new model list
-                for key, widget in self.config_widgets.items():
-                    if isinstance(widget, AgentConfigWidget):
-                        widget.update_model_list(model_names)
+            # List models
+            models_response = client.list()
+            models = models_response.get('models', [])
+            model_names = [model.get('name', '') for model in models]
 
-                self.status_message.emit(
-                    f"Refreshed {len(model_names)} models from Ollama"
-                )
+            # Update agent config widgets with new model list
+            for key, widget in self.config_widgets.items():
+                if isinstance(widget, AgentConfigWidget):
+                    widget.update_model_list(model_names)
+
+            self.status_message.emit(
+                f"Refreshed {len(model_names)} models from Ollama"
+            )
 
         except Exception as e:
             self.status_message.emit(f"Failed to refresh models: {str(e)}")
