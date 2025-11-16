@@ -67,6 +67,8 @@ class QtWorkflowExecutor(QObject):
     # Step-specific signals for UI updates
     query_generated = Signal(str)  # Emitted when query is generated
     documents_found = Signal(list)  # Emitted when documents are retrieved
+    scoring_progress = Signal(int, int)  # Emitted during scoring (current, total)
+    documents_scored = Signal(list)  # Emitted when all documents are scored
 
     def __init__(self, agents: Optional[Dict[str, Any]] = None, parent: Optional[QObject] = None):
         """
@@ -275,15 +277,16 @@ class QtWorkflowExecutor(QObject):
 
     def execute_workflow(self) -> None:
         """
-        Execute the workflow (Milestone 1: Query generation and search only).
+        Execute the workflow (Milestone 2: Add document scoring).
 
         This method orchestrates the workflow steps in sequence.
-        For Milestone 1, we implement:
+        For Milestone 2, we implement:
         1. Query generation
         2. Document search
-        3. Display results
+        3. Document scoring (NEW)
+        4. Display results
 
-        Later milestones will add scoring, citations, and reports.
+        Later milestones will add citations and reports.
         """
         try:
             # Step 1: Generate query
@@ -297,18 +300,41 @@ class QtWorkflowExecutor(QObject):
             self.status_message.emit(f"📚 Searching database with query: {query[:100]}...")
             documents = self.search_documents(query)
 
-            # Step 3: Emit results
-            self.status_message.emit(f"✅ Found {len(documents)} documents")
+            if not documents:
+                self.status_message.emit("⚠️ No documents found")
+                self.workflow_completed.emit({
+                    'phase': 3,
+                    'milestone': 2,
+                    'status': 'no_documents',
+                    'question': self.current_question,
+                    'query': query,
+                    'documents': [],
+                    'scored_documents': [],
+                    'document_count': 0
+                })
+                return
 
-            # Emit completion with results
+            # Step 3: Score documents for relevance (NEW in Milestone 2)
+            self.status_message.emit(f"📊 Scoring {len(documents)} documents for relevance...")
+            scored_documents = self.score_documents(documents)
+
+            # Step 4: Emit results
+            high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+            self.status_message.emit(
+                f"✅ Scored {len(scored_documents)} documents ({high_scoring} highly relevant)"
+            )
+
+            # Emit completion with results including scores
             self.workflow_completed.emit({
                 'phase': 3,
-                'milestone': 1,
-                'status': 'search_completed',
+                'milestone': 2,
+                'status': 'scoring_completed',
                 'question': self.current_question,
                 'query': query,
                 'documents': documents,
-                'document_count': len(documents)
+                'scored_documents': scored_documents,
+                'document_count': len(documents),
+                'high_scoring_count': high_scoring
             })
 
         except Exception as e:
@@ -386,10 +412,64 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Document search failed: {e}", exc_info=True)
             raise
 
-    def score_documents(self, documents: list) -> None:
-        """Score documents for relevance (Phase 3)."""
-        # TODO Phase 3: Call scoring_agent.evaluate_document() for each doc
-        pass
+    def score_documents(self, documents: list) -> list:
+        """
+        Score documents for relevance using DocumentScoringAgent.
+
+        Args:
+            documents: List of document dictionaries to score
+
+        Returns:
+            list: List of (document, score_result) tuples
+
+        Raises:
+            RuntimeError: If ScoringAgent is not initialized
+            Exception: If scoring fails
+        """
+        if not self.scoring_agent:
+            raise RuntimeError("ScoringAgent not initialized")
+
+        if not documents:
+            self.logger.warning("No documents to score")
+            return []
+
+        try:
+            self.logger.info(f"Scoring {len(documents)} documents for relevance...")
+
+            scored_documents = []
+            total = len(documents)
+
+            for i, doc in enumerate(documents, 1):
+                # Score this document
+                score_result = self.scoring_agent.evaluate_document(
+                    user_question=self.current_question,
+                    document=doc
+                )
+
+                if score_result:
+                    scored_documents.append((doc, score_result))
+
+                    # Emit progress for every document
+                    self.scoring_progress.emit(i, total)
+
+                    # Log progress every 10 documents or at end
+                    if i % 10 == 0 or i == total:
+                        self.status_message.emit(f"📊 Scored {i}/{total} documents...")
+                        self.logger.debug(f"Progress: {i}/{total} documents scored")
+
+            self.logger.info(f"Successfully scored {len(scored_documents)} documents")
+
+            # Store in workflow state
+            self.scored_documents = scored_documents
+
+            # Emit signal for UI update
+            self.documents_scored.emit(scored_documents)
+
+            return scored_documents
+
+        except Exception as e:
+            self.logger.error(f"Document scoring failed: {e}", exc_info=True)
+            raise
 
     def extract_citations(self, scored_documents: list) -> None:
         """Extract citations from high-scoring documents (Phase 3)."""

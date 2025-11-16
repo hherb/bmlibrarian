@@ -166,6 +166,10 @@ class ResearchTabWidget(QWidget):
             self.workflow_executor.query_generated.connect(self._on_query_generated)
             self.workflow_executor.documents_found.connect(self._on_documents_found)
 
+            # Connect Milestone 2 signals
+            self.workflow_executor.scoring_progress.connect(self._on_scoring_progress)
+            self.workflow_executor.documents_scored.connect(self._on_documents_scored)
+
             self.logger.info("✅ Workflow executor initialized with agents")
         else:
             self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
@@ -499,16 +503,74 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_literature_tab(self) -> QWidget:
-        """Create Literature tab (document list)."""
-        return self._create_placeholder_tab(
-            "📚",
-            "Literature Documents",
-            "This tab will display:\n"
-            "• List of all documents found by search\n"
-            "• Document cards with title, authors, journal, year\n"
-            "• Expandable abstracts\n"
-            "• Document metadata (DOI, PMID, etc.)"
-        )
+        """Create Literature tab (document list with scores)."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
+                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+
+        # Header
+        header_label = QLabel("📚 Literature Documents")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header_label.setFont(header_font)
+        layout.addWidget(header_label)
+
+        # Subtitle
+        subtitle_label = QLabel("Documents retrieved from search with AI relevance scores")
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(subtitle_label)
+
+        # Document count and score summary
+        self.literature_summary_label = QLabel("No documents scored yet")
+        self.literature_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.literature_summary_label)
+
+        # Progress bar for scoring (hidden by default)
+        from PySide6.QtWidgets import QProgressBar
+        self.literature_progress_bar = QProgressBar()
+        self.literature_progress_bar.setTextVisible(True)
+        self.literature_progress_bar.setFormat("Scoring document %v/%m")
+        self.literature_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #2196F3;
+                border-radius: 3px;
+            }
+        """)
+        self.literature_progress_bar.setVisible(False)
+        layout.addWidget(self.literature_progress_bar)
+
+        # Scroll area for document list
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Container widget for document cards
+        self.literature_container = QWidget()
+        self.literature_layout = QVBoxLayout(self.literature_container)
+        self.literature_layout.setSpacing(8)
+        self.literature_layout.setContentsMargins(0, 10, 0, 0)
+
+        # Empty state message
+        self.literature_empty_label = QLabel("No documents to display")
+        self.literature_empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        self.literature_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.literature_layout.addWidget(self.literature_empty_label)
+
+        # Add stretch at bottom
+        self.literature_layout.addStretch()
+
+        scroll_area.setWidget(self.literature_container)
+        layout.addWidget(scroll_area)
+
+        return widget
 
     def _create_scoring_tab(self) -> QWidget:
         """Create Scoring tab (document relevance scoring)."""
@@ -833,6 +895,183 @@ class ResearchTabWidget(QWidget):
 
         self.status_message.emit(f"Found {doc_count} documents")
 
+    @Slot(int, int)
+    def _on_scoring_progress(self, current: int, total: int) -> None:
+        """
+        Handle scoring progress signal (Milestone 2).
+
+        Updates the progress bar in the Literature tab.
+
+        Args:
+            current: Current document number being scored
+            total: Total number of documents to score
+        """
+        if hasattr(self, 'literature_progress_bar'):
+            # Show progress bar if it's hidden
+            if not self.literature_progress_bar.isVisible():
+                self.literature_progress_bar.setVisible(True)
+
+            # Update progress
+            self.literature_progress_bar.setMaximum(total)
+            self.literature_progress_bar.setValue(current)
+
+    @Slot(list)
+    def _on_documents_scored(self, scored_documents: list) -> None:
+        """
+        Handle documents scored signal (Milestone 2).
+
+        Updates the Literature tab to display scored documents.
+
+        Args:
+            scored_documents: List of (document, score_result) tuples
+        """
+        self.logger.info(f"Documents scored: {len(scored_documents)}")
+
+        # Hide progress bar
+        if hasattr(self, 'literature_progress_bar'):
+            self.literature_progress_bar.setVisible(False)
+
+        # Update the Literature tab with scored documents
+        self._update_literature_tab(scored_documents)
+
+        # Update summary label
+        total = len(scored_documents)
+        high_scoring = len([d for d, s in scored_documents if s.get('score', 0) >= 3])
+
+        if hasattr(self, 'literature_summary_label'):
+            self.literature_summary_label.setText(
+                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ 3)"
+            )
+
+        self.status_message.emit(f"Scored {total} documents ({high_scoring} highly relevant)")
+
+    def _update_literature_tab(self, scored_documents: list) -> None:
+        """
+        Update the Literature tab with scored documents.
+
+        Args:
+            scored_documents: List of (document, score_result) tuples
+        """
+        try:
+            # Clear existing widgets
+            while self.literature_layout.count():
+                child = self.literature_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            if not scored_documents:
+                # Show empty state
+                empty_label = QLabel("No documents to display")
+                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.literature_layout.addWidget(empty_label)
+                self.literature_layout.addStretch()
+                return
+
+            # Sort by score (highest first)
+            sorted_docs = sorted(scored_documents, key=lambda x: x[1].get('score', 0), reverse=True)
+
+            # Create document cards
+            for i, (doc, score_result) in enumerate(sorted_docs):
+                card = self._create_document_score_card(i + 1, doc, score_result)
+                self.literature_layout.addWidget(card)
+
+            # Add stretch at the end
+            self.literature_layout.addStretch()
+
+            self.logger.info(f"Literature tab updated with {len(scored_documents)} documents")
+
+        except Exception as e:
+            self.logger.error(f"Error updating literature tab: {e}", exc_info=True)
+
+    def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
+        """
+        Create a document card showing score and metadata.
+
+        Args:
+            index: Document number (for display)
+            doc: Document dictionary
+            score_result: Scoring result dictionary
+
+        Returns:
+            QFrame containing the document card
+        """
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.Box)
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 4px;
+                padding: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setSpacing(5)
+
+        # Row 1: Index, Title, and Score Badge
+        title_row = QHBoxLayout()
+
+        # Index and Title
+        title = doc.get('title', 'Untitled Document')
+        title_label = QLabel(f"<b>{index}. {title}</b>")
+        title_label.setWordWrap(True)
+        title_row.addWidget(title_label, 1)
+
+        # Score badge
+        score = score_result.get('score', 0)
+        confidence = score_result.get('confidence', 1.0)
+
+        score_badge = QLabel(f"⭐ {score:.1f}")
+        score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Color based on score
+        if score >= 4:
+            bgcolor = "#4CAF50"  # Green
+        elif score >= 3:
+            bgcolor = "#2196F3"  # Blue
+        elif score >= 2:
+            bgcolor = "#FF9800"  # Orange
+        else:
+            bgcolor = "#9E9E9E"  # Grey
+
+        score_badge.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bgcolor};
+                color: white;
+                font-weight: bold;
+                padding: 4px 8px;
+                border-radius: 4px;
+                min-width: 40px;
+            }}
+        """)
+        title_row.addWidget(score_badge)
+
+        layout.addLayout(title_row)
+
+        # Row 2: Authors and Year
+        authors = doc.get('authors', 'Unknown authors')
+        year = doc.get('year', 'Unknown year')
+        meta_label = QLabel(f"{authors} ({year})")
+        meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
+        layout.addWidget(meta_label)
+
+        # Row 3: Journal
+        journal = doc.get('journal', 'Unknown journal')
+        journal_label = QLabel(f"📖 {journal}")
+        journal_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+        layout.addWidget(journal_label)
+
+        # Row 4: Score Reasoning (collapsed by default)
+        reasoning = score_result.get('reasoning', 'No reasoning provided')
+        reasoning_label = QLabel(f"<i>Reasoning: {reasoning}</i>")
+        reasoning_label.setWordWrap(True)
+        reasoning_label.setStyleSheet("color: #666; font-size: 9pt; padding: 5px 0;")
+        layout.addWidget(reasoning_label)
+
+        return frame
+
     # ========================================================================
     # Cleanup
     # ========================================================================
@@ -898,6 +1137,17 @@ class ResearchTabWidget(QWidget):
 
                 try:
                     self.workflow_executor.documents_found.disconnect(self._on_documents_found)
+                except RuntimeError:
+                    pass
+
+                # Disconnect Milestone 2 signals
+                try:
+                    self.workflow_executor.scoring_progress.disconnect(self._on_scoring_progress)
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.workflow_executor.documents_scored.disconnect(self._on_documents_scored)
                 except RuntimeError:
                     pass
 
