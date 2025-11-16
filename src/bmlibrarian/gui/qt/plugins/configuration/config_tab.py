@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt, Signal, Slot
 from typing import Optional
 import json
 from pathlib import Path
+import ollama
 
 from .general_settings_widget import GeneralSettingsWidget
 from .agent_config_widget import AgentConfigWidget
@@ -314,16 +315,19 @@ class ConfigurationTabWidget(QWidget):
         self.status_message.emit("Testing Ollama connection...")
 
         try:
-            import ollama
-
             ollama_url = self.general_widget.get_ollama_url()
 
             # Create client with configured URL
             client = ollama.Client(host=ollama_url)
 
             # List models to test connection
-            models = client.list()
-            model_count = len(models.get('models', []))
+            models_response = client.list()
+
+            # Validate response structure
+            if not isinstance(models_response, dict) or 'models' not in models_response:
+                raise ValueError("Invalid response from Ollama server")
+
+            model_count = len(models_response.get('models', []))
 
             QMessageBox.information(
                 self,
@@ -350,8 +354,6 @@ class ConfigurationTabWidget(QWidget):
     def refresh_models(self):
         """Refresh available models from Ollama server."""
         try:
-            import ollama
-
             ollama_url = self.general_widget.get_ollama_url()
 
             # Create client with configured URL
@@ -359,6 +361,11 @@ class ConfigurationTabWidget(QWidget):
 
             # List models
             models_response = client.list()
+
+            # Validate response structure
+            if not isinstance(models_response, dict) or 'models' not in models_response:
+                raise ValueError("Invalid response from Ollama server")
+
             models = models_response.get('models', [])
             model_names = [model.get('name', '') for model in models]
 
