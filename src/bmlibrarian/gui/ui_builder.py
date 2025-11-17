@@ -121,7 +121,6 @@ def create_search_strategy_checkboxes(
             ft.dropdown.Option("weighted", "Weighted Fusion")
         ],
         width=220,
-        height=45,
         on_change=on_reranking_change,
         tooltip="Method for combining results from multiple strategies"
     )
