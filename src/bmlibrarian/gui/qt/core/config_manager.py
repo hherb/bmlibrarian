@@ -60,11 +60,15 @@ class GUIConfigManager:
                 "enabled_plugins": [
                     "research",
                     "search",
+                    "document_interrogation",
+                    "query_lab",
                     "configuration"
                 ],
                 "tab_order": [
                     "research",
                     "search",
+                    "document_interrogation",
+                    "query_lab",
                     "configuration"
                 ],
                 "default_tab": "research"
@@ -77,6 +81,10 @@ class GUIConfigManager:
             "search_tab": {
                 "max_results": 100,
                 "show_abstracts": True
+            },
+            "document_interrogation_tab": {
+                "remember_last_document": True,
+                "auto_load_on_startup": False
             },
             "fact_checker_tab": {
                 "auto_save": True,

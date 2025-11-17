@@ -179,11 +179,11 @@ class PDFViewerWidget(QWidget):
         try:
             if self._render_backend == 'pymupdf':
                 # PyMuPDF rendering
+                import fitz
                 page = self.pdf_document[self.current_page]
 
-                # Render to pixmap with zoom
-                mat = page.transformation_matrix
-                mat = mat * self.zoom_level
+                # Create transformation matrix with zoom (identity matrix scaled)
+                mat = fitz.Matrix(self.zoom_level, self.zoom_level)
 
                 pix = page.get_pixmap(matrix=mat)
 
@@ -261,6 +261,39 @@ class PDFViewerWidget(QWidget):
         """Update navigation button states."""
         self.prev_btn.setEnabled(self.current_page > 0)
         self.next_btn.setEnabled(self.current_page < self.total_pages - 1)
+
+    def get_all_text(self) -> str:
+        """
+        Extract all text from the PDF document.
+
+        Returns:
+            String containing all text from all pages, or empty string if no PDF loaded
+        """
+        if not self.pdf_document:
+            return ""
+
+        try:
+            text_parts = []
+
+            if self._render_backend == 'pymupdf':
+                # PyMuPDF text extraction
+                for page_num in range(self.total_pages):
+                    page = self.pdf_document[page_num]
+                    text = page.get_text()
+                    text_parts.append(text)
+
+            elif self._render_backend == 'pypdf':
+                # PyPDF text extraction
+                for page_num in range(self.total_pages):
+                    page = self.pdf_document.pages[page_num]
+                    text = page.extract_text()
+                    text_parts.append(text)
+
+            return '\n\n'.join(text_parts)
+
+        except Exception as e:
+            print(f"Error extracting text from PDF: {e}")
+            return ""
 
     def clear(self):
         """Clear the PDF viewer."""
