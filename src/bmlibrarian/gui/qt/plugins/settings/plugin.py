@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Slot, Signal
 from typing import Dict, Optional
 
-from bmlibrarian.cli.config import get_config, DEFAULT_CONFIG
+from bmlibrarian.config import get_config, DEFAULT_CONFIG
 from ...tabs.general_tab import GeneralSettingsTab
 from ...tabs.agent_tab import AgentConfigTab
 from ...tabs.search_tab import SearchSettingsTab

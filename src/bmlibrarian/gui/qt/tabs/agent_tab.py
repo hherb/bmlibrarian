@@ -326,7 +326,7 @@ class AgentConfigTab:
         """Update configuration from UI controls."""
         try:
             # Get agent config section
-            from bmlibrarian.cli.config import get_config
+            from bmlibrarian.config import get_config
             config = get_config()
 
             # Ensure agents section exists
