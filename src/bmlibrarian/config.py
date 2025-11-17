@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
         "reporting_agent": "gpt-oss:20b",  # Keep larger model for complex report generation
         "editor_agent": "gpt-oss:20b",     # Use larger model for comprehensive editing
         "fact_checker_agent": "gpt-oss:20b",  # Use larger model for statement evaluation
+        "document_interrogation_agent": "gpt-oss:20b",  # Use larger model for complex document Q&A
+        "document_interrogation_embedding": "snowflake-arctic-embed2:latest",  # Embedding model for semantic search
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -76,6 +78,16 @@ DEFAULT_CONFIG = {
             "score_threshold": 2.5,
             "max_search_results": 50,
             "max_citations": None  # None = no limit, use all scored documents
+        },
+        "document_interrogation": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": 3000,
+            "chunk_size": 10000,  # Maximum characters per chunk
+            "chunk_overlap": 250,  # Overlap between chunks in characters
+            "processing_mode": "sequential",  # Default: sequential, embedding, or hybrid
+            "embedding_threshold": 0.5,  # Minimum cosine similarity for embedding mode (0-1)
+            "max_sections": 10  # Maximum number of relevant sections to extract
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"

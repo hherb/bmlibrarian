@@ -11,6 +11,7 @@ Available Agents:
 - ReportingAgent: Synthesizes citations into medical publication-style reports
 - CounterfactualAgent: Analyzes documents to generate research questions for finding contradictory evidence
 - EditorAgent: Creates balanced, comprehensive reports combining original findings with contradictory evidence
+- DocumentInterrogationAgent: Answers questions about documents using sliding window chunk processing
 
 Note: FactCheckerAgent has been moved to bmlibrarian.factchecker module (import from there directly)
 
@@ -19,6 +20,10 @@ Queue System:
 - AgentOrchestrator: Multi-agent workflow coordination and handover management
 - TaskStatus/TaskPriority: Queue task management enums
 - Workflow/WorkflowStep: Multi-step agent workflow definition
+
+Text Processing:
+- TextChunker: Sliding window text chunking with configurable overlap
+- TextChunk: Text chunk dataclass with position metadata
 """
 
 from .base import BaseAgent
@@ -29,6 +34,14 @@ from .reporting_agent import ReportingAgent, Reference, Report
 from .counterfactual_agent import CounterfactualAgent
 from .models.counterfactual import CounterfactualQuestion, CounterfactualAnalysis
 from .editor_agent import EditorAgent, EditedReport
+from .document_interrogation_agent import (
+    DocumentInterrogationAgent,
+    DocumentAnswer,
+    RelevantSection,
+    ProcessingMode,
+    DatabaseChunk
+)
+from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
@@ -52,6 +65,16 @@ __all__ = [
     "CounterfactualAnalysis",
     "EditorAgent",
     "EditedReport",
+    "DocumentInterrogationAgent",
+    "DocumentAnswer",
+    "RelevantSection",
+    "ProcessingMode",
+    "DatabaseChunk",
+    "TextChunker",
+    "TextChunk",
+    "chunk_text",
+    "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_CHUNK_OVERLAP",
     "QueueManager",
     "TaskStatus",
     "TaskPriority",

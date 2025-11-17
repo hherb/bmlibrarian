@@ -2,11 +2,12 @@
 Document Interrogation Tab for BMLibrarian Configuration GUI.
 
 Provides a document viewer (PDF/Markdown) with an AI chatbot interface
-for asking questions about the displayed document.
+for asking questions about the displayed document using sliding window
+chunk processing for large documents.
 """
 
 import flet as ft
-from typing import TYPE_CHECKING, Optional, List, Dict
+from typing import TYPE_CHECKING, Optional, List, Dict, Any
 from pathlib import Path
 from .pdf_viewer import PDFViewer, PYMUPDF_AVAILABLE, PyMuPDFNotAvailableError, PDFLoadError
 
@@ -34,7 +35,12 @@ class ChatMessage:
 
 
 class DocumentInterrogationTab:
-    """Document interrogation tab with split-pane document viewer and chat interface."""
+    """
+    Document interrogation tab with split-pane document viewer and chat interface.
+
+    Uses DocumentInterrogationAgent with sliding window chunk processing to handle
+    large documents that exceed LLM context limits.
+    """
 
     def __init__(self, app: "BMLibrarianConfigApp"):
         self.app = app
@@ -47,6 +53,9 @@ class DocumentInterrogationTab:
         self.pdf_viewer: Optional[PDFViewer] = None
         self.is_pdf_loaded = False
 
+        # Document interrogation agent
+        self.interrogation_agent: Optional[Any] = None
+
         # UI controls
         self.file_selector_button = None
         self.model_dropdown = None
@@ -56,6 +65,7 @@ class DocumentInterrogationTab:
         self.message_input = None
         self.send_button = None
         self.pane_divider = None
+        self.progress_text = None  # Progress indicator for chunk processing
 
     def build(self) -> ft.Container:
         """Build the document interrogation tab content."""
@@ -641,25 +651,43 @@ class DocumentInterrogationTab:
         self.message_input.value = ""
         self.app.page.update()
 
-        # Show thinking indicator
+        # Show processing indicator with progress
         thinking_bubble = self._create_message_bubble("🤔 Analyzing document...", is_user=False)
         self.chat_messages_column.controls.append(thinking_bubble)
+
+        # Create progress text indicator
+        self.progress_text = ft.Text(
+            "Initializing...",
+            size=11,
+            italic=True,
+            color=ft.Colors.GREY_600
+        )
+        progress_container = ft.Container(
+            content=self.progress_text,
+            padding=ft.padding.only(left=15, bottom=5)
+        )
+        self.chat_messages_column.controls.append(progress_container)
         self.app.page.update()
 
         try:
-            # Get LLM response
+            # Get LLM response with chunk processing
             response = self._get_llm_response(message_text)
 
-            # Remove thinking indicator
+            # Remove thinking and progress indicators
             self.chat_messages_column.controls.remove(thinking_bubble)
+            self.chat_messages_column.controls.remove(progress_container)
+            self.progress_text = None
 
             # Add LLM response to chat
             self._add_chat_message(response, is_user=False)
 
         except Exception as ex:
-            # Remove thinking indicator
+            # Remove thinking and progress indicators
             if thinking_bubble in self.chat_messages_column.controls:
                 self.chat_messages_column.controls.remove(thinking_bubble)
+            if progress_container in self.chat_messages_column.controls:
+                self.chat_messages_column.controls.remove(progress_container)
+            self.progress_text = None
 
             # Show error message
             self._add_chat_message(
@@ -671,64 +699,106 @@ class DocumentInterrogationTab:
 
     def _get_llm_response(self, question: str) -> str:
         """
-        Get LLM response for a question about the document.
+        Get LLM response for a question about the document using sliding window processing.
+
+        This method uses DocumentInterrogationAgent to process large documents by:
+        1. Splitting document into overlapping chunks
+        2. Processing chunks to extract relevant sections
+        3. Synthesizing a final answer from relevant sections
 
         Args:
             question: User's question
 
         Returns:
-            LLM response text
+            LLM response text with relevant sections and confidence
 
         Raises:
-            Exception: If LLM communication fails
+            Exception: If LLM communication fails or agent initialization fails
         """
         try:
-            import ollama
+            from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 
-            # Get Ollama config from app
+            # Get configuration
             ollama_config = self.app.config.get_ollama_config()
             host = ollama_config.get('host', 'http://localhost:11434')
 
-            # Create client
-            client = ollama.Client(host=host)
+            # Get document interrogation agent config
+            doc_interrogation_config = self.app.config.get_agent_config('document_interrogation')
+            chunk_size = doc_interrogation_config.get('chunk_size', 10000)
+            chunk_overlap = doc_interrogation_config.get('chunk_overlap', 250)
+            temperature = doc_interrogation_config.get('temperature', 0.1)
+            top_p = doc_interrogation_config.get('top_p', 0.9)
+            max_sections = doc_interrogation_config.get('max_sections', 10)
+            processing_mode_str = doc_interrogation_config.get('processing_mode', 'sequential')
+            embedding_threshold = doc_interrogation_config.get('embedding_threshold', 0.5)
 
-            # Prepare context with document content
-            # Truncate document if it's too long to avoid context overflow
-            max_doc_length = 50000  # ~12k tokens at 4 chars/token
-            document_content = self.current_document_content
-            if len(document_content) > max_doc_length:
-                document_content = document_content[:max_doc_length] + "\n\n[Document truncated due to length...]"
+            # Get models
+            main_model = self.selected_model or self.app.config.get_model('document_interrogation_agent')
+            embedding_model = self.app.config.get_model('document_interrogation_embedding')
 
-            # Build the prompt
-            system_prompt = (
-                "You are a helpful AI assistant analyzing a document. "
-                "Answer questions about the document based on the provided content. "
-                "Be concise and accurate. If the information is not in the document, say so."
+            # Convert processing mode string to enum
+            if processing_mode_str.lower() == 'sequential':
+                processing_mode = ProcessingMode.SEQUENTIAL
+            elif processing_mode_str.lower() == 'embedding':
+                processing_mode = ProcessingMode.EMBEDDING
+            elif processing_mode_str.lower() == 'hybrid':
+                processing_mode = ProcessingMode.HYBRID
+            else:
+                processing_mode = ProcessingMode.SEQUENTIAL
+
+            # Create agent with progress callback
+            def progress_callback(step: str, data: str):
+                """Update progress text in UI."""
+                if self.progress_text:
+                    self.progress_text.value = f"{step}: {data}"
+                    if self.app.page:
+                        self.app.page.update()
+
+            # Initialize agent (reuse if already created with same settings)
+            if not self.interrogation_agent:
+                self.interrogation_agent = DocumentInterrogationAgent(
+                    model=main_model,
+                    embedding_model=embedding_model,
+                    host=host,
+                    temperature=temperature,
+                    top_p=top_p,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    embedding_threshold=embedding_threshold,
+                    callback=progress_callback,
+                    show_model_info=False  # Don't spam console in GUI
+                )
+
+            # Process document with agent
+            # For GUI, we always use document_text since we don't have document_id
+            result = self.interrogation_agent.process_document(
+                question=question,
+                document_text=self.current_document_content,
+                mode=processing_mode,
+                max_sections=max_sections
             )
 
-            user_prompt = f"""Document Content:
-{document_content}
+            # Format response with sections and confidence
+            response_parts = [result.answer]
 
-Question: {question}
+            # Add metadata if available
+            if result.metadata:
+                chunk_info = result.metadata.get('chunk_info', {})
+                num_chunks = chunk_info.get('num_chunks', 0)
+                if num_chunks > 1:
+                    response_parts.append(
+                        f"\n\n---\n*Processed {num_chunks} chunks "
+                        f"({chunk_size} chars each, {chunk_overlap} overlap). "
+                        f"Found {len(result.relevant_sections)} relevant sections. "
+                        f"Confidence: {result.confidence:.2f}*"
+                    )
 
-Please answer the question based on the document content above."""
+            return '\n'.join(response_parts)
 
-            # Get response from Ollama
-            response = client.chat(
-                model=self.selected_model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt}
-                ]
-            )
-
-            # Extract response text
-            return response['message']['content']
-
-        except ImportError:
-            raise Exception("Ollama Python library not installed. Run: pip install ollama")
+        except ImportError as e:
+            raise Exception(f"Failed to import DocumentInterrogationAgent: {str(e)}")
         except Exception as ex:
-            raise Exception(f"LLM communication error: {str(ex)}")
+            raise Exception(f"Document interrogation error: {str(ex)}")
 
     def _add_chat_message(self, text: str, is_user: bool):
         """Add a message to the chat history and UI."""
