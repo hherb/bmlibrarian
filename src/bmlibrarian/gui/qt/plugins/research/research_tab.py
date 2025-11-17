@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QMessageBox,
     QProgressBar,
+    QGroupBox,
+    QApplication,
 )
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
@@ -40,6 +42,10 @@ class UIConstants:
     TITLE_FONT_SIZE = 18
     SUBTITLE_FONT_SIZE = 10
     TAB_HEADER_FONT_SIZE = 12
+    CARD_TITLE_FONT_SIZE = 11  # Document/citation card titles
+    CARD_SUBTITLE_FONT_SIZE = 10  # Authors, publication info
+    CARD_BODY_FONT_SIZE = 10  # Abstract, reasoning, passages
+    CARD_LABEL_FONT_SIZE = 9  # Section labels like "Abstract:", "Summary:"
 
     # Colors
     COLOR_PRIMARY_BLUE = "#1976D2"
@@ -831,7 +837,7 @@ class ResearchTabWidget(QWidget):
 
         # Header
         header_label = QLabel("📋 Final Comprehensive Report")
-        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY};")
+        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY_BLUE};")
         layout.addWidget(header_label)
 
         # Summary label
@@ -847,18 +853,239 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_settings_tab(self) -> QWidget:
-        """Create Settings tab."""
-        return self._create_placeholder_tab(
-            "⚙️",
-            "Settings",
-            "This tab will display:\n"
-            "• Agent configuration options\n"
-            "• Model selection dropdowns\n"
-            "• Parameter sliders (temperature, top_p, etc.)\n"
-            "• Quick toggles for workflow options\n"
-            "• Database and Ollama connection status\n"
-            "• Reset to defaults button"
-        )
+        """Create Settings tab with agent configuration and connection status."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+
+        # Header
+        header_label = QLabel("⚙️ Workflow Settings")
+        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY_BLUE};")
+        layout.addWidget(header_label)
+
+        # Create scrollable area for settings
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setSpacing(15)
+
+        # ================================================================
+        # Connection Status Section
+        # ================================================================
+        status_group = QGroupBox("Connection Status")
+        status_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
+                font-weight: bold;
+                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }}
+        """)
+        status_layout = QVBoxLayout()
+        status_layout.setSpacing(8)
+
+        # Ollama connection status
+        ollama_row = QHBoxLayout()
+        ollama_label = QLabel("Ollama Server:")
+        ollama_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+        ollama_row.addWidget(ollama_label)
+
+        self.ollama_status_label = QLabel("⚫ Not checked")
+        self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: {UIConstants.COLOR_TEXT_GREY};")
+        ollama_row.addWidget(self.ollama_status_label)
+        ollama_row.addStretch()
+
+        test_ollama_btn = QPushButton("Test Connection")
+        test_ollama_btn.setFixedWidth(140)
+        test_ollama_btn.clicked.connect(self._test_ollama_connection)
+        ollama_row.addWidget(test_ollama_btn)
+
+        status_layout.addLayout(ollama_row)
+
+        # Database connection status
+        db_row = QHBoxLayout()
+        db_label = QLabel("PostgreSQL Database:")
+        db_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+        db_row.addWidget(db_label)
+
+        self.db_status_label = QLabel("⚫ Not checked")
+        self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: {UIConstants.COLOR_TEXT_GREY};")
+        db_row.addWidget(self.db_status_label)
+        db_row.addStretch()
+
+        test_db_btn = QPushButton("Test Connection")
+        test_db_btn.setFixedWidth(140)
+        test_db_btn.clicked.connect(self._test_database_connection)
+        db_row.addWidget(test_db_btn)
+
+        status_layout.addLayout(db_row)
+
+        status_group.setLayout(status_layout)
+        scroll_layout.addWidget(status_group)
+
+        # ================================================================
+        # Agent Models Section
+        # ================================================================
+        models_group = QGroupBox("Agent Models")
+        models_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
+                font-weight: bold;
+                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }}
+        """)
+        models_layout = QVBoxLayout()
+        models_layout.setSpacing(8)
+
+        # Info label
+        models_info = QLabel("Configure models used by each agent. Changes require workflow restart.")
+        models_info.setWordWrap(True)
+        models_info.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; font-style: italic;")
+        models_layout.addWidget(models_info)
+
+        # Model configuration (read from config)
+        agent_names = ["QueryAgent", "ScoringAgent", "CitationAgent", "ReportingAgent", "EditorAgent", "CounterfactualAgent"]
+
+        for agent_name in agent_names:
+            model_row = QHBoxLayout()
+
+            name_label = QLabel(f"{agent_name}:")
+            name_label.setFixedWidth(150)
+            name_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+            model_row.addWidget(name_label)
+
+            # Get current model from config (if available)
+            try:
+                from bmlibrarian.cli.config import get_agent_config
+                agent_config = get_agent_config(agent_name.lower().replace("agent", ""))
+                current_model = agent_config.get('model', 'Default')
+            except:
+                current_model = 'Default'
+
+            model_label = QLabel(current_model)
+            model_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+            model_row.addWidget(model_label)
+            model_row.addStretch()
+
+            models_layout.addLayout(model_row)
+
+        models_note = QLabel("💡 To change models, use the Configuration GUI (bmlibrarian_config_gui.py)")
+        models_note.setWordWrap(True)
+        models_note.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; font-style: italic; margin-top: 5px;")
+        models_layout.addWidget(models_note)
+
+        models_group.setLayout(models_layout)
+        scroll_layout.addWidget(models_group)
+
+        # ================================================================
+        # Workflow Options Section
+        # ================================================================
+        workflow_group = QGroupBox("Workflow Options")
+        workflow_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
+                font-weight: bold;
+                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }}
+        """)
+        workflow_layout = QVBoxLayout()
+        workflow_layout.setSpacing(10)
+
+        # Enable counterfactual analysis toggle
+        self.enable_counterfactual_checkbox = QCheckBox("Enable Counterfactual Analysis")
+        self.enable_counterfactual_checkbox.setChecked(True)  # Default enabled
+        self.enable_counterfactual_checkbox.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+        workflow_layout.addWidget(self.enable_counterfactual_checkbox)
+
+        counterfactual_desc = QLabel("When enabled, searches for contradictory evidence to strengthen report confidence.")
+        counterfactual_desc.setWordWrap(True)
+        counterfactual_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 25px;")
+        workflow_layout.addWidget(counterfactual_desc)
+
+        # Auto-advance workflow toggle
+        self.auto_advance_checkbox = QCheckBox("Auto-advance Workflow Steps")
+        self.auto_advance_checkbox.setChecked(True)  # Default enabled
+        self.auto_advance_checkbox.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
+        workflow_layout.addWidget(self.auto_advance_checkbox)
+
+        auto_desc = QLabel("When enabled, workflow proceeds automatically without user confirmation between steps.")
+        auto_desc.setWordWrap(True)
+        auto_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 25px;")
+        workflow_layout.addWidget(auto_desc)
+
+        workflow_group.setLayout(workflow_layout)
+        scroll_layout.addWidget(workflow_group)
+
+        # ================================================================
+        # Actions Section
+        # ================================================================
+        actions_group = QGroupBox("Actions")
+        actions_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
+                font-weight: bold;
+                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }}
+        """)
+        actions_layout = QVBoxLayout()
+        actions_layout.setSpacing(8)
+
+        # Open config GUI button
+        open_config_btn = QPushButton("Open Configuration GUI")
+        open_config_btn.setFixedWidth(200)
+        open_config_btn.clicked.connect(self._open_config_gui)
+        actions_layout.addWidget(open_config_btn)
+
+        config_desc = QLabel("Opens the full configuration interface for detailed agent settings, models, and parameters.")
+        config_desc.setWordWrap(True)
+        config_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 10px;")
+        actions_layout.addWidget(config_desc)
+
+        actions_group.setLayout(actions_layout)
+        scroll_layout.addWidget(actions_group)
+
+        # Add stretch to push everything to top
+        scroll_layout.addStretch()
+
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        return widget
 
     # ========================================================================
     # Event Handlers
@@ -1772,7 +1999,7 @@ class ResearchTabWidget(QWidget):
             label = QLabel(abstract or "No abstract available")
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setStyleSheet("font-size: 9pt; color: #333;")
+            label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333;")
             layout.addWidget(label)
             return container
 
@@ -1794,7 +2021,7 @@ class ResearchTabWidget(QWidget):
 
             html = f"""
             <style>
-                .abstract-text {{ font-size: 9pt; color: #333; line-height: 1.4; }}
+                .abstract-text {{ font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
                 .highlight {{ background-color: #FFD54F; font-weight: 600; padding: 2px 4px; }}
             </style>
             <div class="abstract-text">
@@ -1819,7 +2046,7 @@ class ResearchTabWidget(QWidget):
                 end = min(start + len(clean_passage), len(abstract))
 
                 warning_label = QLabel("⚠️ Approximate match only")
-                warning_label.setStyleSheet("font-size: 9pt; color: #F57C00; font-style: italic;")
+                warning_label.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; color: #F57C00; font-style: italic;")
                 layout.addWidget(warning_label)
 
                 before = abstract[:start]
@@ -1828,7 +2055,7 @@ class ResearchTabWidget(QWidget):
 
                 html = f"""
                 <style>
-                    .abstract-text {{ font-size: 9pt; color: #333; line-height: 1.4; }}
+                    .abstract-text {{ font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
                     .highlight {{ background-color: #FFB74D; font-weight: 600; padding: 2px 4px; }}
                 </style>
                 <div class="abstract-text">
@@ -1857,19 +2084,19 @@ class ResearchTabWidget(QWidget):
                 passage_label = QLabel(f"📌 Cited Passage:\n{passage}")
                 passage_label.setWordWrap(True)
                 passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                passage_label.setStyleSheet("font-size: 9pt; font-weight: 600; background-color: transparent; border: none;")
+                passage_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; font-weight: 600; background-color: transparent; border: none;")
                 passage_layout.addWidget(passage_label)
 
                 layout.addWidget(passage_frame)
 
                 abstract_title = QLabel("Full Abstract:")
-                abstract_title.setStyleSheet("font-size: 9pt; font-weight: bold; margin-top: 5px;")
+                abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; font-weight: bold; margin-top: 5px;")
                 layout.addWidget(abstract_title)
 
                 abstract_label = QLabel(abstract)
                 abstract_label.setWordWrap(True)
                 abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                abstract_label.setStyleSheet("font-size: 9pt; color: #333;")
+                abstract_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333;")
                 layout.addWidget(abstract_label)
 
         return container
@@ -1925,7 +2152,7 @@ class ResearchTabWidget(QWidget):
 
         title_label = QLabel(f"<b>{index}. {title}</b>")
         title_label.setWordWrap(True)
-        title_label.setStyleSheet("color: #1976D2; font-size: 10pt;")
+        title_label.setStyleSheet(f"color: #1976D2; font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;")
         title_row.addWidget(title_label, 1)
 
         # Relevance score badge
@@ -1934,15 +2161,15 @@ class ResearchTabWidget(QWidget):
             score_badge = QLabel(f"{relevance_score:.2f}")
             score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             score_badge.setFixedSize(50, 24)
-            score_badge.setStyleSheet("""
-                QLabel {
+            score_badge.setStyleSheet(f"""
+                QLabel {{
                     background-color: #4CAF50;
                     color: white;
-                    font-size: 9pt;
+                    font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt;
                     font-weight: bold;
                     border-radius: 12px;
                     padding: 2px 6px;
-                }
+                }}
             """)
             title_row.addWidget(score_badge)
 
@@ -1973,7 +2200,7 @@ class ResearchTabWidget(QWidget):
         subtitle = f"{authors_str} | {pub_info}"
         subtitle_label = QLabel(subtitle)
         subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_SUBTITLE_FONT_SIZE}pt;")
         header_layout.addWidget(subtitle_label)
 
         container_layout.addWidget(header)
@@ -2013,13 +2240,13 @@ class ResearchTabWidget(QWidget):
             summary_layout.setSpacing(5)
 
             summary_title = QLabel("<b>Summary:</b>")
-            summary_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            summary_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
             summary_layout.addWidget(summary_title)
 
             summary_text = QLabel(summary)
             summary_text.setWordWrap(True)
             summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            summary_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+            summary_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
             summary_layout.addWidget(summary_text)
 
             details_layout.addWidget(summary_container)
@@ -2043,7 +2270,7 @@ class ResearchTabWidget(QWidget):
             abstract_layout.setSpacing(5)
 
             abstract_title = QLabel("<b>Abstract with Highlighted Citation:</b>")
-            abstract_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
             abstract_layout.addWidget(abstract_title)
 
             # Create highlighted abstract widget
@@ -2068,13 +2295,13 @@ class ResearchTabWidget(QWidget):
             passage_layout.setSpacing(5)
 
             passage_title = QLabel("<b>Extracted Passage:</b>")
-            passage_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            passage_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
             passage_layout.addWidget(passage_title)
 
             passage_text = QLabel(f'<i>"{passage}"</i>')
             passage_text.setWordWrap(True)
             passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            passage_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+            passage_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
             passage_layout.addWidget(passage_text)
 
             details_layout.addWidget(passage_container)
@@ -2107,10 +2334,10 @@ class ResearchTabWidget(QWidget):
 
         return container
 
-    def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
+    def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QWidget:
         """
-        Create a document card showing score and metadata.
-        Matches the Flet GUI style with comprehensive information.
+        Create a collapsible document card showing score and metadata.
+        Matches the citation card style with consistent layout.
 
         Args:
             index: Document number (for display)
@@ -2118,48 +2345,60 @@ class ResearchTabWidget(QWidget):
             score_result: Scoring result dictionary
 
         Returns:
-            QFrame containing the document card
+            QWidget containing the collapsible document card
         """
-        frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.Box)
-        frame.setStyleSheet("""
+        # Container widget
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 2)
+        container_layout.setSpacing(0)
+
+        # Header frame (always visible, clickable)
+        header = QFrame()
+        header.setFrameShape(QFrame.Shape.Box)
+        header.setStyleSheet("""
             QFrame {
-                background-color: white;
-                border: 1px solid #E0E0E0;
-                border-radius: 8px;
-                padding: 10px;
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-left: 4px solid #9E9E9E;
+                border-radius: 4px;
+                padding: 8px;
             }
             QFrame:hover {
-                border: 1px solid #1976D2;
-                background-color: #FAFAFA;
+                background-color: #e9ecef;
+                border-left: 4px solid #757575;
             }
         """)
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        layout = QVBoxLayout(frame)
-        layout.setSpacing(6)
+        header_layout = QVBoxLayout(header)
+        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(6, 6, 6, 6)
 
-        # Row 1: Index, Title, and Score Badge
+        # Title row with score badge
         title_row = QHBoxLayout()
+        title_row.setSpacing(8)
 
-        # Index and Title
         title = doc.get('title', 'Untitled Document')
+        # Truncate long titles
+        if len(title) > 80:
+            title = title[:77] + "..."
+
         title_label = QLabel(f"<b>{index}. {title}</b>")
         title_label.setWordWrap(True)
-        title_label.setStyleSheet("color: #1976D2; font-size: 11pt;")
+        title_label.setStyleSheet(f"color: #1976D2; font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;")
         title_row.addWidget(title_label, 1)
 
         # Score badge
         score = score_result.get('score', 0)
-        confidence = score_result.get('confidence', 1.0)
         is_pending = score_result.get('pending', False)
 
-        # Show different badge for pending (unscored) vs scored documents
         if is_pending:
-            score_badge = QLabel("⏳ Pending")
+            score_badge = QLabel("⏳")
             bgcolor = "#9E9E9E"  # Grey for pending
         else:
-            score_badge = QLabel(f"⭐ {score:.1f}")
-            # Color based on score (using constants)
+            score_badge = QLabel(f"{score:.1f}")
+            # Color based on score
             if score >= UIConstants.SCORE_THRESHOLD_HIGH_RELEVANCE:
                 bgcolor = UIConstants.SCORE_COLOR_HIGH
             elif score >= UIConstants.SCORE_THRESHOLD_RELEVANT:
@@ -2170,26 +2409,26 @@ class ResearchTabWidget(QWidget):
                 bgcolor = UIConstants.SCORE_COLOR_LOW
 
         score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        score_badge.setFixedSize(50, 24)
         score_badge.setStyleSheet(f"""
             QLabel {{
                 background-color: {bgcolor};
                 color: white;
+                font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt;
                 font-weight: bold;
-                padding: 4px 8px;
-                border-radius: 4px;
-                min-width: 40px;
+                border-radius: 12px;
+                padding: 2px 6px;
             }}
         """)
         title_row.addWidget(score_badge)
 
-        layout.addLayout(title_row)
+        header_layout.addLayout(title_row)
 
-        # Row 2: Authors and Year
+        # Subtitle row (authors and publication info)
         authors = doc.get('authors', [])
         if isinstance(authors, list):
-            # Format authors list - show first 3 with et al. if more
-            if len(authors) > 3:
-                authors_str = ', '.join(authors[:3]) + ' et al.'
+            if len(authors) > 2:
+                authors_str = ', '.join(authors[:2]) + ' et al.'
             elif authors:
                 authors_str = ', '.join(authors)
             else:
@@ -2197,27 +2436,100 @@ class ResearchTabWidget(QWidget):
         else:
             authors_str = str(authors) if authors else 'Unknown authors'
 
-        # Extract year from publication_date or use year field
+        # Extract year from publication_date
         publication_date = doc.get('publication_date', '')
         year = doc.get('year', '')
         if publication_date and publication_date != 'Unknown':
-            # Extract year from publication_date (format: YYYY-MM-DD or YYYY)
             year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else year
         else:
             year_str = year if year else 'Unknown year'
 
-        meta_label = QLabel(f"<i>{authors_str} ({year_str})</i>")
-        meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
-        layout.addWidget(meta_label)
-
-        # Row 3: Publication (using correct field name)
         publication = doc.get('publication', '')
-        if publication and publication.strip():
-            publication_label = QLabel(f"📖 {publication}")
-            publication_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
-            layout.addWidget(publication_label)
+        pub_info = f"{publication} • {year_str}" if publication else year_str
 
-        # Row 4: Document identifiers (PMID, DOI)
+        subtitle = f"{authors_str} | {pub_info}"
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setWordWrap(True)
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_SUBTITLE_FONT_SIZE}pt;")
+        header_layout.addWidget(subtitle_label)
+
+        container_layout.addWidget(header)
+
+        # Details frame (collapsible content)
+        details = QFrame()
+        details.setFrameShape(QFrame.Shape.Box)
+        details.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #dee2e6;
+                border-top: none;
+                border-radius: 0 0 4px 4px;
+                padding: 10px;
+            }
+        """)
+        details.setVisible(False)  # Collapsed by default
+
+        details_layout = QVBoxLayout(details)
+        details_layout.setSpacing(8)
+        details_layout.setContentsMargins(10, 10, 10, 10)
+
+        # AI Reasoning section
+        reasoning = score_result.get('reasoning', 'No reasoning provided')
+        if reasoning and not is_pending:
+            reasoning_container = QFrame()
+            reasoning_container.setStyleSheet("""
+                QFrame {
+                    background-color: #E3F2FD;
+                    border: 1px solid #BBDEFB;
+                    border-radius: 3px;
+                    padding: 8px;
+                }
+            """)
+            reasoning_layout = QVBoxLayout(reasoning_container)
+            reasoning_layout.setContentsMargins(8, 8, 8, 8)
+            reasoning_layout.setSpacing(5)
+
+            reasoning_title = QLabel("<b>AI Reasoning:</b>")
+            reasoning_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+            reasoning_layout.addWidget(reasoning_title)
+
+            reasoning_text = QLabel(reasoning)
+            reasoning_text.setWordWrap(True)
+            reasoning_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            reasoning_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+            reasoning_layout.addWidget(reasoning_text)
+
+            details_layout.addWidget(reasoning_container)
+
+        # Abstract section
+        abstract = doc.get('abstract', '')
+        if abstract and abstract.strip():
+            abstract_container = QFrame()
+            abstract_container.setStyleSheet("""
+                QFrame {
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                    padding: 8px;
+                }
+            """)
+            abstract_layout = QVBoxLayout(abstract_container)
+            abstract_layout.setContentsMargins(8, 8, 8, 8)
+            abstract_layout.setSpacing(5)
+
+            abstract_title = QLabel("<b>Abstract:</b>")
+            abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+            abstract_layout.addWidget(abstract_title)
+
+            abstract_text = QLabel(abstract)
+            abstract_text.setWordWrap(True)
+            abstract_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            abstract_text.setStyleSheet(f"color: #555; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+            abstract_layout.addWidget(abstract_text)
+
+            details_layout.addWidget(abstract_container)
+
+        # Document identifiers
         id_parts = []
         pmid = doc.get('pmid')
         doi = doc.get('doi')
@@ -2230,63 +2542,126 @@ class ResearchTabWidget(QWidget):
         if id_parts:
             id_label = QLabel(' | '.join(id_parts))
             id_label.setStyleSheet("color: #888; font-size: 8pt;")
-            layout.addWidget(id_label)
+            details_layout.addWidget(id_label)
 
-        # Row 5: Score Reasoning (in styled container)
-        reasoning = score_result.get('reasoning', 'No reasoning provided')
-        reasoning_container = QFrame()
-        reasoning_container.setStyleSheet("""
-            QFrame {
-                background-color: #E3F2FD;
-                border: 1px solid #BBDEFB;
-                border-radius: 5px;
-                padding: 6px;
+        container_layout.addWidget(details)
+
+        # Make header clickable to toggle details
+        def toggle_details():
+            details.setVisible(not details.isVisible())
+
+        header.mousePressEvent = lambda _: toggle_details()
+
+        return container
+
+    # ========================================================================
+    # Settings Tab Handlers
+    # ========================================================================
+
+    @Slot()
+    def _test_ollama_connection(self) -> None:
+        """Test connection to Ollama server."""
+        try:
+            self.ollama_status_label.setText("🔄 Testing...")
+            self.ollama_status_label.repaint()  # Force immediate update
+            QApplication.processEvents()
+
+            # Test Ollama connection
+            import requests
+            from bmlibrarian.cli.config import get_ollama_base_url
+
+            base_url = get_ollama_base_url()
+            response = requests.get(f"{base_url}/api/tags", timeout=5)
+
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                model_count = len(models)
+                self.ollama_status_label.setText(f"✅ Connected ({model_count} models)")
+                self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #4CAF50;")
+                self.logger.info(f"Ollama connection successful: {model_count} models available")
+            else:
+                self.ollama_status_label.setText(f"⚠️ Error {response.status_code}")
+                self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #FF9800;")
+                self.logger.warning(f"Ollama returned status {response.status_code}")
+
+        except requests.exceptions.ConnectionError:
+            self.ollama_status_label.setText("❌ Not running")
+            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
+            self.logger.error("Ollama connection failed: Connection refused")
+        except requests.exceptions.Timeout:
+            self.ollama_status_label.setText("❌ Timeout")
+            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
+            self.logger.error("Ollama connection failed: Timeout")
+        except Exception as e:
+            self.ollama_status_label.setText(f"❌ Error")
+            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
+            self.logger.error(f"Ollama connection test failed: {e}", exc_info=True)
+
+    @Slot()
+    def _test_database_connection(self) -> None:
+        """Test connection to PostgreSQL database."""
+        try:
+            self.db_status_label.setText("🔄 Testing...")
+            self.db_status_label.repaint()  # Force immediate update
+            QApplication.processEvents()
+
+            # Test database connection
+            import psycopg
+            import os
+
+            db_params = {
+                'dbname': os.getenv('POSTGRES_DB', 'knowledgebase'),
+                'user': os.getenv('POSTGRES_USER', 'postgres'),
+                'password': os.getenv('POSTGRES_PASSWORD', ''),
+                'host': os.getenv('POSTGRES_HOST', 'localhost'),
+                'port': os.getenv('POSTGRES_PORT', '5432')
             }
-        """)
-        reasoning_layout = QVBoxLayout(reasoning_container)
-        reasoning_layout.setContentsMargins(6, 6, 6, 6)
-        reasoning_layout.setSpacing(3)
 
-        reasoning_title = QLabel("<b>AI Reasoning:</b>")
-        reasoning_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
-        reasoning_layout.addWidget(reasoning_title)
+            with psycopg.connect(**db_params, connect_timeout=5) as conn:
+                with conn.cursor() as cur:
+                    # Quick query to verify connection
+                    cur.execute("SELECT COUNT(*) FROM documents;")
+                    doc_count = cur.fetchone()[0]
 
-        reasoning_text = QLabel(reasoning)
-        reasoning_text.setWordWrap(True)
-        reasoning_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
-        reasoning_layout.addWidget(reasoning_text)
+                self.db_status_label.setText(f"✅ Connected ({doc_count:,} docs)")
+                self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #4CAF50;")
+                self.logger.info(f"Database connection successful: {doc_count} documents")
 
-        layout.addWidget(reasoning_container)
+        except psycopg.OperationalError as e:
+            self.db_status_label.setText("❌ Connection failed")
+            self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
+            self.logger.error(f"Database connection failed: {e}")
+        except Exception as e:
+            self.db_status_label.setText("❌ Error")
+            self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
+            self.logger.error(f"Database connection test failed: {e}", exc_info=True)
 
-        # Row 6: Abstract (FULL, never truncated - essential for human review)
-        abstract = doc.get('abstract', '')
-        if abstract and abstract.strip():
-            abstract_container = QFrame()
-            abstract_container.setStyleSheet("""
-                QFrame {
-                    background-color: #F5F5F5;
-                    border: 1px solid #E0E0E0;
-                    border-radius: 5px;
-                    padding: 6px;
-                }
-            """)
-            abstract_layout = QVBoxLayout(abstract_container)
-            abstract_layout.setContentsMargins(6, 6, 6, 6)
-            abstract_layout.setSpacing(3)
+    @Slot()
+    def _open_config_gui(self) -> None:
+        """Open the configuration GUI application."""
+        try:
+            import subprocess
+            import sys
 
-            abstract_title = QLabel("<b>Abstract:</b>")
-            abstract_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
-            abstract_layout.addWidget(abstract_title)
+            # Launch the config GUI as a separate process
+            subprocess.Popen([sys.executable, "bmlibrarian_config_gui.py"])
+            self.logger.info("Launched configuration GUI")
 
-            # Display FULL abstract with word wrapping (never truncate)
-            abstract_text = QLabel(abstract)
-            abstract_text.setWordWrap(True)
-            abstract_text.setStyleSheet("color: #555; font-size: 9pt; background-color: transparent; border: none;")
-            abstract_layout.addWidget(abstract_text)
+            # Show info message
+            QMessageBox.information(
+                self,
+                "Configuration GUI",
+                "The configuration GUI has been launched in a separate window.\n\n"
+                "Changes made in the configuration GUI will take effect after restarting the workflow."
+            )
 
-            layout.addWidget(abstract_container)
-
-        return frame
+        except Exception as e:
+            self.logger.error(f"Failed to launch config GUI: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Launch Error",
+                f"Failed to launch configuration GUI:\n\n{str(e)}"
+            )
 
     # ========================================================================
     # Cleanup Utilities
