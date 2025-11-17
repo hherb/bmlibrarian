@@ -858,29 +858,63 @@ def _apply_max_score_reranking(documents: List[Dict]):
 
 
 def _apply_weighted_reranking(documents: List[Dict], weights: Dict[str, float]):
-    """Apply weighted score re-ranking."""
+    """
+    Apply weighted score re-ranking with input validation.
+
+    Args:
+        documents: List of document dictionaries with _search_scores
+        weights: Dictionary mapping strategy names to weight values (must be non-negative)
+
+    Raises:
+        ValueError: If weights contain invalid numeric values or negative weights
+    """
+    # Validate weights
+    if weights:
+        for strategy, weight in weights.items():
+            if not isinstance(weight, (int, float)):
+                raise ValueError(f"Invalid weight type for strategy '{strategy}': {type(weight).__name__} (expected int or float)")
+            if weight < 0:
+                raise ValueError(f"Invalid weight for strategy '{strategy}': {weight} (must be non-negative)")
+
     for doc in documents:
         scores = doc.get('_search_scores', {})
         weighted_score = 0
         for strategy, score in scores.items():
-            weight = weights.get(strategy, 1.0)
+            weight = weights.get(strategy, 1.0) if weights else 1.0
             weighted_score += score * weight
         doc['_combined_score'] = weighted_score
 
 
 def _apply_rrf_reranking(documents: List[Dict], strategies_used: List[str], k: int = 60):
     """
-    Apply Reciprocal Rank Fusion (RRF) re-ranking.
+    Apply Reciprocal Rank Fusion (RRF) re-ranking with input validation.
 
     RRF formula: score(doc) = sum(1 / (k + rank_i)) for all strategies
     where rank_i is the rank of the document in strategy i's results.
+    Documents missing from a strategy receive a penalty based on the max rank.
+
+    Args:
+        documents: List of document dictionaries with _search_scores
+        strategies_used: List of strategy names that were used in the search
+        k: RRF k parameter (must be positive, default: 60)
+
+    Raises:
+        ValueError: If k parameter is not a positive number
 
     Reference: Cormack et al. (2009) "Reciprocal rank fusion outperforms condorcet"
     """
     from collections import defaultdict
 
+    # Validate k parameter
+    if not isinstance(k, (int, float)):
+        raise ValueError(f"Invalid RRF k parameter type: {type(k).__name__} (expected int or float)")
+    if k <= 0:
+        raise ValueError(f"Invalid RRF k parameter: {k} (must be positive)")
+
     # For each strategy, create a ranked list of documents
     strategy_rankings = {}
+    strategy_max_ranks = {}
+
     for strategy in strategies_used:
         # Get all documents that have a score from this strategy
         docs_with_strategy = [(doc, doc.get('_search_scores', {}).get(strategy, 0))
@@ -890,6 +924,8 @@ def _apply_rrf_reranking(documents: List[Dict], strategies_used: List[str], k: i
         # Store as rank -> doc_id mapping
         strategy_rankings[strategy] = {doc['id']: rank + 1
                                       for rank, (doc, _) in enumerate(docs_with_strategy)}
+        # Store the max rank for this strategy (for penalty calculation)
+        strategy_max_ranks[strategy] = len(docs_with_strategy)
 
     # Calculate RRF score for each document
     for doc in documents:
@@ -897,10 +933,16 @@ def _apply_rrf_reranking(documents: List[Dict], strategies_used: List[str], k: i
         doc_id = doc['id']
         scores = doc.get('_search_scores', {})
 
-        for strategy in scores.keys():
+        # Consider all strategies used in the search, not just those with scores
+        for strategy in strategies_used:
             if strategy in strategy_rankings and doc_id in strategy_rankings[strategy]:
                 rank = strategy_rankings[strategy][doc_id]
                 rrf_score += 1.0 / (k + rank)
+            elif strategy in strategy_max_ranks:
+                # Penalty for documents missing from this strategy
+                # Use max_rank + 1 to ensure penalty is smaller than worst-ranked document
+                max_rank = strategy_max_ranks[strategy]
+                rrf_score += 1.0 / (k + max_rank + 1)
 
         doc['_combined_score'] = rrf_score
 
@@ -1002,7 +1044,8 @@ def search_hybrid(
                 if doc_id not in all_documents:
                     all_documents[doc_id] = doc
                     all_documents[doc_id]['_search_scores'] = {}
-                all_documents[doc_id]['_search_scores']['bm25'] = doc.get('rank', 0)
+                # Use bm25_score if available (future-proof), fallback to rank field
+                all_documents[doc_id]['_search_scores']['bm25'] = doc.get('bm25_score', doc.get('rank', 0))
                 bm25_count += 1
 
             strategies_used.append('bm25')
@@ -1020,7 +1063,8 @@ def search_hybrid(
             logger.error(f"BM25 search failed: {e}", exc_info=True)
 
     # 3. Fulltext Search (if enabled) - fallback to keyword if neither semantic nor BM25
-    fulltext_config = search_config.get('keyword', {})  # Using 'keyword' for backward compatibility
+    # Try 'fulltext' first, fall back to 'keyword' for backward compatibility
+    fulltext_config = search_config.get('fulltext', search_config.get('keyword', {}))
     fulltext_enabled = fulltext_config.get('enabled', False)
 
     # Enable fulltext as fallback if no other strategies are enabled
@@ -1040,7 +1084,8 @@ def search_hybrid(
                 if doc_id not in all_documents:
                     all_documents[doc_id] = doc
                     all_documents[doc_id]['_search_scores'] = {}
-                all_documents[doc_id]['_search_scores']['fulltext'] = doc.get('rank', 0)
+                # Use fulltext_score if available (future-proof), fallback to rank field
+                all_documents[doc_id]['_search_scores']['fulltext'] = doc.get('fulltext_score', doc.get('rank', 0))
                 fulltext_count += 1
 
             strategies_used.append('fulltext')
@@ -1065,22 +1110,33 @@ def search_hybrid(
     reranking_config = search_config.get('reranking', {})
     reranking_method = reranking_config.get('method', 'sum_scores')
 
+    # Validate re-ranking method
+    valid_methods = ['sum_scores', 'max_score', 'weighted', 'rrf']
+    if reranking_method not in valid_methods:
+        logger.warning(f"Invalid re-ranking method '{reranking_method}', falling back to 'sum_scores'. Valid methods: {valid_methods}")
+        reranking_method = 'sum_scores'
+
     logger.info(f"Applying re-ranking method: {reranking_method}")
 
-    # Apply re-ranking method
-    if reranking_method == 'rrf':
-        # Reciprocal Rank Fusion
-        rrf_k = reranking_config.get('rrf_k', 60)
-        _apply_rrf_reranking(documents, strategies_used, rrf_k)
-    elif reranking_method == 'max_score':
-        # Use maximum score from any strategy
-        _apply_max_score_reranking(documents)
-    elif reranking_method == 'weighted':
-        # Weighted combination
-        weights = reranking_config.get('weights', {})
-        _apply_weighted_reranking(documents, weights)
-    else:
-        # Default: sum_scores
+    # Apply re-ranking method with error handling
+    try:
+        if reranking_method == 'rrf':
+            # Reciprocal Rank Fusion
+            rrf_k = reranking_config.get('rrf_k', 60)
+            _apply_rrf_reranking(documents, strategies_used, rrf_k)
+        elif reranking_method == 'max_score':
+            # Use maximum score from any strategy
+            _apply_max_score_reranking(documents)
+        elif reranking_method == 'weighted':
+            # Weighted combination
+            weights = reranking_config.get('weights', {})
+            _apply_weighted_reranking(documents, weights)
+        else:
+            # Default: sum_scores
+            _apply_sum_scores_reranking(documents)
+    except ValueError as e:
+        # If re-ranking fails due to invalid parameters, log error and fall back to sum_scores
+        logger.error(f"Re-ranking failed with method '{reranking_method}': {e}. Falling back to 'sum_scores'")
         _apply_sum_scores_reranking(documents)
 
     # Sort by combined score (highest first)
