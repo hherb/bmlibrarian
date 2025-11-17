@@ -1686,6 +1686,7 @@ class ResearchTabWidget(QWidget):
     def _create_citation_card(self, index: int, citation: dict) -> QFrame:
         """
         Create a citation card showing document info and relevant passage.
+        Matches the Flet GUI style with comprehensive information.
 
         Args:
             index: Citation number (for display)
@@ -1698,49 +1699,147 @@ class ResearchTabWidget(QWidget):
         frame.setFrameShape(QFrame.Shape.Box)
         frame.setStyleSheet("""
             QFrame {
-                background-color: white;
-                border: 1px solid #E0E0E0;
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-left: 4px solid #3498db;
                 border-radius: 4px;
                 padding: 10px;
+            }
+            QFrame:hover {
+                background-color: #e9ecef;
+                border-left: 4px solid #2980b9;
             }
         """)
 
         layout = QVBoxLayout(frame)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
 
         # Row 1: Citation number and document title
-        title = citation.get('document_title', 'Untitled Document')
+        title = citation.get('document_title') or citation.get('title', 'Untitled Document')
         title_label = QLabel(f"<b>{index}. {title}</b>")
         title_label.setWordWrap(True)
+        title_label.setStyleSheet("color: #1976D2; font-size: 11pt;")
         layout.addWidget(title_label)
 
         # Row 2: Authors and Year
-        authors = citation.get('authors', 'Unknown authors')
-        year = citation.get('year', 'Unknown year')
-        meta_label = QLabel(f"{authors} ({year})")
+        authors = citation.get('authors', [])
+        if isinstance(authors, list):
+            # Format authors list - show first 2 with et al. if more
+            if len(authors) > 2:
+                authors_str = ', '.join(authors[:2]) + ' et al.'
+            elif authors:
+                authors_str = ', '.join(authors)
+            else:
+                authors_str = 'Unknown authors'
+        else:
+            authors_str = str(authors) if authors else 'Unknown authors'
+
+        # Extract year from publication_date or use year field
+        publication_date = citation.get('publication_date', '')
+        year = citation.get('year', '')
+        if publication_date and publication_date != 'Unknown':
+            # Extract year from publication_date (format: YYYY-MM-DD or YYYY)
+            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else year
+        else:
+            year_str = year if year else 'Unknown year'
+
+        meta_label = QLabel(f"<i>{authors_str} ({year_str})</i>")
         meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
         layout.addWidget(meta_label)
 
-        # Row 3: Relevant passage
-        passage = citation.get('passage', 'No passage extracted')
+        # Row 3: Publication info and Relevance Score
+        publication = citation.get('publication', '')
+        relevance_score = citation.get('relevance_score', 0)
+
+        info_parts = []
+        if publication and publication.strip():
+            info_parts.append(f"📖 {publication}")
+        if relevance_score:
+            info_parts.append(f"⭐ Relevance: {relevance_score:.3f}")
+
+        if info_parts:
+            info_label = QLabel(' | '.join(info_parts))
+            info_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+            layout.addWidget(info_label)
+
+        # Row 4: Summary (if available)
+        summary = citation.get('summary') or citation.get('citation_summary', '')
+        if summary:
+            summary_container = QFrame()
+            summary_container.setStyleSheet("""
+                QFrame {
+                    background-color: #e8f5e9;
+                    border: 1px solid #c8e6c9;
+                    border-radius: 3px;
+                    padding: 6px;
+                }
+            """)
+            summary_layout = QVBoxLayout(summary_container)
+            summary_layout.setContentsMargins(6, 6, 6, 6)
+            summary_layout.setSpacing(3)
+
+            summary_title = QLabel("<b>Summary:</b>")
+            summary_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            summary_layout.addWidget(summary_title)
+
+            summary_text = QLabel(summary)
+            summary_text.setWordWrap(True)
+            summary_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+            summary_layout.addWidget(summary_text)
+
+            layout.addWidget(summary_container)
+
+        # Row 5: Relevant passage
+        passage = citation.get('passage') or citation.get('text') or citation.get('content', 'No passage extracted')
+        passage_container = QFrame()
+        passage_container.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-left: 3px solid #2196F3;
+                border-radius: 3px;
+                padding: 6px;
+            }
+        """)
+        passage_layout = QVBoxLayout(passage_container)
+        passage_layout.setContentsMargins(8, 6, 6, 6)
+        passage_layout.setSpacing(3)
+
+        passage_title = QLabel("<b>Extracted Passage:</b>")
+        passage_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+        passage_layout.addWidget(passage_title)
+
         passage_label = QLabel(f'<i>"{passage}"</i>')
         passage_label.setWordWrap(True)
-        passage_label.setStyleSheet("color: #333; font-size: 10pt; padding: 5px 0; background-color: #F9F9F9; border-left: 3px solid #2196F3; padding-left: 10px;")
-        layout.addWidget(passage_label)
+        passage_label.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+        passage_layout.addWidget(passage_label)
 
-        # Row 4: Relevance note (if available)
-        relevance_note = citation.get('relevance_note', '')
-        if relevance_note:
-            note_label = QLabel(f"<i>Note: {relevance_note}</i>")
-            note_label.setWordWrap(True)
-            note_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
-            layout.addWidget(note_label)
+        layout.addWidget(passage_container)
+
+        # Row 6: Document identifiers (PMID, DOI, Document ID)
+        id_parts = []
+        pmid = citation.get('pmid')
+        doi = citation.get('doi')
+        doc_id = citation.get('document_id')
+
+        if pmid:
+            id_parts.append(f"PMID: {pmid}")
+        if doi:
+            id_parts.append(f"DOI: {doi}")
+        if doc_id and not pmid:
+            id_parts.append(f"ID: {doc_id}")
+
+        if id_parts:
+            id_label = QLabel(' | '.join(id_parts))
+            id_label.setStyleSheet("color: #888; font-size: 8pt;")
+            layout.addWidget(id_label)
 
         return frame
 
     def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
         """
         Create a document card showing score and metadata.
+        Matches the Flet GUI style with comprehensive information.
 
         Args:
             index: Document number (for display)
@@ -1756,13 +1855,17 @@ class ResearchTabWidget(QWidget):
             QFrame {
                 background-color: white;
                 border: 1px solid #E0E0E0;
-                border-radius: 4px;
+                border-radius: 8px;
                 padding: 10px;
+            }
+            QFrame:hover {
+                border: 1px solid #1976D2;
+                background-color: #FAFAFA;
             }
         """)
 
         layout = QVBoxLayout(frame)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
 
         # Row 1: Index, Title, and Score Badge
         title_row = QHBoxLayout()
@@ -1771,6 +1874,7 @@ class ResearchTabWidget(QWidget):
         title = doc.get('title', 'Untitled Document')
         title_label = QLabel(f"<b>{index}. {title}</b>")
         title_label.setWordWrap(True)
+        title_label.setStyleSheet("color: #1976D2; font-size: 11pt;")
         title_row.addWidget(title_label, 1)
 
         # Score badge
@@ -1805,24 +1909,108 @@ class ResearchTabWidget(QWidget):
         layout.addLayout(title_row)
 
         # Row 2: Authors and Year
-        authors = doc.get('authors', 'Unknown authors')
-        year = doc.get('year', 'Unknown year')
-        meta_label = QLabel(f"{authors} ({year})")
+        authors = doc.get('authors', [])
+        if isinstance(authors, list):
+            # Format authors list - show first 3 with et al. if more
+            if len(authors) > 3:
+                authors_str = ', '.join(authors[:3]) + ' et al.'
+            elif authors:
+                authors_str = ', '.join(authors)
+            else:
+                authors_str = 'Unknown authors'
+        else:
+            authors_str = str(authors) if authors else 'Unknown authors'
+
+        # Extract year from publication_date or use year field
+        publication_date = doc.get('publication_date', '')
+        year = doc.get('year', '')
+        if publication_date and publication_date != 'Unknown':
+            # Extract year from publication_date (format: YYYY-MM-DD or YYYY)
+            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else year
+        else:
+            year_str = year if year else 'Unknown year'
+
+        meta_label = QLabel(f"<i>{authors_str} ({year_str})</i>")
         meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
         layout.addWidget(meta_label)
 
-        # Row 3: Journal
-        journal = doc.get('journal', 'Unknown journal')
-        journal_label = QLabel(f"📖 {journal}")
-        journal_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
-        layout.addWidget(journal_label)
+        # Row 3: Publication (using correct field name)
+        publication = doc.get('publication', '')
+        if publication and publication.strip():
+            publication_label = QLabel(f"📖 {publication}")
+            publication_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+            layout.addWidget(publication_label)
 
-        # Row 4: Score Reasoning (collapsed by default)
+        # Row 4: Document identifiers (PMID, DOI)
+        id_parts = []
+        pmid = doc.get('pmid')
+        doi = doc.get('doi')
+
+        if pmid:
+            id_parts.append(f"PMID: {pmid}")
+        if doi:
+            id_parts.append(f"DOI: {doi}")
+
+        if id_parts:
+            id_label = QLabel(' | '.join(id_parts))
+            id_label.setStyleSheet("color: #888; font-size: 8pt;")
+            layout.addWidget(id_label)
+
+        # Row 5: Score Reasoning (in styled container)
         reasoning = score_result.get('reasoning', 'No reasoning provided')
-        reasoning_label = QLabel(f"<i>Reasoning: {reasoning}</i>")
-        reasoning_label.setWordWrap(True)
-        reasoning_label.setStyleSheet("color: #666; font-size: 9pt; padding: 5px 0;")
-        layout.addWidget(reasoning_label)
+        reasoning_container = QFrame()
+        reasoning_container.setStyleSheet("""
+            QFrame {
+                background-color: #E3F2FD;
+                border: 1px solid #BBDEFB;
+                border-radius: 5px;
+                padding: 6px;
+            }
+        """)
+        reasoning_layout = QVBoxLayout(reasoning_container)
+        reasoning_layout.setContentsMargins(6, 6, 6, 6)
+        reasoning_layout.setSpacing(3)
+
+        reasoning_title = QLabel("<b>AI Reasoning:</b>")
+        reasoning_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+        reasoning_layout.addWidget(reasoning_title)
+
+        reasoning_text = QLabel(reasoning)
+        reasoning_text.setWordWrap(True)
+        reasoning_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+        reasoning_layout.addWidget(reasoning_text)
+
+        layout.addWidget(reasoning_container)
+
+        # Row 6: Abstract (truncated, if available)
+        abstract = doc.get('abstract', '')
+        if abstract and abstract.strip():
+            # Truncate to ~300 characters for display
+            truncated_abstract = abstract[:300] + '...' if len(abstract) > 300 else abstract
+
+            abstract_container = QFrame()
+            abstract_container.setStyleSheet("""
+                QFrame {
+                    background-color: #F5F5F5;
+                    border: 1px solid #E0E0E0;
+                    border-radius: 5px;
+                    padding: 6px;
+                }
+            """)
+            abstract_layout = QVBoxLayout(abstract_container)
+            abstract_layout.setContentsMargins(6, 6, 6, 6)
+            abstract_layout.setSpacing(3)
+
+            abstract_title = QLabel("<b>Abstract:</b>")
+            abstract_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            abstract_layout.addWidget(abstract_title)
+
+            abstract_text = QLabel(truncated_abstract)
+            abstract_text.setWordWrap(True)
+            abstract_text.setStyleSheet("color: #555; font-size: 9pt; background-color: transparent; border: none;")
+            abstract_layout.addWidget(abstract_text)
+
+            layout.addWidget(abstract_container)
 
         return frame
 
