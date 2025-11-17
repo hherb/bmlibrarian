@@ -16,6 +16,7 @@ from .progress_widget import (
     SpinnerWidget,
     CompactProgressWidget
 )
+from . import card_utils
 
 __all__ = [
     'DocumentCard',
@@ -27,4 +28,5 @@ __all__ = [
     'StepProgressWidget',
     'SpinnerWidget',
     'CompactProgressWidget',
+    'card_utils',
 ]
