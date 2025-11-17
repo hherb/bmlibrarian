@@ -1122,6 +1122,34 @@ class ResearchTabWidget(QWidget):
 
         self.status_message.emit(f"Generated preliminary report ({word_count} words)")
 
+    def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
+        """
+        Safely clear all widgets from a layout with proper cleanup.
+
+        This method uses aggressive signal disconnection (widget.disconnect()) because:
+        1. Widgets are being permanently destroyed via deleteLater()
+        2. We want to prevent any lingering signal connections from causing errors
+        3. These are self-contained UI components with no external dependencies
+
+        Args:
+            layout: The layout to clear
+        """
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget():
+                widget = child.widget()
+                try:
+                    # Disconnect ALL signals - safe because widget is being deleted
+                    # This prevents any lingering connections from accessing deleted objects
+                    widget.disconnect()
+                except RuntimeError:
+                    # Widget already deleted - safe to ignore
+                    pass
+                # Set parent to None to ensure immediate cleanup
+                widget.setParent(None)
+                # Schedule deletion
+                widget.deleteLater()
+
     def _update_literature_tab(self, scored_documents: list) -> None:
         """
         Update the Literature tab with scored documents.
@@ -1131,16 +1159,7 @@ class ResearchTabWidget(QWidget):
         """
         try:
             # Clear existing widgets with proper cleanup
-            while self.literature_layout.count():
-                child = self.literature_layout.takeAt(0)
-                if child.widget():
-                    widget = child.widget()
-                    # Disconnect any signals to prevent lingering references
-                    widget.disconnect()
-                    # Set parent to None to ensure immediate cleanup
-                    widget.setParent(None)
-                    # Schedule deletion
-                    widget.deleteLater()
+            self._clear_layout_widgets(self.literature_layout)
 
             if not scored_documents:
                 # Show empty state
@@ -1176,16 +1195,7 @@ class ResearchTabWidget(QWidget):
         """
         try:
             # Clear existing widgets with proper cleanup
-            while self.citations_layout.count():
-                child = self.citations_layout.takeAt(0)
-                if child.widget():
-                    widget = child.widget()
-                    # Disconnect any signals to prevent lingering references
-                    widget.disconnect()
-                    # Set parent to None to ensure immediate cleanup
-                    widget.setParent(None)
-                    # Schedule deletion
-                    widget.deleteLater()
+            self._clear_layout_widgets(self.citations_layout)
 
             if not citations:
                 # Show empty state
