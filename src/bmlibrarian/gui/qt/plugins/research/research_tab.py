@@ -1982,12 +1982,9 @@ class ResearchTabWidget(QWidget):
 
         layout.addWidget(reasoning_container)
 
-        # Row 6: Abstract (truncated, if available)
+        # Row 6: Abstract (FULL, never truncated - essential for human review)
         abstract = doc.get('abstract', '')
         if abstract and abstract.strip():
-            # Truncate to ~300 characters for display
-            truncated_abstract = abstract[:300] + '...' if len(abstract) > 300 else abstract
-
             abstract_container = QFrame()
             abstract_container.setStyleSheet("""
                 QFrame {
@@ -2005,7 +2002,8 @@ class ResearchTabWidget(QWidget):
             abstract_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
             abstract_layout.addWidget(abstract_title)
 
-            abstract_text = QLabel(truncated_abstract)
+            # Display FULL abstract with word wrapping (never truncate)
+            abstract_text = QLabel(abstract)
             abstract_text.setWordWrap(True)
             abstract_text.setStyleSheet("color: #555; font-size: 9pt; background-color: transparent; border: none;")
             abstract_layout.addWidget(abstract_text)
