@@ -30,6 +30,13 @@ import logging
 # Import markdown viewer for report display
 from ...widgets.markdown_viewer import MarkdownViewer
 
+# Import document card factory
+from ...qt_document_card_factory import QtDocumentCardFactory
+from bmlibrarian.gui.document_card_factory_base import (
+    DocumentCardData,
+    CardContext
+)
+
 
 # ============================================================================
 # UI Constants
@@ -205,6 +212,10 @@ class ResearchTabWidget(QWidget):
 
         # Workflow thread (Milestone 4: Background execution)
         self.workflow_thread: Optional['WorkflowThread'] = None
+
+        # Document card factory for creating consistent document cards
+        self.document_card_factory = QtDocumentCardFactory()
+        self.logger.info("✅ Document card factory initialized")
 
         # UI Components (initialized in _setup_ui)
         self.question_input: Optional[QTextEdit] = None
@@ -2141,8 +2152,7 @@ class ResearchTabWidget(QWidget):
 
     def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QWidget:
         """
-        Create a collapsible document card showing score and metadata.
-        Matches the citation card style with consistent layout.
+        Create a collapsible document card showing score and metadata using the factory.
 
         Args:
             index: Document number (for display)
@@ -2152,212 +2162,79 @@ class ResearchTabWidget(QWidget):
         Returns:
             QWidget containing the collapsible document card
         """
-        # Container widget
-        container = QWidget()
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 2)
-        container_layout.setSpacing(0)
+        try:
+            # Extract score information
+            score = score_result.get('score', 0)
+            reasoning = score_result.get('reasoning', '')
+            is_pending = score_result.get('pending', False)
 
-        # Header frame (always visible, clickable)
-        header = QFrame()
-        header.setFrameShape(QFrame.Shape.Box)
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-left: 4px solid #9E9E9E;
-                border-radius: 4px;
-                padding: 8px;
-            }
-            QFrame:hover {
-                background-color: #e9ecef;
-                border-left: 4px solid #757575;
-            }
-        """)
-        header.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        header_layout = QVBoxLayout(header)
-        header_layout.setSpacing(4)
-        header_layout.setContentsMargins(6, 6, 6, 6)
-
-        # Title row with score badge
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-
-        title = doc.get('title', 'Untitled Document')
-        # Truncate long titles
-        if len(title) > 80:
-            title = title[:77] + "..."
-
-        title_label = QLabel(f"<b>{index}. {title}</b>")
-        title_label.setWordWrap(True)
-        title_label.setStyleSheet(f"color: #1976D2; font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;")
-        title_row.addWidget(title_label, 1)
-
-        # Score badge
-        score = score_result.get('score', 0)
-        is_pending = score_result.get('pending', False)
-
-        if is_pending:
-            score_badge = QLabel("⏳")
-            bgcolor = "#9E9E9E"  # Grey for pending
-        else:
-            score_badge = QLabel(f"{score:.1f}")
-            # Color based on score
-            if score >= UIConstants.SCORE_THRESHOLD_HIGH_RELEVANCE:
-                bgcolor = UIConstants.SCORE_COLOR_HIGH
-            elif score >= UIConstants.SCORE_THRESHOLD_RELEVANT:
-                bgcolor = UIConstants.SCORE_COLOR_RELEVANT
-            elif score >= UIConstants.SCORE_THRESHOLD_SOMEWHAT_RELEVANT:
-                bgcolor = UIConstants.SCORE_COLOR_SOMEWHAT
+            # Extract year from publication_date or year field
+            publication_date = doc.get('publication_date', '')
+            year = doc.get('year', '')
+            if publication_date and publication_date != 'Unknown':
+                year_value = int(str(publication_date)[:4]) if len(str(publication_date)) >= 4 else (int(year) if year else None)
             else:
-                bgcolor = UIConstants.SCORE_COLOR_LOW
+                year_value = int(year) if year else None
 
-        score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        score_badge.setFixedSize(50, 24)
-        score_badge.setStyleSheet(f"""
-            QLabel {{
-                background-color: {bgcolor};
-                color: white;
-                font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt;
-                font-weight: bold;
-                border-radius: 12px;
-                padding: 2px 6px;
-            }}
-        """)
-        title_row.addWidget(score_badge)
+            # Create DocumentCardData
+            card_data = DocumentCardData(
+                doc_id=doc.get('id', 0),
+                title=doc.get('title', 'Untitled Document'),
+                abstract=doc.get('abstract', ''),
+                authors=doc.get('authors', []),
+                year=year_value,
+                journal=doc.get('publication', ''),
+                pmid=doc.get('pmid'),
+                doi=doc.get('doi'),
+                source=doc.get('source'),
+                relevance_score=score if not is_pending else None,
+                pdf_url=doc.get('pdf_url'),
+                context=CardContext.LITERATURE,
+                show_abstract=True,
+                show_metadata=True,
+                show_pdf_button=True,
+                expanded_by_default=False
+            )
 
-        header_layout.addLayout(title_row)
+            # Create card using factory
+            card = self.document_card_factory.create_card(card_data)
 
-        # Subtitle row (authors and publication info)
-        authors = doc.get('authors', [])
-        if isinstance(authors, list):
-            if len(authors) > 2:
-                authors_str = ', '.join(authors[:2]) + ' et al.'
-            elif authors:
-                authors_str = ', '.join(authors)
-            else:
-                authors_str = 'Unknown authors'
-        else:
-            authors_str = str(authors) if authors else 'Unknown authors'
+            # Add AI reasoning section if available (prepend to details_layout)
+            if reasoning and not is_pending and hasattr(card, 'details_layout'):
+                reasoning_container = QFrame()
+                reasoning_container.setStyleSheet("""
+                    QFrame {
+                        background-color: #E3F2FD;
+                        border: 1px solid #BBDEFB;
+                        border-radius: 3px;
+                        padding: 8px;
+                    }
+                """)
+                reasoning_layout = QVBoxLayout(reasoning_container)
+                reasoning_layout.setContentsMargins(8, 8, 8, 8)
+                reasoning_layout.setSpacing(5)
 
-        # Extract year from publication_date
-        publication_date = doc.get('publication_date', '')
-        year = doc.get('year', '')
-        if publication_date and publication_date != 'Unknown':
-            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else year
-        else:
-            year_str = year if year else 'Unknown year'
+                reasoning_title = QLabel("<b>AI Reasoning:</b>")
+                reasoning_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_layout.addWidget(reasoning_title)
 
-        publication = doc.get('publication', '')
-        pub_info = f"{publication} • {year_str}" if publication else year_str
+                reasoning_text = QLabel(reasoning)
+                reasoning_text.setWordWrap(True)
+                reasoning_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                reasoning_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_layout.addWidget(reasoning_text)
 
-        subtitle = f"{authors_str} | {pub_info}"
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_SUBTITLE_FONT_SIZE}pt;")
-        header_layout.addWidget(subtitle_label)
+                # Insert at the beginning of details_layout (before abstract)
+                card.details_layout.insertWidget(0, reasoning_container)
 
-        container_layout.addWidget(header)
+            return card
 
-        # Details frame (collapsible content)
-        details = QFrame()
-        details.setFrameShape(QFrame.Shape.Box)
-        details.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #dee2e6;
-                border-top: none;
-                border-radius: 0 0 4px 4px;
-                padding: 10px;
-            }
-        """)
-        details.setVisible(False)  # Collapsed by default
-
-        details_layout = QVBoxLayout(details)
-        details_layout.setSpacing(8)
-        details_layout.setContentsMargins(10, 10, 10, 10)
-
-        # AI Reasoning section
-        reasoning = score_result.get('reasoning', 'No reasoning provided')
-        if reasoning and not is_pending:
-            reasoning_container = QFrame()
-            reasoning_container.setStyleSheet("""
-                QFrame {
-                    background-color: #E3F2FD;
-                    border: 1px solid #BBDEFB;
-                    border-radius: 3px;
-                    padding: 8px;
-                }
-            """)
-            reasoning_layout = QVBoxLayout(reasoning_container)
-            reasoning_layout.setContentsMargins(8, 8, 8, 8)
-            reasoning_layout.setSpacing(5)
-
-            reasoning_title = QLabel("<b>AI Reasoning:</b>")
-            reasoning_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
-            reasoning_layout.addWidget(reasoning_title)
-
-            reasoning_text = QLabel(reasoning)
-            reasoning_text.setWordWrap(True)
-            reasoning_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            reasoning_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
-            reasoning_layout.addWidget(reasoning_text)
-
-            details_layout.addWidget(reasoning_container)
-
-        # Abstract section
-        abstract = doc.get('abstract', '')
-        if abstract and abstract.strip():
-            abstract_container = QFrame()
-            abstract_container.setStyleSheet("""
-                QFrame {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                    padding: 8px;
-                }
-            """)
-            abstract_layout = QVBoxLayout(abstract_container)
-            abstract_layout.setContentsMargins(8, 8, 8, 8)
-            abstract_layout.setSpacing(5)
-
-            abstract_title = QLabel("<b>Abstract:</b>")
-            abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
-            abstract_layout.addWidget(abstract_title)
-
-            abstract_text = QLabel(abstract)
-            abstract_text.setWordWrap(True)
-            abstract_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            abstract_text.setStyleSheet(f"color: #555; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
-            abstract_layout.addWidget(abstract_text)
-
-            details_layout.addWidget(abstract_container)
-
-        # Document identifiers
-        id_parts = []
-        pmid = doc.get('pmid')
-        doi = doc.get('doi')
-
-        if pmid:
-            id_parts.append(f"PMID: {pmid}")
-        if doi:
-            id_parts.append(f"DOI: {doi}")
-
-        if id_parts:
-            id_label = QLabel(' | '.join(id_parts))
-            id_label.setStyleSheet("color: #888; font-size: 8pt;")
-            details_layout.addWidget(id_label)
-
-        container_layout.addWidget(details)
-
-        # Make header clickable to toggle details
-        def toggle_details():
-            details.setVisible(not details.isVisible())
-
-        header.mousePressEvent = lambda _: toggle_details()
-
-        return container
+        except Exception as e:
+            self.logger.error(f"Error creating document card using factory: {e}", exc_info=True)
+            # Fallback to a simple error card
+            error_widget = QLabel(f"Error displaying document: {str(e)}")
+            error_widget.setStyleSheet("color: red; padding: 10px;")
+            return error_widget
 
     # ========================================================================
     # Settings Tab Handlers
