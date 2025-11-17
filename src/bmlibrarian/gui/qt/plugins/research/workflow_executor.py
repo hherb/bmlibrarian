@@ -298,6 +298,12 @@ class QtWorkflowExecutor(QObject):
         Later milestones will add counterfactual analysis and final report.
         """
         try:
+            # Early check: if executor has been cleaned up, return silently
+            # This prevents errors when user closes tab during workflow execution
+            if not self._is_active:
+                self.logger.warning("Workflow executor is not active - aborting workflow")
+                return
+
             # Step 1: Generate query
             self.status_message.emit("🔍 Generating database query from your question...")
             query = self.generate_query()
@@ -421,9 +427,20 @@ class QtWorkflowExecutor(QObject):
             RuntimeError: If QueryAgent is not initialized or executor has been cleaned up
             ValueError: If query generation returns empty/invalid result
             Exception: If query generation fails
+
+        Note:
+            If executor has been cleaned up (e.g., user closed tab), this will log a warning
+            and raise RuntimeError. Callers should check _is_active before calling this method
+            to avoid unnecessary errors.
         """
         if not self._is_active:
-            raise RuntimeError("Workflow executor has been cleaned up - cannot generate query")
+            # This should be caught by execute_workflow's early check
+            # If we reach here, it means the method was called directly
+            self.logger.warning("Attempted to generate query after executor cleanup")
+            raise RuntimeError(
+                "Workflow executor is not active - cannot generate query. "
+                "The workflow may have been cancelled or the tab closed."
+            )
 
         if not self.query_agent:
             raise RuntimeError("QueryAgent not initialized")
