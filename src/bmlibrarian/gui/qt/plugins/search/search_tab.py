@@ -219,15 +219,6 @@ class SearchWorker(QThread):
             if self._interrupt_requested:
                 return
 
-            # Generate PostgreSQL tsquery using QueryAgent
-            # Note: QueryAgent.convert_question() already performs additional validation
-            query_agent = QueryAgent()
-            query_text = query_agent.convert_question(search_text)
-
-            # Check for interruption
-            if self._interrupt_requested:
-                return
-
             # Build search configuration from UI settings
             # Uses constants defined at module level for algorithm parameters
             search_config = {
@@ -261,6 +252,24 @@ class SearchWorker(QThread):
                     'weights': DEFAULT_FUSION_WEIGHTS.copy()
                 }
             }
+
+            # Only generate PostgreSQL tsquery if keyword or BM25 search is enabled
+            # Semantic and HyDE search work directly with search_text embeddings
+            query_text = None
+            needs_fulltext_query = (
+                search_config['keyword']['enabled'] or
+                search_config['bm25']['enabled']
+            )
+
+            if needs_fulltext_query:
+                # Generate PostgreSQL tsquery using QueryAgent
+                # Note: QueryAgent.convert_question() already performs additional validation
+                query_agent = QueryAgent()
+                query_text = query_agent.convert_question(search_text)
+
+                # Check for interruption after query generation
+                if self._interrupt_requested:
+                    return
 
             # Determine source filters
             use_pubmed = self.search_params.get('source') in [None, 'pubmed']

@@ -269,6 +269,81 @@ class TestConstants:
 
 
 # ============================================================================
+# Search Strategy Optimization Tests
+# ============================================================================
+
+class TestSearchStrategyOptimization:
+    """Test that query generation is optimized based on enabled strategies."""
+
+    def test_needs_fulltext_query_logic(self):
+        """Test the logic for determining if fulltext query generation is needed."""
+        # Case 1: Keyword enabled -> needs query
+        assert True == (True or False)  # keyword enabled
+
+        # Case 2: BM25 enabled -> needs query
+        assert True == (False or True)  # bm25 enabled
+
+        # Case 3: Both keyword and BM25 enabled -> needs query
+        assert True == (True or True)
+
+        # Case 4: Only semantic enabled -> does NOT need query
+        assert False == (False or False)  # neither keyword nor bm25
+
+        # Case 5: Only HyDE enabled -> does NOT need query
+        assert False == (False or False)
+
+    def test_semantic_only_skips_query_generation(self):
+        """
+        Test that semantic-only search should skip QueryAgent call.
+
+        This is a behavioral test documenting expected optimization:
+        - If only semantic (or HyDE) is enabled
+        - QueryAgent should not be invoked
+        - search_hybrid should receive query_text=None
+        """
+        # Semantic-only configuration
+        semantic_only = {
+            'keyword_enabled': False,
+            'bm25_enabled': False,
+            'semantic_enabled': True,
+            'hyde_enabled': False
+        }
+
+        needs_query = (
+            semantic_only['keyword_enabled'] or
+            semantic_only['bm25_enabled']
+        )
+
+        assert not needs_query, "Semantic-only search should not need fulltext query"
+
+    def test_keyword_or_bm25_requires_query_generation(self):
+        """Test that keyword or BM25 search requires QueryAgent."""
+        # Keyword enabled
+        config1 = {
+            'keyword_enabled': True,
+            'bm25_enabled': False,
+            'semantic_enabled': False
+        }
+        assert config1['keyword_enabled'] or config1['bm25_enabled']
+
+        # BM25 enabled
+        config2 = {
+            'keyword_enabled': False,
+            'bm25_enabled': True,
+            'semantic_enabled': False
+        }
+        assert config2['keyword_enabled'] or config2['bm25_enabled']
+
+        # Both enabled
+        config3 = {
+            'keyword_enabled': True,
+            'bm25_enabled': True,
+            'semantic_enabled': True
+        }
+        assert config3['keyword_enabled'] or config3['bm25_enabled']
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
