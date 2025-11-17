@@ -19,7 +19,8 @@ from datetime import datetime
 from bmlibrarian.config import get_config
 from bmlibrarian.agents.query_agent import QueryAgent
 from bmlibrarian.database import search_hybrid
-from ...widgets.collapsible_document_card import CollapsibleDocumentCard
+from ...qt_document_card_factory import QtDocumentCardFactory
+from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
 
 
 # ============================================================================
@@ -417,6 +418,9 @@ class SearchTabWidget(QWidget):
         self.worker: Optional[SearchWorker] = None
         self.current_results: List[Dict[str, Any]] = []
 
+        # Initialize document card factory
+        self.card_factory = QtDocumentCardFactory()
+
         # Load search strategy settings from config
         search_strategy_config = self.config.get('search_strategy', {})
         self.keyword_enabled = search_strategy_config.get('keyword', {}).get('enabled', True)
@@ -764,7 +768,23 @@ class SearchTabWidget(QWidget):
 
         # Add new results as collapsible cards (collapsed by default)
         for doc in results:
-            card = CollapsibleDocumentCard(doc)
+            # Prepare card data
+            card_data = DocumentCardData(
+                doc_id=doc.get('id') or doc.get('document_id', 0),
+                title=doc.get('title', 'Untitled'),
+                abstract=doc.get('abstract'),
+                authors=doc.get('authors', []),
+                year=doc.get('year'),
+                journal=doc.get('journal'),
+                pmid=doc.get('pmid'),
+                doi=doc.get('doi'),
+                source=doc.get('source'),
+                relevance_score=doc.get('_combined_score') or doc.get('relevance_score'),
+                context=CardContext.SEARCH,
+                show_pdf_button=True,
+                expanded_by_default=False
+            )
+            card = self.card_factory.create_card(card_data)
             # Cards start collapsed, user clicks to expand for details
             self.results_layout.insertWidget(self.results_layout.count() - 1, card)
 
