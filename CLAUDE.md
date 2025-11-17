@@ -116,6 +116,50 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 6. **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
 7. **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
 
+### Document Card Factory System
+
+BMLibrarian uses a factory pattern for creating document cards with consistent functionality across different UI frameworks (Flet and Qt).
+
+**Key Features**:
+- **Framework-Agnostic Interface**: Single API for creating cards in Flet or Qt
+- **Three-State PDF Buttons**: VIEW (local PDF), FETCH (download from URL), UPLOAD (manual upload)
+- **Consistent Styling**: Unified appearance across frameworks
+- **Context-Aware Rendering**: Different card styles for literature, scoring, citations, etc.
+- **Extensible Design**: Easy to add new card variations or contexts
+
+**Factory Classes**:
+- `DocumentCardFactoryBase`: Abstract base class with common utilities
+- `FletDocumentCardFactory`: Flet-specific implementation with `ft.ExpansionTile` cards
+- `QtDocumentCardFactory`: Qt-specific implementation with `QFrame` cards and integrated PDF buttons
+
+**Usage Example**:
+```python
+from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
+from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
+
+factory = FletDocumentCardFactory(page=page)
+card_data = DocumentCardData(
+    doc_id=12345,
+    title="Example Study",
+    authors=["Smith J", "Johnson A"],
+    year=2023,
+    relevance_score=4.5,
+    pdf_url="https://example.com/paper.pdf",
+    context=CardContext.LITERATURE,
+    show_pdf_button=True
+)
+card = factory.create_card(card_data)
+```
+
+**PDF Button States**:
+- **VIEW** (Blue): Local PDF exists → Opens in viewer
+- **FETCH** (Orange): URL available → Downloads then transitions to VIEW
+- **UPLOAD** (Green): No PDF → File picker then transitions to VIEW
+
+**See Documentation**:
+- Developer guide: `doc/developers/document_card_factory_system.md`
+- Demo: `examples/document_card_factory_demo.py`
+
 ### Multi-Model Query Generation
 
 BMLibrarian supports using multiple AI models to generate diverse database queries for improved document retrieval. This feature leverages the strengths of different models to create query variations that often find more relevant literature than single-model approaches.

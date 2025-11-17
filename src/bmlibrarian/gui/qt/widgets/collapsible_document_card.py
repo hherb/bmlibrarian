@@ -207,9 +207,9 @@ class CollapsibleDocumentCard(QFrame):
     def _create_details(self):
         """Create the details section (shown when expanded)."""
         self.details_widget = QWidget()
-        details_layout = QVBoxLayout(self.details_widget)
-        details_layout.setContentsMargins(0, DETAILS_SPACING, 0, 0)
-        details_layout.setSpacing(DETAILS_SPACING)
+        self.details_layout = QVBoxLayout(self.details_widget)
+        self.details_layout.setContentsMargins(0, DETAILS_SPACING, 0, 0)
+        self.details_layout.setSpacing(DETAILS_SPACING)
 
         # Authors
         authors = format_authors(
@@ -221,7 +221,7 @@ class CollapsibleDocumentCard(QFrame):
         authors_label.setObjectName("authors")
         authors_label.setWordWrap(True)
         authors_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 10pt;")
-        details_layout.addWidget(authors_label)
+        self.details_layout.addWidget(authors_label)
 
         # Journal and year
         journal_year = format_journal_year(
@@ -232,7 +232,7 @@ class CollapsibleDocumentCard(QFrame):
             journal_label = QLabel(html_escape(journal_year))
             journal_label.setObjectName("journal")
             journal_label.setStyleSheet(f"color: {COLOR_TEXT_TERTIARY}; font-size: 9pt;")
-            details_layout.addWidget(journal_label)
+            self.details_layout.addWidget(journal_label)
 
         # PMID/DOI
         ids_text = format_document_ids(
@@ -244,7 +244,7 @@ class CollapsibleDocumentCard(QFrame):
             ids_label = QLabel(ids_text)
             ids_label.setObjectName("metadata")
             ids_label.setStyleSheet(f"color: {COLOR_TEXT_METADATA}; font-size: 8pt;")
-            details_layout.addWidget(ids_label)
+            self.details_layout.addWidget(ids_label)
 
         # Abstract (if available)
         abstract = self.document_data.get("abstract")
@@ -254,12 +254,12 @@ class CollapsibleDocumentCard(QFrame):
             separator.setFrameShape(QFrame.HLine)
             separator.setFrameShadow(QFrame.Sunken)
             separator.setStyleSheet(f"background-color: {COLOR_SEPARATOR};")
-            details_layout.addWidget(separator)
+            self.details_layout.addWidget(separator)
 
             # Abstract label
             abstract_header = QLabel("<b>Abstract:</b>")
             abstract_header.setStyleSheet(f"color: {COLOR_TEXT_DARK}; font-size: 9pt; margin-top: {DETAILS_SPACING}px;")
-            details_layout.addWidget(abstract_header)
+            self.details_layout.addWidget(abstract_header)
 
             # Abstract text (read-only, scrollable for very long abstracts)
             abstract_text = QTextEdit()
@@ -276,7 +276,7 @@ class CollapsibleDocumentCard(QFrame):
                     color: {COLOR_TEXT_ABSTRACT};
                 }}
             """)
-            details_layout.addWidget(abstract_text)
+            self.details_layout.addWidget(abstract_text)
 
         self.main_layout.addWidget(self.details_widget)
 
