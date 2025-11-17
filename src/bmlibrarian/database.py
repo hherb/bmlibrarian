@@ -843,6 +843,68 @@ def search_with_fulltext_function(
     logger.info(f"Fulltext search completed for: '{query_text}'")
 
 
+def _apply_sum_scores_reranking(documents: List[Dict]):
+    """Apply simple sum of scores re-ranking."""
+    for doc in documents:
+        scores = doc.get('_search_scores', {})
+        doc['_combined_score'] = sum(scores.values())
+
+
+def _apply_max_score_reranking(documents: List[Dict]):
+    """Apply maximum score re-ranking (use highest score from any strategy)."""
+    for doc in documents:
+        scores = doc.get('_search_scores', {})
+        doc['_combined_score'] = max(scores.values()) if scores else 0
+
+
+def _apply_weighted_reranking(documents: List[Dict], weights: Dict[str, float]):
+    """Apply weighted score re-ranking."""
+    for doc in documents:
+        scores = doc.get('_search_scores', {})
+        weighted_score = 0
+        for strategy, score in scores.items():
+            weight = weights.get(strategy, 1.0)
+            weighted_score += score * weight
+        doc['_combined_score'] = weighted_score
+
+
+def _apply_rrf_reranking(documents: List[Dict], strategies_used: List[str], k: int = 60):
+    """
+    Apply Reciprocal Rank Fusion (RRF) re-ranking.
+
+    RRF formula: score(doc) = sum(1 / (k + rank_i)) for all strategies
+    where rank_i is the rank of the document in strategy i's results.
+
+    Reference: Cormack et al. (2009) "Reciprocal rank fusion outperforms condorcet"
+    """
+    from collections import defaultdict
+
+    # For each strategy, create a ranked list of documents
+    strategy_rankings = {}
+    for strategy in strategies_used:
+        # Get all documents that have a score from this strategy
+        docs_with_strategy = [(doc, doc.get('_search_scores', {}).get(strategy, 0))
+                             for doc in documents if strategy in doc.get('_search_scores', {})]
+        # Sort by score (descending)
+        docs_with_strategy.sort(key=lambda x: x[1], reverse=True)
+        # Store as rank -> doc_id mapping
+        strategy_rankings[strategy] = {doc['id']: rank + 1
+                                      for rank, (doc, _) in enumerate(docs_with_strategy)}
+
+    # Calculate RRF score for each document
+    for doc in documents:
+        rrf_score = 0
+        doc_id = doc['id']
+        scores = doc.get('_search_scores', {})
+
+        for strategy in scores.keys():
+            if strategy in strategy_rankings and doc_id in strategy_rankings[strategy]:
+                rank = strategy_rankings[strategy][doc_id]
+                rrf_score += 1.0 / (k + rank)
+
+        doc['_combined_score'] = rrf_score
+
+
 def search_hybrid(
     search_text: str,
     query_text: str,
@@ -999,16 +1061,33 @@ def search_hybrid(
     # Convert to list and sort by combined score
     documents = list(all_documents.values())
 
-    # Calculate combined scores (simple sum for now)
-    for doc in documents:
-        scores = doc.get('_search_scores', {})
-        doc['_combined_score'] = sum(scores.values())
+    # Get re-ranking configuration
+    reranking_config = search_config.get('reranking', {})
+    reranking_method = reranking_config.get('method', 'sum_scores')
+
+    logger.info(f"Applying re-ranking method: {reranking_method}")
+
+    # Apply re-ranking method
+    if reranking_method == 'rrf':
+        # Reciprocal Rank Fusion
+        rrf_k = reranking_config.get('rrf_k', 60)
+        _apply_rrf_reranking(documents, strategies_used, rrf_k)
+    elif reranking_method == 'max_score':
+        # Use maximum score from any strategy
+        _apply_max_score_reranking(documents)
+    elif reranking_method == 'weighted':
+        # Weighted combination
+        weights = reranking_config.get('weights', {})
+        _apply_weighted_reranking(documents, weights)
+    else:
+        # Default: sum_scores
+        _apply_sum_scores_reranking(documents)
 
     # Sort by combined score (highest first)
     documents.sort(key=lambda d: d.get('_combined_score', 0), reverse=True)
 
     total_unique = len(documents)
-    logger.info(f"Hybrid search complete: {total_unique} unique documents from {len(strategies_used)} strategies")
+    logger.info(f"Hybrid search complete: {total_unique} unique documents from {len(strategies_used)} strategies using {reranking_method} re-ranking")
 
     return documents, strategy_metadata
 

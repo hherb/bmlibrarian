@@ -105,13 +105,31 @@ def create_search_strategy_checkboxes(
     on_keyword_change,
     on_bm25_change,
     on_semantic_change,
-    on_hyde_change
+    on_hyde_change,
+    reranking_method: str = "sum_scores",
+    on_reranking_change = None
 ) -> ft.Container:
-    """Create checkboxes for search strategy selection."""
+    """Create checkboxes for search strategy selection and re-ranking dropdown."""
+    # Re-ranking dropdown
+    reranking_dropdown = ft.Dropdown(
+        label="Re-ranking",
+        value=reranking_method,
+        options=[
+            ft.dropdown.Option("sum_scores", "Sum Scores"),
+            ft.dropdown.Option("rrf", "RRF (Reciprocal Rank Fusion)"),
+            ft.dropdown.Option("max_score", "Max Score"),
+            ft.dropdown.Option("weighted", "Weighted Fusion")
+        ],
+        width=220,
+        height=45,
+        on_change=on_reranking_change,
+        tooltip="Method for combining results from multiple strategies"
+    )
+
     return ft.Container(
         content=ft.Column([
             ft.Text(
-                "Search Strategies",
+                "Search Strategies & Re-ranking",
                 size=12,
                 weight=ft.FontWeight.BOLD,
                 color=ft.Colors.GREY_700
@@ -140,7 +158,9 @@ def create_search_strategy_checkboxes(
                     value=hyde_enabled,
                     on_change=on_hyde_change,
                     tooltip="Hypothetical Document Embeddings search"
-                )
+                ),
+                ft.Container(width=15),  # Spacer
+                reranking_dropdown
             ], spacing=15)
         ], spacing=5),
         padding=ft.padding.all(10),

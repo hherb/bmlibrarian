@@ -58,6 +58,7 @@ class ResearchGUI:
         self.search_strategy_bm25 = False
         self.search_strategy_semantic = False
         self.search_strategy_hyde = False
+        self.reranking_method = "sum_scores"  # Default re-ranking method
 
         # Managers and handlers (initialized in main())
         self.tab_manager = None
@@ -161,6 +162,7 @@ class ResearchGUI:
             self.search_strategy_bm25 = search_config.get('bm25', {}).get('enabled', False)
             self.search_strategy_semantic = search_config.get('semantic', {}).get('enabled', False)
             self.search_strategy_hyde = search_config.get('hyde', {}).get('enabled', False)
+            self.reranking_method = search_config.get('reranking', {}).get('method', 'sum_scores')
 
         except Exception as e:
             print(f"Warning: Could not load config defaults: {e}")
@@ -228,7 +230,9 @@ class ResearchGUI:
             self.event_handlers.on_keyword_search_change,
             self.event_handlers.on_bm25_search_change,
             self.event_handlers.on_semantic_search_change,
-            self.event_handlers.on_hyde_search_change
+            self.event_handlers.on_hyde_search_change,
+            self.reranking_method,
+            self.event_handlers.on_reranking_change
         )
 
         # Create status text (hidden by default)

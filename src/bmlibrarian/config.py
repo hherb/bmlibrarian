@@ -138,6 +138,17 @@ DEFAULT_CONFIG = {
             "embedding_model": "nomic-embed-text:latest",
             "num_hypothetical_docs": 3,  # Number of hypothetical documents to generate
             "similarity_threshold": 0.7   # Cosine similarity threshold (0-1)
+        },
+        "reranking": {
+            # Re-ranking method for combining results from multiple strategies
+            "method": "sum_scores",  # Options: sum_scores, rrf, max_score, weighted
+            "rrf_k": 60,  # RRF constant (Cormack et al., 2009)
+            "weights": {  # Weights for "weighted" method
+                "keyword": 1.0,
+                "bm25": 1.5,
+                "semantic": 2.0,
+                "hyde": 2.0
+            }
         }
     }
 }

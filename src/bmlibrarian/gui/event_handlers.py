@@ -87,6 +87,13 @@ class EventHandlers:
         if self.app.page:
             self.app.page.update()
 
+    def on_reranking_change(self, e):
+        """Handle re-ranking method dropdown change."""
+        self.app.reranking_method = e.control.value
+        self._update_search_strategy_config()
+        if self.app.page:
+            self.app.page.update()
+
     def on_step_expand(self, card: StepCard, expanded: bool):
         """Handle step card expansion change."""
         if self.app.page:
@@ -255,12 +262,13 @@ class EventHandlers:
             self.app.workflow_executor.config_overrides['min_relevant'] = value
 
     def _update_search_strategy_config(self):
-        """Update search strategy configuration based on checkbox states."""
+        """Update search strategy configuration based on checkbox states and re-ranking method."""
         search_strategy_config = {
             'keyword': {'enabled': self.app.search_strategy_keyword},
             'bm25': {'enabled': self.app.search_strategy_bm25},
             'semantic': {'enabled': self.app.search_strategy_semantic},
-            'hyde': {'enabled': self.app.search_strategy_hyde}
+            'hyde': {'enabled': self.app.search_strategy_hyde},
+            'reranking': {'method': self.app.reranking_method}
         }
 
         # Store in config_overrides for workflow executor
