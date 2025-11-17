@@ -84,6 +84,7 @@ class BMLibrarianApplication:
         # Set library loggers to appropriate levels
         logging.getLogger("bmlibrarian.gui.qt").setLevel(logging.DEBUG)
         logging.getLogger("PySide6").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)  # Suppress httpx INFO logs
 
     def _setup_font(self):
         """Setup application-wide font."""

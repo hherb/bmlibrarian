@@ -824,16 +824,27 @@ class ResearchTabWidget(QWidget):
 
     def _create_report_tab(self) -> QWidget:
         """Create Final Report tab."""
-        return self._create_placeholder_tab(
-            "📋",
-            "Final Report",
-            "This tab will display:\n"
-            "• Final comprehensive report (with counterfactual evidence)\n"
-            "• Markdown-rendered content\n"
-            "• Supporting and contradictory evidence sections\n"
-            "• Word count, citation count, metadata\n"
-            "• Export options (Markdown, PDF)"
-        )
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Header
+        header_label = QLabel("📋 Final Comprehensive Report")
+        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY};")
+        layout.addWidget(header_label)
+
+        # Summary label
+        self.report_summary_label = QLabel("No report generated yet")
+        self.report_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.report_summary_label)
+
+        # Markdown viewer
+        self.report_viewer = MarkdownViewer()
+        self.report_viewer.set_markdown("_No final report available yet. The final report will be generated after counterfactual analysis._")
+        layout.addWidget(self.report_viewer)
+
+        return widget
 
     def _create_settings_tab(self) -> QWidget:
         """Create Settings tab."""
@@ -1292,7 +1303,8 @@ class ResearchTabWidget(QWidget):
         """
         Handle documents found signal.
 
-        Updates the Search tab to display the document count.
+        Updates the Search tab to display the document count and populates
+        the Literature tab with document cards (without scores).
 
         Args:
             documents: List of document dictionaries
@@ -1306,6 +1318,9 @@ class ResearchTabWidget(QWidget):
                 f"✅ Found {doc_count} documents matching your query"
             )
             self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
+
+        # Populate Literature tab with unscored documents
+        self._populate_literature_tab_with_unscored_documents(documents)
 
         self.status_message.emit(f"Found {doc_count} documents")
 
@@ -1598,6 +1613,57 @@ class ResearchTabWidget(QWidget):
                 if nested_layout:  # Type guard for None check
                     self._clear_layout_widgets(nested_layout)
 
+    def _populate_literature_tab_with_unscored_documents(self, documents: list) -> None:
+        """
+        Populate the Literature tab with unscored documents.
+
+        This shows documents immediately after search, before scoring happens.
+        Documents are displayed with basic metadata only (no scores).
+
+        Args:
+            documents: List of document dictionaries
+        """
+        try:
+            # Clear existing widgets
+            try:
+                self._clear_layout_widgets(self.literature_layout)
+            except Exception as clear_error:
+                self.logger.warning(f"Error clearing layout (will continue): {clear_error}")
+
+            if not documents:
+                # Show empty state
+                empty_label = QLabel("No documents to display")
+                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.literature_layout.addWidget(empty_label)
+                self.literature_layout.addStretch()
+                return
+
+            # Create simple document cards (without scores)
+            cards_created = 0
+            for i, doc in enumerate(documents):
+                try:
+                    # Create fake score_result with "pending" status for display
+                    score_result = {
+                        'score': 0,
+                        'reasoning': 'Awaiting relevance scoring...',
+                        'confidence': 0,
+                        'pending': True
+                    }
+                    card = self._create_document_score_card(i + 1, doc, score_result)
+                    self.literature_layout.addWidget(card)
+                    cards_created += 1
+                except Exception as card_error:
+                    self.logger.error(f"Error creating card for document {i+1}: {card_error}", exc_info=True)
+
+            # Add stretch at the end
+            self.literature_layout.addStretch()
+
+            self.logger.info(f"Literature tab populated with {cards_created}/{len(documents)} unscored documents")
+
+        except Exception as e:
+            self.logger.error(f"Error populating literature tab: {e}", exc_info=True)
+
     def _update_literature_tab(self, scored_documents: list) -> None:
         """
         Update the Literature tab with scored documents.
@@ -1683,48 +1749,208 @@ class ResearchTabWidget(QWidget):
         except Exception as e:
             self.logger.error(f"Error updating citations tab: {e}", exc_info=True)
 
-    def _create_citation_card(self, index: int, citation: dict) -> QFrame:
+    def _create_highlighted_abstract_widget(self, abstract: str, passage: str) -> QWidget:
         """
-        Create a citation card showing document info and relevant passage.
-        Matches the Flet GUI style with comprehensive information.
+        Create a widget showing the abstract with the passage highlighted in yellow.
+        Matches the Flet implementation's highlighting logic.
+
+        Args:
+            abstract: Full abstract text
+            passage: Passage to highlight within the abstract
+
+        Returns:
+            QWidget containing the highlighted abstract
+        """
+        import re
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        if not abstract or not passage:
+            label = QLabel(abstract or "No abstract available")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setStyleSheet("font-size: 9pt; color: #333;")
+            layout.addWidget(label)
+            return container
+
+        # Clean up passage for matching (remove extra whitespace)
+        clean_passage = ' '.join(passage.split())
+
+        # Try to find exact match (case-insensitive)
+        pattern = re.compile(re.escape(clean_passage), re.IGNORECASE)
+        match = pattern.search(abstract)
+
+        if match:
+            # Exact match - create highlighted text
+            start, end = match.span()
+
+            # Build HTML with highlighted section
+            before = abstract[:start]
+            highlighted = abstract[start:end]
+            after = abstract[end:]
+
+            html = f"""
+            <style>
+                .abstract-text {{ font-size: 9pt; color: #333; line-height: 1.4; }}
+                .highlight {{ background-color: #FFD54F; font-weight: 600; padding: 2px 4px; }}
+            </style>
+            <div class="abstract-text">
+                {before}<span class="highlight">📌 {highlighted} 📌</span>{after}
+            </div>
+            """
+
+            label = QLabel(html)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(label)
+
+        else:
+            # Try fuzzy matching with first 10 words
+            passage_start = ' '.join(passage.split()[:10])
+            fuzzy_pattern = re.compile(re.escape(passage_start), re.IGNORECASE)
+            fuzzy_match = fuzzy_pattern.search(abstract)
+
+            if fuzzy_match:
+                # Partial match
+                start = fuzzy_match.span()[0]
+                end = min(start + len(clean_passage), len(abstract))
+
+                warning_label = QLabel("⚠️ Approximate match only")
+                warning_label.setStyleSheet("font-size: 9pt; color: #F57C00; font-style: italic;")
+                layout.addWidget(warning_label)
+
+                before = abstract[:start]
+                highlighted = abstract[start:end]
+                after = abstract[end:]
+
+                html = f"""
+                <style>
+                    .abstract-text {{ font-size: 9pt; color: #333; line-height: 1.4; }}
+                    .highlight {{ background-color: #FFB74D; font-weight: 600; padding: 2px 4px; }}
+                </style>
+                <div class="abstract-text">
+                    {before}<span class="highlight">⚠️ {highlighted} ⚠️</span>{after}
+                </div>
+                """
+
+                label = QLabel(html)
+                label.setWordWrap(True)
+                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                layout.addWidget(label)
+
+            else:
+                # No match - show separately
+                passage_frame = QFrame()
+                passage_frame.setStyleSheet("""
+                    QFrame {
+                        background-color: #FFD54F;
+                        border-radius: 3px;
+                        padding: 8px;
+                    }
+                """)
+                passage_layout = QVBoxLayout(passage_frame)
+                passage_layout.setContentsMargins(8, 8, 8, 8)
+
+                passage_label = QLabel(f"📌 Cited Passage:\n{passage}")
+                passage_label.setWordWrap(True)
+                passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                passage_label.setStyleSheet("font-size: 9pt; font-weight: 600; background-color: transparent; border: none;")
+                passage_layout.addWidget(passage_label)
+
+                layout.addWidget(passage_frame)
+
+                abstract_title = QLabel("Full Abstract:")
+                abstract_title.setStyleSheet("font-size: 9pt; font-weight: bold; margin-top: 5px;")
+                layout.addWidget(abstract_title)
+
+                abstract_label = QLabel(abstract)
+                abstract_label.setWordWrap(True)
+                abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                abstract_label.setStyleSheet("font-size: 9pt; color: #333;")
+                layout.addWidget(abstract_label)
+
+        return container
+
+    def _create_citation_card(self, index: int, citation) -> QWidget:
+        """
+        Create a collapsible citation card showing document info and relevant passage.
+        Matches the Flet GUI ExpansionTile style with abstract highlighting.
 
         Args:
             index: Citation number (for display)
-            citation: Citation dictionary
+            citation: Citation object (from CitationFinderAgent)
 
         Returns:
-            QFrame containing the citation card
+            QWidget containing the collapsible citation card
         """
-        frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.Box)
-        frame.setStyleSheet("""
+        # Container widget
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 2)
+        container_layout.setSpacing(0)
+
+        # Header frame (always visible, clickable)
+        header = QFrame()
+        header.setFrameShape(QFrame.Shape.Box)
+        header.setStyleSheet("""
             QFrame {
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
                 border-left: 4px solid #3498db;
                 border-radius: 4px;
-                padding: 10px;
+                padding: 8px;
             }
             QFrame:hover {
                 background-color: #e9ecef;
                 border-left: 4px solid #2980b9;
             }
         """)
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        layout = QVBoxLayout(frame)
-        layout.setSpacing(6)
+        header_layout = QVBoxLayout(header)
+        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(6, 6, 6, 6)
 
-        # Row 1: Citation number and document title
-        title = citation.get('document_title') or citation.get('title', 'Untitled Document')
+        # Title row with relevance badge
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+
+        title = getattr(citation, 'document_title', 'Untitled Document')
+        # Truncate long titles
+        if len(title) > 80:
+            title = title[:77] + "..."
+
         title_label = QLabel(f"<b>{index}. {title}</b>")
         title_label.setWordWrap(True)
-        title_label.setStyleSheet("color: #1976D2; font-size: 11pt;")
-        layout.addWidget(title_label)
+        title_label.setStyleSheet("color: #1976D2; font-size: 10pt;")
+        title_row.addWidget(title_label, 1)
 
-        # Row 2: Authors and Year
-        authors = citation.get('authors', [])
+        # Relevance score badge
+        relevance_score = getattr(citation, 'relevance_score', 0)
+        if relevance_score:
+            score_badge = QLabel(f"{relevance_score:.2f}")
+            score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            score_badge.setFixedSize(50, 24)
+            score_badge.setStyleSheet("""
+                QLabel {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-size: 9pt;
+                    font-weight: bold;
+                    border-radius: 12px;
+                    padding: 2px 6px;
+                }
+            """)
+            title_row.addWidget(score_badge)
+
+        header_layout.addLayout(title_row)
+
+        # Subtitle row (authors and publication info)
+        authors = getattr(citation, 'authors', [])
         if isinstance(authors, list):
-            # Format authors list - show first 2 with et al. if more
             if len(authors) > 2:
                 authors_str = ', '.join(authors[:2]) + ' et al.'
             elif authors:
@@ -1734,36 +1960,44 @@ class ResearchTabWidget(QWidget):
         else:
             authors_str = str(authors) if authors else 'Unknown authors'
 
-        # Extract year from publication_date or use year field
-        publication_date = citation.get('publication_date', '')
-        year = citation.get('year', '')
+        # Extract year from publication_date
+        publication_date = getattr(citation, 'publication_date', '')
         if publication_date and publication_date != 'Unknown':
-            # Extract year from publication_date (format: YYYY-MM-DD or YYYY)
-            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else year
+            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else 'Unknown year'
         else:
-            year_str = year if year else 'Unknown year'
+            year_str = 'Unknown year'
 
-        meta_label = QLabel(f"<i>{authors_str} ({year_str})</i>")
-        meta_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt;")
-        layout.addWidget(meta_label)
+        publication = getattr(citation, 'publication', '')
+        pub_info = f"{publication} • {year_str}" if publication else year_str
 
-        # Row 3: Publication info and Relevance Score
-        publication = citation.get('publication', '')
-        relevance_score = citation.get('relevance_score', 0)
+        subtitle = f"{authors_str} | {pub_info}"
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setWordWrap(True)
+        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+        header_layout.addWidget(subtitle_label)
 
-        info_parts = []
-        if publication and publication.strip():
-            info_parts.append(f"📖 {publication}")
-        if relevance_score:
-            info_parts.append(f"⭐ Relevance: {relevance_score:.3f}")
+        container_layout.addWidget(header)
 
-        if info_parts:
-            info_label = QLabel(' | '.join(info_parts))
-            info_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
-            layout.addWidget(info_label)
+        # Details frame (collapsible content)
+        details = QFrame()
+        details.setFrameShape(QFrame.Shape.Box)
+        details.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #dee2e6;
+                border-top: none;
+                border-radius: 0 0 4px 4px;
+                padding: 10px;
+            }
+        """)
+        details.setVisible(False)  # Collapsed by default
 
-        # Row 4: Summary (if available)
-        summary = citation.get('summary') or citation.get('citation_summary', '')
+        details_layout = QVBoxLayout(details)
+        details_layout.setSpacing(8)
+        details_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Summary section
+        summary = getattr(citation, 'summary', '')
         if summary:
             summary_container = QFrame()
             summary_container.setStyleSheet("""
@@ -1771,12 +2005,12 @@ class ResearchTabWidget(QWidget):
                     background-color: #e8f5e9;
                     border: 1px solid #c8e6c9;
                     border-radius: 3px;
-                    padding: 6px;
+                    padding: 8px;
                 }
             """)
             summary_layout = QVBoxLayout(summary_container)
-            summary_layout.setContentsMargins(6, 6, 6, 6)
-            summary_layout.setSpacing(3)
+            summary_layout.setContentsMargins(8, 8, 8, 8)
+            summary_layout.setSpacing(5)
 
             summary_title = QLabel("<b>Summary:</b>")
             summary_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
@@ -1784,43 +2018,72 @@ class ResearchTabWidget(QWidget):
 
             summary_text = QLabel(summary)
             summary_text.setWordWrap(True)
+            summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             summary_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
             summary_layout.addWidget(summary_text)
 
-            layout.addWidget(summary_container)
+            details_layout.addWidget(summary_container)
 
-        # Row 5: Relevant passage
-        passage = citation.get('passage') or citation.get('text') or citation.get('content', 'No passage extracted')
-        passage_container = QFrame()
-        passage_container.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-left: 3px solid #2196F3;
-                border-radius: 3px;
-                padding: 6px;
-            }
-        """)
-        passage_layout = QVBoxLayout(passage_container)
-        passage_layout.setContentsMargins(8, 6, 6, 6)
-        passage_layout.setSpacing(3)
+        # Abstract with highlighted citation
+        abstract = getattr(citation, 'abstract', None)
+        passage = getattr(citation, 'passage', '')
 
-        passage_title = QLabel("<b>Extracted Passage:</b>")
-        passage_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
-        passage_layout.addWidget(passage_title)
+        if abstract and passage:
+            abstract_container = QFrame()
+            abstract_container.setStyleSheet("""
+                QFrame {
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                    padding: 8px;
+                }
+            """)
+            abstract_layout = QVBoxLayout(abstract_container)
+            abstract_layout.setContentsMargins(8, 8, 8, 8)
+            abstract_layout.setSpacing(5)
 
-        passage_label = QLabel(f'<i>"{passage}"</i>')
-        passage_label.setWordWrap(True)
-        passage_label.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
-        passage_layout.addWidget(passage_label)
+            abstract_title = QLabel("<b>Abstract with Highlighted Citation:</b>")
+            abstract_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            abstract_layout.addWidget(abstract_title)
 
-        layout.addWidget(passage_container)
+            # Create highlighted abstract widget
+            highlighted_widget = self._create_highlighted_abstract_widget(abstract, passage)
+            abstract_layout.addWidget(highlighted_widget)
 
-        # Row 6: Document identifiers (PMID, DOI, Document ID)
+            details_layout.addWidget(abstract_container)
+        elif passage:
+            # Fallback: just show the passage if no abstract
+            passage_container = QFrame()
+            passage_container.setStyleSheet("""
+                QFrame {
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
+                    border-left: 3px solid #2196F3;
+                    border-radius: 3px;
+                    padding: 8px;
+                }
+            """)
+            passage_layout = QVBoxLayout(passage_container)
+            passage_layout.setContentsMargins(8, 8, 8, 8)
+            passage_layout.setSpacing(5)
+
+            passage_title = QLabel("<b>Extracted Passage:</b>")
+            passage_title.setStyleSheet("font-size: 9pt; background-color: transparent; border: none;")
+            passage_layout.addWidget(passage_title)
+
+            passage_text = QLabel(f'<i>"{passage}"</i>')
+            passage_text.setWordWrap(True)
+            passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            passage_text.setStyleSheet("color: #333; font-size: 9pt; background-color: transparent; border: none;")
+            passage_layout.addWidget(passage_text)
+
+            details_layout.addWidget(passage_container)
+
+        # Document identifiers
         id_parts = []
-        pmid = citation.get('pmid')
-        doi = citation.get('doi')
-        doc_id = citation.get('document_id')
+        pmid = getattr(citation, 'pmid', None)
+        doi = getattr(citation, 'doi', None)
+        doc_id = getattr(citation, 'document_id', None)
 
         if pmid:
             id_parts.append(f"PMID: {pmid}")
@@ -1832,9 +2095,17 @@ class ResearchTabWidget(QWidget):
         if id_parts:
             id_label = QLabel(' | '.join(id_parts))
             id_label.setStyleSheet("color: #888; font-size: 8pt;")
-            layout.addWidget(id_label)
+            details_layout.addWidget(id_label)
 
-        return frame
+        container_layout.addWidget(details)
+
+        # Make header clickable to toggle details
+        def toggle_details():
+            details.setVisible(not details.isVisible())
+
+        header.mousePressEvent = lambda _: toggle_details()
+
+        return container
 
     def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QFrame:
         """
@@ -1880,20 +2151,25 @@ class ResearchTabWidget(QWidget):
         # Score badge
         score = score_result.get('score', 0)
         confidence = score_result.get('confidence', 1.0)
+        is_pending = score_result.get('pending', False)
 
-        score_badge = QLabel(f"⭐ {score:.1f}")
-        score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Color based on score (using constants)
-        if score >= UIConstants.SCORE_THRESHOLD_HIGH_RELEVANCE:
-            bgcolor = UIConstants.SCORE_COLOR_HIGH
-        elif score >= UIConstants.SCORE_THRESHOLD_RELEVANT:
-            bgcolor = UIConstants.SCORE_COLOR_RELEVANT
-        elif score >= UIConstants.SCORE_THRESHOLD_SOMEWHAT_RELEVANT:
-            bgcolor = UIConstants.SCORE_COLOR_SOMEWHAT
+        # Show different badge for pending (unscored) vs scored documents
+        if is_pending:
+            score_badge = QLabel("⏳ Pending")
+            bgcolor = "#9E9E9E"  # Grey for pending
         else:
-            bgcolor = UIConstants.SCORE_COLOR_LOW
+            score_badge = QLabel(f"⭐ {score:.1f}")
+            # Color based on score (using constants)
+            if score >= UIConstants.SCORE_THRESHOLD_HIGH_RELEVANCE:
+                bgcolor = UIConstants.SCORE_COLOR_HIGH
+            elif score >= UIConstants.SCORE_THRESHOLD_RELEVANT:
+                bgcolor = UIConstants.SCORE_COLOR_RELEVANT
+            elif score >= UIConstants.SCORE_THRESHOLD_SOMEWHAT_RELEVANT:
+                bgcolor = UIConstants.SCORE_COLOR_SOMEWHAT
+            else:
+                bgcolor = UIConstants.SCORE_COLOR_LOW
 
+        score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         score_badge.setStyleSheet(f"""
             QLabel {{
                 background-color: {bgcolor};
