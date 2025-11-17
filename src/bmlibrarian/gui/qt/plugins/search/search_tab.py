@@ -7,7 +7,7 @@ Advanced document search interface with filters and results visualization.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QGroupBox, QScrollArea, QComboBox, QSpinBox,
-    QCheckBox, QMessageBox, QFormLayout
+    QCheckBox, QMessageBox, QFormLayout, QFrame
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont
