@@ -56,15 +56,15 @@ class ScoreColors:
 
 class ButtonSizes:
     """Size constants for buttons."""
-    MIN_HEIGHT: Final[int] = 40  # Minimum button height in pixels
-    PADDING_HORIZONTAL: Final[int] = 12  # Horizontal padding in pixels
-    PADDING_VERTICAL: Final[int] = 8  # Vertical padding in pixels
+    MIN_HEIGHT: Final[int] = 30  # Minimum button height in pixels (reduced for compact design)
+    PADDING_HORIZONTAL: Final[int] = 10  # Horizontal padding in pixels
+    PADDING_VERTICAL: Final[int] = 5  # Vertical padding in pixels (reduced for compact design)
     BORDER_RADIUS: Final[int] = 4  # Border radius in pixels
 
 
 class LayoutSpacing:
     """Spacing constants for layouts."""
-    PDF_BUTTON_TOP_MARGIN: Final[int] = 8  # Top margin for PDF button container
+    PDF_BUTTON_TOP_MARGIN: Final[int] = 6  # Top margin for PDF button container (reduced)
     CONTAINER_MARGIN: Final[int] = 0  # Margin for containers
 
 

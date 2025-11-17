@@ -272,7 +272,7 @@ class CollapsibleDocumentCard(QFrame):
                     border: 1px solid {COLOR_BORDER_ABSTRACT};
                     border-radius: 4px;
                     padding: {ABSTRACT_PADDING}px;
-                    font-size: 11pt;
+                    font-size: 12pt;
                     color: {COLOR_TEXT_ABSTRACT};
                 }}
             """)
