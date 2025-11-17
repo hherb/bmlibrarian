@@ -853,239 +853,44 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_settings_tab(self) -> QWidget:
-        """Create Settings tab with agent configuration and connection status."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        """Create Settings tab using the modular SettingsPlugin."""
+        from ..settings import SettingsPlugin
 
-        # Header
-        header_label = QLabel("⚙️ Workflow Settings")
-        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY_BLUE};")
-        layout.addWidget(header_label)
+        # Create the settings plugin
+        self.settings_plugin = SettingsPlugin(self)
 
-        # Create scrollable area for settings
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Connect signal to reinitialize agents when settings change
+        self.settings_plugin.agents_need_reinit.connect(self._reinitialize_agents)
 
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setSpacing(15)
+        return self.settings_plugin
 
-        # ================================================================
-        # Connection Status Section
-        # ================================================================
-        status_group = QGroupBox("Connection Status")
-        status_group.setStyleSheet(f"""
-            QGroupBox {{
-                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
-                font-weight: bold;
-                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }}
-        """)
-        status_layout = QVBoxLayout()
-        status_layout.setSpacing(8)
+    def _reinitialize_agents(self):
+        """Reinitialize agents with new configuration from settings."""
+        try:
+            from bmlibrarian.agents import (
+                QueryAgent, DocumentScoringAgent, CitationFinderAgent,
+                ReportingAgent, CounterfactualAgent, EditorAgent, AgentOrchestrator
+            )
 
-        # Ollama connection status
-        ollama_row = QHBoxLayout()
-        ollama_label = QLabel("Ollama Server:")
-        ollama_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-        ollama_row.addWidget(ollama_label)
+            self.logger.info("🔧 Reinitializing agents with new configuration...")
 
-        self.ollama_status_label = QLabel("⚫ Not checked")
-        self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: {UIConstants.COLOR_TEXT_GREY};")
-        ollama_row.addWidget(self.ollama_status_label)
-        ollama_row.addStretch()
+            # Create new orchestrator
+            orchestrator = AgentOrchestrator(max_workers=4)
 
-        test_ollama_btn = QPushButton("Test Connection")
-        test_ollama_btn.setFixedWidth(140)
-        test_ollama_btn.clicked.connect(self._test_ollama_connection)
-        ollama_row.addWidget(test_ollama_btn)
+            # Reinitialize all agents
+            self.agents = {
+                'query_agent': QueryAgent(orchestrator=orchestrator),
+                'scoring_agent': DocumentScoringAgent(orchestrator=orchestrator),
+                'citation_agent': CitationFinderAgent(orchestrator=orchestrator),
+                'reporting_agent': ReportingAgent(orchestrator=orchestrator),
+                'counterfactual_agent': CounterfactualAgent(orchestrator=orchestrator),
+                'editor_agent': EditorAgent(orchestrator=orchestrator)
+            }
 
-        status_layout.addLayout(ollama_row)
+            self.logger.info("✅ Agents reinitialized successfully")
 
-        # Database connection status
-        db_row = QHBoxLayout()
-        db_label = QLabel("PostgreSQL Database:")
-        db_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-        db_row.addWidget(db_label)
-
-        self.db_status_label = QLabel("⚫ Not checked")
-        self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: {UIConstants.COLOR_TEXT_GREY};")
-        db_row.addWidget(self.db_status_label)
-        db_row.addStretch()
-
-        test_db_btn = QPushButton("Test Connection")
-        test_db_btn.setFixedWidth(140)
-        test_db_btn.clicked.connect(self._test_database_connection)
-        db_row.addWidget(test_db_btn)
-
-        status_layout.addLayout(db_row)
-
-        status_group.setLayout(status_layout)
-        scroll_layout.addWidget(status_group)
-
-        # ================================================================
-        # Agent Models Section
-        # ================================================================
-        models_group = QGroupBox("Agent Models")
-        models_group.setStyleSheet(f"""
-            QGroupBox {{
-                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
-                font-weight: bold;
-                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }}
-        """)
-        models_layout = QVBoxLayout()
-        models_layout.setSpacing(8)
-
-        # Info label
-        models_info = QLabel("Configure models used by each agent. Changes require workflow restart.")
-        models_info.setWordWrap(True)
-        models_info.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; font-style: italic;")
-        models_layout.addWidget(models_info)
-
-        # Model configuration (read from config)
-        agent_names = ["QueryAgent", "ScoringAgent", "CitationAgent", "ReportingAgent", "EditorAgent", "CounterfactualAgent"]
-
-        for agent_name in agent_names:
-            model_row = QHBoxLayout()
-
-            name_label = QLabel(f"{agent_name}:")
-            name_label.setFixedWidth(150)
-            name_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-            model_row.addWidget(name_label)
-
-            # Get current model from config (if available)
-            try:
-                from bmlibrarian.cli.config import get_agent_config
-                agent_config = get_agent_config(agent_name.lower().replace("agent", ""))
-                current_model = agent_config.get('model', 'Default')
-            except:
-                current_model = 'Default'
-
-            model_label = QLabel(current_model)
-            model_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-            model_row.addWidget(model_label)
-            model_row.addStretch()
-
-            models_layout.addLayout(model_row)
-
-        models_note = QLabel("💡 To change models, use the Configuration GUI (bmlibrarian_config_gui.py)")
-        models_note.setWordWrap(True)
-        models_note.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; font-style: italic; margin-top: 5px;")
-        models_layout.addWidget(models_note)
-
-        models_group.setLayout(models_layout)
-        scroll_layout.addWidget(models_group)
-
-        # ================================================================
-        # Workflow Options Section
-        # ================================================================
-        workflow_group = QGroupBox("Workflow Options")
-        workflow_group.setStyleSheet(f"""
-            QGroupBox {{
-                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
-                font-weight: bold;
-                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }}
-        """)
-        workflow_layout = QVBoxLayout()
-        workflow_layout.setSpacing(10)
-
-        # Enable counterfactual analysis toggle
-        self.enable_counterfactual_checkbox = QCheckBox("Enable Counterfactual Analysis")
-        self.enable_counterfactual_checkbox.setChecked(True)  # Default enabled
-        self.enable_counterfactual_checkbox.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-        workflow_layout.addWidget(self.enable_counterfactual_checkbox)
-
-        counterfactual_desc = QLabel("When enabled, searches for contradictory evidence to strengthen report confidence.")
-        counterfactual_desc.setWordWrap(True)
-        counterfactual_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 25px;")
-        workflow_layout.addWidget(counterfactual_desc)
-
-        # Auto-advance workflow toggle
-        self.auto_advance_checkbox = QCheckBox("Auto-advance Workflow Steps")
-        self.auto_advance_checkbox.setChecked(True)  # Default enabled
-        self.auto_advance_checkbox.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt;")
-        workflow_layout.addWidget(self.auto_advance_checkbox)
-
-        auto_desc = QLabel("When enabled, workflow proceeds automatically without user confirmation between steps.")
-        auto_desc.setWordWrap(True)
-        auto_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 25px;")
-        workflow_layout.addWidget(auto_desc)
-
-        workflow_group.setLayout(workflow_layout)
-        scroll_layout.addWidget(workflow_group)
-
-        # ================================================================
-        # Actions Section
-        # ================================================================
-        actions_group = QGroupBox("Actions")
-        actions_group.setStyleSheet(f"""
-            QGroupBox {{
-                font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;
-                font-weight: bold;
-                border: 2px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }}
-        """)
-        actions_layout = QVBoxLayout()
-        actions_layout.setSpacing(8)
-
-        # Open config GUI button
-        open_config_btn = QPushButton("Open Configuration GUI")
-        open_config_btn.setFixedWidth(200)
-        open_config_btn.clicked.connect(self._open_config_gui)
-        actions_layout.addWidget(open_config_btn)
-
-        config_desc = QLabel("Opens the full configuration interface for detailed agent settings, models, and parameters.")
-        config_desc.setWordWrap(True)
-        config_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; margin-left: 10px;")
-        actions_layout.addWidget(config_desc)
-
-        actions_group.setLayout(actions_layout)
-        scroll_layout.addWidget(actions_group)
-
-        # Add stretch to push everything to top
-        scroll_layout.addStretch()
-
-        scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
-
-        return widget
+        except Exception as e:
+            self.logger.error(f"⚠️ Error reinitializing agents: {e}", exc_info=True)
 
     # ========================================================================
     # Event Handlers
@@ -2558,110 +2363,13 @@ class ResearchTabWidget(QWidget):
     # Settings Tab Handlers
     # ========================================================================
 
-    @Slot()
-    def _test_ollama_connection(self) -> None:
-        """Test connection to Ollama server."""
-        try:
-            self.ollama_status_label.setText("🔄 Testing...")
-            self.ollama_status_label.repaint()  # Force immediate update
-            QApplication.processEvents()
-
-            # Test Ollama connection
-            import requests
-            from bmlibrarian.cli.config import get_ollama_base_url
-
-            base_url = get_ollama_base_url()
-            response = requests.get(f"{base_url}/api/tags", timeout=5)
-
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                model_count = len(models)
-                self.ollama_status_label.setText(f"✅ Connected ({model_count} models)")
-                self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #4CAF50;")
-                self.logger.info(f"Ollama connection successful: {model_count} models available")
-            else:
-                self.ollama_status_label.setText(f"⚠️ Error {response.status_code}")
-                self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #FF9800;")
-                self.logger.warning(f"Ollama returned status {response.status_code}")
-
-        except requests.exceptions.ConnectionError:
-            self.ollama_status_label.setText("❌ Not running")
-            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
-            self.logger.error("Ollama connection failed: Connection refused")
-        except requests.exceptions.Timeout:
-            self.ollama_status_label.setText("❌ Timeout")
-            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
-            self.logger.error("Ollama connection failed: Timeout")
-        except Exception as e:
-            self.ollama_status_label.setText(f"❌ Error")
-            self.ollama_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
-            self.logger.error(f"Ollama connection test failed: {e}", exc_info=True)
-
-    @Slot()
-    def _test_database_connection(self) -> None:
-        """Test connection to PostgreSQL database."""
-        try:
-            self.db_status_label.setText("🔄 Testing...")
-            self.db_status_label.repaint()  # Force immediate update
-            QApplication.processEvents()
-
-            # Test database connection
-            import psycopg
-            import os
-
-            db_params = {
-                'dbname': os.getenv('POSTGRES_DB', 'knowledgebase'),
-                'user': os.getenv('POSTGRES_USER', 'postgres'),
-                'password': os.getenv('POSTGRES_PASSWORD', ''),
-                'host': os.getenv('POSTGRES_HOST', 'localhost'),
-                'port': os.getenv('POSTGRES_PORT', '5432')
-            }
-
-            with psycopg.connect(**db_params, connect_timeout=5) as conn:
-                with conn.cursor() as cur:
-                    # Quick query to verify connection
-                    cur.execute("SELECT COUNT(*) FROM documents;")
-                    doc_count = cur.fetchone()[0]
-
-                self.db_status_label.setText(f"✅ Connected ({doc_count:,} docs)")
-                self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #4CAF50;")
-                self.logger.info(f"Database connection successful: {doc_count} documents")
-
-        except psycopg.OperationalError as e:
-            self.db_status_label.setText("❌ Connection failed")
-            self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
-            self.logger.error(f"Database connection failed: {e}")
-        except Exception as e:
-            self.db_status_label.setText("❌ Error")
-            self.db_status_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #F44336;")
-            self.logger.error(f"Database connection test failed: {e}", exc_info=True)
-
-    @Slot()
-    def _open_config_gui(self) -> None:
-        """Open the configuration GUI application."""
-        try:
-            import subprocess
-            import sys
-
-            # Launch the config GUI as a separate process
-            subprocess.Popen([sys.executable, "bmlibrarian_config_gui.py"])
-            self.logger.info("Launched configuration GUI")
-
-            # Show info message
-            QMessageBox.information(
-                self,
-                "Configuration GUI",
-                "The configuration GUI has been launched in a separate window.\n\n"
-                "Changes made in the configuration GUI will take effect after restarting the workflow."
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to launch config GUI: {e}", exc_info=True)
-            QMessageBox.critical(
-                self,
-                "Launch Error",
-                f"Failed to launch configuration GUI:\n\n{str(e)}"
-            )
+    # ========================================================================
+    # Settings Tab Methods - Now handled by SettingsPlugin
+    # ========================================================================
+    # The following methods have been moved to the SettingsPlugin:
+    # - _test_ollama_connection() - now in SettingsPlugin._test_connection()
+    # - _test_database_connection() - handled by SettingsPlugin
+    # - _open_config_gui() - no longer needed (settings are now integrated)
 
     # ========================================================================
     # Cleanup Utilities
