@@ -179,3 +179,77 @@ QHeaderView::section {
     border-bottom: 1px solid #c0c0c0;
     border-right: 1px solid #e0e0e0;
 }
+
+/* Document Cards */
+DocumentCard {
+    background-color: white;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+DocumentCard:hover {
+    border: 1px solid #3498db;
+    background-color: #f8f9fa;
+}
+
+DocumentCard QLabel#title {
+    font-weight: bold;
+    color: #333333;
+}
+
+DocumentCard QLabel#authors {
+    font-style: italic;
+    color: #666666;
+}
+
+DocumentCard QLabel#journal {
+    color: #555555;
+}
+
+DocumentCard QLabel#score {
+    color: #3498db;
+    font-weight: bold;
+}
+
+DocumentCard QLabel#metadata {
+    font-size: 8pt;
+    color: #666666;
+}
+
+/* Citation Cards */
+CitationCard {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-left: 4px solid #3498db;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+CitationCard:hover {
+    background-color: #e9ecef;
+    border-left: 4px solid #2980b9;
+}
+
+CitationCard QLabel#title {
+    font-weight: bold;
+    color: #333333;
+}
+
+CitationCard QLabel#authors {
+    font-style: italic;
+    color: #666666;
+}
+
+CitationCard QLabel#metadata {
+    font-size: 8pt;
+    color: #888888;
+}
+
+CitationCard QTextEdit {
+    background-color: white;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 6px;
+    font-size: 9pt;
+}

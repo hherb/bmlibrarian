@@ -1,19 +1,43 @@
 """
 Citation card widget for BMLibrarian Qt GUI.
 
-Displays citation information with passage text.
+Displays citation information with passage text using centralized
+styles and utility functions for consistent formatting.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QTextEdit
 from PySide6.QtCore import Qt, Signal
 from typing import Optional, Dict, Any
 
+from .card_utils import (
+    CitationData,
+    validate_citation_data,
+    format_authors,
+    extract_year,
+    format_document_ids,
+    html_escape
+)
+
 
 class CitationCard(QFrame):
     """
     Card widget for displaying citation information.
 
-    Shows document info and relevant passage/quote.
+    Shows document info and relevant passage/quote using centralized
+    stylesheet and utility functions.
+
+    Signals:
+        clicked: Emitted when card is clicked, passes citation data
+
+    Example:
+        >>> citation_data = {
+        ...     "title": "Example Study",
+        ...     "authors": ["Smith J", "Jones A"],
+        ...     "year": 2023,
+        ...     "passage": "This is a relevant passage from the document.",
+        ...     "pmid": 12345678
+        ... }
+        >>> card = CitationCard(citation_data)
     """
 
     # Signal emitted when card is clicked
@@ -26,28 +50,19 @@ class CitationCard(QFrame):
         Args:
             citation_data: Dictionary containing citation information
             parent: Optional parent widget
+
+        Raises:
+            TypeError: If citation_data is not a dictionary
+            ValueError: If required fields are missing
         """
         super().__init__(parent)
 
-        self.citation_data = citation_data
+        # Validate and store citation data
+        self.citation_data = validate_citation_data(citation_data)
 
-        # Configure frame
+        # Configure frame (styling from QSS)
         self.setFrameShape(QFrame.StyledPanel)
-        self.setStyleSheet(
-            """
-            CitationCard {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-left: 4px solid #3498db;
-                border-radius: 4px;
-                padding: 8px;
-            }
-            CitationCard:hover {
-                background-color: #e9ecef;
-                border-left: 4px solid #2980b9;
-            }
-        """
-        )
+        self.setObjectName("citationCard")
 
         # Create layout
         layout = QVBoxLayout(self)
@@ -55,67 +70,54 @@ class CitationCard(QFrame):
         layout.setSpacing(6)
 
         # Document title
-        title = citation_data.get("title", "Untitled")
-        title_label = QLabel(f"<b>{title}</b>")
+        title = self.citation_data.get("title", "Untitled")
+        title_label = QLabel(f"<b>{html_escape(title)}</b>")
+        title_label.setObjectName("title")
         title_label.setWordWrap(True)
         title_label.setTextFormat(Qt.RichText)
         layout.addWidget(title_label)
 
         # Authors and year
-        authors = citation_data.get("authors", "")
-        if isinstance(authors, list):
-            authors = ", ".join(authors[:2])  # First 2 authors
-            if len(citation_data.get("authors", [])) > 2:
-                authors += " et al."
-        year = citation_data.get("year", "")
-        if authors or year:
-            author_text = f"{authors}" if authors else ""
-            year_text = f" ({year})" if year else ""
+        authors = format_authors(
+            self.citation_data.get("authors"),
+            max_authors=2,
+            et_al=True
+        )
+        year_str = extract_year(self.citation_data.get("year"))
+
+        if authors or year_str:
+            author_text = html_escape(authors) if authors else ""
+            year_text = f" ({year_str})" if year_str else ""
             author_label = QLabel(f"<i>{author_text}{year_text}</i>")
-            author_label.setStyleSheet("color: #666;")
+            author_label.setObjectName("authors")
             layout.addWidget(author_label)
 
         # Citation passage/quote
-        passage = citation_data.get("passage", citation_data.get("quote", ""))
+        passage = self.citation_data.get("passage", self.citation_data.get("quote", ""))
         if passage:
             passage_widget = QTextEdit()
             passage_widget.setPlainText(passage)
             passage_widget.setReadOnly(True)
             passage_widget.setMaximumHeight(100)
-            passage_widget.setStyleSheet(
-                """
-                QTextEdit {
-                    background-color: white;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                    padding: 6px;
-                    font-size: 9pt;
-                }
-            """
-            )
+            passage_widget.setObjectName("passageText")
             layout.addWidget(passage_widget)
 
         # Document ID (PMID/DOI)
-        pmid = citation_data.get("pmid")
-        doi = citation_data.get("doi")
-        doc_id = citation_data.get("document_id")
-
-        id_parts = []
-        if pmid:
-            id_parts.append(f"PMID: {pmid}")
-        if doi:
-            id_parts.append(f"DOI: {doi}")
-        if doc_id and not pmid:
-            id_parts.append(f"ID: {doc_id}")
-
-        if id_parts:
-            id_label = QLabel(" | ".join(id_parts))
-            id_label.setStyleSheet("font-size: 8pt; color: #888;")
+        ids_text = format_document_ids(
+            pmid=self.citation_data.get("pmid"),
+            doi=self.citation_data.get("doi"),
+            doc_id=self.citation_data.get("document_id")
+        )
+        if ids_text:
+            id_label = QLabel(ids_text)
+            id_label.setObjectName("metadata")
             layout.addWidget(id_label)
 
     def mousePressEvent(self, event):
         """
         Handle mouse press event.
+
+        Emits clicked signal with citation data on left button click.
 
         Args:
             event: Mouse event
@@ -123,3 +125,30 @@ class CitationCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.citation_data)
         super().mousePressEvent(event)
+
+    def get_document_id(self) -> Optional[int]:
+        """
+        Get the document ID.
+
+        Returns:
+            Document ID if available, None otherwise
+        """
+        return self.citation_data.get("document_id")
+
+    def get_title(self) -> str:
+        """
+        Get the document title.
+
+        Returns:
+            Document title
+        """
+        return self.citation_data.get("title", "Untitled")
+
+    def get_passage(self) -> str:
+        """
+        Get the citation passage/quote.
+
+        Returns:
+            Passage or quote text
+        """
+        return self.citation_data.get("passage", self.citation_data.get("quote", ""))
