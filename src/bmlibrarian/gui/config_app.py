@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from ..config import get_config, DEFAULT_CONFIG
-from .tabs import GeneralSettingsTab, AgentConfigTab, QueryGenerationTab
+from .tabs import GeneralSettingsTab, AgentConfigTab, QueryGenerationTab, DocumentInterrogationTab
 
 
 class BMLibrarianConfigApp:
@@ -140,6 +140,15 @@ class BMLibrarianConfigApp:
         
     def _create_tabs(self):
         """Create all configuration tabs."""
+        # Document Interrogation Tab (NEW - primary feature)
+        doc_interrogation_tab = DocumentInterrogationTab(self)
+        self.tab_objects['document_interrogation'] = doc_interrogation_tab  # Store reference
+        self.tabs['document_interrogation'] = ft.Tab(
+            text="Document Interrogation",
+            icon=ft.Icons.CHAT,
+            content=doc_interrogation_tab.build()
+        )
+
         # General Settings Tab
         general_tab = GeneralSettingsTab(self)
         self.tab_objects['general'] = general_tab  # Store reference
