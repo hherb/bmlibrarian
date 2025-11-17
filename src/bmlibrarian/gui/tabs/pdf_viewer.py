@@ -18,6 +18,22 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 
+# Custom Exceptions
+class PyMuPDFNotAvailableError(Exception):
+    """Raised when PyMuPDF library is not installed."""
+    pass
+
+
+class PDFLoadError(Exception):
+    """Raised when PDF document fails to load."""
+    pass
+
+
+class PDFRenderError(Exception):
+    """Raised when PDF page rendering fails."""
+    pass
+
+
 class HighlightRegion:
     """Represents a highlighted region in the PDF."""
 
@@ -72,6 +88,10 @@ class PDFViewer:
         self.highlights: List[HighlightRegion] = []
         self.search_results: List[Tuple[int, fitz.Rect]] = []  # (page_num, rect)
         self.current_search_index = 0
+
+        # Performance: Page rendering cache
+        self._page_cache: dict = {}  # Cache key -> base64 image
+        self._max_cache_size = 10  # Maximum cached pages
 
         # UI components
         self.page_image = None
@@ -322,10 +342,14 @@ class PDFViewer:
 
         Args:
             file_path: Path to PDF file
+
+        Raises:
+            PyMuPDFNotAvailableError: If PyMuPDF is not installed
+            PDFLoadError: If PDF cannot be loaded
         """
         try:
             if not PYMUPDF_AVAILABLE:
-                raise Exception("PyMuPDF is not installed")
+                raise PyMuPDFNotAvailableError("PyMuPDF is not installed. Run: pip install PyMuPDF")
 
             # Open PDF document
             self.pdf_document = fitz.open(file_path)
@@ -334,6 +358,9 @@ class PDFViewer:
             self.highlights = []
             self.search_results = []
             self.current_search_index = 0
+
+            # Clear page cache for new document
+            self._clear_cache()
 
             # Update UI
             self.total_pages_text.value = f"/ {self.total_pages}"
@@ -345,8 +372,12 @@ class PDFViewer:
             if self.page:
                 self.page.update()
 
+        except PyMuPDFNotAvailableError:
+            raise
+        except PDFRenderError:
+            raise
         except Exception as ex:
-            raise Exception(f"Failed to load PDF: {str(ex)}")
+            raise PDFLoadError(f"Failed to load PDF: {str(ex)}")
 
     def _render_current_page(self):
         """Render the current page with all highlights and search results."""
@@ -354,6 +385,14 @@ class PDFViewer:
             return
 
         try:
+            # Performance: Check cache first
+            cache_key = self._get_cache_key()
+            if cache_key in self._page_cache:
+                self.page_image.src_base64 = self._page_cache[cache_key]
+                if self.on_page_change:
+                    self.on_page_change(self.current_page_num, self.total_pages)
+                return
+
             # Get current page
             page = self.pdf_document[self.current_page_num]
 
@@ -375,12 +414,17 @@ class PDFViewer:
             # Update image
             self.page_image.src_base64 = img_base64
 
+            # Store in cache
+            self._add_to_cache(cache_key, img_base64)
+
             # Call page change callback
             if self.on_page_change:
                 self.on_page_change(self.current_page_num, self.total_pages)
 
+        except PDFRenderError:
+            raise
         except Exception as ex:
-            print(f"Error rendering page: {ex}")
+            raise PDFRenderError(f"Failed to render page {self.current_page_num + 1}: {str(ex)}")
 
     def _draw_highlights_on_pixmap(self, pix: fitz.Pixmap, page: fitz.Page, mat: fitz.Matrix):
         """
@@ -407,6 +451,52 @@ class PDFViewer:
             if highlight.page_num == self.current_page_num:
                 rect = fitz.Rect(highlight.rect)
                 page.add_highlight_annot(rect)
+
+    def _get_cache_key(self) -> tuple:
+        """
+        Generate a cache key for the current page rendering state.
+
+        Returns:
+            Tuple representing the unique rendering state
+        """
+        # Create hash of highlights that affect current page
+        current_highlights = []
+        for highlight in self.highlights:
+            if highlight.page_num == self.current_page_num:
+                current_highlights.append((highlight.rect, highlight.color, highlight.alpha))
+
+        # Create hash of search results that affect current page
+        current_search = []
+        for search_page_num, rect in self.search_results:
+            if search_page_num == self.current_page_num:
+                current_search.append(tuple(rect))
+
+        return (
+            self.current_page_num,
+            round(self.zoom_level, 2),  # Round to avoid float precision issues
+            tuple(sorted(current_highlights)),
+            tuple(sorted(current_search, key=lambda x: (x[0], x[1])))
+        )
+
+    def _add_to_cache(self, cache_key: tuple, img_base64: str):
+        """
+        Add rendered page to cache with LRU eviction.
+
+        Args:
+            cache_key: Cache key for this rendering
+            img_base64: Base64-encoded image data
+        """
+        # If cache is full, remove oldest entry (simple FIFO)
+        if len(self._page_cache) >= self._max_cache_size:
+            # Remove first (oldest) item
+            first_key = next(iter(self._page_cache))
+            del self._page_cache[first_key]
+
+        self._page_cache[cache_key] = img_base64
+
+    def _clear_cache(self):
+        """Clear the entire page rendering cache."""
+        self._page_cache.clear()
 
     def _on_prev_page(self, e):
         """Handle previous page button click."""
