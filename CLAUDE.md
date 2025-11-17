@@ -234,7 +234,10 @@ bmlibrarian/
 │       └── tabs/              # Configuration GUI tab components
 │           ├── __init__.py
 │           ├── general_tab.py # General settings tab
-│           └── agent_tab.py   # Agent-specific configuration tabs
+│           ├── agent_tab.py   # Agent-specific configuration tabs
+│           ├── query_generation_tab.py  # Multi-model query generation tab
+│           ├── search_tab.py  # Search settings tab
+│           └── document_interrogation_tab.py  # Document interrogation interface
 │   └── lab/                   # Experimental tools and interfaces
 │       ├── __init__.py        # Lab module exports
 │       └── query_lab.py       # QueryAgent experimental GUI
@@ -280,6 +283,7 @@ bmlibrarian/
 │   │   ├── fact_checker_review_guide.md  # Fact-checker review GUI guide
 │   │   ├── medrxiv_import_guide.md  # MedRxiv import guide
 │   │   ├── document_embedding_guide.md  # Document embedding guide
+│   │   ├── document_interrogation_guide.md  # Document interrogation tab guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -287,6 +291,7 @@ bmlibrarian/
 │       ├── reporting_system.md
 │       ├── counterfactual_system.md
 │       ├── fact_checker_system.md
+│       ├── document_interrogation_ui_spec.md  # Document interrogation UI specification
 │       └── multi_model_architecture.md  # Multi-model architecture docs
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
 ├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
@@ -446,6 +451,7 @@ uv run python bmlibrarian_config_gui.py
 
 # GUI Features:
 # - Native desktop application with tabbed interface
+# - Document Interrogation tab: Interactive document viewer with AI chatbot for Q&A
 # - Separate configuration tabs for each agent
 # - Model selection with live refresh from Ollama server
 # - Parameter adjustment with sliders and input fields
@@ -462,6 +468,13 @@ uv run python bmlibrarian_config_gui.py --debug            # Enable debug mode
 
 The GUI provides:
 - **Native Desktop App**: Cross-platform desktop application (default mode)
+- **Document Interrogation**: Interactive split-pane interface for document Q&A
+  - Left pane: Document viewer (PDF, Markdown, text files) with 60% width
+  - Right pane: Chat interface with dialogue bubbles (40% width)
+  - File selector and model dropdown in top bar
+  - Support for programmatic document loading from other plugins
+  - Message history with user/AI distinction
+  - Real-time chat with selected Ollama model
 - **Agent Configuration**: Individual tabs for Query, Scoring, Citation, Reporting, Counterfactual, and Editor agents
 - **Model Management**: Dropdown selection with live model refresh from Ollama
 - **Parameter Tuning**: Interactive sliders for temperature, top-p, and agent-specific settings

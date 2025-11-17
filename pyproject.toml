@@ -18,6 +18,8 @@ dependencies = [
     "scipy>=1.11.0",
     "matplotlib>=3.8.0",
     "seaborn>=0.13.0",
+    # PDF support
+    "PyMuPDF>=1.23.0",
     # PySide6 dependencies for Qt GUI
     "pyside6>=6.6.0",
     "PySide6-Addons>=6.6.0",
