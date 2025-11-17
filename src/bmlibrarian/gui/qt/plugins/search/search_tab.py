@@ -19,7 +19,7 @@ from datetime import datetime
 from bmlibrarian.config import get_config
 from bmlibrarian.agents.query_agent import QueryAgent
 from bmlibrarian.database import search_hybrid
-from ...widgets.document_card import DocumentCard
+from ...widgets.collapsible_document_card import CollapsibleDocumentCard
 
 
 # ============================================================================
@@ -64,6 +64,34 @@ SUSPICIOUS_SQL_PATTERNS = [
     r';[\s]*DROP', r';[\s]*DELETE', r';[\s]*UPDATE', r';[\s]*INSERT',
     r'--', r'/\*', r'\*/', r'xp_', r'sp_', r'EXEC', r'EXECUTE'
 ]
+
+# ============================================================================
+# UI Layout Constants
+# ============================================================================
+# Widget dimensions and spacing for consistent layout
+
+# Main layout
+MAIN_MARGIN = 15            # Main window margins (all sides)
+MAIN_SPACING = 8            # Spacing between major sections
+
+# Search controls layout
+CONTROLS_SPACING = 6        # Vertical spacing between control rows
+ROW_SPACING = 8             # Spacing within a control row
+ROW2_SPACING = 15           # Spacing for row 2 elements
+ROW3_SPACING = 12           # Spacing for row 3 elements
+
+# Widget dimensions
+SEARCH_LABEL_MIN_WIDTH = 70      # "Search for:" label minimum width
+SEARCH_BUTTON_MIN_WIDTH = 80     # Search button minimum width
+SEARCH_BUTTON_PADDING = "6px 16px"  # Search button padding
+LIMIT_SPIN_WIDTH = 80            # Max results spinbox width
+SOURCE_COMBO_WIDTH = 120         # Source dropdown width
+YEAR_FIELD_WIDTH = 70            # Year from/to field width
+THRESHOLD_FIELD_WIDTH = 60       # Semantic threshold field width
+RESET_BUTTON_WIDTH = 80          # Reset button width
+
+# Results area
+RESULTS_SPACING = 6         # Spacing between result cards (tighter for more visibility)
 
 
 # ============================================================================
@@ -416,239 +444,190 @@ class SearchTabWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Setup the user interface."""
+        """Setup the user interface with compact layout."""
         # Main layout
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(MAIN_MARGIN, MAIN_MARGIN, MAIN_MARGIN, MAIN_MARGIN)
+        main_layout.setSpacing(MAIN_SPACING)
 
-        # Title
-        title = QLabel("Document Search")
-        title_font = QFont("", 16, QFont.Bold)
-        title.setFont(title_font)
-        main_layout.addWidget(title)
+        # Search controls (3 compact rows)
+        search_controls = self._create_search_controls()
+        main_layout.addWidget(search_controls)
 
-        # Search panel
-        search_panel = self._create_search_panel()
-        main_layout.addWidget(search_panel)
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        main_layout.addWidget(separator)
 
-        # Results panel
-        results_panel = self._create_results_panel()
-        main_layout.addWidget(results_panel, stretch=1)
+        # Results area (expanding, scrollable)
+        results_area = self._create_results_area()
+        main_layout.addWidget(results_area, stretch=1)
 
-    def _create_search_panel(self) -> QGroupBox:
+    def _create_search_controls(self) -> QWidget:
         """
-        Create search filters panel.
+        Create compact search controls (3 rows).
 
         Returns:
-            Search panel group box
+            Widget containing search controls
         """
-        group = QGroupBox("Search Filters")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(CONTROLS_SPACING)
 
-        # Main search box - prominent and wide
-        search_box_layout = QHBoxLayout()
+        # Row 1: Search box with Search button
+        row1 = QHBoxLayout()
+        row1.setSpacing(ROW_SPACING)
+
         search_label = QLabel("Search for:")
-        search_label.setMinimumWidth(80)
-        search_box_layout.addWidget(search_label)
+        search_label.setMinimumWidth(SEARCH_LABEL_MIN_WIDTH)
+        row1.addWidget(search_label)
 
         self.text_query_edit = QLineEdit()
         self.text_query_edit.setPlaceholderText("Enter your research question or search query...")
-        self.text_query_edit.setMinimumWidth(400)
         self.text_query_edit.returnPressed.connect(self._on_search)
-        search_box_layout.addWidget(self.text_query_edit, stretch=1)  # Expand to fill available space
+        row1.addWidget(self.text_query_edit, stretch=1)
 
         search_btn = QPushButton("Search")
         search_btn.setStyleSheet(
-            "background-color: #3498db; color: white; padding: 8px 20px; font-weight: bold;"
+            f"background-color: #3498db; color: white; padding: {SEARCH_BUTTON_PADDING}; font-weight: bold;"
         )
-        search_btn.setMinimumWidth(100)
+        search_btn.setMinimumWidth(SEARCH_BUTTON_MIN_WIDTH)
         search_btn.clicked.connect(self._on_search)
-        search_box_layout.addWidget(search_btn)
+        row1.addWidget(search_btn)
 
-        layout.addLayout(search_box_layout)
+        layout.addLayout(row1)
 
-        # Filters row 1: Year range and semantic threshold
-        filters_layout1 = QHBoxLayout()
+        # Row 2: Max results, Source, Year from, Year to
+        row2 = QHBoxLayout()
+        row2.setSpacing(ROW2_SPACING)
 
-        # Year from
-        year_from_layout = QHBoxLayout()
-        year_from_layout.addWidget(QLabel("Year From:"))
-        self.year_from_edit = QLineEdit()
-        self.year_from_edit.setPlaceholderText("Any")
-        self.year_from_edit.setMaximumWidth(80)
-        self.year_from_edit.setToolTip("Enter start year (e.g., 2000)")
-        year_from_layout.addWidget(self.year_from_edit)
-        filters_layout1.addLayout(year_from_layout)
-
-        # Year to
-        year_to_layout = QHBoxLayout()
-        year_to_layout.addWidget(QLabel("Year To:"))
-        self.year_to_edit = QLineEdit()
-        self.year_to_edit.setPlaceholderText("Any")
-        self.year_to_edit.setMaximumWidth(80)
-        self.year_to_edit.setToolTip("Enter end year (e.g., 2025)")
-        year_to_layout.addWidget(self.year_to_edit)
-        filters_layout1.addLayout(year_to_layout)
-
-        # Semantic search threshold
-        threshold_layout = QHBoxLayout()
-        threshold_layout.addWidget(QLabel("Semantic Threshold:"))
-        self.semantic_threshold_edit = QLineEdit()
-        self.semantic_threshold_edit.setPlaceholderText("0.7")
-        self.semantic_threshold_edit.setMaximumWidth(60)
-        self.semantic_threshold_edit.setToolTip("Semantic similarity threshold (0.0-1.0)")
-        threshold_layout.addWidget(self.semantic_threshold_edit)
-        filters_layout1.addLayout(threshold_layout)
-
-        filters_layout1.addStretch()
-        layout.addLayout(filters_layout1)
-
-        # Filters row 2: Source and Limit
-        filters_layout2 = QHBoxLayout()
-
-        # Source
-        source_layout = QHBoxLayout()
-        source_layout.addWidget(QLabel("Source:"))
-        self.source_combo = QComboBox()
-        self.source_combo.addItems(["All", "pubmed", "medrxiv"])
-        source_layout.addWidget(self.source_combo)
-        filters_layout2.addLayout(source_layout)
-
-        # Limit
-        limit_layout = QHBoxLayout()
-        limit_layout.addWidget(QLabel("Max Results:"))
+        # Max results
+        row2.addWidget(QLabel("max results"))
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(10, 1000)
         self.limit_spin.setValue(100)
         self.limit_spin.setSingleStep(10)
-        limit_layout.addWidget(self.limit_spin)
-        filters_layout2.addLayout(limit_layout)
+        self.limit_spin.setMaximumWidth(LIMIT_SPIN_WIDTH)
+        row2.addWidget(self.limit_spin)
 
-        filters_layout2.addStretch()
-        layout.addLayout(filters_layout2)
+        # Source
+        row2.addWidget(QLabel("source"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["All", "pubmed", "medrxiv"])
+        self.source_combo.setMaximumWidth(SOURCE_COMBO_WIDTH)
+        row2.addWidget(self.source_combo)
 
-        # Search Strategies section
-        strategies_layout = self._create_search_strategies_section()
-        layout.addLayout(strategies_layout)
+        # Year from
+        row2.addWidget(QLabel("year from"))
+        self.year_from_edit = QLineEdit()
+        self.year_from_edit.setPlaceholderText("Any")
+        self.year_from_edit.setMaximumWidth(YEAR_FIELD_WIDTH)
+        self.year_from_edit.setToolTip("Enter start year (e.g., 2000)")
+        row2.addWidget(self.year_from_edit)
 
-        # Clear button
-        button_layout = QHBoxLayout()
-        clear_btn = QPushButton("Clear Filters")
-        clear_btn.clicked.connect(self._on_clear_filters)
-        button_layout.addWidget(clear_btn)
+        # Year to
+        row2.addWidget(QLabel("year to"))
+        self.year_to_edit = QLineEdit()
+        self.year_to_edit.setPlaceholderText("Any")
+        self.year_to_edit.setMaximumWidth(YEAR_FIELD_WIDTH)
+        self.year_to_edit.setToolTip("Enter end year (e.g., 2025)")
+        row2.addWidget(self.year_to_edit)
 
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
+        row2.addStretch()
+        layout.addLayout(row2)
 
-        return group
+        # Row 3: Strategies, Semantic threshold, Reset
+        row3 = QHBoxLayout()
+        row3.setSpacing(ROW3_SPACING)
 
-    def _create_search_strategies_section(self) -> QVBoxLayout:
-        """
-        Create search strategies and re-ranking section.
+        # Strategies label and checkboxes
+        row3.addWidget(QLabel("Strategies"))
 
-        Returns:
-            Layout containing strategy checkboxes and re-ranking dropdown
-        """
-        section_layout = QVBoxLayout()
-
-        # Title
-        title = QLabel("Search Strategies & Re-ranking")
-        title.setStyleSheet("font-weight: bold; color: #555; font-size: 11px;")
-        section_layout.addWidget(title)
-
-        # Checkboxes and dropdown row
-        controls_layout = QHBoxLayout()
-
-        # Keyword checkbox
         self.keyword_check = QCheckBox("Keyword")
         self.keyword_check.setChecked(self.keyword_enabled)
         self.keyword_check.setToolTip("PostgreSQL full-text search")
         self.keyword_check.stateChanged.connect(self._on_keyword_changed)
-        controls_layout.addWidget(self.keyword_check)
+        row3.addWidget(self.keyword_check)
 
-        # BM25 checkbox
         self.bm25_check = QCheckBox("BM25")
         self.bm25_check.setChecked(self.bm25_enabled)
         self.bm25_check.setToolTip("Probabilistic ranking (BM25)")
         self.bm25_check.stateChanged.connect(self._on_bm25_changed)
-        controls_layout.addWidget(self.bm25_check)
+        row3.addWidget(self.bm25_check)
 
-        # Semantic checkbox
         self.semantic_check = QCheckBox("Semantic")
         self.semantic_check.setChecked(self.semantic_enabled)
         self.semantic_check.setToolTip("Vector similarity search using embeddings")
         self.semantic_check.stateChanged.connect(self._on_semantic_changed)
-        controls_layout.addWidget(self.semantic_check)
+        row3.addWidget(self.semantic_check)
 
-        # HyDE checkbox
         self.hyde_check = QCheckBox("HyDE")
         self.hyde_check.setChecked(self.hyde_enabled)
         self.hyde_check.setToolTip("Hypothetical Document Embeddings search")
         self.hyde_check.stateChanged.connect(self._on_hyde_changed)
-        controls_layout.addWidget(self.hyde_check)
+        row3.addWidget(self.hyde_check)
 
-        # Spacer
-        controls_layout.addSpacing(20)
+        # Spacer between strategies and threshold
+        row3.addSpacing(15)
 
-        # Re-ranking dropdown
-        controls_layout.addWidget(QLabel("Re-ranking:"))
-        self.reranking_combo = QComboBox()
-        self.reranking_combo.addItem("Sum Scores", "sum_scores")
-        self.reranking_combo.addItem("RRF (Reciprocal Rank Fusion)", "rrf")
-        self.reranking_combo.addItem("Max Score", "max_score")
-        self.reranking_combo.addItem("Weighted Fusion", "weighted")
-        self.reranking_combo.setToolTip("Method for combining results from multiple strategies")
-        self.reranking_combo.setCurrentText(self._get_reranking_display_name(self.reranking_method))
-        self.reranking_combo.currentIndexChanged.connect(self._on_reranking_changed)
-        controls_layout.addWidget(self.reranking_combo)
+        # Semantic threshold
+        row3.addWidget(QLabel("Semantic threshold"))
+        self.semantic_threshold_edit = QLineEdit()
+        self.semantic_threshold_edit.setPlaceholderText("0.7")
+        self.semantic_threshold_edit.setMaximumWidth(THRESHOLD_FIELD_WIDTH)
+        self.semantic_threshold_edit.setToolTip("Semantic similarity threshold (0.0-1.0)")
+        row3.addWidget(self.semantic_threshold_edit)
 
-        controls_layout.addStretch()
-        section_layout.addLayout(controls_layout)
+        # Spacer before reset
+        row3.addStretch()
 
-        return section_layout
+        # Reset button
+        reset_btn = QPushButton("Reset")
+        reset_btn.setToolTip("Clear all filters")
+        reset_btn.clicked.connect(self._on_clear_filters)
+        reset_btn.setMaximumWidth(RESET_BUTTON_WIDTH)
+        row3.addWidget(reset_btn)
 
-    def _get_reranking_display_name(self, method: str) -> str:
-        """Get display name for re-ranking method."""
-        mapping = {
-            'sum_scores': 'Sum Scores',
-            'rrf': 'RRF (Reciprocal Rank Fusion)',
-            'max_score': 'Max Score',
-            'weighted': 'Weighted Fusion'
-        }
-        return mapping.get(method, 'Sum Scores')
+        layout.addLayout(row3)
 
-    def _create_results_panel(self) -> QGroupBox:
+        return container
+
+    def _create_results_area(self) -> QWidget:
         """
-        Create results display panel.
+        Create compact results display area (no group box).
 
         Returns:
-            Results panel group box
+            Widget containing results area
         """
-        group = QGroupBox("Search Results")
-        layout = QVBoxLayout(group)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(MAIN_SPACING)
 
-        # Result count
+        # Result count (compact, no redundant "Search Results" label)
         self.result_count_label = QLabel("No search performed yet")
-        self.result_count_label.setStyleSheet("color: gray; font-style: italic;")
+        self.result_count_label.setStyleSheet("color: gray; font-style: italic; font-size: 10pt;")
         layout.addWidget(self.result_count_label)
 
         # Scroll area for results
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
         self.results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.results_scroll.setStyleSheet("QScrollArea { border: none; }")
 
         # Container for document cards
         self.results_container = QWidget()
         self.results_layout = QVBoxLayout(self.results_container)
-        self.results_layout.setSpacing(10)
+        self.results_layout.setSpacing(RESULTS_SPACING)
+        self.results_layout.setContentsMargins(0, 0, 0, 0)
         self.results_layout.addStretch()
 
         self.results_scroll.setWidget(self.results_container)
         layout.addWidget(self.results_scroll)
 
-        return group
+        return container
 
     def _on_keyword_changed(self, state):
         """Handle keyword search checkbox change."""
@@ -665,10 +644,6 @@ class SearchTabWidget(QWidget):
     def _on_hyde_changed(self, state):
         """Handle HyDE search checkbox change."""
         self.hyde_enabled = self.hyde_check.isChecked()
-
-    def _on_reranking_changed(self, index):
-        """Handle re-ranking method dropdown change."""
-        self.reranking_method = self.reranking_combo.itemData(index)
 
     def _on_search(self):
         """Execute search with current filters."""
@@ -774,7 +749,7 @@ class SearchTabWidget(QWidget):
 
     def _on_results(self, results: List[Dict[str, Any]]):
         """
-        Handle search results.
+        Handle search results with collapsible cards.
 
         Args:
             results: List of document dictionaries
@@ -787,16 +762,16 @@ class SearchTabWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Add new results
+        # Add new results as collapsible cards (collapsed by default)
         for doc in results:
-            card = DocumentCard(doc)
-            card.clicked.connect(self._on_document_clicked)
+            card = CollapsibleDocumentCard(doc)
+            # Cards start collapsed, user clicks to expand for details
             self.results_layout.insertWidget(self.results_layout.count() - 1, card)
 
         # Update count
         count = len(results)
         self.result_count_label.setText(f"Found {count} document(s)")
-        self.result_count_label.setStyleSheet("color: green; font-weight: bold;")
+        self.result_count_label.setStyleSheet("color: #27ae60; font-weight: bold; font-size: 10pt;")
         self.status_message.emit(f"Found {count} documents")
 
     def _on_error(self, error: str):
@@ -855,42 +830,6 @@ class SearchTabWidget(QWidget):
             self.status_message.emit(f"Search strategies: {strategy_msg}")
         else:
             self.status_message.emit("Search completed with no strategy results")
-
-    def _on_document_clicked(self, document_data: Dict[str, Any]):
-        """
-        Handle document card click.
-
-        Args:
-            document_data: Clicked document data
-        """
-        # Show document details
-        title = document_data.get('title', 'Untitled')
-        authors = document_data.get('authors', 'Unknown')
-        if isinstance(authors, list):
-            authors = ', '.join(authors)
-
-        journal = document_data.get('journal', 'Unknown')
-        year = document_data.get('year', 'Unknown')
-        pmid = document_data.get('pmid', 'N/A')
-        doi = document_data.get('doi', 'N/A')
-        abstract = document_data.get('abstract', 'No abstract available')
-
-        details = f"""
-<h2>{title}</h2>
-<p><b>Authors:</b> {authors}</p>
-<p><b>Journal:</b> {journal} ({year})</p>
-<p><b>PMID:</b> {pmid} | <b>DOI:</b> {doi}</p>
-<hr>
-<p><b>Abstract:</b></p>
-<p>{abstract}</p>
-        """
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Document Details")
-        msg.setText(details)
-        msg.setTextFormat(Qt.RichText)
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.exec()
 
     def _on_clear_filters(self):
         """Clear all search filters."""
