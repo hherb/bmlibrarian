@@ -15,6 +15,8 @@ from typing import Optional, List, Dict, Any
 import psycopg
 
 from bmlibrarian.config import get_config
+from bmlibrarian.agents.query_agent import QueryAgent
+from bmlibrarian.database import search_hybrid
 from ...widgets.document_card import DocumentCard
 
 
@@ -24,119 +26,144 @@ class SearchWorker(QThread):
     results_ready = Signal(list)
     error_occurred = Signal(str)
 
-    def __init__(self, search_params: Dict[str, Any], db_config: Dict[str, str]):
+    def __init__(self, search_params: Dict[str, Any]):
         """
         Initialize search worker.
 
         Args:
-            search_params: Search parameters (query, filters, limits)
-            db_config: Database configuration
+            search_params: Search parameters including search strategies
         """
         super().__init__()
         self.search_params = search_params
-        self.db_config = db_config
 
     def run(self):
         """Execute search in background thread."""
         try:
-            # Connect to database
-            conn = psycopg.connect(**self.db_config)
-            cursor = conn.cursor()
+            # Get search text
+            search_text = self.search_params.get('text_query', '')
+            if not search_text:
+                self.results_ready.emit([])
+                return
 
-            # Build query based on search parameters
-            query = self._build_query()
-            params = self._build_params()
+            # Generate PostgreSQL tsquery using QueryAgent
+            query_agent = QueryAgent()
+            query_text = query_agent.generate_query(search_text)
 
-            # Execute search
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-
-            # Convert to document dictionaries
-            results = []
-            for row in rows:
-                doc = {
-                    'id': row[0],
-                    'title': row[1],
-                    'authors': row[2],
-                    'journal': row[3],  # publication
-                    'year': row[4],  # extracted year from publication_date
-                    'pmid': row[5],  # external_id
-                    'doi': row[6],
-                    'abstract': row[7] if len(row) > 7 else None,
-                    'source': row[8] if len(row) > 8 else None  # source name
+            # Build search configuration from UI settings
+            search_config = {
+                'keyword': {
+                    'enabled': self.search_params.get('keyword_enabled', True),
+                    'max_results': self.search_params.get('limit', 100)
+                },
+                'bm25': {
+                    'enabled': self.search_params.get('bm25_enabled', False),
+                    'max_results': self.search_params.get('limit', 100),
+                    'k1': 1.2,
+                    'b': 0.75
+                },
+                'semantic': {
+                    'enabled': self.search_params.get('semantic_enabled', False),
+                    'max_results': self.search_params.get('limit', 100),
+                    'embedding_model': 'snowflake-arctic-embed2:latest',
+                    'similarity_threshold': 0.7
+                },
+                'hyde': {
+                    'enabled': self.search_params.get('hyde_enabled', False),
+                    'max_results': self.search_params.get('limit', 100),
+                    'generation_model': 'medgemma-27b-text-it-Q8_0:latest',
+                    'embedding_model': 'snowflake-arctic-embed2:latest',
+                    'num_hypothetical_docs': 3,
+                    'similarity_threshold': 0.7
+                },
+                'reranking': {
+                    'method': self.search_params.get('reranking_method', 'sum_scores'),
+                    'rrf_k': 60,
+                    'weights': {
+                        'keyword': 1.0,
+                        'bm25': 1.5,
+                        'semantic': 2.0,
+                        'hyde': 2.0
+                    }
                 }
-                results.append(doc)
+            }
 
-            cursor.close()
-            conn.close()
+            # Determine source filters
+            use_pubmed = self.search_params.get('source') in [None, 'pubmed']
+            use_medrxiv = self.search_params.get('source') in [None, 'medrxiv']
+            use_others = self.search_params.get('source') is None
 
-            self.results_ready.emit(results)
+            # Execute hybrid search
+            documents, strategy_metadata = search_hybrid(
+                search_text=search_text,
+                query_text=query_text,
+                search_config=search_config,
+                use_pubmed=use_pubmed,
+                use_medrxiv=use_medrxiv,
+                use_others=use_others
+            )
+
+            # Apply additional filters (year, journal) if specified
+            filtered_docs = self._apply_filters(documents)
+
+            # Sort by combined score (descending) if available, otherwise by date
+            if filtered_docs and '_combined_score' in filtered_docs[0]:
+                filtered_docs.sort(key=lambda x: x.get('_combined_score', 0), reverse=True)
+            else:
+                # Sort by publication date if no score available
+                filtered_docs.sort(
+                    key=lambda x: (x.get('publication_date') or '', x.get('id', 0)),
+                    reverse=True
+                )
+
+            # Limit results
+            limit = self.search_params.get('limit', 100)
+            filtered_docs = filtered_docs[:limit]
+
+            self.results_ready.emit(filtered_docs)
 
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            import traceback
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+            self.error_occurred.emit(error_msg)
 
-    def _build_query(self) -> str:
-        """Build SQL query based on search parameters."""
-        # Base query with joins to get source name
-        query = """
-            SELECT d.id, d.title, d.authors, d.publication,
-                   EXTRACT(YEAR FROM d.publication_date)::integer as pub_year,
-                   d.external_id, d.doi, d.abstract, s.name as source_name
-            FROM document d
-            LEFT JOIN sources s ON d.source_id = s.id
-            WHERE 1=1
-        """
+    def _apply_filters(self, documents: List[Dict]) -> List[Dict]:
+        """Apply year and journal filters to documents."""
+        filtered = []
 
-        # Add text search filter
-        if self.search_params.get('text_query'):
-            query += " AND (d.title ILIKE %s OR d.abstract ILIKE %s)"
+        year_from = self.search_params.get('year_from')
+        year_to = self.search_params.get('year_to')
+        journal_filter = self.search_params.get('journal', '').strip().lower()
 
-        # Add year range filter
-        if self.search_params.get('year_from'):
-            query += " AND EXTRACT(YEAR FROM d.publication_date) >= %s"
-        if self.search_params.get('year_to'):
-            query += " AND EXTRACT(YEAR FROM d.publication_date) <= %s"
+        for doc in documents:
+            # Year filter
+            if year_from or year_to:
+                doc_year = doc.get('year')
+                if doc_year is None:
+                    # Try to extract from publication_date
+                    pub_date = doc.get('publication_date')
+                    if pub_date:
+                        if isinstance(pub_date, str):
+                            try:
+                                doc_year = int(pub_date[:4])
+                            except (ValueError, IndexError):
+                                continue
+                        else:
+                            doc_year = pub_date.year
 
-        # Add publication (journal) filter
-        if self.search_params.get('journal'):
-            query += " AND d.publication ILIKE %s"
+                if year_from and (doc_year is None or doc_year < year_from):
+                    continue
+                if year_to and (doc_year is None or doc_year > year_to):
+                    continue
 
-        # Add source filter
-        if self.search_params.get('source'):
-            query += " AND s.name = %s"
+            # Journal filter
+            if journal_filter:
+                doc_journal = (doc.get('journal') or doc.get('publication') or '').lower()
+                if journal_filter not in doc_journal:
+                    continue
 
-        # Order by
-        query += " ORDER BY d.publication_date DESC NULLS LAST, d.id DESC"
+            filtered.append(doc)
 
-        # Limit
-        query += f" LIMIT {self.search_params.get('limit', 100)}"
-
-        return query
-
-    def _build_params(self) -> tuple:
-        """Build query parameters."""
-        params = []
-
-        # Text search
-        if self.search_params.get('text_query'):
-            search_term = f"%{self.search_params['text_query']}%"
-            params.extend([search_term, search_term])
-
-        # Year range
-        if self.search_params.get('year_from'):
-            params.append(self.search_params['year_from'])
-        if self.search_params.get('year_to'):
-            params.append(self.search_params['year_to'])
-
-        # Journal
-        if self.search_params.get('journal'):
-            params.append(f"%{self.search_params['journal']}%")
-
-        # Source
-        if self.search_params.get('source'):
-            params.append(self.search_params['source'])
-
-        return tuple(params)
+        return filtered
 
 
 class SearchTabWidget(QWidget):
@@ -157,6 +184,14 @@ class SearchTabWidget(QWidget):
         self.worker: Optional[SearchWorker] = None
         self.current_results: List[Dict[str, Any]] = []
 
+        # Load search strategy settings from config
+        search_strategy_config = self.config.get('search_strategy', {})
+        self.keyword_enabled = search_strategy_config.get('keyword', {}).get('enabled', True)
+        self.bm25_enabled = search_strategy_config.get('bm25', {}).get('enabled', False)
+        self.semantic_enabled = search_strategy_config.get('semantic', {}).get('enabled', False)
+        self.hyde_enabled = search_strategy_config.get('hyde', {}).get('enabled', False)
+        self.reranking_method = search_strategy_config.get('reranking', {}).get('method', 'sum_scores')
+
         # UI Components
         self.text_query_edit: Optional[QLineEdit] = None
         self.year_from_spin: Optional[QSpinBox] = None
@@ -164,6 +199,11 @@ class SearchTabWidget(QWidget):
         self.journal_edit: Optional[QLineEdit] = None
         self.source_combo: Optional[QComboBox] = None
         self.limit_spin: Optional[QSpinBox] = None
+        self.keyword_check: Optional[QCheckBox] = None
+        self.bm25_check: Optional[QCheckBox] = None
+        self.semantic_check: Optional[QCheckBox] = None
+        self.hyde_check: Optional[QCheckBox] = None
+        self.reranking_combo: Optional[QComboBox] = None
         self.results_scroll: Optional[QScrollArea] = None
         self.results_container: Optional[QWidget] = None
         self.result_count_label: Optional[QLabel] = None
@@ -269,6 +309,10 @@ class SearchTabWidget(QWidget):
         filters_layout2.addStretch()
         layout.addLayout(filters_layout2)
 
+        # Search Strategies section
+        strategies_layout = self._create_search_strategies_section()
+        layout.addLayout(strategies_layout)
+
         # Search button
         button_layout = QHBoxLayout()
         search_btn = QPushButton("Search Documents")
@@ -286,6 +330,81 @@ class SearchTabWidget(QWidget):
         layout.addLayout(button_layout)
 
         return group
+
+    def _create_search_strategies_section(self) -> QVBoxLayout:
+        """
+        Create search strategies and re-ranking section.
+
+        Returns:
+            Layout containing strategy checkboxes and re-ranking dropdown
+        """
+        section_layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("Search Strategies & Re-ranking")
+        title.setStyleSheet("font-weight: bold; color: #555; font-size: 11px;")
+        section_layout.addWidget(title)
+
+        # Checkboxes and dropdown row
+        controls_layout = QHBoxLayout()
+
+        # Keyword checkbox
+        self.keyword_check = QCheckBox("Keyword")
+        self.keyword_check.setChecked(self.keyword_enabled)
+        self.keyword_check.setToolTip("PostgreSQL full-text search")
+        self.keyword_check.stateChanged.connect(self._on_keyword_changed)
+        controls_layout.addWidget(self.keyword_check)
+
+        # BM25 checkbox
+        self.bm25_check = QCheckBox("BM25")
+        self.bm25_check.setChecked(self.bm25_enabled)
+        self.bm25_check.setToolTip("Probabilistic ranking (BM25)")
+        self.bm25_check.stateChanged.connect(self._on_bm25_changed)
+        controls_layout.addWidget(self.bm25_check)
+
+        # Semantic checkbox
+        self.semantic_check = QCheckBox("Semantic")
+        self.semantic_check.setChecked(self.semantic_enabled)
+        self.semantic_check.setToolTip("Vector similarity search using embeddings")
+        self.semantic_check.stateChanged.connect(self._on_semantic_changed)
+        controls_layout.addWidget(self.semantic_check)
+
+        # HyDE checkbox
+        self.hyde_check = QCheckBox("HyDE")
+        self.hyde_check.setChecked(self.hyde_enabled)
+        self.hyde_check.setToolTip("Hypothetical Document Embeddings search")
+        self.hyde_check.stateChanged.connect(self._on_hyde_changed)
+        controls_layout.addWidget(self.hyde_check)
+
+        # Spacer
+        controls_layout.addSpacing(20)
+
+        # Re-ranking dropdown
+        controls_layout.addWidget(QLabel("Re-ranking:"))
+        self.reranking_combo = QComboBox()
+        self.reranking_combo.addItem("Sum Scores", "sum_scores")
+        self.reranking_combo.addItem("RRF (Reciprocal Rank Fusion)", "rrf")
+        self.reranking_combo.addItem("Max Score", "max_score")
+        self.reranking_combo.addItem("Weighted Fusion", "weighted")
+        self.reranking_combo.setToolTip("Method for combining results from multiple strategies")
+        self.reranking_combo.setCurrentText(self._get_reranking_display_name(self.reranking_method))
+        self.reranking_combo.currentIndexChanged.connect(self._on_reranking_changed)
+        controls_layout.addWidget(self.reranking_combo)
+
+        controls_layout.addStretch()
+        section_layout.addLayout(controls_layout)
+
+        return section_layout
+
+    def _get_reranking_display_name(self, method: str) -> str:
+        """Get display name for re-ranking method."""
+        mapping = {
+            'sum_scores': 'Sum Scores',
+            'rrf': 'RRF (Reciprocal Rank Fusion)',
+            'max_score': 'Max Score',
+            'weighted': 'Weighted Fusion'
+        }
+        return mapping.get(method, 'Sum Scores')
 
     def _create_results_panel(self) -> QGroupBox:
         """
@@ -318,6 +437,26 @@ class SearchTabWidget(QWidget):
 
         return group
 
+    def _on_keyword_changed(self, state):
+        """Handle keyword search checkbox change."""
+        self.keyword_enabled = self.keyword_check.isChecked()
+
+    def _on_bm25_changed(self, state):
+        """Handle BM25 search checkbox change."""
+        self.bm25_enabled = self.bm25_check.isChecked()
+
+    def _on_semantic_changed(self, state):
+        """Handle semantic search checkbox change."""
+        self.semantic_enabled = self.semantic_check.isChecked()
+
+    def _on_hyde_changed(self, state):
+        """Handle HyDE search checkbox change."""
+        self.hyde_enabled = self.hyde_check.isChecked()
+
+    def _on_reranking_changed(self, index):
+        """Handle re-ranking method dropdown change."""
+        self.reranking_method = self.reranking_combo.itemData(index)
+
     def _on_search(self):
         """Execute search with current filters."""
         # Get search parameters
@@ -327,32 +466,37 @@ class SearchTabWidget(QWidget):
             'year_to': self.year_to_spin.value() if self.year_to_spin.value() > 0 else None,
             'journal': self.journal_edit.text().strip() or None,
             'source': self.source_combo.currentText() if self.source_combo.currentText() != "All" else None,
-            'limit': self.limit_spin.value()
+            'limit': self.limit_spin.value(),
+            # Search strategy settings
+            'keyword_enabled': self.keyword_enabled,
+            'bm25_enabled': self.bm25_enabled,
+            'semantic_enabled': self.semantic_enabled,
+            'hyde_enabled': self.hyde_enabled,
+            'reranking_method': self.reranking_method
         }
 
         # Validate at least one search criterion
+        if not search_params['text_query']:
+            QMessageBox.warning(
+                self,
+                "Warning",
+                "Please enter a search query."
+            )
+            return
+
+        # Validate at least one search strategy is enabled
         if not any([
-            search_params['text_query'],
-            search_params['year_from'],
-            search_params['year_to'],
-            search_params['journal'],
-            search_params['source']
+            self.keyword_enabled,
+            self.bm25_enabled,
+            self.semantic_enabled,
+            self.hyde_enabled
         ]):
             QMessageBox.warning(
                 self,
                 "Warning",
-                "Please specify at least one search criterion."
+                "Please enable at least one search strategy."
             )
             return
-
-        # Get database configuration
-        db_config = {
-            'dbname': self.config.get('database', {}).get('name', 'knowledgebase'),
-            'user': self.config.get('database', {}).get('user', 'postgres'),
-            'password': self.config.get('database', {}).get('password', ''),
-            'host': self.config.get('database', {}).get('host', 'localhost'),
-            'port': self.config.get('database', {}).get('port', 5432)
-        }
 
         # Update status
         self.result_count_label.setText("Searching...")
@@ -360,7 +504,7 @@ class SearchTabWidget(QWidget):
         self.status_message.emit("Searching database...")
 
         # Run search in background
-        self.worker = SearchWorker(search_params, db_config)
+        self.worker = SearchWorker(search_params)
         self.worker.results_ready.connect(self._on_results)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.start()
