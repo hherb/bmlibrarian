@@ -38,7 +38,8 @@ from .document_interrogation_agent import (
     DocumentInterrogationAgent,
     DocumentAnswer,
     RelevantSection,
-    ProcessingMode
+    ProcessingMode,
+    DatabaseChunk
 )
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
@@ -68,6 +69,7 @@ __all__ = [
     "DocumentAnswer",
     "RelevantSection",
     "ProcessingMode",
+    "DatabaseChunk",
     "TextChunker",
     "TextChunk",
     "chunk_text",

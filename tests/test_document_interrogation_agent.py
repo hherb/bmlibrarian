@@ -144,30 +144,39 @@ class TestDocumentInterrogationAgent:
 
     def test_process_document_empty_text_raises_error(self, agent):
         """Test that processing empty document raises ValueError."""
+        # Empty string - should be caught by the validation
         with pytest.raises(ValueError, match="document_text cannot be empty"):
             agent.process_document(
-                document_text="",
-                question="What is this about?"
+                question="What is this about?",
+                document_text=""
             )
 
+        # Whitespace only - should be caught by the validation
         with pytest.raises(ValueError, match="document_text cannot be empty"):
             agent.process_document(
-                document_text="   ",
-                question="What is this about?"
+                question="What is this about?",
+                document_text="   "
+            )
+
+        # None - should be caught by different validation
+        with pytest.raises(ValueError, match="Must provide either document_text or document_id"):
+            agent.process_document(
+                question="What is this about?",
+                document_text=None
             )
 
     def test_process_document_empty_question_raises_error(self, agent):
         """Test that processing with empty question raises ValueError."""
         with pytest.raises(ValueError, match="question cannot be empty"):
             agent.process_document(
-                document_text="Some document text",
-                question=""
+                question="",
+                document_text="Some document text"
             )
 
         with pytest.raises(ValueError, match="question cannot be empty"):
             agent.process_document(
-                document_text="Some document text",
-                question="   "
+                question="   ",
+                document_text="Some document text"
             )
 
     def test_process_document_sequential_mode(self, agent, mock_ollama_client):
@@ -187,8 +196,8 @@ class TestDocumentInterrogationAgent:
         question = "What is this about?"
 
         result = agent.process_document(
-            document_text=document,
             question=question,
+            document_text=document,
             mode=ProcessingMode.SEQUENTIAL,
             max_sections=10
         )
@@ -407,7 +416,7 @@ class TestDocumentInterrogationAgent:
         ]
 
         document = "A" * 100  # Creates multiple chunks
-        agent.process_document(document, "Question?", mode=ProcessingMode.SEQUENTIAL)
+        agent.process_document(question="Question?", document_text=document, mode=ProcessingMode.SEQUENTIAL)
 
         # Verify callbacks were made
         assert len(callback_calls) > 0
@@ -420,8 +429,8 @@ class TestDocumentInterrogationAgent:
         with pytest.raises(ValueError, match="Unknown processing mode"):
             # Use a string that's not a valid enum
             agent.process_document(
-                document_text="Test",
                 question="Question?",
+                document_text="Test",
                 mode="invalid_mode"  # This will fail type checking, but test runtime behavior
             )
 
@@ -456,8 +465,8 @@ class TestDocumentInterrogationAgent:
 
         document = "A" * 150  # Multiple chunks
         result = agent.process_document(
-            document_text=document,
             question="Question?",
+            document_text=document,
             mode=ProcessingMode.EMBEDDING,
             max_sections=5
         )
@@ -495,3 +504,51 @@ class TestDocumentInterrogationAgent:
         mock_ollama_client.list.side_effect = Exception("Connection failed")
 
         assert agent.test_connection() is False
+
+    def test_process_document_requires_text_or_id(self, agent):
+        """Test that either document_text or document_id must be provided."""
+        # Neither provided
+        with pytest.raises(ValueError, match="Must provide either document_text or document_id"):
+            agent.process_document(question="Question?")
+
+        # Both provided
+        with pytest.raises(ValueError, match="Provide either document_text OR document_id, not both"):
+            agent.process_document(
+                question="Question?",
+                document_text="Some text",
+                document_id=123
+            )
+
+    def test_process_document_with_database_chunks(self, agent, mock_ollama_client):
+        """Test processing document using pre-chunked database chunks."""
+        # Mock database retrieval
+        with patch('bmlibrarian.agents.document_interrogation_agent.get_db_manager') as mock_db_manager:
+            # Set up nested context managers for connection and cursor
+            mock_cursor = MagicMock()
+            mock_conn = MagicMock()
+            mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+            mock_db_manager.return_value.get_connection.return_value.__enter__.return_value = mock_conn
+
+            # Mock database chunks
+            mock_cursor.fetchall.return_value = [
+                (1, "First chunk text", 0, [0.1, 0.2, 0.3]),
+                (2, "Second chunk text", 1, [0.4, 0.5, 0.6])
+            ]
+
+            # Mock LLM responses
+            mock_ollama_client.chat.side_effect = [
+                {'message': {'content': '[{"text": "Relevant!", "relevance_score": 0.9, "reasoning": "Match"}]'}},
+                {'message': {'content': '[]'}},
+                {'message': {'content': '{"answer": "Database answer", "confidence": 0.9}'}}
+            ]
+
+            result = agent.process_document(
+                question="What is this?",
+                document_id=123,
+                mode=ProcessingMode.SEQUENTIAL
+            )
+
+            assert isinstance(result, DocumentAnswer)
+            assert "Database answer" in result.answer
+            assert result.metadata['chunk_info']['source'] == 'database'
+            assert result.metadata['chunk_info']['document_id'] == 123

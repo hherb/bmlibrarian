@@ -4,6 +4,10 @@ Document Interrogation Agent for answering questions about documents.
 Processes large documents using a sliding window approach to extract
 information needed to answer user questions. Supports both sequential
 chunk processing and embedding-based semantic search.
+
+Can work with both:
+1. Raw document text (chunks and embeds on the fly)
+2. Pre-chunked documents from database (reuses existing chunks/embeddings)
 """
 
 import json
@@ -15,6 +19,12 @@ from enum import Enum
 from .base import BaseAgent
 from .text_chunking import TextChunker, TextChunk, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 
+# Import at module level for easier mocking in tests
+try:
+    from bmlibrarian.database import get_db_manager
+except ImportError:
+    get_db_manager = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +33,25 @@ class ProcessingMode(Enum):
     SEQUENTIAL = "sequential"  # Process all chunks sequentially
     EMBEDDING = "embedding"    # Use embeddings for semantic search
     HYBRID = "hybrid"          # Combine both approaches
+
+
+@dataclass
+class DatabaseChunk:
+    """Represents a pre-existing chunk from the database."""
+    chunk_id: int
+    text: str
+    chunk_no: int
+    embedding: Optional[List[float]] = None
+
+    def to_text_chunk(self, total_chunks: int) -> TextChunk:
+        """Convert to TextChunk for compatibility with existing code."""
+        return TextChunk(
+            content=self.text,
+            start_pos=0,  # Position not tracked in database
+            end_pos=len(self.text),
+            chunk_index=self.chunk_no,
+            total_chunks=total_chunks
+        )
 
 
 @dataclass
@@ -127,17 +156,92 @@ class DocumentInterrogationAgent(BaseAgent):
         """Get the agent type identifier."""
         return "document_interrogation_agent"
 
+    def _retrieve_database_chunks(self, document_id: int) -> List[DatabaseChunk]:
+        """
+        Retrieve pre-chunked and pre-embedded chunks from the database.
+
+        Args:
+            document_id: The database ID of the document
+
+        Returns:
+            List of DatabaseChunk objects with text and embeddings
+
+        Raises:
+            ValueError: If document_id not found or no chunks exist
+        """
+        if get_db_manager is None:
+            raise ImportError("Database module not available. Cannot retrieve chunks from database.")
+
+        try:
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get chunks with embeddings for this document
+                    # Join with embedding tables to get the embeddings
+                    query = """
+                        SELECT
+                            c.id AS chunk_id,
+                            c.text,
+                            c.chunk_no,
+                            eb.embedding
+                        FROM chunks c
+                        LEFT JOIN embedding_base eb ON c.id = eb.chunk_id
+                        WHERE c.document_id = %s
+                        AND eb.model_id = (
+                            SELECT id FROM embedding_models
+                            WHERE model_name = %s
+                            LIMIT 1
+                        )
+                        ORDER BY c.chunk_no
+                    """
+
+                    cur.execute(query, (document_id, self.embedding_model))
+                    rows = cur.fetchall()
+
+                    if not rows:
+                        raise ValueError(
+                            f"No chunks found for document_id={document_id} with "
+                            f"embedding model {self.embedding_model}. "
+                            f"Document may not be chunked/embedded yet."
+                        )
+
+                    chunks = []
+                    for row in rows:
+                        chunk = DatabaseChunk(
+                            chunk_id=row[0],
+                            text=row[1],
+                            chunk_no=row[2],
+                            embedding=row[3] if row[3] else None
+                        )
+                        chunks.append(chunk)
+
+                    self._call_callback(
+                        "database_chunks_retrieved",
+                        f"Retrieved {len(chunks)} chunks from database for document_id={document_id}"
+                    )
+
+                    return chunks
+
+        except Exception as e:
+            logger.error(f"Error retrieving chunks from database: {e}")
+            raise
+
     def process_document(self,
-                        document_text: str,
                         question: str,
+                        document_text: Optional[str] = None,
+                        document_id: Optional[int] = None,
                         mode: ProcessingMode = ProcessingMode.SEQUENTIAL,
                         max_sections: int = 10) -> DocumentAnswer:
         """
         Process a document to answer a question.
 
+        Can work with either raw text (chunks on-the-fly) or pre-chunked database documents.
+
         Args:
-            document_text: The full document text to process
             question: The question to answer about the document
+            document_text: The full document text to process (mutually exclusive with document_id)
+            document_id: Database ID of pre-chunked document (mutually exclusive with document_text)
             mode: Processing mode (SEQUENTIAL, EMBEDDING, or HYBRID)
             max_sections: Maximum number of relevant sections to extract (default: 10)
 
@@ -145,23 +249,58 @@ class DocumentInterrogationAgent(BaseAgent):
             DocumentAnswer with the answer and supporting sections
 
         Raises:
-            ValueError: If document_text or question is empty
+            ValueError: If both or neither document_text/document_id provided, or if question is empty
         """
-        if not document_text or not document_text.strip():
-            raise ValueError("document_text cannot be empty")
+        # Validate inputs
         if not question or not question.strip():
             raise ValueError("question cannot be empty")
+
+        if document_text is not None and document_id is not None:
+            raise ValueError("Provide either document_text OR document_id, not both")
+
+        if document_text is None and document_id is None:
+            raise ValueError("Must provide either document_text or document_id")
 
         # Validate processing mode
         if not isinstance(mode, ProcessingMode):
             raise ValueError(f"Unknown processing mode: {mode}. Must be a ProcessingMode enum value.")
 
-        self._call_callback("document_interrogation_start",
-                          f"Processing document ({len(document_text)} chars) with mode: {mode.value}")
+        # Get chunks - either from text or database
+        if document_text is not None:
+            if not document_text.strip():
+                raise ValueError("document_text cannot be empty")
 
-        # Chunk the document
-        chunks = self.chunker.chunk_text(document_text)
-        chunk_info = self.chunker.get_chunk_info(document_text)
+            self._call_callback("document_interrogation_start",
+                              f"Processing document text ({len(document_text)} chars) with mode: {mode.value}")
+
+            # Chunk the document on-the-fly
+            chunks = self.chunker.chunk_text(document_text)
+            chunk_info = self.chunker.get_chunk_info(document_text)
+            use_database_chunks = False
+
+        else:  # document_id provided
+            self._call_callback("document_interrogation_start",
+                              f"Processing document_id={document_id} with mode: {mode.value}")
+
+            # Retrieve pre-chunked and pre-embedded chunks from database
+            db_chunks = self._retrieve_database_chunks(document_id)
+
+            # Convert to TextChunk format for compatibility
+            chunks = [db.to_text_chunk(len(db_chunks)) for db in db_chunks]
+            chunk_info = {
+                'text_length': sum(len(c.content) for c in chunks),
+                'num_chunks': len(chunks),
+                'chunk_size': 'variable (database)',
+                'overlap': 'variable (database)',
+                'stride': 'N/A',
+                'avg_chunk_size': int(sum(len(c.content) for c in chunks) / len(chunks)) if chunks else 0,
+                'last_chunk_size': len(chunks[-1].content) if chunks else 0,
+                'source': 'database',
+                'document_id': document_id
+            }
+            use_database_chunks = True
+            # Store db_chunks for later use in embedding mode
+            self._db_chunks = db_chunks
 
         self._call_callback("chunking_complete",
                           f"Created {len(chunks)} chunks (size={self.chunk_size}, overlap={self.chunk_overlap})")
@@ -241,6 +380,8 @@ class DocumentInterrogationAgent(BaseAgent):
         This is faster but may miss relevant information if embeddings don't
         capture the semantic relationship well.
 
+        When database chunks are used, reuses pre-computed embeddings for efficiency.
+
         Args:
             chunks: List of text chunks to process
             question: The question to answer
@@ -253,13 +394,30 @@ class DocumentInterrogationAgent(BaseAgent):
         self._call_callback("embedding_question", "Generating question embedding")
         question_embedding = self._get_embedding(question)
 
+        # Check if we have pre-computed embeddings from database
+        use_db_embeddings = hasattr(self, '_db_chunks') and self._db_chunks
+
         # Get embeddings for all chunks and calculate similarity
         chunk_similarities = []
-        for chunk in chunks:
-            self._call_callback("embedding_chunk",
-                              f"Embedding chunk {chunk.chunk_index + 1}/{chunk.total_chunks}")
+        for i, chunk in enumerate(chunks):
+            # Use pre-computed embedding if available, otherwise generate
+            if use_db_embeddings and i < len(self._db_chunks):
+                db_chunk = self._db_chunks[i]
+                if db_chunk.embedding:
+                    self._call_callback("using_cached_embedding",
+                                      f"Using cached embedding for chunk {chunk.chunk_index + 1}/{chunk.total_chunks}")
+                    chunk_embedding = db_chunk.embedding
+                else:
+                    # Fallback: generate embedding if not in database
+                    self._call_callback("embedding_chunk",
+                                      f"Generating embedding for chunk {chunk.chunk_index + 1}/{chunk.total_chunks}")
+                    chunk_embedding = self._get_embedding(chunk.content)
+            else:
+                # Generate embedding on-the-fly
+                self._call_callback("embedding_chunk",
+                                  f"Embedding chunk {chunk.chunk_index + 1}/{chunk.total_chunks}")
+                chunk_embedding = self._get_embedding(chunk.content)
 
-            chunk_embedding = self._get_embedding(chunk.content)
             similarity = self._cosine_similarity(question_embedding, chunk_embedding)
 
             if similarity >= self.embedding_threshold:

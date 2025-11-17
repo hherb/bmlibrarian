@@ -770,9 +770,10 @@ class DocumentInterrogationTab:
                 )
 
             # Process document with agent
+            # For GUI, we always use document_text since we don't have document_id
             result = self.interrogation_agent.process_document(
-                document_text=self.current_document_content,
                 question=question,
+                document_text=self.current_document_content,
                 mode=processing_mode,
                 max_sections=max_sections
             )
