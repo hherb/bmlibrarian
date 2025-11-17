@@ -17,7 +17,8 @@ from .event_handlers import EventHandlers
 from .data_updaters import DataUpdaters
 from .ui_builder import (
     create_header, create_question_field, create_toggle_switch,
-    create_start_button, create_max_results_field, create_min_relevant_field, create_controls_section
+    create_start_button, create_max_results_field, create_min_relevant_field,
+    create_controls_section, create_search_strategy_checkboxes
 )
 from ..cli.workflow_steps import WorkflowStep
 from ..cli import CLIConfig, UserInterface, QueryProcessor, ReportFormatter, WorkflowOrchestrator
@@ -51,7 +52,14 @@ class ResearchGUI:
         # Default max results and min relevant values
         self.max_results = 100
         self.min_relevant = 10
-        
+
+        # Search strategy settings (will be loaded from config)
+        self.search_strategy_keyword = True  # Default enabled
+        self.search_strategy_bm25 = False
+        self.search_strategy_semantic = False
+        self.search_strategy_hyde = False
+        self.reranking_method = "sum_scores"  # Default re-ranking method
+
         # Managers and handlers (initialized in main())
         self.tab_manager = None
         self.event_handlers = None
@@ -138,16 +146,23 @@ class ResearchGUI:
     def _load_config_defaults(self):
         """Load default values from config file."""
         try:
-            from ..config import get_search_config
-            search_config = get_search_config()
+            from ..config import get_config
+            config = get_config()
+            search_config = config.get('search_strategy', {})
 
-            # Load max_results from config if not already set by command line
+            # Load max_results and min_relevant from config if not already set by command line
             if 'max_results' not in self.config_overrides:
-                self.max_results = search_config.get('max_results', 100)
+                self.max_results = config.get('max_results', 100)
 
-            # Load min_relevant from config
             if 'min_relevant' not in self.config_overrides:
-                self.min_relevant = search_config.get('min_relevant', 10)
+                self.min_relevant = config.get('min_relevant', 10)
+
+            # Load search strategy settings from config
+            self.search_strategy_keyword = search_config.get('keyword', {}).get('enabled', True)
+            self.search_strategy_bm25 = search_config.get('bm25', {}).get('enabled', False)
+            self.search_strategy_semantic = search_config.get('semantic', {}).get('enabled', False)
+            self.search_strategy_hyde = search_config.get('hyde', {}).get('enabled', False)
+            self.reranking_method = search_config.get('reranking', {}).get('method', 'sum_scores')
 
         except Exception as e:
             print(f"Warning: Could not load config defaults: {e}")
@@ -156,6 +171,7 @@ class ResearchGUI:
                 self.max_results = 100
             if 'min_relevant' not in self.config_overrides:
                 self.min_relevant = 10
+            # Search strategy defaults already set in __init__
     
     def _apply_config_overrides(self):
         """Apply command-line overrides to configuration."""
@@ -205,6 +221,20 @@ class ResearchGUI:
         )
         self.start_button = create_start_button(self.event_handlers.on_start_research)
 
+        # Create search strategy checkboxes
+        search_strategy_checkboxes = create_search_strategy_checkboxes(
+            self.search_strategy_keyword,
+            self.search_strategy_bm25,
+            self.search_strategy_semantic,
+            self.search_strategy_hyde,
+            self.event_handlers.on_keyword_search_change,
+            self.event_handlers.on_bm25_search_change,
+            self.event_handlers.on_semantic_search_change,
+            self.event_handlers.on_hyde_search_change,
+            self.reranking_method,
+            self.event_handlers.on_reranking_change
+        )
+
         # Create status text (hidden by default)
         self.status_text = ft.Text(
             "Enter a research question to begin",
@@ -220,7 +250,8 @@ class ResearchGUI:
             self.min_relevant_field,
             self.human_loop_toggle,
             self.counterfactual_toggle,
-            self.start_button
+            self.start_button,
+            search_strategy_checkboxes
         )
         
         # Create step cards and tabbed interface

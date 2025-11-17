@@ -333,7 +333,8 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         use_ranking: bool = False,
         human_in_the_loop: bool = False,
         human_query_modifier: Optional[Callable[[str], str]] = None,
-        offset: int = 0
+        offset: int = 0,
+        search_config: Optional[Dict[str, Any]] = None
     ) -> Generator[Dict, None, None]:
         """
         Find biomedical abstracts using natural language questions.
@@ -354,6 +355,7 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             human_in_the_loop: If True, allow human to modify the generated query
             human_query_modifier: Optional function to modify query when human_in_the_loop=True
             offset: Number of rows to skip before returning results (default: 0)
+            search_config: Optional search strategy configuration (keyword, bm25, semantic, hyde)
 
         Yields:
             Dict containing document information (same format as database.find_abstracts)
@@ -408,7 +410,7 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             documents, strategy_metadata = search_hybrid(
                 search_text=question,  # Original question for semantic search
                 query_text=ts_query_str,  # Generated tsquery for BM25/fulltext
-                search_config=None,  # Will read from config.json
+                search_config=search_config,  # Use provided config or will read from config.json
                 use_pubmed=use_pubmed,
                 use_medrxiv=use_medrxiv,
                 use_others=use_others
@@ -806,6 +808,16 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
 
         context_section = "\n".join(context_lines) if context_lines else ""
 
+        # Build attempt-specific instructions
+        if attempt == 1:
+            instructions = "1. Expand single-word terms to OR clauses with synonyms and related medical terms\n2. Add alternative phrasing for multi-word medical terms"
+        elif attempt == 2:
+            instructions = "2. Replace some AND operators with OR to be less restrictive\n3. Use broader category terms (e.g., 'steroid' instead of specific drug names)"
+        elif attempt >= 3:
+            instructions = "3. Remove very specific terms and keep only core medical concepts\n4. Use general medical categories rather than specific drugs or procedures"
+        else:
+            instructions = ""
+
         # Create a prompt asking the LLM to broaden the query
         prompt = f"""Given the following medical research question and PostgreSQL to_tsquery string, generate a BROADER version of the query that will find more documents while staying relevant to the topic.
 
@@ -823,9 +835,7 @@ Problem: "methylprednisolone" is too specific and has zero matches
 Fixed Query: "(methylprednisolone | prednisolone | steroid | corticoid | corticosteroid) & (prophylactic | preventative | prevention) & ('acute mountain sickness' | AMS | 'altitude sickness')"
 
 Instructions for broadening (attempt {attempt}):
-{"1. Expand single-word terms to OR clauses with synonyms and related medical terms\n2. Add alternative phrasing for multi-word medical terms" if attempt == 1 else ""}
-{"2. Replace some AND operators with OR to be less restrictive\n3. Use broader category terms (e.g., 'steroid' instead of specific drug names)" if attempt == 2 else ""}
-{"3. Remove very specific terms and keep only core medical concepts\n4. Use general medical categories rather than specific drugs or procedures" if attempt >= 3 else ""}
+{instructions}
 
 Return ONLY the broader to_tsquery string, no explanation. Ensure all quotes are properly closed.
 
