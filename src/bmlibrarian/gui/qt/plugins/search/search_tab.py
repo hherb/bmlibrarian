@@ -65,6 +65,34 @@ SUSPICIOUS_SQL_PATTERNS = [
     r'--', r'/\*', r'\*/', r'xp_', r'sp_', r'EXEC', r'EXECUTE'
 ]
 
+# ============================================================================
+# UI Layout Constants
+# ============================================================================
+# Widget dimensions and spacing for consistent layout
+
+# Main layout
+MAIN_MARGIN = 15            # Main window margins (all sides)
+MAIN_SPACING = 8            # Spacing between major sections
+
+# Search controls layout
+CONTROLS_SPACING = 6        # Vertical spacing between control rows
+ROW_SPACING = 8             # Spacing within a control row
+ROW2_SPACING = 15           # Spacing for row 2 elements
+ROW3_SPACING = 12           # Spacing for row 3 elements
+
+# Widget dimensions
+SEARCH_LABEL_MIN_WIDTH = 70      # "Search for:" label minimum width
+SEARCH_BUTTON_MIN_WIDTH = 80     # Search button minimum width
+SEARCH_BUTTON_PADDING = "6px 16px"  # Search button padding
+LIMIT_SPIN_WIDTH = 80            # Max results spinbox width
+SOURCE_COMBO_WIDTH = 120         # Source dropdown width
+YEAR_FIELD_WIDTH = 70            # Year from/to field width
+THRESHOLD_FIELD_WIDTH = 60       # Semantic threshold field width
+RESET_BUTTON_WIDTH = 80          # Reset button width
+
+# Results area
+RESULTS_SPACING = 6         # Spacing between result cards (tighter for more visibility)
+
 
 # ============================================================================
 # Utility Functions - Input Validation and Type Safety
@@ -419,8 +447,8 @@ class SearchTabWidget(QWidget):
         """Setup the user interface with compact layout."""
         # Main layout
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(MAIN_MARGIN, MAIN_MARGIN, MAIN_MARGIN, MAIN_MARGIN)
+        main_layout.setSpacing(MAIN_SPACING)
 
         # Search controls (3 compact rows)
         search_controls = self._create_search_controls()
@@ -446,14 +474,14 @@ class SearchTabWidget(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(CONTROLS_SPACING)
 
         # Row 1: Search box with Search button
         row1 = QHBoxLayout()
-        row1.setSpacing(8)
+        row1.setSpacing(ROW_SPACING)
 
         search_label = QLabel("Search for:")
-        search_label.setMinimumWidth(70)
+        search_label.setMinimumWidth(SEARCH_LABEL_MIN_WIDTH)
         row1.addWidget(search_label)
 
         self.text_query_edit = QLineEdit()
@@ -463,9 +491,9 @@ class SearchTabWidget(QWidget):
 
         search_btn = QPushButton("Search")
         search_btn.setStyleSheet(
-            "background-color: #3498db; color: white; padding: 6px 16px; font-weight: bold;"
+            f"background-color: #3498db; color: white; padding: {SEARCH_BUTTON_PADDING}; font-weight: bold;"
         )
-        search_btn.setMinimumWidth(80)
+        search_btn.setMinimumWidth(SEARCH_BUTTON_MIN_WIDTH)
         search_btn.clicked.connect(self._on_search)
         row1.addWidget(search_btn)
 
@@ -473,7 +501,7 @@ class SearchTabWidget(QWidget):
 
         # Row 2: Max results, Source, Year from, Year to
         row2 = QHBoxLayout()
-        row2.setSpacing(15)
+        row2.setSpacing(ROW2_SPACING)
 
         # Max results
         row2.addWidget(QLabel("max results"))
@@ -481,21 +509,21 @@ class SearchTabWidget(QWidget):
         self.limit_spin.setRange(10, 1000)
         self.limit_spin.setValue(100)
         self.limit_spin.setSingleStep(10)
-        self.limit_spin.setMaximumWidth(80)
+        self.limit_spin.setMaximumWidth(LIMIT_SPIN_WIDTH)
         row2.addWidget(self.limit_spin)
 
         # Source
         row2.addWidget(QLabel("source"))
         self.source_combo = QComboBox()
         self.source_combo.addItems(["All", "pubmed", "medrxiv"])
-        self.source_combo.setMaximumWidth(120)
+        self.source_combo.setMaximumWidth(SOURCE_COMBO_WIDTH)
         row2.addWidget(self.source_combo)
 
         # Year from
         row2.addWidget(QLabel("year from"))
         self.year_from_edit = QLineEdit()
         self.year_from_edit.setPlaceholderText("Any")
-        self.year_from_edit.setMaximumWidth(70)
+        self.year_from_edit.setMaximumWidth(YEAR_FIELD_WIDTH)
         self.year_from_edit.setToolTip("Enter start year (e.g., 2000)")
         row2.addWidget(self.year_from_edit)
 
@@ -503,7 +531,7 @@ class SearchTabWidget(QWidget):
         row2.addWidget(QLabel("year to"))
         self.year_to_edit = QLineEdit()
         self.year_to_edit.setPlaceholderText("Any")
-        self.year_to_edit.setMaximumWidth(70)
+        self.year_to_edit.setMaximumWidth(YEAR_FIELD_WIDTH)
         self.year_to_edit.setToolTip("Enter end year (e.g., 2025)")
         row2.addWidget(self.year_to_edit)
 
@@ -512,7 +540,7 @@ class SearchTabWidget(QWidget):
 
         # Row 3: Strategies, Semantic threshold, Reset
         row3 = QHBoxLayout()
-        row3.setSpacing(12)
+        row3.setSpacing(ROW3_SPACING)
 
         # Strategies label and checkboxes
         row3.addWidget(QLabel("Strategies"))
@@ -548,7 +576,7 @@ class SearchTabWidget(QWidget):
         row3.addWidget(QLabel("Semantic threshold"))
         self.semantic_threshold_edit = QLineEdit()
         self.semantic_threshold_edit.setPlaceholderText("0.7")
-        self.semantic_threshold_edit.setMaximumWidth(60)
+        self.semantic_threshold_edit.setMaximumWidth(THRESHOLD_FIELD_WIDTH)
         self.semantic_threshold_edit.setToolTip("Semantic similarity threshold (0.0-1.0)")
         row3.addWidget(self.semantic_threshold_edit)
 
@@ -559,7 +587,7 @@ class SearchTabWidget(QWidget):
         reset_btn = QPushButton("Reset")
         reset_btn.setToolTip("Clear all filters")
         reset_btn.clicked.connect(self._on_clear_filters)
-        reset_btn.setMaximumWidth(80)
+        reset_btn.setMaximumWidth(RESET_BUTTON_WIDTH)
         row3.addWidget(reset_btn)
 
         layout.addLayout(row3)
@@ -576,7 +604,7 @@ class SearchTabWidget(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(MAIN_SPACING)
 
         # Result count (compact, no redundant "Search Results" label)
         self.result_count_label = QLabel("No search performed yet")
@@ -592,7 +620,7 @@ class SearchTabWidget(QWidget):
         # Container for document cards
         self.results_container = QWidget()
         self.results_layout = QVBoxLayout(self.results_container)
-        self.results_layout.setSpacing(6)  # Tighter spacing for more cards visible
+        self.results_layout.setSpacing(RESULTS_SPACING)
         self.results_layout.setContentsMargins(0, 0, 0, 0)
         self.results_layout.addStretch()
 
