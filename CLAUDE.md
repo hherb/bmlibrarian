@@ -67,6 +67,11 @@ Since this project uses `uv` for package management:
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
+  - `uv run python pdf_import_cli.py file /path/to/paper.pdf` - Import single PDF with LLM-based metadata extraction and database matching
+  - `uv run python pdf_import_cli.py directory /path/to/pdfs/` - Import directory of PDFs with intelligent matching
+  - `uv run python pdf_import_cli.py directory /pdfs/ --recursive` - Import PDFs recursively from subdirectories
+  - `uv run python pdf_import_cli.py file paper.pdf --dry-run` - Preview import without making changes
+  - `uv run python pdf_import_cli.py status` - Show PDF import statistics and coverage
   - `uv run python fact_checker_cli.py statements.json -o results.json` - Export results to JSON file (PostgreSQL is always used)
   - `uv run python fact_checker_stats.py` - Generate comprehensive statistical analysis report (console output)
   - `uv run python fact_checker_stats.py --export-csv stats_output/` - Export statistics to CSV files
@@ -212,6 +217,7 @@ bmlibrarian/
 │   │   ├── medrxiv_importer.py # MedRxiv preprint importer
 │   │   ├── pubmed_importer.py # PubMed E-utilities importer (targeted imports)
 │   │   ├── pubmed_bulk_importer.py # PubMed FTP bulk importer (complete mirror)
+│   │   ├── pdf_matcher.py     # LLM-based PDF matching and import (DOI/PMID/title matching)
 │   │   └── README.md          # Importer documentation
 │   ├── embeddings/            # Document embedding generation
 │   │   ├── __init__.py        # Embeddings module exports
@@ -284,6 +290,7 @@ bmlibrarian/
 │   │   ├── medrxiv_import_guide.md  # MedRxiv import guide
 │   │   ├── document_embedding_guide.md  # Document embedding guide
 │   │   ├── document_interrogation_guide.md  # Document interrogation tab guide
+│   │   ├── pdf_import_guide.md  # PDF import and matching guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -306,6 +313,7 @@ bmlibrarian/
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
 ├── embed_documents_cli.py     # Document embedding generation CLI
+├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
