@@ -236,7 +236,7 @@ class SearchWorker(QThread):
                     'enabled': self.search_params.get('semantic_enabled', False),
                     'max_results': self.search_params.get('limit', 100),
                     'embedding_model': DEFAULT_EMBEDDING_MODEL,
-                    'similarity_threshold': DEFAULT_SEMANTIC_THRESHOLD
+                    'similarity_threshold': self.search_params.get('semantic_threshold', DEFAULT_SEMANTIC_THRESHOLD)
                 },
                 'hyde': {
                     'enabled': self.search_params.get('hyde_enabled', False),
@@ -399,8 +399,9 @@ class SearchTabWidget(QWidget):
 
         # UI Components
         self.text_query_edit: Optional[QLineEdit] = None
-        self.year_from_spin: Optional[QSpinBox] = None
-        self.year_to_spin: Optional[QSpinBox] = None
+        self.year_from_edit: Optional[QLineEdit] = None
+        self.year_to_edit: Optional[QLineEdit] = None
+        self.semantic_threshold_edit: Optional[QLineEdit] = None
         self.source_combo: Optional[QComboBox] = None
         self.limit_spin: Optional[QSpinBox] = None
         self.keyword_check: Optional[QCheckBox] = None
@@ -468,30 +469,38 @@ class SearchTabWidget(QWidget):
 
         layout.addLayout(search_box_layout)
 
-        # Filters row 1: Year range
+        # Filters row 1: Year range and semantic threshold
         filters_layout1 = QHBoxLayout()
 
         # Year from
         year_from_layout = QHBoxLayout()
         year_from_layout.addWidget(QLabel("Year From:"))
-        self.year_from_spin = QSpinBox()
-        self.year_from_spin.setRange(1900, 2100)
-        self.year_from_spin.setValue(2000)
-        self.year_from_spin.setSpecialValueText("Any")
-        self.year_from_spin.setMinimum(0)
-        year_from_layout.addWidget(self.year_from_spin)
+        self.year_from_edit = QLineEdit()
+        self.year_from_edit.setPlaceholderText("Any")
+        self.year_from_edit.setMaximumWidth(80)
+        self.year_from_edit.setToolTip("Enter start year (e.g., 2000)")
+        year_from_layout.addWidget(self.year_from_edit)
         filters_layout1.addLayout(year_from_layout)
 
         # Year to
         year_to_layout = QHBoxLayout()
         year_to_layout.addWidget(QLabel("Year To:"))
-        self.year_to_spin = QSpinBox()
-        self.year_to_spin.setRange(1900, 2100)
-        self.year_to_spin.setValue(2025)
-        self.year_to_spin.setSpecialValueText("Any")
-        self.year_to_spin.setMinimum(0)
-        year_to_layout.addWidget(self.year_to_spin)
+        self.year_to_edit = QLineEdit()
+        self.year_to_edit.setPlaceholderText("Any")
+        self.year_to_edit.setMaximumWidth(80)
+        self.year_to_edit.setToolTip("Enter end year (e.g., 2025)")
+        year_to_layout.addWidget(self.year_to_edit)
         filters_layout1.addLayout(year_to_layout)
+
+        # Semantic search threshold
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("Semantic Threshold:"))
+        self.semantic_threshold_edit = QLineEdit()
+        self.semantic_threshold_edit.setPlaceholderText("0.7")
+        self.semantic_threshold_edit.setMaximumWidth(60)
+        self.semantic_threshold_edit.setToolTip("Semantic similarity threshold (0.0-1.0)")
+        threshold_layout.addWidget(self.semantic_threshold_edit)
+        filters_layout1.addLayout(threshold_layout)
 
         filters_layout1.addStretch()
         layout.addLayout(filters_layout1)
@@ -663,11 +672,60 @@ class SearchTabWidget(QWidget):
 
     def _on_search(self):
         """Execute search with current filters."""
+        # Parse year fields (only use if not empty and valid)
+        year_from = None
+        year_to = None
+        year_from_text = self.year_from_edit.text().strip()
+        year_to_text = self.year_to_edit.text().strip()
+
+        if year_from_text:
+            try:
+                year_from = int(year_from_text)
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Year",
+                    f"Year From must be a valid integer (got: '{year_from_text}')"
+                )
+                return
+
+        if year_to_text:
+            try:
+                year_to = int(year_to_text)
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Year",
+                    f"Year To must be a valid integer (got: '{year_to_text}')"
+                )
+                return
+
+        # Parse semantic threshold (use default if empty or invalid)
+        semantic_threshold = DEFAULT_SEMANTIC_THRESHOLD
+        threshold_text = self.semantic_threshold_edit.text().strip()
+        if threshold_text:
+            try:
+                semantic_threshold = float(threshold_text)
+                if not (0.0 <= semantic_threshold <= 1.0):
+                    QMessageBox.warning(
+                        self,
+                        "Invalid Threshold",
+                        f"Semantic threshold must be between 0.0 and 1.0 (got: {semantic_threshold})"
+                    )
+                    return
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Threshold",
+                    f"Semantic threshold must be a valid number (got: '{threshold_text}')"
+                )
+                return
+
         # Get search parameters
         search_params = {
             'text_query': self.text_query_edit.text().strip(),
-            'year_from': self.year_from_spin.value() if self.year_from_spin.value() > 0 else None,
-            'year_to': self.year_to_spin.value() if self.year_to_spin.value() > 0 else None,
+            'year_from': year_from,
+            'year_to': year_to,
             'source': self.source_combo.currentText() if self.source_combo.currentText() != "All" else None,
             'limit': self.limit_spin.value(),
             # Search strategy settings
@@ -675,6 +733,7 @@ class SearchTabWidget(QWidget):
             'bm25_enabled': self.bm25_enabled,
             'semantic_enabled': self.semantic_enabled,
             'hyde_enabled': self.hyde_enabled,
+            'semantic_threshold': semantic_threshold,
             'reranking_method': self.reranking_method
         }
 
@@ -836,8 +895,9 @@ class SearchTabWidget(QWidget):
     def _on_clear_filters(self):
         """Clear all search filters."""
         self.text_query_edit.clear()
-        self.year_from_spin.setValue(0)
-        self.year_to_spin.setValue(0)
+        self.year_from_edit.clear()
+        self.year_to_edit.clear()
+        self.semantic_threshold_edit.clear()
         self.source_combo.setCurrentIndex(0)
         self.limit_spin.setValue(100)
 
