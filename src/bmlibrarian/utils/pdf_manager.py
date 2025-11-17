@@ -14,16 +14,34 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Import OpenAthens auth if available
+try:
+    from .openathens_auth import OpenAthensAuth
+    OPENATHENS_AVAILABLE = True
+except ImportError:
+    OPENATHENS_AVAILABLE = False
+    OpenAthensAuth = None
+
 
 class PDFManager:
     """Manages PDF storage and retrieval with year-based organization."""
 
-    def __init__(self, base_dir: Optional[str] = None, db_conn=None):
+    def __init__(
+        self,
+        base_dir: Optional[str] = None,
+        db_conn=None,
+        openathens_config: Optional[Dict[str, Any]] = None
+    ):
         """Initialize PDF manager.
 
         Args:
             base_dir: Base directory for PDF storage. If None, reads from environment.
             db_conn: Optional database connection for migration operations.
+            openathens_config: Optional OpenAthens configuration dict with:
+                - enabled (bool): Enable OpenAthens proxy
+                - institution_url (str): Institution's OpenAthens URL
+                - session_timeout_hours (int): Session timeout (default: 24)
+                - auto_login (bool): Automatically login if not authenticated (default: True)
         """
         if base_dir is None:
             # Read from environment
@@ -33,6 +51,52 @@ class PDFManager:
 
         self.base_dir = Path(base_dir).expanduser()
         self.db_conn = db_conn
+
+        # Initialize OpenAthens authentication if configured
+        self.openathens_auth: Optional[OpenAthensAuth] = None
+        self.openathens_enabled = False
+
+        if openathens_config and openathens_config.get('enabled', False):
+            if not OPENATHENS_AVAILABLE:
+                logger.warning("OpenAthens requested but openathens_auth module not available")
+            else:
+                institution_url = openathens_config.get('institution_url')
+                if not institution_url:
+                    logger.warning("OpenAthens enabled but no institution_url provided")
+                else:
+                    try:
+                        self.openathens_auth = OpenAthensAuth(
+                            institution_url=institution_url,
+                            session_timeout_hours=openathens_config.get('session_timeout_hours', 24),
+                            headless=openathens_config.get('headless', False)
+                        )
+
+                        # Auto-login if requested and not authenticated
+                        if openathens_config.get('auto_login', True):
+                            if not self.openathens_auth.is_authenticated():
+                                logger.info("OpenAthens: No valid session, initiating login...")
+                                success = self.openathens_auth.login_sync(
+                                    wait_for_login=openathens_config.get('login_timeout', 300)
+                                )
+                                if success:
+                                    logger.info("OpenAthens login successful")
+                                    self.openathens_enabled = True
+                                else:
+                                    logger.warning("OpenAthens login failed, proxy disabled")
+                            else:
+                                logger.info("OpenAthens session valid, proxy enabled")
+                                self.openathens_enabled = True
+                        else:
+                            # Check if already authenticated
+                            if self.openathens_auth.is_authenticated():
+                                logger.info("OpenAthens session valid, proxy enabled")
+                                self.openathens_enabled = True
+                            else:
+                                logger.warning("OpenAthens not authenticated, call login_openathens() manually")
+
+                    except Exception as e:
+                        logger.error(f"Failed to initialize OpenAthens: {e}")
+                        self.openathens_auth = None
 
     def get_pdf_path(self, document: Dict[str, Any], create_dirs: bool = False) -> Optional[Path]:
         """Get the expected PDF path for a document.
@@ -117,25 +181,46 @@ class PDFManager:
         if pdf_path is None:
             return None
 
+        # Prepare URL and headers (with OpenAthens proxy if enabled)
+        download_url = pdf_url
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'application/pdf,*/*'
+        }
+        cookies = None
+
+        if self.openathens_enabled and self.openathens_auth:
+            # Check if session is still valid
+            if not self.openathens_auth.is_authenticated():
+                logger.warning("OpenAthens session expired, attempting re-login...")
+                success = self.openathens_auth.login_sync()
+                if not success:
+                    logger.warning("OpenAthens re-login failed, falling back to direct download")
+                    self.openathens_enabled = False
+                else:
+                    logger.info("OpenAthens re-login successful")
+
+            if self.openathens_enabled:
+                # Use OpenAthens proxy URL
+                download_url = self.openathens_auth.construct_proxy_url(pdf_url)
+                headers.update(self.openathens_auth.get_session_headers())
+                cookies = self.openathens_auth.get_cookies_dict()
+                logger.info(f"Using OpenAthens proxy for {pdf_url}")
+
         # Try download with retries
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    logger.info(f"Retry attempt {attempt + 1}/{max_retries} for {pdf_url}")
+                    logger.info(f"Retry attempt {attempt + 1}/{max_retries} for {download_url}")
                 else:
-                    logger.info(f"Downloading PDF from {pdf_url}")
-
-                # Add headers to mimic browser request
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                    'Accept': 'application/pdf,*/*'
-                }
+                    logger.info(f"Downloading PDF from {download_url}")
 
                 response = requests.get(
-                    pdf_url,
+                    download_url,
                     timeout=timeout,
                     stream=True,
                     headers=headers,
+                    cookies=cookies,
                     allow_redirects=True
                 )
                 response.raise_for_status()
@@ -1123,3 +1208,75 @@ class PDFManager:
                 'status': 'failed',
                 'reason': str(e)
             }
+
+    def login_openathens(self, wait_for_login: int = 300) -> bool:
+        """Manually initiate OpenAthens login.
+
+        Args:
+            wait_for_login: Maximum seconds to wait for login completion
+
+        Returns:
+            True if login successful, False otherwise
+        """
+        if not self.openathens_auth:
+            logger.error("OpenAthens not configured")
+            return False
+
+        success = self.openathens_auth.login_sync(wait_for_login)
+        if success:
+            self.openathens_enabled = True
+            logger.info("OpenAthens login successful")
+        else:
+            logger.error("OpenAthens login failed")
+
+        return success
+
+    def get_openathens_status(self) -> Dict[str, Any]:
+        """Get OpenAthens authentication status.
+
+        Returns:
+            Dictionary with status information
+        """
+        if not self.openathens_auth:
+            return {
+                'configured': False,
+                'enabled': False,
+                'message': 'OpenAthens not configured'
+            }
+
+        status = self.openathens_auth.get_session_info()
+        status['configured'] = True
+        status['enabled'] = self.openathens_enabled
+
+        return status
+
+    def clear_openathens_session(self) -> None:
+        """Clear OpenAthens session and disable proxy."""
+        if self.openathens_auth:
+            self.openathens_auth.clear_session()
+            self.openathens_enabled = False
+            logger.info("OpenAthens session cleared")
+
+    def refresh_openathens_session(self) -> bool:
+        """Refresh OpenAthens session if expired.
+
+        Returns:
+            True if session is valid or successfully refreshed, False otherwise
+        """
+        if not self.openathens_auth:
+            return False
+
+        if self.openathens_auth.is_authenticated():
+            logger.info("OpenAthens session still valid")
+            return True
+
+        logger.info("OpenAthens session expired, refreshing...")
+        success = self.openathens_auth.login_sync()
+        if success:
+            self.openathens_enabled = True
+            logger.info("OpenAthens session refreshed")
+        else:
+            self.openathens_enabled = False
+            logger.error("Failed to refresh OpenAthens session")
+
+        return success
