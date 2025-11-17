@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QSizePolicy,
     QMessageBox,
+    QProgressBar,
 )
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
@@ -195,9 +196,15 @@ class ResearchTabWidget(QWidget):
         else:
             self.logger.warning("⚠️ No agents provided - workflow functionality disabled")
 
+        # Workflow thread (Milestone 4: Background execution)
+        self.workflow_thread: Optional['WorkflowThread'] = None
+
         # UI Components (initialized in _setup_ui)
         self.question_input: Optional[QTextEdit] = None
         self.start_button: Optional[QPushButton] = None
+        self.cancel_button: Optional[QPushButton] = None
+        self.progress_bar: Optional[QProgressBar] = None
+        self.step_status_label: Optional[QLabel] = None
         self.max_results_spin: Optional[QSpinBox] = None
         self.min_relevant_spin: Optional[QSpinBox] = None
         self.interactive_checkbox: Optional[QCheckBox] = None
@@ -302,6 +309,14 @@ class ResearchTabWidget(QWidget):
         question_container.addWidget(self.question_input)
         row1.addLayout(question_container, stretch=1)
 
+        # Button container for Start and Cancel buttons
+        button_container = QVBoxLayout()
+        button_container.setSpacing(5)
+
+        # Start and Cancel buttons in horizontal layout
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
         # Start button
         self.start_button = QPushButton("Start Research")
         self.start_button.setIcon(self.start_button.style().standardIcon(
@@ -312,7 +327,62 @@ class ResearchTabWidget(QWidget):
         self.start_button.setEnabled(False)
         self.start_button.setStyleSheet(StyleSheets.start_button())
         self.start_button.clicked.connect(self._on_start_research)
-        row1.addWidget(self.start_button, alignment=Qt.AlignmentFlag.AlignBottom)
+        button_row.addWidget(self.start_button)
+
+        # Cancel button (Milestone 4: Workflow cancellation)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setIcon(self.cancel_button.style().standardIcon(
+            self.cancel_button.style().StandardPixmap.SP_DialogCancelButton
+        ))
+        self.cancel_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
+        self.cancel_button.setMinimumWidth(100)
+        self.cancel_button.setEnabled(False)  # Only enabled during workflow
+        self.cancel_button.setStyleSheet("""
+            QPushButton {
+                background-color: #F44336;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #D32F2F;
+            }
+            QPushButton:pressed {
+                background-color: #C62828;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+                color: #757575;
+            }
+        """)
+        self.cancel_button.clicked.connect(self._on_cancel_clicked)
+        button_row.addWidget(self.cancel_button)
+
+        button_container.addLayout(button_row)
+
+        # Progress bar (Milestone 4: Progress tracking)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMaximumHeight(6)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #E0E0E0;
+                border-radius: 3px;
+                background-color: #F5F5F5;
+            }
+            QProgressBar::chunk {
+                background-color: #1976D2;
+                border-radius: 2px;
+            }
+        """)
+        self.progress_bar.setVisible(False)  # Hidden until workflow starts
+        button_container.addWidget(self.progress_bar)
+
+        row1.addLayout(button_container, alignment=Qt.AlignmentFlag.AlignBottom)
 
         controls_layout.addLayout(row1)
 
@@ -371,6 +441,17 @@ class ResearchTabWidget(QWidget):
         row2.addStretch()
 
         controls_layout.addLayout(row2)
+
+        # Row 3: Step status label (Milestone 4: Progress display)
+        self.step_status_label = QLabel("")
+        self.step_status_label.setStyleSheet(f"""
+            color: {UIConstants.COLOR_TEXT_GREY};
+            font-style: italic;
+            padding: 5px;
+        """)
+        self.step_status_label.setWordWrap(True)
+        self.step_status_label.setVisible(False)  # Hidden until workflow starts
+        controls_layout.addWidget(self.step_status_label)
 
         return controls_frame
 
@@ -846,10 +927,14 @@ class ResearchTabWidget(QWidget):
                 )
                 return
 
-            # Phase 2: Call workflow executor (just test agent connection)
-            # Phase 3+: Will execute full workflow
+            # Milestone 4: Create and start background workflow thread
             self.status_message.emit(f"Research started: {question[:50]}...")
             self.start_button.setEnabled(False)
+            self.cancel_button.setEnabled(True)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.step_status_label.setVisible(True)
+            self.step_status_label.setText("Initializing workflow...")
             self.workflow_running = True
 
             self.logger.info(f"Research started: {question[:100]}")
@@ -859,14 +944,24 @@ class ResearchTabWidget(QWidget):
                 f"counterfactual={self.counterfactual_checkbox.isChecked()}"
             )
 
-            # Start workflow (Phase 2: agent connection test)
-            self.workflow_executor.start_workflow(
+            # Create and configure workflow thread
+            from .workflow_thread import WorkflowThread
+
+            self.workflow_thread = WorkflowThread(
+                executor=self.workflow_executor,
                 question=question,
                 max_results=max_results,
-                min_relevant=min_relevant,
-                interactive=self.interactive_checkbox.isChecked(),
-                counterfactual=self.counterfactual_checkbox.isChecked()
+                score_threshold=3.0,  # Use relevance threshold
+                enable_counterfactual=self.counterfactual_checkbox.isChecked(),
+                parent=self
             )
+
+            # Connect thread signals to UI handlers
+            self._connect_workflow_thread_signals()
+
+            # Start thread
+            self.workflow_thread.start()
+            self.logger.info("Background workflow thread started")
 
         except Exception as e:
             self.logger.error(f"Error in _on_start_research: {e}", exc_info=True)
@@ -975,6 +1070,154 @@ class ResearchTabWidget(QWidget):
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
         self.status_message.emit(message)
+
+    # ========================================================================
+    # Workflow Thread Methods (Milestone 4: Background Execution)
+    # ========================================================================
+
+    def _connect_workflow_thread_signals(self) -> None:
+        """Connect workflow thread signals to UI handlers."""
+        if not self.workflow_thread:
+            return
+
+        # Progress signals
+        self.workflow_thread.step_started.connect(self._on_thread_step_started)
+        self.workflow_thread.step_progress.connect(self._on_thread_step_progress)
+        self.workflow_thread.step_completed.connect(self._on_thread_step_completed)
+        self.workflow_thread.status_message.connect(self._on_workflow_status)
+
+        # Result signals (reuse existing handlers)
+        self.workflow_thread.query_generated.connect(self._on_query_generated)
+        self.workflow_thread.documents_found.connect(self._on_documents_found)
+        self.workflow_thread.documents_scored.connect(self._on_documents_scored)
+        self.workflow_thread.citations_extracted.connect(self._on_citations_extracted)
+        self.workflow_thread.preliminary_report_generated.connect(self._on_preliminary_report_generated)
+
+        # Completion signals
+        self.workflow_thread.workflow_completed.connect(self._on_thread_workflow_completed)
+        self.workflow_thread.workflow_error.connect(self._on_thread_workflow_error)
+        self.workflow_thread.workflow_cancelled.connect(self._on_thread_workflow_cancelled)
+
+        # Thread finished signal for cleanup
+        self.workflow_thread.finished.connect(self._on_thread_finished)
+
+        self.logger.info("Workflow thread signals connected")
+
+    @Slot()
+    def _on_cancel_clicked(self) -> None:
+        """Handle Cancel button click."""
+        if not self.workflow_thread or not self.workflow_thread.isRunning():
+            self.logger.warning("Cancel clicked but no workflow thread is running")
+            return
+
+        self.logger.info("User requested workflow cancellation")
+        self.cancel_button.setEnabled(False)  # Prevent double-cancel
+        self.step_status_label.setText("Cancelling workflow...")
+        self.workflow_thread.cancel()
+
+    @Slot(str, str)
+    def _on_thread_step_started(self, step_name: str, description: str) -> None:
+        """Handle workflow step started signal."""
+        self.logger.info(f"Step started: {step_name} - {description}")
+        self.step_status_label.setText(f"⚙️ {description}")
+
+        # Update progress bar based on step (rough percentage)
+        step_progress_map = {
+            'generate_query': 10,
+            'search_documents': 20,
+            'score_documents': 40,
+            'extract_citations': 60,
+            'generate_preliminary_report': 80,
+            'counterfactual_analysis': 90
+        }
+        progress = step_progress_map.get(step_name, 0)
+        self.progress_bar.setValue(progress)
+
+    @Slot(str, int, int)
+    def _on_thread_step_progress(self, step_name: str, current: int, total: int) -> None:
+        """Handle workflow step progress signal."""
+        if total > 0:
+            percentage = int((current / total) * 100)
+            # For scoring step, show fine-grained progress between 20% and 60%
+            if step_name == 'score_documents':
+                progress = 20 + int((current / total) * 40)
+                self.progress_bar.setValue(progress)
+            self.step_status_label.setText(f"⚙️ Processing {current}/{total} documents...")
+
+    @Slot(str)
+    def _on_thread_step_completed(self, step_name: str) -> None:
+        """Handle workflow step completed signal."""
+        self.logger.info(f"Step completed: {step_name}")
+
+    @Slot(dict)
+    def _on_thread_workflow_completed(self, results: dict) -> None:
+        """Handle workflow completed signal from thread."""
+        self.logger.info(f"Thread workflow completed: {results.get('status', 'unknown')}")
+
+        # Update UI state
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.progress_bar.setValue(100)
+        self.step_status_label.setText("✅ Workflow completed successfully!")
+
+        # Store results
+        self.current_results = results
+
+        # Emit completion signal
+        self.workflow_completed.emit(results)
+
+        # Display summary
+        doc_count = results.get('document_count', 0)
+        citation_count = results.get('citation_count', 0)
+        self.status_message.emit(
+            f"✅ Research complete! Found {doc_count} documents, "
+            f"extracted {citation_count} citations"
+        )
+
+    @Slot(Exception)
+    def _on_thread_workflow_error(self, error: Exception) -> None:
+        """Handle workflow error signal from thread."""
+        self.logger.error(f"Thread workflow error: {error}", exc_info=True)
+
+        # Update UI state
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.step_status_label.setText("❌ Workflow failed")
+
+        # Emit error signal
+        self.workflow_error.emit(error)
+
+        # Show error dialog
+        QMessageBox.critical(
+            self,
+            "Workflow Error",
+            f"An error occurred during workflow execution:\n\n{str(error)}"
+        )
+
+    @Slot()
+    def _on_thread_workflow_cancelled(self) -> None:
+        """Handle workflow cancelled signal from thread."""
+        self.logger.info("Workflow cancelled by user")
+
+        # Update UI state
+        self.workflow_running = False
+        self.start_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.step_status_label.setText("🛑 Workflow cancelled")
+
+        self.status_message.emit("🛑 Workflow cancelled by user")
+
+    @Slot()
+    def _on_thread_finished(self) -> None:
+        """Handle thread finished signal for cleanup."""
+        self.logger.info("Workflow thread finished")
+        if self.workflow_thread:
+            self.workflow_thread.deleteLater()
+            self.workflow_thread = None
 
     # ========================================================================
     # Step-Specific Signal Handlers (Milestone 1)
@@ -1399,6 +1642,18 @@ class ResearchTabWidget(QWidget):
         try:
             self.logger.info("Cleaning up research tab widget...")
 
+            # Milestone 4: Cleanup workflow thread first
+            if self.workflow_thread and self.workflow_thread.isRunning():
+                self.logger.info("Stopping workflow thread...")
+                self.workflow_thread.cancel()  # Request cancellation
+                self.workflow_thread.wait(5000)  # Wait up to 5 seconds for thread to finish
+                if self.workflow_thread.isRunning():
+                    self.logger.warning("Workflow thread did not stop in time, forcing termination")
+                    self.workflow_thread.terminate()
+                    self.workflow_thread.wait()
+                self.workflow_thread.deleteLater()
+                self.workflow_thread = None
+
             # Disconnect workflow executor signals FIRST (before cleanup)
             # This prevents signals being processed after executor is cleaned up
             if self.workflow_executor:
@@ -1421,6 +1676,7 @@ class ResearchTabWidget(QWidget):
             # Disconnect UI element signals
             self._safe_disconnect(self.question_input.textChanged, self._on_question_changed)
             self._safe_disconnect(self.start_button.clicked, self._on_start_research)
+            self._safe_disconnect(self.cancel_button.clicked, self._on_cancel_clicked)
             self._safe_disconnect(self.max_results_spin.valueChanged, self._on_max_results_changed)
             self._safe_disconnect(self.min_relevant_spin.valueChanged, self._on_min_relevant_changed)
 
