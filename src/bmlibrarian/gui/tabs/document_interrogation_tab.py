@@ -8,7 +8,18 @@ for asking questions about the displayed document.
 import flet as ft
 from typing import TYPE_CHECKING, Optional, List, Dict
 from pathlib import Path
-from .pdf_viewer import PDFViewer, PYMUPDF_AVAILABLE
+from .pdf_viewer import PDFViewer, PYMUPDF_AVAILABLE, PyMuPDFNotAvailableError, PDFLoadError
+
+
+# Custom Exceptions
+class FileValidationError(Exception):
+    """Raised when file validation fails."""
+    pass
+
+
+class FileSizeError(FileValidationError):
+    """Raised when file exceeds size limit."""
+    pass
 
 if TYPE_CHECKING:
     from ..config_app import BMLibrarianConfigApp
@@ -355,9 +366,37 @@ class DocumentInterrogationTab:
         )
 
     def _load_document(self, file_path: str):
-        """Load a document for viewing and interrogation."""
+        """
+        Load a document for viewing and interrogation.
+
+        Args:
+            file_path: Path to the document to load
+
+        Raises:
+            FileValidationError: If file validation fails
+            FileSizeError: If file exceeds size limit
+        """
         try:
+            # Security: Validate file path
             path = Path(file_path)
+
+            # Check file exists
+            if not path.exists():
+                raise FileValidationError(f"File does not exist: {file_path}")
+
+            # Check it's a file (not directory)
+            if not path.is_file():
+                raise FileValidationError(f"Path is not a file: {file_path}")
+
+            # Security: Check file size (100MB limit)
+            max_size_bytes = 100 * 1024 * 1024  # 100MB
+            file_size = path.stat().st_size
+            if file_size > max_size_bytes:
+                size_mb = file_size / (1024 * 1024)
+                raise FileSizeError(
+                    f"File too large ({size_mb:.1f}MB). Maximum size is 100MB."
+                )
+
             self.current_document_path = file_path
 
             # Update label
@@ -371,7 +410,7 @@ class DocumentInterrogationTab:
             elif path.suffix.lower() in ['.md', '.txt']:
                 self._load_text_document(file_path)
             else:
-                self._show_error(f"Unsupported file type: {path.suffix}")
+                raise FileValidationError(f"Unsupported file type: {path.suffix}")
 
             # Add system message to chat
             self._add_chat_message(
@@ -382,11 +421,21 @@ class DocumentInterrogationTab:
 
             self.app.page.update()
 
+        except (FileValidationError, FileSizeError) as ex:
+            self._show_error(str(ex))
+        except (PyMuPDFNotAvailableError, PDFLoadError) as ex:
+            self._show_error(f"PDF Error: {str(ex)}")
         except Exception as ex:
             self._show_error(f"Error loading document: {str(ex)}")
 
     def _load_pdf(self, file_path: str):
-        """Load and display a PDF document."""
+        """
+        Load and display a PDF document.
+
+        Raises:
+            PyMuPDFNotAvailableError: If PyMuPDF is not installed
+            PDFLoadError: If PDF cannot be loaded
+        """
         try:
             if not PYMUPDF_AVAILABLE:
                 # Show error message if PyMuPDF is not installed
@@ -419,7 +468,7 @@ class DocumentInterrogationTab:
                 expand=True
                 )
                 self.current_document_content = f"[PDF Document: {file_path}] (PyMuPDF not installed)"
-                return
+                raise PyMuPDFNotAvailableError("PyMuPDF is not installed. Run: pip install PyMuPDF")
 
             # Create PDF viewer if not already created
             if not self.pdf_viewer:
@@ -438,6 +487,31 @@ class DocumentInterrogationTab:
             # Extract all text for LLM processing
             self.current_document_content = self.pdf_viewer.get_all_text()
 
+        except PyMuPDFNotAvailableError:
+            raise
+        except PDFLoadError as ex:
+            # Show error in viewer
+            self.document_viewer.content = ft.Column([
+                ft.Icon(ft.Icons.ERROR_OUTLINE, size=80, color=ft.Colors.RED_400),
+                ft.Text(
+                    "PDF Loading Error",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.RED_700
+                ),
+                ft.Container(height=10),
+                ft.Text(
+                    str(ex),
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                    text_align=ft.TextAlign.CENTER
+                )
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            expand=True
+            )
+            raise
         except Exception as ex:
             # Show error in viewer
             self.document_viewer.content = ft.Column([
@@ -460,10 +534,15 @@ class DocumentInterrogationTab:
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             expand=True
             )
-            raise Exception(f"Failed to load PDF: {str(ex)}")
+            raise PDFLoadError(f"Failed to load PDF: {str(ex)}")
 
     def _load_text_document(self, file_path: str):
-        """Load and display a text/markdown document."""
+        """
+        Load and display a text/markdown document.
+
+        Raises:
+            FileValidationError: If file cannot be read
+        """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -491,8 +570,12 @@ class DocumentInterrogationTab:
                     padding=ft.padding.all(10)
                 )
 
+        except UnicodeDecodeError as ex:
+            raise FileValidationError(f"File encoding error: {str(ex)}")
+        except PermissionError as ex:
+            raise FileValidationError(f"Permission denied: {str(ex)}")
         except Exception as ex:
-            raise Exception(f"Failed to read text document: {str(ex)}")
+            raise FileValidationError(f"Failed to read text document: {str(ex)}")
 
     def _on_model_change(self, e):
         """Handle model selection change."""
@@ -556,16 +639,96 @@ class DocumentInterrogationTab:
 
         # Clear input
         self.message_input.value = ""
+        self.app.page.update()
 
-        # TODO: Send to LLM and get response
-        # For now, show placeholder response
-        self._add_chat_message(
-            "🔧 LLM integration will be implemented in next iteration.\n\n"
-            f"Your question: \"{message_text}\"",
-            is_user=False
-        )
+        # Show thinking indicator
+        thinking_bubble = self._create_message_bubble("🤔 Analyzing document...", is_user=False)
+        self.chat_messages_column.controls.append(thinking_bubble)
+        self.app.page.update()
+
+        try:
+            # Get LLM response
+            response = self._get_llm_response(message_text)
+
+            # Remove thinking indicator
+            self.chat_messages_column.controls.remove(thinking_bubble)
+
+            # Add LLM response to chat
+            self._add_chat_message(response, is_user=False)
+
+        except Exception as ex:
+            # Remove thinking indicator
+            if thinking_bubble in self.chat_messages_column.controls:
+                self.chat_messages_column.controls.remove(thinking_bubble)
+
+            # Show error message
+            self._add_chat_message(
+                f"❌ Error communicating with LLM:\n\n{str(ex)}",
+                is_user=False
+            )
 
         self.app.page.update()
+
+    def _get_llm_response(self, question: str) -> str:
+        """
+        Get LLM response for a question about the document.
+
+        Args:
+            question: User's question
+
+        Returns:
+            LLM response text
+
+        Raises:
+            Exception: If LLM communication fails
+        """
+        try:
+            import ollama
+
+            # Get Ollama config from app
+            ollama_config = self.app.config.get_ollama_config()
+            host = ollama_config.get('host', 'http://localhost:11434')
+
+            # Create client
+            client = ollama.Client(host=host)
+
+            # Prepare context with document content
+            # Truncate document if it's too long to avoid context overflow
+            max_doc_length = 50000  # ~12k tokens at 4 chars/token
+            document_content = self.current_document_content
+            if len(document_content) > max_doc_length:
+                document_content = document_content[:max_doc_length] + "\n\n[Document truncated due to length...]"
+
+            # Build the prompt
+            system_prompt = (
+                "You are a helpful AI assistant analyzing a document. "
+                "Answer questions about the document based on the provided content. "
+                "Be concise and accurate. If the information is not in the document, say so."
+            )
+
+            user_prompt = f"""Document Content:
+{document_content}
+
+Question: {question}
+
+Please answer the question based on the document content above."""
+
+            # Get response from Ollama
+            response = client.chat(
+                model=self.selected_model,
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt}
+                ]
+            )
+
+            # Extract response text
+            return response['message']['content']
+
+        except ImportError:
+            raise Exception("Ollama Python library not installed. Run: pip install ollama")
+        except Exception as ex:
+            raise Exception(f"LLM communication error: {str(ex)}")
 
     def _add_chat_message(self, text: str, is_user: bool):
         """Add a message to the chat history and UI."""
