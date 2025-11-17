@@ -12,6 +12,7 @@ Available Agents:
 - CounterfactualAgent: Analyzes documents to generate research questions for finding contradictory evidence
 - EditorAgent: Creates balanced, comprehensive reports combining original findings with contradictory evidence
 - DocumentInterrogationAgent: Answers questions about documents using sliding window chunk processing
+- PICOAgent: Extracts Population, Intervention, Comparison, and Outcome components from research papers
 
 Note: FactCheckerAgent has been moved to bmlibrarian.factchecker module (import from there directly)
 
@@ -41,6 +42,7 @@ from .document_interrogation_agent import (
     ProcessingMode,
     DatabaseChunk
 )
+from .pico_agent import PICOAgent, PICOExtraction
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
@@ -70,6 +72,8 @@ __all__ = [
     "RelevantSection",
     "ProcessingMode",
     "DatabaseChunk",
+    "PICOAgent",
+    "PICOExtraction",
     "TextChunker",
     "TextChunk",
     "chunk_text",

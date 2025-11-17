@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
         "fact_checker_agent": "gpt-oss:20b",  # Use larger model for statement evaluation
         "document_interrogation_agent": "gpt-oss:20b",  # Use larger model for complex document Q&A
         "document_interrogation_embedding": "snowflake-arctic-embed2:latest",  # Embedding model for semantic search
+        "pico_agent": "gpt-oss:20b",  # Use larger model for PICO extraction
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -88,6 +89,13 @@ DEFAULT_CONFIG = {
             "processing_mode": "sequential",  # Default: sequential, embedding, or hybrid
             "embedding_threshold": 0.5,  # Minimum cosine similarity for embedding mode (0-1)
             "max_sections": 10  # Maximum number of relevant sections to extract
+        },
+        "pico": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": 2000,
+            "min_confidence": 0.5,  # Minimum confidence threshold to accept extraction
+            "max_retries": 3  # Maximum retry attempts for failed extractions
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
