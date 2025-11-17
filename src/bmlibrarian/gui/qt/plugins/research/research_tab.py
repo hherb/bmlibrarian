@@ -161,6 +161,7 @@ class ResearchTabWidget(QWidget):
 
         # Workflow state
         self.current_results: dict = {}
+        self.counterfactual_results: Optional[dict] = None
         self.workflow_running: bool = False
 
         # Validation state (prevent infinite spinbox adjustment loops)
@@ -771,16 +772,54 @@ class ResearchTabWidget(QWidget):
 
     def _create_counterfactual_tab(self) -> QWidget:
         """Create Counterfactual Analysis tab."""
-        return self._create_placeholder_tab(
-            "🧠",
-            "Counterfactual Analysis",
-            "This tab will display:\n"
-            "• Research questions for finding contradictory evidence\n"
-            "• Search results for contradictory documents\n"
-            "• Contradictory document list\n"
-            "• Evidence assessment\n"
-            "• Interactive controls (skip, regenerate)"
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # Header
+        header = QLabel("🧠 Counterfactual Analysis")
+        header_font = QFont()
+        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setBold(True)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        # Summary label
+        self.counterfactual_summary_label = QLabel("Waiting for analysis...")
+        self.counterfactual_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        layout.addWidget(self.counterfactual_summary_label)
+
+        # Scroll area for counterfactual content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        # Content widget
+        content_widget = QWidget()
+        self.counterfactual_layout = QVBoxLayout(content_widget)
+        self.counterfactual_layout.setSpacing(10)
+        self.counterfactual_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Initial placeholder
+        placeholder = QLabel(
+            "Counterfactual analysis will appear here when enabled.\n\n"
+            "This analysis:\n"
+            "• Identifies key claims in the preliminary report\n"
+            "• Generates research questions to find contradictory evidence\n"
+            "• Searches for documents that might contradict the findings\n"
+            "• Provides a balanced view of the evidence"
         )
+        placeholder.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        placeholder.setWordWrap(True)
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.counterfactual_layout.addWidget(placeholder)
+        self.counterfactual_layout.addStretch()
+
+        scroll.setWidget(content_widget)
+        layout.addWidget(scroll, stretch=1)
+
+        return tab
 
     def _create_report_tab(self) -> QWidget:
         """Create Final Report tab."""
@@ -1093,6 +1132,10 @@ class ResearchTabWidget(QWidget):
         self.workflow_thread.citations_extracted.connect(self._on_citations_extracted)
         self.workflow_thread.preliminary_report_generated.connect(self._on_preliminary_report_generated)
 
+        # Counterfactual analysis signals
+        self.workflow_thread.counterfactual_analysis_complete.connect(self._on_counterfactual_analysis_complete)
+        self.workflow_thread.final_report_generated.connect(self._on_final_report_generated)
+
         # Completion signals
         self.workflow_thread.workflow_completed.connect(self._on_thread_workflow_completed)
         self.workflow_thread.workflow_error.connect(self._on_thread_workflow_error)
@@ -1127,8 +1170,10 @@ class ResearchTabWidget(QWidget):
             'search_documents': 20,
             'score_documents': 40,
             'extract_citations': 60,
-            'generate_preliminary_report': 80,
-            'counterfactual_analysis': 90
+            'generate_preliminary_report': 70,
+            'counterfactual_analysis': 75,
+            'search_contradictory_evidence': 85,
+            'generate_final_report': 95
         }
         progress = step_progress_map.get(step_name, 0)
         self.progress_bar.setValue(progress)
@@ -1364,6 +1409,167 @@ class ResearchTabWidget(QWidget):
             )
 
         self.status_message.emit(f"Generated preliminary report ({word_count} words)")
+
+    @Slot(dict)
+    def _on_counterfactual_analysis_complete(self, results: dict) -> None:
+        """
+        Handle counterfactual analysis complete signal.
+
+        Updates the Counterfactual tab with analysis results.
+
+        Args:
+            results: Dictionary with counterfactual analysis results
+        """
+        self.logger.info(f"Counterfactual analysis complete: {results.get('question_count', 0)} questions")
+
+        # Store results for later display
+        self.counterfactual_results = results
+
+        # Update status
+        question_count = results.get('question_count', 0)
+        doc_count = results.get('document_count', 0)
+        self.status_message.emit(
+            f"Counterfactual analysis: {question_count} questions, {doc_count} contradictory documents"
+        )
+
+        # Update Counterfactual tab (will be implemented next)
+        self._update_counterfactual_tab(results)
+
+    @Slot(str)
+    def _on_final_report_generated(self, report: str) -> None:
+        """
+        Handle final comprehensive report generated signal.
+
+        Updates the Report tab with the comprehensive balanced report.
+
+        Args:
+            report: Markdown-formatted comprehensive report
+        """
+        self.logger.info(f"Final report generated ({len(report)} characters)")
+
+        # Update the Report tab with markdown
+        if hasattr(self, 'report_viewer'):
+            self.report_viewer.set_markdown(report)
+
+        # Update summary label (word count approximation)
+        word_count = len(report.split())
+        if hasattr(self, 'report_summary_label'):
+            self.report_summary_label.setText(
+                f"✅ Comprehensive report generated | ~{word_count} words | {len(report)} characters"
+            )
+
+        self.status_message.emit(f"Generated comprehensive final report ({word_count} words)")
+
+    def _update_counterfactual_tab(self, results: dict) -> None:
+        """
+        Update the Counterfactual tab with analysis results.
+
+        Args:
+            results: Dictionary containing counterfactual analysis results
+        """
+        try:
+            # Clear existing widgets
+            self._clear_layout_widgets(self.counterfactual_layout)
+
+            # Update summary label
+            question_count = results.get('question_count', 0)
+            doc_count = results.get('document_count', 0)
+            self.counterfactual_summary_label.setText(
+                f"✅ Analysis complete | {question_count} counterfactual questions | "
+                f"{doc_count} potentially contradictory documents found"
+            )
+
+            if question_count == 0:
+                # Show message if no questions generated
+                no_questions_label = QLabel("No counterfactual questions were generated.")
+                no_questions_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                no_questions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.counterfactual_layout.addWidget(no_questions_label)
+                self.counterfactual_layout.addStretch()
+                return
+
+            # Display counterfactual questions
+            questions = results.get('questions', [])
+            for i, question in enumerate(questions, 1):
+                # Create question card
+                card = QFrame()
+                card.setFrameShape(QFrame.Shape.StyledPanel)
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {UIConstants.COLOR_WHITE};
+                        border: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                        border-radius: 6px;
+                        padding: 12px;
+                    }}
+                """)
+
+                card_layout = QVBoxLayout(card)
+                card_layout.setSpacing(8)
+
+                # Question number and priority
+                header_layout = QHBoxLayout()
+                question_number = QLabel(f"Question {i}")
+                question_number.setStyleSheet("font-weight: bold; font-size: 11pt;")
+                header_layout.addWidget(question_number)
+
+                priority = getattr(question, 'priority', 'MEDIUM')
+                priority_label = QLabel(f"Priority: {priority}")
+                priority_colors = {
+                    'HIGH': '#F44336',
+                    'MEDIUM': '#FF9800',
+                    'LOW': '#9E9E9E'
+                }
+                priority_color = priority_colors.get(priority, '#9E9E9E')
+                priority_label.setStyleSheet(f"color: {priority_color}; font-weight: bold;")
+                header_layout.addWidget(priority_label)
+                header_layout.addStretch()
+
+                card_layout.addLayout(header_layout)
+
+                # Research question
+                question_text = getattr(question, 'question', 'No question text')
+                question_label = QLabel(f"<b>Research Question:</b><br>{question_text}")
+                question_label.setWordWrap(True)
+                question_label.setStyleSheet("padding: 4px;")
+                card_layout.addWidget(question_label)
+
+                # Counterfactual statement
+                cf_statement = getattr(question, 'counterfactual_statement', '')
+                if cf_statement:
+                    statement_label = QLabel(f"<b>Counterfactual Statement:</b><br>{cf_statement}")
+                    statement_label.setWordWrap(True)
+                    statement_label.setStyleSheet(f"padding: 4px; color: {UIConstants.COLOR_TEXT_GREY};")
+                    card_layout.addWidget(statement_label)
+
+                # Reasoning
+                reasoning = getattr(question, 'reasoning', '')
+                if reasoning:
+                    reasoning_label = QLabel(f"<b>Reasoning:</b><br>{reasoning}")
+                    reasoning_label.setWordWrap(True)
+                    reasoning_label.setStyleSheet("padding: 4px; font-style: italic;")
+                    card_layout.addWidget(reasoning_label)
+
+                # Search keywords
+                keywords = getattr(question, 'search_keywords', [])
+                if keywords:
+                    keywords_text = ", ".join(keywords[:10])  # Limit display
+                    keywords_label = QLabel(f"<b>Search Keywords:</b> {keywords_text}")
+                    keywords_label.setWordWrap(True)
+                    keywords_label.setStyleSheet(f"padding: 4px; color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+                    card_layout.addWidget(keywords_label)
+
+                self.counterfactual_layout.addWidget(card)
+
+            # Show contradictory documents summary
+            if doc_count > 0:
+                doc_summary = QLabel(f"\n📚 Found {doc_count} potentially contradictory documents")
+                doc_summary.setStyleSheet("font-weight: bold; font-size: 10pt; padding-top: 10px;")
+                self.counterfactual_layout.addWidget(doc_summary)
+
+            self.counterfactual_layout.addStretch()
+
+        except Exception as e:
+            self.logger.error(f"Error updating counterfactual tab: {e}", exc_info=True)
 
     def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
         """
