@@ -269,3 +269,46 @@ CitationCard QTextEdit {
     font-size: 9pt;
     color: #d4d4d4;
 }
+
+/* PDF Buttons */
+QPushButton#pdf_view_button {
+    background-color: #1976D2;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    min-height: 40px;
+}
+
+QPushButton#pdf_view_button:hover {
+    background-color: #2196F3;
+}
+
+QPushButton#pdf_fetch_button {
+    background-color: #F57C00;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    min-height: 40px;
+}
+
+QPushButton#pdf_fetch_button:hover {
+    background-color: #FB8C00;
+}
+
+QPushButton#pdf_upload_button {
+    background-color: #388E3C;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    min-height: 40px;
+}
+
+QPushButton#pdf_upload_button:hover {
+    background-color: #43A047;
+}
