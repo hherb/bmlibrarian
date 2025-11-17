@@ -6,6 +6,7 @@ different tabs and plugins.
 """
 
 from .document_card import DocumentCard
+from .collapsible_document_card import CollapsibleDocumentCard
 from .citation_card import CitationCard
 from .markdown_viewer import MarkdownViewer
 from .collapsible_section import CollapsibleSection
@@ -20,6 +21,7 @@ from . import card_utils
 
 __all__ = [
     'DocumentCard',
+    'CollapsibleDocumentCard',
     'CitationCard',
     'MarkdownViewer',
     'CollapsibleSection',
