@@ -97,13 +97,66 @@ def create_min_relevant_field(value: int, on_change_handler) -> ft.TextField:
     )
 
 
+def create_search_strategy_checkboxes(
+    keyword_enabled: bool,
+    bm25_enabled: bool,
+    semantic_enabled: bool,
+    hyde_enabled: bool,
+    on_keyword_change,
+    on_bm25_change,
+    on_semantic_change,
+    on_hyde_change
+) -> ft.Container:
+    """Create checkboxes for search strategy selection."""
+    return ft.Container(
+        content=ft.Column([
+            ft.Text(
+                "Search Strategies",
+                size=12,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.GREY_700
+            ),
+            ft.Row([
+                ft.Checkbox(
+                    label="Keyword",
+                    value=keyword_enabled,
+                    on_change=on_keyword_change,
+                    tooltip="PostgreSQL full-text search"
+                ),
+                ft.Checkbox(
+                    label="BM25",
+                    value=bm25_enabled,
+                    on_change=on_bm25_change,
+                    tooltip="Probabilistic ranking (BM25)"
+                ),
+                ft.Checkbox(
+                    label="Semantic",
+                    value=semantic_enabled,
+                    on_change=on_semantic_change,
+                    tooltip="Vector similarity search using embeddings"
+                ),
+                ft.Checkbox(
+                    label="HyDE",
+                    value=hyde_enabled,
+                    on_change=on_hyde_change,
+                    tooltip="Hypothetical Document Embeddings search"
+                )
+            ], spacing=15)
+        ], spacing=5),
+        padding=ft.padding.all(10),
+        bgcolor=ft.Colors.BLUE_50,
+        border_radius=5
+    )
+
+
 def create_controls_section(
     question_field: ft.TextField,
     max_results_field: ft.TextField,
     min_relevant_field: ft.TextField,
     human_loop_toggle: ft.Switch,
     counterfactual_toggle: ft.Switch,
-    start_button: ft.ElevatedButton
+    start_button: ft.ElevatedButton,
+    search_strategy_checkboxes: Optional[ft.Container] = None
 ) -> ft.Container:
     """Create the controls section with reorganized layout."""
     # First row: Question field and Start button
@@ -126,11 +179,15 @@ def create_controls_section(
     ], alignment=ft.MainAxisAlignment.START,
        vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+    # Build layout rows
+    layout_rows = [first_row, second_row]
+
+    # Add search strategy checkboxes if provided
+    if search_strategy_checkboxes:
+        layout_rows.append(search_strategy_checkboxes)
+
     return ft.Container(
-        content=ft.Column([
-            first_row,
-            second_row
-        ], spacing=15),
+        content=ft.Column(layout_rows, spacing=15),
         padding=ft.padding.all(15),
         bgcolor=ft.Colors.GREY_50,
         border_radius=10,

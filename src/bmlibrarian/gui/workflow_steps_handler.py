@@ -383,7 +383,8 @@ class WorkflowStepsHandler:
                 question=research_question,
                 max_rows=override_max_results,
                 human_in_the_loop=interactive_mode,
-                human_query_modifier=query_modifier if interactive_mode else None
+                human_query_modifier=query_modifier if interactive_mode else None,
+                search_config=self.config_overrides.get('search_strategy')
             )
             # Convert generator to list
             documents = list(documents_generator)
@@ -462,7 +463,8 @@ class WorkflowStepsHandler:
                         max_retry=search_config.get('max_retry', 3),
                         batch_size=search_config.get('batch_size', 100),
                         scoring_agent=self.agents['scoring_agent'],
-                        progress_callback=search_callback
+                        progress_callback=search_callback,
+                        search_config=self.config_overrides.get('search_strategy')
                     )
 
                     if all_documents:
@@ -1240,7 +1242,8 @@ class WorkflowStepsHandler:
                 max_retry=max_retry,
                 batch_size=batch_size,
                 scoring_agent=self.agents['scoring_agent'],
-                progress_callback=gui_progress_callback
+                progress_callback=gui_progress_callback,
+                search_config=self.config_overrides.get('search_strategy')
             )
 
             # Filter out documents we already have

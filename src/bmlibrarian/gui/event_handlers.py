@@ -59,6 +59,34 @@ class EventHandlers:
         if self.app.page:
             self.app.page.update()
 
+    def on_keyword_search_change(self, e):
+        """Handle keyword search checkbox change."""
+        self.app.search_strategy_keyword = e.control.value
+        self._update_search_strategy_config()
+        if self.app.page:
+            self.app.page.update()
+
+    def on_bm25_search_change(self, e):
+        """Handle BM25 search checkbox change."""
+        self.app.search_strategy_bm25 = e.control.value
+        self._update_search_strategy_config()
+        if self.app.page:
+            self.app.page.update()
+
+    def on_semantic_search_change(self, e):
+        """Handle semantic search checkbox change."""
+        self.app.search_strategy_semantic = e.control.value
+        self._update_search_strategy_config()
+        if self.app.page:
+            self.app.page.update()
+
+    def on_hyde_search_change(self, e):
+        """Handle HyDE search checkbox change."""
+        self.app.search_strategy_hyde = e.control.value
+        self._update_search_strategy_config()
+        if self.app.page:
+            self.app.page.update()
+
     def on_step_expand(self, card: StepCard, expanded: bool):
         """Handle step card expansion change."""
         if self.app.page:
@@ -225,6 +253,22 @@ class EventHandlers:
         self.app.config_overrides['min_relevant'] = value
         if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
             self.app.workflow_executor.config_overrides['min_relevant'] = value
+
+    def _update_search_strategy_config(self):
+        """Update search strategy configuration based on checkbox states."""
+        search_strategy_config = {
+            'keyword': {'enabled': self.app.search_strategy_keyword},
+            'bm25': {'enabled': self.app.search_strategy_bm25},
+            'semantic': {'enabled': self.app.search_strategy_semantic},
+            'hyde': {'enabled': self.app.search_strategy_hyde}
+        }
+
+        # Store in config_overrides for workflow executor
+        self.app.config_overrides['search_strategy'] = search_strategy_config
+
+        # Apply to workflow executor if it exists
+        if hasattr(self.app, 'workflow_executor') and self.app.workflow_executor:
+            self.app.workflow_executor.config_overrides['search_strategy'] = search_strategy_config
 
     def _start_workflow_execution(self):
         """Prepare and start workflow execution in a thread."""
