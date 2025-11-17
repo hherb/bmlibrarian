@@ -10,6 +10,28 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional, Dict, List
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Constants for Document Card Factory
+# ============================================================================
+
+# Display limits
+MAX_AUTHORS_BEFORE_ET_AL = 3  # Maximum authors to show before using "et al."
+
+# Score color thresholds
+SCORE_THRESHOLD_EXCELLENT = 4.5  # Threshold for excellent score (green)
+SCORE_THRESHOLD_GOOD = 3.5  # Threshold for good score (blue)
+SCORE_THRESHOLD_MODERATE = 2.5  # Threshold for moderate score (orange)
+# Below MODERATE is considered poor (red)
+
+# Score colors (hex values)
+SCORE_COLOR_EXCELLENT = "#2E7D32"  # Dark green
+SCORE_COLOR_GOOD = "#1976D2"  # Blue
+SCORE_COLOR_MODERATE = "#F57C00"  # Orange
+SCORE_COLOR_POOR = "#C62828"  # Red
 
 
 class CardContext(Enum):
@@ -103,10 +125,33 @@ class DocumentCardFactoryBase(ABC):
 
         Args:
             base_pdf_dir: Base directory for PDF files (defaults to ~/knowledgebase/pdf)
+
+        Raises:
+            ValueError: If base_pdf_dir is not a valid directory path
         """
         if base_pdf_dir is None:
             base_pdf_dir = Path.home() / "knowledgebase" / "pdf"
+
         self.base_pdf_dir = Path(base_pdf_dir)
+
+        # Validate and create directory if it doesn't exist
+        try:
+            self.base_pdf_dir.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            logger.error(f"Failed to create PDF directory {self.base_pdf_dir}: {e}")
+            raise ValueError(f"Invalid PDF directory: {base_pdf_dir}") from e
+
+        # Check if directory is writable
+        if not self.base_pdf_dir.is_dir():
+            raise ValueError(f"PDF path is not a directory: {base_pdf_dir}")
+
+        # Test write access
+        try:
+            test_file = self.base_pdf_dir / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+        except (PermissionError, OSError) as e:
+            logger.warning(f"PDF directory {self.base_pdf_dir} is not writable: {e}")
 
     @abstractmethod
     def create_card(self, card_data: DocumentCardData) -> Any:
@@ -188,7 +233,11 @@ class DocumentCardFactoryBase(ABC):
 
         return None
 
-    def format_authors(self, authors: Optional[List[str]], max_authors: int = 3) -> str:
+    def format_authors(
+        self,
+        authors: Optional[List[str]],
+        max_authors: int = MAX_AUTHORS_BEFORE_ET_AL
+    ) -> str:
         """
         Format author list for display.
 
@@ -258,37 +307,31 @@ class DocumentCardFactoryBase(ABC):
         Returns:
             Color string (hex or named color)
         """
-        if score >= 4.5:
-            return "#2E7D32"  # Dark green
-        elif score >= 3.5:
-            return "#1976D2"  # Blue
-        elif score >= 2.5:
-            return "#F57C00"  # Orange
+        if score >= SCORE_THRESHOLD_EXCELLENT:
+            return SCORE_COLOR_EXCELLENT
+        elif score >= SCORE_THRESHOLD_GOOD:
+            return SCORE_COLOR_GOOD
+        elif score >= SCORE_THRESHOLD_MODERATE:
+            return SCORE_COLOR_MODERATE
         else:
-            return "#C62828"  # Red
+            return SCORE_COLOR_POOR
 
-    def truncate_abstract(self, abstract: Optional[str], max_length: int = 500) -> str:
+    def truncate_abstract(self, abstract: Optional[str], max_length: int = None) -> str:
         """
-        Truncate abstract to specified length.
+        Return the full abstract (NEVER truncates).
+
+        This method exists for API compatibility but always returns the full abstract.
+        Truncation is disabled because users must be able to verify all data.
 
         Args:
             abstract: Full abstract text
-            max_length: Maximum length before truncation
+            max_length: Ignored - kept for API compatibility only
 
         Returns:
-            Truncated abstract with ellipsis if needed
+            Full abstract text or "No abstract available." if None
         """
         if not abstract:
             return "No abstract available."
 
-        if len(abstract) <= max_length:
-            return abstract
-
-        # Find last complete sentence within limit
-        truncated = abstract[:max_length]
-        last_period = truncated.rfind('. ')
-
-        if last_period > max_length * 0.7:  # At least 70% of desired length
-            return abstract[:last_period + 1]
-
-        return truncated + "..."
+        # NEVER truncate - users need to see full abstract for verification
+        return abstract
