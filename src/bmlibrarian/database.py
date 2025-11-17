@@ -991,7 +991,25 @@ def search_hybrid(
         'fulltext_search_params': None
     }
 
-    logger.info("Starting hybrid search")
+    # Determine which strategies are enabled for better logging
+    enabled_strategies = []
+    if search_config.get('semantic', {}).get('enabled', False):
+        enabled_strategies.append('semantic')
+    if search_config.get('bm25', {}).get('enabled', False):
+        enabled_strategies.append('BM25')
+    if search_config.get('fulltext', search_config.get('keyword', {})).get('enabled', False):
+        enabled_strategies.append('fulltext')
+    if search_config.get('hyde', {}).get('enabled', False):
+        enabled_strategies.append('HyDE')
+
+    # Log appropriate search type
+    if len(enabled_strategies) == 0:
+        logger.info("Starting search (no strategies explicitly enabled, will use fulltext fallback)")
+    elif len(enabled_strategies) == 1:
+        logger.info(f"Starting {enabled_strategies[0]} search")
+    else:
+        logger.info(f"Starting hybrid search (strategies: {', '.join(enabled_strategies)})")
+
     logger.info(f"  Search text: '{search_text}'")
     logger.info(f"  Query text: '{query_text}'")
 
