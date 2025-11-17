@@ -14,8 +14,8 @@ def test_document_interrogation_tab():
 
     def main(page: ft.Page):
         page.title = "Document Interrogation Test"
-        page.window.width = 1200
-        page.window.height = 800
+        page.window.width = 1400
+        page.window.height = 900
 
         # Create app instance
         app = BMLibrarianConfigApp()
@@ -44,11 +44,26 @@ def test_document_interrogation_tab():
         print("   - Chat interface with message bubbles")
         print("")
         print("Test the following:")
-        print("1. Click 'Load Document' button")
-        print("2. Select a .md, .txt, or .pdf file")
-        print("3. Select a model from dropdown")
-        print("4. Type a message in the chat input")
-        print("5. Click Send or press Enter")
+        print("1. Load Document (PDF, Markdown, or Text)")
+        print("   - Click 'Load Document' button")
+        print("   - Select a .md, .txt, or .pdf file")
+        print("")
+        print("2. PDF Features (if PDF loaded)")
+        print("   - Navigate pages with arrow buttons")
+        print("   - Zoom in/out with zoom controls")
+        print("   - Search for text in PDF")
+        print("   - Navigate between search results")
+        print("")
+        print("3. Chat Interface")
+        print("   - Select a model from dropdown")
+        print("   - Type a message in the chat input")
+        print("   - Click Send or press Enter")
+        print("")
+        print("4. Programmatic API (via Python console)")
+        print("   - doc_tab.search_pdf('keyword')")
+        print("   - doc_tab.highlight_pdf_region(0, (100, 100, 300, 120))")
+        print("   - doc_tab.jump_to_pdf_page(5)")
+        print("   - doc_tab.clear_pdf_highlights()")
 
     ft.app(target=main, view=ft.FLET_APP)
 

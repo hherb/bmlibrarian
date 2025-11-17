@@ -8,6 +8,7 @@ for asking questions about the displayed document.
 import flet as ft
 from typing import TYPE_CHECKING, Optional, List, Dict
 from pathlib import Path
+from .pdf_viewer import PDFViewer, PYMUPDF_AVAILABLE
 
 if TYPE_CHECKING:
     from ..config_app import BMLibrarianConfigApp
@@ -30,6 +31,10 @@ class DocumentInterrogationTab:
         self.current_document_content: Optional[str] = None
         self.selected_model: Optional[str] = None
         self.chat_history: List[ChatMessage] = []
+
+        # PDF viewer
+        self.pdf_viewer: Optional[PDFViewer] = None
+        self.is_pdf_loaded = False
 
         # UI controls
         self.file_selector_button = None
@@ -382,38 +387,80 @@ class DocumentInterrogationTab:
 
     def _load_pdf(self, file_path: str):
         """Load and display a PDF document."""
-        # For now, show PDF placeholder
-        # In future: could use pdf2image or PyMuPDF to render pages
-        self.document_viewer.content = ft.Column([
-            ft.Icon(ft.Icons.PICTURE_AS_PDF, size=80, color=ft.Colors.RED_400),
-            ft.Text(
-                Path(file_path).name,
-                size=16,
-                weight=ft.FontWeight.BOLD,
-                text_align=ft.TextAlign.CENTER
-            ),
-            ft.Text(
-                "PDF Preview",
-                size=14,
-                color=ft.Colors.GREY_600,
-                text_align=ft.TextAlign.CENTER
-            ),
-            ft.Container(height=20),
-            ft.Text(
-                "📝 PDF rendering will be implemented in next iteration",
-                size=12,
-                color=ft.Colors.GREY_500,
-                italic=True,
-                text_align=ft.TextAlign.CENTER
-            )
-        ],
-        alignment=ft.MainAxisAlignment.CENTER,
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        expand=True
-        )
+        try:
+            if not PYMUPDF_AVAILABLE:
+                # Show error message if PyMuPDF is not installed
+                self.document_viewer.content = ft.Column([
+                    ft.Icon(ft.Icons.ERROR_OUTLINE, size=80, color=ft.Colors.RED_400),
+                    ft.Text(
+                        "PyMuPDF Not Installed",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        text_align=ft.TextAlign.CENTER,
+                        color=ft.Colors.RED_700
+                    ),
+                    ft.Container(height=10),
+                    ft.Text(
+                        "To view PDF files, install PyMuPDF:",
+                        size=12,
+                        color=ft.Colors.GREY_600,
+                        text_align=ft.TextAlign.CENTER
+                    ),
+                    ft.Text(
+                        "pip install PyMuPDF",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.BLUE_700,
+                        text_align=ft.TextAlign.CENTER
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                expand=True
+                )
+                self.current_document_content = f"[PDF Document: {file_path}] (PyMuPDF not installed)"
+                return
 
-        # Store file path for LLM to process (even if not displayed yet)
-        self.current_document_content = f"[PDF Document: {file_path}]"
+            # Create PDF viewer if not already created
+            if not self.pdf_viewer:
+                self.pdf_viewer = PDFViewer(
+                    page=self.app.page,
+                    on_page_change=self._on_pdf_page_change
+                )
+
+            # Load PDF
+            self.pdf_viewer.load_pdf(file_path)
+
+            # Replace document viewer content with PDF viewer
+            self.document_viewer.content = self.pdf_viewer.build()
+            self.is_pdf_loaded = True
+
+            # Extract all text for LLM processing
+            self.current_document_content = self.pdf_viewer.get_all_text()
+
+        except Exception as ex:
+            # Show error in viewer
+            self.document_viewer.content = ft.Column([
+                ft.Icon(ft.Icons.ERROR_OUTLINE, size=80, color=ft.Colors.RED_400),
+                ft.Text(
+                    "PDF Loading Error",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.RED_700
+                ),
+                ft.Container(height=10),
+                ft.Text(
+                    str(ex),
+                    size=12,
+                    color=ft.Colors.GREY_600,
+                    text_align=ft.TextAlign.CENTER
+                )
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            expand=True
+            )
+            raise Exception(f"Failed to load PDF: {str(ex)}")
 
     def _load_text_document(self, file_path: str):
         """Load and display a text/markdown document."""
@@ -543,6 +590,17 @@ class DocumentInterrogationTab:
             )
             self.app.page.open(snack_bar)
 
+    def _on_pdf_page_change(self, page_num: int, total_pages: int):
+        """
+        Callback when PDF page changes.
+
+        Args:
+            page_num: Current page number (0-indexed)
+            total_pages: Total number of pages
+        """
+        # Can be used to update chat with page context or other UI elements
+        pass
+
     def load_document_programmatically(self, file_path: str):
         """
         Programmatically load a document (for integration with other plugins).
@@ -558,3 +616,59 @@ class DocumentInterrogationTab:
         self.chat_messages_column.controls = [self._create_welcome_message()]
         if self.app.page:
             self.app.page.update()
+
+    # PDF-specific API methods
+
+    def highlight_pdf_region(self, page_num: int, rect: tuple, color: tuple = (255, 200, 0), label: str = ""):
+        """
+        Programmatically highlight a region in the PDF.
+
+        This is useful for highlighting citations or specific passages mentioned
+        in chat responses.
+
+        Args:
+            page_num: Page number (0-indexed)
+            rect: Rectangle (x0, y0, x1, y1) in PDF coordinates
+            color: RGB color tuple (default: orange)
+            label: Optional label for this highlight
+
+        Example:
+            tab.highlight_pdf_region(0, (100, 100, 300, 120), label="Citation 1")
+        """
+        if self.pdf_viewer and self.is_pdf_loaded:
+            self.pdf_viewer.add_highlight(page_num, rect, color, label)
+
+    def search_pdf(self, text: str) -> int:
+        """
+        Search for text in the PDF and highlight all occurrences.
+
+        Args:
+            text: Text to search for
+
+        Returns:
+            Number of results found
+
+        Example:
+            count = tab.search_pdf("cardiovascular")
+        """
+        if self.pdf_viewer and self.is_pdf_loaded:
+            return self.pdf_viewer.search_and_highlight(text)
+        return 0
+
+    def clear_pdf_highlights(self):
+        """Clear all programmatic PDF highlights."""
+        if self.pdf_viewer and self.is_pdf_loaded:
+            self.pdf_viewer.clear_highlights()
+
+    def jump_to_pdf_page(self, page_num: int):
+        """
+        Jump to a specific PDF page.
+
+        Args:
+            page_num: Page number (0-indexed)
+
+        Example:
+            tab.jump_to_pdf_page(5)  # Jump to page 6
+        """
+        if self.pdf_viewer and self.is_pdf_loaded:
+            self.pdf_viewer.jump_to_page(page_num)
