@@ -13,6 +13,8 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont
 from typing import Optional, List, Dict, Any
 import psycopg
+import re
+from datetime import datetime
 
 from bmlibrarian.config import get_config
 from bmlibrarian.agents.query_agent import QueryAgent
@@ -20,11 +22,167 @@ from bmlibrarian.database import search_hybrid
 from ...widgets.document_card import DocumentCard
 
 
+# ============================================================================
+# Configuration Constants - Algorithm Parameters
+# ============================================================================
+# These constants define default parameters for search algorithms.
+# They can be overridden through configuration files or UI controls.
+
+# BM25 ranking algorithm parameters (Best Match 25)
+# See: Robertson & Zaragoza (2009) "The Probabilistic Relevance Framework: BM25 and Beyond"
+DEFAULT_BM25_K1 = 1.2  # Term frequency saturation parameter (typical range: 1.2-2.0)
+DEFAULT_BM25_B = 0.75  # Length normalization parameter (typical range: 0.5-0.8)
+
+# Reciprocal Rank Fusion (RRF) parameter
+# See: Cormack, Clarke & Buettcher (2009) "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods"
+DEFAULT_RRF_K = 60  # RRF constant (typical range: 20-100)
+
+# Default weights for hybrid search fusion
+# Higher weights give more importance to that search strategy
+DEFAULT_FUSION_WEIGHTS = {
+    'keyword': 1.0,     # PostgreSQL full-text search
+    'bm25': 1.5,        # BM25 probabilistic ranking
+    'semantic': 2.0,    # Vector similarity search
+    'hyde': 2.0         # Hypothetical Document Embeddings
+}
+
+# Semantic search parameters
+DEFAULT_SEMANTIC_THRESHOLD = 0.7  # Minimum cosine similarity score (0.0-1.0)
+DEFAULT_EMBEDDING_MODEL = 'snowflake-arctic-embed2:latest'
+
+# HyDE (Hypothetical Document Embeddings) parameters
+DEFAULT_HYDE_NUM_DOCS = 3  # Number of hypothetical documents to generate
+DEFAULT_HYDE_GENERATION_MODEL = 'medgemma-27b-text-it-Q8_0:latest'
+DEFAULT_HYDE_THRESHOLD = 0.7  # Minimum similarity threshold
+
+# Worker shutdown parameters
+WORKER_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 3000  # 3 seconds before force termination
+
+# Input validation parameters
+MAX_SEARCH_TEXT_LENGTH = 2000  # Maximum length for search input
+SUSPICIOUS_SQL_PATTERNS = [
+    r';[\s]*DROP', r';[\s]*DELETE', r';[\s]*UPDATE', r';[\s]*INSERT',
+    r'--', r'/\*', r'\*/', r'xp_', r'sp_', r'EXEC', r'EXECUTE'
+]
+
+
+# ============================================================================
+# Utility Functions - Input Validation and Type Safety
+# ============================================================================
+
+def validate_search_input(search_text: str) -> tuple[bool, str]:
+    """
+    Validate user search input for security and safety.
+
+    Checks for:
+    - Empty or whitespace-only input
+    - Excessive length
+    - Suspicious SQL injection patterns
+
+    Args:
+        search_text: User-provided search text
+
+    Returns:
+        Tuple of (is_valid, error_message)
+        - is_valid: True if input passes validation
+        - error_message: Empty string if valid, error description if invalid
+    """
+    # Check for empty input
+    if not search_text or not search_text.strip():
+        return False, "Search text cannot be empty"
+
+    # Check length
+    if len(search_text) > MAX_SEARCH_TEXT_LENGTH:
+        return False, f"Search text too long (max {MAX_SEARCH_TEXT_LENGTH} characters)"
+
+    # Check for suspicious SQL patterns
+    # Note: QueryAgent generates PostgreSQL tsquery, not raw SQL, but defense in depth
+    search_upper = search_text.upper()
+    for pattern in SUSPICIOUS_SQL_PATTERNS:
+        if re.search(pattern, search_upper, re.IGNORECASE):
+            return False, "Search text contains potentially unsafe characters"
+
+    return True, ""
+
+
+def extract_year_from_value(value: Any) -> Optional[int]:
+    """
+    Safely extract year as integer from various input types.
+
+    Handles:
+    - None values (returns None)
+    - Integer values (returns directly)
+    - String values (attempts to parse)
+    - Date/datetime objects (extracts year)
+    - Invalid values (returns None)
+
+    Args:
+        value: Value to extract year from (can be None, int, str, date, datetime)
+
+    Returns:
+        Integer year if successfully extracted, None otherwise
+
+    Examples:
+        >>> extract_year_from_value(2024)
+        2024
+        >>> extract_year_from_value("2024")
+        2024
+        >>> extract_year_from_value("2024-03-15")
+        2024
+        >>> extract_year_from_value(datetime(2024, 3, 15))
+        2024
+        >>> extract_year_from_value(None)
+        None
+        >>> extract_year_from_value("invalid")
+        None
+    """
+    if value is None:
+        return None
+
+    # Handle integer
+    if isinstance(value, int):
+        # Sanity check for reasonable year range
+        if 1800 <= value <= 2200:
+            return value
+        return None
+
+    # Handle string
+    if isinstance(value, str):
+        # Try direct conversion first
+        try:
+            year = int(value)
+            if 1800 <= year <= 2200:
+                return year
+        except ValueError:
+            pass
+
+        # Try extracting first 4 digits (for ISO date strings like "2024-03-15")
+        try:
+            if len(value) >= 4:
+                year = int(value[:4])
+                if 1800 <= year <= 2200:
+                    return year
+        except ValueError:
+            pass
+
+    # Handle date/datetime objects
+    if hasattr(value, 'year'):
+        try:
+            year = int(value.year)
+            if 1800 <= year <= 2200:
+                return year
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
 class SearchWorker(QThread):
     """Worker thread for database search to prevent UI blocking."""
 
     results_ready = Signal(list)
     error_occurred = Signal(str)
+    strategy_info = Signal(dict)  # New signal for search strategy feedback
 
     def __init__(self, search_params: Dict[str, Any]):
         """
@@ -35,6 +193,12 @@ class SearchWorker(QThread):
         """
         super().__init__()
         self.search_params = search_params
+        self._interrupt_requested = False
+
+    def requestInterruption(self):
+        """Request graceful interruption of the search."""
+        self._interrupt_requested = True
+        super().requestInterruption()
 
     def run(self):
         """Execute search in background thread."""
@@ -45,11 +209,18 @@ class SearchWorker(QThread):
                 self.results_ready.emit([])
                 return
 
-            # Generate PostgreSQL tsquery using QueryAgent
-            query_agent = QueryAgent()
-            query_text = query_agent.generate_query(search_text)
+            # Validate search input before processing
+            is_valid, error_msg = validate_search_input(search_text)
+            if not is_valid:
+                self.error_occurred.emit(f"Invalid search input: {error_msg}")
+                return
+
+            # Check for interruption
+            if self._interrupt_requested:
+                return
 
             # Build search configuration from UI settings
+            # Uses constants defined at module level for algorithm parameters
             search_config = {
                 'keyword': {
                     'enabled': self.search_params.get('keyword_enabled', True),
@@ -58,34 +229,47 @@ class SearchWorker(QThread):
                 'bm25': {
                     'enabled': self.search_params.get('bm25_enabled', False),
                     'max_results': self.search_params.get('limit', 100),
-                    'k1': 1.2,
-                    'b': 0.75
+                    'k1': DEFAULT_BM25_K1,
+                    'b': DEFAULT_BM25_B
                 },
                 'semantic': {
                     'enabled': self.search_params.get('semantic_enabled', False),
                     'max_results': self.search_params.get('limit', 100),
-                    'embedding_model': 'snowflake-arctic-embed2:latest',
-                    'similarity_threshold': 0.7
+                    'embedding_model': DEFAULT_EMBEDDING_MODEL,
+                    'similarity_threshold': DEFAULT_SEMANTIC_THRESHOLD
                 },
                 'hyde': {
                     'enabled': self.search_params.get('hyde_enabled', False),
                     'max_results': self.search_params.get('limit', 100),
-                    'generation_model': 'medgemma-27b-text-it-Q8_0:latest',
-                    'embedding_model': 'snowflake-arctic-embed2:latest',
-                    'num_hypothetical_docs': 3,
-                    'similarity_threshold': 0.7
+                    'generation_model': DEFAULT_HYDE_GENERATION_MODEL,
+                    'embedding_model': DEFAULT_EMBEDDING_MODEL,
+                    'num_hypothetical_docs': DEFAULT_HYDE_NUM_DOCS,
+                    'similarity_threshold': DEFAULT_HYDE_THRESHOLD
                 },
                 'reranking': {
                     'method': self.search_params.get('reranking_method', 'sum_scores'),
-                    'rrf_k': 60,
-                    'weights': {
-                        'keyword': 1.0,
-                        'bm25': 1.5,
-                        'semantic': 2.0,
-                        'hyde': 2.0
-                    }
+                    'rrf_k': DEFAULT_RRF_K,
+                    'weights': DEFAULT_FUSION_WEIGHTS.copy()
                 }
             }
+
+            # Only generate PostgreSQL tsquery if keyword or BM25 search is enabled
+            # Semantic and HyDE search work directly with search_text embeddings
+            query_text = None
+            needs_fulltext_query = (
+                search_config['keyword']['enabled'] or
+                search_config['bm25']['enabled']
+            )
+
+            if needs_fulltext_query:
+                # Generate PostgreSQL tsquery using QueryAgent
+                # Note: QueryAgent.convert_question() already performs additional validation
+                query_agent = QueryAgent()
+                query_text = query_agent.convert_question(search_text)
+
+                # Check for interruption after query generation
+                if self._interrupt_requested:
+                    return
 
             # Determine source filters
             use_pubmed = self.search_params.get('source') in [None, 'pubmed']
@@ -102,8 +286,24 @@ class SearchWorker(QThread):
                 use_others=use_others
             )
 
+            # Emit strategy information for user feedback
+            # Extract strategy-specific result counts from metadata
+            strategy_info = {
+                'total_before_filters': len(documents),
+                'strategies_used': [],
+                'strategy_counts': {}
+            }
+
+            if strategy_metadata:
+                for strategy_name, metadata in strategy_metadata.items():
+                    if isinstance(metadata, dict) and metadata.get('documents_found', 0) > 0:
+                        strategy_info['strategies_used'].append(strategy_name)
+                        strategy_info['strategy_counts'][strategy_name] = metadata.get('documents_found', 0)
+
             # Apply additional filters (year, journal) if specified
+            # Early filtering for memory efficiency
             filtered_docs = self._apply_filters(documents)
+            strategy_info['after_filters'] = len(filtered_docs)
 
             # Sort by combined score (descending) if available, otherwise by date
             if filtered_docs and '_combined_score' in filtered_docs[0]:
@@ -115,10 +315,15 @@ class SearchWorker(QThread):
                     reverse=True
                 )
 
-            # Limit results
+            # Limit results (already filtered, so this is efficient)
             limit = self.search_params.get('limit', 100)
             filtered_docs = filtered_docs[:limit]
+            strategy_info['final_count'] = len(filtered_docs)
 
+            # Emit strategy information before results
+            self.strategy_info.emit(strategy_info)
+
+            # Emit results
             self.results_ready.emit(filtered_docs)
 
         except Exception as e:
@@ -127,7 +332,17 @@ class SearchWorker(QThread):
             self.error_occurred.emit(error_msg)
 
     def _apply_filters(self, documents: List[Dict]) -> List[Dict]:
-        """Apply year and journal filters to documents."""
+        """
+        Apply year and journal filters to documents.
+
+        Uses type-safe year extraction to handle various date formats robustly.
+
+        Args:
+            documents: List of document dictionaries
+
+        Returns:
+            Filtered list of documents matching year and journal criteria
+        """
         filtered = []
 
         year_from = self.search_params.get('year_from')
@@ -135,28 +350,26 @@ class SearchWorker(QThread):
         journal_filter = self.search_params.get('journal', '').strip().lower()
 
         for doc in documents:
-            # Year filter
+            # Year filter with type-safe extraction
             if year_from or year_to:
-                doc_year = doc.get('year')
+                # Try to get year from 'year' field first
+                doc_year = extract_year_from_value(doc.get('year'))
+
+                # If no year field, try publication_date
                 if doc_year is None:
-                    # Try to extract from publication_date
                     pub_date = doc.get('publication_date')
                     if pub_date:
-                        if isinstance(pub_date, str):
-                            try:
-                                doc_year = int(pub_date[:4])
-                            except (ValueError, IndexError):
-                                continue
-                        else:
-                            doc_year = pub_date.year
+                        doc_year = extract_year_from_value(pub_date)
 
+                # Apply year range filters
                 if year_from and (doc_year is None or doc_year < year_from):
                     continue
                 if year_to and (doc_year is None or doc_year > year_to):
                     continue
 
-            # Journal filter
+            # Journal filter (case-insensitive substring match)
             if journal_filter:
+                # Check both 'journal' and 'publication' fields
                 doc_journal = (doc.get('journal') or doc.get('publication') or '').lower()
                 if journal_filter not in doc_journal:
                     continue
@@ -507,6 +720,7 @@ class SearchTabWidget(QWidget):
         self.worker = SearchWorker(search_params)
         self.worker.results_ready.connect(self._on_results)
         self.worker.error_occurred.connect(self._on_error)
+        self.worker.strategy_info.connect(self._on_strategy_info)
         self.worker.start()
 
     def _on_results(self, results: List[Dict[str, Any]]):
@@ -552,6 +766,46 @@ class SearchTabWidget(QWidget):
             "Search Error",
             f"Search failed:\n\n{error}\n\nPlease check your database connection and configuration."
         )
+
+    def _on_strategy_info(self, strategy_info: Dict[str, Any]):
+        """
+        Handle search strategy feedback information.
+
+        Displays which strategies were used and how many documents each found.
+
+        Args:
+            strategy_info: Dictionary containing strategy metadata
+                - strategies_used: List of strategy names
+                - strategy_counts: Dict mapping strategy names to document counts
+                - total_before_filters: Total docs before filtering
+                - after_filters: Docs after year/journal filters
+                - final_count: Final doc count after limit
+        """
+        # Build strategy feedback message
+        strategies = strategy_info.get('strategies_used', [])
+        counts = strategy_info.get('strategy_counts', {})
+
+        if strategies:
+            strategy_details = []
+            for strategy in strategies:
+                count = counts.get(strategy, 0)
+                strategy_details.append(f"{strategy}: {count}")
+
+            strategy_msg = " | ".join(strategy_details)
+
+            # Show filtering impact if applicable
+            total_before = strategy_info.get('total_before_filters', 0)
+            after_filter = strategy_info.get('after_filters', 0)
+            final = strategy_info.get('final_count', 0)
+
+            if after_filter < total_before:
+                strategy_msg += f" → {after_filter} after filters → {final} final"
+            elif final < total_before:
+                strategy_msg += f" → {final} after limit"
+
+            self.status_message.emit(f"Search strategies: {strategy_msg}")
+        else:
+            self.status_message.emit("Search completed with no strategy results")
 
     def _on_document_clicked(self, document_data: Dict[str, Any]):
         """
@@ -609,7 +863,17 @@ class SearchTabWidget(QWidget):
         self.status_message.emit("Filters cleared")
 
     def cleanup(self):
-        """Cleanup resources when tab is closed."""
+        """
+        Cleanup resources when tab is closed.
+
+        Implements graceful shutdown with timeout to prevent resource leaks.
+        """
         if self.worker and self.worker.isRunning():
-            self.worker.terminate()
-            self.worker.wait()
+            # Request graceful interruption first
+            self.worker.requestInterruption()
+
+            # Wait for graceful shutdown with timeout
+            if not self.worker.wait(WORKER_GRACEFUL_SHUTDOWN_TIMEOUT_MS):
+                # If graceful shutdown times out, force termination as last resort
+                self.worker.terminate()
+                self.worker.wait()  # Wait for termination to complete
