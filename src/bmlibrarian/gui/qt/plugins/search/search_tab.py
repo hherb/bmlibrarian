@@ -333,7 +333,7 @@ class SearchWorker(QThread):
 
     def _apply_filters(self, documents: List[Dict]) -> List[Dict]:
         """
-        Apply year and journal filters to documents.
+        Apply year filters to documents.
 
         Uses type-safe year extraction to handle various date formats robustly.
 
@@ -341,13 +341,12 @@ class SearchWorker(QThread):
             documents: List of document dictionaries
 
         Returns:
-            Filtered list of documents matching year and journal criteria
+            Filtered list of documents matching year criteria
         """
         filtered = []
 
         year_from = self.search_params.get('year_from')
         year_to = self.search_params.get('year_to')
-        journal_filter = self.search_params.get('journal', '').strip().lower()
 
         for doc in documents:
             # Year filter with type-safe extraction
@@ -365,13 +364,6 @@ class SearchWorker(QThread):
                 if year_from and (doc_year is None or doc_year < year_from):
                     continue
                 if year_to and (doc_year is None or doc_year > year_to):
-                    continue
-
-            # Journal filter (case-insensitive substring match)
-            if journal_filter:
-                # Check both 'journal' and 'publication' fields
-                doc_journal = (doc.get('journal') or doc.get('publication') or '').lower()
-                if journal_filter not in doc_journal:
                     continue
 
             filtered.append(doc)
@@ -409,7 +401,6 @@ class SearchTabWidget(QWidget):
         self.text_query_edit: Optional[QLineEdit] = None
         self.year_from_spin: Optional[QSpinBox] = None
         self.year_to_spin: Optional[QSpinBox] = None
-        self.journal_edit: Optional[QLineEdit] = None
         self.source_combo: Optional[QComboBox] = None
         self.limit_spin: Optional[QSpinBox] = None
         self.keyword_check: Optional[QCheckBox] = None
@@ -455,15 +446,29 @@ class SearchTabWidget(QWidget):
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
 
-        # Text search
-        text_layout = QFormLayout()
-        self.text_query_edit = QLineEdit()
-        self.text_query_edit.setPlaceholderText("Search in title or abstract...")
-        self.text_query_edit.returnPressed.connect(self._on_search)
-        text_layout.addRow("Text Search:", self.text_query_edit)
-        layout.addLayout(text_layout)
+        # Main search box - prominent and wide
+        search_box_layout = QHBoxLayout()
+        search_label = QLabel("Search for:")
+        search_label.setMinimumWidth(80)
+        search_box_layout.addWidget(search_label)
 
-        # Filters row 1: Year range and Journal
+        self.text_query_edit = QLineEdit()
+        self.text_query_edit.setPlaceholderText("Enter your research question or search query...")
+        self.text_query_edit.setMinimumWidth(400)
+        self.text_query_edit.returnPressed.connect(self._on_search)
+        search_box_layout.addWidget(self.text_query_edit, stretch=1)  # Expand to fill available space
+
+        search_btn = QPushButton("Search")
+        search_btn.setStyleSheet(
+            "background-color: #3498db; color: white; padding: 8px 20px; font-weight: bold;"
+        )
+        search_btn.setMinimumWidth(100)
+        search_btn.clicked.connect(self._on_search)
+        search_box_layout.addWidget(search_btn)
+
+        layout.addLayout(search_box_layout)
+
+        # Filters row 1: Year range
         filters_layout1 = QHBoxLayout()
 
         # Year from
@@ -488,14 +493,7 @@ class SearchTabWidget(QWidget):
         year_to_layout.addWidget(self.year_to_spin)
         filters_layout1.addLayout(year_to_layout)
 
-        # Journal
-        journal_layout = QHBoxLayout()
-        journal_layout.addWidget(QLabel("Journal:"))
-        self.journal_edit = QLineEdit()
-        self.journal_edit.setPlaceholderText("Any journal")
-        journal_layout.addWidget(self.journal_edit)
-        filters_layout1.addLayout(journal_layout)
-
+        filters_layout1.addStretch()
         layout.addLayout(filters_layout1)
 
         # Filters row 2: Source and Limit
@@ -526,15 +524,8 @@ class SearchTabWidget(QWidget):
         strategies_layout = self._create_search_strategies_section()
         layout.addLayout(strategies_layout)
 
-        # Search button
+        # Clear button
         button_layout = QHBoxLayout()
-        search_btn = QPushButton("Search Documents")
-        search_btn.setStyleSheet(
-            "background-color: #3498db; color: white; padding: 10px 30px; font-weight: bold;"
-        )
-        search_btn.clicked.connect(self._on_search)
-        button_layout.addWidget(search_btn)
-
         clear_btn = QPushButton("Clear Filters")
         clear_btn.clicked.connect(self._on_clear_filters)
         button_layout.addWidget(clear_btn)
@@ -677,7 +668,6 @@ class SearchTabWidget(QWidget):
             'text_query': self.text_query_edit.text().strip(),
             'year_from': self.year_from_spin.value() if self.year_from_spin.value() > 0 else None,
             'year_to': self.year_to_spin.value() if self.year_to_spin.value() > 0 else None,
-            'journal': self.journal_edit.text().strip() or None,
             'source': self.source_combo.currentText() if self.source_combo.currentText() != "All" else None,
             'limit': self.limit_spin.value(),
             # Search strategy settings
@@ -848,7 +838,6 @@ class SearchTabWidget(QWidget):
         self.text_query_edit.clear()
         self.year_from_spin.setValue(0)
         self.year_to_spin.setValue(0)
-        self.journal_edit.clear()
         self.source_combo.setCurrentIndex(0)
         self.limit_spin.setValue(100)
 
