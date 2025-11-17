@@ -136,6 +136,11 @@ class WorkflowThread(QThread):
         try:
             self.logger.info(f"Workflow thread started: {self.question[:100]}")
 
+            # Set the research question on the executor before starting workflow
+            self.executor.current_question = self.question
+            self.executor.max_results = self.max_results
+            self.logger.debug(f"Executor configured: question='{self.question[:50]}...', max_results={self.max_results}")
+
             # ==================================================================
             # Step 1: Generate Query
             # ==================================================================

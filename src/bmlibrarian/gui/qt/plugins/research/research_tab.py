@@ -383,7 +383,8 @@ class ResearchTabWidget(QWidget):
         self.progress_bar.setVisible(False)  # Hidden until workflow starts
         button_container.addWidget(self.progress_bar)
 
-        row1.addLayout(button_container, alignment=Qt.AlignmentFlag.AlignBottom)
+        row1.addLayout(button_container)
+        row1.setAlignment(button_container, Qt.AlignmentFlag.AlignBottom)
 
         controls_layout.addLayout(row1)
 
@@ -1571,33 +1572,31 @@ class ResearchTabWidget(QWidget):
         except Exception as e:
             self.logger.error(f"Error updating counterfactual tab: {e}", exc_info=True)
 
-    def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
+    def _clear_layout_widgets(self, layout) -> None:
         """
         Safely clear all widgets from a layout with proper cleanup.
 
-        This method uses aggressive signal disconnection (widget.disconnect()) because:
-        1. Widgets are being permanently destroyed via deleteLater()
-        2. We want to prevent any lingering signal connections from causing errors
-        3. These are self-contained UI components with no external dependencies
+        This method properly cleans up widgets by removing them from the layout
+        and scheduling them for deletion. PySide6 will automatically handle
+        signal disconnection when widgets are deleted.
 
         Args:
-            layout: The layout to clear
+            layout: The layout to clear (QVBoxLayout, QHBoxLayout, or QLayout)
         """
         while layout.count():
             child = layout.takeAt(0)
             if child.widget():
                 widget = child.widget()
-                try:
-                    # Disconnect ALL signals - safe because widget is being deleted
-                    # This prevents any lingering connections from accessing deleted objects
-                    widget.disconnect()
-                except RuntimeError:
-                    # Widget already deleted - safe to ignore
-                    pass
-                # Set parent to None to ensure immediate cleanup
-                widget.setParent(None)
-                # Schedule deletion
-                widget.deleteLater()
+                if widget:  # Type guard for None check
+                    # Set parent to None to ensure immediate cleanup
+                    widget.setParent(None)
+                    # Schedule deletion (PySide6 handles signal disconnection automatically)
+                    widget.deleteLater()
+            elif child.layout():
+                # Recursively clear nested layouts
+                nested_layout = child.layout()
+                if nested_layout:  # Type guard for None check
+                    self._clear_layout_widgets(nested_layout)
 
     def _update_literature_tab(self, scored_documents: list) -> None:
         """
@@ -1608,7 +1607,10 @@ class ResearchTabWidget(QWidget):
         """
         try:
             # Clear existing widgets with proper cleanup
-            self._clear_layout_widgets(self.literature_layout)
+            try:
+                self._clear_layout_widgets(self.literature_layout)
+            except Exception as clear_error:
+                self.logger.warning(f"Error clearing layout (will continue): {clear_error}")
 
             if not scored_documents:
                 # Show empty state
@@ -1623,14 +1625,19 @@ class ResearchTabWidget(QWidget):
             sorted_docs = sorted(scored_documents, key=lambda x: x[1].get('score', 0), reverse=True)
 
             # Create document cards
+            cards_created = 0
             for i, (doc, score_result) in enumerate(sorted_docs):
-                card = self._create_document_score_card(i + 1, doc, score_result)
-                self.literature_layout.addWidget(card)
+                try:
+                    card = self._create_document_score_card(i + 1, doc, score_result)
+                    self.literature_layout.addWidget(card)
+                    cards_created += 1
+                except Exception as card_error:
+                    self.logger.error(f"Error creating card for document {i+1}: {card_error}", exc_info=True)
 
             # Add stretch at the end
             self.literature_layout.addStretch()
 
-            self.logger.info(f"Literature tab updated with {len(scored_documents)} documents")
+            self.logger.info(f"Literature tab updated with {cards_created}/{len(scored_documents)} documents")
 
         except Exception as e:
             self.logger.error(f"Error updating literature tab: {e}", exc_info=True)
@@ -1644,7 +1651,10 @@ class ResearchTabWidget(QWidget):
         """
         try:
             # Clear existing widgets with proper cleanup
-            self._clear_layout_widgets(self.citations_layout)
+            try:
+                self._clear_layout_widgets(self.citations_layout)
+            except Exception as clear_error:
+                self.logger.warning(f"Error clearing layout (will continue): {clear_error}")
 
             if not citations:
                 # Show empty state
@@ -1656,14 +1666,19 @@ class ResearchTabWidget(QWidget):
                 return
 
             # Create citation cards
+            cards_created = 0
             for i, citation in enumerate(citations):
-                card = self._create_citation_card(i + 1, citation)
-                self.citations_layout.addWidget(card)
+                try:
+                    card = self._create_citation_card(i + 1, citation)
+                    self.citations_layout.addWidget(card)
+                    cards_created += 1
+                except Exception as card_error:
+                    self.logger.error(f"Error creating citation card {i+1}: {card_error}", exc_info=True)
 
             # Add stretch at the end
             self.citations_layout.addStretch()
 
-            self.logger.info(f"Citations tab updated with {len(citations)} citations")
+            self.logger.info(f"Citations tab updated with {cards_created}/{len(citations)} citations")
 
         except Exception as e:
             self.logger.error(f"Error updating citations tab: {e}", exc_info=True)

@@ -445,14 +445,14 @@ Respond only with valid JSON."""
         citations = []
         qualifying_docs = [
             (doc, score) for doc, score in scored_documents
-            if score.get('score', 0) > score_threshold
+            if score.get('score', 0) >= score_threshold
         ]
 
         if not qualifying_docs:
-            logger.info(f"No documents above score threshold {score_threshold}")
+            logger.info(f"No documents meeting score threshold {score_threshold}")
             return citations
 
-        logger.info(f"Processing {len(qualifying_docs)} documents above threshold {score_threshold}")
+        logger.info(f"Processing {len(qualifying_docs)} documents at or above threshold {score_threshold}")
 
         for i, (document, score_result) in enumerate(qualifying_docs):
             # Call progress callback with document title
@@ -492,15 +492,15 @@ Respond only with valid JSON."""
         if not self.orchestrator:
             logger.error("No orchestrator available for task submission")
             return None
-        
-        # Filter documents above threshold
+
+        # Filter documents at or above threshold
         qualifying_docs = [
-            (doc, score) for doc, score in scored_documents 
-            if score.get('score', 0) > score_threshold
+            (doc, score) for doc, score in scored_documents
+            if score.get('score', 0) >= score_threshold
         ]
-        
+
         if not qualifying_docs:
-            logger.info(f"No documents above score threshold {score_threshold}")
+            logger.info(f"No documents meeting score threshold {score_threshold}")
             return []
         
         # Prepare task data for each document
@@ -591,15 +591,15 @@ Respond only with valid JSON."""
         if not self.orchestrator:
             logger.error("Orchestrator required for queue processing")
             return
-        
+
         # Filter qualifying documents
         qualifying_docs = [
-            (doc, score) for doc, score in scored_documents 
-            if score.get('score', 0) > score_threshold
+            (doc, score) for doc, score in scored_documents
+            if score.get('score', 0) >= score_threshold
         ]
-        
+
         if not qualifying_docs:
-            logger.info(f"No documents above threshold {score_threshold}")
+            logger.info(f"No documents meeting threshold {score_threshold}")
             return
         
         # Submit tasks in batches
@@ -807,11 +807,11 @@ Respond only with valid JSON."""
         qualifying_docs = [
             (doc, score_result, scoring_id)
             for doc, score_result, scoring_id in scored_documents_with_ids
-            if score_result.get('score', 0) > score_threshold
+            if score_result.get('score', 0) >= score_threshold
         ]
 
         if not qualifying_docs:
-            logger.info(f"No documents above score threshold {score_threshold}")
+            logger.info(f"No documents meeting score threshold {score_threshold}")
             return []
 
         results = []
