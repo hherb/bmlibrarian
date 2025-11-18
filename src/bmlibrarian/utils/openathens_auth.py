@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 class OpenAthensConfig:
     """Configuration for OpenAthens authentication."""
+class OpenAthensAuth:
+    """Manages OpenAthens authentication and session persistence."""
 
     def __init__(
         self,

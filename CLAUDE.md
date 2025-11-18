@@ -37,6 +37,12 @@ The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides f
 - **AI/LLM configuration:**
   - Ollama service typically runs on `http://localhost:11434`
   - Models used: `gpt-oss:20b` (default for complex tasks), `medgemma4B_it_q8:latest` (fast processing)
+- **OpenAthens proxy authentication** (optional):
+  - Enable institutional access to paywalled PDFs via OpenAthens proxy
+  - Supports 2FA authentication with persistent sessions (24 hours default)
+  - Configure in `config.json` under `"openathens"` section
+  - Requires Playwright: `uv add playwright && uv run python -m playwright install chromium`
+  - See: `doc/OPENATHENS_QUICKSTART.md` and `doc/users/openathens_guide.md`
 
 ## Development Commands
 
