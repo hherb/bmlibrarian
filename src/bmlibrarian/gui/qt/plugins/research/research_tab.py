@@ -192,6 +192,7 @@ class ResearchTabWidget(QWidget):
         self.current_results: dict = {}
         self.counterfactual_results: Optional[dict] = None
         self.workflow_running: bool = False
+        self.final_report_markdown: str = ""  # Store final report for export
 
         # Validation state (prevent infinite spinbox adjustment loops)
         self._validation_in_progress: bool = False
@@ -893,16 +894,86 @@ class ResearchTabWidget(QWidget):
         return tab
 
     def _create_report_tab(self) -> QWidget:
-        """Create Final Report tab."""
+        """Create Final Report tab with export buttons."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # Header
+        # Header row with title and export buttons
+        header_row = QHBoxLayout()
+
+        # Header label
         header_label = QLabel("📋 Final Comprehensive Report")
         header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY_BLUE};")
-        layout.addWidget(header_label)
+        header_row.addWidget(header_label)
+
+        header_row.addStretch()
+
+        # Export buttons container
+        export_buttons_layout = QHBoxLayout()
+        export_buttons_layout.setSpacing(10)
+
+        # Save Markdown button
+        self.report_save_markdown_button = QPushButton("Save Report (Markdown)")
+        self.report_save_markdown_button.setIcon(self.report_save_markdown_button.style().standardIcon(
+            self.report_save_markdown_button.style().StandardPixmap.SP_DialogSaveButton
+        ))
+        self.report_save_markdown_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+                color: #757575;
+            }
+        """)
+        self.report_save_markdown_button.setEnabled(False)  # Disabled until report is ready
+        self.report_save_markdown_button.clicked.connect(self._on_save_markdown_report)
+        export_buttons_layout.addWidget(self.report_save_markdown_button)
+
+        # Export JSON button
+        self.report_export_json_button = QPushButton("Export as JSON")
+        self.report_export_json_button.setIcon(self.report_export_json_button.style().standardIcon(
+            self.report_export_json_button.style().StandardPixmap.SP_FileDialogDetailedView
+        ))
+        self.report_export_json_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:pressed {
+                background-color: #1565C0;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+                color: #757575;
+            }
+        """)
+        self.report_export_json_button.setEnabled(False)  # Disabled until report is ready
+        self.report_export_json_button.clicked.connect(self._on_export_json_report)
+        export_buttons_layout.addWidget(self.report_export_json_button)
+
+        header_row.addLayout(export_buttons_layout)
+        layout.addLayout(header_row)
 
         # Summary label
         self.report_summary_label = QLabel("No report generated yet")
@@ -1626,6 +1697,9 @@ class ResearchTabWidget(QWidget):
         """
         self.logger.info(f"Final report generated ({len(report)} characters)")
 
+        # Store the final report for export
+        self.final_report_markdown = report
+
         # Update the Report tab with markdown
         if hasattr(self, 'report_viewer'):
             self.report_viewer.set_markdown(report)
@@ -1636,6 +1710,12 @@ class ResearchTabWidget(QWidget):
             self.report_summary_label.setText(
                 f"✅ Comprehensive report generated | ~{word_count} words | {len(report)} characters"
             )
+
+        # Enable export buttons
+        if hasattr(self, 'report_save_markdown_button'):
+            self.report_save_markdown_button.setEnabled(True)
+        if hasattr(self, 'report_export_json_button'):
+            self.report_export_json_button.setEnabled(True)
 
         self.status_message.emit(f"Generated comprehensive final report ({word_count} words)")
 
@@ -2151,6 +2231,142 @@ class ResearchTabWidget(QWidget):
             return error_widget
 
     # ========================================================================
+    # Export Report Handlers
+    # ========================================================================
+
+    @Slot()
+    def _on_save_markdown_report(self) -> None:
+        """Handle Save Report (Markdown) button click."""
+        try:
+            if not hasattr(self, 'final_report_markdown') or not self.final_report_markdown:
+                QMessageBox.warning(
+                    self,
+                    "No Report Available",
+                    "No final report is available to save.\n\n"
+                    "Please complete a research workflow first."
+                )
+                return
+
+            # Get filename from user using file dialog
+            from PySide6.QtWidgets import QFileDialog
+            from datetime import datetime
+
+            # Generate default filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"bmlibrarian_report_{timestamp}.md"
+
+            # Show save file dialog
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Research Report",
+                default_filename,
+                "Markdown Files (*.md);;All Files (*)"
+            )
+
+            if not filename:
+                # User cancelled
+                return
+
+            # Save the report
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(self.final_report_markdown)
+
+            # Show success message
+            file_size = len(self.final_report_markdown.encode('utf-8'))
+            file_size_kb = file_size / 1024
+
+            QMessageBox.information(
+                self,
+                "Report Saved",
+                f"Research report saved successfully!\n\n"
+                f"File: {filename}\n"
+                f"Size: {file_size_kb:.1f} KB\n"
+                f"Words: ~{len(self.final_report_markdown.split())}"
+            )
+
+            self.logger.info(f"Report saved to: {filename} ({file_size_kb:.1f} KB)")
+            self.status_message.emit(f"✅ Report saved to {filename}")
+
+        except Exception as e:
+            self.logger.error(f"Error saving markdown report: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Save Error",
+                f"An error occurred while saving the report:\n\n{str(e)}"
+            )
+
+    @Slot()
+    def _on_export_json_report(self) -> None:
+        """Handle Export as JSON button click."""
+        try:
+            if not self.current_results:
+                QMessageBox.warning(
+                    self,
+                    "No Results Available",
+                    "No research results are available to export.\n\n"
+                    "Please complete a research workflow first."
+                )
+                return
+
+            # Get filename from user using file dialog
+            from PySide6.QtWidgets import QFileDialog
+            from datetime import datetime
+            import json
+
+            # Generate default filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"bmlibrarian_results_{timestamp}.json"
+
+            # Show save file dialog
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Results as JSON",
+                default_filename,
+                "JSON Files (*.json);;All Files (*)"
+            )
+
+            if not filename:
+                # User cancelled
+                return
+
+            # Prepare export data (simplified structure)
+            export_data = {
+                'research_question': self.current_results.get('question', ''),
+                'document_count': self.current_results.get('document_count', 0),
+                'citation_count': self.current_results.get('citation_count', 0),
+                'final_report_markdown': self.current_results.get('final_report', ''),
+                'generated_at': datetime.now().isoformat(),
+                'workflow_status': self.current_results.get('status', 'unknown')
+            }
+
+            # Save the JSON
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+
+            # Show success message
+            file_size = len(json.dumps(export_data, indent=2).encode('utf-8'))
+            file_size_kb = file_size / 1024
+
+            QMessageBox.information(
+                self,
+                "Results Exported",
+                f"Research results exported successfully!\n\n"
+                f"File: {filename}\n"
+                f"Size: {file_size_kb:.1f} KB"
+            )
+
+            self.logger.info(f"Results exported to: {filename} ({file_size_kb:.1f} KB)")
+            self.status_message.emit(f"✅ Results exported to {filename}")
+
+        except Exception as e:
+            self.logger.error(f"Error exporting JSON results: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"An error occurred while exporting the results:\n\n{str(e)}"
+            )
+
+    # ========================================================================
     # Settings Tab Handlers
     # ========================================================================
 
@@ -2236,6 +2452,12 @@ class ResearchTabWidget(QWidget):
             self._safe_disconnect(self.cancel_button.clicked, self._on_cancel_clicked)
             self._safe_disconnect(self.max_results_spin.valueChanged, self._on_max_results_changed)
             self._safe_disconnect(self.min_relevant_spin.valueChanged, self._on_min_relevant_changed)
+
+            # Disconnect export button signals
+            if hasattr(self, 'report_save_markdown_button'):
+                self._safe_disconnect(self.report_save_markdown_button.clicked, self._on_save_markdown_report)
+            if hasattr(self, 'report_export_json_button'):
+                self._safe_disconnect(self.report_export_json_button.clicked, self._on_export_json_report)
 
             self.logger.info("✅ Research tab widget cleanup complete")
 
