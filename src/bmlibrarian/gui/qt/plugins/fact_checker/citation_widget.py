@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
+# Import DPI-aware styling
+from ...resources.styles import get_font_scale
+
 
 class CitationCard(QWidget):
     """Individual citation card with expandable abstract."""
@@ -30,6 +33,9 @@ class CitationCard(QWidget):
         """
         super().__init__(parent)
 
+        # DPI-aware scaling
+        self.scale = get_font_scale()
+
         self.citation_data = citation_data
         self.is_expanded = False
 
@@ -37,9 +43,11 @@ class CitationCard(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(s['spacing_medium'], s['spacing_medium'], s['spacing_medium'], s['spacing_medium'])
+        layout.setSpacing(s['spacing_small'])
 
         # Title row with expand button
         title_layout = QHBoxLayout()
@@ -55,23 +63,21 @@ class CitationCard(QWidget):
 
         # Expand/collapse button
         self.expand_button = QPushButton("▼ Show Abstract")
-        self.expand_button.setFixedWidth(140)
+        self.expand_button.setFixedWidth(int(s['control_height_medium'] * 3.9))
         self.expand_button.clicked.connect(self._toggle_abstract)
-        self.expand_button.setStyleSheet(
-            """
-            QPushButton {
+        self.expand_button.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #ff9800;
                 color: white;
-                padding: 4px 8px;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
                 border: none;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_tiny']}pt;
+            }}
+            QPushButton:hover {{
                 background-color: #f57c00;
-            }
-        """
-        )
+            }}
+        """)
         title_layout.addWidget(self.expand_button)
 
         layout.addLayout(title_layout)
@@ -88,10 +94,10 @@ class CitationCard(QWidget):
         if passage:
             passage_label = QLabel(f"Relevant passage: \"{passage}\"")
             passage_label.setWordWrap(True)
-            passage_label.setStyleSheet(
-                "font-style: italic; color: #37474f; "
-                "background-color: #fff3e0; padding: 8px; border-radius: 4px;"
-            )
+            passage_label.setStyleSheet(f"""
+                font-style: italic; color: #37474f;
+                background-color: #fff3e0; padding: {s['padding_small']}px; border-radius: {s['radius_small']}px;
+            """)
             layout.addWidget(passage_label)
 
         # Abstract (initially hidden)
@@ -99,19 +105,17 @@ class CitationCard(QWidget):
         abstract = self.citation_data.get('abstract', 'No abstract available')
         self.abstract_widget.setPlainText(abstract)
         self.abstract_widget.setReadOnly(True)
-        self.abstract_widget.setMinimumHeight(150)
-        self.abstract_widget.setMaximumHeight(300)
+        self.abstract_widget.setMinimumHeight(int(s['control_height_large'] * 3.75))
+        self.abstract_widget.setMaximumHeight(int(s['control_height_large'] * 7.5))
         self.abstract_widget.setVisible(False)
-        self.abstract_widget.setStyleSheet(
-            """
-            QTextEdit {
+        self.abstract_widget.setStyleSheet(f"""
+            QTextEdit {{
                 background-color: #f5f5f5;
                 border: 1px solid #ddd;
-                padding: 8px;
-                border-radius: 4px;
-            }
-        """
-        )
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+            }}
+        """)
         layout.addWidget(self.abstract_widget)
 
         # Authors and journal info
@@ -121,19 +125,17 @@ class CitationCard(QWidget):
 
         info_label = QLabel(f"{authors} - {journal} ({year})")
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("font-size: 11px; color: #666;")
+        info_label.setStyleSheet(f"font-size: {s['font_tiny']}pt; color: #666;")
         layout.addWidget(info_label)
 
         # Style the card
-        self.setStyleSheet(
-            """
-            CitationCard {
+        self.setStyleSheet(f"""
+            CitationCard {{
                 background-color: white;
                 border: 1px solid #e0e0e0;
-                border-radius: 6px;
-            }
-        """
-        )
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
 
     def _toggle_abstract(self):
         """Toggle abstract visibility."""
@@ -159,18 +161,23 @@ class CitationListWidget(QWidget):
         """
         super().__init__(parent)
 
+        # DPI-aware scaling
+        self.scale = get_font_scale()
+
         self._setup_ui()
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(10)
+        self.layout.setSpacing(s['spacing_medium'])
 
         # Empty state message
         self.empty_label = QLabel("No citations available")
         self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.setStyleSheet("color: #999; font-style: italic; padding: 20px;")
+        self.empty_label.setStyleSheet(f"color: #999; font-style: italic; padding: {s['padding_xlarge']}px;")
         self.layout.addWidget(self.empty_label)
 
     def set_citations(self, citations: list):
@@ -180,6 +187,8 @@ class CitationListWidget(QWidget):
         Args:
             citations: List of citation dictionaries
         """
+        s = self.scale
+
         # Clear existing citations
         while self.layout.count() > 0:
             item = self.layout.takeAt(0)
@@ -190,7 +199,7 @@ class CitationListWidget(QWidget):
         if not citations:
             self.empty_label = QLabel("No citations available")
             self.empty_label.setAlignment(Qt.AlignCenter)
-            self.empty_label.setStyleSheet("color: #999; font-style: italic; padding: 20px;")
+            self.empty_label.setStyleSheet(f"color: #999; font-style: italic; padding: {s['padding_xlarge']}px;")
             self.layout.addWidget(self.empty_label)
         else:
             for citation in citations:

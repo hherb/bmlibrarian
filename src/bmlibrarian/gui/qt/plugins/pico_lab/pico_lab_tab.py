@@ -18,6 +18,7 @@ from bmlibrarian.agents import PICOAgent, AgentOrchestrator
 from bmlibrarian.agents.pico_agent import PICOExtraction
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
+from ...resources.styles import get_font_scale
 
 
 class PICOExtractionWorker(QThread):
@@ -67,6 +68,7 @@ class PICOLabTabWidget(QWidget):
         """
         super().__init__(parent)
 
+        self.scale = get_font_scale()
         self.config = get_config()
         self.pico_agent: Optional[PICOAgent] = None
         self.orchestrator: Optional[AgentOrchestrator] = None
@@ -129,9 +131,10 @@ class PICOLabTabWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(s(20), s(20), s(20), s(20))
+        main_layout.setSpacing(s(15))
 
         # Header
         header = self._create_header()
@@ -159,22 +162,23 @@ class PICOLabTabWidget(QWidget):
 
         # Status bar
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: gray; font-size: {s(11)}px;")
         main_layout.addWidget(self.status_label)
 
     def _create_header(self) -> QWidget:
         """Create header section."""
+        s = self.scale
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(5)
+        header_layout.setSpacing(s(5))
 
         title = QLabel("PICO Laboratory")
-        title.setFont(QFont("", 20, QFont.Bold))
+        title.setFont(QFont("", s(20), QFont.Bold))
         title.setStyleSheet("color: #1976D2;")
 
         subtitle = QLabel("Extract Population, Intervention, Comparison, and Outcome components from research papers")
-        subtitle.setStyleSheet("color: gray; font-size: 12px;")
+        subtitle.setStyleSheet(f"color: gray; font-size: {s(12)}px;")
 
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
@@ -183,23 +187,24 @@ class PICOLabTabWidget(QWidget):
 
     def _create_input_panel(self) -> QGroupBox:
         """Create input panel for document loading."""
+        s = self.scale
         group = QGroupBox("Document Input")
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(s(10))
 
         # Model selection row
         model_row = QHBoxLayout()
         model_label = QLabel("PICO Model:")
-        model_label.setFont(QFont("", 10, QFont.Bold))
+        model_label.setFont(QFont("", s(10), QFont.Bold))
 
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(300)
+        self.model_combo.setMinimumWidth(s(300))
         self._refresh_models()
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
 
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._refresh_models)
-        self.refresh_button.setMaximumWidth(80)
+        self.refresh_button.setMaximumWidth(s(80))
 
         model_row.addWidget(model_label)
         model_row.addWidget(self.model_combo)
@@ -214,20 +219,20 @@ class PICOLabTabWidget(QWidget):
         doc_id_label = QLabel("Document ID:")
         self.doc_id_input = QLineEdit()
         self.doc_id_input.setPlaceholderText("Enter document ID (e.g., 12345)")
-        self.doc_id_input.setMaximumWidth(200)
+        self.doc_id_input.setMaximumWidth(s(200))
         self.doc_id_input.setValidator(QIntValidator(1, 999999999))
         self.doc_id_input.returnPressed.connect(self._load_document)
 
         self.load_button = QPushButton("Load & Analyze")
         self.load_button.clicked.connect(self._load_document)
         self.load_button.setStyleSheet("background-color: #43A047; color: white; font-weight: bold;")
-        self.load_button.setMinimumHeight(35)
-        self.load_button.setMaximumWidth(150)
+        self.load_button.setMinimumHeight(s(35))
+        self.load_button.setMaximumWidth(s(150))
 
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self._clear_all)
-        self.clear_button.setMaximumWidth(80)
-        self.clear_button.setMinimumHeight(35)
+        self.clear_button.setMaximumWidth(s(80))
+        self.clear_button.setMinimumHeight(s(35))
 
         input_row.addWidget(doc_id_label)
         input_row.addWidget(self.doc_id_input)
@@ -241,24 +246,25 @@ class PICOLabTabWidget(QWidget):
 
     def _create_document_panel(self) -> QGroupBox:
         """Create document display panel."""
+        s = self.scale
         group = QGroupBox("Document")
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(s(10))
 
         # Title
         self.doc_title_label = QLabel("No document loaded")
-        self.doc_title_label.setFont(QFont("", 12, QFont.Bold))
+        self.doc_title_label.setFont(QFont("", s(12), QFont.Bold))
         self.doc_title_label.setWordWrap(True)
         self.doc_title_label.setStyleSheet("color: #424242;")
 
         # Metadata
         self.doc_metadata_label = QLabel("")
-        self.doc_metadata_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.doc_metadata_label.setStyleSheet(f"color: gray; font-size: {s(11)}px;")
         self.doc_metadata_label.setWordWrap(True)
 
         # Abstract
         abstract_label = QLabel("Abstract:")
-        abstract_label.setFont(QFont("", 10, QFont.Bold))
+        abstract_label.setFont(QFont("", s(10), QFont.Bold))
 
         self.doc_abstract_edit = QTextEdit()
         self.doc_abstract_edit.setReadOnly(True)
@@ -266,7 +272,7 @@ class PICOLabTabWidget(QWidget):
 
         layout.addWidget(self.doc_title_label)
         layout.addWidget(self.doc_metadata_label)
-        layout.addSpacing(10)
+        layout.addSpacing(s(10))
         layout.addWidget(abstract_label)
         layout.addWidget(self.doc_abstract_edit)
 
@@ -274,17 +280,18 @@ class PICOLabTabWidget(QWidget):
 
     def _create_pico_panel(self) -> QGroupBox:
         """Create PICO results display panel."""
+        s = self.scale
         group = QGroupBox("PICO Analysis")
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(s(10))
 
         # Overall confidence and study info
         self.pico_confidence_label = QLabel("")
-        self.pico_confidence_label.setFont(QFont("", 11, QFont.Bold))
+        self.pico_confidence_label.setFont(QFont("", s(11), QFont.Bold))
         self.pico_confidence_label.setStyleSheet("color: #2E7D32;")
 
         self.study_info_label = QLabel("")
-        self.study_info_label.setStyleSheet("color: #424242; font-size: 11px;")
+        self.study_info_label.setStyleSheet(f"color: #424242; font-size: {s(11)}px;")
         self.study_info_label.setWordWrap(True)
 
         layout.addWidget(self.pico_confidence_label)
@@ -292,16 +299,16 @@ class PICOLabTabWidget(QWidget):
 
         # Population
         pop_label = QLabel("Population (P):")
-        pop_label.setFont(QFont("", 10, QFont.Bold))
+        pop_label.setFont(QFont("", s(10), QFont.Bold))
         pop_label.setStyleSheet("color: #1976D2;")
 
         self.population_edit = QTextEdit()
         self.population_edit.setReadOnly(True)
         self.population_edit.setPlaceholderText("Population will appear here...")
-        self.population_edit.setMaximumHeight(80)
+        self.population_edit.setMaximumHeight(s(80))
 
         self.population_conf_label = QLabel("")
-        self.population_conf_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.population_conf_label.setStyleSheet(f"color: gray; font-size: {s(10)}px;")
 
         layout.addWidget(pop_label)
         layout.addWidget(self.population_edit)
@@ -309,16 +316,16 @@ class PICOLabTabWidget(QWidget):
 
         # Intervention
         int_label = QLabel("Intervention (I):")
-        int_label.setFont(QFont("", 10, QFont.Bold))
+        int_label.setFont(QFont("", s(10), QFont.Bold))
         int_label.setStyleSheet("color: #388E3C;")
 
         self.intervention_edit = QTextEdit()
         self.intervention_edit.setReadOnly(True)
         self.intervention_edit.setPlaceholderText("Intervention will appear here...")
-        self.intervention_edit.setMaximumHeight(80)
+        self.intervention_edit.setMaximumHeight(s(80))
 
         self.intervention_conf_label = QLabel("")
-        self.intervention_conf_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.intervention_conf_label.setStyleSheet(f"color: gray; font-size: {s(10)}px;")
 
         layout.addWidget(int_label)
         layout.addWidget(self.intervention_edit)
@@ -326,16 +333,16 @@ class PICOLabTabWidget(QWidget):
 
         # Comparison
         comp_label = QLabel("Comparison (C):")
-        comp_label.setFont(QFont("", 10, QFont.Bold))
+        comp_label.setFont(QFont("", s(10), QFont.Bold))
         comp_label.setStyleSheet("color: #F57C00;")
 
         self.comparison_edit = QTextEdit()
         self.comparison_edit.setReadOnly(True)
         self.comparison_edit.setPlaceholderText("Comparison will appear here...")
-        self.comparison_edit.setMaximumHeight(80)
+        self.comparison_edit.setMaximumHeight(s(80))
 
         self.comparison_conf_label = QLabel("")
-        self.comparison_conf_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.comparison_conf_label.setStyleSheet(f"color: gray; font-size: {s(10)}px;")
 
         layout.addWidget(comp_label)
         layout.addWidget(self.comparison_edit)
@@ -343,16 +350,16 @@ class PICOLabTabWidget(QWidget):
 
         # Outcome
         out_label = QLabel("Outcome (O):")
-        out_label.setFont(QFont("", 10, QFont.Bold))
+        out_label.setFont(QFont("", s(10), QFont.Bold))
         out_label.setStyleSheet("color: #7B1FA2;")
 
         self.outcome_edit = QTextEdit()
         self.outcome_edit.setReadOnly(True)
         self.outcome_edit.setPlaceholderText("Outcome will appear here...")
-        self.outcome_edit.setMaximumHeight(80)
+        self.outcome_edit.setMaximumHeight(s(80))
 
         self.outcome_conf_label = QLabel("")
-        self.outcome_conf_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.outcome_conf_label.setStyleSheet(f"color: gray; font-size: {s(10)}px;")
 
         layout.addWidget(out_label)
         layout.addWidget(self.outcome_edit)
@@ -418,6 +425,7 @@ class PICOLabTabWidget(QWidget):
 
     def _load_document(self):
         """Load document and perform PICO analysis."""
+        s = self.scale
         doc_id_str = self.doc_id_input.text().strip()
 
         if not doc_id_str:
@@ -432,7 +440,7 @@ class PICOLabTabWidget(QWidget):
 
         # Update status
         self.status_label.setText(f"Loading document {doc_id}...")
-        self.status_label.setStyleSheet("color: #1976D2; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: #1976D2; font-size: {s(11)}px;")
         self.load_button.setEnabled(False)
 
         try:
@@ -442,7 +450,7 @@ class PICOLabTabWidget(QWidget):
             if not documents:
                 QMessageBox.warning(self, "Not Found", f"Document {doc_id} not found in database.")
                 self.status_label.setText("Ready")
-                self.status_label.setStyleSheet("color: gray; font-size: 11px;")
+                self.status_label.setStyleSheet(f"color: gray; font-size: {s(11)}px;")
                 self.load_button.setEnabled(True)
                 return
 
@@ -453,13 +461,13 @@ class PICOLabTabWidget(QWidget):
             if not self.pico_agent:
                 QMessageBox.warning(self, "Agent Error", "PICO Agent not initialized. Cannot perform analysis.")
                 self.status_label.setText("Agent unavailable")
-                self.status_label.setStyleSheet("color: red; font-size: 11px;")
+                self.status_label.setStyleSheet(f"color: red; font-size: {s(11)}px;")
                 self.load_button.setEnabled(True)
                 return
 
             # Start PICO extraction in background
             self.status_label.setText("Running PICO extraction...")
-            self.status_label.setStyleSheet("color: #1976D2; font-size: 11px;")
+            self.status_label.setStyleSheet(f"color: #1976D2; font-size: {s(11)}px;")
 
             self.worker = PICOExtractionWorker(self.pico_agent, self.current_document)
             self.worker.result_ready.connect(self._on_extraction_complete)
@@ -470,7 +478,7 @@ class PICOLabTabWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading document: {str(e)}")
             self.status_label.setText(f"Error: {str(e)[:50]}...")
-            self.status_label.setStyleSheet("color: red; font-size: 11px;")
+            self.status_label.setStyleSheet(f"color: red; font-size: {s(11)}px;")
             self.load_button.setEnabled(True)
 
     def _display_document(self):
@@ -501,25 +509,28 @@ class PICOLabTabWidget(QWidget):
 
     def _on_extraction_complete(self, extraction: PICOExtraction):
         """Handle PICO extraction completion."""
+        s = self.scale
         self.current_extraction = extraction
         self._display_pico_results()
 
         confidence_pct = extraction.extraction_confidence * 100
         self.status_label.setText(f"✓ Analysis complete (confidence: {confidence_pct:.1f}%)")
-        self.status_label.setStyleSheet("color: #2E7D32; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: #2E7D32; font-size: {s(11)}px;")
         self.status_message.emit(f"PICO extraction complete - {confidence_pct:.1f}% confidence")
 
     def _on_extraction_error(self, error_msg: str):
         """Handle PICO extraction error."""
+        s = self.scale
         QMessageBox.critical(self, "Extraction Error", f"PICO extraction failed: {error_msg}")
         self.status_label.setText("Extraction failed")
-        self.status_label.setStyleSheet("color: red; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: red; font-size: {s(11)}px;")
 
     def _display_pico_results(self):
         """Display PICO extraction results."""
         if not self.current_extraction:
             return
 
+        s = self.scale
         ext = self.current_extraction
 
         # Overall info
@@ -528,11 +539,11 @@ class PICOLabTabWidget(QWidget):
 
         # Color-code confidence
         if ext.extraction_confidence >= 0.8:
-            self.pico_confidence_label.setStyleSheet("color: #2E7D32; font-weight: bold; font-size: 11pt;")
+            self.pico_confidence_label.setStyleSheet(f"color: #2E7D32; font-weight: bold; font-size: {s(11)}pt;")
         elif ext.extraction_confidence >= 0.6:
-            self.pico_confidence_label.setStyleSheet("color: #F57C00; font-weight: bold; font-size: 11pt;")
+            self.pico_confidence_label.setStyleSheet(f"color: #F57C00; font-weight: bold; font-size: {s(11)}pt;")
         else:
-            self.pico_confidence_label.setStyleSheet("color: #C62828; font-weight: bold; font-size: 11pt;")
+            self.pico_confidence_label.setStyleSheet(f"color: #C62828; font-weight: bold; font-size: {s(11)}pt;")
 
         study_info_parts = []
         if ext.study_type:
@@ -576,6 +587,7 @@ class PICOLabTabWidget(QWidget):
 
     def _clear_all(self):
         """Clear all fields."""
+        s = self.scale
         self.doc_id_input.clear()
         self.doc_title_label.setText("No document loaded")
         self.doc_metadata_label.setText("")
@@ -593,7 +605,7 @@ class PICOLabTabWidget(QWidget):
         self.outcome_conf_label.setText("")
 
         self.status_label.setText("Ready")
-        self.status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: gray; font-size: {s(11)}px;")
 
         self.current_document = None
         self.current_extraction = None

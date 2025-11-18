@@ -18,6 +18,7 @@ from .card_utils import (
     format_document_ids,
     html_escape
 )
+from ..resources.styles import get_font_scale
 
 
 # ============================================================================
@@ -103,6 +104,10 @@ class CollapsibleDocumentCard(QFrame):
         """
         super().__init__(parent)
 
+        # Get DPI scale
+        self.scale = get_font_scale()
+        s = self.scale
+
         # Validate and store document data
         self.document_data = validate_document_data(document_data)
         self._is_expanded = False
@@ -115,10 +120,10 @@ class CollapsibleDocumentCard(QFrame):
         # Create layout
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(
-            CARD_MARGIN_HORIZONTAL, CARD_MARGIN_VERTICAL,
-            CARD_MARGIN_HORIZONTAL, CARD_MARGIN_VERTICAL
+            s['padding_medium'], s['padding_small'],
+            s['padding_medium'], s['padding_small']
         )
-        self.main_layout.setSpacing(CARD_SPACING)
+        self.main_layout.setSpacing(s['spacing_small'])
 
         # Create header (always visible)
         self._create_header()
@@ -132,9 +137,11 @@ class CollapsibleDocumentCard(QFrame):
 
     def _create_header(self):
         """Create the header row (title + tag)."""
+        s = self.scale
+
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(HEADER_SPACING)
+        header_layout.setSpacing(s['spacing_small'])
 
         # Title (truncated in collapsed state)
         title = self.document_data.get("title", "Untitled")
@@ -144,7 +151,7 @@ class CollapsibleDocumentCard(QFrame):
         self.title_label.setTextFormat(Qt.RichText)
 
         # Enable text elision for long titles
-        self.title_label.setMinimumWidth(TITLE_MIN_WIDTH)
+        self.title_label.setMinimumWidth(s['control_width_large'])
 
         header_layout.addWidget(self.title_label, stretch=1)
 
@@ -164,6 +171,8 @@ class CollapsibleDocumentCard(QFrame):
         Returns:
             QLabel with formatted score, or None if no score available
         """
+        s = self.scale
+
         # Check for combined score first (from hybrid search)
         score = self.document_data.get("_combined_score")
         if score is None:
@@ -193,23 +202,25 @@ class CollapsibleDocumentCard(QFrame):
             QLabel {{
                 background-color: {color};
                 color: white;
-                padding: {SCORE_TAG_PADDING_V}px {SCORE_TAG_PADDING_H}px;
-                border-radius: {SCORE_TAG_RADIUS}px;
-                font-size: 11pt;
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
+                border-radius: {s['radius_medium']}px;
+                font-size: {s['font_normal']}pt;
             }}
         """)
         tag.setAlignment(Qt.AlignCenter)
-        tag.setFixedHeight(SCORE_TAG_HEIGHT)
-        tag.setMinimumWidth(SCORE_TAG_MIN_WIDTH)
+        tag.setFixedHeight(s['control_height_small'])
+        tag.setMinimumWidth(s['control_width_tiny'])
 
         return tag
 
     def _create_details(self):
         """Create the details section (shown when expanded)."""
+        s = self.scale
+
         self.details_widget = QWidget()
         self.details_layout = QVBoxLayout(self.details_widget)
-        self.details_layout.setContentsMargins(0, DETAILS_SPACING, 0, 0)
-        self.details_layout.setSpacing(DETAILS_SPACING)
+        self.details_layout.setContentsMargins(0, s['spacing_tiny'], 0, 0)
+        self.details_layout.setSpacing(s['spacing_tiny'])
 
         # Authors
         authors = format_authors(
@@ -220,7 +231,7 @@ class CollapsibleDocumentCard(QFrame):
         authors_label = QLabel(f"<i>{html_escape(authors)}</i>")
         authors_label.setObjectName("authors")
         authors_label.setWordWrap(True)
-        authors_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 10pt;")
+        authors_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: {s['font_small']}pt;")
         self.details_layout.addWidget(authors_label)
 
         # Journal and year
@@ -231,7 +242,7 @@ class CollapsibleDocumentCard(QFrame):
         if journal_year:
             journal_label = QLabel(html_escape(journal_year))
             journal_label.setObjectName("journal")
-            journal_label.setStyleSheet(f"color: {COLOR_TEXT_TERTIARY}; font-size: 9pt;")
+            journal_label.setStyleSheet(f"color: {COLOR_TEXT_TERTIARY}; font-size: {s['font_tiny']}pt;")
             self.details_layout.addWidget(journal_label)
 
         # PMID/DOI
@@ -243,7 +254,7 @@ class CollapsibleDocumentCard(QFrame):
         if ids_text:
             ids_label = QLabel(ids_text)
             ids_label.setObjectName("metadata")
-            ids_label.setStyleSheet(f"color: {COLOR_TEXT_METADATA}; font-size: 8pt;")
+            ids_label.setStyleSheet(f"color: {COLOR_TEXT_METADATA}; font-size: {s['font_micro']}pt;")
             self.details_layout.addWidget(ids_label)
 
         # Abstract (if available)
@@ -258,21 +269,21 @@ class CollapsibleDocumentCard(QFrame):
 
             # Abstract label
             abstract_header = QLabel("<b>Abstract:</b>")
-            abstract_header.setStyleSheet(f"color: {COLOR_TEXT_DARK}; font-size: 9pt; margin-top: {DETAILS_SPACING}px;")
+            abstract_header.setStyleSheet(f"color: {COLOR_TEXT_DARK}; font-size: {s['font_tiny']}pt; margin-top: {s['spacing_tiny']}px;")
             self.details_layout.addWidget(abstract_header)
 
             # Abstract text (read-only, scrollable for very long abstracts)
             abstract_text = QTextEdit()
             abstract_text.setReadOnly(True)
             abstract_text.setPlainText(abstract)
-            abstract_text.setMaximumHeight(ABSTRACT_MAX_HEIGHT)
+            abstract_text.setMaximumHeight(s['control_height_xlarge'])
             abstract_text.setStyleSheet(f"""
                 QTextEdit {{
                     background-color: {COLOR_BACKGROUND_ABSTRACT};
                     border: 1px solid {COLOR_BORDER_ABSTRACT};
-                    border-radius: 4px;
-                    padding: {ABSTRACT_PADDING}px;
-                    font-size: 12pt;
+                    border-radius: {s['radius_tiny']}px;
+                    padding: {s['padding_tiny']}px;
+                    font-size: {s['font_medium']}pt;
                     color: {COLOR_TEXT_ABSTRACT};
                 }}
             """)
@@ -282,12 +293,14 @@ class CollapsibleDocumentCard(QFrame):
 
     def _apply_collapsed_style(self):
         """Apply styling for collapsed state."""
+        s = self.scale
+
         self.setStyleSheet(f"""
             QFrame#collapsibleDocumentCard {{
                 background-color: {COLOR_BACKGROUND_COLLAPSED};
                 border: 1px solid {COLOR_BORDER_NEUTRAL};
                 border-left: {BORDER_WIDTH_COLLAPSED}px solid {COLOR_BORDER_ACCENT};
-                border-radius: 4px;
+                border-radius: {s['radius_tiny']}px;
             }}
             QFrame#collapsibleDocumentCard:hover {{
                 background-color: {COLOR_BACKGROUND_COLLAPSED_HOVER};
@@ -297,11 +310,13 @@ class CollapsibleDocumentCard(QFrame):
 
     def _apply_expanded_style(self):
         """Apply styling for expanded state."""
+        s = self.scale
+
         self.setStyleSheet(f"""
             QFrame#collapsibleDocumentCard {{
                 background-color: {COLOR_BACKGROUND_EXPANDED};
                 border: {BORDER_WIDTH_EXPANDED}px solid {COLOR_BORDER_ACCENT};
-                border-radius: 4px;
+                border-radius: {s['radius_tiny']}px;
             }}
             QFrame#collapsibleDocumentCard:hover {{
                 background-color: {COLOR_BACKGROUND_EXPANDED_HOVER};

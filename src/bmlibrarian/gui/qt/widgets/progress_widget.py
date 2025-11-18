@@ -12,6 +12,8 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 from typing import Optional
 
+from ..resources.styles import get_font_scale
+
 
 class ProgressWidget(QFrame):
     """
@@ -29,6 +31,9 @@ class ProgressWidget(QFrame):
         """
         super().__init__(parent)
 
+        # Get DPI scale
+        self.scale = get_font_scale()
+
         self.progress_bar: Optional[QProgressBar] = None
         self.status_label: Optional[QLabel] = None
         self.detail_label: Optional[QLabel] = None
@@ -37,24 +42,26 @@ class ProgressWidget(QFrame):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet(
-            """
-            ProgressWidget {
+            f"""
+            ProgressWidget {{
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
-                border-radius: 4px;
-                padding: 10px;
-            }
+                border-radius: {s['radius_tiny']}px;
+                padding: {s['padding_medium']}px;
+            }}
             """
         )
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(s['spacing_small'])
 
         # Status label
         self.status_label = QLabel("Processing...")
-        self.status_label.setFont(QFont("", 10, QFont.Bold))
+        self.status_label.setFont(QFont("", s['font_small'], QFont.Bold))
         layout.addWidget(self.status_label)
 
         # Progress bar
@@ -67,7 +74,7 @@ class ProgressWidget(QFrame):
 
         # Detail label
         self.detail_label = QLabel("")
-        self.detail_label.setStyleSheet("color: #6c757d; font-size: 9pt;")
+        self.detail_label.setStyleSheet(f"color: #6c757d; font-size: {s['font_tiny']}pt;")
         self.detail_label.setWordWrap(True)
         layout.addWidget(self.detail_label)
 
@@ -125,6 +132,9 @@ class StepProgressWidget(QFrame):
         """
         super().__init__(parent)
 
+        # Get DPI scale
+        self.scale = get_font_scale()
+
         self.total_steps = total_steps
         self.current_step = 0
 
@@ -136,24 +146,26 @@ class StepProgressWidget(QFrame):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet(
-            """
-            StepProgressWidget {
+            f"""
+            StepProgressWidget {{
                 background-color: white;
                 border: 2px solid #3498db;
-                border-radius: 6px;
-                padding: 15px;
-            }
+                border-radius: {s['radius_small']}px;
+                padding: {s['padding_large']}px;
+            }}
             """
         )
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(s['spacing_medium'])
 
         # Step counter
         self.step_label = QLabel(f"Step {self.current_step} of {self.total_steps}")
-        self.step_label.setFont(QFont("", 11, QFont.Bold))
+        self.step_label.setFont(QFont("", s['font_normal'], QFont.Bold))
         self.step_label.setStyleSheet("color: #3498db;")
         layout.addWidget(self.step_label)
 
@@ -164,24 +176,24 @@ class StepProgressWidget(QFrame):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setStyleSheet(
-            """
-            QProgressBar {
+            f"""
+            QProgressBar {{
                 border: 2px solid #e0e0e0;
-                border-radius: 5px;
+                border-radius: {s['radius_tiny']}px;
                 text-align: center;
-                height: 25px;
-            }
-            QProgressBar::chunk {
+                height: {s['control_height_small']}px;
+            }}
+            QProgressBar::chunk {{
                 background-color: #3498db;
-                border-radius: 3px;
-            }
+                border-radius: {s['radius_tiny']}px;
+            }}
             """
         )
         layout.addWidget(self.progress_bar)
 
         # Step name
         self.step_name_label = QLabel("")
-        self.step_name_label.setFont(QFont("", 10))
+        self.step_name_label.setFont(QFont("", s['font_small']))
         self.step_name_label.setStyleSheet("color: #555;")
         self.step_name_label.setWordWrap(True)
         layout.addWidget(self.step_name_label)
@@ -235,6 +247,9 @@ class SpinnerWidget(QWidget):
         """
         super().__init__(parent)
 
+        # Get DPI scale
+        self.scale = get_font_scale()
+
         self.message = message
         self.spinner_label: Optional[QLabel] = None
         self.message_label: Optional[QLabel] = None
@@ -246,18 +261,20 @@ class SpinnerWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QHBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(s['spacing_medium'])
 
         # Spinner label
         self.spinner_label = QLabel(self.spinner_chars[0])
-        self.spinner_label.setFont(QFont("", 16))
+        self.spinner_label.setFont(QFont("", s['font_large']))
         self.spinner_label.setStyleSheet("color: #3498db;")
         layout.addWidget(self.spinner_label)
 
         # Message label
         self.message_label = QLabel(self.message)
-        self.message_label.setFont(QFont("", 10))
+        self.message_label.setFont(QFont("", s['font_small']))
         layout.addWidget(self.message_label)
 
         layout.addStretch()
@@ -308,29 +325,34 @@ class CompactProgressWidget(QWidget):
         """
         super().__init__(parent)
 
+        # Get DPI scale
+        self.scale = get_font_scale()
+
         self.progress_bar: Optional[QProgressBar] = None
 
         self._setup_ui()
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximumHeight(10)
+        self.progress_bar.setMaximumHeight(s['spacing_medium'])
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setStyleSheet(
-            """
-            QProgressBar {
+            f"""
+            QProgressBar {{
                 border: 1px solid #ddd;
-                border-radius: 3px;
+                border-radius: {s['radius_tiny']}px;
                 background-color: #f0f0f0;
-            }
-            QProgressBar::chunk {
+            }}
+            QProgressBar::chunk {{
                 background-color: #3498db;
-                border-radius: 2px;
-            }
+                border-radius: {s['radius_tiny']}px;
+            }}
             """
         )
         layout.addWidget(self.progress_bar)

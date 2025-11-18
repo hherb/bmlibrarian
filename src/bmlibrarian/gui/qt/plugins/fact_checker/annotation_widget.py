@@ -14,6 +14,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
+# Import DPI-aware styling
+from ...resources.styles import get_font_scale
+
 
 class AnnotationWidget(QWidget):
     """Widget for annotation input."""
@@ -30,17 +33,22 @@ class AnnotationWidget(QWidget):
         """
         super().__init__(parent)
 
+        # DPI-aware scaling
+        self.scale = get_font_scale()
+
         self._setup_ui()
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
+        layout.setContentsMargins(s['spacing_xlarge'], s['spacing_xlarge'], s['spacing_xlarge'], s['spacing_xlarge'])
+        layout.setSpacing(s['spacing_medium'])
 
         # Title
         title = QLabel("Human Review")
-        title.setStyleSheet("font-weight: bold; color: #2e7d32; font-size: 12px;")
+        title.setStyleSheet(f"font-weight: bold; color: #2e7d32; font-size: {s['font_small']}pt;")
         layout.addWidget(title)
 
         # Annotation dropdown
@@ -76,27 +84,25 @@ class AnnotationWidget(QWidget):
 
         self.explanation_field = QTextEdit()
         self.explanation_field.setPlaceholderText("Provide your reasoning...")
-        self.explanation_field.setMinimumHeight(80)
-        self.explanation_field.setMaximumHeight(120)
+        self.explanation_field.setMinimumHeight(int(s['control_height_medium'] * 2.2))
+        self.explanation_field.setMaximumHeight(int(s['control_height_medium'] * 3.3))
         self.explanation_field.textChanged.connect(self._on_explanation_change)
         layout.addWidget(self.explanation_field)
 
         # Style the widget
-        self.setStyleSheet(
-            """
-            AnnotationWidget {
+        self.setStyleSheet(f"""
+            AnnotationWidget {{
                 background-color: #e8f5e9;
                 border: 2px solid #66bb6a;
-                border-radius: 8px;
-            }
-            QComboBox, QTextEdit {
+                border-radius: {s['radius_medium']}px;
+            }}
+            QComboBox, QTextEdit {{
                 background-color: white;
                 border: 1px solid #ccc;
-                padding: 5px;
-                border-radius: 4px;
-            }
-        """
-        )
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
+            }}
+        """)
 
     def _on_annotation_change(self):
         """Handle annotation dropdown change."""

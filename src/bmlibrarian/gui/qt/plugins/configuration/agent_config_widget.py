@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from typing import Optional, List
 
+from ...resources.styles import get_font_scale
+
 
 class AgentConfigWidget(QWidget):
     """
@@ -48,6 +50,7 @@ class AgentConfigWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+        self.scale = get_font_scale()
         self.agent_id = agent_id
         self.agent_display_name = agent_display_name
         self.config = config
@@ -56,6 +59,7 @@ class AgentConfigWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         # Create scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -63,7 +67,7 @@ class AgentConfigWidget(QWidget):
 
         container = QWidget()
         main_layout = QVBoxLayout(container)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
         # Model Settings Group
         model_group = self._create_model_group()
@@ -93,6 +97,7 @@ class AgentConfigWidget(QWidget):
         Returns:
             Model settings group box
         """
+        s = self.scale
         group = QGroupBox("Model Settings")
         layout = QFormLayout()
 
@@ -112,7 +117,7 @@ class AgentConfigWidget(QWidget):
             "Click 'Test Connection' to refresh available models from Ollama server."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #7f8c8d; font-style: italic; font-size: 10pt;")
+        info_label.setStyleSheet(f"color: #7f8c8d; font-style: italic; font-size: {s['font_small']}pt;")
         layout.addRow("", info_label)
 
         group.setLayout(layout)

@@ -14,6 +14,7 @@ import re
 from .card_utils import (
     html_escape
 )
+from ..resources.styles import get_font_scale
 
 
 class CitationCard(QFrame):
@@ -34,13 +35,7 @@ class CitationCard(QFrame):
     expanded = Signal()
     collapsed = Signal()
 
-    # Font sizes (consistent with research_tab)
-    CARD_TITLE_FONT_SIZE = 11
-    CARD_SUBTITLE_FONT_SIZE = 10
-    CARD_BODY_FONT_SIZE = 10
-    CARD_LABEL_FONT_SIZE = 9
-
-    # Colors
+    # Colors (DPI-independent)
     COLOR_PRIMARY_BLUE = "#1976D2"
     COLOR_TEXT_GREY = "#666666"
     COLOR_BORDER_GREY = "#dee2e6"
@@ -71,6 +66,9 @@ class CitationCard(QFrame):
         """
         super().__init__(parent)
 
+        # Get DPI-aware scale
+        self.scale = get_font_scale()
+
         # Convert citation object to dict if needed (for compatibility with BMLibrarian citation objects)
         if hasattr(citation_data, '__dict__'):
             # It's an object, convert to dict
@@ -96,8 +94,9 @@ class CitationCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         # Create layout
+        s = self.scale
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 2)
+        main_layout.setContentsMargins(0, 0, 0, s['spacing_tiny'])
         main_layout.setSpacing(0)
 
         # Create header (always visible)
@@ -114,14 +113,15 @@ class CitationCard(QFrame):
 
     def _create_header(self) -> QFrame:
         """Create the header section (always visible)."""
+        s = self.scale
         header = QFrame()
         header.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_BACKGROUND_COLLAPSED};
                 border: 1px solid {self.COLOR_BORDER_GREY};
                 border-left: 4px solid {self.COLOR_BORDER_ACCENT};
-                border-radius: 4px;
-                padding: 8px;
+                border-radius: {s['radius_small']}px;
+                padding: {s['padding_medium']}px;
             }}
             QFrame:hover {{
                 background-color: {self.COLOR_BACKGROUND_COLLAPSED_HOVER};
@@ -130,12 +130,12 @@ class CitationCard(QFrame):
         """)
 
         header_layout = QVBoxLayout(header)
-        header_layout.setSpacing(4)
-        header_layout.setContentsMargins(6, 6, 6, 6)
+        header_layout.setSpacing(s['spacing_small'])
+        header_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
 
         # Title row with relevance badge
         title_row = QHBoxLayout()
-        title_row.setSpacing(8)
+        title_row.setSpacing(s['spacing_medium'])
 
         title = self.citation_data.get('document_title', self.citation_data.get('title', 'Untitled Document'))
         # Truncate long titles
@@ -144,7 +144,7 @@ class CitationCard(QFrame):
 
         title_label = QLabel(f"<b>{self.index}. {html_escape(title)}</b>")
         title_label.setWordWrap(True)
-        title_label.setStyleSheet(f"color: {self.COLOR_PRIMARY_BLUE}; font-size: {self.CARD_TITLE_FONT_SIZE}pt;")
+        title_label.setStyleSheet(f"color: {self.COLOR_PRIMARY_BLUE}; font-size: {s['font_large']}pt;")
         title_row.addWidget(title_label, 1)
 
         # Relevance score badge
@@ -152,15 +152,15 @@ class CitationCard(QFrame):
         if relevance_score:
             score_badge = QLabel(f"{relevance_score:.2f}")
             score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            score_badge.setFixedSize(50, 24)
+            score_badge.setFixedSize(50, s['control_height_small'])
             score_badge.setStyleSheet(f"""
                 QLabel {{
                     background-color: #4CAF50;
                     color: white;
-                    font-size: {self.CARD_LABEL_FONT_SIZE}pt;
+                    font-size: {s['font_small']}pt;
                     font-weight: bold;
-                    border-radius: 12px;
-                    padding: 2px 6px;
+                    border-radius: {s['radius_medium']}px;
+                    padding: {s['padding_tiny']}px {s['padding_small']}px;
                 }}
             """)
             title_row.addWidget(score_badge)
@@ -192,27 +192,28 @@ class CitationCard(QFrame):
         subtitle = f"{authors_str} | {pub_info}"
         subtitle_label = QLabel(subtitle)
         subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {self.CARD_SUBTITLE_FONT_SIZE}pt;")
+        subtitle_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_normal']}pt;")
         header_layout.addWidget(subtitle_label)
 
         return header
 
     def _create_details(self) -> QFrame:
         """Create the details section (collapsible)."""
+        s = self.scale
         details = QFrame()
         details.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_BACKGROUND_WHITE};
                 border: 1px solid {self.COLOR_BORDER_GREY};
                 border-top: none;
-                border-radius: 0 0 4px 4px;
-                padding: 10px;
+                border-radius: 0 0 {s['radius_small']}px {s['radius_small']}px;
+                padding: {s['padding_medium']}px;
             }}
         """)
 
         self.details_layout = QVBoxLayout(details)
-        self.details_layout.setSpacing(8)
-        self.details_layout.setContentsMargins(10, 10, 10, 10)
+        self.details_layout.setSpacing(s['spacing_medium'])
+        self.details_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
         # Summary section
         summary = self.citation_data.get('summary', '')
@@ -236,48 +237,50 @@ class CitationCard(QFrame):
 
     def _create_summary_section(self, summary: str) -> QFrame:
         """Create the summary section."""
+        s = self.scale
         summary_container = QFrame()
         summary_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_SUMMARY_BG};
                 border: 1px solid {self.COLOR_SUMMARY_BORDER};
-                border-radius: 3px;
-                padding: 8px;
+                border-radius: {s['radius_tiny']}px;
+                padding: {s['padding_medium']}px;
             }}
         """)
         summary_layout = QVBoxLayout(summary_container)
-        summary_layout.setContentsMargins(8, 8, 8, 8)
-        summary_layout.setSpacing(5)
+        summary_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
+        summary_layout.setSpacing(s['spacing_small'])
 
         summary_title = QLabel("<b>Summary:</b>")
-        summary_title.setStyleSheet(f"font-size: {self.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+        summary_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
         summary_layout.addWidget(summary_title)
 
         summary_text = QLabel(html_escape(summary))
         summary_text.setWordWrap(True)
         summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        summary_text.setStyleSheet(f"color: #333; font-size: {self.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+        summary_text.setStyleSheet(f"color: #333; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
         summary_layout.addWidget(summary_text)
 
         return summary_container
 
     def _create_abstract_with_highlight(self, abstract: str, passage: str) -> QFrame:
         """Create abstract section with highlighted passage."""
+        s = self.scale
         abstract_container = QFrame()
         abstract_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_ABSTRACT_BG};
                 border: 1px solid {self.COLOR_ABSTRACT_BORDER};
-                border-radius: 3px;
-                padding: 8px;
+                border-radius: {s['radius_tiny']}px;
+                padding: {s['padding_medium']}px;
             }}
         """)
         abstract_layout = QVBoxLayout(abstract_container)
-        abstract_layout.setContentsMargins(8, 8, 8, 8)
-        abstract_layout.setSpacing(5)
+        abstract_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
+        abstract_layout.setSpacing(s['spacing_small'])
 
         abstract_title = QLabel("<b>Abstract with Highlighted Citation:</b>")
-        abstract_title.setStyleSheet(f"font-size: {self.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+        abstract_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
         abstract_layout.addWidget(abstract_title)
 
         # Create highlighted widget
@@ -288,16 +291,17 @@ class CitationCard(QFrame):
 
     def _create_highlighted_abstract_widget(self, abstract: str, passage: str) -> QWidget:
         """Create widget showing abstract with passage highlighted."""
+        s = self.scale
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(s['spacing_small'])
 
         if not abstract or not passage:
             label = QLabel(abstract or "No abstract available")
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setStyleSheet(f"font-size: {self.CARD_BODY_FONT_SIZE}pt; color: #333;")
+            label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
             layout.addWidget(label)
             return container
 
@@ -319,8 +323,8 @@ class CitationCard(QFrame):
 
             html = f"""
             <style>
-                .abstract-text {{ font-size: {self.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
-                .highlight {{ background-color: {self.COLOR_PASSAGE_BG}; font-weight: 600; padding: 2px 4px; }}
+                .abstract-text {{ font-size: {s['font_normal']}pt; color: #333; line-height: 1.4; }}
+                .highlight {{ background-color: {self.COLOR_PASSAGE_BG}; font-weight: 600; padding: {s['padding_tiny']}px {s['padding_small']}px; }}
             </style>
             <div class="abstract-text">
                 {before}<span class="highlight">📌 {highlighted} 📌</span>{after}
@@ -344,7 +348,7 @@ class CitationCard(QFrame):
                 end = min(start + len(clean_passage), len(abstract))
 
                 warning_label = QLabel("⚠️ Approximate match only")
-                warning_label.setStyleSheet(f"font-size: {self.CARD_LABEL_FONT_SIZE}pt; color: #F57C00; font-style: italic;")
+                warning_label.setStyleSheet(f"font-size: {s['font_small']}pt; color: #F57C00; font-style: italic;")
                 layout.addWidget(warning_label)
 
                 before = html_escape(abstract[:start])
@@ -353,8 +357,8 @@ class CitationCard(QFrame):
 
                 html = f"""
                 <style>
-                    .abstract-text {{ font-size: {self.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
-                    .highlight {{ background-color: #FFB74D; font-weight: 600; padding: 2px 4px; }}
+                    .abstract-text {{ font-size: {s['font_normal']}pt; color: #333; line-height: 1.4; }}
+                    .highlight {{ background-color: #FFB74D; font-weight: 600; padding: {s['padding_tiny']}px {s['padding_small']}px; }}
                 </style>
                 <div class="abstract-text">
                     {before}<span class="highlight">⚠️ {highlighted} ⚠️</span>{after}
@@ -372,56 +376,57 @@ class CitationCard(QFrame):
                 passage_frame.setStyleSheet(f"""
                     QFrame {{
                         background-color: {self.COLOR_PASSAGE_BG};
-                        border-radius: 3px;
-                        padding: 8px;
+                        border-radius: {s['radius_tiny']}px;
+                        padding: {s['padding_medium']}px;
                     }}
                 """)
                 passage_layout = QVBoxLayout(passage_frame)
-                passage_layout.setContentsMargins(8, 8, 8, 8)
+                passage_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
                 passage_label = QLabel(f"📌 Cited Passage:\n{html_escape(passage)}")
                 passage_label.setWordWrap(True)
                 passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                passage_label.setStyleSheet(f"font-size: {self.CARD_BODY_FONT_SIZE}pt; font-weight: 600; background-color: transparent; border: none;")
+                passage_label.setStyleSheet(f"font-size: {s['font_normal']}pt; font-weight: 600; background-color: transparent; border: none;")
                 passage_layout.addWidget(passage_label)
 
                 layout.addWidget(passage_frame)
 
                 abstract_title = QLabel("Full Abstract:")
-                abstract_title.setStyleSheet(f"font-size: {self.CARD_LABEL_FONT_SIZE}pt; font-weight: bold; margin-top: 5px;")
+                abstract_title.setStyleSheet(f"font-size: {s['font_small']}pt; font-weight: bold; margin-top: {s['spacing_small']}px;")
                 layout.addWidget(abstract_title)
 
                 abstract_label = QLabel(html_escape(abstract))
                 abstract_label.setWordWrap(True)
                 abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                abstract_label.setStyleSheet(f"font-size: {self.CARD_BODY_FONT_SIZE}pt; color: #333;")
+                abstract_label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
                 layout.addWidget(abstract_label)
 
         return container
 
     def _create_passage_only(self, passage: str) -> QFrame:
         """Create section showing only the passage (fallback when no abstract)."""
+        s = self.scale
         passage_container = QFrame()
         passage_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_ABSTRACT_BG};
                 border: 1px solid {self.COLOR_ABSTRACT_BORDER};
-                border-radius: 3px;
-                padding: 10px;
+                border-radius: {s['radius_tiny']}px;
+                padding: {s['padding_medium']}px;
             }}
         """)
         passage_layout = QVBoxLayout(passage_container)
-        passage_layout.setContentsMargins(10, 10, 10, 10)
-        passage_layout.setSpacing(5)
+        passage_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
+        passage_layout.setSpacing(s['spacing_small'])
 
         passage_title = QLabel("<b>Cited Passage:</b>")
-        passage_title.setStyleSheet(f"font-size: {self.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+        passage_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
         passage_layout.addWidget(passage_title)
 
         passage_text = QLabel(html_escape(passage))
         passage_text.setWordWrap(True)
         passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        passage_text.setStyleSheet(f"color: #333; font-size: {self.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+        passage_text.setStyleSheet(f"color: #333; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
         passage_layout.addWidget(passage_text)
 
         return passage_container

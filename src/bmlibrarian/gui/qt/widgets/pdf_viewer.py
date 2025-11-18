@@ -13,6 +13,8 @@ from PySide6.QtGui import QPixmap, QImage
 from typing import Optional
 from pathlib import Path
 
+from ..resources.styles import get_font_scale
+
 
 class PDFViewerWidget(QWidget):
     """
@@ -32,6 +34,9 @@ class PDFViewerWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+
+        # Get DPI scale
+        self.scale = get_font_scale()
 
         self.pdf_path: Optional[Path] = None
         self.current_page: int = 0
@@ -56,13 +61,15 @@ class PDFViewerWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(s['spacing_tiny'])
 
         # Navigation bar
         nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(10)
+        nav_layout.setSpacing(s['spacing_medium'])
 
         self.prev_btn = QPushButton("◀ Previous")
         self.prev_btn.clicked.connect(self._on_previous_page)
@@ -104,14 +111,14 @@ class PDFViewerWidget(QWidget):
 
         self.pdf_label = QLabel("No PDF loaded")
         self.pdf_label.setAlignment(Qt.AlignCenter)
-        self.pdf_label.setStyleSheet("background-color: #f0f0f0; padding: 50px;")
+        self.pdf_label.setStyleSheet(f"background-color: #f0f0f0; padding: {s['padding_xlarge']}px;")
 
         self.scroll_area.setWidget(self.pdf_label)
         layout.addWidget(self.scroll_area)
 
         # Status bar
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: gray; font-size: 9pt;")
+        self.status_label.setStyleSheet(f"color: gray; font-size: {s['font_tiny']}pt;")
         layout.addWidget(self.status_label)
 
         # Zoom level

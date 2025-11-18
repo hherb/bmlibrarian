@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Slot
 from typing import Dict, List
 import logging
 
+from ...resources.styles import get_font_scale
+
 
 class PluginCard(QFrame):
     """Card widget displaying information about a single plugin."""
@@ -24,6 +26,7 @@ class PluginCard(QFrame):
             parent: Parent widget
         """
         super().__init__(parent)
+        self.scale = get_font_scale()
         self.plugin_id = plugin_id
         self.metadata = metadata
         self.on_toggle_callback = on_toggle_callback
@@ -38,15 +41,16 @@ class PluginCard(QFrame):
         Args:
             is_enabled: Whether plugin is currently enabled
         """
+        s = self.scale
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(s(10), s(10), s(10), s(10))
 
         # Left side: Plugin info
         info_layout = QVBoxLayout()
 
         # Plugin name and version
         name_label = QLabel(f"<b>{self.metadata.get('display_name', self.plugin_id)}</b>")
-        name_label.setStyleSheet("font-size: 14pt;")
+        name_label.setStyleSheet(f"font-size: {s(14)}pt;")
         info_layout.addWidget(name_label)
 
         version_label = QLabel(f"Version: {self.metadata.get('version', 'Unknown')}")
@@ -57,19 +61,19 @@ class PluginCard(QFrame):
         description = self.metadata.get('description', 'No description available')
         desc_label = QLabel(description)
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("margin-top: 5px;")
+        desc_label.setStyleSheet(f"margin-top: {s(5)}px;")
         info_layout.addWidget(desc_label)
 
         # Plugin ID
         id_label = QLabel(f"Plugin ID: {self.plugin_id}")
-        id_label.setStyleSheet("color: gray; font-size: 9pt; margin-top: 5px;")
+        id_label.setStyleSheet(f"color: gray; font-size: {s(9)}pt; margin-top: {s(5)}px;")
         info_layout.addWidget(id_label)
 
         # Dependencies (if any)
         requires = self.metadata.get('requires', [])
         if requires:
             deps_label = QLabel(f"Dependencies: {', '.join(requires)}")
-            deps_label.setStyleSheet("color: gray; font-size: 9pt;")
+            deps_label.setStyleSheet(f"color: gray; font-size: {s(9)}pt;")
             info_layout.addWidget(deps_label)
 
         # Status
@@ -130,6 +134,7 @@ class PluginsManagerTab(QWidget):
             parent: Parent widget
         """
         super().__init__(parent)
+        self.scale = get_font_scale()
         self.plugin = plugin
         self.logger = logging.getLogger("bmlibrarian.gui.qt.plugins.PluginsManagerTab")
 
@@ -174,6 +179,7 @@ class PluginsManagerTab(QWidget):
 
     def _build_ui(self):
         """Build the user interface."""
+        s = self.scale
         layout = QVBoxLayout(self)
 
         # Header
@@ -185,7 +191,7 @@ class PluginsManagerTab(QWidget):
             "Changes take effect after restarting the application."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("margin-bottom: 10px;")
+        description.setStyleSheet(f"margin-bottom: {s(10)}px;")
         layout.addWidget(description)
 
         # Refresh button

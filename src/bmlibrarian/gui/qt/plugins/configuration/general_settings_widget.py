@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from typing import Optional
 
+from ...resources.styles import get_font_scale
+
 
 class GeneralSettingsWidget(QWidget):
     """
@@ -39,12 +41,14 @@ class GeneralSettingsWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+        self.scale = get_font_scale()
         self.config = config
         self._setup_ui()
         self._load_values()
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         # Create scroll area for the form
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -52,7 +56,7 @@ class GeneralSettingsWidget(QWidget):
 
         container = QWidget()
         main_layout = QVBoxLayout(container)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
         # Ollama Settings Group
         ollama_group = self._create_ollama_group()

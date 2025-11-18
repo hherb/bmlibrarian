@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from typing import Optional
 
+from ...resources.styles import get_font_scale
+
 
 class QueryGenerationWidget(QWidget):
     """
@@ -43,12 +45,14 @@ class QueryGenerationWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+        self.scale = get_font_scale()
         self.config = config
         self._setup_ui()
         self._load_values()
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         # Create scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -56,7 +60,7 @@ class QueryGenerationWidget(QWidget):
 
         container = QWidget()
         main_layout = QVBoxLayout(container)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
         # Enable/Disable Group
         enable_group = self._create_enable_group()
@@ -89,6 +93,7 @@ class QueryGenerationWidget(QWidget):
         Returns:
             Enable group box
         """
+        s = self.scale
         group = QGroupBox("Multi-Model Query Generation")
         layout = QVBoxLayout()
 
@@ -107,7 +112,7 @@ class QueryGenerationWidget(QWidget):
             "processing time by 2-3x but improves research comprehensiveness."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #7f8c8d; font-style: italic; padding: 5px;")
+        info_label.setStyleSheet(f"color: #7f8c8d; font-style: italic; padding: {s['padding_small']}px;")
         layout.addWidget(info_label)
 
         group.setLayout(layout)
@@ -120,6 +125,7 @@ class QueryGenerationWidget(QWidget):
         Returns:
             Models group box
         """
+        s = self.scale
         group = QGroupBox("Query Generation Models")
         layout = QVBoxLayout()
 
@@ -134,7 +140,7 @@ class QueryGenerationWidget(QWidget):
             "medgemma4B_it_q8:latest",
         ])
         self.models_list.setSelectionMode(QListWidget.MultiSelection)
-        self.models_list.setMaximumHeight(150)
+        self.models_list.setMaximumHeight(s['list_height_medium'])
         self.models_list.setToolTip(
             "Select 1-3 models to use for query generation (Ctrl+Click for multiple)"
         )
@@ -146,7 +152,7 @@ class QueryGenerationWidget(QWidget):
             "More models = more diverse queries but slower processing."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #7f8c8d; font-style: italic; font-size: 10pt;")
+        info_label.setStyleSheet(f"color: #7f8c8d; font-style: italic; font-size: {s['font_small']}pt;")
         layout.addWidget(info_label)
 
         group.setLayout(layout)

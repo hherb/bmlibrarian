@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from typing import Optional
 
+from ..resources.styles import get_font_scale
+
 
 class CollapsibleSection(QWidget):
     """
@@ -45,6 +47,7 @@ class CollapsibleSection(QWidget):
         """
         super().__init__(parent)
 
+        self.scale = get_font_scale()  # Get DPI-aware scale
         self._expanded = expanded
         self._animation_duration = 200  # milliseconds
 
@@ -54,47 +57,53 @@ class CollapsibleSection(QWidget):
         main_layout.setSpacing(0)
 
         # Create header widget
+        s = self.scale  # Shorthand
         self.header_frame = QFrame()
         self.header_frame.setFrameShape(QFrame.StyledPanel)
         self.header_frame.setStyleSheet(
-            """
-            QFrame {
+            f"""
+            QFrame {{
                 background-color: #e8e8e8;
                 border: 1px solid #c0c0c0;
-                border-radius: 3px;
-            }
-            QFrame:hover {
+                border-radius: {s['radius_tiny']}px;
+            }}
+            QFrame:hover {{
                 background-color: #d8d8d8;
-            }
+            }}
         """
         )
 
         header_layout = QHBoxLayout(self.header_frame)
-        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setContentsMargins(
+            s['padding_medium'],
+            s['padding_tiny'],
+            s['padding_medium'],
+            s['padding_tiny']
+        )
 
         # Toggle button
         self.toggle_button = QPushButton("▼" if expanded else "▶")
         self.toggle_button.setFlat(True)
-        self.toggle_button.setFixedSize(20, 20)
+        self.toggle_button.setFixedSize(s['icon_small'], s['icon_small'])
         self.toggle_button.clicked.connect(self.toggle)
         self.toggle_button.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 border: none;
                 background: transparent;
-                font-size: 12pt;
-            }
+                font-size: {s['font_medium']}pt;
+            }}
         """
         )
 
         # Title label
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet(
-            """
-            QLabel {
+            f"""
+            QLabel {{
                 font-weight: bold;
-                font-size: 10pt;
-            }
+                font-size: {s['font_normal']}pt;
+            }}
         """
         )
 
@@ -111,18 +120,23 @@ class CollapsibleSection(QWidget):
         self.content_frame = QFrame()
         self.content_frame.setFrameShape(QFrame.StyledPanel)
         self.content_frame.setStyleSheet(
-            """
-            QFrame {
+            f"""
+            QFrame {{
                 background-color: white;
                 border: 1px solid #c0c0c0;
                 border-top: none;
-                border-radius: 0 0 3px 3px;
-            }
+                border-radius: 0 0 {s['radius_tiny']}px {s['radius_tiny']}px;
+            }}
         """
         )
 
         self.content_layout = QVBoxLayout(self.content_frame)
-        self.content_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_layout.setContentsMargins(
+            s['spacing_large'],
+            s['spacing_large'],
+            s['spacing_large'],
+            s['spacing_large']
+        )
 
         main_layout.addWidget(self.content_frame)
 
@@ -211,12 +225,13 @@ class CollapsibleSection(QWidget):
         Args:
             color: CSS color string (e.g., "#3498db" or "blue")
         """
+        s = self.scale
         self.header_frame.setStyleSheet(
             f"""
             QFrame {{
                 background-color: {color};
                 border: 1px solid #c0c0c0;
-                border-radius: 3px;
+                border-radius: {s['radius_tiny']}px;
             }}
         """
         )
