@@ -64,11 +64,12 @@ if self.enable_counterfactual and ...:
         # Log warning and skip
     else:
         # Step 7: Search contradictory evidence
-        # Store results
+        # Store results (may be empty list - that's valid!)
 
 # Step 8: Generate Final Report (ALWAYS RUNS)
-if counterfactual_analysis and unique_contradictory_docs and self.executor.editor_agent:
-    # Case 1: Use EditorAgent with contradictory evidence
+if counterfactual_analysis and self.executor.editor_agent:
+    # Case 1: Use EditorAgent with counterfactual analysis
+    # (even if no contradictory documents found - that's a valid outcome!)
     edited_report = self.executor.editor_agent.create_comprehensive_report(...)
     self.final_report = self._format_edited_report(edited_report)
 else:
@@ -82,7 +83,8 @@ else:
 |----------|-----------|-----------|
 | Counterfactual disabled | ❌ No final report | ✅ Final report = preliminary |
 | Counterfactual fails | ❌ No final report | ✅ Final report = preliminary |
-| Counterfactual succeeds | ✅ Final report with EditorAgent | ✅ Final report with EditorAgent |
+| Counterfactual succeeds + no contradictory docs | ❌ No final report | ✅ Final report with EditorAgent (empty contradictory evidence) |
+| Counterfactual succeeds + contradictory docs found | ✅ Final report with EditorAgent | ✅ Final report with EditorAgent |
 
 ## Testing
 
@@ -94,16 +96,21 @@ uv run python -m py_compile src/bmlibrarian/gui/qt/plugins/research/workflow_thr
 
 ### Recommended Testing
 1. **With counterfactual disabled:** Verify final report equals preliminary report
-2. **With counterfactual enabled (success):** Verify EditorAgent generates comprehensive report
-3. **With counterfactual enabled (fail):** Verify fallback to preliminary report works
+2. **With counterfactual enabled (success, no contradictory docs):** Verify EditorAgent is used with empty contradictory evidence
+3. **With counterfactual enabled (success, contradictory docs found):** Verify EditorAgent generates comprehensive report with contradictory evidence
+4. **With counterfactual enabled (fail):** Verify fallback to preliminary report works
 
 ## Files Modified
 - `src/bmlibrarian/gui/qt/plugins/research/workflow_thread.py` (lines 268-435)
 
 ## Additional Improvements
-- Consistent use of `self.max_results` instead of magic number `10`
-- Clear comments documenting the two execution paths
-- Proper variable initialization for scope clarity
+- **Removed incorrect check for `unique_contradictory_docs`** in Step 8 condition (line 372)
+  - Previously: `if counterfactual_analysis and unique_contradictory_docs and self.executor.editor_agent:`
+  - Now: `if counterfactual_analysis and self.executor.editor_agent:`
+  - Finding zero contradictory documents is a **valid outcome** that should still use EditorAgent
+- **Consistent use of `self.max_results`** instead of magic number `10` (line 336)
+- **Clear comments** documenting the two execution paths
+- **Proper variable initialization** for scope clarity
 
 ## Related Issues
 This fix ensures that:

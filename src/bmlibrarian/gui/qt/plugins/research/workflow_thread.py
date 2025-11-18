@@ -369,8 +369,9 @@ class WorkflowThread(QThread):
             step_name = "generate_final_report"
             self.step_started.emit(step_name, "Creating comprehensive balanced report")
 
-            if counterfactual_analysis and unique_contradictory_docs and self.executor.editor_agent:
+            if counterfactual_analysis and self.executor.editor_agent:
                 # Case 1: Counterfactual analysis succeeded - use EditorAgent for comprehensive report
+                # (even if no contradictory documents found - that's a valid outcome!)
                 self.status_message.emit(f"📄 Synthesizing final report with all evidence...")
 
                 if self._check_cancellation(step_name):
