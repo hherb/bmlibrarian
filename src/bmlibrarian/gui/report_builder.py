@@ -420,32 +420,65 @@ Analysis completed - {str(counterfactual_analysis)[:200]}...
 | Citations Extracted | {len(citations)} |"""
     
     def _build_methodology_section(self, counterfactual_analysis: Any = None) -> str:
-        """Build the methodology section.
-        
+        """Build the detailed methodology section matching Flet GUI formatting.
+
         Args:
             counterfactual_analysis: Counterfactual analysis results to determine type
-        
+
         Returns:
-            Formatted methodology section
+            Formatted methodology section with detailed steps and quality controls
         """
-        # Determine type of counterfactual analysis performed
-        cf_description = "**Counterfactual Analysis**: Analyzed for potential contradictory evidence"
+        lines = []
+
+        lines.append("## Methodology")
+        lines.append("")
+        lines.append("This report was generated using the BMLibrarian multi-agent system with the following workflow:")
+        lines.append("")
+
+        lines.append("### Core Research Pipeline")
+        lines.append("")
+        lines.append("1. **Query Generation:** Natural language question converted to optimized PostgreSQL to_tsquery")
+        lines.append("2. **Document Retrieval:** Full-text search with semantic ranking using pgvector extension")
+        lines.append("3. **Relevance Scoring:** AI-powered document assessment using medical LLMs (1-5 scale)")
+        lines.append("4. **Citation Extraction:** Automated extraction of relevant passages from high-scoring documents")
+        lines.append("5. **Report Synthesis:** Medical publication-style report generation with evidence grading")
+        lines.append("")
+
+        # Add enhanced analysis pipeline if counterfactual analysis was performed
         if counterfactual_analysis:
-            if isinstance(counterfactual_analysis, dict) and counterfactual_analysis.get('contradictory_evidence'):
+            lines.append("### Enhanced Analysis Pipeline")
+            lines.append("")
+            lines.append("6. **Counterfactual Analysis:** Identification of main claims and generation of research questions to find contradictory evidence")
+            lines.append("7. **Contradictory Evidence Search:** Automated literature search for opposing findings using generated research questions")
+            lines.append("8. **Comprehensive Synthesis:** Integration of supporting and contradictory evidence into balanced conclusions")
+            lines.append("")
+
+            # Add details about what was found
+            if isinstance(counterfactual_analysis, dict):
                 contradictory_docs = len(counterfactual_analysis.get('contradictory_evidence', []))
                 contradictory_citations = len(counterfactual_analysis.get('contradictory_citations', []))
-                cf_description = f"**Comprehensive Counterfactual Analysis**: Literature search performed, found {contradictory_docs} contradictory studies and extracted {contradictory_citations} citations"
-            elif hasattr(counterfactual_analysis, 'counterfactual_questions'):
-                cf_description = "**Basic Counterfactual Analysis**: Analyzed claims and generated research questions for finding contradictory evidence"
-        
-        return f"""## Research Methodology
+                if contradictory_docs > 0 or contradictory_citations > 0:
+                    lines.append(f"**Counterfactual Analysis Results:** Found {contradictory_docs} contradictory studies and extracted {contradictory_citations} citations")
+                    lines.append("")
 
-- **Query Generation**: Natural language converted to PostgreSQL query
-- **Database Search**: Searched biomedical literature database  
-- **Relevance Scoring**: AI-powered document scoring (1-5 scale)
-- **Citation Extraction**: Extracted relevant passages from high-scoring documents
-- **Report Synthesis**: Generated comprehensive medical research report
-- {cf_description}"""
+        lines.append("### Quality Controls")
+        lines.append("")
+        lines.append("- **Citation Verification:** Document ID validation prevents AI hallucination")
+        lines.append("- **Evidence Grading:** Multi-tier assessment of evidence strength and reliability")
+        lines.append("- **Bias Detection:** Counterfactual analysis identifies potential confirmation bias")
+        lines.append("- **Human Oversight:** Interactive validation at critical processing steps")
+        lines.append("- **Confidence Assessment:** Transparent reporting of evidence limitations")
+        lines.append("")
+
+        lines.append("### AI Models Used")
+        lines.append("")
+        lines.append("- **Document Scoring:** LLM via Ollama for relevance assessment")
+        lines.append("- **Citation Extraction:** LLM via Ollama for passage extraction")
+        lines.append("- **Report Synthesis:** Medical writing-focused language model")
+        lines.append("- **Counterfactual Analysis:** LLM via Ollama for critical analysis")
+        lines.append("")
+
+        return "\n".join(lines)
     
     def _build_limitations_section(self, documents: List[Dict], 
                                  scored_documents: List[Tuple[Dict, Dict]], 
