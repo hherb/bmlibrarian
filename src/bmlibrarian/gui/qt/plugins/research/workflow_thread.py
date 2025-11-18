@@ -269,96 +269,92 @@ class WorkflowThread(QThread):
             self.status_message.emit(f"✓ Generated preliminary report ({report_word_count} words)")
 
             # ==================================================================
-            # Step 6: Counterfactual Analysis (Optional)
+            # Step 6-7: Comprehensive Counterfactual Analysis (WITH citation extraction)
             # ==================================================================
             if self.enable_counterfactual and self.executor.counterfactual_agent and self.executor.editor_agent:
-                # Step 6a: Analyze preliminary report for counterfactual questions
                 step_name = "counterfactual_analysis"
-                self.step_started.emit(step_name, "Analyzing report for potential contradictions")
-                self.status_message.emit(f"🔄 Generating counterfactual research questions...")
+                self.step_started.emit(step_name, "Performing comprehensive counterfactual analysis")
+                self.status_message.emit(f"🔬 Analyzing report and searching for contradictory evidence...")
 
                 if self._check_cancellation(step_name):
                     return
 
-                # Analyze preliminary report to generate counterfactual questions
-                counterfactual_analysis = self.executor.counterfactual_agent.analyze_document(
-                    document_content=self.preliminary_report,
-                    document_title=f"Preliminary Report: {self.question[:100]}"
-                )
-
-                if not counterfactual_analysis:
-                    self.logger.warning("Counterfactual analysis failed - skipping")
-                    self.step_completed.emit(step_name)
-                else:
-                    # Store counterfactual questions
-                    counterfactual_questions = counterfactual_analysis.counterfactual_questions
-                    self.status_message.emit(
-                        f"✓ Generated {len(counterfactual_questions)} counterfactual questions"
+                # Use the comprehensive find_contradictory_literature method (same as Flet GUI)
+                # This does ALL the work:
+                # 1. Analyzes report to generate counterfactual questions
+                # 2. Searches for contradictory documents
+                # 3. SCORES the contradictory documents (using ScoringAgent)
+                # 4. EXTRACTS citations from contradictory documents (using CitationAgent)
+                # 5. Assembles comprehensive analysis with evidence and citations
+                try:
+                    comprehensive_analysis = self.executor.counterfactual_agent.find_contradictory_literature(
+                        document_content=self.preliminary_report,
+                        document_title=f"Preliminary Report: {self.question[:100]}",
+                        max_results_per_query=100,  # Same as main search
+                        min_relevance_score=3.0,  # Configurable threshold for contradictory docs
+                        query_agent=self.executor.query_agent,
+                        scoring_agent=self.executor.scoring_agent,  # ← Scores contradictory docs!
+                        citation_agent=self.executor.citation_agent  # ← Extracts citations!
                     )
+
+                    if not comprehensive_analysis:
+                        self.logger.warning("Counterfactual analysis failed - skipping")
+                        self.step_completed.emit(step_name)
+                        counterfactual_analysis = None
+                    else:
+                        # Extract components from comprehensive analysis
+                        analysis_obj = comprehensive_analysis.get('analysis')
+                        contradictory_evidence = comprehensive_analysis.get('contradictory_evidence', [])
+                        contradictory_citations = comprehensive_analysis.get('contradictory_citations', [])
+                        rejected_citations = comprehensive_analysis.get('rejected_citations', [])
+                        no_citation_extracted = comprehensive_analysis.get('no_citation_extracted', [])
+                        summary = comprehensive_analysis.get('summary', {})
+
+                        # Get questions from analysis object
+                        counterfactual_questions = []
+                        if analysis_obj and hasattr(analysis_obj, 'counterfactual_questions'):
+                            counterfactual_questions = analysis_obj.counterfactual_questions
+
+                        # Extract documents from contradictory evidence (for backward-compatible UI display)
+                        contradictory_docs = []
+                        for evidence_item in contradictory_evidence:
+                            if isinstance(evidence_item, dict) and 'document' in evidence_item:
+                                doc = evidence_item['document']
+                                # Tag with score and reasoning
+                                doc['_counterfactual_score'] = evidence_item.get('score')
+                                doc['_counterfactual_reasoning'] = evidence_item.get('reasoning')
+                                contradictory_docs.append(doc)
+
+                        self.status_message.emit(
+                            f"✓ Found {len(contradictory_docs)} contradictory documents, "
+                            f"extracted {len(contradictory_citations)} citations"
+                        )
+                        self.step_completed.emit(step_name)
+
+                        # Store comprehensive counterfactual results (matching Flet structure)
+                        self.counterfactual_results = {
+                            'analysis': analysis_obj,
+                            'questions': counterfactual_questions,
+                            'contradictory_documents': contradictory_docs,
+                            'contradictory_evidence': contradictory_evidence,  # Scored documents
+                            'contradictory_citations': contradictory_citations,  # ← CITATIONS!
+                            'rejected_citations': rejected_citations,
+                            'no_citation_extracted': no_citation_extracted,
+                            'summary': summary,
+                            'question_count': len(counterfactual_questions),
+                            'document_count': len(contradictory_docs),
+                            'citation_count': len(contradictory_citations)
+                        }
+                        self.counterfactual_analysis_complete.emit(self.counterfactual_results)
+
+                        # Also store for final report generation
+                        counterfactual_analysis = comprehensive_analysis
+
+                except Exception as e:
+                    self.logger.error(f"Comprehensive counterfactual analysis failed: {e}", exc_info=True)
+                    self.status_message.emit(f"⚠️ Counterfactual analysis failed: {str(e)}")
                     self.step_completed.emit(step_name)
-
-                    # ==============================================================
-                    # Step 7: Search for Contradictory Evidence
-                    # ==============================================================
-                    step_name = "search_contradictory_evidence"
-                    self.step_started.emit(step_name, "Searching for contradictory evidence")
-                    self.status_message.emit(f"📚 Searching for contradictory studies...")
-
-                    if self._check_cancellation(step_name):
-                        return
-
-                    # Search for contradictory documents using counterfactual statements
-                    contradictory_docs = []
-                    for i, cf_question in enumerate(counterfactual_questions, 1):
-                        if self._check_cancellation(step_name):
-                            return
-
-                        # Emit progress for each counterfactual search
-                        self.step_progress.emit(step_name, i, len(counterfactual_questions))
-
-                        # Use the counterfactual_statement for search (it's a declarative statement)
-                        cf_statement = cf_question.counterfactual_statement
-
-                        # Convert natural language statement to PostgreSQL tsquery
-                        # Use QueryAgent if available, otherwise try direct search
-                        if self.executor.query_agent:
-                            try:
-                                cf_query = self.executor.query_agent.convert_question(cf_statement)
-                                if cf_query:
-                                    cf_docs = self.executor.query_agent.search_documents(cf_query)
-                                    if cf_docs:
-                                        # Tag documents with the counterfactual question they relate to
-                                        for doc in cf_docs:
-                                            doc['_counterfactual_question'] = cf_question.question
-                                            doc['_counterfactual_priority'] = cf_question.priority
-                                        contradictory_docs.extend(cf_docs[:10])  # Limit per question
-                            except Exception as e:
-                                self.logger.error(f"Counterfactual search failed for: {cf_statement[:100]}: {e}")
-                                continue
-
-                    # Remove duplicates based on doc_id
-                    seen_ids = set()
-                    unique_contradictory_docs = []
-                    for doc in contradictory_docs:
-                        doc_id = doc.get('doc_id')
-                        if doc_id and doc_id not in seen_ids:
-                            seen_ids.add(doc_id)
-                            unique_contradictory_docs.append(doc)
-
-                    self.status_message.emit(
-                        f"✓ Found {len(unique_contradictory_docs)} potentially contradictory documents"
-                    )
-                    self.step_completed.emit(step_name)
-
-                    # Store counterfactual results
-                    self.counterfactual_results = {
-                        'analysis': counterfactual_analysis,
-                        'questions': counterfactual_questions,
-                        'contradictory_documents': unique_contradictory_docs,
-                        'question_count': len(counterfactual_questions),
-                        'document_count': len(unique_contradictory_docs)
-                    }
-                    self.counterfactual_analysis_complete.emit(self.counterfactual_results)
+                    counterfactual_analysis = None
 
                     # ==============================================================
                     # Step 8: Generate Comprehensive Final Report

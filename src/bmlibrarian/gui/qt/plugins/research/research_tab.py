@@ -1822,6 +1822,78 @@ class ResearchTabWidget(QWidget):
 
                 self.logger.info(f"Counterfactual tab updated with {cards_created}/{len(contradictory_docs)} document cards")
 
+            # Display contradictory citations (extracted passages from contradictory documents)
+            contradictory_citations = results.get('contradictory_citations', [])
+            if contradictory_citations:
+                # Add section header for citations
+                citations_header = QLabel(f"\n💬 Contradictory Citations ({len(contradictory_citations)})")
+                citations_header.setStyleSheet("font-weight: bold; font-size: 11pt; padding-top: 15px; padding-bottom: 5px;")
+                self.counterfactual_layout.addWidget(citations_header)
+
+                citations_desc = QLabel(
+                    "Specific passages extracted from contradictory documents that challenge the original claims:"
+                )
+                citations_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt; padding-bottom: 10px;")
+                citations_desc.setWordWrap(True)
+                self.counterfactual_layout.addWidget(citations_desc)
+
+                # Import CitationCard widget
+                from ...widgets.citation_card import CitationCard
+
+                # Create citation cards
+                for i, citation_info in enumerate(contradictory_citations, 1):
+                    try:
+                        # Extract citation object (may be wrapped in dict)
+                        if isinstance(citation_info, dict) and 'citation' in citation_info:
+                            citation = citation_info['citation']
+                            original_claim = citation_info.get('original_claim', '')
+                            cf_question = citation_info.get('counterfactual_question', '')
+                        else:
+                            citation = citation_info
+                            original_claim = ''
+                            cf_question = ''
+
+                        # Create citation card using the existing widget
+                        citation_card = CitationCard(citation, index=i)
+
+                        # Add context information if available
+                        if original_claim or cf_question:
+                            context_frame = QFrame()
+                            context_frame.setStyleSheet("""
+                                QFrame {
+                                    background-color: #FFF9C4;
+                                    border: 1px solid #FFF176;
+                                    border-radius: 3px;
+                                    padding: 8px;
+                                }
+                            """)
+                            context_layout = QVBoxLayout(context_frame)
+                            context_layout.setContentsMargins(8, 8, 8, 8)
+                            context_layout.setSpacing(5)
+
+                            if original_claim:
+                                claim_label = QLabel(f"<b>Challenges Claim:</b> {original_claim}")
+                                claim_label.setWordWrap(True)
+                                claim_label.setStyleSheet("background-color: transparent; border: none;")
+                                context_layout.addWidget(claim_label)
+
+                            if cf_question:
+                                question_label = QLabel(f"<b>Research Question:</b> {cf_question}")
+                                question_label.setWordWrap(True)
+                                question_label.setStyleSheet("background-color: transparent; border: none;")
+                                context_layout.addWidget(question_label)
+
+                            # Insert context at the top of the citation card
+                            if hasattr(citation_card, 'main_layout'):
+                                citation_card.main_layout.insertWidget(0, context_frame)
+
+                        self.counterfactual_layout.addWidget(citation_card)
+
+                    except Exception as citation_error:
+                        self.logger.error(f"Error creating counterfactual citation card {i}: {citation_error}", exc_info=True)
+
+                self.logger.info(f"Counterfactual tab updated with {len(contradictory_citations)} citation cards")
+
             self.counterfactual_layout.addStretch()
 
         except Exception as e:
