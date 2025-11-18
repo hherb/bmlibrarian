@@ -18,12 +18,22 @@ logger = logging.getLogger(__name__)
 class PDFManager:
     """Manages PDF storage and retrieval with year-based organization."""
 
-    def __init__(self, base_dir: Optional[str] = None, db_conn=None):
+    def __init__(
+        self,
+        base_dir: Optional[str] = None,
+        db_conn=None,
+        openathens_auth=None,
+        openathens_config: Optional[Dict[str, Any]] = None  # Deprecated, for backward compatibility
+    ):
         """Initialize PDF manager.
 
         Args:
             base_dir: Base directory for PDF storage. If None, reads from environment.
             db_conn: Optional database connection for migration operations.
+            openathens_auth: Optional OpenAthensAuth instance for authenticated downloads (recommended).
+            openathens_config: Optional dict with OpenAthens config (deprecated, use openathens_auth instead).
+                If provided, creates OpenAthensAuth instance internally.
+                Dict keys: enabled, institution_url, session_timeout_hours
         """
         if base_dir is None:
             # Read from environment
@@ -33,6 +43,42 @@ class PDFManager:
 
         self.base_dir = Path(base_dir).expanduser()
         self.db_conn = db_conn
+
+        # Handle backward compatibility with old openathens_config dict
+        if openathens_config is not None and openathens_auth is None:
+            import warnings
+            warnings.warn(
+                "openathens_config dict parameter is deprecated. "
+                "Use openathens_auth parameter with OpenAthensAuth instance instead:\n"
+                "  from bmlibrarian.utils.openathens_auth import OpenAthensConfig, OpenAthensAuth\n"
+                "  config = OpenAthensConfig(institution_url='...')\n"
+                "  auth = OpenAthensAuth(config=config)\n"
+                "  pdf_manager = PDFManager(openathens_auth=auth)",
+                DeprecationWarning,
+                stacklevel=2
+            )
+
+            if openathens_config.get('enabled', False):
+                try:
+                    from .openathens_auth import OpenAthensAuth
+                    institution_url = openathens_config.get('institution_url')
+                    if institution_url:
+                        # Use deprecated API for backward compatibility
+                        self.openathens_auth = OpenAthensAuth(
+                            institution_url=institution_url,
+                            session_timeout_hours=openathens_config.get('session_timeout_hours', 24)
+                        )
+                    else:
+                        logger.warning("OpenAthens enabled but no institution_url provided")
+                        self.openathens_auth = None
+                except ImportError:
+                    logger.warning("OpenAthens requested but openathens_auth module not available")
+                    self.openathens_auth = None
+            else:
+                self.openathens_auth = None
+        else:
+            # New API - use provided auth instance
+            self.openathens_auth = openathens_auth
 
     def get_pdf_path(self, document: Dict[str, Any], create_dirs: bool = False) -> Optional[Path]:
         """Get the expected PDF path for a document.
@@ -125,17 +171,34 @@ class PDFManager:
                 else:
                     logger.info(f"Downloading PDF from {pdf_url}")
 
-                # Add headers to mimic browser request
+                # Prepare headers and cookies
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                     'Accept': 'application/pdf,*/*'
                 }
+
+                cookies = {}
+
+                # Use OpenAthens authentication if available
+                if self.openathens_auth and self.openathens_auth.is_authenticated():
+                    # Get user agent from session
+                    session_user_agent = self.openathens_auth.get_user_agent()
+                    if session_user_agent:
+                        headers['User-Agent'] = session_user_agent
+
+                    # Convert cookies to requests format
+                    session_cookies = self.openathens_auth.get_cookies()
+                    for cookie in session_cookies:
+                        cookies[cookie['name']] = cookie['value']
+
+                    logger.info("Using OpenAthens authenticated session")
 
                 response = requests.get(
                     pdf_url,
                     timeout=timeout,
                     stream=True,
                     headers=headers,
+                    cookies=cookies,
                     allow_redirects=True
                 )
                 response.raise_for_status()

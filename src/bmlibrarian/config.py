@@ -170,6 +170,14 @@ DEFAULT_CONFIG = {
                 "hyde": 2.0
             }
         }
+    },
+    "openathens": {
+        "enabled": False,  # Enable OpenAthens proxy for PDF downloads
+        "institution_url": "",  # Your institution's OpenAthens URL (e.g., "https://institution.openathens.net")
+        "session_timeout_hours": 24,  # Session timeout in hours (default: 24)
+        "auto_login": True,  # Automatically login on startup if session expired
+        "login_timeout": 300,  # Maximum seconds to wait for login completion (default: 300 = 5 minutes)
+        "headless": False  # Run browser in headless mode for login (False = visible for 2FA)
     }
 }
 
@@ -431,3 +439,17 @@ def get_search_config() -> Dict[str, Any]:
 def get_query_generation_config() -> Dict[str, Any]:
     """Get query generation configuration."""
     return get_config().get("query_generation", DEFAULT_CONFIG["query_generation"])
+
+def get_openathens_config() -> Dict[str, Any]:
+    """Get OpenAthens proxy configuration.
+
+    Returns:
+        Dictionary with OpenAthens configuration:
+        - enabled (bool): Enable OpenAthens proxy
+        - institution_url (str): Institution's OpenAthens URL
+        - session_timeout_hours (int): Session timeout in hours
+        - auto_login (bool): Auto-login on startup
+        - login_timeout (int): Maximum seconds to wait for login
+        - headless (bool): Run browser in headless mode
+    """
+    return get_config().get("openathens", DEFAULT_CONFIG["openathens"])

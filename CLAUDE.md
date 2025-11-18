@@ -37,6 +37,12 @@ The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides f
 - **AI/LLM configuration:**
   - Ollama service typically runs on `http://localhost:11434`
   - Models used: `gpt-oss:20b` (default for complex tasks), `medgemma4B_it_q8:latest` (fast processing)
+- **OpenAthens proxy authentication** (optional):
+  - Enable institutional access to paywalled PDFs via OpenAthens proxy
+  - Supports 2FA authentication with persistent sessions (24 hours default)
+  - Configure in `config.json` under `"openathens"` section
+  - Requires Playwright: `uv add playwright && uv run python -m playwright install chromium`
+  - See: `doc/OPENATHENS_QUICKSTART.md` and `doc/users/openathens_guide.md`
 
 ## Development Commands
 
@@ -95,6 +101,54 @@ Since this project uses `uv` for package management:
   - `uv run python examples/citation_demo.py` - Citation extraction examples
   - `uv run python examples/reporting_demo.py` - Report generation examples
   - `uv run python examples/counterfactual_demo.py` - Counterfactual analysis demonstration
+
+## OpenAthens Authentication
+
+BMLibrarian includes secure OpenAthens authentication for accessing institutional journal subscriptions:
+
+### Key Features
+- **Secure Session Management**: JSON-based storage with 600 file permissions (no pickle vulnerability)
+- **Browser Automation**: Interactive login via Playwright
+- **Cookie-Based Authentication**: Automatic cookie injection for authenticated downloads
+- **Session Validation Caching**: Performance optimization with configurable TTL
+- **HTTPS Enforcement**: All institutional URLs must use HTTPS
+- **Network Connectivity Checks**: Pre-authentication validation
+
+### Security Improvements Implemented
+1. **JSON Serialization**: Replaced pickle to eliminate code execution vulnerability
+2. **File Permissions**: Session files stored with 600 permissions (owner read/write only)
+3. **Cookie Pattern Matching**: Specific regex patterns for OpenAthens/SAML/Shibboleth cookies
+4. **Configurable Parameters**: No magic numbers, all timeouts/intervals configurable
+5. **URL Validation**: HTTPS requirement and format validation
+6. **Browser Crash Handling**: Graceful cleanup on browser failures
+7. **Session Cache TTL**: Reduces validation overhead during batch downloads
+
+### Usage
+```python
+from bmlibrarian.utils.openathens_auth import OpenAthensConfig, OpenAthensAuth
+from bmlibrarian.utils.pdf_manager import PDFManager
+
+# Configure OpenAthens
+config = OpenAthensConfig(
+    institution_url='https://institution.openathens.net/login',
+    session_max_age_hours=24,
+    session_cache_ttl=60
+)
+
+# Authenticate (interactive browser login)
+auth = OpenAthensAuth(config)
+import asyncio
+asyncio.run(auth.login_interactive())
+
+# Use with PDFManager for authenticated downloads
+pdf_manager = PDFManager(openathens_auth=auth)
+pdf_path = pdf_manager.download_pdf(document)
+```
+
+### Documentation
+- **User Guide**: `doc/users/openathens_guide.md` - Complete usage guide with examples
+- **Security Documentation**: `doc/developers/openathens_security.md` - Security architecture and best practices
+- **Unit Tests**: `tests/test_openathens_auth.py` - Comprehensive test suite
 
 ## Architecture
 
