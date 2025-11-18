@@ -9,10 +9,10 @@ DocumentInterrogationAgent with sliding window chunk processing.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QSplitter, QFileDialog, QMessageBox, QComboBox,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QThread, Slot
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QFont, QTextCursor, QFontMetrics
 from typing import Optional, List
 from pathlib import Path
 
@@ -20,6 +20,64 @@ from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 from bmlibrarian.config import get_config
 from ...widgets.pdf_viewer import PDFViewerWidget
 from ...widgets.markdown_viewer import MarkdownViewer
+
+
+def get_font_scale() -> dict:
+    """
+    Get font-relative scaling dimensions based on system default font.
+
+    Returns:
+        dict: Scaling factors and base dimensions for DPI-independent layout
+    """
+    # Get system default font
+    default_font = QApplication.font()
+    base_font_size = default_font.pointSize()
+    if base_font_size <= 0:
+        base_font_size = 10  # Fallback to 10pt if system font size unavailable
+
+    # Calculate font metrics for precise measurements
+    metrics = QFontMetrics(default_font)
+    base_line_height = metrics.lineSpacing()
+    char_width = metrics.averageCharWidth()
+
+    # Create scaling dictionary with font-relative dimensions
+    # All dimensions are multiples of base font size or line height
+    return {
+        'base_font_size': base_font_size,
+        'base_line_height': base_line_height,
+        'char_width': char_width,
+
+        # Font sizes (in points, DPI-independent)
+        'font_small': max(8, int(base_font_size * 0.85)),      # Slightly smaller
+        'font_normal': base_font_size,                          # System default
+        'font_medium': max(10, int(base_font_size * 1.1)),     # Slightly larger
+        'font_large': max(12, int(base_font_size * 1.2)),      # Headers
+        'font_icon': max(16, int(base_font_size * 1.8)),       # Icons
+
+        # Spacing (in pixels, relative to line height)
+        'spacing_tiny': max(2, int(base_line_height * 0.15)),   # 2-3px
+        'spacing_small': max(4, int(base_line_height * 0.25)),  # 4-6px
+        'spacing_medium': max(6, int(base_line_height * 0.4)),  # 6-10px
+        'spacing_large': max(8, int(base_line_height * 0.5)),   # 8-12px
+
+        # Padding (in pixels, relative to line height)
+        'padding_tiny': max(2, int(base_line_height * 0.15)),
+        'padding_small': max(4, int(base_line_height * 0.3)),
+        'padding_medium': max(6, int(base_line_height * 0.4)),
+        'padding_large': max(8, int(base_line_height * 0.6)),
+
+        # Control heights (in pixels, relative to line height)
+        'control_height_small': max(24, int(base_line_height * 1.8)),
+        'control_height_medium': max(30, int(base_line_height * 2.2)),
+        'control_height_large': max(40, int(base_line_height * 2.8)),
+
+        # Chat bubble dimensions
+        'bubble_margin_large': max(24, int(char_width * 3.5)),  # More padding side
+        'bubble_margin_small': max(6, int(char_width * 0.8)),   # Less padding side
+        'bubble_padding': max(10, int(base_line_height * 0.7)),
+        'bubble_max_width': max(500, int(char_width * 70)),     # ~70 characters wide
+        'bubble_radius': max(12, int(base_line_height * 0.9)),
+    }
 
 
 class DocumentProcessingWorker(QThread):
@@ -87,68 +145,80 @@ class DocumentProcessingWorker(QThread):
 
 
 class ChatBubble(QFrame):
-    """A single chat message bubble."""
+    """A single chat message bubble with DPI-aware dimensions."""
 
-    def __init__(self, text: str, is_user: bool, parent: Optional[QWidget] = None):
+    def __init__(self, text: str, is_user: bool, scale: dict, parent: Optional[QWidget] = None):
         """
         Initialize chat bubble.
 
         Args:
             text: Message text
             is_user: True if user message, False if AI message
+            scale: Font-relative scaling dimensions from get_font_scale()
             parent: Optional parent widget
         """
         super().__init__(parent)
 
+        # Get scaled dimensions
+        radius = scale['bubble_radius']
+        padding = scale['bubble_padding']
+
         # Styling with proper colors and rounded corners
         if is_user:
             # User: pale sand background
-            self.setStyleSheet("""
-                QFrame {
+            self.setStyleSheet(f"""
+                QFrame {{
                     background-color: #F4EAD5;
-                    border-radius: 16px;
-                    padding: 12px 14px;
-                }
-                QLabel {
+                    border-radius: {radius}px;
+                    padding: {padding}px;
+                }}
+                QLabel {{
                     color: #333333;
                     background-color: transparent;
-                }
+                }}
             """)
         else:
             # LLM: pale blue background
-            self.setStyleSheet("""
-                QFrame {
+            self.setStyleSheet(f"""
+                QFrame {{
                     background-color: #E3F2FD;
-                    border-radius: 16px;
-                    padding: 12px 14px;
-                }
-                QLabel {
+                    border-radius: {radius}px;
+                    padding: {padding}px;
+                }}
+                QLabel {{
                     color: #1A1A1A;
                     background-color: transparent;
-                }
+                }}
             """)
 
         # Main horizontal layout with icon and content
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(
+            scale['spacing_medium'],
+            scale['spacing_medium'],
+            scale['spacing_medium'],
+            scale['spacing_medium']
+        )
+        main_layout.setSpacing(scale['spacing_large'])
 
-        # Icon
+        # Icon - sized relative to font
         icon_label = QLabel("👤" if is_user else "🤖")
-        icon_label.setStyleSheet("font-size: 20pt;")
+        icon_size = scale['font_icon']
+        icon_label.setStyleSheet(f"font-size: {icon_size}pt;")
         icon_label.setAlignment(Qt.AlignTop)
-        icon_label.setFixedSize(32, 32)
+        icon_px_size = max(28, int(scale['base_line_height'] * 2))
+        icon_label.setFixedSize(icon_px_size, icon_px_size)
         main_layout.addWidget(icon_label)
 
         # Content layout (vertical for header and message)
         content_layout = QVBoxLayout()
-        content_layout.setSpacing(4)
+        content_layout.setSpacing(scale['spacing_small'])
 
         # Header label (smaller, less prominent)
         header = QLabel("You" if is_user else "AI Assistant")
         header_font = QFont()
         header_font.setBold(True)
-        header_font.setPointSize(8)
+        header_font.setPointSize(scale['font_small'])
         header.setFont(header_font)
         header.setStyleSheet("color: #666666;")
         content_layout.addWidget(header)
@@ -157,13 +227,15 @@ class ChatBubble(QFrame):
         message_label = QLabel(text)
         message_label.setWordWrap(True)
         message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        message_label.setFont(QFont("", 10))
+        message_font = QFont()
+        message_font.setPointSize(scale['font_medium'])
+        message_label.setFont(message_font)
         content_layout.addWidget(message_label)
 
         main_layout.addLayout(content_layout, 1)
 
-        # Set maximum width to use more space
-        self.setMaximumWidth(650)
+        # Set maximum width to use more space (font-relative)
+        self.setMaximumWidth(scale['bubble_max_width'])
 
 
 class DocumentInterrogationTabWidget(QWidget):
@@ -185,6 +257,9 @@ class DocumentInterrogationTabWidget(QWidget):
         self.current_document_text: Optional[str] = None
         self.interrogation_agent: Optional[DocumentInterrogationAgent] = None
         self.worker: Optional[DocumentProcessingWorker] = None
+
+        # Get DPI-aware font-relative scaling dimensions
+        self.scale = get_font_scale()
 
         # UI Components
         self.load_doc_btn: Optional[QPushButton] = None
@@ -221,6 +296,8 @@ class DocumentInterrogationTabWidget(QWidget):
 
     def _create_top_bar(self) -> QWidget:
         """Create top bar with file selector and model dropdown."""
+        s = self.scale  # Shorthand for scale dict
+
         widget = QWidget()
         widget.setStyleSheet("""
             QWidget {
@@ -228,42 +305,50 @@ class DocumentInterrogationTabWidget(QWidget):
                 border-bottom: 1px solid #D0D0D0;
             }
         """)
-        widget.setFixedHeight(44)  # Compact fixed height
+        # Height based on control height + padding
+        bar_height = s['control_height_medium'] + s['padding_medium']
+        widget.setFixedHeight(bar_height)
         layout = QHBoxLayout(widget)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(
+            s['padding_small'],
+            s['padding_tiny'],
+            s['padding_small'],
+            s['padding_tiny']
+        )
+        layout.setSpacing(s['spacing_medium'])
 
         # Load document button
         self.load_doc_btn = QPushButton("📄 Load Document")
         self.load_doc_btn.clicked.connect(self._on_load_document)
-        self.load_doc_btn.setFixedHeight(30)
-        self.load_doc_btn.setStyleSheet("""
-            QPushButton {
-                padding: 4px 12px;
-                font-size: 9pt;
-            }
+        self.load_doc_btn.setFixedHeight(s['control_height_medium'])
+        self.load_doc_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
+                font-size: {s['font_small']}pt;
+            }}
         """)
         layout.addWidget(self.load_doc_btn)
 
         # Current document label
         self.current_doc_label = QLabel("No document loaded")
-        self.current_doc_label.setStyleSheet("""
-            QLabel {
+        self.current_doc_label.setStyleSheet(f"""
+            QLabel {{
                 color: #666;
                 font-style: italic;
-                font-size: 9pt;
-            }
+                font-size: {s['font_small']}pt;
+            }}
         """)
         layout.addWidget(self.current_doc_label, 1)
 
         # Model selection
         model_label = QLabel("Model:")
-        model_label.setStyleSheet("font-size: 9pt;")
+        model_label.setStyleSheet(f"font-size: {s['font_small']}pt;")
         layout.addWidget(model_label)
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(180)
-        self.model_combo.setFixedHeight(30)
-        self.model_combo.setStyleSheet("font-size: 9pt;")
+        combo_width = max(180, int(s['char_width'] * 25))
+        self.model_combo.setMinimumWidth(combo_width)
+        self.model_combo.setFixedHeight(s['control_height_medium'])
+        self.model_combo.setStyleSheet(f"font-size: {s['font_small']}pt;")
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         layout.addWidget(self.model_combo)
 
@@ -271,7 +356,10 @@ class DocumentInterrogationTabWidget(QWidget):
         self.refresh_models_btn = QPushButton("🔄")
         self.refresh_models_btn.setToolTip("Refresh model list")
         self.refresh_models_btn.clicked.connect(self._load_models)
-        self.refresh_models_btn.setFixedSize(30, 30)
+        self.refresh_models_btn.setFixedSize(
+            s['control_height_medium'],
+            s['control_height_medium']
+        )
         layout.addWidget(self.refresh_models_btn)
 
         return widget
@@ -295,6 +383,8 @@ class DocumentInterrogationTabWidget(QWidget):
 
     def _create_document_pane(self) -> QWidget:
         """Create document viewer pane."""
+        s = self.scale
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -302,27 +392,32 @@ class DocumentInterrogationTabWidget(QWidget):
 
         # Header with minimal padding
         header = QLabel("📖 Document Viewer")
-        header.setStyleSheet("""
-            QLabel {
+        header.setStyleSheet(f"""
+            QLabel {{
                 background-color: #E0E0E0;
-                padding: 6px 8px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
                 font-weight: bold;
-                font-size: 11pt;
-            }
+                font-size: {s['font_large']}pt;
+            }}
         """)
         layout.addWidget(header)
 
         # Document container (will hold PDF viewer or markdown viewer)
         # Minimal padding to maximize PDF viewing area
         self.document_container = QWidget()
-        self.document_container.setStyleSheet("""
-            QWidget {
+        self.document_container.setStyleSheet(f"""
+            QWidget {{
                 background-color: #FFFFFF;
-                padding: 2px;
-            }
+                padding: {s['padding_tiny']}px;
+            }}
         """)
         container_layout = QVBoxLayout(self.document_container)
-        container_layout.setContentsMargins(2, 2, 2, 2)
+        container_layout.setContentsMargins(
+            s['padding_tiny'],
+            s['padding_tiny'],
+            s['padding_tiny'],
+            s['padding_tiny']
+        )
         container_layout.setSpacing(0)
 
         # Initial empty state
@@ -358,6 +453,8 @@ class DocumentInterrogationTabWidget(QWidget):
 
     def _create_chat_pane(self) -> QWidget:
         """Create chat interface pane."""
+        s = self.scale
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -365,13 +462,13 @@ class DocumentInterrogationTabWidget(QWidget):
 
         # Header with minimal padding
         header = QLabel("💬 Chat")
-        header.setStyleSheet("""
-            QLabel {
+        header.setStyleSheet(f"""
+            QLabel {{
                 background-color: #E0E0E0;
-                padding: 6px 8px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
                 font-weight: bold;
-                font-size: 11pt;
-            }
+                font-size: {s['font_large']}pt;
+            }}
         """)
         layout.addWidget(header)
 
@@ -388,8 +485,13 @@ class DocumentInterrogationTabWidget(QWidget):
         # Chat container with reduced padding
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
-        self.chat_layout.setContentsMargins(8, 8, 8, 8)
-        self.chat_layout.setSpacing(8)
+        self.chat_layout.setContentsMargins(
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium']
+        )
+        self.chat_layout.setSpacing(s['spacing_medium'])
         self.chat_layout.setAlignment(Qt.AlignTop)
 
         # Welcome message
@@ -400,12 +502,13 @@ class DocumentInterrogationTabWidget(QWidget):
 
         # Progress label
         self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet("""
-            QLabel {
+        self.progress_label.setStyleSheet(f"""
+            QLabel {{
                 color: #666;
                 font-style: italic;
-                padding: 4px 8px;
-            }
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
+                font-size: {s['font_small']}pt;
+            }}
         """)
         self.progress_label.setVisible(False)
         layout.addWidget(self.progress_label)
@@ -418,6 +521,8 @@ class DocumentInterrogationTabWidget(QWidget):
 
     def _create_input_area(self) -> QWidget:
         """Create message input area - fixed height, expands horizontally."""
+        s = self.scale
+
         widget = QWidget()
         widget.setStyleSheet("""
             QWidget {
@@ -425,49 +530,56 @@ class DocumentInterrogationTabWidget(QWidget):
                 border-top: 1px solid #CCC;
             }
         """)
-        # Fixed height for input area
-        widget.setFixedHeight(70)
+        # Fixed height for input area - relative to control height
+        input_height = s['control_height_large'] + (s['padding_medium'] * 2)
+        widget.setFixedHeight(input_height)
 
         layout = QHBoxLayout(widget)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium']
+        )
+        layout.setSpacing(s['spacing_medium'])
 
         # Message input - expands horizontally, fixed height
         self.message_input = QTextEdit()
         self.message_input.setPlaceholderText("Ask a question about the document...")
-        self.message_input.setStyleSheet("""
-            QTextEdit {
+        self.message_input.setStyleSheet(f"""
+            QTextEdit {{
                 border: 1px solid #CCC;
-                border-radius: 4px;
-                padding: 6px;
-                font-size: 10pt;
-            }
-            QTextEdit:focus {
+                border-radius: {s['padding_tiny']}px;
+                padding: {s['padding_small']}px;
+                font-size: {s['font_medium']}pt;
+            }}
+            QTextEdit:focus {{
                 border: 1px solid #2196F3;
-            }
+            }}
         """)
-        self.message_input.setFixedHeight(54)
+        self.message_input.setFixedHeight(s['control_height_large'])
         layout.addWidget(self.message_input, 1)  # Stretch factor 1 to expand horizontally
 
         # Send button - fixed width and height
         self.send_btn = QPushButton("▶ Send")
         self.send_btn.clicked.connect(self._on_send_message)
-        self.send_btn.setFixedSize(80, 54)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
+        btn_width = max(70, int(s['char_width'] * 8))
+        self.send_btn.setFixedSize(btn_width, s['control_height_large'])
+        self.send_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #2196F3;
                 color: white;
-                border-radius: 5px;
+                border-radius: {s['padding_tiny']}px;
                 font-weight: bold;
-                font-size: 10pt;
-            }
-            QPushButton:hover {
+                font-size: {s['font_medium']}pt;
+            }}
+            QPushButton:hover {{
                 background-color: #1976D2;
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:disabled {{
                 background-color: #CCC;
                 color: #666;
-            }
+            }}
         """)
         layout.addWidget(self.send_btn)
 
@@ -484,22 +596,33 @@ class DocumentInterrogationTabWidget(QWidget):
 
     def _add_chat_bubble(self, text: str, is_user: bool):
         """Add a chat bubble to the chat area."""
-        bubble = ChatBubble(text, is_user)
+        s = self.scale
+        bubble = ChatBubble(text, is_user, s)
 
-        # Create container for alignment with asymmetric padding
+        # Create container for alignment with asymmetric padding (24/6px scaled)
         container = QWidget()
         container.setStyleSheet("background-color: transparent;")
         container_layout = QHBoxLayout(container)
         container_layout.setSpacing(0)
 
         if is_user:
-            # User messages: left-aligned, minor left padding, more right padding
-            container_layout.setContentsMargins(8, 0, 60, 0)
+            # User messages: left-aligned, minor left padding (6px), more right padding (24px)
+            container_layout.setContentsMargins(
+                s['bubble_margin_small'],  # 6px scaled
+                0,
+                s['bubble_margin_large'],  # 24px scaled
+                0
+            )
             container_layout.addWidget(bubble)
             container_layout.addStretch()
         else:
-            # LLM messages: right-aligned, more left padding, minor right padding
-            container_layout.setContentsMargins(60, 0, 8, 0)
+            # LLM messages: right-aligned, more left padding (24px), minor right padding (6px)
+            container_layout.setContentsMargins(
+                s['bubble_margin_large'],  # 24px scaled
+                0,
+                s['bubble_margin_small'],  # 6px scaled
+                0
+            )
             container_layout.addStretch()
             container_layout.addWidget(bubble)
 
@@ -589,12 +712,12 @@ class DocumentInterrogationTabWidget(QWidget):
 
             # Update label
             self.current_doc_label.setText(f"📄 {path.name}")
-            self.current_doc_label.setStyleSheet("""
-                QLabel {
+            self.current_doc_label.setStyleSheet(f"""
+                QLabel {{
                     color: #000;
                     font-weight: bold;
-                    font-size: 9pt;
-                }
+                    font-size: {self.scale['font_small']}pt;
+                }}
             """)
 
             # Clear existing document viewer
