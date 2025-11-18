@@ -138,20 +138,21 @@ class PluginsManagerTab(QWidget):
         from ...core.plugin_manager import PluginManager
         from ...core.tab_registry import TabRegistry
 
-        # Try to get plugin manager from main window
-        self.config_manager = GUIConfigManager()
-
-        # We'll get the plugin manager from the parent window
+        # Get the plugin manager and config manager from the parent window
+        # IMPORTANT: Use the same config_manager instance to avoid overwriting changes
         main_window = self._get_main_window()
         if main_window:
             self.plugin_manager = main_window.plugin_manager
             self.tab_widget = main_window.tab_widget
             self.main_window = main_window
+            self.config_manager = main_window.config_manager
         else:
             self.logger.error("Could not find main window")
             self.plugin_manager = None
             self.tab_widget = None
             self.main_window = None
+            # Fallback: create new instance (but this shouldn't happen)
+            self.config_manager = GUIConfigManager()
 
         self.plugin_cards: Dict[str, PluginCard] = {}
 

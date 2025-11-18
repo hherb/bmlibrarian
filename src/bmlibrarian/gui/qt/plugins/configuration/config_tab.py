@@ -22,7 +22,7 @@ import ollama
 from .general_settings_widget import GeneralSettingsWidget
 from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
-from .....config import get_config, save_config, DEFAULT_CONFIG
+from .....config import get_config, DEFAULT_CONFIG
 
 
 class ConfigurationTabWidget(QWidget):
@@ -50,7 +50,16 @@ class ConfigurationTabWidget(QWidget):
         """
         super().__init__(parent)
 
-        self.config = get_config()
+        # Load current configuration
+        # get_config() returns a BMLibrarianConfig object, but we need a dict
+        bmlib_config = get_config()
+        # Convert to dict by accessing the internal _config
+        if hasattr(bmlib_config, '_config'):
+            self.config = bmlib_config._config.copy()
+        else:
+            # Fallback: create a basic config structure
+            self.config = DEFAULT_CONFIG.copy()
+
         self.config_widgets = {}
 
         self._setup_ui()
@@ -202,8 +211,11 @@ class ConfigurationTabWidget(QWidget):
         try:
             config = self._collect_config()
 
-            # Save using config module
-            save_config(config)
+            # Save configuration to file manually since save_config doesn't exist
+            config_path = Path.home() / ".bmlibrarian" / "config.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
 
             self.status_message.emit("Configuration saved to ~/.bmlibrarian/config.json")
             self.config_saved.emit(str(Path.home() / ".bmlibrarian" / "config.json"))
