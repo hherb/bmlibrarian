@@ -9,10 +9,10 @@ DocumentInterrogationAgent with sliding window chunk processing.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QSplitter, QFileDialog, QMessageBox, QComboBox,
-    QScrollArea, QFrame, QApplication
+    QScrollArea, QFrame
 )
 from PySide6.QtCore import Qt, Signal, QThread, Slot
-from PySide6.QtGui import QFont, QTextCursor, QFontMetrics
+from PySide6.QtGui import QFont, QTextCursor
 from typing import Optional, List
 from pathlib import Path
 
@@ -20,64 +20,7 @@ from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 from bmlibrarian.config import get_config
 from ...widgets.pdf_viewer import PDFViewerWidget
 from ...widgets.markdown_viewer import MarkdownViewer
-
-
-def get_font_scale() -> dict:
-    """
-    Get font-relative scaling dimensions based on system default font.
-
-    Returns:
-        dict: Scaling factors and base dimensions for DPI-independent layout
-    """
-    # Get system default font
-    default_font = QApplication.font()
-    base_font_size = default_font.pointSize()
-    if base_font_size <= 0:
-        base_font_size = 10  # Fallback to 10pt if system font size unavailable
-
-    # Calculate font metrics for precise measurements
-    metrics = QFontMetrics(default_font)
-    base_line_height = metrics.lineSpacing()
-    char_width = metrics.averageCharWidth()
-
-    # Create scaling dictionary with font-relative dimensions
-    # All dimensions are multiples of base font size or line height
-    return {
-        'base_font_size': base_font_size,
-        'base_line_height': base_line_height,
-        'char_width': char_width,
-
-        # Font sizes (in points, DPI-independent)
-        'font_small': max(8, int(base_font_size * 0.85)),      # Slightly smaller
-        'font_normal': base_font_size,                          # System default
-        'font_medium': max(10, int(base_font_size * 1.1)),     # Slightly larger
-        'font_large': max(12, int(base_font_size * 1.2)),      # Headers
-        'font_icon': max(16, int(base_font_size * 1.8)),       # Icons
-
-        # Spacing (in pixels, relative to line height)
-        'spacing_tiny': max(2, int(base_line_height * 0.15)),   # 2-3px
-        'spacing_small': max(4, int(base_line_height * 0.25)),  # 4-6px
-        'spacing_medium': max(6, int(base_line_height * 0.4)),  # 6-10px
-        'spacing_large': max(8, int(base_line_height * 0.5)),   # 8-12px
-
-        # Padding (in pixels, relative to line height)
-        'padding_tiny': max(2, int(base_line_height * 0.15)),
-        'padding_small': max(4, int(base_line_height * 0.3)),
-        'padding_medium': max(6, int(base_line_height * 0.4)),
-        'padding_large': max(8, int(base_line_height * 0.6)),
-
-        # Control heights (in pixels, relative to line height)
-        'control_height_small': max(24, int(base_line_height * 1.8)),
-        'control_height_medium': max(30, int(base_line_height * 2.2)),
-        'control_height_large': max(40, int(base_line_height * 2.8)),
-
-        # Chat bubble dimensions
-        'bubble_margin_large': max(24, int(char_width * 3.5)),  # More padding side
-        'bubble_margin_small': max(6, int(char_width * 0.8)),   # Less padding side
-        'bubble_padding': max(10, int(base_line_height * 0.7)),
-        'bubble_max_width': max(500, int(char_width * 70)),     # ~70 characters wide
-        'bubble_radius': max(12, int(base_line_height * 0.9)),
-    }
+from ...resources.styles import get_font_scale, StylesheetGenerator
 
 
 class DocumentProcessingWorker(QThread):
