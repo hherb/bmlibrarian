@@ -146,7 +146,7 @@ class QueryLabTabWidget(QWidget):
         # Model Selection
         model_layout = QVBoxLayout()
         model_label = QLabel("Query Agent Model:")
-        model_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        model_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         model_layout.addWidget(model_label)
 
         model_row = QHBoxLayout()

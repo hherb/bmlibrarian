@@ -174,7 +174,7 @@ class PICOLabTabWidget(QWidget):
         header_layout.setSpacing(scale_px(5))
 
         title = QLabel("PICO Laboratory")
-        title.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        title.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         title.setStyleSheet("color: #1976D2;")
 
         subtitle = QLabel("Extract Population, Intervention, Comparison, and Outcome components from research papers")
