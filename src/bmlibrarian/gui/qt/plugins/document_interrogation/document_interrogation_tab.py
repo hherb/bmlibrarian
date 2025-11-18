@@ -100,52 +100,70 @@ class ChatBubble(QFrame):
         """
         super().__init__(parent)
 
-        # Styling
+        # Styling with proper colors and rounded corners
         if is_user:
+            # User: pale sand background
             self.setStyleSheet("""
                 QFrame {
-                    background-color: #2196F3;
-                    border-radius: 12px;
-                    padding: 10px;
+                    background-color: #F4EAD5;
+                    border-radius: 16px;
+                    padding: 12px 14px;
                 }
                 QLabel {
-                    color: white;
+                    color: #333333;
+                    background-color: transparent;
                 }
             """)
         else:
+            # LLM: pale blue background
             self.setStyleSheet("""
                 QFrame {
-                    background-color: #E0E0E0;
-                    border-radius: 12px;
-                    padding: 10px;
+                    background-color: #E3F2FD;
+                    border-radius: 16px;
+                    padding: 12px 14px;
                 }
                 QLabel {
-                    color: #333;
+                    color: #1A1A1A;
+                    background-color: transparent;
                 }
             """)
 
-        # Layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(5)
+        # Main horizontal layout with icon and content
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(10)
 
-        # Header label
+        # Icon
+        icon_label = QLabel("👤" if is_user else "🤖")
+        icon_label.setStyleSheet("font-size: 20pt;")
+        icon_label.setAlignment(Qt.AlignTop)
+        icon_label.setFixedSize(32, 32)
+        main_layout.addWidget(icon_label)
+
+        # Content layout (vertical for header and message)
+        content_layout = QVBoxLayout()
+        content_layout.setSpacing(4)
+
+        # Header label (smaller, less prominent)
         header = QLabel("You" if is_user else "AI Assistant")
         header_font = QFont()
         header_font.setBold(True)
-        header_font.setPointSize(9)
+        header_font.setPointSize(8)
         header.setFont(header_font)
-        layout.addWidget(header)
+        header.setStyleSheet("color: #666666;")
+        content_layout.addWidget(header)
 
         # Message text
         message_label = QLabel(text)
         message_label.setWordWrap(True)
         message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         message_label.setFont(QFont("", 10))
-        layout.addWidget(message_label)
+        content_layout.addWidget(message_label)
 
-        # Set maximum width
-        self.setMaximumWidth(500)
+        main_layout.addLayout(content_layout, 1)
+
+        # Set maximum width to use more space
+        self.setMaximumWidth(650)
 
 
 class DocumentInterrogationTabWidget(QWidget):
@@ -412,17 +430,20 @@ class DocumentInterrogationTabWidget(QWidget):
         """Add a chat bubble to the chat area."""
         bubble = ChatBubble(text, is_user)
 
-        # Create container for alignment
+        # Create container for alignment with asymmetric padding
         container = QWidget()
         container_layout = QHBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
 
         if is_user:
-            container_layout.addStretch()
+            # User messages: left-aligned, minor left padding, more right padding
+            container_layout.setContentsMargins(10, 0, 80, 0)
             container_layout.addWidget(bubble)
+            container_layout.addStretch()
         else:
-            container_layout.addWidget(bubble)
+            # LLM messages: right-aligned, more left padding, minor right padding
+            container_layout.setContentsMargins(80, 0, 10, 0)
             container_layout.addStretch()
+            container_layout.addWidget(bubble)
 
         self.chat_layout.addWidget(container)
 
