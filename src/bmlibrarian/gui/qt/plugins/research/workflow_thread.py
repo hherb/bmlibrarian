@@ -268,6 +268,11 @@ class WorkflowThread(QThread):
             # ==================================================================
             # Step 6: Counterfactual Analysis (Optional)
             # ==================================================================
+            # Initialize variables for later use in Step 8
+            counterfactual_analysis = None
+            unique_contradictory_docs = []
+            counterfactual_questions = []
+
             if self.enable_counterfactual and self.executor.counterfactual_agent and self.executor.editor_agent:
                 # Step 6a: Analyze preliminary report for counterfactual questions
                 step_name = "counterfactual_analysis"
@@ -328,7 +333,7 @@ class WorkflowThread(QThread):
                                         for doc in cf_docs:
                                             doc['_counterfactual_question'] = cf_question.question
                                             doc['_counterfactual_priority'] = cf_question.priority
-                                        contradictory_docs.extend(cf_docs[:10])  # Limit per question
+                                        contradictory_docs.extend(cf_docs[:self.max_results])
                             except Exception as e:
                                 self.logger.error(f"Counterfactual search failed for: {cf_statement[:100]}: {e}")
                                 continue
@@ -357,63 +362,78 @@ class WorkflowThread(QThread):
                     }
                     self.counterfactual_analysis_complete.emit(self.counterfactual_results)
 
-                    # ==============================================================
-                    # Step 8: Generate Comprehensive Final Report
-                    # ==============================================================
-                    step_name = "generate_final_report"
-                    self.step_started.emit(step_name, "Creating comprehensive balanced report")
-                    self.status_message.emit(f"📄 Synthesizing final report with all evidence...")
+            # ==============================================================
+            # Step 8: Generate Comprehensive Final Report
+            # ==============================================================
+            # This step runs ALWAYS - either with or without counterfactual analysis
+            step_name = "generate_final_report"
+            self.step_started.emit(step_name, "Creating comprehensive balanced report")
 
-                    if self._check_cancellation(step_name):
-                        return
+            if counterfactual_analysis and self.executor.editor_agent:
+                # Case 1: Counterfactual analysis succeeded - use EditorAgent for comprehensive report
+                # (even if no contradictory documents found - that's a valid outcome!)
+                self.status_message.emit(f"📄 Synthesizing final report with all evidence...")
 
-                    # Prepare contradictory evidence dict for EditorAgent
-                    contradictory_evidence = {
-                        'counterfactual_analysis': counterfactual_analysis,
-                        'contradictory_documents': unique_contradictory_docs,
-                        'counterfactual_questions': counterfactual_questions
-                    }
+                if self._check_cancellation(step_name):
+                    return
 
-                    # Generate comprehensive report using EditorAgent
-                    # EditorAgent needs: original_report, research_question, supporting_citations,
-                    #                    contradictory_evidence, confidence_analysis
-                    try:
-                        # Convert preliminary report text to a simple report-like object
-                        # EditorAgent expects an object with content/text attribute
-                        class PreliminaryReportWrapper:
-                            def __init__(self, content):
-                                self.content = content
-                                self.text = content
-                                self.markdown = content
+                # Prepare contradictory evidence dict for EditorAgent
+                contradictory_evidence = {
+                    'counterfactual_analysis': counterfactual_analysis,
+                    'contradictory_documents': unique_contradictory_docs,
+                    'counterfactual_questions': counterfactual_questions
+                }
 
-                        preliminary_report_obj = PreliminaryReportWrapper(self.preliminary_report)
+                # Generate comprehensive report using EditorAgent
+                # EditorAgent needs: original_report, research_question, supporting_citations,
+                #                    contradictory_evidence, confidence_analysis
+                try:
+                    # Convert preliminary report text to a simple report-like object
+                    # EditorAgent expects an object with content/text attribute
+                    class PreliminaryReportWrapper:
+                        def __init__(self, content):
+                            self.content = content
+                            self.text = content
+                            self.markdown = content
 
-                        edited_report = self.executor.editor_agent.create_comprehensive_report(
-                            original_report=preliminary_report_obj,
-                            research_question=self.question,
-                            supporting_citations=self.citations,
-                            contradictory_evidence=contradictory_evidence,
-                            confidence_analysis=counterfactual_analysis
+                    preliminary_report_obj = PreliminaryReportWrapper(self.preliminary_report)
+
+                    edited_report = self.executor.editor_agent.create_comprehensive_report(
+                        original_report=preliminary_report_obj,
+                        research_question=self.question,
+                        supporting_citations=self.citations,
+                        contradictory_evidence=contradictory_evidence,
+                        confidence_analysis=counterfactual_analysis
+                    )
+
+                    if edited_report:
+                        # Format the edited report as markdown
+                        self.final_report = self._format_edited_report(edited_report)
+                        self.final_report_generated.emit(self.final_report)
+
+                        final_word_count = len(self.final_report.split())
+                        self.status_message.emit(
+                            f"✓ Generated comprehensive final report ({final_word_count} words)"
                         )
-
-                        if edited_report:
-                            # Format the edited report as markdown
-                            self.final_report = self._format_edited_report(edited_report)
-                            self.final_report_generated.emit(self.final_report)
-
-                            final_word_count = len(self.final_report.split())
-                            self.status_message.emit(
-                                f"✓ Generated comprehensive final report ({final_word_count} words)"
-                            )
-                        else:
-                            self.logger.warning("EditorAgent failed to create final report")
-                            self.final_report = self.preliminary_report  # Fallback to preliminary
-
-                    except Exception as e:
-                        self.logger.error(f"Final report generation failed: {e}", exc_info=True)
+                    else:
+                        self.logger.warning("EditorAgent failed to create final report")
                         self.final_report = self.preliminary_report  # Fallback to preliminary
 
-                    self.step_completed.emit(step_name)
+                except Exception as e:
+                    self.logger.error(f"Final report generation failed: {e}", exc_info=True)
+                    self.final_report = self.preliminary_report  # Fallback to preliminary
+            else:
+                # Case 2: No counterfactual analysis or it failed - use preliminary report as final
+                self.status_message.emit(f"📄 Using preliminary report as final report...")
+                self.final_report = self.preliminary_report
+                self.final_report_generated.emit(self.final_report)
+
+                final_word_count = len(self.final_report.split())
+                self.status_message.emit(
+                    f"✓ Final report ready ({final_word_count} words)"
+                )
+
+            self.step_completed.emit(step_name)
 
             # ==================================================================
             # Final: Emit Completion
