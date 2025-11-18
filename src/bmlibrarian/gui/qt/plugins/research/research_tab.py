@@ -2251,13 +2251,17 @@ class ResearchTabWidget(QWidget):
             Tuple of (success: bool, error_message: Optional[str])
         """
         try:
-            # Check if parent directory exists
+            # Get parent directory (use '.' if empty for current directory)
             parent_dir = os.path.dirname(filename)
-            if parent_dir and not os.path.exists(parent_dir):
+            if not parent_dir:
+                parent_dir = '.'
+
+            # Check if parent directory exists
+            if not os.path.exists(parent_dir):
                 return False, f"Directory does not exist: {parent_dir}"
 
             # Check if we have write permissions on the directory
-            if parent_dir and not os.access(parent_dir, os.W_OK):
+            if not os.access(parent_dir, os.W_OK):
                 return False, f"No write permission for directory: {parent_dir}"
 
             # Check if file exists and we can overwrite it
@@ -2281,7 +2285,7 @@ class ResearchTabWidget(QWidget):
             elif e.errno == errno.ENAMETOOLONG:
                 return False, "Filename is too long"
             elif e.errno == errno.ENOENT:
-                return False, f"Directory not found: {os.path.dirname(filename)}"
+                return False, f"Directory not found: {os.path.dirname(filename) or '.'}"
             else:
                 return False, f"OS error: {str(e)}"
         except UnicodeEncodeError as e:
