@@ -62,6 +62,7 @@ class UIConstants:
     COLOR_BACKGROUND_GREY = "#F5F5F5"
     COLOR_BORDER_GREY = "#E0E0E0"
     COLOR_WHITE = "white"
+    COLOR_TEXT_INPUT_BACKGROUND = "#FFF8F0"  # Very faint pastel sand color
 
     # Spacing
     MAIN_LAYOUT_MARGIN = 15
@@ -134,6 +135,21 @@ class StyleSheets:
             }}
             QPushButton:disabled {{
                 background-color: {UIConstants.COLOR_DISABLED_GREY};
+            }}
+        """
+
+    @staticmethod
+    def text_input() -> str:
+        """Stylesheet for all text input widgets (QTextEdit, QLineEdit, QSpinBox)."""
+        return f"""
+            QTextEdit, QLineEdit, QSpinBox {{
+                background-color: {UIConstants.COLOR_TEXT_INPUT_BACKGROUND};
+                border: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            QTextEdit:focus, QLineEdit:focus, QSpinBox:focus {{
+                border: 2px solid {UIConstants.COLOR_PRIMARY_BLUE};
             }}
         """
 
@@ -221,12 +237,14 @@ class ResearchTabWidget(QWidget):
         self.question_input: Optional[QTextEdit] = None
         self.start_button: Optional[QPushButton] = None
         self.cancel_button: Optional[QPushButton] = None
-        self.progress_bar: Optional[QProgressBar] = None
-        self.step_status_label: Optional[QLabel] = None
+        self.new_button: Optional[QPushButton] = None
+        self.progress_label: Optional[QLabel] = None
+        self.status_label: Optional[QLabel] = None
         self.max_results_spin: Optional[QSpinBox] = None
         self.min_relevant_spin: Optional[QSpinBox] = None
         self.interactive_checkbox: Optional[QCheckBox] = None
         self.counterfactual_checkbox: Optional[QCheckBox] = None
+        self.study_quality_checkbox: Optional[QCheckBox] = None
         self.research_tabs: Optional[QTabWidget] = None
 
         # Initialize UI
@@ -243,32 +261,36 @@ class ResearchTabWidget(QWidget):
         )
         main_layout.setSpacing(UIConstants.MAIN_LAYOUT_SPACING)
 
-        # 1. Header section
+        # 1. Header section (Row 1 - fixed height, expands horizontally)
         header = self._create_header_section()
         main_layout.addWidget(header)
 
-        # 2. Controls section (question input, parameters, buttons)
+        # 2. Controls section (Rows 2-3 - fixed height, expands horizontally)
         controls = self._create_controls_section()
         main_layout.addWidget(controls)
 
-        # 3. Tabbed interface (8 tabs)
+        # 3. Tabbed interface (Row 4 - expands both horizontally and vertically)
         self.research_tabs = self._create_tabbed_interface()
         main_layout.addWidget(self.research_tabs, stretch=1)
 
+        # 4. Status bar (fixed height, expands horizontally)
+        status_bar = self._create_status_bar()
+        main_layout.addWidget(status_bar)
+
     def _create_header_section(self) -> QWidget:
         """
-        Create header section with title and subtitle.
+        Create header section with single-line title.
 
         Returns:
             Header widget
         """
         header_widget = QWidget()
-        header_layout = QVBoxLayout(header_widget)
+        header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
-        header_layout.setSpacing(UIConstants.HEADER_SPACING)
+        header_layout.setSpacing(0)
 
-        # Title
-        title = QLabel("BMLibrarian Research Assistant")
+        # Single-line title
+        title = QLabel("BMLibrarian Research Assistant - AI Powered Evidence Based Biomedical Literature Research")
         title_font = QFont()
         title_font.setPointSize(UIConstants.TITLE_FONT_SIZE)
         title_font.setBold(True)
@@ -276,13 +298,11 @@ class ResearchTabWidget(QWidget):
         title.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
         header_layout.addWidget(title)
 
-        # Subtitle
-        subtitle = QLabel("AI-Powered Evidence-Based Medical Literature Research")
-        subtitle_font = QFont()
-        subtitle_font.setPointSize(UIConstants.SUBTITLE_FONT_SIZE)
-        subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
-        header_layout.addWidget(subtitle)
+        # Add stretch to keep title left-aligned
+        header_layout.addStretch()
+
+        # Set fixed height for header
+        header_widget.setMaximumHeight(40)
 
         return header_widget
 
@@ -291,8 +311,8 @@ class ResearchTabWidget(QWidget):
         Create controls section with question input, parameters, and buttons.
 
         Layout:
-        Row 1: [Question Text Edit --------] [Start Button]
-        Row 2: [Max Results] [Min Relevant] [Interactive ☐] [Counterfactual ☑]
+        Row 2: [Research question: _____(2 lines)_____] [Start Research → Cancel] [New]
+        Row 3: [Max results (...)] [Min relevant (...)] [☐ Interactive mode] [☐ Counterfactual analysis] [☐ Study quality rating]
 
         Returns:
             Controls widget
@@ -302,59 +322,52 @@ class ResearchTabWidget(QWidget):
         controls_frame.setFrameShape(QFrame.StyledPanel)
         controls_frame.setFrameShadow(QFrame.Raised)
         controls_frame.setStyleSheet(StyleSheets.controls_frame())
+        controls_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         controls_layout = QVBoxLayout(controls_frame)
         controls_layout.setSpacing(UIConstants.CONTROLS_SPACING)
 
-        # Row 1: Question input + Start button
-        row1 = QHBoxLayout()
-        row1.setSpacing(UIConstants.CONTROLS_SPACING)
+        # Row 2: Research question label + input + buttons
+        row2 = QHBoxLayout()
+        row2.setSpacing(UIConstants.CONTROLS_SPACING)
 
-        # Question input
-        question_container = QVBoxLayout()
-        question_label = QLabel("Research Question:")
+        # Research Question label
+        question_label = QLabel("Research question:")
         question_label.setStyleSheet("font-weight: bold;")
-        question_container.addWidget(question_label)
+        row2.addWidget(question_label)
 
+        # Question input (2 lines)
         self.question_input = QTextEdit()
         self.question_input.setPlaceholderText(
-            "Enter your biomedical research question here...\n\n"
-            "Example: What are the cardiovascular benefits of regular exercise in adults?"
+            "Enter your biomedical research question here..."
         )
-        self.question_input.setMaximumHeight(UIConstants.QUESTION_INPUT_MAX_HEIGHT)
-        self.question_input.setMinimumHeight(UIConstants.QUESTION_INPUT_MIN_HEIGHT)
+        self.question_input.setMaximumHeight(60)  # 2 lines
+        self.question_input.setMinimumHeight(60)
+        self.question_input.setStyleSheet(StyleSheets.text_input())
         self.question_input.textChanged.connect(self._on_question_changed)
-        question_container.addWidget(self.question_input)
-        row1.addLayout(question_container, stretch=1)
+        row2.addWidget(self.question_input, stretch=1)
 
-        # Button container for Start and Cancel buttons
-        button_container = QVBoxLayout()
-        button_container.setSpacing(5)
-
-        # Start and Cancel buttons in horizontal layout
-        button_row = QHBoxLayout()
-        button_row.setSpacing(8)
-
-        # Start button
+        # Start/Cancel button (dynamic)
         self.start_button = QPushButton("Start Research")
         self.start_button.setIcon(self.start_button.style().standardIcon(
             self.start_button.style().StandardPixmap.SP_MediaPlay
         ))
-        self.start_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
-        self.start_button.setMinimumWidth(UIConstants.START_BUTTON_MIN_WIDTH)
+        self.start_button.setMinimumHeight(60)
+        self.start_button.setMinimumWidth(140)
         self.start_button.setEnabled(False)
         self.start_button.setStyleSheet(StyleSheets.start_button())
         self.start_button.clicked.connect(self._on_start_research)
-        button_row.addWidget(self.start_button)
+        row2.addWidget(self.start_button)
 
-        # Cancel button (Milestone 4: Workflow cancellation)
+        # Cancel button (shown during workflow)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setIcon(self.cancel_button.style().standardIcon(
             self.cancel_button.style().StandardPixmap.SP_DialogCancelButton
         ))
-        self.cancel_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
-        self.cancel_button.setMinimumWidth(100)
-        self.cancel_button.setEnabled(False)  # Only enabled during workflow
+        self.cancel_button.setMinimumHeight(60)
+        self.cancel_button.setMinimumWidth(140)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setVisible(False)  # Hidden initially
         self.cancel_button.setStyleSheet("""
             QPushButton {
                 background-color: #F44336;
@@ -376,103 +389,143 @@ class ResearchTabWidget(QWidget):
             }
         """)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
-        button_row.addWidget(self.cancel_button)
+        row2.addWidget(self.cancel_button)
 
-        button_container.addLayout(button_row)
-
-        # Progress bar (Milestone 4: Progress tracking)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setMaximumHeight(6)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #E0E0E0;
-                border-radius: 3px;
-                background-color: #F5F5F5;
+        # New button
+        self.new_button = QPushButton("New")
+        self.new_button.setMinimumHeight(60)
+        self.new_button.setMinimumWidth(80)
+        self.new_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 8px 16px;
             }
-            QProgressBar::chunk {
-                background-color: #1976D2;
-                border-radius: 2px;
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
             }
         """)
-        self.progress_bar.setVisible(False)  # Hidden until workflow starts
-        button_container.addWidget(self.progress_bar)
+        self.new_button.clicked.connect(self._on_new_research)
+        row2.addWidget(self.new_button)
 
-        row1.addLayout(button_container)
-        row1.setAlignment(button_container, Qt.AlignmentFlag.AlignBottom)
+        controls_layout.addLayout(row2)
 
-        controls_layout.addLayout(row1)
-
-        # Row 2: Parameters and toggles
-        row2 = QHBoxLayout()
-        row2.setSpacing(UIConstants.ROW2_SPACING)
+        # Row 3: Parameters and toggles
+        row3 = QHBoxLayout()
+        row3.setSpacing(UIConstants.ROW2_SPACING)
 
         # Max Results
-        max_results_label = QLabel("Max Results:")
-        row2.addWidget(max_results_label)
+        max_results_label = QLabel("Max results:")
+        row3.addWidget(max_results_label)
 
         self.max_results_spin = QSpinBox()
         self.max_results_spin.setMinimum(UIConstants.MAX_RESULTS_MIN)
         self.max_results_spin.setMaximum(UIConstants.MAX_RESULTS_MAX)
         self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
         self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
+        self.max_results_spin.setStyleSheet(StyleSheets.text_input())
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
         self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
-        row2.addWidget(self.max_results_spin)
+        row3.addWidget(self.max_results_spin)
 
         # Min Relevant
-        min_relevant_label = QLabel("Min Relevant:")
-        row2.addWidget(min_relevant_label)
+        min_relevant_label = QLabel("Min relevant:")
+        row3.addWidget(min_relevant_label)
 
         self.min_relevant_spin = QSpinBox()
         self.min_relevant_spin.setMinimum(UIConstants.MIN_RELEVANT_MIN)
         self.min_relevant_spin.setMaximum(UIConstants.MIN_RELEVANT_MAX)
         self.min_relevant_spin.setValue(UIConstants.MIN_RELEVANT_DEFAULT)
         self.min_relevant_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
+        self.min_relevant_spin.setStyleSheet(StyleSheets.text_input())
         self.min_relevant_spin.setToolTip(
             "Minimum high-scoring documents to find (triggers iterative search)"
         )
         self.min_relevant_spin.valueChanged.connect(self._on_min_relevant_changed)
-        row2.addWidget(self.min_relevant_spin)
+        row3.addWidget(self.min_relevant_spin)
 
         # Spacer
-        row2.addSpacing(20)
+        row3.addSpacing(20)
 
         # Interactive mode toggle
-        self.interactive_checkbox = QCheckBox("Interactive Mode")
+        self.interactive_checkbox = QCheckBox("Interactive mode")
         self.interactive_checkbox.setChecked(False)
         self.interactive_checkbox.setToolTip(
             "Enable human-in-the-loop for query editing, manual scoring, etc."
         )
-        row2.addWidget(self.interactive_checkbox)
+        row3.addWidget(self.interactive_checkbox)
 
         # Counterfactual toggle
-        self.counterfactual_checkbox = QCheckBox("Comprehensive Counterfactual Analysis")
+        self.counterfactual_checkbox = QCheckBox("Counterfactual analysis")
         self.counterfactual_checkbox.setChecked(True)
         self.counterfactual_checkbox.setToolTip(
             "Search for contradictory evidence and create balanced report"
         )
-        row2.addWidget(self.counterfactual_checkbox)
+        row3.addWidget(self.counterfactual_checkbox)
+
+        # Study quality rating toggle
+        self.study_quality_checkbox = QCheckBox("Study quality rating")
+        self.study_quality_checkbox.setChecked(False)
+        self.study_quality_checkbox.setToolTip(
+            "Assess and display study quality metrics for documents"
+        )
+        row3.addWidget(self.study_quality_checkbox)
 
         # Stretch to push everything left
-        row2.addStretch()
+        row3.addStretch()
 
-        controls_layout.addLayout(row2)
-
-        # Row 3: Step status label (Milestone 4: Progress display)
-        self.step_status_label = QLabel("")
-        self.step_status_label.setStyleSheet(f"""
-            color: {UIConstants.COLOR_TEXT_GREY};
-            font-style: italic;
-            padding: 5px;
-        """)
-        self.step_status_label.setWordWrap(True)
-        self.step_status_label.setVisible(False)  # Hidden until workflow starts
-        controls_layout.addWidget(self.step_status_label)
+        controls_layout.addLayout(row3)
 
         return controls_frame
+
+    def _create_status_bar(self) -> QWidget:
+        """
+        Create status bar with progress indicator and status messages.
+
+        Layout:
+        [Progress indicator / messages (left half)] | [Status / warning messages (right half)]
+
+        Returns:
+            Status bar widget
+        """
+        status_widget = QWidget()
+        status_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {UIConstants.COLOR_BACKGROUND_GREY};
+                border-top: 1px solid {UIConstants.COLOR_BORDER_GREY};
+            }}
+        """)
+        status_widget.setMaximumHeight(30)
+        status_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(10, 5, 10, 5)
+        status_layout.setSpacing(20)
+
+        # Left half: Progress indicator / messages
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        status_layout.addWidget(self.progress_label, stretch=1)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        status_layout.addWidget(separator)
+
+        # Right half: Status / warning messages
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        status_layout.addWidget(self.status_label, stretch=1)
+
+        return status_widget
 
     def _create_tabbed_interface(self) -> QTabWidget:
         """
@@ -1023,12 +1076,11 @@ class ResearchTabWidget(QWidget):
 
             # Milestone 4: Create and start background workflow thread
             self.status_message.emit(f"Research started: {question[:50]}...")
-            self.start_button.setEnabled(False)
-            self.cancel_button.setEnabled(True)
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            self.step_status_label.setVisible(True)
-            self.step_status_label.setText("Initializing workflow...")
+
+            # Update status bar
+            self.progress_label.setText("Initializing workflow...")
+            self.status_label.setText("Starting")
+
             self.workflow_running = True
 
             self.logger.info(f"Research started: {question[:100]}")
@@ -1077,7 +1129,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow started signal."""
         self.logger.info("Workflow started")
         self.workflow_running = True
-        self.start_button.setEnabled(False)
+
+        # Hide Start button, show Cancel button
+        self.start_button.setVisible(False)
+        self.cancel_button.setVisible(True)
+        self.cancel_button.setEnabled(True)
+
+        # Update status bar
+        self.status_label.setText("Running")
+        self.progress_label.setText("Starting research workflow...")
+
         self.workflow_started.emit()
 
     @Slot(dict)
@@ -1085,7 +1146,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow completed signal."""
         self.logger.info(f"Workflow completed: {results.get('status', 'unknown')}")
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.status_label.setText("Completed")
+        self.progress_label.setText("Research workflow completed successfully")
+
         self.current_results = results
         self.workflow_completed.emit(results)
 
@@ -1150,7 +1220,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow error signal."""
         self.logger.error(f"Workflow error: {error}", exc_info=True)
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.status_label.setText("⚠️ Error")
+        self.progress_label.setText("Workflow failed - see error message")
+
         self.workflow_error.emit(error)
 
         QMessageBox.critical(
@@ -1163,6 +1242,8 @@ class ResearchTabWidget(QWidget):
     def _on_workflow_status(self, message: str) -> None:
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
+        # Update progress label with status messages
+        self.progress_label.setText(message)
         self.status_message.emit(message)
 
     # ========================================================================
@@ -1210,39 +1291,67 @@ class ResearchTabWidget(QWidget):
 
         self.logger.info("User requested workflow cancellation")
         self.cancel_button.setEnabled(False)  # Prevent double-cancel
-        self.step_status_label.setText("Cancelling workflow...")
+        self.progress_label.setText("Cancelling workflow...")
+        self.status_label.setText("Cancelled")
         self.workflow_thread.cancel()
+
+    def _on_new_research(self) -> None:
+        """Handle New button click to start a fresh research session."""
+        # Confirm if there are unsaved results
+        if self.current_results or self.counterfactual_results:
+            reply = QMessageBox.question(
+                self,
+                "Start New Research",
+                "This will clear your current research results.\n\n"
+                "Are you sure you want to start a new research session?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Clear all results and UI
+        self.current_results = {}
+        self.counterfactual_results = None
+        self.question_input.clear()
+
+        # Clear all tabs (delegate to tab-specific methods if they exist)
+        # For now, we'll just log this action
+        self.logger.info("Starting new research session - clearing previous results")
+
+        # Update status
+        self.status_label.setText("Ready")
+        self.progress_label.setText("")
+
+        # Focus on question input
+        self.question_input.setFocus()
 
     @Slot(str, str)
     def _on_thread_step_started(self, step_name: str, description: str) -> None:
         """Handle workflow step started signal."""
         self.logger.info(f"Step started: {step_name} - {description}")
-        self.step_status_label.setText(f"⚙️ {description}")
+        self.progress_label.setText(f"⚙️ {description}")
 
-        # Update progress bar based on step (rough percentage)
-        step_progress_map = {
-            'generate_query': 10,
-            'search_documents': 20,
-            'score_documents': 40,
-            'extract_citations': 60,
-            'generate_preliminary_report': 70,
-            'counterfactual_analysis': 75,
-            'search_contradictory_evidence': 85,
-            'generate_final_report': 95
-        }
-        progress = step_progress_map.get(step_name, 0)
-        self.progress_bar.setValue(progress)
+        # Update status label based on major steps
+        if 'query' in step_name.lower():
+            self.status_label.setText("Generating query")
+        elif 'search' in step_name.lower():
+            self.status_label.setText("Searching documents")
+        elif 'scor' in step_name.lower():
+            self.status_label.setText("Scoring documents")
+        elif 'citation' in step_name.lower():
+            self.status_label.setText("Extracting citations")
+        elif 'report' in step_name.lower():
+            self.status_label.setText("Generating report")
+        elif 'counterfactual' in step_name.lower():
+            self.status_label.setText("Analyzing evidence")
 
     @Slot(str, int, int)
     def _on_thread_step_progress(self, step_name: str, current: int, total: int) -> None:
         """Handle workflow step progress signal."""
         if total > 0:
             percentage = int((current / total) * 100)
-            # For scoring step, show fine-grained progress between 20% and 60%
-            if step_name == 'score_documents':
-                progress = 20 + int((current / total) * 40)
-                self.progress_bar.setValue(progress)
-            self.step_status_label.setText(f"⚙️ Processing {current}/{total} documents...")
+            self.progress_label.setText(f"⚙️ Processing {current}/{total} documents... ({percentage}%)")
 
     @Slot(str)
     def _on_thread_step_completed(self, step_name: str) -> None:
@@ -1256,24 +1365,25 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setValue(100)
-        self.step_status_label.setText("✅ Workflow completed successfully!")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        doc_count = results.get('document_count', 0)
+        citation_count = results.get('citation_count', 0)
+        self.progress_label.setText(
+            f"✅ Found {doc_count} documents, extracted {citation_count} citations"
+        )
+        self.status_label.setText("Completed")
 
         # Store results
         self.current_results = results
 
         # Emit completion signal
         self.workflow_completed.emit(results)
-
-        # Display summary
-        doc_count = results.get('document_count', 0)
-        citation_count = results.get('citation_count', 0)
-        self.status_message.emit(
-            f"✅ Research complete! Found {doc_count} documents, "
-            f"extracted {citation_count} citations"
-        )
 
     @Slot(Exception)
     def _on_thread_workflow_error(self, error: Exception) -> None:
@@ -1282,10 +1392,15 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.step_status_label.setText("❌ Workflow failed")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.progress_label.setText("❌ Workflow failed - see error message")
+        self.status_label.setText("⚠️ Error")
 
         # Emit error signal
         self.workflow_error.emit(error)
@@ -1304,10 +1419,15 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.step_status_label.setText("🛑 Workflow cancelled")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.progress_label.setText("🛑 Workflow cancelled by user")
+        self.status_label.setText("Cancelled")
 
         self.status_message.emit("🛑 Workflow cancelled by user")
 
@@ -1619,11 +1739,88 @@ class ResearchTabWidget(QWidget):
 
                 self.counterfactual_layout.addWidget(card)
 
-            # Show contradictory documents summary
-            if doc_count > 0:
-                doc_summary = QLabel(f"\n📚 Found {doc_count} potentially contradictory documents")
-                doc_summary.setStyleSheet("font-weight: bold; font-size: 10pt; padding-top: 10px;")
-                self.counterfactual_layout.addWidget(doc_summary)
+            # Display contradictory documents using document card factory
+            contradictory_docs = results.get('contradictory_documents', [])
+            if contradictory_docs:
+                # Add section header
+                doc_header = QLabel(f"\n📚 Potentially Contradictory Documents ({len(contradictory_docs)})")
+                doc_header.setStyleSheet("font-weight: bold; font-size: 11pt; padding-top: 15px; padding-bottom: 5px;")
+                self.counterfactual_layout.addWidget(doc_header)
+
+                # Create document cards using factory
+                cards_created = 0
+                for i, doc in enumerate(contradictory_docs):
+                    try:
+                        # Extract year from publication_date or year field
+                        publication_date = doc.get('publication_date', '')
+                        year = doc.get('year', '')
+                        if publication_date and publication_date != 'Unknown':
+                            year_value = int(str(publication_date)[:4]) if len(str(publication_date)) >= 4 else (int(year) if year else None)
+                        else:
+                            year_value = int(year) if year else None
+
+                        # Create DocumentCardData for counterfactual context
+                        card_data = DocumentCardData(
+                            doc_id=doc.get('id', 0),
+                            title=doc.get('title', 'Untitled Document'),
+                            abstract=doc.get('abstract', ''),
+                            authors=doc.get('authors', []),
+                            year=year_value,
+                            journal=doc.get('publication', ''),
+                            pmid=doc.get('pmid'),
+                            doi=doc.get('doi'),
+                            source=doc.get('source'),
+                            pdf_url=doc.get('pdf_url'),
+                            context=CardContext.COUNTERFACTUAL,
+                            show_abstract=True,
+                            show_metadata=True,
+                            show_pdf_button=True,
+                            expanded_by_default=False
+                        )
+
+                        # Create card using factory
+                        card = self.document_card_factory.create_card(card_data)
+
+                        # Add counterfactual question tag if available
+                        cf_question = doc.get('_counterfactual_question')
+                        cf_priority = doc.get('_counterfactual_priority')
+                        if cf_question and hasattr(card, 'details_layout'):
+                            cf_info_container = QFrame()
+                            cf_info_container.setStyleSheet("""
+                                QFrame {
+                                    background-color: #FFF9C4;
+                                    border: 1px solid #FFF176;
+                                    border-radius: 3px;
+                                    padding: 8px;
+                                }
+                            """)
+                            cf_info_layout = QVBoxLayout(cf_info_container)
+                            cf_info_layout.setContentsMargins(8, 8, 8, 8)
+                            cf_info_layout.setSpacing(5)
+
+                            cf_title = QLabel(f"<b>Related Counterfactual Question:</b>")
+                            if cf_priority:
+                                priority_colors = {'HIGH': '#F44336', 'MEDIUM': '#FF9800', 'LOW': '#9E9E9E'}
+                                priority_color = priority_colors.get(cf_priority, '#9E9E9E')
+                                cf_title.setText(f"<b>Related Counterfactual Question</b> <span style='color: {priority_color};'>[{cf_priority} Priority]</span>")
+                            cf_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_info_layout.addWidget(cf_title)
+
+                            cf_question_text = QLabel(cf_question)
+                            cf_question_text.setWordWrap(True)
+                            cf_question_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                            cf_question_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_info_layout.addWidget(cf_question_text)
+
+                            # Insert at the beginning of details_layout (before abstract)
+                            card.details_layout.insertWidget(0, cf_info_container)
+
+                        self.counterfactual_layout.addWidget(card)
+                        cards_created += 1
+                    except Exception as card_error:
+                        self.logger.error(f"Error creating counterfactual document card {i+1}: {card_error}", exc_info=True)
+
+                self.logger.info(f"Counterfactual tab updated with {cards_created}/{len(contradictory_docs)} document cards")
 
             self.counterfactual_layout.addStretch()
 
@@ -1753,10 +1950,10 @@ class ResearchTabWidget(QWidget):
 
     def _update_citations_tab(self, citations: list) -> None:
         """
-        Update the Citations tab with extracted citations.
+        Update the Citations tab with extracted citations using CitationCard widget.
 
         Args:
-            citations: List of citation dictionaries
+            citations: List of citation dictionaries or citation objects
         """
         try:
             # Clear existing widgets with proper cleanup
@@ -1774,11 +1971,14 @@ class ResearchTabWidget(QWidget):
                 self.citations_layout.addStretch()
                 return
 
-            # Create citation cards
+            # Import CitationCard widget
+            from ...widgets.citation_card import CitationCard
+
+            # Create citation cards using the CitationCard widget
             cards_created = 0
             for i, citation in enumerate(citations):
                 try:
-                    card = self._create_citation_card(i + 1, citation)
+                    card = CitationCard(citation_data=citation, index=i + 1)
                     self.citations_layout.addWidget(card)
                     cards_created += 1
                 except Exception as card_error:
@@ -1787,368 +1987,10 @@ class ResearchTabWidget(QWidget):
             # Add stretch at the end
             self.citations_layout.addStretch()
 
-            self.logger.info(f"Citations tab updated with {cards_created}/{len(citations)} citations")
+            self.logger.info(f"Citations tab updated with {cards_created}/{len(citations)} citations using CitationCard widget")
 
         except Exception as e:
             self.logger.error(f"Error updating citations tab: {e}", exc_info=True)
-
-    def _create_highlighted_abstract_widget(self, abstract: str, passage: str) -> QWidget:
-        """
-        Create a widget showing the abstract with the passage highlighted in yellow.
-        Matches the Flet implementation's highlighting logic.
-
-        Args:
-            abstract: Full abstract text
-            passage: Passage to highlight within the abstract
-
-        Returns:
-            QWidget containing the highlighted abstract
-        """
-        import re
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
-
-        if not abstract or not passage:
-            label = QLabel(abstract or "No abstract available")
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333;")
-            layout.addWidget(label)
-            return container
-
-        # Clean up passage for matching (remove extra whitespace)
-        clean_passage = ' '.join(passage.split())
-
-        # Try to find exact match (case-insensitive)
-        pattern = re.compile(re.escape(clean_passage), re.IGNORECASE)
-        match = pattern.search(abstract)
-
-        if match:
-            # Exact match - create highlighted text
-            start, end = match.span()
-
-            # Build HTML with highlighted section
-            before = abstract[:start]
-            highlighted = abstract[start:end]
-            after = abstract[end:]
-
-            html = f"""
-            <style>
-                .abstract-text {{ font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
-                .highlight {{ background-color: #FFD54F; font-weight: 600; padding: 2px 4px; }}
-            </style>
-            <div class="abstract-text">
-                {before}<span class="highlight">📌 {highlighted} 📌</span>{after}
-            </div>
-            """
-
-            label = QLabel(html)
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            layout.addWidget(label)
-
-        else:
-            # Try fuzzy matching with first 10 words
-            passage_start = ' '.join(passage.split()[:10])
-            fuzzy_pattern = re.compile(re.escape(passage_start), re.IGNORECASE)
-            fuzzy_match = fuzzy_pattern.search(abstract)
-
-            if fuzzy_match:
-                # Partial match
-                start = fuzzy_match.span()[0]
-                end = min(start + len(clean_passage), len(abstract))
-
-                warning_label = QLabel("⚠️ Approximate match only")
-                warning_label.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; color: #F57C00; font-style: italic;")
-                layout.addWidget(warning_label)
-
-                before = abstract[:start]
-                highlighted = abstract[start:end]
-                after = abstract[end:]
-
-                html = f"""
-                <style>
-                    .abstract-text {{ font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333; line-height: 1.4; }}
-                    .highlight {{ background-color: #FFB74D; font-weight: 600; padding: 2px 4px; }}
-                </style>
-                <div class="abstract-text">
-                    {before}<span class="highlight">⚠️ {highlighted} ⚠️</span>{after}
-                </div>
-                """
-
-                label = QLabel(html)
-                label.setWordWrap(True)
-                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                layout.addWidget(label)
-
-            else:
-                # No match - show separately
-                passage_frame = QFrame()
-                passage_frame.setStyleSheet("""
-                    QFrame {
-                        background-color: #FFD54F;
-                        border-radius: 3px;
-                        padding: 8px;
-                    }
-                """)
-                passage_layout = QVBoxLayout(passage_frame)
-                passage_layout.setContentsMargins(8, 8, 8, 8)
-
-                passage_label = QLabel(f"📌 Cited Passage:\n{passage}")
-                passage_label.setWordWrap(True)
-                passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                passage_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; font-weight: 600; background-color: transparent; border: none;")
-                passage_layout.addWidget(passage_label)
-
-                layout.addWidget(passage_frame)
-
-                abstract_title = QLabel("Full Abstract:")
-                abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; font-weight: bold; margin-top: 5px;")
-                layout.addWidget(abstract_title)
-
-                abstract_label = QLabel(abstract)
-                abstract_label.setWordWrap(True)
-                abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                abstract_label.setStyleSheet(f"font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; color: #333;")
-                layout.addWidget(abstract_label)
-
-        return container
-
-    def _create_citation_card(self, index: int, citation) -> QWidget:
-        """
-        Create a collapsible citation card showing document info and relevant passage.
-        Matches the Flet GUI ExpansionTile style with abstract highlighting.
-
-        Args:
-            index: Citation number (for display)
-            citation: Citation object (from CitationFinderAgent)
-
-        Returns:
-            QWidget containing the collapsible citation card
-        """
-        # Container widget
-        container = QWidget()
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 2)
-        container_layout.setSpacing(0)
-
-        # Header frame (always visible, clickable)
-        header = QFrame()
-        header.setFrameShape(QFrame.Shape.Box)
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-left: 4px solid #3498db;
-                border-radius: 4px;
-                padding: 8px;
-            }
-            QFrame:hover {
-                background-color: #e9ecef;
-                border-left: 4px solid #2980b9;
-            }
-        """)
-        header.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        header_layout = QVBoxLayout(header)
-        header_layout.setSpacing(4)
-        header_layout.setContentsMargins(6, 6, 6, 6)
-
-        # Title row with relevance badge
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-
-        title = getattr(citation, 'document_title', 'Untitled Document')
-        # Truncate long titles
-        if len(title) > 80:
-            title = title[:77] + "..."
-
-        title_label = QLabel(f"<b>{index}. {title}</b>")
-        title_label.setWordWrap(True)
-        title_label.setStyleSheet(f"color: #1976D2; font-size: {UIConstants.CARD_TITLE_FONT_SIZE}pt;")
-        title_row.addWidget(title_label, 1)
-
-        # Relevance score badge
-        relevance_score = getattr(citation, 'relevance_score', 0)
-        if relevance_score:
-            score_badge = QLabel(f"{relevance_score:.2f}")
-            score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            score_badge.setFixedSize(50, 24)
-            score_badge.setStyleSheet(f"""
-                QLabel {{
-                    background-color: #4CAF50;
-                    color: white;
-                    font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt;
-                    font-weight: bold;
-                    border-radius: 12px;
-                    padding: 2px 6px;
-                }}
-            """)
-            title_row.addWidget(score_badge)
-
-        header_layout.addLayout(title_row)
-
-        # Subtitle row (authors and publication info)
-        authors = getattr(citation, 'authors', [])
-        if isinstance(authors, list):
-            if len(authors) > 2:
-                authors_str = ', '.join(authors[:2]) + ' et al.'
-            elif authors:
-                authors_str = ', '.join(authors)
-            else:
-                authors_str = 'Unknown authors'
-        else:
-            authors_str = str(authors) if authors else 'Unknown authors'
-
-        # Extract year from publication_date
-        publication_date = getattr(citation, 'publication_date', '')
-        if publication_date and publication_date != 'Unknown':
-            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else 'Unknown year'
-        else:
-            year_str = 'Unknown year'
-
-        publication = getattr(citation, 'publication', '')
-        pub_info = f"{publication} • {year_str}" if publication else year_str
-
-        subtitle = f"{authors_str} | {pub_info}"
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: {UIConstants.CARD_SUBTITLE_FONT_SIZE}pt;")
-        header_layout.addWidget(subtitle_label)
-
-        container_layout.addWidget(header)
-
-        # Details frame (collapsible content)
-        details = QFrame()
-        details.setFrameShape(QFrame.Shape.Box)
-        details.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #dee2e6;
-                border-top: none;
-                border-radius: 0 0 4px 4px;
-                padding: 10px;
-            }
-        """)
-        details.setVisible(False)  # Collapsed by default
-
-        details_layout = QVBoxLayout(details)
-        details_layout.setSpacing(8)
-        details_layout.setContentsMargins(10, 10, 10, 10)
-
-        # Summary section
-        summary = getattr(citation, 'summary', '')
-        if summary:
-            summary_container = QFrame()
-            summary_container.setStyleSheet("""
-                QFrame {
-                    background-color: #e8f5e9;
-                    border: 1px solid #c8e6c9;
-                    border-radius: 3px;
-                    padding: 8px;
-                }
-            """)
-            summary_layout = QVBoxLayout(summary_container)
-            summary_layout.setContentsMargins(8, 8, 8, 8)
-            summary_layout.setSpacing(5)
-
-            summary_title = QLabel("<b>Summary:</b>")
-            summary_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
-            summary_layout.addWidget(summary_title)
-
-            summary_text = QLabel(summary)
-            summary_text.setWordWrap(True)
-            summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            summary_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
-            summary_layout.addWidget(summary_text)
-
-            details_layout.addWidget(summary_container)
-
-        # Abstract with highlighted citation
-        abstract = getattr(citation, 'abstract', None)
-        passage = getattr(citation, 'passage', '')
-
-        if abstract and passage:
-            abstract_container = QFrame()
-            abstract_container.setStyleSheet("""
-                QFrame {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    border-radius: 3px;
-                    padding: 8px;
-                }
-            """)
-            abstract_layout = QVBoxLayout(abstract_container)
-            abstract_layout.setContentsMargins(8, 8, 8, 8)
-            abstract_layout.setSpacing(5)
-
-            abstract_title = QLabel("<b>Abstract with Highlighted Citation:</b>")
-            abstract_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
-            abstract_layout.addWidget(abstract_title)
-
-            # Create highlighted abstract widget
-            highlighted_widget = self._create_highlighted_abstract_widget(abstract, passage)
-            abstract_layout.addWidget(highlighted_widget)
-
-            details_layout.addWidget(abstract_container)
-        elif passage:
-            # Fallback: just show the passage if no abstract
-            passage_container = QFrame()
-            passage_container.setStyleSheet("""
-                QFrame {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    border-left: 3px solid #2196F3;
-                    border-radius: 3px;
-                    padding: 8px;
-                }
-            """)
-            passage_layout = QVBoxLayout(passage_container)
-            passage_layout.setContentsMargins(8, 8, 8, 8)
-            passage_layout.setSpacing(5)
-
-            passage_title = QLabel("<b>Extracted Passage:</b>")
-            passage_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
-            passage_layout.addWidget(passage_title)
-
-            passage_text = QLabel(f'<i>"{passage}"</i>')
-            passage_text.setWordWrap(True)
-            passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            passage_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
-            passage_layout.addWidget(passage_text)
-
-            details_layout.addWidget(passage_container)
-
-        # Document identifiers
-        id_parts = []
-        pmid = getattr(citation, 'pmid', None)
-        doi = getattr(citation, 'doi', None)
-        doc_id = getattr(citation, 'document_id', None)
-
-        if pmid:
-            id_parts.append(f"PMID: {pmid}")
-        if doi:
-            id_parts.append(f"DOI: {doi}")
-        if doc_id and not pmid:
-            id_parts.append(f"ID: {doc_id}")
-
-        if id_parts:
-            id_label = QLabel(' | '.join(id_parts))
-            id_label.setStyleSheet("color: #888; font-size: 8pt;")
-            details_layout.addWidget(id_label)
-
-        container_layout.addWidget(details)
-
-        # Make header clickable to toggle details
-        def toggle_details():
-            details.setVisible(not details.isVisible())
-
-        header.mousePressEvent = lambda _: toggle_details()
-
-        return container
 
     def _create_document_score_card(self, index: int, doc: dict, score_result: dict) -> QWidget:
         """
