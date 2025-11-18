@@ -23,6 +23,7 @@ from .general_settings_widget import GeneralSettingsWidget
 from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
 from .....config import get_config, DEFAULT_CONFIG
+from ...resources.styles import get_font_scale
 
 
 class ConfigurationTabWidget(QWidget):
@@ -50,6 +51,8 @@ class ConfigurationTabWidget(QWidget):
         """
         super().__init__(parent)
 
+        self.scale = get_font_scale()
+
         # Load current configuration
         # get_config() returns a BMLibrarianConfig object, but we need a dict
         bmlib_config = get_config()
@@ -66,8 +69,9 @@ class ConfigurationTabWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
         # Create tab widget for configuration sections
         self.tab_widget = QTabWidget()
@@ -112,6 +116,7 @@ class ConfigurationTabWidget(QWidget):
         Returns:
             Button layout
         """
+        s = self.scale
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
@@ -119,19 +124,19 @@ class ConfigurationTabWidget(QWidget):
         save_default_btn = QPushButton("Save to ~/.bmlibrarian")
         save_default_btn.clicked.connect(self._save_to_default)
         save_default_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background-color: #27ae60;
                 color: white;
                 font-weight: bold;
-                padding: 8px 16px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
                 border: none;
-                border-radius: 4px;
-                min-width: 180px;
-            }
-            QPushButton:hover {
+                border-radius: {s['border_radius']}px;
+                min-width: {s['button_width_large']}px;
+            }}
+            QPushButton:hover {{
                 background-color: #229954;
-            }
+            }}
         """
         )
         button_layout.addWidget(save_default_btn)
@@ -150,17 +155,17 @@ class ConfigurationTabWidget(QWidget):
         reset_btn = QPushButton("Reset to Defaults")
         reset_btn.clicked.connect(self._reset_to_defaults)
         reset_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background-color: #e67e22;
                 color: white;
-                padding: 8px 16px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
                 border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
+                border-radius: {s['border_radius']}px;
+            }}
+            QPushButton:hover {{
                 background-color: #d35400;
-            }
+            }}
         """
         )
         button_layout.addWidget(reset_btn)
@@ -169,17 +174,17 @@ class ConfigurationTabWidget(QWidget):
         test_btn = QPushButton("Test Connection")
         test_btn.clicked.connect(self._test_connection)
         test_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background-color: #3498db;
                 color: white;
-                padding: 8px 16px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
                 border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
+                border-radius: {s['border_radius']}px;
+            }}
+            QPushButton:hover {{
                 background-color: #2980b9;
-            }
+            }}
         """
         )
         button_layout.addWidget(test_btn)

@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 
+# Import DPI-aware styling
+from ...resources.styles import get_font_scale
+
 
 class TimerWidget(QWidget):
     """Timer widget for tracking review time."""
@@ -31,6 +34,9 @@ class TimerWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+
+        # DPI-aware scaling
+        self.scale = get_font_scale()
 
         # Timer state
         self._start_time: Optional[float] = None
@@ -48,9 +54,11 @@ class TimerWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(5)
+        layout.setContentsMargins(s['spacing_medium'], s['spacing_medium'], s['spacing_medium'], s['spacing_medium'])
+        layout.setSpacing(s['spacing_tiny'])
 
         # Title
         title_layout = QHBoxLayout()
@@ -62,7 +70,7 @@ class TimerWidget(QWidget):
         # Timer display
         self.timer_display = QLabel("00:00")
         font = QFont()
-        font.setPointSize(24)
+        font.setPointSize(s['font_xlarge'])
         font.setBold(True)
         self.timer_display.setFont(font)
         self.timer_display.setAlignment(Qt.AlignCenter)
@@ -73,22 +81,20 @@ class TimerWidget(QWidget):
         pause_layout = QHBoxLayout()
         pause_layout.addStretch()
         self.pause_button = QPushButton("⏸ Pause")
-        self.pause_button.setFixedWidth(100)
+        self.pause_button.setFixedWidth(int(s['control_height_medium'] * 2.8))
         self.pause_button.clicked.connect(self._on_pause_click)
-        self.pause_button.setStyleSheet(
-            """
-            QPushButton {
+        self.pause_button.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #1976d2;
                 color: white;
-                padding: 5px;
+                padding: {s['padding_tiny']}px;
                 border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
+                border-radius: {s['radius_small']}px;
+            }}
+            QPushButton:hover {{
                 background-color: #1565c0;
-            }
-        """
-        )
+            }}
+        """)
         pause_layout.addWidget(self.pause_button)
         pause_layout.addStretch()
         layout.addLayout(pause_layout)
@@ -96,20 +102,18 @@ class TimerWidget(QWidget):
         # Status text
         self.status_text = QLabel("Timer ready")
         self.status_text.setAlignment(Qt.AlignCenter)
-        self.status_text.setStyleSheet("font-size: 11px; color: #666; font-style: italic;")
+        self.status_text.setStyleSheet(f"font-size: {s['font_tiny']}pt; color: #666; font-style: italic;")
         layout.addWidget(self.status_text)
 
         # Style the widget
-        self.setStyleSheet(
-            """
-            TimerWidget {
+        self.setStyleSheet(f"""
+            TimerWidget {{
                 background-color: #e3f2fd;
                 border: 1px solid #90caf9;
-                border-radius: 8px;
-            }
-        """
-        )
-        self.setFixedWidth(200)
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
+        self.setFixedWidth(int(s['control_height_large'] * 5))
 
     def _format_time(self, seconds: int) -> str:
         """Format seconds as MM:SS."""
@@ -132,18 +136,20 @@ class TimerWidget(QWidget):
 
     def _update_display(self):
         """Update timer display."""
+        s = self.scale
+
         elapsed = self._get_current_elapsed()
         self.timer_display.setText(self._format_time(elapsed))
 
         if self._is_paused:
             self.status_text.setText("⏸ Paused")
-            self.status_text.setStyleSheet("font-size: 11px; color: #f57c00; font-style: italic;")
+            self.status_text.setStyleSheet(f"font-size: {s['font_tiny']}pt; color: #f57c00; font-style: italic;")
         elif self._is_running:
             self.status_text.setText("⏱ Recording...")
-            self.status_text.setStyleSheet("font-size: 11px; color: #2e7d32; font-style: italic;")
+            self.status_text.setStyleSheet(f"font-size: {s['font_tiny']}pt; color: #2e7d32; font-style: italic;")
         else:
             self.status_text.setText("Timer stopped")
-            self.status_text.setStyleSheet("font-size: 11px; color: #666; font-style: italic;")
+            self.status_text.setStyleSheet(f"font-size: {s['font_tiny']}pt; color: #666; font-style: italic;")
 
         # Emit signal
         self.timer_updated.emit(elapsed)

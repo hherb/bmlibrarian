@@ -9,6 +9,8 @@ from PySide6.QtWidgets import QTextBrowser, QWidget, QVBoxLayout
 from PySide6.QtCore import Qt, Signal
 from typing import Optional
 
+from ..resources.styles import get_font_scale
+
 
 class MarkdownViewer(QTextBrowser):
     """
@@ -28,6 +30,9 @@ class MarkdownViewer(QTextBrowser):
             parent: Optional parent widget
         """
         super().__init__(parent)
+
+        # Get DPI scale
+        self.scale = get_font_scale()
 
         # Configure text browser
         self.setReadOnly(True)
@@ -49,14 +54,16 @@ class MarkdownViewer(QTextBrowser):
 
     def _apply_stylesheet(self):
         """Apply custom stylesheet for markdown rendering."""
-        stylesheet = """
-        QTextBrowser {
+        s = self.scale
+
+        stylesheet = f"""
+        QTextBrowser {{
             background-color: white;
             color: #333;
             font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 10pt;
-            padding: 10px;
-        }
+            font-size: {s['font_small']}pt;
+            padding: {s['padding_medium']}px;
+        }}
         """
         self.setStyleSheet(stylesheet)
 
@@ -86,6 +93,8 @@ class MarkdownViewer(QTextBrowser):
         Returns:
             HTML string
         """
+        s = self.scale
+
         # Reset markdown processor
         self.md.reset()
 
@@ -101,7 +110,7 @@ class MarkdownViewer(QTextBrowser):
             <style>
                 body {{
                     font-family: 'Segoe UI', Arial, sans-serif;
-                    font-size: 10pt;
+                    font-size: {s['font_small']}pt;
                     line-height: 1.6;
                     color: #333;
                     max-width: 100%;
@@ -131,16 +140,16 @@ class MarkdownViewer(QTextBrowser):
                 code {{
                     background-color: #f8f8f8;
                     border: 1px solid #e0e0e0;
-                    border-radius: 3px;
-                    padding: 2px 4px;
+                    border-radius: {s['radius_tiny']}px;
+                    padding: {s['padding_tiny']}px {s['padding_tiny']}px;
                     font-family: 'Consolas', 'Monaco', monospace;
                     font-size: 0.9em;
                 }}
                 pre {{
                     background-color: #f8f8f8;
                     border: 1px solid #e0e0e0;
-                    border-radius: 3px;
-                    padding: 10px;
+                    border-radius: {s['radius_tiny']}px;
+                    padding: {s['padding_medium']}px;
                     overflow-x: auto;
                 }}
                 pre code {{
@@ -168,7 +177,7 @@ class MarkdownViewer(QTextBrowser):
                 }}
                 th, td {{
                     border: 1px solid #ddd;
-                    padding: 8px;
+                    padding: {s['spacing_small']}px;
                     text-align: left;
                 }}
                 th {{

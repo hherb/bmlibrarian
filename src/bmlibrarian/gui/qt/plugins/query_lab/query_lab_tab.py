@@ -18,6 +18,7 @@ from pathlib import Path
 
 from bmlibrarian.agents import QueryAgent, AgentOrchestrator
 from bmlibrarian.config import get_config
+from ...resources.styles import get_font_scale
 
 
 class QueryGenerationWorker(QThread):
@@ -67,6 +68,7 @@ class QueryLabTabWidget(QWidget):
         """
         super().__init__(parent)
 
+        self.scale = get_font_scale()
         self.config = get_config()
         self.query_agent: Optional[QueryAgent] = None
         self.orchestrator: Optional[AgentOrchestrator] = None
@@ -111,10 +113,11 @@ class QueryLabTabWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
         # Main layout
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(s(20), s(20), s(20), s(20))
+        main_layout.setSpacing(s(20))
 
         # Left panel: Configuration
         config_panel = self._create_config_panel()
@@ -135,24 +138,25 @@ class QueryLabTabWidget(QWidget):
         Returns:
             Configuration panel group box
         """
+        s = self.scale
         group = QGroupBox("Configuration")
         layout = QVBoxLayout(group)
-        layout.setSpacing(15)
+        layout.setSpacing(s(15))
 
         # Model Selection
         model_layout = QVBoxLayout()
         model_label = QLabel("Query Agent Model:")
-        model_label.setFont(QFont("", 10, QFont.Bold))
+        model_label.setFont(QFont("", s(10), QFont.Bold))
         model_layout.addWidget(model_label)
 
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(200)
+        self.model_combo.setMinimumWidth(s(200))
         self._refresh_models()
         model_row.addWidget(self.model_combo)
 
         refresh_btn = QPushButton("↻")
-        refresh_btn.setMaximumWidth(40)
+        refresh_btn.setMaximumWidth(s(40))
         refresh_btn.setToolTip("Refresh available models")
         refresh_btn.clicked.connect(self._on_refresh_models)
         model_row.addWidget(refresh_btn)
@@ -161,7 +165,7 @@ class QueryLabTabWidget(QWidget):
 
         # Parameters
         params_label = QLabel("Parameters:")
-        params_label.setFont(QFont("", 10, QFont.Bold))
+        params_label.setFont(QFont("", s(10), QFont.Bold))
         layout.addWidget(params_label)
 
         # Temperature
@@ -231,11 +235,12 @@ class QueryLabTabWidget(QWidget):
         Returns:
             Query panel layout
         """
+        s = self.scale
         layout = QVBoxLayout()
 
         # Title
         title = QLabel("Query Laboratory")
-        title_font = QFont("", 14, QFont.Bold)
+        title_font = QFont("", s(14), QFont.Bold)
         title.setFont(title_font)
         layout.addWidget(title)
 
@@ -246,7 +251,7 @@ class QueryLabTabWidget(QWidget):
             "Enter your medical research question in natural language...\n\n"
             "Example: What are the cardiovascular benefits of exercise?"
         )
-        self.human_query_edit.setMaximumHeight(120)
+        self.human_query_edit.setMaximumHeight(s(120))
         self.human_query_edit.textChanged.connect(self._on_query_text_changed)
         layout.addWidget(self.human_query_edit)
 
@@ -255,7 +260,7 @@ class QueryLabTabWidget(QWidget):
         self.postgres_query_edit = QTextEdit()
         self.postgres_query_edit.setPlaceholderText("Generated query will appear here...")
         self.postgres_query_edit.setReadOnly(True)
-        self.postgres_query_edit.setMaximumHeight(150)
+        self.postgres_query_edit.setMaximumHeight(s(150))
         self.postgres_query_edit.setStyleSheet(
             "background-color: #f5f5f5; font-family: 'Courier New', monospace;"
         )
@@ -266,7 +271,7 @@ class QueryLabTabWidget(QWidget):
         self.explanation_edit = QTextEdit()
         self.explanation_edit.setPlaceholderText("Explanation of the generated query...")
         self.explanation_edit.setReadOnly(True)
-        self.explanation_edit.setMaximumHeight(100)
+        self.explanation_edit.setMaximumHeight(s(100))
         self.explanation_edit.setStyleSheet("background-color: #e8f4f8;")
         layout.addWidget(self.explanation_edit)
 
@@ -279,17 +284,17 @@ class QueryLabTabWidget(QWidget):
         status_layout.addStretch()
 
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("color: gray; font-size: 9pt;")
+        self.stats_label.setStyleSheet(f"color: gray; font-size: {s(9)}pt;")
         status_layout.addWidget(self.stats_label)
         layout.addLayout(status_layout)
 
         # Control buttons
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
+        button_layout.setSpacing(s(10))
 
         generate_btn = QPushButton("Generate Query")
         generate_btn.setStyleSheet(
-            "background-color: #27ae60; color: white; padding: 10px 20px; font-weight: bold;"
+            f"background-color: #27ae60; color: white; padding: {s(10)}px {s(20)}px; font-weight: bold;"
         )
         generate_btn.clicked.connect(self._on_generate_query)
         button_layout.addWidget(generate_btn)
@@ -308,7 +313,7 @@ class QueryLabTabWidget(QWidget):
 
         test_btn = QPushButton("Test Connection")
         test_btn.setStyleSheet(
-            "background-color: #3498db; color: white; padding: 10px 20px;"
+            f"background-color: #3498db; color: white; padding: {s(10)}px {s(20)}px;"
         )
         test_btn.clicked.connect(self._on_test_connection)
         button_layout.addWidget(test_btn)

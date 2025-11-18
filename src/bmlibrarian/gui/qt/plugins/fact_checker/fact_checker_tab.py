@@ -28,6 +28,9 @@ from .navigation_widget import NavigationWidget
 # Import fact-checker database components
 from .....factchecker.db import get_fact_checker_db, Annotator, HumanAnnotation
 
+# Import DPI-aware styling
+from ...resources.styles import get_font_scale
+
 
 class FactCheckerTabWidget(QWidget):
     """Main fact-checker review tab widget."""
@@ -43,6 +46,9 @@ class FactCheckerTabWidget(QWidget):
             parent: Optional parent widget
         """
         super().__init__(parent)
+
+        # DPI-aware scaling
+        self.scale = get_font_scale()
 
         # Configuration
         self.incremental = False
@@ -77,20 +83,22 @@ class FactCheckerTabWidget(QWidget):
 
     def _setup_ui(self):
         """Setup the user interface."""
+        s = self.scale
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(s['padding_xlarge'], s['padding_xlarge'], s['padding_xlarge'], s['padding_xlarge'])
+        main_layout.setSpacing(s['spacing_xlarge'])
 
         # Header
         header_layout = QHBoxLayout()
 
         title_layout = QVBoxLayout()
         title = QLabel("Fact-Checker Review Interface")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #0d47a1;")
+        title.setStyleSheet(f"font-size: {s['font_xlarge']}pt; font-weight: bold; color: #0d47a1;")
         title_layout.addWidget(title)
 
         subtitle = QLabel("Review and annotate AI-generated fact-checking results")
-        subtitle.setStyleSheet("font-size: 13px; color: #666;")
+        subtitle.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #666;")
         title_layout.addWidget(subtitle)
 
         header_layout.addLayout(title_layout)
@@ -98,23 +106,21 @@ class FactCheckerTabWidget(QWidget):
 
         # Statistics button
         self.statistics_button = QPushButton("📊 Statistics")
-        self.statistics_button.setFixedWidth(120)
+        self.statistics_button.setFixedWidth(int(s['control_height_medium'] * 3.3))
         self.statistics_button.clicked.connect(self._on_show_statistics)
-        self.statistics_button.setStyleSheet(
-            """
-            QPushButton {
+        self.statistics_button.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #1565c0;
                 color: white;
-                padding: 8px 16px;
+                padding: {s['padding_small']}px {s['padding_large']}px;
                 border: none;
-                border-radius: 4px;
+                border-radius: {s['radius_small']}px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #0d47a1;
-            }
-        """
-        )
+            }}
+        """)
         header_layout.addWidget(self.statistics_button)
 
         main_layout.addLayout(header_layout)
@@ -122,41 +128,37 @@ class FactCheckerTabWidget(QWidget):
         # Status section
         status_container = QWidget()
         status_layout = QHBoxLayout(status_container)
-        status_layout.setContentsMargins(15, 10, 15, 10)
+        status_layout.setContentsMargins(s['spacing_xlarge'], s['spacing_medium'], s['spacing_xlarge'], s['spacing_medium'])
 
         self.status_label = QLabel("Click 'Load Data' to begin reviewing")
         self.status_label.setStyleSheet("color: #666; font-style: italic;")
         status_layout.addWidget(self.status_label)
 
-        status_container.setStyleSheet(
-            """
-            QWidget {
+        status_container.setStyleSheet(f"""
+            QWidget {{
                 background-color: #bbdefb;
-                border-radius: 6px;
-            }
-        """
-        )
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
         main_layout.addWidget(status_container)
 
         # Load data button (initially visible)
         self.load_data_button = QPushButton("Load Data from Database")
         self.load_data_button.clicked.connect(self._on_load_data)
-        self.load_data_button.setStyleSheet(
-            """
-            QPushButton {
+        self.load_data_button.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #43a047;
                 color: white;
-                padding: 12px 24px;
+                padding: {s['padding_large']}px {s['padding_xlarge'] * 2}px;
                 border: none;
-                border-radius: 4px;
-                font-size: 14px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_medium']}pt;
                 font-weight: bold;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #388e3c;
-            }
-        """
-        )
+            }}
+        """)
         main_layout.addWidget(self.load_data_button, alignment=Qt.AlignCenter)
 
         # Review content (initially hidden)
@@ -166,10 +168,12 @@ class FactCheckerTabWidget(QWidget):
 
     def _build_review_container(self) -> QWidget:
         """Build the review interface container."""
+        s = self.scale
+
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(15)
+        layout.setSpacing(s['spacing_xlarge'])
 
         # Progress and timer row
         progress_layout = QHBoxLayout()
@@ -191,27 +195,25 @@ class FactCheckerTabWidget(QWidget):
 
         # Citations section
         citations_title = QLabel("Supporting Citations")
-        citations_title.setStyleSheet("font-weight: bold; color: #263238; font-size: 13px;")
+        citations_title.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
         layout.addWidget(citations_title)
 
         # Scrollable citation list
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumHeight(300)
-        scroll_area.setMaximumHeight(400)
+        scroll_area.setMinimumHeight(int(s['control_height_large'] * 7.5))
+        scroll_area.setMaximumHeight(int(s['control_height_large'] * 10))
 
         self.citation_widget = CitationListWidget()
         scroll_area.setWidget(self.citation_widget)
 
-        scroll_area.setStyleSheet(
-            """
-            QScrollArea {
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
                 background-color: #fff8e1;
                 border: 1px solid #ffb74d;
-                border-radius: 6px;
-            }
-        """
-        )
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
         layout.addWidget(scroll_area)
 
         # Navigation

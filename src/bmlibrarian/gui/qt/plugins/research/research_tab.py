@@ -41,6 +41,7 @@ from bmlibrarian.gui.document_card_factory_base import (
     DocumentCardData,
     CardContext
 )
+from ...resources.styles import get_font_scale
 
 
 # ============================================================================
@@ -48,113 +49,119 @@ from bmlibrarian.gui.document_card_factory_base import (
 # ============================================================================
 
 class UIConstants:
-    """UI layout and styling constants."""
+    """UI layout and styling constants with DPI-aware scaling."""
 
-    # Fonts
-    TITLE_FONT_SIZE = 18
-    SUBTITLE_FONT_SIZE = 10
-    TAB_HEADER_FONT_SIZE = 12
-    CARD_TITLE_FONT_SIZE = 11  # Document/citation card titles
-    CARD_SUBTITLE_FONT_SIZE = 10  # Authors, publication info
-    CARD_BODY_FONT_SIZE = 10  # Abstract, reasoning, passages
-    CARD_LABEL_FONT_SIZE = 9  # Section labels like "Abstract:", "Summary:"
+    def __init__(self, scale_func):
+        """Initialize constants with scale function."""
+        s = scale_func
 
-    # Colors
-    COLOR_PRIMARY_BLUE = "#1976D2"
-    COLOR_PRIMARY_BLUE_HOVER = "#1565C0"
-    COLOR_DISABLED_GREY = "#BDBDBD"
-    COLOR_TEXT_GREY = "#666666"
-    COLOR_BACKGROUND_GREY = "#F5F5F5"
-    COLOR_BORDER_GREY = "#E0E0E0"
-    COLOR_WHITE = "white"
-    COLOR_TEXT_INPUT_BACKGROUND = "#FFF8F0"  # Very faint pastel sand color
+        # Fonts
+        self.TITLE_FONT_SIZE = s(18)
+        self.SUBTITLE_FONT_SIZE = s(10)
+        self.TAB_HEADER_FONT_SIZE = s(12)
+        self.CARD_TITLE_FONT_SIZE = s(11)  # Document/citation card titles
+        self.CARD_SUBTITLE_FONT_SIZE = s(10)  # Authors, publication info
+        self.CARD_BODY_FONT_SIZE = s(10)  # Abstract, reasoning, passages
+        self.CARD_LABEL_FONT_SIZE = s(9)  # Section labels like "Abstract:", "Summary:"
 
-    # Spacing
-    MAIN_LAYOUT_MARGIN = 15
-    MAIN_LAYOUT_SPACING = 10
-    CONTROLS_SPACING = 10
-    ROW2_SPACING = 15
-    HEADER_BOTTOM_MARGIN = 10
-    HEADER_SPACING = 5
-    TAB_WIDGET_MARGIN = 15
+        # Colors (not scaled)
+        self.COLOR_PRIMARY_BLUE = "#1976D2"
+        self.COLOR_PRIMARY_BLUE_HOVER = "#1565C0"
+        self.COLOR_DISABLED_GREY = "#BDBDBD"
+        self.COLOR_TEXT_GREY = "#666666"
+        self.COLOR_BACKGROUND_GREY = "#F5F5F5"
+        self.COLOR_BORDER_GREY = "#E0E0E0"
+        self.COLOR_WHITE = "white"
+        self.COLOR_TEXT_INPUT_BACKGROUND = "#FFF8F0"  # Very faint pastel sand color
 
-    # Widget Sizes
-    QUESTION_INPUT_MIN_HEIGHT = 70
-    QUESTION_INPUT_MAX_HEIGHT = 100
-    START_BUTTON_MIN_HEIGHT = 45
-    START_BUTTON_MIN_WIDTH = 140
-    SPINBOX_WIDTH = 80
+        # Spacing
+        self.MAIN_LAYOUT_MARGIN = s(15)
+        self.MAIN_LAYOUT_SPACING = s(10)
+        self.CONTROLS_SPACING = s(10)
+        self.ROW2_SPACING = s(15)
+        self.HEADER_BOTTOM_MARGIN = s(10)
+        self.HEADER_SPACING = s(5)
+        self.TAB_WIDGET_MARGIN = s(15)
 
-    # Border Radii
-    CONTROLS_BORDER_RADIUS = 8
-    BUTTON_BORDER_RADIUS = 4
+        # Widget Sizes
+        self.QUESTION_INPUT_MIN_HEIGHT = s(70)
+        self.QUESTION_INPUT_MAX_HEIGHT = s(100)
+        self.START_BUTTON_MIN_HEIGHT = s(45)
+        self.START_BUTTON_MIN_WIDTH = s(140)
+        self.SPINBOX_WIDTH = s(80)
 
-    # Spinbox Ranges
-    MAX_RESULTS_MIN = 10
-    MAX_RESULTS_MAX = 1000
-    MAX_RESULTS_DEFAULT = 100
-    MIN_RELEVANT_MIN = 1
-    MIN_RELEVANT_MAX = 100
-    MIN_RELEVANT_DEFAULT = 10
+        # Border Radii
+        self.CONTROLS_BORDER_RADIUS = s(8)
+        self.BUTTON_BORDER_RADIUS = s(4)
 
-    # Document Score Thresholds
-    SCORE_THRESHOLD_HIGH_RELEVANCE = 4.0
-    SCORE_THRESHOLD_RELEVANT = 3.0
-    SCORE_THRESHOLD_SOMEWHAT_RELEVANT = 2.0
+        # Spinbox Ranges (not scaled - these are value ranges)
+        self.MAX_RESULTS_MIN = 10
+        self.MAX_RESULTS_MAX = 1000
+        self.MAX_RESULTS_DEFAULT = 100
+        self.MIN_RELEVANT_MIN = 1
+        self.MIN_RELEVANT_MAX = 100
+        self.MIN_RELEVANT_DEFAULT = 10
 
-    # Document Score Colors
-    SCORE_COLOR_HIGH = "#4CAF50"  # Green
-    SCORE_COLOR_RELEVANT = "#2196F3"  # Blue
-    SCORE_COLOR_SOMEWHAT = "#FF9800"  # Orange
-    SCORE_COLOR_LOW = "#9E9E9E"  # Grey
+        # Document Score Thresholds (not scaled - these are score values)
+        self.SCORE_THRESHOLD_HIGH_RELEVANCE = 4.0
+        self.SCORE_THRESHOLD_RELEVANT = 3.0
+        self.SCORE_THRESHOLD_SOMEWHAT_RELEVANT = 2.0
+
+        # Document Score Colors (not scaled)
+        self.SCORE_COLOR_HIGH = "#4CAF50"  # Green
+        self.SCORE_COLOR_RELEVANT = "#2196F3"  # Blue
+        self.SCORE_COLOR_SOMEWHAT = "#FF9800"  # Orange
+        self.SCORE_COLOR_LOW = "#9E9E9E"  # Grey
 
 
 class StyleSheets:
-    """Centralized stylesheet definitions."""
+    """Centralized stylesheet definitions with DPI-aware scaling."""
 
     @staticmethod
-    def controls_frame() -> str:
+    def controls_frame(c: UIConstants) -> str:
         """Stylesheet for controls section frame."""
         return f"""
             QFrame {{
-                background-color: {UIConstants.COLOR_BACKGROUND_GREY};
-                border: 1px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: {UIConstants.CONTROLS_BORDER_RADIUS}px;
-                padding: 10px;
+                background-color: {c.COLOR_BACKGROUND_GREY};
+                border: 1px solid {c.COLOR_BORDER_GREY};
+                border-radius: {c.CONTROLS_BORDER_RADIUS}px;
+                padding: {c.CONTROLS_SPACING}px;
             }}
         """
 
     @staticmethod
-    def start_button() -> str:
+    def start_button(c: UIConstants, scale_func) -> str:
         """Stylesheet for Start Research button."""
+        s = scale_func
         return f"""
             QPushButton {{
-                background-color: {UIConstants.COLOR_PRIMARY_BLUE};
-                color: {UIConstants.COLOR_WHITE};
+                background-color: {c.COLOR_PRIMARY_BLUE};
+                color: {c.COLOR_WHITE};
                 font-weight: bold;
-                border-radius: {UIConstants.BUTTON_BORDER_RADIUS}px;
-                padding: 8px 16px;
+                border-radius: {c.BUTTON_BORDER_RADIUS}px;
+                padding: {s(8)}px {s(16)}px;
             }}
             QPushButton:hover {{
-                background-color: {UIConstants.COLOR_PRIMARY_BLUE_HOVER};
+                background-color: {c.COLOR_PRIMARY_BLUE_HOVER};
             }}
             QPushButton:disabled {{
-                background-color: {UIConstants.COLOR_DISABLED_GREY};
+                background-color: {c.COLOR_DISABLED_GREY};
             }}
         """
 
     @staticmethod
-    def text_input() -> str:
+    def text_input(c: UIConstants, scale_func) -> str:
         """Stylesheet for all text input widgets (QTextEdit, QLineEdit, QSpinBox)."""
+        s = scale_func
         return f"""
             QTextEdit, QLineEdit, QSpinBox {{
-                background-color: {UIConstants.COLOR_TEXT_INPUT_BACKGROUND};
-                border: 1px solid {UIConstants.COLOR_BORDER_GREY};
-                border-radius: 4px;
-                padding: 4px;
+                background-color: {c.COLOR_TEXT_INPUT_BACKGROUND};
+                border: 1px solid {c.COLOR_BORDER_GREY};
+                border-radius: {s(4)}px;
+                padding: {s(4)}px;
             }}
             QTextEdit:focus, QLineEdit:focus, QSpinBox:focus {{
-                border: 2px solid {UIConstants.COLOR_PRIMARY_BLUE};
+                border: 2px solid {c.COLOR_PRIMARY_BLUE};
             }}
         """
 
@@ -189,6 +196,10 @@ class ResearchTabWidget(QWidget):
             agents: Optional dictionary of initialized BMLibrarian agents
         """
         super().__init__(parent)
+
+        # DPI-aware scaling
+        self.scale = get_font_scale()
+        self.ui = UIConstants(self.scale)
 
         # Logger
         self.logger = logging.getLogger("bmlibrarian.gui.qt.plugins.research.ResearchTabWidget")
@@ -260,12 +271,12 @@ class ResearchTabWidget(QWidget):
         """Setup the user interface with Qt-native design."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(
-            UIConstants.MAIN_LAYOUT_MARGIN,
-            UIConstants.MAIN_LAYOUT_MARGIN,
-            UIConstants.MAIN_LAYOUT_MARGIN,
-            UIConstants.MAIN_LAYOUT_MARGIN
+            self.ui.MAIN_LAYOUT_MARGIN,
+            self.ui.MAIN_LAYOUT_MARGIN,
+            self.ui.MAIN_LAYOUT_MARGIN,
+            self.ui.MAIN_LAYOUT_MARGIN
         )
-        main_layout.setSpacing(UIConstants.MAIN_LAYOUT_SPACING)
+        main_layout.setSpacing(self.ui.MAIN_LAYOUT_SPACING)
 
         # 1. Header section (Row 1 - fixed height, expands horizontally)
         header = self._create_header_section()
@@ -292,16 +303,16 @@ class ResearchTabWidget(QWidget):
         """
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
-        header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
+        header_layout.setContentsMargins(0, 0, 0, self.ui.HEADER_BOTTOM_MARGIN)
         header_layout.setSpacing(0)
 
         # Single-line title
         title = QLabel("BMLibrarian Research Assistant - AI Powered Evidence Based Biomedical Literature Research")
         title_font = QFont()
-        title_font.setPointSize(UIConstants.TITLE_FONT_SIZE)
+        title_font.setPointSize(self.ui.TITLE_FONT_SIZE)
         title_font.setBold(True)
         title.setFont(title_font)
-        title.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
+        title.setStyleSheet(f"color: {self.ui.COLOR_PRIMARY_BLUE};")
         header_layout.addWidget(title)
 
         # Add stretch to keep title left-aligned
@@ -327,15 +338,15 @@ class ResearchTabWidget(QWidget):
         controls_frame = QFrame()
         controls_frame.setFrameShape(QFrame.StyledPanel)
         controls_frame.setFrameShadow(QFrame.Raised)
-        controls_frame.setStyleSheet(StyleSheets.controls_frame())
+        controls_frame.setStyleSheet(StyleSheets.controls_frame(self.ui))
         controls_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         controls_layout = QVBoxLayout(controls_frame)
-        controls_layout.setSpacing(UIConstants.CONTROLS_SPACING)
+        controls_layout.setSpacing(self.ui.CONTROLS_SPACING)
 
         # Row 2: Research question label + input + buttons
         row2 = QHBoxLayout()
-        row2.setSpacing(UIConstants.CONTROLS_SPACING)
+        row2.setSpacing(self.ui.CONTROLS_SPACING)
 
         # Research Question label
         question_label = QLabel("Research question:")
@@ -349,7 +360,7 @@ class ResearchTabWidget(QWidget):
         )
         self.question_input.setMaximumHeight(60)  # 2 lines
         self.question_input.setMinimumHeight(60)
-        self.question_input.setStyleSheet(StyleSheets.text_input())
+        self.question_input.setStyleSheet(StyleSheets.text_input(self.ui, self.scale))
         self.question_input.textChanged.connect(self._on_question_changed)
         row2.addWidget(self.question_input, stretch=1)
 
@@ -361,7 +372,7 @@ class ResearchTabWidget(QWidget):
         self.start_button.setMinimumHeight(60)
         self.start_button.setMinimumWidth(140)
         self.start_button.setEnabled(False)
-        self.start_button.setStyleSheet(StyleSheets.start_button())
+        self.start_button.setStyleSheet(StyleSheets.start_button(self.ui, self.scale))
         self.start_button.clicked.connect(self._on_start_research)
         row2.addWidget(self.start_button)
 
@@ -424,18 +435,18 @@ class ResearchTabWidget(QWidget):
 
         # Row 3: Parameters and toggles
         row3 = QHBoxLayout()
-        row3.setSpacing(UIConstants.ROW2_SPACING)
+        row3.setSpacing(self.ui.ROW2_SPACING)
 
         # Max Results
         max_results_label = QLabel("Max results:")
         row3.addWidget(max_results_label)
 
         self.max_results_spin = QSpinBox()
-        self.max_results_spin.setMinimum(UIConstants.MAX_RESULTS_MIN)
-        self.max_results_spin.setMaximum(UIConstants.MAX_RESULTS_MAX)
-        self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
-        self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
-        self.max_results_spin.setStyleSheet(StyleSheets.text_input())
+        self.max_results_spin.setMinimum(self.ui.MAX_RESULTS_MIN)
+        self.max_results_spin.setMaximum(self.ui.MAX_RESULTS_MAX)
+        self.max_results_spin.setValue(self.ui.MAX_RESULTS_DEFAULT)
+        self.max_results_spin.setFixedWidth(self.ui.SPINBOX_WIDTH)
+        self.max_results_spin.setStyleSheet(StyleSheets.text_input(self.ui, self.scale))
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
         self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
         row3.addWidget(self.max_results_spin)
@@ -445,11 +456,11 @@ class ResearchTabWidget(QWidget):
         row3.addWidget(min_relevant_label)
 
         self.min_relevant_spin = QSpinBox()
-        self.min_relevant_spin.setMinimum(UIConstants.MIN_RELEVANT_MIN)
-        self.min_relevant_spin.setMaximum(UIConstants.MIN_RELEVANT_MAX)
-        self.min_relevant_spin.setValue(UIConstants.MIN_RELEVANT_DEFAULT)
-        self.min_relevant_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
-        self.min_relevant_spin.setStyleSheet(StyleSheets.text_input())
+        self.min_relevant_spin.setMinimum(self.ui.MIN_RELEVANT_MIN)
+        self.min_relevant_spin.setMaximum(self.ui.MIN_RELEVANT_MAX)
+        self.min_relevant_spin.setValue(self.ui.MIN_RELEVANT_DEFAULT)
+        self.min_relevant_spin.setFixedWidth(self.ui.SPINBOX_WIDTH)
+        self.min_relevant_spin.setStyleSheet(StyleSheets.text_input(self.ui, self.scale))
         self.min_relevant_spin.setToolTip(
             "Minimum high-scoring documents to find (triggers iterative search)"
         )
@@ -503,8 +514,8 @@ class ResearchTabWidget(QWidget):
         status_widget = QWidget()
         status_widget.setStyleSheet(f"""
             QWidget {{
-                background-color: {UIConstants.COLOR_BACKGROUND_GREY};
-                border-top: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                background-color: {self.ui.COLOR_BACKGROUND_GREY};
+                border-top: 1px solid {self.ui.COLOR_BORDER_GREY};
             }}
         """)
         status_widget.setMaximumHeight(30)
@@ -516,7 +527,7 @@ class ResearchTabWidget(QWidget):
 
         # Left half: Progress indicator / messages
         self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.progress_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         status_layout.addWidget(self.progress_label, stretch=1)
 
         # Separator
@@ -527,7 +538,7 @@ class ResearchTabWidget(QWidget):
 
         # Right half: Status / warning messages
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.status_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         status_layout.addWidget(self.status_label, stretch=1)
 
@@ -596,23 +607,23 @@ class ResearchTabWidget(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN
         )
 
         # Header
         label = QLabel(f"{icon} {title}")
         label_font = QFont()
-        label_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        label_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         label_font.setBold(True)
         label.setFont(label_font)
         layout.addWidget(label)
 
         # Description
         desc_label = QLabel(description)
-        desc_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; margin-top: 10px;")
+        desc_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; margin-top: 10px;")
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
 
@@ -628,16 +639,16 @@ class ResearchTabWidget(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN,
-            UIConstants.TAB_WIDGET_MARGIN
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN,
+            self.ui.TAB_WIDGET_MARGIN
         )
 
         # Header
         header = QLabel("🔍 Search Query Generation")
         header_font = QFont()
-        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         header_font.setBold(True)
         header.setFont(header_font)
         layout.addWidget(header)
@@ -674,7 +685,7 @@ class ResearchTabWidget(QWidget):
 
         # Document count display
         self.document_count_label = QLabel("No search performed yet")
-        self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.document_count_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.document_count_label)
 
         # Add stretch to push everything to the top
@@ -686,25 +697,25 @@ class ResearchTabWidget(QWidget):
         """Create Literature tab (document list with scores)."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
-                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+        layout.setContentsMargins(self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN,
+                                 self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN)
 
         # Header
         header_label = QLabel("📚 Literature Documents")
         header_font = QFont()
-        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         header_font.setBold(True)
         header_label.setFont(header_font)
         layout.addWidget(header_label)
 
         # Subtitle
         subtitle_label = QLabel("Documents retrieved from search with AI relevance scores")
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        subtitle_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(subtitle_label)
 
         # Document count and score summary
         self.literature_summary_label = QLabel("No documents scored yet")
-        self.literature_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.literature_summary_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.literature_summary_label)
 
         # Progress bar for scoring (hidden by default)
@@ -740,7 +751,7 @@ class ResearchTabWidget(QWidget):
 
         # Empty state message
         self.literature_empty_label = QLabel("No documents to display")
-        self.literature_empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        self.literature_empty_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
         self.literature_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.literature_layout.addWidget(self.literature_empty_label)
 
@@ -769,25 +780,25 @@ class ResearchTabWidget(QWidget):
         """Create Citations tab (extracted citations)."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
-                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+        layout.setContentsMargins(self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN,
+                                 self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN)
 
         # Header
         header_label = QLabel("💬 Extracted Citations")
         header_font = QFont()
-        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         header_font.setBold(True)
         header_label.setFont(header_font)
         layout.addWidget(header_label)
 
         # Subtitle
         subtitle_label = QLabel("Relevant passages from high-scoring documents (score ≥ 3.0)")
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        subtitle_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(subtitle_label)
 
         # Citation count summary
         self.citations_summary_label = QLabel("No citations extracted yet")
-        self.citations_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.citations_summary_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.citations_summary_label)
 
         # Scroll area for citation list
@@ -803,7 +814,7 @@ class ResearchTabWidget(QWidget):
 
         # Empty state message
         self.citations_empty_label = QLabel("No citations to display")
-        self.citations_empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        self.citations_empty_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
         self.citations_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.citations_layout.addWidget(self.citations_empty_label)
 
@@ -819,25 +830,25 @@ class ResearchTabWidget(QWidget):
         """Create Preliminary Report tab."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN,
-                                 UIConstants.TAB_WIDGET_MARGIN, UIConstants.TAB_WIDGET_MARGIN)
+        layout.setContentsMargins(self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN,
+                                 self.ui.TAB_WIDGET_MARGIN, self.ui.TAB_WIDGET_MARGIN)
 
         # Header
         header_label = QLabel("📄 Preliminary Report")
         header_font = QFont()
-        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         header_font.setBold(True)
         header_label.setFont(header_font)
         layout.addWidget(header_label)
 
         # Subtitle
         subtitle_label = QLabel("Report generated from extracted citations (before counterfactual analysis)")
-        subtitle_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        subtitle_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(subtitle_label)
 
         # Report statistics summary
         self.preliminary_report_summary_label = QLabel("No report generated yet")
-        self.preliminary_report_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.preliminary_report_summary_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.preliminary_report_summary_label)
 
         # Markdown viewer for report
@@ -857,14 +868,14 @@ class ResearchTabWidget(QWidget):
         # Header
         header = QLabel("🧠 Counterfactual Analysis")
         header_font = QFont()
-        header_font.setPointSize(UIConstants.TAB_HEADER_FONT_SIZE)
+        header_font.setPointSize(self.ui.TAB_HEADER_FONT_SIZE)
         header_font.setBold(True)
         header.setFont(header_font)
         layout.addWidget(header)
 
         # Summary label
         self.counterfactual_summary_label = QLabel("Waiting for analysis...")
-        self.counterfactual_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.counterfactual_summary_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.counterfactual_summary_label)
 
         # Scroll area for counterfactual content
@@ -887,7 +898,7 @@ class ResearchTabWidget(QWidget):
             "• Searches for documents that might contradict the findings\n"
             "• Provides a balanced view of the evidence"
         )
-        placeholder.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+        placeholder.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
         placeholder.setWordWrap(True)
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.counterfactual_layout.addWidget(placeholder)
@@ -910,7 +921,7 @@ class ResearchTabWidget(QWidget):
 
         # Header label
         header_label = QLabel("📋 Final Comprehensive Report")
-        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {UIConstants.COLOR_PRIMARY_BLUE};")
+        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {self.ui.COLOR_PRIMARY_BLUE};")
         header_row.addWidget(header_label)
 
         header_row.addStretch()
@@ -982,7 +993,7 @@ class ResearchTabWidget(QWidget):
 
         # Summary label
         self.report_summary_label = QLabel("No report generated yet")
-        self.report_summary_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.report_summary_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY};")
         layout.addWidget(self.report_summary_label)
 
         # Markdown viewer
@@ -1556,7 +1567,7 @@ class ResearchTabWidget(QWidget):
             self.document_count_label.setText(
                 f"✅ Found {doc_count} documents matching your query"
             )
-            self.document_count_label.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
+            self.document_count_label.setStyleSheet(f"color: {self.ui.COLOR_PRIMARY_BLUE};")
 
         # Populate Literature tab with unscored documents
         self._populate_literature_tab_with_unscored_documents(documents)
@@ -1607,12 +1618,12 @@ class ResearchTabWidget(QWidget):
         # Type-safe score extraction with validation
         high_scoring = len([
             d for d, s in scored_documents
-            if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= UIConstants.SCORE_THRESHOLD_RELEVANT
+            if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.ui.SCORE_THRESHOLD_RELEVANT
         ])
 
         if hasattr(self, 'literature_summary_label'):
             self.literature_summary_label.setText(
-                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ {UIConstants.SCORE_THRESHOLD_RELEVANT})"
+                f"✅ {total} documents scored | {high_scoring} highly relevant (score ≥ {self.ui.SCORE_THRESHOLD_RELEVANT})"
             )
 
         self.status_message.emit(f"Scored {total} documents ({high_scoring} highly relevant)")
@@ -1746,7 +1757,7 @@ class ResearchTabWidget(QWidget):
             if question_count == 0:
                 # Show message if no questions generated
                 no_questions_label = QLabel("No counterfactual questions were generated.")
-                no_questions_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                no_questions_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
                 no_questions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.counterfactual_layout.addWidget(no_questions_label)
                 self.counterfactual_layout.addStretch()
@@ -1760,8 +1771,8 @@ class ResearchTabWidget(QWidget):
                 card.setFrameShape(QFrame.Shape.StyledPanel)
                 card.setStyleSheet(f"""
                     QFrame {{
-                        background-color: {UIConstants.COLOR_WHITE};
-                        border: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                        background-color: {self.ui.COLOR_WHITE};
+                        border: 1px solid {self.ui.COLOR_BORDER_GREY};
                         border-radius: 6px;
                         padding: 12px;
                     }}
@@ -1802,7 +1813,7 @@ class ResearchTabWidget(QWidget):
                 if cf_statement:
                     statement_label = QLabel(f"<b>Counterfactual Statement:</b><br>{cf_statement}")
                     statement_label.setWordWrap(True)
-                    statement_label.setStyleSheet(f"padding: 4px; color: {UIConstants.COLOR_TEXT_GREY};")
+                    statement_label.setStyleSheet(f"padding: 4px; color: {self.ui.COLOR_TEXT_GREY};")
                     card_layout.addWidget(statement_label)
 
                 # Reasoning
@@ -1819,7 +1830,7 @@ class ResearchTabWidget(QWidget):
                     keywords_text = ", ".join(keywords[:10])  # Limit display
                     keywords_label = QLabel(f"<b>Search Keywords:</b> {keywords_text}")
                     keywords_label.setWordWrap(True)
-                    keywords_label.setStyleSheet(f"padding: 4px; color: {UIConstants.COLOR_TEXT_GREY}; font-size: 9pt;")
+                    keywords_label.setStyleSheet(f"padding: 4px; color: {self.ui.COLOR_TEXT_GREY}; font-size: 9pt;")
                     card_layout.addWidget(keywords_label)
 
                 self.counterfactual_layout.addWidget(card)
@@ -1888,13 +1899,13 @@ class ResearchTabWidget(QWidget):
                                 priority_colors = {'HIGH': '#F44336', 'MEDIUM': '#FF9800', 'LOW': '#9E9E9E'}
                                 priority_color = priority_colors.get(cf_priority, '#9E9E9E')
                                 cf_title.setText(f"<b>Related Counterfactual Question</b> <span style='color: {priority_color};'>[{cf_priority} Priority]</span>")
-                            cf_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_title.setStyleSheet(f"font-size: {self.ui.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
                             cf_info_layout.addWidget(cf_title)
 
                             cf_question_text = QLabel(cf_question)
                             cf_question_text.setWordWrap(True)
                             cf_question_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                            cf_question_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_question_text.setStyleSheet(f"color: #333; font-size: {self.ui.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
                             cf_info_layout.addWidget(cf_question_text)
 
                             # Insert at the beginning of details_layout (before abstract)
@@ -1918,7 +1929,7 @@ class ResearchTabWidget(QWidget):
                 citations_desc = QLabel(
                     "Specific passages extracted from contradictory documents that challenge the original claims:"
                 )
-                citations_desc.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; font-size: 10pt; padding-bottom: 10px;")
+                citations_desc.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; font-size: 10pt; padding-bottom: 10px;")
                 citations_desc.setWordWrap(True)
                 self.counterfactual_layout.addWidget(citations_desc)
 
@@ -2030,7 +2041,7 @@ class ResearchTabWidget(QWidget):
             if not documents:
                 # Show empty state
                 empty_label = QLabel("No documents to display")
-                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
                 empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.literature_layout.addWidget(empty_label)
                 self.literature_layout.addStretch()
@@ -2078,7 +2089,7 @@ class ResearchTabWidget(QWidget):
             if not scored_documents:
                 # Show empty state
                 empty_label = QLabel("No documents to display")
-                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
                 empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.literature_layout.addWidget(empty_label)
                 self.literature_layout.addStretch()
@@ -2122,7 +2133,7 @@ class ResearchTabWidget(QWidget):
             if not citations:
                 # Show empty state
                 empty_label = QLabel("No citations to display")
-                empty_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY}; padding: 20px;")
+                empty_label.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; padding: 20px;")
                 empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.citations_layout.addWidget(empty_label)
                 self.citations_layout.addStretch()
@@ -2214,13 +2225,13 @@ class ResearchTabWidget(QWidget):
                 reasoning_layout.setSpacing(5)
 
                 reasoning_title = QLabel("<b>AI Reasoning:</b>")
-                reasoning_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_title.setStyleSheet(f"font-size: {self.ui.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
                 reasoning_layout.addWidget(reasoning_title)
 
                 reasoning_text = QLabel(reasoning)
                 reasoning_text.setWordWrap(True)
                 reasoning_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                reasoning_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_text.setStyleSheet(f"color: #333; font-size: {self.ui.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
                 reasoning_layout.addWidget(reasoning_text)
 
                 # Insert at the beginning of details_layout (before abstract)
