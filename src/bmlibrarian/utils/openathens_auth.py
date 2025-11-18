@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 class OpenAthensConfig:
     """Configuration for OpenAthens authentication."""
-class OpenAthensAuth:
-    """Manages OpenAthens authentication and session persistence."""
 
     def __init__(
         self,
@@ -96,16 +94,50 @@ class OpenAthensAuth:
 
     def __init__(
         self,
-        config: OpenAthensConfig,
-        session_file: Optional[Path] = None
+        config: Optional[OpenAthensConfig] = None,
+        session_file: Optional[Path] = None,
+        # Deprecated parameters for backward compatibility
+        institution_url: Optional[str] = None,
+        session_timeout_hours: Optional[int] = None,
+        headless: Optional[bool] = None
     ):
         """Initialize OpenAthens authentication.
 
         Args:
-            config: OpenAthens configuration
-            session_file: Path to session storage file (default: ~/.bmlibrarian/openathens_session.json)
+            config: OpenAthensConfig instance (recommended)
+            session_file: Path to session storage file
+
+            # Deprecated (backward compatibility with old API):
+            institution_url: Institution's OpenAthens URL (deprecated, use config instead)
+            session_timeout_hours: Session timeout hours (deprecated, use config instead)
+            headless: Headless browser mode (deprecated, use config instead)
         """
-        self.config = config
+        # Handle backward compatibility with old API
+        if config is None:
+            if institution_url is None:
+                raise ValueError(
+                    "Either 'config' (recommended) or 'institution_url' (deprecated) must be provided"
+                )
+
+            # Old API used - create config from parameters
+            import warnings
+            warnings.warn(
+                "Passing institution_url directly is deprecated. "
+                "Use OpenAthensConfig instead:\n"
+                "  config = OpenAthensConfig(institution_url='...')\n"
+                "  auth = OpenAthensAuth(config=config)",
+                DeprecationWarning,
+                stacklevel=2
+            )
+
+            self.config = OpenAthensConfig(
+                institution_url=institution_url,
+                session_max_age_hours=session_timeout_hours or 24,
+                headless=headless if headless is not None else True
+            )
+        else:
+            # New API - use provided config
+            self.config = config
 
         if session_file is None:
             session_dir = Path.home() / '.bmlibrarian'
@@ -420,6 +452,25 @@ class OpenAthensAuth:
             logger.error(f"Login failed: {e}", exc_info=True)
             await self._cleanup_browser()
             return False
+
+    async def login(self, wait_for_login: int = 300) -> bool:
+        """Perform interactive login (deprecated alias).
+
+        This method is an alias for login_interactive() for backward compatibility.
+
+        Args:
+            wait_for_login: Maximum seconds to wait (ignored, uses configured timeout)
+
+        Returns:
+            True if login successful, False otherwise
+        """
+        import warnings
+        warnings.warn(
+            "login() is deprecated. Use login_interactive() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return await self.login_interactive()
 
     async def _cleanup_browser(self):
         """Cleanup browser resources."""
