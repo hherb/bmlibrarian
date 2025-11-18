@@ -62,6 +62,7 @@ class UIConstants:
     COLOR_BACKGROUND_GREY = "#F5F5F5"
     COLOR_BORDER_GREY = "#E0E0E0"
     COLOR_WHITE = "white"
+    COLOR_TEXT_INPUT_BACKGROUND = "#FFF8F0"  # Very faint pastel sand color
 
     # Spacing
     MAIN_LAYOUT_MARGIN = 15
@@ -134,6 +135,21 @@ class StyleSheets:
             }}
             QPushButton:disabled {{
                 background-color: {UIConstants.COLOR_DISABLED_GREY};
+            }}
+        """
+
+    @staticmethod
+    def text_input() -> str:
+        """Stylesheet for all text input widgets (QTextEdit, QLineEdit, QSpinBox)."""
+        return f"""
+            QTextEdit, QLineEdit, QSpinBox {{
+                background-color: {UIConstants.COLOR_TEXT_INPUT_BACKGROUND};
+                border: 1px solid {UIConstants.COLOR_BORDER_GREY};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            QTextEdit:focus, QLineEdit:focus, QSpinBox:focus {{
+                border: 2px solid {UIConstants.COLOR_PRIMARY_BLUE};
             }}
         """
 
@@ -221,12 +237,14 @@ class ResearchTabWidget(QWidget):
         self.question_input: Optional[QTextEdit] = None
         self.start_button: Optional[QPushButton] = None
         self.cancel_button: Optional[QPushButton] = None
-        self.progress_bar: Optional[QProgressBar] = None
-        self.step_status_label: Optional[QLabel] = None
+        self.new_button: Optional[QPushButton] = None
+        self.progress_label: Optional[QLabel] = None
+        self.status_label: Optional[QLabel] = None
         self.max_results_spin: Optional[QSpinBox] = None
         self.min_relevant_spin: Optional[QSpinBox] = None
         self.interactive_checkbox: Optional[QCheckBox] = None
         self.counterfactual_checkbox: Optional[QCheckBox] = None
+        self.study_quality_checkbox: Optional[QCheckBox] = None
         self.research_tabs: Optional[QTabWidget] = None
 
         # Initialize UI
@@ -243,32 +261,36 @@ class ResearchTabWidget(QWidget):
         )
         main_layout.setSpacing(UIConstants.MAIN_LAYOUT_SPACING)
 
-        # 1. Header section
+        # 1. Header section (Row 1 - fixed height, expands horizontally)
         header = self._create_header_section()
         main_layout.addWidget(header)
 
-        # 2. Controls section (question input, parameters, buttons)
+        # 2. Controls section (Rows 2-3 - fixed height, expands horizontally)
         controls = self._create_controls_section()
         main_layout.addWidget(controls)
 
-        # 3. Tabbed interface (8 tabs)
+        # 3. Tabbed interface (Row 4 - expands both horizontally and vertically)
         self.research_tabs = self._create_tabbed_interface()
         main_layout.addWidget(self.research_tabs, stretch=1)
 
+        # 4. Status bar (fixed height, expands horizontally)
+        status_bar = self._create_status_bar()
+        main_layout.addWidget(status_bar)
+
     def _create_header_section(self) -> QWidget:
         """
-        Create header section with title and subtitle.
+        Create header section with single-line title.
 
         Returns:
             Header widget
         """
         header_widget = QWidget()
-        header_layout = QVBoxLayout(header_widget)
+        header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, UIConstants.HEADER_BOTTOM_MARGIN)
-        header_layout.setSpacing(UIConstants.HEADER_SPACING)
+        header_layout.setSpacing(0)
 
-        # Title
-        title = QLabel("BMLibrarian Research Assistant")
+        # Single-line title
+        title = QLabel("BMLibrarian Research Assistant - AI Powered Evidence Based Biomedical Literature Research")
         title_font = QFont()
         title_font.setPointSize(UIConstants.TITLE_FONT_SIZE)
         title_font.setBold(True)
@@ -276,13 +298,11 @@ class ResearchTabWidget(QWidget):
         title.setStyleSheet(f"color: {UIConstants.COLOR_PRIMARY_BLUE};")
         header_layout.addWidget(title)
 
-        # Subtitle
-        subtitle = QLabel("AI-Powered Evidence-Based Medical Literature Research")
-        subtitle_font = QFont()
-        subtitle_font.setPointSize(UIConstants.SUBTITLE_FONT_SIZE)
-        subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
-        header_layout.addWidget(subtitle)
+        # Add stretch to keep title left-aligned
+        header_layout.addStretch()
+
+        # Set fixed height for header
+        header_widget.setMaximumHeight(40)
 
         return header_widget
 
@@ -291,8 +311,8 @@ class ResearchTabWidget(QWidget):
         Create controls section with question input, parameters, and buttons.
 
         Layout:
-        Row 1: [Question Text Edit --------] [Start Button]
-        Row 2: [Max Results] [Min Relevant] [Interactive ☐] [Counterfactual ☑]
+        Row 2: [Research question: _____(2 lines)_____] [Start Research → Cancel] [New]
+        Row 3: [Max results (...)] [Min relevant (...)] [☐ Interactive mode] [☐ Counterfactual analysis] [☐ Study quality rating]
 
         Returns:
             Controls widget
@@ -302,59 +322,52 @@ class ResearchTabWidget(QWidget):
         controls_frame.setFrameShape(QFrame.StyledPanel)
         controls_frame.setFrameShadow(QFrame.Raised)
         controls_frame.setStyleSheet(StyleSheets.controls_frame())
+        controls_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         controls_layout = QVBoxLayout(controls_frame)
         controls_layout.setSpacing(UIConstants.CONTROLS_SPACING)
 
-        # Row 1: Question input + Start button
-        row1 = QHBoxLayout()
-        row1.setSpacing(UIConstants.CONTROLS_SPACING)
+        # Row 2: Research question label + input + buttons
+        row2 = QHBoxLayout()
+        row2.setSpacing(UIConstants.CONTROLS_SPACING)
 
-        # Question input
-        question_container = QVBoxLayout()
-        question_label = QLabel("Research Question:")
+        # Research Question label
+        question_label = QLabel("Research question:")
         question_label.setStyleSheet("font-weight: bold;")
-        question_container.addWidget(question_label)
+        row2.addWidget(question_label)
 
+        # Question input (2 lines)
         self.question_input = QTextEdit()
         self.question_input.setPlaceholderText(
-            "Enter your biomedical research question here...\n\n"
-            "Example: What are the cardiovascular benefits of regular exercise in adults?"
+            "Enter your biomedical research question here..."
         )
-        self.question_input.setMaximumHeight(UIConstants.QUESTION_INPUT_MAX_HEIGHT)
-        self.question_input.setMinimumHeight(UIConstants.QUESTION_INPUT_MIN_HEIGHT)
+        self.question_input.setMaximumHeight(60)  # 2 lines
+        self.question_input.setMinimumHeight(60)
+        self.question_input.setStyleSheet(StyleSheets.text_input())
         self.question_input.textChanged.connect(self._on_question_changed)
-        question_container.addWidget(self.question_input)
-        row1.addLayout(question_container, stretch=1)
+        row2.addWidget(self.question_input, stretch=1)
 
-        # Button container for Start and Cancel buttons
-        button_container = QVBoxLayout()
-        button_container.setSpacing(5)
-
-        # Start and Cancel buttons in horizontal layout
-        button_row = QHBoxLayout()
-        button_row.setSpacing(8)
-
-        # Start button
+        # Start/Cancel button (dynamic)
         self.start_button = QPushButton("Start Research")
         self.start_button.setIcon(self.start_button.style().standardIcon(
             self.start_button.style().StandardPixmap.SP_MediaPlay
         ))
-        self.start_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
-        self.start_button.setMinimumWidth(UIConstants.START_BUTTON_MIN_WIDTH)
+        self.start_button.setMinimumHeight(60)
+        self.start_button.setMinimumWidth(140)
         self.start_button.setEnabled(False)
         self.start_button.setStyleSheet(StyleSheets.start_button())
         self.start_button.clicked.connect(self._on_start_research)
-        button_row.addWidget(self.start_button)
+        row2.addWidget(self.start_button)
 
-        # Cancel button (Milestone 4: Workflow cancellation)
+        # Cancel button (shown during workflow)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setIcon(self.cancel_button.style().standardIcon(
             self.cancel_button.style().StandardPixmap.SP_DialogCancelButton
         ))
-        self.cancel_button.setMinimumHeight(UIConstants.START_BUTTON_MIN_HEIGHT)
-        self.cancel_button.setMinimumWidth(100)
-        self.cancel_button.setEnabled(False)  # Only enabled during workflow
+        self.cancel_button.setMinimumHeight(60)
+        self.cancel_button.setMinimumWidth(140)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setVisible(False)  # Hidden initially
         self.cancel_button.setStyleSheet("""
             QPushButton {
                 background-color: #F44336;
@@ -376,103 +389,143 @@ class ResearchTabWidget(QWidget):
             }
         """)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
-        button_row.addWidget(self.cancel_button)
+        row2.addWidget(self.cancel_button)
 
-        button_container.addLayout(button_row)
-
-        # Progress bar (Milestone 4: Progress tracking)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setMaximumHeight(6)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #E0E0E0;
-                border-radius: 3px;
-                background-color: #F5F5F5;
+        # New button
+        self.new_button = QPushButton("New")
+        self.new_button.setMinimumHeight(60)
+        self.new_button.setMinimumWidth(80)
+        self.new_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 8px 16px;
             }
-            QProgressBar::chunk {
-                background-color: #1976D2;
-                border-radius: 2px;
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
             }
         """)
-        self.progress_bar.setVisible(False)  # Hidden until workflow starts
-        button_container.addWidget(self.progress_bar)
+        self.new_button.clicked.connect(self._on_new_research)
+        row2.addWidget(self.new_button)
 
-        row1.addLayout(button_container)
-        row1.setAlignment(button_container, Qt.AlignmentFlag.AlignBottom)
+        controls_layout.addLayout(row2)
 
-        controls_layout.addLayout(row1)
-
-        # Row 2: Parameters and toggles
-        row2 = QHBoxLayout()
-        row2.setSpacing(UIConstants.ROW2_SPACING)
+        # Row 3: Parameters and toggles
+        row3 = QHBoxLayout()
+        row3.setSpacing(UIConstants.ROW2_SPACING)
 
         # Max Results
-        max_results_label = QLabel("Max Results:")
-        row2.addWidget(max_results_label)
+        max_results_label = QLabel("Max results:")
+        row3.addWidget(max_results_label)
 
         self.max_results_spin = QSpinBox()
         self.max_results_spin.setMinimum(UIConstants.MAX_RESULTS_MIN)
         self.max_results_spin.setMaximum(UIConstants.MAX_RESULTS_MAX)
         self.max_results_spin.setValue(UIConstants.MAX_RESULTS_DEFAULT)
         self.max_results_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
+        self.max_results_spin.setStyleSheet(StyleSheets.text_input())
         self.max_results_spin.setToolTip("Maximum number of documents to retrieve from database")
         self.max_results_spin.valueChanged.connect(self._on_max_results_changed)
-        row2.addWidget(self.max_results_spin)
+        row3.addWidget(self.max_results_spin)
 
         # Min Relevant
-        min_relevant_label = QLabel("Min Relevant:")
-        row2.addWidget(min_relevant_label)
+        min_relevant_label = QLabel("Min relevant:")
+        row3.addWidget(min_relevant_label)
 
         self.min_relevant_spin = QSpinBox()
         self.min_relevant_spin.setMinimum(UIConstants.MIN_RELEVANT_MIN)
         self.min_relevant_spin.setMaximum(UIConstants.MIN_RELEVANT_MAX)
         self.min_relevant_spin.setValue(UIConstants.MIN_RELEVANT_DEFAULT)
         self.min_relevant_spin.setFixedWidth(UIConstants.SPINBOX_WIDTH)
+        self.min_relevant_spin.setStyleSheet(StyleSheets.text_input())
         self.min_relevant_spin.setToolTip(
             "Minimum high-scoring documents to find (triggers iterative search)"
         )
         self.min_relevant_spin.valueChanged.connect(self._on_min_relevant_changed)
-        row2.addWidget(self.min_relevant_spin)
+        row3.addWidget(self.min_relevant_spin)
 
         # Spacer
-        row2.addSpacing(20)
+        row3.addSpacing(20)
 
         # Interactive mode toggle
-        self.interactive_checkbox = QCheckBox("Interactive Mode")
+        self.interactive_checkbox = QCheckBox("Interactive mode")
         self.interactive_checkbox.setChecked(False)
         self.interactive_checkbox.setToolTip(
             "Enable human-in-the-loop for query editing, manual scoring, etc."
         )
-        row2.addWidget(self.interactive_checkbox)
+        row3.addWidget(self.interactive_checkbox)
 
         # Counterfactual toggle
-        self.counterfactual_checkbox = QCheckBox("Comprehensive Counterfactual Analysis")
+        self.counterfactual_checkbox = QCheckBox("Counterfactual analysis")
         self.counterfactual_checkbox.setChecked(True)
         self.counterfactual_checkbox.setToolTip(
             "Search for contradictory evidence and create balanced report"
         )
-        row2.addWidget(self.counterfactual_checkbox)
+        row3.addWidget(self.counterfactual_checkbox)
+
+        # Study quality rating toggle
+        self.study_quality_checkbox = QCheckBox("Study quality rating")
+        self.study_quality_checkbox.setChecked(False)
+        self.study_quality_checkbox.setToolTip(
+            "Assess and display study quality metrics for documents"
+        )
+        row3.addWidget(self.study_quality_checkbox)
 
         # Stretch to push everything left
-        row2.addStretch()
+        row3.addStretch()
 
-        controls_layout.addLayout(row2)
-
-        # Row 3: Step status label (Milestone 4: Progress display)
-        self.step_status_label = QLabel("")
-        self.step_status_label.setStyleSheet(f"""
-            color: {UIConstants.COLOR_TEXT_GREY};
-            font-style: italic;
-            padding: 5px;
-        """)
-        self.step_status_label.setWordWrap(True)
-        self.step_status_label.setVisible(False)  # Hidden until workflow starts
-        controls_layout.addWidget(self.step_status_label)
+        controls_layout.addLayout(row3)
 
         return controls_frame
+
+    def _create_status_bar(self) -> QWidget:
+        """
+        Create status bar with progress indicator and status messages.
+
+        Layout:
+        [Progress indicator / messages (left half)] | [Status / warning messages (right half)]
+
+        Returns:
+            Status bar widget
+        """
+        status_widget = QWidget()
+        status_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {UIConstants.COLOR_BACKGROUND_GREY};
+                border-top: 1px solid {UIConstants.COLOR_BORDER_GREY};
+            }}
+        """)
+        status_widget.setMaximumHeight(30)
+        status_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(10, 5, 10, 5)
+        status_layout.setSpacing(20)
+
+        # Left half: Progress indicator / messages
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        status_layout.addWidget(self.progress_label, stretch=1)
+
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        status_layout.addWidget(separator)
+
+        # Right half: Status / warning messages
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet(f"color: {UIConstants.COLOR_TEXT_GREY};")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        status_layout.addWidget(self.status_label, stretch=1)
+
+        return status_widget
 
     def _create_tabbed_interface(self) -> QTabWidget:
         """
@@ -1023,12 +1076,11 @@ class ResearchTabWidget(QWidget):
 
             # Milestone 4: Create and start background workflow thread
             self.status_message.emit(f"Research started: {question[:50]}...")
-            self.start_button.setEnabled(False)
-            self.cancel_button.setEnabled(True)
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            self.step_status_label.setVisible(True)
-            self.step_status_label.setText("Initializing workflow...")
+
+            # Update status bar
+            self.progress_label.setText("Initializing workflow...")
+            self.status_label.setText("Starting")
+
             self.workflow_running = True
 
             self.logger.info(f"Research started: {question[:100]}")
@@ -1077,7 +1129,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow started signal."""
         self.logger.info("Workflow started")
         self.workflow_running = True
-        self.start_button.setEnabled(False)
+
+        # Hide Start button, show Cancel button
+        self.start_button.setVisible(False)
+        self.cancel_button.setVisible(True)
+        self.cancel_button.setEnabled(True)
+
+        # Update status bar
+        self.status_label.setText("Running")
+        self.progress_label.setText("Starting research workflow...")
+
         self.workflow_started.emit()
 
     @Slot(dict)
@@ -1085,7 +1146,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow completed signal."""
         self.logger.info(f"Workflow completed: {results.get('status', 'unknown')}")
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.status_label.setText("Completed")
+        self.progress_label.setText("Research workflow completed successfully")
+
         self.current_results = results
         self.workflow_completed.emit(results)
 
@@ -1150,7 +1220,16 @@ class ResearchTabWidget(QWidget):
         """Handle workflow error signal."""
         self.logger.error(f"Workflow error: {error}", exc_info=True)
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.status_label.setText("⚠️ Error")
+        self.progress_label.setText("Workflow failed - see error message")
+
         self.workflow_error.emit(error)
 
         QMessageBox.critical(
@@ -1163,6 +1242,8 @@ class ResearchTabWidget(QWidget):
     def _on_workflow_status(self, message: str) -> None:
         """Handle workflow status message signal."""
         self.logger.debug(f"Workflow status: {message}")
+        # Update progress label with status messages
+        self.progress_label.setText(message)
         self.status_message.emit(message)
 
     # ========================================================================
@@ -1210,39 +1291,67 @@ class ResearchTabWidget(QWidget):
 
         self.logger.info("User requested workflow cancellation")
         self.cancel_button.setEnabled(False)  # Prevent double-cancel
-        self.step_status_label.setText("Cancelling workflow...")
+        self.progress_label.setText("Cancelling workflow...")
+        self.status_label.setText("Cancelled")
         self.workflow_thread.cancel()
+
+    def _on_new_research(self) -> None:
+        """Handle New button click to start a fresh research session."""
+        # Confirm if there are unsaved results
+        if self.current_results or self.counterfactual_results:
+            reply = QMessageBox.question(
+                self,
+                "Start New Research",
+                "This will clear your current research results.\n\n"
+                "Are you sure you want to start a new research session?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Clear all results and UI
+        self.current_results = {}
+        self.counterfactual_results = None
+        self.question_input.clear()
+
+        # Clear all tabs (delegate to tab-specific methods if they exist)
+        # For now, we'll just log this action
+        self.logger.info("Starting new research session - clearing previous results")
+
+        # Update status
+        self.status_label.setText("Ready")
+        self.progress_label.setText("")
+
+        # Focus on question input
+        self.question_input.setFocus()
 
     @Slot(str, str)
     def _on_thread_step_started(self, step_name: str, description: str) -> None:
         """Handle workflow step started signal."""
         self.logger.info(f"Step started: {step_name} - {description}")
-        self.step_status_label.setText(f"⚙️ {description}")
+        self.progress_label.setText(f"⚙️ {description}")
 
-        # Update progress bar based on step (rough percentage)
-        step_progress_map = {
-            'generate_query': 10,
-            'search_documents': 20,
-            'score_documents': 40,
-            'extract_citations': 60,
-            'generate_preliminary_report': 70,
-            'counterfactual_analysis': 75,
-            'search_contradictory_evidence': 85,
-            'generate_final_report': 95
-        }
-        progress = step_progress_map.get(step_name, 0)
-        self.progress_bar.setValue(progress)
+        # Update status label based on major steps
+        if 'query' in step_name.lower():
+            self.status_label.setText("Generating query")
+        elif 'search' in step_name.lower():
+            self.status_label.setText("Searching documents")
+        elif 'scor' in step_name.lower():
+            self.status_label.setText("Scoring documents")
+        elif 'citation' in step_name.lower():
+            self.status_label.setText("Extracting citations")
+        elif 'report' in step_name.lower():
+            self.status_label.setText("Generating report")
+        elif 'counterfactual' in step_name.lower():
+            self.status_label.setText("Analyzing evidence")
 
     @Slot(str, int, int)
     def _on_thread_step_progress(self, step_name: str, current: int, total: int) -> None:
         """Handle workflow step progress signal."""
         if total > 0:
             percentage = int((current / total) * 100)
-            # For scoring step, show fine-grained progress between 20% and 60%
-            if step_name == 'score_documents':
-                progress = 20 + int((current / total) * 40)
-                self.progress_bar.setValue(progress)
-            self.step_status_label.setText(f"⚙️ Processing {current}/{total} documents...")
+            self.progress_label.setText(f"⚙️ Processing {current}/{total} documents... ({percentage}%)")
 
     @Slot(str)
     def _on_thread_step_completed(self, step_name: str) -> None:
@@ -1256,24 +1365,25 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setValue(100)
-        self.step_status_label.setText("✅ Workflow completed successfully!")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        doc_count = results.get('document_count', 0)
+        citation_count = results.get('citation_count', 0)
+        self.progress_label.setText(
+            f"✅ Found {doc_count} documents, extracted {citation_count} citations"
+        )
+        self.status_label.setText("Completed")
 
         # Store results
         self.current_results = results
 
         # Emit completion signal
         self.workflow_completed.emit(results)
-
-        # Display summary
-        doc_count = results.get('document_count', 0)
-        citation_count = results.get('citation_count', 0)
-        self.status_message.emit(
-            f"✅ Research complete! Found {doc_count} documents, "
-            f"extracted {citation_count} citations"
-        )
 
     @Slot(Exception)
     def _on_thread_workflow_error(self, error: Exception) -> None:
@@ -1282,10 +1392,15 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.step_status_label.setText("❌ Workflow failed")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.progress_label.setText("❌ Workflow failed - see error message")
+        self.status_label.setText("⚠️ Error")
 
         # Emit error signal
         self.workflow_error.emit(error)
@@ -1304,10 +1419,15 @@ class ResearchTabWidget(QWidget):
 
         # Update UI state
         self.workflow_running = False
+
+        # Show Start button, hide Cancel button
+        self.start_button.setVisible(True)
         self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.step_status_label.setText("🛑 Workflow cancelled")
+        self.cancel_button.setVisible(False)
+
+        # Update status bar
+        self.progress_label.setText("🛑 Workflow cancelled by user")
+        self.status_label.setText("Cancelled")
 
         self.status_message.emit("🛑 Workflow cancelled by user")
 
