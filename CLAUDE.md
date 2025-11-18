@@ -96,6 +96,7 @@ Since this project uses `uv` for package management:
   - `uv run python import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
 - **Laboratory Tools**:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
+  - `uv run python pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
 - **Demonstrations**: 
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
@@ -169,6 +170,7 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 5. **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
 6. **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
 7. **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
+8. **PICOAgent**: Extracts Population, Intervention, Comparison, and Outcome components from research papers for systematic reviews
 
 ### Document Card Factory System
 
@@ -344,7 +346,8 @@ bmlibrarian/
 │           └── document_interrogation_tab.py  # Document interrogation interface
 │   └── lab/                   # Experimental tools and interfaces
 │       ├── __init__.py        # Lab module exports
-│       └── query_lab.py       # QueryAgent experimental GUI
+│       ├── query_lab.py       # QueryAgent experimental GUI
+│       └── pico_lab.py        # PICOAgent experimental GUI for PICO component extraction
 │   └── factchecker/           # Fact-checker module (PostgreSQL-based)
 │       ├── __init__.py        # Fact-checker module exports
 │       ├── agent/             # Fact-checker agent
@@ -413,6 +416,7 @@ bmlibrarian/
 ├── embed_documents_cli.py     # Document embedding generation CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
+├── pico_lab.py                # PICOAgent experimental laboratory GUI for PICO component extraction
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
 ├── migrations/                # Database migration scripts
