@@ -1,145 +1,348 @@
-"""OpenAthens Authentication and Session Management
+"""OpenAthens Authentication Module
 
-This module handles OpenAthens proxy authentication for accessing paywalled
-journal articles through institutional subscriptions. It supports 2FA login,
-session persistence, and automatic proxy URL construction.
+Provides secure session management for OpenAthens institutional authentication
+using Playwright browser automation with proper security practices.
 """
 
-import logging
 import json
-import time
+import logging
+import stat
+import re
 import asyncio
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-import pickle
+from urllib.parse import urlparse
+import requests
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAthensAuth:
-    """Manages OpenAthens authentication and session persistence."""
+class OpenAthensConfig:
+    """Configuration for OpenAthens authentication."""
 
     def __init__(
         self,
         institution_url: str,
-        session_file: Optional[Path] = None,
-        session_timeout_hours: int = 24,
-        headless: bool = False
+        session_max_age_hours: int = 24,
+        auth_check_interval: float = 1.0,
+        cloudflare_wait: int = 30,
+        page_timeout: int = 60000,
+        headless: bool = True,
+        session_cache_ttl: int = 60
     ):
-        """Initialize OpenAthens authenticator.
+        """Initialize OpenAthens configuration.
 
         Args:
-            institution_url: Your institution's OpenAthens URL
-                           (e.g., "https://institution.openathens.net")
-            session_file: Path to store session cookies (default: ~/.bmlibrarian/openathens_session.pkl)
-            session_timeout_hours: Hours before session expires (default: 24)
-            headless: Run browser in headless mode for login (default: False for 2FA visibility)
+            institution_url: Institution's OpenAthens login URL
+            session_max_age_hours: Maximum session age in hours (default: 24)
+            auth_check_interval: Polling interval for auth checks in seconds (default: 1.0)
+            cloudflare_wait: Max seconds to wait for Cloudflare (default: 30)
+            page_timeout: Page load timeout in milliseconds (default: 60000)
+            headless: Run browser in headless mode (default: True)
+            session_cache_ttl: Session validation cache TTL in seconds (default: 60)
         """
-        self.institution_url = institution_url.rstrip('/')
-        self.session_timeout_hours = session_timeout_hours
+        self.institution_url = self._validate_url(institution_url)
+        self.session_max_age_hours = session_max_age_hours
+        self.auth_check_interval = auth_check_interval
+        self.cloudflare_wait = cloudflare_wait
+        self.page_timeout = page_timeout
         self.headless = headless
+        self.session_cache_ttl = session_cache_ttl
 
-        # Default session file location
+        # Cookie patterns for different authentication systems
+        self.auth_cookie_patterns = [
+            r'openathens.*session',
+            r'_saml_.*',
+            r'shib.*session',
+            r'shibsession.*',
+            r'_shibstate_.*'
+        ]
+
+    def _validate_url(self, url: str) -> str:
+        """Validate and normalize institution URL.
+
+        Args:
+            url: URL to validate
+
+        Returns:
+            Normalized URL
+
+        Raises:
+            ValueError: If URL is invalid or not HTTPS
+        """
+        if not url:
+            raise ValueError("Institution URL cannot be empty")
+
+        # Parse URL
+        parsed = urlparse(url)
+
+        # Require HTTPS for security
+        if parsed.scheme != 'https':
+            raise ValueError(f"Institution URL must use HTTPS: {url}")
+
+        # Require hostname
+        if not parsed.netloc:
+            raise ValueError(f"Invalid URL format: {url}")
+
+        # Normalize by removing trailing slash
+        return url.rstrip('/')
+
+
+class OpenAthensAuth:
+    """Manages OpenAthens institutional authentication sessions."""
+
+    def __init__(
+        self,
+        config: Optional[OpenAthensConfig] = None,
+        session_file: Optional[Path] = None,
+        # Deprecated parameters for backward compatibility
+        institution_url: Optional[str] = None,
+        session_timeout_hours: Optional[int] = None,
+        headless: Optional[bool] = None
+    ):
+        """Initialize OpenAthens authentication.
+
+        Args:
+            config: OpenAthensConfig instance (recommended)
+            session_file: Path to session storage file
+
+            # Deprecated (backward compatibility with old API):
+            institution_url: Institution's OpenAthens URL (deprecated, use config instead)
+            session_timeout_hours: Session timeout hours (deprecated, use config instead)
+            headless: Headless browser mode (deprecated, use config instead)
+        """
+        # Handle backward compatibility with old API
+        if config is None:
+            if institution_url is None:
+                raise ValueError(
+                    "Either 'config' (recommended) or 'institution_url' (deprecated) must be provided"
+                )
+
+            # Old API used - create config from parameters
+            import warnings
+            warnings.warn(
+                "Passing institution_url directly is deprecated. "
+                "Use OpenAthensConfig instead:\n"
+                "  config = OpenAthensConfig(institution_url='...')\n"
+                "  auth = OpenAthensAuth(config=config)",
+                DeprecationWarning,
+                stacklevel=2
+            )
+
+            self.config = OpenAthensConfig(
+                institution_url=institution_url,
+                session_max_age_hours=session_timeout_hours or 24,
+                headless=headless if headless is not None else True
+            )
+        else:
+            # New API - use provided config
+            self.config = config
+
         if session_file is None:
-            config_dir = Path.home() / '.bmlibrarian'
-            config_dir.mkdir(exist_ok=True)
-            session_file = config_dir / 'openathens_session.pkl'
+            session_dir = Path.home() / '.bmlibrarian'
+            session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            session_file = session_dir / 'openathens_session.json'
 
         self.session_file = session_file
         self.session_data: Optional[Dict[str, Any]] = None
-        self.cookies: Optional[Dict[str, str]] = None
+        self.browser = None
+        self.playwright = None
+
+        # Session validation cache
+        self._last_validation_time: Optional[datetime] = None
+        self._last_validation_result: bool = False
 
         # Load existing session if available
         self._load_session()
 
-    def _load_session(self) -> bool:
-        """Load session from disk if available and valid.
+    def _check_network_connectivity(self) -> bool:
+        """Check if institutional URL is reachable.
 
         Returns:
-            True if session loaded successfully, False otherwise
+            True if reachable, False otherwise
         """
-        if not self.session_file.exists():
-            logger.info("No existing OpenAthens session found")
+        try:
+            response = requests.head(
+                self.config.institution_url,
+                timeout=10,
+                allow_redirects=True
+            )
+            return response.status_code < 400
+        except Exception as e:
+            logger.warning(f"Network connectivity check failed: {e}")
             return False
+
+    def _serialize_session_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert session data to JSON-safe format.
+
+        Args:
+            data: Session data to serialize
+
+        Returns:
+            JSON-serializable dictionary
+        """
+        return {
+            'created_at': data['created_at'].isoformat(),
+            'cookies': data['cookies'],
+            'institution_url': data['institution_url'],
+            'user_agent': data['user_agent']
+        }
+
+    def _deserialize_session_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert JSON data back to session format.
+
+        Args:
+            data: Serialized session data
+
+        Returns:
+            Session data dictionary
+        """
+        data['created_at'] = datetime.fromisoformat(data['created_at'])
+        return data
+
+    def _load_session(self) -> None:
+        """Load session data from file."""
+        if not self.session_file.exists():
+            logger.debug("No existing session file found")
+            return
 
         try:
-            with open(self.session_file, 'rb') as f:
-                self.session_data = pickle.load(f)
+            with open(self.session_file, 'r') as f:
+                serialized_data = json.load(f)
 
-            # Check if session is expired
-            created_at = self.session_data.get('created_at')
-            if created_at:
-                expires_at = created_at + timedelta(hours=self.session_timeout_hours)
-                if datetime.now() > expires_at:
-                    logger.info("OpenAthens session expired, re-login required")
-                    self.session_data = None
-                    self.cookies = None
-                    return False
+            self.session_data = self._deserialize_session_data(serialized_data)
+            logger.info(f"Loaded session from {self.session_file}")
 
-            self.cookies = self.session_data.get('cookies', {})
-            logger.info(f"Loaded OpenAthens session (created: {created_at}, "
-                       f"{len(self.cookies)} cookies)")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to load OpenAthens session: {e}")
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.error(f"Failed to load session: {e}")
             self.session_data = None
-            self.cookies = None
-            return False
 
-    def _save_session(self) -> bool:
-        """Save session to disk.
+    def _save_session(self) -> None:
+        """Save session data to file with secure permissions."""
+        if not self.session_data:
+            logger.warning("No session data to save")
+            return
+
+        try:
+            # Ensure parent directory exists with secure permissions
+            self.session_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+            # Serialize session data
+            serialized_data = self._serialize_session_data(self.session_data)
+
+            # Write to file
+            with open(self.session_file, 'w') as f:
+                json.dump(serialized_data, f, indent=2)
+
+            # Set restrictive file permissions (600 = owner read/write only)
+            self.session_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+            logger.info(f"Saved session to {self.session_file} with secure permissions")
+
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save session: {e}")
+
+    def _detect_auth_success(self, cookies: List[Dict]) -> bool:
+        """Detect successful authentication from cookies.
+
+        Args:
+            cookies: List of cookie dictionaries
 
         Returns:
-            True if session saved successfully, False otherwise
+            True if authentication cookies detected, False otherwise
+        """
+        cookie_names = [c['name'] for c in cookies]
+
+        # Check each cookie pattern
+        for pattern in self.config.auth_cookie_patterns:
+            for name in cookie_names:
+                if re.search(pattern, name, re.IGNORECASE):
+                    logger.info(f"Authentication cookie detected: {name}")
+                    return True
+
+        logger.debug(f"No authentication cookies found. Present cookies: {cookie_names}")
+        return False
+
+    def is_session_valid(self) -> bool:
+        """Check if current session is valid (not expired).
+
+        Returns:
+            True if session is valid, False otherwise
         """
         if not self.session_data:
             return False
 
-        try:
-            # Ensure directory exists
-            self.session_file.parent.mkdir(parents=True, exist_ok=True)
+        # Check session age
+        age = datetime.now() - self.session_data['created_at']
+        max_age = timedelta(hours=self.config.session_max_age_hours)
 
-            with open(self.session_file, 'wb') as f:
-                pickle.dump(self.session_data, f)
-
-            logger.info(f"Saved OpenAthens session to {self.session_file}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to save OpenAthens session: {e}")
+        if age > max_age:
+            logger.info(f"Session expired (age: {age} > max: {max_age})")
             return False
 
+        return True
+
     def is_authenticated(self) -> bool:
-        """Check if currently authenticated with valid session.
+        """Check if currently authenticated with caching.
+
+        Uses cached result if within TTL, otherwise performs full validation.
 
         Returns:
             True if authenticated, False otherwise
         """
-        if not self.session_data or not self.cookies:
-            return False
+        # Check cache first
+        if self._last_validation_time:
+            cache_age = (datetime.now() - self._last_validation_time).total_seconds()
+            if cache_age < self.config.session_cache_ttl:
+                logger.debug(f"Using cached validation result (age: {cache_age:.1f}s)")
+                return self._last_validation_result
 
-        # Check expiration
-        created_at = self.session_data.get('created_at')
-        if created_at:
-            expires_at = created_at + timedelta(hours=self.session_timeout_hours)
-            if datetime.now() > expires_at:
-                return False
+        # Perform validation
+        result = self.is_session_valid()
 
-        return True
+        # Update cache
+        self._last_validation_time = datetime.now()
+        self._last_validation_result = result
 
-    async def login(self, wait_for_login: int = 300) -> bool:
-        """Perform OpenAthens login using browser automation.
+        return result
 
-        Opens browser for user to complete login with 2FA, then captures session.
+    def get_cookies(self) -> List[Dict[str, Any]]:
+        """Get authentication cookies.
 
-        Args:
-            wait_for_login: Maximum seconds to wait for user to complete login (default: 300)
+        Returns:
+            List of cookie dictionaries, or empty list if not authenticated
+        """
+        if not self.is_session_valid():
+            return []
+
+        return self.session_data.get('cookies', [])
+
+    def get_user_agent(self) -> Optional[str]:
+        """Get user agent from session.
+
+        Returns:
+            User agent string, or None if not authenticated
+        """
+        if not self.is_session_valid():
+            return None
+
+        return self.session_data.get('user_agent')
+
+    async def login_interactive(self) -> bool:
+        """Perform interactive login using browser automation.
+
+        Opens browser window for user to complete institutional login,
+        then captures and saves the authentication cookies.
 
         Returns:
             True if login successful, False otherwise
         """
+        # Check network connectivity first
+        if not self._check_network_connectivity():
+            logger.error(f"Cannot reach institution URL: {self.config.institution_url}")
+            return False
+
         try:
             from playwright.async_api import async_playwright
         except ImportError:
@@ -149,252 +352,176 @@ class OpenAthensAuth:
             )
             return False
 
-        logger.info("Starting OpenAthens login flow...")
-        logger.info(f"Browser will open for login (2FA supported, timeout: {wait_for_login}s)")
-
-        playwright = None
-        browser = None
-        context = None
-
         try:
-            playwright = await async_playwright().start()
+            # Start Playwright
+            self.playwright = await async_playwright().start()
 
-            # Launch browser (visible for 2FA)
-            browser = await playwright.chromium.launch(
-                headless=self.headless,
-                args=['--disable-blink-features=AutomationControlled']
-            )
+            # Launch browser
+            try:
+                self.browser = await self.playwright.chromium.launch(
+                    headless=self.config.headless,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox'
+                    ]
+                )
+            except Exception as e:
+                logger.error(f"Browser launch failed: {e}")
+                await self._cleanup_browser()
+                return False
 
             # Create context with realistic settings
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 800},
+            context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/131.0.0.0 Safari/537.36',
-                locale='en-US'
+                locale='en-US',
+                timezone_id='America/New_York'
             )
 
             page = await context.new_page()
 
-            # Navigate to institution's OpenAthens login
-            logger.info(f"Opening: {self.institution_url}")
-            await page.goto(self.institution_url)
-
-            # Wait for user to complete login
-            logger.info("Please complete login in the browser (including 2FA if required)")
-            logger.info("Waiting for successful authentication...")
-
-            start_time = time.time()
-            authenticated = False
-
-            while time.time() - start_time < wait_for_login:
-                # Check for successful authentication indicators
-                current_url = page.url
-
-                # Common success indicators:
-                # 1. URL contains "authenticated" or "success"
-                # 2. Specific cookies are set (OpenAthens session cookies)
-                # 3. Redirected to authorized page
-
-                cookies = await context.cookies()
-                cookie_names = [c['name'] for c in cookies]
-
-                # Check for OpenAthens session cookies
-                openathens_cookies = [
-                    name for name in cookie_names
-                    if 'openathens' in name.lower() or
-                       '_saml' in name.lower() or
-                       'shib' in name.lower()  # Common SSO cookie patterns
-                ]
-
-                if openathens_cookies or 'authenticated' in current_url.lower():
-                    authenticated = True
-                    logger.info("Authentication successful!")
-                    break
-
-                await asyncio.sleep(1)
-
-            if not authenticated:
-                logger.error(f"Login timeout after {wait_for_login} seconds")
+            # Navigate to institution login
+            logger.info(f"Navigating to: {self.config.institution_url}")
+            try:
+                await page.goto(
+                    self.config.institution_url,
+                    wait_until='domcontentloaded',
+                    timeout=self.config.page_timeout
+                )
+            except Exception as e:
+                logger.error(f"Navigation failed: {e}")
+                await context.close()
+                await self._cleanup_browser()
                 return False
 
-            # Capture all cookies
-            all_cookies = await context.cookies()
+            # Wait for user to complete login
+            # Poll for authentication cookies
+            logger.info("Waiting for authentication to complete...")
+            auth_success = False
+            start_time = asyncio.get_event_loop().time()
+            max_wait_time = 300  # 5 minutes max
 
-            # Convert to dict format for requests library
-            cookie_dict = {
-                cookie['name']: cookie['value']
-                for cookie in all_cookies
-            }
+            while (asyncio.get_event_loop().time() - start_time) < max_wait_time:
+                try:
+                    cookies = await context.cookies()
 
-            # Save session data
+                    if self._detect_auth_success(cookies):
+                        auth_success = True
+                        logger.info("Authentication successful!")
+                        break
+
+                    await asyncio.sleep(self.config.auth_check_interval)
+
+                except Exception as e:
+                    logger.error(f"Error checking cookies: {e}")
+                    break
+
+            if not auth_success:
+                logger.error("Authentication timeout or failed")
+                await context.close()
+                await self._cleanup_browser()
+                return False
+
+            # Capture session data
+            cookies = await context.cookies()
+            user_agent = await page.evaluate('navigator.userAgent')
+
             self.session_data = {
                 'created_at': datetime.now(),
-                'cookies': cookie_dict,
-                'institution_url': self.institution_url,
-                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                             'AppleWebKit/537.36 (KHTML, like Gecko) '
-                             'Chrome/131.0.0.0 Safari/537.36'
+                'cookies': cookies,
+                'institution_url': self.config.institution_url,
+                'user_agent': user_agent
             }
-            self.cookies = cookie_dict
 
-            # Save to disk
+            # Save session
             self._save_session()
 
-            logger.info(f"OpenAthens session captured ({len(cookie_dict)} cookies)")
+            # Cleanup
+            await context.close()
+            await self._cleanup_browser()
+
+            # Reset validation cache
+            self._last_validation_time = None
+
             return True
 
         except Exception as e:
-            logger.error(f"OpenAthens login failed: {e}")
+            logger.error(f"Login failed: {e}", exc_info=True)
+            await self._cleanup_browser()
             return False
 
-        finally:
-            if context:
-                await context.close()
-            if browser:
-                await browser.close()
-            if playwright:
-                await playwright.stop()
+    async def login(self, wait_for_login: int = 300) -> bool:
+        """Perform interactive login (deprecated alias).
 
-    def login_sync(self, wait_for_login: int = 300) -> bool:
-        """Synchronous wrapper for login().
+        This method is an alias for login_interactive() for backward compatibility.
 
         Args:
-            wait_for_login: Maximum seconds to wait for login
+            wait_for_login: Maximum seconds to wait (ignored, uses configured timeout)
 
         Returns:
             True if login successful, False otherwise
         """
-        return asyncio.run(self.login(wait_for_login))
+        import warnings
+        warnings.warn(
+            "login() is deprecated. Use login_interactive() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return await self.login_interactive()
 
-    def construct_proxy_url(self, original_url: str) -> str:
-        """Construct OpenAthens proxy URL for accessing content.
+    async def _cleanup_browser(self):
+        """Cleanup browser resources."""
+        try:
+            if self.browser:
+                await self.browser.close()
+                self.browser = None
+        except Exception as e:
+            logger.debug(f"Error closing browser: {e}")
 
-        Args:
-            original_url: Original journal/article URL
-
-        Returns:
-            Proxied URL that routes through OpenAthens
-        """
-        # OpenAthens proxy URL format:
-        # https://institution.openathens.net/direct?url=<encoded_original_url>
-
-        from urllib.parse import quote
-
-        encoded_url = quote(original_url, safe='')
-        proxy_url = f"{self.institution_url}/direct?url={encoded_url}"
-
-        return proxy_url
-
-    def get_session_headers(self) -> Dict[str, str]:
-        """Get HTTP headers including session cookies.
-
-        Returns:
-            Dictionary of headers for authenticated requests
-        """
-        if not self.session_data:
-            return {}
-
-        headers = {
-            'User-Agent': self.session_data.get('user_agent',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                'AppleWebKit/537.36'),
-            'Accept': 'application/pdf,*/*',
-            'Referer': self.institution_url
-        }
-
-        return headers
-
-    def get_cookies_dict(self) -> Dict[str, str]:
-        """Get session cookies as dictionary.
-
-        Returns:
-            Dictionary of cookie name-value pairs
-        """
-        return self.cookies if self.cookies else {}
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+                self.playwright = None
+        except Exception as e:
+            logger.debug(f"Error stopping playwright: {e}")
 
     def clear_session(self) -> None:
         """Clear current session and delete session file."""
         self.session_data = None
-        self.cookies = None
+        self._last_validation_time = None
+        self._last_validation_result = False
 
         if self.session_file.exists():
-            self.session_file.unlink()
-            logger.info("OpenAthens session cleared")
-
-    def get_session_info(self) -> Dict[str, Any]:
-        """Get information about current session.
-
-        Returns:
-            Dictionary with session metadata
-        """
-        if not self.session_data:
-            return {
-                'authenticated': False,
-                'message': 'No active session'
-            }
-
-        created_at = self.session_data.get('created_at')
-        expires_at = created_at + timedelta(hours=self.session_timeout_hours) if created_at else None
-
-        return {
-            'authenticated': self.is_authenticated(),
-            'institution_url': self.institution_url,
-            'created_at': created_at.isoformat() if created_at else None,
-            'expires_at': expires_at.isoformat() if expires_at else None,
-            'cookie_count': len(self.cookies) if self.cookies else 0,
-            'time_remaining_hours': (expires_at - datetime.now()).total_seconds() / 3600
-                                   if expires_at and expires_at > datetime.now() else 0
-        }
+            try:
+                self.session_file.unlink()
+                logger.info(f"Deleted session file: {self.session_file}")
+            except OSError as e:
+                logger.error(f"Failed to delete session file: {e}")
 
 
-# Convenience function for quick setup
-def create_openathens_auth(
-    institution_url: str,
-    auto_login: bool = False,
-    **kwargs
-) -> OpenAthensAuth:
-    """Create OpenAthens authenticator and optionally login.
+def login_interactive_sync(config: OpenAthensConfig) -> OpenAthensAuth:
+    """Synchronous wrapper for interactive login.
 
     Args:
-        institution_url: Institution's OpenAthens URL
-        auto_login: If True, perform login if not already authenticated
-        **kwargs: Additional arguments for OpenAthensAuth
+        config: OpenAthens configuration
 
     Returns:
-        OpenAthensAuth instance
-    """
-    auth = OpenAthensAuth(institution_url, **kwargs)
+        OpenAthensAuth instance with active session
 
-    if auto_login and not auth.is_authenticated():
-        logger.info("No valid session found, initiating login...")
-        auth.login_sync()
+    Raises:
+        RuntimeError: If login fails
+    """
+    auth = OpenAthensAuth(config)
+
+    async def _login():
+        return await auth.login_interactive()
+
+    success = asyncio.run(_login())
+
+    if not success:
+        raise RuntimeError("OpenAthens login failed")
 
     return auth
-
-
-# Example usage
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    # Example: Create authenticator and login
-    auth = OpenAthensAuth(
-        institution_url="https://myinstitution.openathens.net",
-        headless=False  # Show browser for 2FA
-    )
-
-    if not auth.is_authenticated():
-        print("Not authenticated, please login...")
-        if auth.login_sync():
-            print("Login successful!")
-            print(f"Session info: {auth.get_session_info()}")
-        else:
-            print("Login failed")
-    else:
-        print("Already authenticated")
-        print(f"Session info: {auth.get_session_info()}")
-
-    # Example: Construct proxy URL
-    original_url = "https://www.nature.com/articles/s41586-024-12345-6.pdf"
-    proxy_url = auth.construct_proxy_url(original_url)
-    print(f"\nProxy URL: {proxy_url}")
