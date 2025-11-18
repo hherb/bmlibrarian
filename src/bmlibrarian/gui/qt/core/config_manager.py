@@ -58,6 +58,7 @@ class GUIConfigManager:
             },
             "tabs": {
                 "enabled_plugins": [
+                    "plugins_manager",
                     "research",
                     "search",
                     "document_interrogation",
@@ -65,6 +66,7 @@ class GUIConfigManager:
                     "configuration"
                 ],
                 "tab_order": [
+                    "plugins_manager",
                     "research",
                     "search",
                     "document_interrogation",
