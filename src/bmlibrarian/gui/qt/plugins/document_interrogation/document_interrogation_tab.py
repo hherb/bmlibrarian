@@ -222,30 +222,48 @@ class DocumentInterrogationTabWidget(QWidget):
     def _create_top_bar(self) -> QWidget:
         """Create top bar with file selector and model dropdown."""
         widget = QWidget()
-        widget.setStyleSheet("QWidget { background-color: #F5F5F5; }")
-        widget.setFixedHeight(50)  # Fixed minimal height
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: #F5F5F5;
+                border-bottom: 1px solid #D0D0D0;
+            }
+        """)
+        widget.setFixedHeight(44)  # Compact fixed height
         layout = QHBoxLayout(widget)
-        layout.setContentsMargins(8, 5, 8, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(8)
 
         # Load document button
         self.load_doc_btn = QPushButton("📄 Load Document")
         self.load_doc_btn.clicked.connect(self._on_load_document)
-        self.load_doc_btn.setFixedHeight(32)
+        self.load_doc_btn.setFixedHeight(30)
+        self.load_doc_btn.setStyleSheet("""
+            QPushButton {
+                padding: 4px 12px;
+                font-size: 9pt;
+            }
+        """)
         layout.addWidget(self.load_doc_btn)
 
         # Current document label
         self.current_doc_label = QLabel("No document loaded")
-        self.current_doc_label.setStyleSheet("color: #666; font-style: italic; font-size: 10pt;")
+        self.current_doc_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                font-style: italic;
+                font-size: 9pt;
+            }
+        """)
         layout.addWidget(self.current_doc_label, 1)
 
         # Model selection
         model_label = QLabel("Model:")
-        model_label.setStyleSheet("font-size: 10pt;")
+        model_label.setStyleSheet("font-size: 9pt;")
         layout.addWidget(model_label)
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(200)
-        self.model_combo.setFixedHeight(32)
+        self.model_combo.setMinimumWidth(180)
+        self.model_combo.setFixedHeight(30)
+        self.model_combo.setStyleSheet("font-size: 9pt;")
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         layout.addWidget(self.model_combo)
 
@@ -253,7 +271,7 @@ class DocumentInterrogationTabWidget(QWidget):
         self.refresh_models_btn = QPushButton("🔄")
         self.refresh_models_btn.setToolTip("Refresh model list")
         self.refresh_models_btn.clicked.connect(self._load_models)
-        self.refresh_models_btn.setFixedSize(32, 32)
+        self.refresh_models_btn.setFixedSize(30, 30)
         layout.addWidget(self.refresh_models_btn)
 
         return widget
@@ -282,22 +300,30 @@ class DocumentInterrogationTabWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
+        # Header with minimal padding
         header = QLabel("📖 Document Viewer")
         header.setStyleSheet("""
             QLabel {
                 background-color: #E0E0E0;
-                padding: 10px;
+                padding: 6px 8px;
                 font-weight: bold;
-                font-size: 12pt;
+                font-size: 11pt;
             }
         """)
         layout.addWidget(header)
 
         # Document container (will hold PDF viewer or markdown viewer)
+        # Minimal padding to maximize PDF viewing area
         self.document_container = QWidget()
+        self.document_container.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFFF;
+                padding: 2px;
+            }
+        """)
         container_layout = QVBoxLayout(self.document_container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setContentsMargins(2, 2, 2, 2)
+        container_layout.setSpacing(0)
 
         # Initial empty state
         empty_state = self._create_empty_document_state()
@@ -337,80 +363,110 @@ class DocumentInterrogationTabWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
+        # Header with minimal padding
         header = QLabel("💬 Chat")
         header.setStyleSheet("""
             QLabel {
                 background-color: #E0E0E0;
-                padding: 10px;
+                padding: 6px 8px;
                 font-weight: bold;
-                font-size: 12pt;
+                font-size: 11pt;
             }
         """)
         layout.addWidget(header)
 
-        # Chat messages area
+        # Chat messages area - expands to fill available vertical space
         self.chat_scroll_area = QScrollArea()
         self.chat_scroll_area.setWidgetResizable(True)
-        self.chat_scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #FAFAFA; }")
+        self.chat_scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: #FAFAFA;
+            }
+        """)
 
-        # Chat container
+        # Chat container with reduced padding
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
-        self.chat_layout.setContentsMargins(10, 10, 10, 10)
-        self.chat_layout.setSpacing(10)
+        self.chat_layout.setContentsMargins(8, 8, 8, 8)
+        self.chat_layout.setSpacing(8)
         self.chat_layout.setAlignment(Qt.AlignTop)
 
         # Welcome message
         self._add_welcome_message()
 
         self.chat_scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.chat_scroll_area)
+        layout.addWidget(self.chat_scroll_area, 1)  # Stretch factor 1 to expand
 
         # Progress label
         self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        self.progress_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                font-style: italic;
+                padding: 4px 8px;
+            }
+        """)
         self.progress_label.setVisible(False)
         layout.addWidget(self.progress_label)
 
-        # Input area
+        # Input area - fixed height, expands horizontally
         input_widget = self._create_input_area()
         layout.addWidget(input_widget)
 
         return widget
 
     def _create_input_area(self) -> QWidget:
-        """Create message input area."""
+        """Create message input area - fixed height, expands horizontally."""
         widget = QWidget()
-        widget.setStyleSheet("QWidget { background-color: white; border-top: 1px solid #CCC; }")
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-top: 1px solid #CCC;
+            }
+        """)
+        # Fixed height for input area
+        widget.setFixedHeight(70)
 
-        # Message input
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Message input - expands horizontally, fixed height
         self.message_input = QTextEdit()
         self.message_input.setPlaceholderText("Ask a question about the document...")
-        self.message_input.setMaximumHeight(80)
-        self.message_input.setMinimumHeight(40)
-        layout.addWidget(self.message_input)
+        self.message_input.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #CCC;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 10pt;
+            }
+            QTextEdit:focus {
+                border: 1px solid #2196F3;
+            }
+        """)
+        self.message_input.setFixedHeight(54)
+        layout.addWidget(self.message_input, 1)  # Stretch factor 1 to expand horizontally
 
-        # Send button
+        # Send button - fixed width and height
         self.send_btn = QPushButton("▶ Send")
         self.send_btn.clicked.connect(self._on_send_message)
-        self.send_btn.setMinimumHeight(40)
-        self.send_btn.setMinimumWidth(80)
+        self.send_btn.setFixedSize(80, 54)
         self.send_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
                 color: white;
                 border-radius: 5px;
                 font-weight: bold;
+                font-size: 10pt;
             }
             QPushButton:hover {
                 background-color: #1976D2;
             }
             QPushButton:disabled {
                 background-color: #CCC;
+                color: #666;
             }
         """)
         layout.addWidget(self.send_btn)
@@ -432,16 +488,18 @@ class DocumentInterrogationTabWidget(QWidget):
 
         # Create container for alignment with asymmetric padding
         container = QWidget()
+        container.setStyleSheet("background-color: transparent;")
         container_layout = QHBoxLayout(container)
+        container_layout.setSpacing(0)
 
         if is_user:
             # User messages: left-aligned, minor left padding, more right padding
-            container_layout.setContentsMargins(10, 0, 80, 0)
+            container_layout.setContentsMargins(8, 0, 60, 0)
             container_layout.addWidget(bubble)
             container_layout.addStretch()
         else:
             # LLM messages: right-aligned, more left padding, minor right padding
-            container_layout.setContentsMargins(80, 0, 10, 0)
+            container_layout.setContentsMargins(60, 0, 8, 0)
             container_layout.addStretch()
             container_layout.addWidget(bubble)
 
@@ -531,7 +589,13 @@ class DocumentInterrogationTabWidget(QWidget):
 
             # Update label
             self.current_doc_label.setText(f"📄 {path.name}")
-            self.current_doc_label.setStyleSheet("color: #000; font-weight: bold;")
+            self.current_doc_label.setStyleSheet("""
+                QLabel {
+                    color: #000;
+                    font-weight: bold;
+                    font-size: 9pt;
+                }
+            """)
 
             # Clear existing document viewer
             while self.document_container.layout().count():
