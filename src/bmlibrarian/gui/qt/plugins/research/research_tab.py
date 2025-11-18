@@ -21,11 +21,16 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QGroupBox,
     QApplication,
+    QFileDialog,
 )
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 from typing import Optional
 import logging
+import json
+import os
+import errno
+from datetime import datetime
 
 # Import markdown viewer for report display
 from ...widgets.markdown_viewer import MarkdownViewer
@@ -2234,137 +2239,213 @@ class ResearchTabWidget(QWidget):
     # Export Report Handlers
     # ========================================================================
 
+    def _safe_write_file(self, filename: str, content: str, file_type: str = "file") -> tuple[bool, Optional[str]]:
+        """Safely write content to a file with comprehensive error handling.
+
+        Args:
+            filename: Path to the file to write
+            content: Content to write
+            file_type: Type of file being written (for error messages)
+
+        Returns:
+            Tuple of (success: bool, error_message: Optional[str])
+        """
+        try:
+            # Get parent directory (use '.' if empty for current directory)
+            parent_dir = os.path.dirname(filename)
+            if not parent_dir:
+                parent_dir = '.'
+
+            # Check if parent directory exists
+            if not os.path.exists(parent_dir):
+                return False, f"Directory does not exist: {parent_dir}"
+
+            # Check if we have write permissions on the directory
+            if not os.access(parent_dir, os.W_OK):
+                return False, f"No write permission for directory: {parent_dir}"
+
+            # Check if file exists and we can overwrite it
+            if os.path.exists(filename) and not os.access(filename, os.W_OK):
+                return False, f"No write permission for file: {filename}"
+
+            # Try to write the file
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            return True, None
+
+        except OSError as e:
+            # Handle specific OS errors
+            if e.errno == errno.ENOSPC:
+                return False, "No space left on device"
+            elif e.errno == errno.EROFS:
+                return False, "Read-only file system"
+            elif e.errno == errno.EACCES:
+                return False, "Permission denied"
+            elif e.errno == errno.ENAMETOOLONG:
+                return False, "Filename is too long"
+            elif e.errno == errno.ENOENT:
+                return False, f"Directory not found: {os.path.dirname(filename) or '.'}"
+            else:
+                return False, f"OS error: {str(e)}"
+        except UnicodeEncodeError as e:
+            return False, f"Encoding error: {str(e)}"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+
+    def _show_save_success(self, filename: str, content: str, file_type: str = "Report") -> None:
+        """Show a standardized success message for file saves.
+
+        Args:
+            filename: Path to the saved file
+            content: Content that was saved
+            file_type: Type of file saved (for display)
+        """
+        file_size = len(content.encode('utf-8'))
+        file_size_kb = file_size / 1024
+
+        # Calculate word count for text content
+        word_count = len(content.split()) if isinstance(content, str) else "N/A"
+
+        message_parts = [
+            f"{file_type} saved successfully!\n",
+            f"File: {filename}",
+            f"Size: {file_size_kb:.1f} KB"
+        ]
+
+        if word_count != "N/A":
+            message_parts.append(f"Words: ~{word_count}")
+
+        QMessageBox.information(
+            self,
+            f"{file_type} Saved",
+            "\n".join(message_parts)
+        )
+
+        self.logger.info(f"{file_type} saved to: {filename} ({file_size_kb:.1f} KB)")
+        self.status_message.emit(f"✅ {file_type} saved to {filename}")
+
+    def _show_save_error(self, error_msg: str, file_type: str = "file") -> None:
+        """Show a standardized error message for file save failures.
+
+        Args:
+            error_msg: Error message to display
+            file_type: Type of file being saved (for display)
+        """
+        QMessageBox.critical(
+            self,
+            "Save Error",
+            f"An error occurred while saving the {file_type}:\n\n{error_msg}"
+        )
+        self.logger.error(f"Error saving {file_type}: {error_msg}")
+
     @Slot()
     def _on_save_markdown_report(self) -> None:
         """Handle Save Report (Markdown) button click."""
-        try:
-            if not hasattr(self, 'final_report_markdown') or not self.final_report_markdown:
-                QMessageBox.warning(
-                    self,
-                    "No Report Available",
-                    "No final report is available to save.\n\n"
-                    "Please complete a research workflow first."
-                )
-                return
-
-            # Get filename from user using file dialog
-            from PySide6.QtWidgets import QFileDialog
-            from datetime import datetime
-
-            # Generate default filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_filename = f"bmlibrarian_report_{timestamp}.md"
-
-            # Show save file dialog
-            filename, _ = QFileDialog.getSaveFileName(
+        # Check if report is available
+        if not hasattr(self, 'final_report_markdown') or not self.final_report_markdown:
+            QMessageBox.warning(
                 self,
-                "Save Research Report",
-                default_filename,
-                "Markdown Files (*.md);;All Files (*)"
+                "No Report Available",
+                "No final report is available to save.\n\n"
+                "Please complete a research workflow first."
             )
+            return
 
-            if not filename:
-                # User cancelled
-                return
+        # Generate default filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"bmlibrarian_report_{timestamp}.md"
 
-            # Save the report
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(self.final_report_markdown)
+        # Show save file dialog
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Research Report",
+            default_filename,
+            "Markdown Files (*.md);;All Files (*)"
+        )
 
-            # Show success message
-            file_size = len(self.final_report_markdown.encode('utf-8'))
-            file_size_kb = file_size / 1024
+        if not filename:
+            # User cancelled
+            return
 
-            QMessageBox.information(
-                self,
-                "Report Saved",
-                f"Research report saved successfully!\n\n"
-                f"File: {filename}\n"
-                f"Size: {file_size_kb:.1f} KB\n"
-                f"Words: ~{len(self.final_report_markdown.split())}"
-            )
+        # Save the report using safe write helper
+        success, error_msg = self._safe_write_file(filename, self.final_report_markdown, "markdown report")
 
-            self.logger.info(f"Report saved to: {filename} ({file_size_kb:.1f} KB)")
-            self.status_message.emit(f"✅ Report saved to {filename}")
-
-        except Exception as e:
-            self.logger.error(f"Error saving markdown report: {e}", exc_info=True)
-            QMessageBox.critical(
-                self,
-                "Save Error",
-                f"An error occurred while saving the report:\n\n{str(e)}"
-            )
+        if success:
+            self._show_save_success(filename, self.final_report_markdown, "Research Report")
+        else:
+            self._show_save_error(error_msg, "markdown report")
 
     @Slot()
     def _on_export_json_report(self) -> None:
         """Handle Export as JSON button click."""
+        # Validate that we have results and a report to export
+        if not self.current_results:
+            QMessageBox.warning(
+                self,
+                "No Results Available",
+                "No research results are available to export.\n\n"
+                "Please complete a research workflow first."
+            )
+            return
+
+        # Validate that we have a final report (use self.final_report_markdown for consistency)
+        if not hasattr(self, 'final_report_markdown') or not self.final_report_markdown:
+            QMessageBox.warning(
+                self,
+                "No Report Available",
+                "No final report is available to export.\n\n"
+                "Please complete the report generation step first."
+            )
+            return
+
+        # Generate default filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"bmlibrarian_results_{timestamp}.json"
+
+        # Show save file dialog
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Results as JSON",
+            default_filename,
+            "JSON Files (*.json);;All Files (*)"
+        )
+
+        if not filename:
+            # User cancelled
+            return
+
+        # Prepare export data with validated structure
+        # Use self.final_report_markdown for consistency with markdown export
+        export_data = {
+            'research_question': self.current_results.get('question', ''),
+            'document_count': self.current_results.get('document_count', 0),
+            'citation_count': self.current_results.get('citation_count', 0),
+            'final_report_markdown': self.final_report_markdown,  # ✅ Fixed: Use self.final_report_markdown
+            'generated_at': datetime.now().isoformat(),
+            'workflow_status': self.current_results.get('status', 'unknown')
+        }
+
+        # Validate export data structure
+        if not export_data['research_question']:
+            self.logger.warning("Exporting JSON with empty research question")
+        if not export_data['final_report_markdown']:
+            self.logger.warning("Exporting JSON with empty final report")
+
         try:
-            if not self.current_results:
-                QMessageBox.warning(
-                    self,
-                    "No Results Available",
-                    "No research results are available to export.\n\n"
-                    "Please complete a research workflow first."
-                )
-                return
+            # Serialize to JSON string
+            json_content = json.dumps(export_data, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            self._show_save_error(f"Failed to serialize data to JSON: {str(e)}", "JSON export")
+            return
 
-            # Get filename from user using file dialog
-            from PySide6.QtWidgets import QFileDialog
-            from datetime import datetime
-            import json
+        # Save the JSON using safe write helper
+        success, error_msg = self._safe_write_file(filename, json_content, "JSON export")
 
-            # Generate default filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_filename = f"bmlibrarian_results_{timestamp}.json"
-
-            # Show save file dialog
-            filename, _ = QFileDialog.getSaveFileName(
-                self,
-                "Export Results as JSON",
-                default_filename,
-                "JSON Files (*.json);;All Files (*)"
-            )
-
-            if not filename:
-                # User cancelled
-                return
-
-            # Prepare export data (simplified structure)
-            export_data = {
-                'research_question': self.current_results.get('question', ''),
-                'document_count': self.current_results.get('document_count', 0),
-                'citation_count': self.current_results.get('citation_count', 0),
-                'final_report_markdown': self.current_results.get('final_report', ''),
-                'generated_at': datetime.now().isoformat(),
-                'workflow_status': self.current_results.get('status', 'unknown')
-            }
-
-            # Save the JSON
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(export_data, f, indent=2, ensure_ascii=False)
-
-            # Show success message
-            file_size = len(json.dumps(export_data, indent=2).encode('utf-8'))
-            file_size_kb = file_size / 1024
-
-            QMessageBox.information(
-                self,
-                "Results Exported",
-                f"Research results exported successfully!\n\n"
-                f"File: {filename}\n"
-                f"Size: {file_size_kb:.1f} KB"
-            )
-
-            self.logger.info(f"Results exported to: {filename} ({file_size_kb:.1f} KB)")
-            self.status_message.emit(f"✅ Results exported to {filename}")
-
-        except Exception as e:
-            self.logger.error(f"Error exporting JSON results: {e}", exc_info=True)
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"An error occurred while exporting the results:\n\n{str(e)}"
-            )
+        if success:
+            self._show_save_success(filename, json_content, "Research Results")
+        else:
+            self._show_save_error(error_msg, "JSON export")
 
     # ========================================================================
     # Settings Tab Handlers
