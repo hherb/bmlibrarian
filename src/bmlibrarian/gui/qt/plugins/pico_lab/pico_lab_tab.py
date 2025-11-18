@@ -195,7 +195,7 @@ class PICOLabTabWidget(QWidget):
         # Model selection row
         model_row = QHBoxLayout()
         model_label = QLabel("PICO Model:")
-        model_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        model_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
 
         self.model_combo = QComboBox()
         self.model_combo.setMinimumWidth(scale_px(300))
@@ -253,7 +253,7 @@ class PICOLabTabWidget(QWidget):
 
         # Title
         self.doc_title_label = QLabel("No document loaded")
-        self.doc_title_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        self.doc_title_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         self.doc_title_label.setWordWrap(True)
         self.doc_title_label.setStyleSheet("color: #424242;")
 
@@ -264,7 +264,7 @@ class PICOLabTabWidget(QWidget):
 
         # Abstract
         abstract_label = QLabel("Abstract:")
-        abstract_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        abstract_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
 
         self.doc_abstract_edit = QTextEdit()
         self.doc_abstract_edit.setReadOnly(True)
@@ -287,7 +287,7 @@ class PICOLabTabWidget(QWidget):
 
         # Overall confidence and study info
         self.pico_confidence_label = QLabel("")
-        self.pico_confidence_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        self.pico_confidence_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         self.pico_confidence_label.setStyleSheet("color: #2E7D32;")
 
         self.study_info_label = QLabel("")
@@ -299,7 +299,7 @@ class PICOLabTabWidget(QWidget):
 
         # Population
         pop_label = QLabel("Population (P):")
-        pop_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        pop_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         pop_label.setStyleSheet("color: #1976D2;")
 
         self.population_edit = QTextEdit()
@@ -316,7 +316,7 @@ class PICOLabTabWidget(QWidget):
 
         # Intervention
         int_label = QLabel("Intervention (I):")
-        int_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        int_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         int_label.setStyleSheet("color: #388E3C;")
 
         self.intervention_edit = QTextEdit()
@@ -333,7 +333,7 @@ class PICOLabTabWidget(QWidget):
 
         # Comparison
         comp_label = QLabel("Comparison (C):")
-        comp_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        comp_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         comp_label.setStyleSheet("color: #F57C00;")
 
         self.comparison_edit = QTextEdit()
@@ -350,7 +350,7 @@ class PICOLabTabWidget(QWidget):
 
         # Outcome
         out_label = QLabel("Outcome (O):")
-        out_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        out_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         out_label.setStyleSheet("color: #7B1FA2;")
 
         self.outcome_edit = QTextEdit()

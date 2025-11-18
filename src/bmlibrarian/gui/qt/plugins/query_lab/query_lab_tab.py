@@ -165,7 +165,7 @@ class QueryLabTabWidget(QWidget):
 
         # Parameters
         params_label = QLabel("Parameters:")
-        params_label.setFont(QFont("", 10, QFont.Bold)  # Font size from centralized theme)
+        params_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
         layout.addWidget(params_label)
 
         # Temperature
