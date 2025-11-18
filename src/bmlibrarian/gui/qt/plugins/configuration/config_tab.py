@@ -123,22 +123,7 @@ class ConfigurationTabWidget(QWidget):
         # Save to default location button
         save_default_btn = QPushButton("Save to ~/.bmlibrarian")
         save_default_btn.clicked.connect(self._save_to_default)
-        save_default_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: #27ae60;
-                color: white;
-                font-weight: bold;
-                padding: {s['padding_small']}px {s['padding_medium']}px;
-                border: none;
-                border-radius: {s['border_radius']}px;
-                min-width: {s['button_width_large']}px;
-            }}
-            QPushButton:hover {{
-                background-color: #229954;
-            }}
-        """
-        )
+        # Styling handled by centralized theme
         button_layout.addWidget(save_default_btn)
 
         # Save As button
@@ -154,20 +139,7 @@ class ConfigurationTabWidget(QWidget):
         # Reset button
         reset_btn = QPushButton("Reset to Defaults")
         reset_btn.clicked.connect(self._reset_to_defaults)
-        reset_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: #e67e22;
-                color: white;
-                padding: {s['padding_small']}px {s['padding_medium']}px;
-                border: none;
-                border-radius: {s['border_radius']}px;
-            }}
-            QPushButton:hover {{
-                background-color: #d35400;
-            }}
-        """
-        )
+        # Styling handled by centralized theme
         button_layout.addWidget(reset_btn)
 
         # Test Connection button
@@ -180,7 +152,7 @@ class ConfigurationTabWidget(QWidget):
                 color: white;
                 padding: {s['padding_small']}px {s['padding_medium']}px;
                 border: none;
-                border-radius: {s['border_radius']}px;
+                border-radius: {s['radius_small']}px;
             }}
             QPushButton:hover {{
                 background-color: #2980b9;

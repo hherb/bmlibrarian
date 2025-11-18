@@ -94,24 +94,21 @@ class BMLibrarianApplication:
         self.qapp.setFont(font)
 
     def _load_theme(self):
-        """Load and apply theme stylesheet."""
+        """Load and apply DPI-aware theme stylesheet."""
+        from ..resources.styles import generate_default_theme, generate_dark_theme
+
         theme = self.config_manager.get_theme()
 
-        if theme == "dark":
-            stylesheet_path = self._get_resource_path("styles/dark.qss")
-        else:
-            stylesheet_path = self._get_resource_path("styles/default.qss")
+        try:
+            if theme == "dark":
+                stylesheet = generate_dark_theme()
+            else:
+                stylesheet = generate_default_theme()
 
-        if stylesheet_path and stylesheet_path.exists():
-            try:
-                with open(stylesheet_path, 'r') as f:
-                    stylesheet = f.read()
-                self.qapp.setStyleSheet(stylesheet)
-                self.logger.info(f"Loaded theme: {theme}")
-            except Exception as e:
-                self.logger.warning(f"Failed to load theme '{theme}': {e}")
-        else:
-            self.logger.debug(f"Theme file not found: {stylesheet_path}")
+            self.qapp.setStyleSheet(stylesheet)
+            self.logger.info(f"Loaded DPI-aware theme: {theme}")
+        except Exception as e:
+            self.logger.warning(f"Failed to generate theme '{theme}': {e}")
 
     def _get_resource_path(self, resource: str) -> Optional[Path]:
         """Get path to a resource file.

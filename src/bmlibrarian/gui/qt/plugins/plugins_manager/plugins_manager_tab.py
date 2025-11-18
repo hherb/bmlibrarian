@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, Slot
 from typing import Dict, List
 import logging
 
-from ...resources.styles import get_font_scale
+from ...resources.styles import get_font_scale, scale_px
 
 
 class PluginCard(QFrame):
@@ -41,16 +41,16 @@ class PluginCard(QFrame):
         Args:
             is_enabled: Whether plugin is currently enabled
         """
-        s = self.scale
+        s = self.scale  # Dictionary of scale values
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(s(10), s(10), s(10), s(10))
+        layout.setContentsMargins(scale_px(10), scale_px(10), scale_px(10), scale_px(10))
 
         # Left side: Plugin info
         info_layout = QVBoxLayout()
 
         # Plugin name and version
         name_label = QLabel(f"<b>{self.metadata.get('display_name', self.plugin_id)}</b>")
-        name_label.setStyleSheet(f"font-size: {s(14)}pt;")
+        name_label# Styling handled by centralized theme
         info_layout.addWidget(name_label)
 
         version_label = QLabel(f"Version: {self.metadata.get('version', 'Unknown')}")
@@ -61,19 +61,19 @@ class PluginCard(QFrame):
         description = self.metadata.get('description', 'No description available')
         desc_label = QLabel(description)
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet(f"margin-top: {s(5)}px;")
+        desc_label.setStyleSheet(f"margin-top: {scale_px(5)}px;")
         info_layout.addWidget(desc_label)
 
         # Plugin ID
         id_label = QLabel(f"Plugin ID: {self.plugin_id}")
-        id_label.setStyleSheet(f"color: gray; font-size: {s(9)}pt; margin-top: {s(5)}px;")
+        id_label# Styling handled by centralized theme
         info_layout.addWidget(id_label)
 
         # Dependencies (if any)
         requires = self.metadata.get('requires', [])
         if requires:
             deps_label = QLabel(f"Dependencies: {', '.join(requires)}")
-            deps_label.setStyleSheet(f"color: gray; font-size: {s(9)}pt;")
+            deps_label# Styling handled by centralized theme
             info_layout.addWidget(deps_label)
 
         # Status
@@ -191,7 +191,7 @@ class PluginsManagerTab(QWidget):
             "Changes take effect after restarting the application."
         )
         description.setWordWrap(True)
-        description.setStyleSheet(f"margin-bottom: {s(10)}px;")
+        description.setStyleSheet(f"margin-bottom: {s['spacing_medium']}px;")
         layout.addWidget(description)
 
         # Refresh button

@@ -41,7 +41,7 @@ from bmlibrarian.gui.document_card_factory_base import (
     DocumentCardData,
     CardContext
 )
-from ...resources.styles import get_font_scale
+from ...resources.styles import get_font_scale, scale_px
 
 
 # ============================================================================
@@ -51,18 +51,22 @@ from ...resources.styles import get_font_scale
 class UIConstants:
     """UI layout and styling constants with DPI-aware scaling."""
 
-    def __init__(self, scale_func):
-        """Initialize constants with scale function."""
-        s = scale_func
+    def __init__(self, scale_dict):
+        """Initialize constants with scale dictionary.
 
-        # Fonts
-        self.TITLE_FONT_SIZE = s(18)
-        self.SUBTITLE_FONT_SIZE = s(10)
-        self.TAB_HEADER_FONT_SIZE = s(12)
-        self.CARD_TITLE_FONT_SIZE = s(11)  # Document/citation card titles
-        self.CARD_SUBTITLE_FONT_SIZE = s(10)  # Authors, publication info
-        self.CARD_BODY_FONT_SIZE = s(10)  # Abstract, reasoning, passages
-        self.CARD_LABEL_FONT_SIZE = s(9)  # Section labels like "Abstract:", "Summary:"
+        Args:
+            scale_dict: Dictionary from get_font_scale() with predefined scale values
+        """
+        s = scale_dict
+
+        # Fonts - use predefined font size keys (in points, DPI-independent)
+        self.TITLE_FONT_SIZE = s['font_xlarge']  # ~14pt
+        self.SUBTITLE_FONT_SIZE = s['font_normal']  # System default
+        self.TAB_HEADER_FONT_SIZE = s['font_large']  # ~12pt
+        self.CARD_TITLE_FONT_SIZE = s['font_medium']  # Document/citation card titles
+        self.CARD_SUBTITLE_FONT_SIZE = s['font_normal']  # Authors, publication info
+        self.CARD_BODY_FONT_SIZE = s['font_normal']  # Abstract, reasoning, passages
+        self.CARD_LABEL_FONT_SIZE = s['font_small']  # Section labels like "Abstract:", "Summary:"
 
         # Colors (not scaled)
         self.COLOR_PRIMARY_BLUE = "#1976D2"
@@ -74,25 +78,25 @@ class UIConstants:
         self.COLOR_WHITE = "white"
         self.COLOR_TEXT_INPUT_BACKGROUND = "#FFF8F0"  # Very faint pastel sand color
 
-        # Spacing
-        self.MAIN_LAYOUT_MARGIN = s(15)
-        self.MAIN_LAYOUT_SPACING = s(10)
-        self.CONTROLS_SPACING = s(10)
-        self.ROW2_SPACING = s(15)
-        self.HEADER_BOTTOM_MARGIN = s(10)
-        self.HEADER_SPACING = s(5)
-        self.TAB_WIDGET_MARGIN = s(15)
+        # Spacing - use predefined spacing keys (in pixels)
+        self.MAIN_LAYOUT_MARGIN = s['spacing_large']
+        self.MAIN_LAYOUT_SPACING = s['spacing_medium']
+        self.CONTROLS_SPACING = s['spacing_medium']
+        self.ROW2_SPACING = s['spacing_large']
+        self.HEADER_BOTTOM_MARGIN = s['spacing_medium']
+        self.HEADER_SPACING = s['spacing_small']
+        self.TAB_WIDGET_MARGIN = s['spacing_large']
 
-        # Widget Sizes
-        self.QUESTION_INPUT_MIN_HEIGHT = s(70)
-        self.QUESTION_INPUT_MAX_HEIGHT = s(100)
-        self.START_BUTTON_MIN_HEIGHT = s(45)
-        self.START_BUTTON_MIN_WIDTH = s(140)
-        self.SPINBOX_WIDTH = s(80)
+        # Widget Sizes - use control height keys
+        self.QUESTION_INPUT_MIN_HEIGHT = s['control_height_large']
+        self.QUESTION_INPUT_MAX_HEIGHT = s['control_height_xlarge']
+        self.START_BUTTON_MIN_HEIGHT = s['control_height_large']
+        self.START_BUTTON_MIN_WIDTH = scale_px(140)
+        self.SPINBOX_WIDTH = scale_px(80)
 
-        # Border Radii
-        self.CONTROLS_BORDER_RADIUS = s(8)
-        self.BUTTON_BORDER_RADIUS = s(4)
+        # Border Radii - use predefined radius keys
+        self.CONTROLS_BORDER_RADIUS = s['radius_medium']
+        self.BUTTON_BORDER_RADIUS = s['radius_small']
 
         # Spinbox Ranges (not scaled - these are value ranges)
         self.MAX_RESULTS_MIN = 10
@@ -130,16 +134,21 @@ class StyleSheets:
         """
 
     @staticmethod
-    def start_button(c: UIConstants, scale_func) -> str:
-        """Stylesheet for Start Research button."""
-        s = scale_func
+    def start_button(c: UIConstants, scale_dict) -> str:
+        """Stylesheet for Start Research button.
+
+        Args:
+            c: UI constants
+            scale_dict: Scale dictionary from get_font_scale()
+        """
+        s = scale_dict
         return f"""
             QPushButton {{
                 background-color: {c.COLOR_PRIMARY_BLUE};
                 color: {c.COLOR_WHITE};
                 font-weight: bold;
                 border-radius: {c.BUTTON_BORDER_RADIUS}px;
-                padding: {s(8)}px {s(16)}px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
             }}
             QPushButton:hover {{
                 background-color: {c.COLOR_PRIMARY_BLUE_HOVER};
@@ -150,15 +159,20 @@ class StyleSheets:
         """
 
     @staticmethod
-    def text_input(c: UIConstants, scale_func) -> str:
-        """Stylesheet for all text input widgets (QTextEdit, QLineEdit, QSpinBox)."""
-        s = scale_func
+    def text_input(c: UIConstants, scale_dict) -> str:
+        """Stylesheet for all text input widgets (QTextEdit, QLineEdit, QSpinBox).
+
+        Args:
+            c: UI constants
+            scale_dict: Scale dictionary from get_font_scale()
+        """
+        s = scale_dict
         return f"""
             QTextEdit, QLineEdit, QSpinBox {{
                 background-color: {c.COLOR_TEXT_INPUT_BACKGROUND};
                 border: 1px solid {c.COLOR_BORDER_GREY};
-                border-radius: {s(4)}px;
-                padding: {s(4)}px;
+                border-radius: {s['radius_small']}px;
+                padding: {s['padding_small']}px;
             }}
             QTextEdit:focus, QLineEdit:focus, QSpinBox:focus {{
                 border: 2px solid {c.COLOR_PRIMARY_BLUE};
@@ -921,7 +935,7 @@ class ResearchTabWidget(QWidget):
 
         # Header label
         header_label = QLabel("📋 Final Comprehensive Report")
-        header_label.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {self.ui.COLOR_PRIMARY_BLUE};")
+        header_label# Styling handled by centralized theme
         header_row.addWidget(header_label)
 
         header_row.addStretch()
@@ -1784,7 +1798,7 @@ class ResearchTabWidget(QWidget):
                 # Question number and priority
                 header_layout = QHBoxLayout()
                 question_number = QLabel(f"Question {i}")
-                question_number.setStyleSheet("font-weight: bold; font-size: 11pt;")
+                question_number# Styling handled by centralized theme
                 header_layout.addWidget(question_number)
 
                 priority = getattr(question, 'priority', 'MEDIUM')
@@ -1830,7 +1844,7 @@ class ResearchTabWidget(QWidget):
                     keywords_text = ", ".join(keywords[:10])  # Limit display
                     keywords_label = QLabel(f"<b>Search Keywords:</b> {keywords_text}")
                     keywords_label.setWordWrap(True)
-                    keywords_label.setStyleSheet(f"padding: 4px; color: {self.ui.COLOR_TEXT_GREY}; font-size: 9pt;")
+                    keywords_label# Styling handled by centralized theme
                     card_layout.addWidget(keywords_label)
 
                 self.counterfactual_layout.addWidget(card)
@@ -1840,7 +1854,7 @@ class ResearchTabWidget(QWidget):
             if contradictory_docs:
                 # Add section header
                 doc_header = QLabel(f"\n📚 Potentially Contradictory Documents ({len(contradictory_docs)})")
-                doc_header.setStyleSheet("font-weight: bold; font-size: 11pt; padding-top: 15px; padding-bottom: 5px;")
+                doc_header# Styling handled by centralized theme
                 self.counterfactual_layout.addWidget(doc_header)
 
                 # Create document cards using factory
@@ -1899,13 +1913,13 @@ class ResearchTabWidget(QWidget):
                                 priority_colors = {'HIGH': '#F44336', 'MEDIUM': '#FF9800', 'LOW': '#9E9E9E'}
                                 priority_color = priority_colors.get(cf_priority, '#9E9E9E')
                                 cf_title.setText(f"<b>Related Counterfactual Question</b> <span style='color: {priority_color};'>[{cf_priority} Priority]</span>")
-                            cf_title.setStyleSheet(f"font-size: {self.ui.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_title# Styling handled by centralized theme
                             cf_info_layout.addWidget(cf_title)
 
                             cf_question_text = QLabel(cf_question)
                             cf_question_text.setWordWrap(True)
                             cf_question_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                            cf_question_text.setStyleSheet(f"color: #333; font-size: {self.ui.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_question_text# Styling handled by centralized theme
                             cf_info_layout.addWidget(cf_question_text)
 
                             # Insert at the beginning of details_layout (before abstract)
@@ -1923,13 +1937,13 @@ class ResearchTabWidget(QWidget):
             if contradictory_citations:
                 # Add section header for citations
                 citations_header = QLabel(f"\n💬 Contradictory Citations ({len(contradictory_citations)})")
-                citations_header.setStyleSheet("font-weight: bold; font-size: 11pt; padding-top: 15px; padding-bottom: 5px;")
+                citations_header# Styling handled by centralized theme
                 self.counterfactual_layout.addWidget(citations_header)
 
                 citations_desc = QLabel(
                     "Specific passages extracted from contradictory documents that challenge the original claims:"
                 )
-                citations_desc.setStyleSheet(f"color: {self.ui.COLOR_TEXT_GREY}; font-size: 10pt; padding-bottom: 10px;")
+                citations_desc# Styling handled by centralized theme
                 citations_desc.setWordWrap(True)
                 self.counterfactual_layout.addWidget(citations_desc)
 
@@ -2225,13 +2239,13 @@ class ResearchTabWidget(QWidget):
                 reasoning_layout.setSpacing(5)
 
                 reasoning_title = QLabel("<b>AI Reasoning:</b>")
-                reasoning_title.setStyleSheet(f"font-size: {self.ui.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_title# Styling handled by centralized theme
                 reasoning_layout.addWidget(reasoning_title)
 
                 reasoning_text = QLabel(reasoning)
                 reasoning_text.setWordWrap(True)
                 reasoning_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                reasoning_text.setStyleSheet(f"color: #333; font-size: {self.ui.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                reasoning_text# Styling handled by centralized theme
                 reasoning_layout.addWidget(reasoning_text)
 
                 # Insert at the beginning of details_layout (before abstract)

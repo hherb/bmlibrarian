@@ -143,3 +143,36 @@ def get_scale_value(key: str, default=None):
         Scaled value or default
     """
     return FontScale().get(key, default)
+
+
+def scale_px(pixels: int) -> int:
+    """
+    Scale a raw pixel value based on the system DPI.
+
+    This function provides backwards compatibility for code that uses
+    arbitrary pixel values. It scales the input value proportionally
+    to the base line height.
+
+    For new code, prefer using predefined scale keys (e.g., 'padding_small',
+    'spacing_medium') instead of arbitrary pixel values.
+
+    Args:
+        pixels: Raw pixel value to scale (assumed to be for ~16px line height)
+
+    Returns:
+        Scaled pixel value appropriate for current DPI
+
+    Example:
+        >>> # Old pattern (backwards compatibility)
+        >>> margin = scale_px(10)  # Scales 10px to current DPI
+        >>>
+        >>> # Preferred new pattern
+        >>> scale = get_font_scale()
+        >>> margin = scale['spacing_medium']
+    """
+    font_scale = FontScale()
+    # Use 16px as baseline (typical line height for 10pt font at 96 DPI)
+    baseline_height = 16
+    actual_height = font_scale['base_line_height']
+    scale_factor = actual_height / baseline_height
+    return max(1, int(pixels * scale_factor))

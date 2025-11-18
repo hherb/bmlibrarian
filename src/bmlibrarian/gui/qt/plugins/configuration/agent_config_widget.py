@@ -117,7 +117,7 @@ class AgentConfigWidget(QWidget):
             "Click 'Test Connection' to refresh available models from Ollama server."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet(f"color: #7f8c8d; font-style: italic; font-size: {s['font_small']}pt;")
+        info_label# Styling handled by centralized theme
         layout.addRow("", info_label)
 
         group.setLayout(layout)

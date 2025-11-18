@@ -22,6 +22,7 @@ from .dpi_scale import (
     FontScale,
     get_font_scale,
     get_scale_value,
+    scale_px,
 )
 
 from .stylesheet_generator import (
@@ -32,11 +33,17 @@ from .stylesheet_generator import (
     apply_header_style,
 )
 
+from .theme_generator import (
+    generate_default_theme,
+    generate_dark_theme,
+)
+
 __all__ = [
     # DPI scaling
     'FontScale',
     'get_font_scale',
     'get_scale_value',
+    'scale_px',
 
     # Stylesheet generation
     'StylesheetGenerator',
@@ -44,4 +51,8 @@ __all__ = [
     'apply_button_style',
     'apply_input_style',
     'apply_header_style',
+
+    # Theme generation
+    'generate_default_theme',
+    'generate_dark_theme',
 ]

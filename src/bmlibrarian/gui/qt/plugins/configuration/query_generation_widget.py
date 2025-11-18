@@ -140,7 +140,8 @@ class QueryGenerationWidget(QWidget):
             "medgemma4B_it_q8:latest",
         ])
         self.models_list.setSelectionMode(QListWidget.MultiSelection)
-        self.models_list.setMaximumHeight(s['list_height_medium'])
+        # List height: 3 items × control height = good default
+        self.models_list.setMaximumHeight(s['control_height_medium'] * 3)
         self.models_list.setToolTip(
             "Select 1-3 models to use for query generation (Ctrl+Click for multiple)"
         )
@@ -152,7 +153,7 @@ class QueryGenerationWidget(QWidget):
             "More models = more diverse queries but slower processing."
         )
         info_label.setWordWrap(True)
-        info_label.setStyleSheet(f"color: #7f8c8d; font-style: italic; font-size: {s['font_small']}pt;")
+        info_label# Styling handled by centralized theme
         layout.addWidget(info_label)
 
         group.setLayout(layout)
