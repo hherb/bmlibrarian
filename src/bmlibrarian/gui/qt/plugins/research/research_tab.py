@@ -1739,11 +1739,88 @@ class ResearchTabWidget(QWidget):
 
                 self.counterfactual_layout.addWidget(card)
 
-            # Show contradictory documents summary
-            if doc_count > 0:
-                doc_summary = QLabel(f"\n📚 Found {doc_count} potentially contradictory documents")
-                doc_summary.setStyleSheet("font-weight: bold; font-size: 10pt; padding-top: 10px;")
-                self.counterfactual_layout.addWidget(doc_summary)
+            # Display contradictory documents using document card factory
+            contradictory_docs = results.get('contradictory_documents', [])
+            if contradictory_docs:
+                # Add section header
+                doc_header = QLabel(f"\n📚 Potentially Contradictory Documents ({len(contradictory_docs)})")
+                doc_header.setStyleSheet("font-weight: bold; font-size: 11pt; padding-top: 15px; padding-bottom: 5px;")
+                self.counterfactual_layout.addWidget(doc_header)
+
+                # Create document cards using factory
+                cards_created = 0
+                for i, doc in enumerate(contradictory_docs):
+                    try:
+                        # Extract year from publication_date or year field
+                        publication_date = doc.get('publication_date', '')
+                        year = doc.get('year', '')
+                        if publication_date and publication_date != 'Unknown':
+                            year_value = int(str(publication_date)[:4]) if len(str(publication_date)) >= 4 else (int(year) if year else None)
+                        else:
+                            year_value = int(year) if year else None
+
+                        # Create DocumentCardData for counterfactual context
+                        card_data = DocumentCardData(
+                            doc_id=doc.get('id', 0),
+                            title=doc.get('title', 'Untitled Document'),
+                            abstract=doc.get('abstract', ''),
+                            authors=doc.get('authors', []),
+                            year=year_value,
+                            journal=doc.get('publication', ''),
+                            pmid=doc.get('pmid'),
+                            doi=doc.get('doi'),
+                            source=doc.get('source'),
+                            pdf_url=doc.get('pdf_url'),
+                            context=CardContext.COUNTERFACTUAL,
+                            show_abstract=True,
+                            show_metadata=True,
+                            show_pdf_button=True,
+                            expanded_by_default=False
+                        )
+
+                        # Create card using factory
+                        card = self.document_card_factory.create_card(card_data)
+
+                        # Add counterfactual question tag if available
+                        cf_question = doc.get('_counterfactual_question')
+                        cf_priority = doc.get('_counterfactual_priority')
+                        if cf_question and hasattr(card, 'details_layout'):
+                            cf_info_container = QFrame()
+                            cf_info_container.setStyleSheet("""
+                                QFrame {
+                                    background-color: #FFF9C4;
+                                    border: 1px solid #FFF176;
+                                    border-radius: 3px;
+                                    padding: 8px;
+                                }
+                            """)
+                            cf_info_layout = QVBoxLayout(cf_info_container)
+                            cf_info_layout.setContentsMargins(8, 8, 8, 8)
+                            cf_info_layout.setSpacing(5)
+
+                            cf_title = QLabel(f"<b>Related Counterfactual Question:</b>")
+                            if cf_priority:
+                                priority_colors = {'HIGH': '#F44336', 'MEDIUM': '#FF9800', 'LOW': '#9E9E9E'}
+                                priority_color = priority_colors.get(cf_priority, '#9E9E9E')
+                                cf_title.setText(f"<b>Related Counterfactual Question</b> <span style='color: {priority_color};'>[{cf_priority} Priority]</span>")
+                            cf_title.setStyleSheet(f"font-size: {UIConstants.CARD_LABEL_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_info_layout.addWidget(cf_title)
+
+                            cf_question_text = QLabel(cf_question)
+                            cf_question_text.setWordWrap(True)
+                            cf_question_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                            cf_question_text.setStyleSheet(f"color: #333; font-size: {UIConstants.CARD_BODY_FONT_SIZE}pt; background-color: transparent; border: none;")
+                            cf_info_layout.addWidget(cf_question_text)
+
+                            # Insert at the beginning of details_layout (before abstract)
+                            card.details_layout.insertWidget(0, cf_info_container)
+
+                        self.counterfactual_layout.addWidget(card)
+                        cards_created += 1
+                    except Exception as card_error:
+                        self.logger.error(f"Error creating counterfactual document card {i+1}: {card_error}", exc_info=True)
+
+                self.logger.info(f"Counterfactual tab updated with {cards_created}/{len(contradictory_docs)} document cards")
 
             self.counterfactual_layout.addStretch()
 
