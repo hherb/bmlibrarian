@@ -134,51 +134,24 @@ class ChatBubble(QFrame):
                 }}
             """)
 
-        # Main horizontal layout with icon and content
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(
-            scale['spacing_medium'],
-            scale['spacing_medium'],
-            scale['spacing_medium'],
-            scale['spacing_medium']
+        # Simple layout with just the message (no icon, no header)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            scale['padding_medium'],
+            scale['padding_small'],
+            scale['padding_medium'],
+            scale['padding_small']
         )
-        main_layout.setSpacing(scale['spacing_large'])
+        layout.setSpacing(0)
 
-        # Icon - sized relative to font
-        icon_label = QLabel("👤" if is_user else "🤖")
-        icon_size = scale['font_icon']
-        icon_label.setStyleSheet(f"font-size: {icon_size}pt;")
-        icon_label.setAlignment(Qt.AlignTop)
-        icon_px_size = max(28, int(scale['base_line_height'] * 2))
-        icon_label.setFixedSize(icon_px_size, icon_px_size)
-        main_layout.addWidget(icon_label)
-
-        # Content layout (vertical for header and message)
-        content_layout = QVBoxLayout()
-        content_layout.setSpacing(scale['spacing_small'])
-
-        # Header label (smaller, less prominent)
-        header = QLabel("You" if is_user else "AI Assistant")
-        header_font = QFont()
-        header_font.setBold(True)
-        header_font.setPointSize(scale['font_small'])
-        header.setFont(header_font)
-        header.setStyleSheet("color: #666666;")
-        content_layout.addWidget(header)
-
-        # Message text
+        # Message text only
         message_label = QLabel(text)
         message_label.setWordWrap(True)
         message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         message_font = QFont()
         message_font.setPointSize(scale['font_medium'])
         message_label.setFont(message_font)
-        content_layout.addWidget(message_label)
-
-        main_layout.addLayout(content_layout, 1)
-
-        # Set maximum width to use more space (font-relative)
-        self.setMaximumWidth(scale['bubble_max_width'])
+        layout.addWidget(message_label)
 
 
 class DocumentInterrogationTabWidget(QWidget):
@@ -538,41 +511,60 @@ class DocumentInterrogationTabWidget(QWidget):
         self._add_chat_bubble(welcome_text, is_user=False)
 
     def _add_chat_bubble(self, text: str, is_user: bool):
-        """Add a chat bubble to the chat area."""
+        """Add a chat bubble to the chat area with icon on the left."""
         s = self.scale
+
+        # Create the bubble
         bubble = ChatBubble(text, is_user, s)
 
-        # Create container for alignment with asymmetric padding (24/6px scaled)
+        # Create icon - always on the left side
+        icon_label = QLabel("👤" if is_user else "🤖")
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: {s['icon_small']}px;
+                background-color: transparent;
+            }}
+        """)
+        icon_label.setAlignment(Qt.AlignTop)
+        icon_label.setFixedSize(s['icon_small'], s['icon_small'])
+
+        # Create container for icon + bubble with asymmetric padding
         container = QWidget()
         container.setStyleSheet("background-color: transparent;")
         container_layout = QHBoxLayout(container)
-        container_layout.setSpacing(0)
+        container_layout.setSpacing(s['spacing_small'])
 
         if is_user:
-            # User messages: left-aligned, minor left padding (6px), more right padding (24px)
+            # User messages: left-aligned
+            # Minor left padding, more right padding
             container_layout.setContentsMargins(
-                s['bubble_margin_small'],  # 6px scaled
+                s['bubble_margin_small'],
                 0,
-                s['bubble_margin_large'],  # 24px scaled
+                s['bubble_margin_large'],
                 0
             )
+            # Layout: [icon] [bubble] [stretch]
+            container_layout.addWidget(icon_label)
             container_layout.addWidget(bubble)
             container_layout.addStretch()
         else:
-            # LLM messages: right-aligned, more left padding (24px), minor right padding (6px)
+            # LLM messages: right-aligned
+            # More left padding, minor right padding
             container_layout.setContentsMargins(
-                s['bubble_margin_large'],  # 24px scaled
+                s['bubble_margin_large'],
                 0,
-                s['bubble_margin_small'],  # 6px scaled
+                s['bubble_margin_small'],
                 0
             )
+            # Layout: [stretch] [icon] [bubble]
             container_layout.addStretch()
+            container_layout.addWidget(icon_label)
             container_layout.addWidget(bubble)
 
         self.chat_layout.addWidget(container)
 
         # Auto-scroll to bottom
-        QTimer.singleShot(100, self._scroll_to_bottom)
+        QTimer.singleShot(s['spacing_medium'] * 10, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
         """Scroll chat area to bottom."""
