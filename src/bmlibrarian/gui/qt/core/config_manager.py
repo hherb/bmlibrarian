@@ -62,14 +62,16 @@ class GUIConfigManager:
                     "search",
                     "document_interrogation",
                     "query_lab",
-                    "configuration"
+                    "configuration",
+                    "plugins_manager"
                 ],
                 "tab_order": [
                     "research",
                     "search",
                     "document_interrogation",
                     "query_lab",
-                    "configuration"
+                    "configuration",
+                    "plugins_manager"
                 ],
                 "default_tab": "research"
             },
