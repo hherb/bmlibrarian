@@ -8,6 +8,9 @@ from typing import Dict, Any, Optional, List, Tuple
 from PySide6.QtCore import QThread, Signal
 import logging
 
+# Import ReportBuilder for consistent final report generation (same as Flet GUI)
+from bmlibrarian.gui.report_builder import ReportBuilder
+
 
 class WorkflowThread(QThread):
     """
@@ -367,51 +370,44 @@ class WorkflowThread(QThread):
                     if self._check_cancellation(step_name):
                         return
 
-                    # Prepare contradictory evidence dict for EditorAgent
-                    contradictory_evidence = {
-                        'counterfactual_analysis': counterfactual_analysis,
-                        'contradictory_documents': unique_contradictory_docs,
-                        'counterfactual_questions': counterfactual_questions
-                    }
-
-                    # Generate comprehensive report using EditorAgent
-                    # EditorAgent needs: original_report, research_question, supporting_citations,
-                    #                    contradictory_evidence, confidence_analysis
+                    # Use ReportBuilder to create final report (same approach as Flet GUI)
+                    # This wraps the preliminary report (which contains all citations) with metadata sections
                     try:
-                        # Convert preliminary report text to a simple report-like object
-                        # EditorAgent expects an object with content/text attribute
-                        class PreliminaryReportWrapper:
-                            def __init__(self, content):
-                                self.content = content
-                                self.text = content
-                                self.markdown = content
+                        # Create workflow steps list for metadata
+                        workflow_steps = []  # Will be populated with actual steps if available
 
-                        preliminary_report_obj = PreliminaryReportWrapper(self.preliminary_report)
+                        # Initialize ReportBuilder
+                        report_builder = ReportBuilder(workflow_steps)
 
-                        edited_report = self.executor.editor_agent.create_comprehensive_report(
-                            original_report=preliminary_report_obj,
+                        # Build comprehensive final report using same method as Flet GUI
+                        # This preserves all citations from the preliminary report
+                        self.final_report = report_builder.build_final_report(
                             research_question=self.question,
-                            supporting_citations=self.citations,
-                            contradictory_evidence=contradictory_evidence,
-                            confidence_analysis=counterfactual_analysis
+                            report_content=self.preliminary_report,  # Preliminary report with all citations
+                            counterfactual_analysis=counterfactual_analysis,  # Counterfactual analysis results
+                            documents=self.documents,  # All found documents
+                            scored_documents=self.scored_documents,  # Scored documents above threshold
+                            citations=self.citations,  # Extracted citations
+                            human_in_loop=False,  # Qt GUI doesn't have interactive mode yet
+                            agent_model_info=None,  # TODO: Pass model info if available
+                            all_scored_documents=self.scored_documents  # All scored documents for accurate stats
                         )
 
-                        if edited_report:
-                            # Format the edited report as markdown
-                            self.final_report = self._format_edited_report(edited_report)
+                        if self.final_report:
                             self.final_report_generated.emit(self.final_report)
-
                             final_word_count = len(self.final_report.split())
                             self.status_message.emit(
                                 f"✓ Generated comprehensive final report ({final_word_count} words)"
                             )
+                            self.logger.info(f"Final report generated with {final_word_count} words, {len(self.final_report)} characters")
                         else:
-                            self.logger.warning("EditorAgent failed to create final report")
+                            self.logger.warning("ReportBuilder returned empty final report")
                             self.final_report = self.preliminary_report  # Fallback to preliminary
 
                     except Exception as e:
                         self.logger.error(f"Final report generation failed: {e}", exc_info=True)
                         self.final_report = self.preliminary_report  # Fallback to preliminary
+                        self.status_message.emit(f"⚠️ Using preliminary report (final report generation failed)")
 
                     self.step_completed.emit(step_name)
 
