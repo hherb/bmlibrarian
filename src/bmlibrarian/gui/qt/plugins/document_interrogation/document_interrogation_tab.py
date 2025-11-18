@@ -9,7 +9,7 @@ DocumentInterrogationAgent with sliding window chunk processing.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QSplitter, QFileDialog, QMessageBox, QComboBox,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QThread, Slot
 from PySide6.QtGui import QFont, QTextCursor
@@ -106,6 +106,10 @@ class ChatBubble(QFrame):
         radius = scale['bubble_radius']
         padding = scale['bubble_padding']
 
+        # Allow bubble to expand horizontally based on content
+        # Set size policy to expand with content
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
         # Styling with proper colors and rounded corners
         if is_user:
             # User: pale sand background
@@ -136,11 +140,12 @@ class ChatBubble(QFrame):
 
         # Simple layout with just the message (no icon, no header)
         layout = QVBoxLayout(self)
+        # Increased padding for more comfortable spacing around text
         layout.setContentsMargins(
+            scale['padding_large'],
             scale['padding_medium'],
-            scale['padding_small'],
-            scale['padding_medium'],
-            scale['padding_small']
+            scale['padding_large'],
+            scale['padding_medium']
         )
         layout.setSpacing(0)
 
@@ -148,8 +153,10 @@ class ChatBubble(QFrame):
         message_label = QLabel(text)
         message_label.setWordWrap(True)
         message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         message_font = QFont()
-        message_font.setPointSize(scale['font_medium'])
+        # Use larger font size for better readability
+        message_font.setPointSize(scale['font_large'])
         message_label.setFont(message_font)
         layout.addWidget(message_label)
 
@@ -517,20 +524,23 @@ class DocumentInterrogationTabWidget(QWidget):
         # Create the bubble
         bubble = ChatBubble(text, is_user, s)
 
-        # Create icon - always on the left side
+        # Create small icon - always on the left side of the bubble
         icon_label = QLabel("👤" if is_user else "🤖")
         icon_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {s['icon_small']}px;
+                font-size: {s['font_icon']}pt;
                 background-color: transparent;
             }}
         """)
         icon_label.setAlignment(Qt.AlignTop)
-        icon_label.setFixedSize(s['icon_small'], s['icon_small'])
+        # Small fixed size for icon
+        icon_size = s['icon_small']
+        icon_label.setFixedSize(icon_size, icon_size)
 
         # Create container for icon + bubble with asymmetric padding
         container = QWidget()
         container.setStyleSheet("background-color: transparent;")
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         container_layout = QHBoxLayout(container)
         container_layout.setSpacing(s['spacing_small'])
 
@@ -543,10 +553,10 @@ class DocumentInterrogationTabWidget(QWidget):
                 s['bubble_margin_large'],
                 0
             )
-            # Layout: [icon] [bubble] [stretch]
-            container_layout.addWidget(icon_label)
-            container_layout.addWidget(bubble)
-            container_layout.addStretch()
+            # Layout: [icon] [bubble with expansion]
+            # Icon is fixed size, bubble takes all remaining space
+            container_layout.addWidget(icon_label, 0)
+            container_layout.addWidget(bubble, 1)  # Stretch factor 1 to take remaining space
         else:
             # LLM messages: right-aligned
             # More left padding, minor right padding
@@ -556,10 +566,10 @@ class DocumentInterrogationTabWidget(QWidget):
                 s['bubble_margin_small'],
                 0
             )
-            # Layout: [stretch] [icon] [bubble]
-            container_layout.addStretch()
-            container_layout.addWidget(icon_label)
-            container_layout.addWidget(bubble)
+            # Layout: [icon] [bubble with expansion]
+            # Icon is fixed size, bubble takes all remaining space
+            container_layout.addWidget(icon_label, 0)
+            container_layout.addWidget(bubble, 1)  # Stretch factor 1 to take remaining space
 
         self.chat_layout.addWidget(container)
 

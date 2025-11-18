@@ -51,13 +51,14 @@ class FontScale:
             'char_width': char_width,
 
             # Font sizes (in points, DPI-independent)
-            'font_tiny': max(7, int(base_font_size * 0.7)),       # Very small text
-            'font_small': max(8, int(base_font_size * 0.85)),     # Slightly smaller
-            'font_normal': base_font_size,                         # System default
-            'font_medium': max(10, int(base_font_size * 1.1)),    # Slightly larger
-            'font_large': max(12, int(base_font_size * 1.2)),     # Headers
-            'font_xlarge': max(14, int(base_font_size * 1.4)),    # Large headers
-            'font_icon': max(16, int(base_font_size * 1.8)),      # Icons
+            # Increased by one size level for better readability
+            'font_tiny': max(8, int(base_font_size * 0.85)),      # Very small text (was 0.7)
+            'font_small': max(10, int(base_font_size * 1.0)),     # Slightly smaller (was 0.85)
+            'font_normal': max(11, int(base_font_size * 1.1)),    # System default (was 1.0)
+            'font_medium': max(12, int(base_font_size * 1.2)),    # Slightly larger (was 1.1)
+            'font_large': max(13, int(base_font_size * 1.3)),     # Headers (was 1.2)
+            'font_xlarge': max(15, int(base_font_size * 1.5)),    # Large headers (was 1.4)
+            'font_icon': max(18, int(base_font_size * 2.0)),      # Icons (was 1.8)
 
             # Spacing (in pixels, relative to line height)
             'spacing_tiny': max(2, int(base_line_height * 0.15)),    # 2-3px
