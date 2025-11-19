@@ -143,12 +143,20 @@ class CitationListWidget(QWidget):
         if not db or 'document_id' not in citation:
             return citation
 
-        # Check if we need to enrich (missing abstract or PMID)
+        # Check if we need to enrich (missing any important fields)
         needs_enrichment = (
             not citation.get('abstract') or
-            citation.get('abstract') == 'No abstract' or
+            citation.get('abstract') in ('No abstract', 'No abstract available') or
             not citation.get('pmid') or
-            citation.get('pmid') == 'N/A'
+            citation.get('pmid') == 'N/A' or
+            not citation.get('title') or
+            citation.get('title') == 'No title' or
+            not citation.get('authors') or
+            citation.get('authors') == 'Unknown' or
+            not citation.get('journal') or
+            citation.get('journal') == 'Unknown' or
+            not citation.get('pub_year') or
+            citation.get('pub_year') == 'N/A'
         )
 
         if not needs_enrichment:
