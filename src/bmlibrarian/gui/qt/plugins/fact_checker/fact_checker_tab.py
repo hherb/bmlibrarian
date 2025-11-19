@@ -131,6 +131,74 @@ class FactCheckerTabWidget(QWidget):
 
         self._setup_ui()
 
+    def _get_statement_input_stylesheet(self) -> str:
+        """Generate stylesheet for statement input field."""
+        s = self.scale
+        return f"""
+            QLineEdit {{
+                background-color: {self.COLOR_INPUT_BG};
+                padding: {s['padding_medium']}px;
+                border: 1px solid {self.COLOR_INPUT_BORDER};
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_medium']}pt;
+                color: #263238;
+            }}
+        """
+
+    def _get_nav_button_stylesheet(self, is_next: bool = False) -> str:
+        """Generate stylesheet for navigation buttons."""
+        s = self.scale
+        bg_color = self.COLOR_PRIMARY_BLUE if is_next else self.COLOR_NAV_GREY
+        hover_color = self.COLOR_LIGHT_BLUE if is_next else self.COLOR_NAV_GREY_HOVER
+        return f"""
+            QPushButton {{
+                background-color: {bg_color};
+                color: white;
+                border: none;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_large']}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+            }}
+            QPushButton:disabled {{
+                background-color: {self.COLOR_DISABLED_BG};
+                color: {self.COLOR_DISABLED_TEXT};
+            }}
+        """
+
+    def _get_column_stylesheet(self, col_type: str) -> str:
+        """Generate stylesheet for evaluation columns."""
+        s = self.scale
+        color_map = {
+            'original': (self.COLOR_ORIGINAL_BG, self.COLOR_ORIGINAL_BORDER),
+            'ai': (self.COLOR_AI_BG, self.COLOR_AI_BORDER),
+            'human': (self.COLOR_HUMAN_BG, self.COLOR_HUMAN_BORDER),
+        }
+        bg, border = color_map.get(col_type, ('#fff', '#ccc'))
+        border_width = '2px' if col_type == 'human' else '1px'
+        return f"""
+            QWidget {{
+                background-color: {bg};
+                border: {border_width} solid {border};
+                border-radius: {s['radius_medium']}px;
+            }}
+        """
+
+    def _get_text_edit_stylesheet(self) -> str:
+        """Generate stylesheet for text edit fields."""
+        s = self.scale
+        return f"""
+            QTextEdit {{
+                background-color: {self.COLOR_INPUT_BG};
+                border: 1px solid {self.COLOR_INPUT_BORDER};
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """
+
     def _setup_ui(self):
         """Setup the user interface."""
         s = self.scale
