@@ -4,11 +4,29 @@ This module defines the interface for plugins that can receive documents
 from other plugins (e.g., from the Search tab's "Send to" context menu).
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, ABCMeta
 from typing import Dict, Any, Optional
 
+try:
+    from PySide6.QtCore import QObject
 
-class IDocumentReceiver(ABC):
+    # Create a combined metaclass to resolve QObject + ABC conflict
+    class QABCMeta(type(QObject), ABCMeta):
+        """Combined metaclass for classes that need both QObject and ABC functionality.
+
+        This resolves the metaclass conflict that occurs when a class tries to inherit
+        from both QWidget (which has Qt's meta-object system) and ABC (which uses ABCMeta).
+        """
+        pass
+
+    # Use combined metaclass if PySide6 is available
+    _receiver_metaclass = QABCMeta
+except ImportError:
+    # Fallback to standard ABC if PySide6 is not available
+    _receiver_metaclass = ABCMeta
+
+
+class IDocumentReceiver(ABC, metaclass=_receiver_metaclass):
     """Interface for plugins that can receive documents from other plugins.
 
     Plugins that implement this interface can register themselves to appear

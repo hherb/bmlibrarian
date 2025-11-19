@@ -102,6 +102,8 @@ class FactCheckerTabWidget(QWidget):
         self.incremental = False
         self.blind_mode = False
         self.db_file: Optional[str] = None
+        self.show_review_enabled = True  # Show original/AI columns by default
+        self.show_citations_enabled = True  # Show citations by default
 
         # Data
         self.results: List[Dict[str, Any]] = []
@@ -123,6 +125,10 @@ class FactCheckerTabWidget(QWidget):
         self.review_container: Optional[QWidget] = None
         self.load_data_button: Optional[QPushButton] = None
         self.statistics_button: Optional[QPushButton] = None
+        self.username_field: Optional[QLineEdit] = None
+        self.show_review_toggle: Optional[QPushButton] = None
+        self.show_citations_toggle: Optional[QPushButton] = None
+        self.citations_section: Optional[QWidget] = None
         self.statement_label: Optional[QLabel] = None
         self.statement_text: Optional[QLineEdit] = None
         self.original_tag: Optional[QLabel] = None
@@ -435,6 +441,43 @@ class FactCheckerTabWidget(QWidget):
         header_layout.addLayout(title_layout)
         header_layout.addStretch()
 
+        # Username field
+        username_label = QLabel("Username:")
+        username_label.setStyleSheet(f"font-weight: bold; font-size: {s['font_normal']}pt;")
+        header_layout.addWidget(username_label)
+
+        self.username_field = QLineEdit()
+        self.username_field.setPlaceholderText("Enter your username...")
+        self.username_field.setFixedWidth(int(s['control_height_medium'] * 4.4))
+        self.username_field.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: white;
+                border: 1px solid #ccc;
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_normal']}pt;
+            }}
+        """)
+        header_layout.addWidget(self.username_field)
+
+        # Show Review toggle
+        self.show_review_toggle = QPushButton("👁 Hide Review")
+        self.show_review_toggle.setCheckable(True)
+        self.show_review_toggle.setChecked(False)  # Not checked = showing
+        self.show_review_toggle.setFixedWidth(int(s['control_height_medium'] * 3.3))
+        self.show_review_toggle.clicked.connect(self._on_toggle_review)
+        self.show_review_toggle.setStyleSheet(self._get_statistics_button_stylesheet())
+        header_layout.addWidget(self.show_review_toggle)
+
+        # Show Citations toggle
+        self.show_citations_toggle = QPushButton("📚 Hide Citations")
+        self.show_citations_toggle.setCheckable(True)
+        self.show_citations_toggle.setChecked(False)  # Not checked = showing
+        self.show_citations_toggle.setFixedWidth(int(s['control_height_medium'] * 3.8))
+        self.show_citations_toggle.clicked.connect(self._on_toggle_citations)
+        self.show_citations_toggle.setStyleSheet(self._get_statistics_button_stylesheet())
+        header_layout.addWidget(self.show_citations_toggle)
+
         # Statistics button
         self.statistics_button = QPushButton("📊 Statistics")
         self.statistics_button.setFixedWidth(int(s['control_height_medium'] * 3.3))
@@ -624,11 +667,16 @@ class FactCheckerTabWidget(QWidget):
         layout.addWidget(self.article_text)
 
         # ==============================================================================
-        # ROW 4: Citations (both ways expandable)
+        # ROW 4: Citations (both ways expandable) - wrapped in container for toggle
         # ==============================================================================
+        self.citations_section = QWidget()
+        citations_section_layout = QVBoxLayout(self.citations_section)
+        citations_section_layout.setContentsMargins(0, 0, 0, 0)
+        citations_section_layout.setSpacing(s['spacing_small'])
+
         citations_label = QLabel("Supporting Citations:")
         citations_label.setStyleSheet(self._get_section_label_stylesheet())
-        layout.addWidget(citations_label)
+        citations_section_layout.addWidget(citations_label)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -638,7 +686,9 @@ class FactCheckerTabWidget(QWidget):
         scroll_area.setWidget(self.citation_widget)
 
         scroll_area.setStyleSheet(self._get_citation_scroll_stylesheet())
-        layout.addWidget(scroll_area, stretch=1)
+        citations_section_layout.addWidget(scroll_area, stretch=1)
+
+        layout.addWidget(self.citations_section, stretch=1)
 
         # ==============================================================================
         # Timer and auto-save indicator
@@ -667,46 +717,16 @@ class FactCheckerTabWidget(QWidget):
 
     @Slot()
     def _on_load_data(self):
-        """Handle load data button click."""
-        # Show annotator login dialog
-        username, ok = QInputDialog.getText(
-            self,
-            "Annotator Login",
-            "Enter your username:",
-        )
-
-        if ok and username:
+        """Handle load data button click - use PostgreSQL by default."""
+        # Get username from text field (optional at load time)
+        username = self.username_field.text().strip()
+        if username:
             self.annotator_username = username
 
-            # Ask for database type
-            options = ["PostgreSQL (default)", "SQLite file"]
-            choice, ok = QInputDialog.getItem(
-                self,
-                "Database Source",
-                "Select data source:",
-                options,
-                0,
-                False,
-            )
-
-            if ok:
-                if "SQLite" in choice:
-                    # Ask for SQLite file
-                    file_path, _ = QFileDialog.getOpenFileName(
-                        self,
-                        "Select SQLite Database File",
-                        str(Path.home()),
-                        "Database Files (*.db *.sqlite);;All Files (*)",
-                    )
-                    if file_path:
-                        self.db_file = file_path
-                        self.db_type = "sqlite"
-                        self._load_from_database()
-                else:
-                    # Use PostgreSQL
-                    self.db_file = None
-                    self.db_type = "postgresql"
-                    self._load_from_database()
+        # Use PostgreSQL by default (no dialogs)
+        self.db_file = None
+        self.db_type = "postgresql"
+        self._load_from_database()
 
     def _load_from_database(self):
         """Load fact-check results from database."""
@@ -717,14 +737,18 @@ class FactCheckerTabWidget(QWidget):
             # Get database instance
             self.fact_checker_db = get_fact_checker_db(self.db_file)
 
-            # Register annotator
-            annotator = Annotator(
-                username=self.annotator_username,
-                full_name=self.annotator_username,
-                email=None,
-                expertise_level=None,
-            )
-            self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+            # Register annotator only if username is provided
+            if self.annotator_username:
+                annotator = Annotator(
+                    username=self.annotator_username,
+                    full_name=self.annotator_username,
+                    email=None,
+                    expertise_level=None,
+                )
+                self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+            else:
+                # No username provided yet - will prompt when user tries to annotate
+                self.annotator_id = None
 
             # Load all statements with evaluations
             all_data = self.fact_checker_db.get_all_statements_with_evaluations()
@@ -903,6 +927,60 @@ class FactCheckerTabWidget(QWidget):
         if not self.fact_checker_db or self.current_index >= len(self.results):
             return
 
+        # Check if username is required (user is making a real annotation)
+        if annotation and annotation != "n/a" and not self.annotator_id:
+            # Get username from field
+            username = self.username_field.text().strip()
+
+            # If still no username, prompt the user
+            if not username:
+                username, ok = QInputDialog.getText(
+                    self,
+                    "Username Required",
+                    "Please enter your username to save annotations:",
+                )
+                if ok and username:
+                    self.username_field.setText(username)
+                    self.annotator_username = username
+
+                    # Register annotator
+                    try:
+                        annotator = Annotator(
+                            username=username,
+                            full_name=username,
+                            email=None,
+                            expertise_level=None,
+                        )
+                        self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+                    except Exception as e:
+                        QMessageBox.critical(
+                            self,
+                            "Error",
+                            f"Failed to register annotator: {str(e)}",
+                        )
+                        return
+                else:
+                    # User cancelled - don't save annotation
+                    return
+            else:
+                # Username in field but not registered yet
+                self.annotator_username = username
+                try:
+                    annotator = Annotator(
+                        username=username,
+                        full_name=username,
+                        email=None,
+                        expertise_level=None,
+                    )
+                    self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        "Error",
+                        f"Failed to register annotator: {str(e)}",
+                    )
+                    return
+
         try:
             result = self.results[self.current_index]
             statement_id = result['statement_id']
@@ -941,6 +1019,9 @@ class FactCheckerTabWidget(QWidget):
     def _on_previous(self):
         """Navigate to previous statement."""
         if self.current_index > 0:
+            # Save current annotation before navigating
+            self._save_current_annotation()
+
             # Reset timer if no annotation
             current_review = self.reviews[self.current_index]
             if not current_review.get('human_annotation'):
@@ -953,6 +1034,9 @@ class FactCheckerTabWidget(QWidget):
     def _on_next(self):
         """Navigate to next statement."""
         if self.current_index < len(self.results) - 1:
+            # Save current annotation before navigating
+            self._save_current_annotation()
+
             # Reset timer if no annotation
             current_review = self.reviews[self.current_index]
             if not current_review.get('human_annotation'):
@@ -960,6 +1044,20 @@ class FactCheckerTabWidget(QWidget):
 
             self.current_index += 1
             self._display_current_statement()
+
+    def _save_current_annotation(self):
+        """Save the current annotation from UI widgets to database."""
+        # Get current values from widgets
+        annotation = self.human_dropdown.currentData()
+        explanation = self.human_text.toPlainText()
+
+        # Only record time if an evaluation has been selected
+        review_duration = None
+        if annotation and annotation != "n/a":
+            review_duration = self.timer_widget.get_elapsed_seconds()
+
+        # Save to database
+        self._save_annotation(annotation, explanation, "", review_duration)
 
     @Slot()
     def _on_show_statistics(self):
@@ -1006,6 +1104,39 @@ Progress: {(annotated / total * 100):.1f}%
         # Gray out AI column
         self.ai_col.setEnabled(False)
         self.ai_col.setStyleSheet(self._get_blind_mode_column_stylesheet())
+
+    @Slot()
+    def _on_toggle_review(self):
+        """Toggle visibility of original and AI review columns."""
+        # Toggle state
+        self.show_review_enabled = not self.show_review_toggle.isChecked()
+
+        # Update button text
+        if self.show_review_enabled:
+            self.show_review_toggle.setText("👁 Hide Review")
+        else:
+            self.show_review_toggle.setText("🔒 Show Review")
+
+        # Show/hide the columns
+        if self.original_col and self.ai_col:
+            self.original_col.setVisible(self.show_review_enabled)
+            self.ai_col.setVisible(self.show_review_enabled)
+
+    @Slot()
+    def _on_toggle_citations(self):
+        """Toggle visibility of citations section."""
+        # Toggle state
+        self.show_citations_enabled = not self.show_citations_toggle.isChecked()
+
+        # Update button text
+        if self.show_citations_enabled:
+            self.show_citations_toggle.setText("📚 Hide Citations")
+        else:
+            self.show_citations_toggle.setText("🔒 Show Citations")
+
+        # Show/hide citations section
+        if self.citations_section:
+            self.citations_section.setVisible(self.show_citations_enabled)
 
     def on_activated(self):
         """Called when tab is activated."""

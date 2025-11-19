@@ -143,9 +143,7 @@ class CitationCard(QFrame):
 
         # Title label
         title = self.citation_data.get('document_title', self.citation_data.get('title', 'Untitled Document'))
-        # Truncate long titles
-        if len(title) > 80:
-            title = title[:77] + "..."
+        # DO NOT truncate titles - display full title with word wrap
 
         title_label = QLabel(f"<b>{self.index}. {html_escape(title)}</b>")
         title_label.setWordWrap(True)
