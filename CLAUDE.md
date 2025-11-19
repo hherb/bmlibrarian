@@ -98,6 +98,7 @@ Since this project uses `uv` for package management:
   - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
   - `uv run python pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
+  - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
 - **Demonstrations**: 
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
@@ -173,6 +174,7 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 7. **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
 8. **PICOAgent**: Extracts Population, Intervention, Comparison, and Outcome components from research papers for systematic reviews
 9. **StudyAssessmentAgent**: Evaluates research quality, study design, methodological rigor, bias risk, and trustworthiness of biomedical evidence
+10. **PRISMA2020Agent**: Assesses systematic reviews and meta-analyses against PRISMA 2020 reporting guidelines (27-item checklist with suitability pre-screening)
 
 ### Document Card Factory System
 
@@ -350,7 +352,8 @@ bmlibrarian/
 │       ├── __init__.py        # Lab module exports
 │       ├── query_lab.py       # QueryAgent experimental GUI
 │       ├── pico_lab.py        # PICOAgent experimental GUI for PICO component extraction
-│       └── study_assessment_lab.py # StudyAssessmentAgent experimental GUI for study quality evaluation
+│       ├── study_assessment_lab.py # StudyAssessmentAgent experimental GUI for study quality evaluation
+│       └── prisma2020_lab.py  # PRISMA2020Agent experimental GUI for PRISMA 2020 compliance assessment
 │   └── factchecker/           # Fact-checker module (PostgreSQL-based)
 │       ├── __init__.py        # Fact-checker module exports
 │       ├── agent/             # Fact-checker agent
@@ -396,6 +399,7 @@ bmlibrarian/
 │   │   ├── document_interrogation_guide.md  # Document interrogation tab guide
 │   │   ├── pdf_import_guide.md  # PDF import and matching guide
 │   │   ├── study_assessment_guide.md  # Study quality assessment guide
+│   │   ├── prisma2020_guide.md  # PRISMA 2020 compliance assessment guide
 │   │   └── multi_model_query_guide.md  # Multi-model query generation guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -404,6 +408,7 @@ bmlibrarian/
 │       ├── counterfactual_system.md
 │       ├── fact_checker_system.md
 │       ├── study_assessment_system.md  # Study quality assessment system
+│       ├── prisma2020_system.md  # PRISMA 2020 compliance assessment system
 │       ├── document_interrogation_ui_spec.md  # Document interrogation UI specification
 │       └── multi_model_architecture.md  # Multi-model architecture docs
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
@@ -423,6 +428,7 @@ bmlibrarian/
 ├── query_lab.py               # QueryAgent experimental laboratory GUI
 ├── pico_lab.py                # PICOAgent experimental laboratory GUI for PICO component extraction
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
+├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
 ├── migrations/                # Database migration scripts

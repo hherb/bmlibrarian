@@ -26,6 +26,8 @@ DEFAULT_CONFIG = {
         "document_interrogation_agent": "gpt-oss:20b",  # Use larger model for complex document Q&A
         "document_interrogation_embedding": "snowflake-arctic-embed2:latest",  # Embedding model for semantic search
         "pico_agent": "gpt-oss:20b",  # Use larger model for PICO extraction
+        "study_assessment_agent": "gpt-oss:20b",  # Use larger model for study quality assessment
+        "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -96,6 +98,20 @@ DEFAULT_CONFIG = {
             "max_tokens": 2000,
             "min_confidence": 0.5,  # Minimum confidence threshold to accept extraction
             "max_retries": 3  # Maximum retry attempts for failed extractions
+        },
+        "study_assessment": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": 3000,
+            "min_confidence": 0.4,  # Minimum confidence threshold for assessments
+            "max_retries": 3  # Maximum retry attempts for failed assessments
+        },
+        "prisma2020": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "max_tokens": 4000,  # PRISMA assessments need more tokens (27 items)
+            "min_confidence": 0.4,  # Minimum confidence threshold for assessments
+            "max_retries": 3  # Maximum retry attempts for failed assessments
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
