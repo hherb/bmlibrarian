@@ -16,14 +16,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QFileDialog,
+    QLineEdit,
+    QTextEdit,
+    QComboBox,
 )
 from PySide6.QtCore import Qt, Signal, Slot
 
-from .statement_widget import StatementWidget
-from .annotation_widget import AnnotationWidget
 from .citation_widget import CitationListWidget
 from .timer_widget import TimerWidget
-from .navigation_widget import NavigationWidget
 
 # Import fact-checker database components
 from .....factchecker.db import get_fact_checker_db, Annotator, HumanAnnotation
@@ -67,17 +67,27 @@ class FactCheckerTabWidget(QWidget):
         self.annotator_username: Optional[str] = None
 
         # Components
-        self.statement_widget: Optional[StatementWidget] = None
-        self.annotation_widget: Optional[AnnotationWidget] = None
         self.citation_widget: Optional[CitationListWidget] = None
         self.timer_widget: Optional[TimerWidget] = None
-        self.navigation_widget: Optional[NavigationWidget] = None
 
-        # UI elements
+        # UI elements - new layout
         self.status_label: Optional[QLabel] = None
         self.review_container: Optional[QWidget] = None
         self.load_data_button: Optional[QPushButton] = None
         self.statistics_button: Optional[QPushButton] = None
+        self.statement_label: Optional[QLabel] = None
+        self.statement_text: Optional[QLineEdit] = None
+        self.original_tag: Optional[QLabel] = None
+        self.original_text: Optional[QTextEdit] = None
+        self.ai_tag: Optional[QLabel] = None
+        self.ai_text: Optional[QTextEdit] = None
+        self.human_dropdown: Optional[QComboBox] = None
+        self.human_text: Optional[QTextEdit] = None
+        self.article_text: Optional[QTextEdit] = None
+        self.prev_button: Optional[QPushButton] = None
+        self.next_button: Optional[QPushButton] = None
+        self.original_col: Optional[QWidget] = None
+        self.ai_col: Optional[QWidget] = None
 
         self._setup_ui()
 
@@ -167,42 +177,285 @@ class FactCheckerTabWidget(QWidget):
         main_layout.addWidget(self.review_container)
 
     def _build_review_container(self) -> QWidget:
-        """Build the review interface container."""
+        """Build the review interface container with redesigned layout."""
         s = self.scale
 
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(s['spacing_xlarge'])
+        layout.setSpacing(s['spacing_large'])
 
-        # Progress and timer row
-        progress_layout = QHBoxLayout()
+        # ==============================================================================
+        # ROW 1: Statement text + Navigation buttons (fixed height, expandable width)
+        # ==============================================================================
+        statement_row = QHBoxLayout()
+        statement_row.setSpacing(s['spacing_medium'])
 
-        # Statement widget
-        self.statement_widget = StatementWidget(blind_mode=self.blind_mode)
-        progress_layout.addWidget(self.statement_widget, stretch=1)
+        # Statement label and text
+        self.statement_label = QLabel("Statement #1:")
+        self.statement_label.setStyleSheet(f"font-weight: bold; color: #1976d2; font-size: {s['font_normal']}pt;")
+        self.statement_label.setFixedWidth(int(s['control_height_medium'] * 3.3))
+        statement_row.addWidget(self.statement_label)
 
-        # Timer widget
-        self.timer_widget = TimerWidget()
-        progress_layout.addWidget(self.timer_widget)
+        # Statement text (read-only, expandable)
+        self.statement_text = QLineEdit()
+        self.statement_text.setReadOnly(True)
+        self.statement_text.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: #f5f5f5;
+                padding: {s['padding_medium']}px;
+                border: 1px solid #ddd;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_medium']}pt;
+                color: #263238;
+            }}
+        """)
+        statement_row.addWidget(self.statement_text, stretch=1)
 
-        layout.addLayout(progress_layout)
+        # Navigation buttons (back/forward arrows)
+        self.prev_button = QPushButton("←")
+        self.prev_button.setFixedSize(int(s['control_height_medium'] * 1.1), int(s['control_height_medium'] * 1.1))
+        self.prev_button.clicked.connect(self._on_previous)
+        self.prev_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #757575;
+                color: white;
+                border: none;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_large']}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #616161;
+            }}
+            QPushButton:disabled {{
+                background-color: #e0e0e0;
+                color: #9e9e9e;
+            }}
+        """)
+        statement_row.addWidget(self.prev_button)
 
-        # Annotation widget
-        self.annotation_widget = AnnotationWidget()
-        self.annotation_widget.annotation_changed.connect(self._on_annotation_change)
-        layout.addWidget(self.annotation_widget)
+        self.next_button = QPushButton("→")
+        self.next_button.setFixedSize(int(s['control_height_medium'] * 1.1), int(s['control_height_medium'] * 1.1))
+        self.next_button.clicked.connect(self._on_next)
+        self.next_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #1976d2;
+                color: white;
+                border: none;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_large']}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #1565c0;
+            }}
+            QPushButton:disabled {{
+                background-color: #e0e0e0;
+                color: #9e9e9e;
+            }}
+        """)
+        statement_row.addWidget(self.next_button)
 
-        # Citations section
-        citations_title = QLabel("Supporting Citations")
-        citations_title.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
-        layout.addWidget(citations_title)
+        layout.addLayout(statement_row)
 
-        # Scrollable citation list
+        # ==============================================================================
+        # ROW 2: 3-column evaluation row (Original | AI | Human)
+        # Horizontal stretch, NO vertical stretch, equal width columns
+        # ==============================================================================
+        evaluation_row = QHBoxLayout()
+        evaluation_row.setSpacing(s['spacing_medium'])
+
+        # Column 1: Original Answer
+        original_col = QWidget()
+        original_layout = QVBoxLayout(original_col)
+        original_layout.setContentsMargins(s['spacing_medium'], s['spacing_medium'], s['spacing_medium'], s['spacing_medium'])
+        original_layout.setSpacing(s['spacing_small'])
+
+        original_title = QLabel("Original Answer")
+        original_title.setStyleSheet(f"font-weight: bold; color: #3949ab; font-size: {s['font_small']}pt;")
+        original_layout.addWidget(original_title)
+
+        self.original_tag = QLabel("N/A")
+        self.original_tag.setAlignment(Qt.AlignCenter)
+        self.original_tag.setFixedHeight(int(s['control_height_small'] * 0.83))
+        self.original_tag.setStyleSheet(f"""
+            QLabel {{
+                background-color: #9e9e9e;
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+        """)
+        original_layout.addWidget(self.original_tag)
+
+        self.original_text = QTextEdit()
+        self.original_text.setReadOnly(True)
+        self.original_text.setPlaceholderText("Original long answer (to be added)")
+        self.original_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
+        self.original_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
+        self.original_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #f5f5f5;
+                border: 1px solid #ddd;
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """)
+        original_layout.addWidget(self.original_text)
+
+        original_col.setStyleSheet(f"""
+            QWidget {{
+                background-color: #e8eaf6;
+                border: 1px solid #c5cae9;
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
+        evaluation_row.addWidget(original_col, stretch=1)
+
+        # Column 2: AI Evaluation
+        ai_col = QWidget()
+        ai_layout = QVBoxLayout(ai_col)
+        ai_layout.setContentsMargins(s['spacing_medium'], s['spacing_medium'], s['spacing_medium'], s['spacing_medium'])
+        ai_layout.setSpacing(s['spacing_small'])
+
+        ai_title = QLabel("AI Evaluation")
+        ai_title.setStyleSheet(f"font-weight: bold; color: #5e35b1; font-size: {s['font_small']}pt;")
+        ai_layout.addWidget(ai_title)
+
+        self.ai_tag = QLabel("N/A")
+        self.ai_tag.setAlignment(Qt.AlignCenter)
+        self.ai_tag.setFixedHeight(int(s['control_height_small'] * 0.83))
+        self.ai_tag.setStyleSheet(f"""
+            QLabel {{
+                background-color: #9e9e9e;
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+        """)
+        ai_layout.addWidget(self.ai_tag)
+
+        self.ai_text = QTextEdit()
+        self.ai_text.setReadOnly(True)
+        self.ai_text.setPlaceholderText("AI rationale")
+        self.ai_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
+        self.ai_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
+        self.ai_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #f5f5f5;
+                border: 1px solid #ddd;
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """)
+        ai_layout.addWidget(self.ai_text)
+
+        ai_col.setStyleSheet(f"""
+            QWidget {{
+                background-color: #ede7f6;
+                border: 1px solid #d1c4e9;
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
+        evaluation_row.addWidget(ai_col, stretch=1)
+
+        # Column 3: Human Evaluation
+        human_col = QWidget()
+        human_layout = QVBoxLayout(human_col)
+        human_layout.setContentsMargins(s['spacing_medium'], s['spacing_medium'], s['spacing_medium'], s['spacing_medium'])
+        human_layout.setSpacing(s['spacing_small'])
+
+        human_title = QLabel("Human Review")
+        human_title.setStyleSheet(f"font-weight: bold; color: #2e7d32; font-size: {s['font_small']}pt;")
+        human_layout.addWidget(human_title)
+
+        self.human_dropdown = QComboBox()
+        self.human_dropdown.addItem("N/A (Not Yet Annotated)", "n/a")
+        self.human_dropdown.addItem("Yes", "yes")
+        self.human_dropdown.addItem("No", "no")
+        self.human_dropdown.addItem("Maybe", "maybe")
+        self.human_dropdown.setCurrentIndex(0)
+        self.human_dropdown.currentIndexChanged.connect(self._on_annotation_change)
+        self.human_dropdown.setFixedHeight(int(s['control_height_small'] * 0.83))
+        self.human_dropdown.setStyleSheet(f"""
+            QComboBox {{
+                background-color: white;
+                border: 1px solid #ccc;
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
+            }}
+        """)
+        human_layout.addWidget(self.human_dropdown)
+
+        self.human_text = QTextEdit()
+        self.human_text.setPlaceholderText("Enter your explanation...")
+        self.human_text.textChanged.connect(self._on_annotation_change)
+        self.human_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
+        self.human_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
+        self.human_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: white;
+                border: 1px solid #ccc;
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """)
+        human_layout.addWidget(self.human_text)
+
+        human_col.setStyleSheet(f"""
+            QWidget {{
+                background-color: #e8f5e9;
+                border: 2px solid #66bb6a;
+                border-radius: {s['radius_medium']}px;
+            }}
+        """)
+        evaluation_row.addWidget(human_col, stretch=1)
+
+        # Store column widgets for blind mode
+        self.original_col = original_col
+        self.ai_col = ai_col
+
+        layout.addLayout(evaluation_row)
+
+        # ==============================================================================
+        # ROW 3: Original article (fixed height ~12 lines, horizontally expandable)
+        # ==============================================================================
+        article_label = QLabel("Original Article Context:")
+        article_label.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
+        layout.addWidget(article_label)
+
+        self.article_text = QTextEdit()
+        self.article_text.setReadOnly(True)
+        self.article_text.setPlaceholderText("Original article information will be shown here")
+        self.article_text.setMinimumHeight(int(s['control_height_medium'] * 4.4))
+        self.article_text.setMaximumHeight(int(s['control_height_medium'] * 4.4))
+        self.article_text.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #fffde7;
+                border: 1px solid #fdd835;
+                padding: {s['padding_medium']}px;
+                border-radius: {s['radius_medium']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """)
+        layout.addWidget(self.article_text)
+
+        # ==============================================================================
+        # ROW 4: Citations (both ways expandable)
+        # ==============================================================================
+        citations_label = QLabel("Supporting Citations:")
+        citations_label.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
+        layout.addWidget(citations_label)
+
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setMinimumHeight(int(s['control_height_large'] * 7.5))
-        scroll_area.setMaximumHeight(int(s['control_height_large'] * 10))
+        scroll_area.setMinimumHeight(int(s['control_height_large'] * 3.75))
 
         self.citation_widget = CitationListWidget()
         scroll_area.setWidget(self.citation_widget)
@@ -214,13 +467,30 @@ class FactCheckerTabWidget(QWidget):
                 border-radius: {s['radius_medium']}px;
             }}
         """)
-        layout.addWidget(scroll_area)
+        layout.addWidget(scroll_area, stretch=1)
 
-        # Navigation
-        self.navigation_widget = NavigationWidget()
-        self.navigation_widget.previous_clicked.connect(self._on_previous)
-        self.navigation_widget.next_clicked.connect(self._on_next)
-        layout.addWidget(self.navigation_widget)
+        # ==============================================================================
+        # Timer and auto-save indicator
+        # ==============================================================================
+        footer_layout = QHBoxLayout()
+        footer_layout.setSpacing(s['spacing_medium'])
+
+        # Timer widget
+        self.timer_widget = TimerWidget()
+        footer_layout.addWidget(self.timer_widget)
+
+        footer_layout.addStretch()
+
+        # Auto-save indicator
+        auto_save_label = QLabel("✓ Annotations saved automatically")
+        auto_save_label.setStyleSheet(f"color: #2e7d32; font-size: {s['font_small']}pt; font-style: italic;")
+        footer_layout.addWidget(auto_save_label)
+
+        layout.addLayout(footer_layout)
+
+        # Apply blind mode if enabled
+        if self.blind_mode:
+            self._apply_blind_mode()
 
         return container
 
@@ -308,6 +578,7 @@ class FactCheckerTabWidget(QWidget):
                 # Convert evidence
                 for ev in row.get('evidence', []):
                     result['evidence_list'].append({
+                        'document_id': ev.get('document_id'),  # Include for database enrichment
                         'pmid': ev.get('pmid', 'N/A'),
                         'doi': ev.get('doi', ''),
                         'title': ev.get('title', 'No title'),
@@ -372,46 +643,103 @@ class FactCheckerTabWidget(QWidget):
 
         result = self.results[self.current_index]
 
-        # Update statement widget
-        self.statement_widget.update_progress(self.current_index, len(self.results))
-        self.statement_widget.update_statement(result.get('statement', 'N/A'))
-        self.statement_widget.update_annotations(
-            result.get('expected_answer', 'N/A'),
-            result.get('evaluation', 'N/A'),
-            result.get('reason', 'No rationale provided'),
-        )
+        # Update statement label and text
+        self.statement_label.setText(f"Statement #{self.current_index + 1}:")
+        self.statement_text.setText(result.get('statement', 'N/A'))
 
-        # Update annotation widget
+        # Update original answer column
+        original_answer = result.get('expected_answer', 'N/A')
+        self._update_tag(self.original_tag, original_answer)
+        self.original_text.setPlainText(result.get('original_explanation', ''))  # Will be added to DB
+
+        # Update AI evaluation column
+        ai_evaluation = result.get('evaluation', 'N/A')
+        self._update_tag(self.ai_tag, ai_evaluation)
+        self.ai_text.setPlainText(result.get('reason', 'No rationale provided'))
+
+        # Update human evaluation column
         saved_review = self.reviews[self.current_index]
-        self.annotation_widget.set_annotation(
-            saved_review.get('human_annotation', ''),
-            saved_review.get('human_explanation', ''),
-            saved_review.get('confidence', ''),
-        )
+        self.human_dropdown.blockSignals(True)
+        self.human_text.blockSignals(True)
 
-        # Update citations
-        self.citation_widget.set_citations(result.get('evidence_list', []))
+        human_annotation = saved_review.get('human_annotation', '')
+        if not human_annotation or human_annotation == "":
+            human_annotation = "n/a"
+        idx = self.human_dropdown.findData(human_annotation.lower())
+        if idx >= 0:
+            self.human_dropdown.setCurrentIndex(idx)
 
-        # Update navigation
-        self.navigation_widget.set_button_states(
-            can_go_previous=self.current_index > 0,
-            can_go_next=self.current_index < len(self.results) - 1,
-        )
+        self.human_text.setPlainText(saved_review.get('human_explanation', ''))
+
+        self.human_dropdown.blockSignals(False)
+        self.human_text.blockSignals(False)
+
+        # Update original article context
+        # TODO: Fetch from database if not present
+        article_context = result.get('article_context', '')
+        if not article_context:
+            # Get from input_statement_id if it's a PMID
+            input_id = result.get('input_statement_id', '')
+            if input_id:
+                article_context = f"Original article ID: {input_id}\n\n(Full article text to be fetched from database)"
+        self.article_text.setPlainText(article_context)
+
+        # Update citations (with database enrichment if needed)
+        citations = result.get('evidence_list', [])
+        self.citation_widget.set_citations(citations, self.fact_checker_db)
+
+        # Update navigation buttons
+        self.prev_button.setEnabled(self.current_index > 0)
+        self.next_button.setEnabled(self.current_index < len(self.results) - 1)
 
         # Start timer
         previous_time = saved_review.get('review_duration_seconds', 0) or 0
         self.timer_widget.start(previous_seconds=previous_time)
 
-    @Slot(str, str, str)
-    def _on_annotation_change(self, annotation: str, explanation: str, confidence: str):
+    def _update_tag(self, tag_label: QLabel, value: str):
+        """
+        Update a tag label with appropriate styling.
+
+        Args:
+            tag_label: The QLabel to update
+            value: The value ('yes', 'no', 'maybe', 'N/A')
+        """
+        s = self.scale
+        value_lower = value.lower() if value else 'n/a'
+
+        # Color mapping
+        color_map = {
+            'yes': '#4caf50',    # Green
+            'no': '#f44336',     # Red
+            'maybe': '#ff9800',  # Orange
+            'n/a': '#9e9e9e',    # Gray
+        }
+
+        bg_color = color_map.get(value_lower, '#9e9e9e')
+        tag_label.setText(value.upper() if value else 'N/A')
+        tag_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+        """)
+
+    def _on_annotation_change(self):
         """Handle annotation change event."""
+        # Get current values from widgets
+        annotation = self.human_dropdown.currentData()
+        explanation = self.human_text.toPlainText()
+
         # Only record time if an evaluation has been selected
         review_duration = None
         if annotation and annotation != "n/a":
             review_duration = self.timer_widget.get_elapsed_seconds()
 
-        # Save to database
-        self._save_annotation(annotation, explanation, confidence, review_duration)
+        # Save to database (using empty string for confidence for now)
+        self._save_annotation(annotation, explanation, "", review_duration)
 
     def _save_annotation(
         self,
@@ -512,6 +840,35 @@ Progress: {(annotated / total * 100):.1f}%
             "Review Statistics",
             stats_text,
         )
+
+    def _apply_blind_mode(self):
+        """Apply visual graying to original and AI columns in blind mode."""
+        if not self.original_col or not self.ai_col:
+            return
+
+        s = self.scale
+
+        # Gray out original column
+        self.original_col.setEnabled(False)
+        self.original_col.setStyleSheet(f"""
+            QWidget {{
+                background-color: #e0e0e0;
+                border: 1px solid #bdbdbd;
+                border-radius: {s['radius_medium']}px;
+                opacity: 0.5;
+            }}
+        """)
+
+        # Gray out AI column
+        self.ai_col.setEnabled(False)
+        self.ai_col.setStyleSheet(f"""
+            QWidget {{
+                background-color: #e0e0e0;
+                border: 1px solid #bdbdbd;
+                border-radius: {s['radius_medium']}px;
+                opacity: 0.5;
+            }}
+        """)
 
     def on_activated(self):
         """Called when tab is activated."""

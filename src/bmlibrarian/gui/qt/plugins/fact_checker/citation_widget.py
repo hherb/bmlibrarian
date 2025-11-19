@@ -180,12 +180,13 @@ class CitationListWidget(QWidget):
         self.empty_label.setStyleSheet(f"color: #999; font-style: italic; padding: {s['padding_xlarge']}px;")
         self.layout.addWidget(self.empty_label)
 
-    def set_citations(self, citations: list):
+    def set_citations(self, citations: list, db=None):
         """
         Set the list of citations to display.
 
         Args:
             citations: List of citation dictionaries
+            db: Optional database connection for enriching citation data
         """
         s = self.scale
 
@@ -203,11 +204,82 @@ class CitationListWidget(QWidget):
             self.layout.addWidget(self.empty_label)
         else:
             for citation in citations:
-                card = CitationCard(citation)
+                # Enrich citation with database data if needed
+                enriched_citation = self._enrich_citation(citation, db)
+                card = CitationCard(enriched_citation)
                 self.layout.addWidget(card)
 
             # Add stretch at the end
             self.layout.addStretch()
+
+    def _enrich_citation(self, citation: dict, db) -> dict:
+        """
+        Enrich citation with data from database if fields are missing.
+
+        Args:
+            citation: Citation dictionary
+            db: Database connection
+
+        Returns:
+            Enriched citation dictionary
+        """
+        # If no database or document_id, return as-is
+        if not db or 'document_id' not in citation:
+            return citation
+
+        # Check if we need to enrich (missing abstract or PMID)
+        needs_enrichment = (
+            not citation.get('abstract') or
+            citation.get('abstract') == 'No abstract' or
+            not citation.get('pmid') or
+            citation.get('pmid') == 'N/A'
+        )
+
+        if not needs_enrichment:
+            return citation
+
+        try:
+            # Fetch document from database
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT
+                            d.id, d.title, d.abstract, d.authors,
+                            d.journal, d.pub_year, d.external_id, d.doi
+                        FROM document d
+                        WHERE d.id = %s
+                    """, (citation.get('document_id'),))
+                    row = cur.fetchone()
+
+                    if row:
+                        # Update missing fields
+                        enriched = citation.copy()
+                        if not enriched.get('abstract') or enriched['abstract'] == 'No abstract':
+                            enriched['abstract'] = row[2] or 'No abstract available'
+                        if not enriched.get('pmid') or enriched['pmid'] == 'N/A':
+                            enriched['pmid'] = row[6] or 'N/A'
+                        if not enriched.get('doi'):
+                            enriched['doi'] = row[7] or ''
+                        if not enriched.get('title'):
+                            enriched['title'] = row[1] or 'No title'
+                        if not enriched.get('authors'):
+                            enriched['authors'] = row[3] or 'Unknown authors'
+                        if not enriched.get('journal'):
+                            enriched['journal'] = row[4] or 'Unknown journal'
+                        if not enriched.get('pub_year'):
+                            enriched['pub_year'] = row[5] or 'N/A'
+
+                        return enriched
+
+        except Exception as e:
+            print(f"Warning: Failed to enrich citation from database: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return citation
 
     def clear(self):
         """Clear all citations."""
