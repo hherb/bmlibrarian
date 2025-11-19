@@ -2,6 +2,7 @@
 Settings plugin for BMLibrarian Qt GUI.
 """
 
-from .plugin import SettingsPlugin
+# Note: create_plugin is imported directly by PluginManager from plugin.py
+# Don't import plugin classes here to avoid circular imports
 
-__all__ = ['SettingsPlugin']
+__all__ = []

@@ -19,10 +19,11 @@ from bmlibrarian.config import get_config, DEFAULT_CONFIG
 from ...tabs.general_tab import GeneralSettingsTab
 from ...tabs.agent_tab import AgentConfigTab
 from ...tabs.search_tab import SearchSettingsTab
+from ..base_tab import BaseTabPlugin, TabPluginMetadata
 
 
-class SettingsPlugin(QWidget):
-    """Settings plugin with vertical navigation layout."""
+class SettingsWidget(QWidget):
+    """Settings widget with vertical navigation layout."""
 
     # Signal emitted when agents need reinitialization
     agents_need_reinit = Signal()
@@ -529,3 +530,73 @@ class SettingsPlugin(QWidget):
         for key, tab in self.tab_objects.items():
             if hasattr(tab, 'refresh'):
                 tab.refresh()
+
+
+class SettingsPlugin(BaseTabPlugin):
+    """Plugin for Settings and Configuration interface."""
+
+    def __init__(self):
+        """Initialize Settings plugin."""
+        super().__init__()
+        self.settings_widget: Optional[SettingsWidget] = None
+
+    def get_metadata(self) -> TabPluginMetadata:
+        """
+        Get plugin metadata.
+
+        Returns:
+            Plugin metadata including ID, name, and description
+        """
+        return TabPluginMetadata(
+            plugin_id="settings",
+            display_name="Settings",
+            description="Configuration interface for BMLibrarian agents and system settings",
+            version="1.0.0",
+            icon="settings",
+            requires=[]
+        )
+
+    def create_widget(self, parent: Optional[QWidget] = None) -> QWidget:
+        """
+        Create the main widget for this tab.
+
+        Args:
+            parent: Optional parent widget
+
+        Returns:
+            Main Settings widget
+        """
+        self.settings_widget = SettingsWidget(parent)
+
+        # Connect signals
+        self.settings_widget.agents_need_reinit.connect(
+            lambda: self.status_changed.emit("Configuration updated - agents reinitialized")
+        )
+
+        return self.settings_widget
+
+    def on_tab_activated(self):
+        """Called when this tab becomes active."""
+        self.status_changed.emit("Settings tab activated - Configure agents and system")
+
+    def on_tab_deactivated(self):
+        """Called when this tab is deactivated."""
+        pass
+
+    def cleanup(self):
+        """Cleanup resources when plugin is unloaded."""
+        if self.settings_widget:
+            try:
+                self.settings_widget.agents_need_reinit.disconnect()
+            except RuntimeError:
+                pass  # Already disconnected
+
+
+def create_plugin() -> BaseTabPlugin:
+    """
+    Plugin factory function.
+
+    Returns:
+        Initialized SettingsPlugin instance
+    """
+    return SettingsPlugin()
