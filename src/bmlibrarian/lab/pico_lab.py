@@ -19,6 +19,7 @@ from bmlibrarian.agents import PICOAgent, AgentOrchestrator
 from bmlibrarian.agents.pico_agent import PICOExtraction
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
+from bmlibrarian.lab.document_display_factory import create_document_display_simple
 
 
 class PICOLab:
@@ -32,6 +33,7 @@ class PICOLab:
         self.controls = {}
         self.current_document: Optional[Dict[str, Any]] = None
         self.current_extraction: Optional[PICOExtraction] = None
+        self.document_display = None  # Will hold document display widgets
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -224,42 +226,20 @@ class PICOLab:
         )
 
     def _create_document_panel(self) -> ft.Column:
-        """Create document display panel."""
-
-        self.controls['doc_title'] = ft.Text(
-            "No document loaded",
-            size=16,
-            weight=ft.FontWeight.BOLD,
-            color=ft.Colors.GREY_700
+        """Create document display panel using document display factory."""
+        # Create document display using factory (with tabbed abstract/fulltext)
+        self.document_display = create_document_display_simple(
+            page=self.page,
+            initial_title="No document loaded",
+            width=500,
+            abstract_height=350
         )
 
-        self.controls['doc_metadata'] = ft.Text(
-            "",
-            size=12,
-            color=ft.Colors.GREY_600
-        )
+        # Store references for backward compatibility
+        self.controls['doc_title'] = self.document_display['title']
+        self.controls['doc_metadata'] = self.document_display['metadata']
 
-        self.controls['doc_abstract'] = ft.TextField(
-            label="Abstract",
-            multiline=True,
-            min_lines=15,
-            max_lines=20,
-            read_only=True,
-            bgcolor=ft.Colors.WHITE,
-            border_color=ft.Colors.GREY_300
-        )
-
-        return ft.Column([
-            ft.Text("Document", size=18, weight=ft.FontWeight.BOLD),
-            ft.Container(height=10),
-            self.controls['doc_title'],
-            ft.Container(height=5),
-            self.controls['doc_metadata'],
-            ft.Container(height=10),
-            self.controls['doc_abstract']
-        ],
-        spacing=5
-        )
+        return self.document_display['container']
 
     def _create_pico_panel(self) -> ft.Column:
         """Create PICO results display panel."""
@@ -446,32 +426,16 @@ class PICOLab:
         self.page.update()
 
     def _display_document(self):
-        """Display the loaded document."""
+        """Display the loaded document using document display factory."""
         if not self.current_document:
             return
 
-        # Title
-        title = self.current_document.get('title', 'Untitled')
-        self.controls['doc_title'].value = title
-
-        # Metadata
-        metadata_parts = []
-        if self.current_document.get('pmid'):
-            metadata_parts.append(f"PMID: {self.current_document['pmid']}")
-        if self.current_document.get('doi'):
-            metadata_parts.append(f"DOI: {self.current_document['doi']}")
-        if self.current_document.get('publication_date'):
-            metadata_parts.append(f"Date: {self.current_document['publication_date']}")
-        if self.current_document.get('source_name'):
-            metadata_parts.append(f"Source: {self.current_document['source_name']}")
-
-        self.controls['doc_metadata'].value = " | ".join(metadata_parts)
-
-        # Abstract
-        abstract = self.current_document.get('abstract', 'No abstract available')
-        self.controls['doc_abstract'].value = abstract
-
-        self.page.update()
+        # Use the document display factory's update function
+        if self.document_display:
+            self.document_display['update_func'](self.current_document)
+        else:
+            # Fallback to manual update (shouldn't happen)
+            self.page.update()
 
     def _display_pico_results(self):
         """Display PICO extraction results."""
@@ -533,9 +497,9 @@ class PICOLab:
         self.controls['status_text'].value = "Ready"
         self.controls['status_text'].color = ft.Colors.GREY_600
 
-        self.controls['doc_title'].value = "No document loaded"
-        self.controls['doc_metadata'].value = ""
-        self.controls['doc_abstract'].value = ""
+        # Clear document display using factory
+        if self.document_display:
+            self.document_display['update_func'](None)
 
         self.controls['pico_confidence'].value = ""
         self.controls['study_info'].value = ""
