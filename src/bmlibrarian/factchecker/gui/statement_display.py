@@ -164,18 +164,19 @@ class StatementDisplay:
             border=ft.border.all(1, ft.Colors.GREY_300)
         )
 
-    def build_annotations_section(self, human_annotation_section: ft.Container) -> ft.Row:
+    def build_annotations_section(self, human_annotation_section: ft.Container, show_reviews: bool = True) -> ft.Row:
         """
         Build annotations display section.
 
         Args:
             human_annotation_section: Human annotation input section
+            show_reviews: Whether to show Original and AI annotations (default: True)
 
         Returns:
-            Row containing all annotation sections (or just human section in blind mode)
+            Row containing annotation sections based on visibility settings
         """
-        if self.blind_mode:
-            # In blind mode, only show the human annotation section
+        if self.blind_mode or not show_reviews:
+            # In blind mode or when reviews are hidden, only show the human annotation section
             return ft.Row([
                 ft.Container(
                     content=human_annotation_section,
