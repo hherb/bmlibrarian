@@ -7,6 +7,8 @@ Leverages BMLibrarian GUI utilities for citation cards and text highlighting.
 from typing import Dict, List, Optional, Any
 import flet as ft
 
+from .styles import Colors
+
 # Import BMLibrarian GUI utilities
 try:
     from bmlibrarian.gui.citation_card_utils import extract_citation_data, create_citation_metadata
@@ -252,15 +254,15 @@ class CitationDisplay:
 
         # Determine stance styling
         if stance == 'supports':
-            stance_badge_color = ft.Colors.GREEN_700
+            stance_badge_color = Colors.EVAL_YES
             stance_icon = "✓"
             stance_display = "SUPPORTS"
         elif stance == 'contradicts':
-            stance_badge_color = ft.Colors.RED_700
+            stance_badge_color = Colors.EVAL_NO
             stance_icon = "✗"
             stance_display = "CONTRADICTS"
         else:
-            stance_badge_color = ft.Colors.GREY_600
+            stance_badge_color = Colors.EVAL_NA
             stance_icon = "?"
             stance_display = "NEUTRAL" if stance else "UNKNOWN"
 
@@ -278,7 +280,7 @@ class CitationDisplay:
                 f"{stance_icon} {stance_display}",
                 size=10,
                 weight=ft.FontWeight.BOLD,
-                color=ft.Colors.WHITE,
+                color=Colors.WHITE,
                 selectable=True
             ),
             bgcolor=stance_badge_color,
@@ -314,13 +316,13 @@ class CitationDisplay:
         if document_id:
             metadata_items.append(("Document ID", document_id))
 
-        content_sections.append(create_metadata_section(metadata_items, ft.Colors.BLUE_50))
+        content_sections.append(create_metadata_section(metadata_items, Colors.PRIMARY_BLUE_PALE))
 
         # Citation passage section
         content_sections.append(create_text_content_section(
             "Extracted Citation:",
             citation_text,
-            ft.Colors.YELLOW_100
+            Colors.HIGHLIGHT_BG
         ))
 
         # Abstract with highlighting if available
@@ -333,9 +335,9 @@ class CitationDisplay:
                         create_highlighted_abstract(abstract, citation_text)
                     ], spacing=5),
                     padding=ft.padding.all(10),
-                    bgcolor=ft.Colors.GREY_50,
+                    bgcolor=Colors.GREY_BG,
                     border_radius=5,
-                    border=ft.border.all(1, ft.Colors.GREY_300)
+                    border=ft.border.all(1, Colors.GREY_BORDER)
                 )
             )
         else:
@@ -344,7 +346,7 @@ class CitationDisplay:
                     content=ft.Text(
                         "ℹ️ Full abstract not available" + (" (database not connected)" if not self.db_manager else ""),
                         size=10,
-                        color=ft.Colors.GREY_600,
+                        color=Colors.GREY_LIGHT,
                         italic=True
                     ),
                     padding=ft.padding.all(10)
@@ -362,16 +364,16 @@ class CitationDisplay:
         """Create a simple citation card fallback."""
         stance = evidence.get('stance', 'neutral')
         if stance == 'supports':
-            stance_color = ft.Colors.GREEN_100
-            stance_border = ft.Colors.GREEN_500
+            stance_color = Colors.SUCCESS_LIGHT
+            stance_border = Colors.SUCCESS_BORDER
             stance_display = "SUPPORTS"
         elif stance == 'contradicts':
-            stance_color = ft.Colors.RED_100
-            stance_border = ft.Colors.RED_500
+            stance_color = Colors.ERROR_LIGHT
+            stance_border = Colors.ERROR_BORDER
             stance_display = "CONTRADICTS"
         else:
-            stance_color = ft.Colors.GREY_100
-            stance_border = ft.Colors.GREY_400
+            stance_color = Colors.GREY_BG
+            stance_border = Colors.GREY_BORDER_LIGHT
             stance_display = "NEUTRAL" if stance else "UNKNOWN"
 
         return ft.Container(
@@ -411,7 +413,7 @@ class CitationDisplay:
 
         if not evidence_list:
             citations_column.controls.append(
-                ft.Text("No citations available", size=12, color=ft.Colors.GREY_500, italic=True)
+                ft.Text("No citations available", size=12, color=Colors.GREY_PALE, italic=True)
             )
             return citations_column
 

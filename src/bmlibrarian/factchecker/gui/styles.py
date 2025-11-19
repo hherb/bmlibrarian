@@ -58,6 +58,9 @@ class Colors:
     # Primary colors
     PRIMARY_BLUE = ft.Colors.BLUE_900
     PRIMARY_BLUE_LIGHT = ft.Colors.BLUE_700
+    PRIMARY_BLUE_MEDIUM = ft.Colors.BLUE_600
+    PRIMARY_BLUE_BORDER = ft.Colors.BLUE_200
+    PRIMARY_BLUE_BG = ft.Colors.BLUE_100
     PRIMARY_BLUE_PALE = ft.Colors.BLUE_50
 
     # Accent colors
@@ -71,11 +74,17 @@ class Colors:
 
     # Semantic colors
     SUCCESS = ft.Colors.GREEN_700
+    SUCCESS_DARK = ft.Colors.GREEN_900
     SUCCESS_BG = ft.Colors.GREEN_50
+    SUCCESS_LIGHT = ft.Colors.GREEN_100
+    SUCCESS_BORDER = ft.Colors.GREEN_500
     WARNING = ft.Colors.ORANGE_700
     WARNING_BG = ft.Colors.ORANGE_50
     ERROR = ft.Colors.RED_700
+    ERROR_DARK = ft.Colors.RED_900
     ERROR_BG = ft.Colors.RED_50
+    ERROR_LIGHT = ft.Colors.RED_100
+    ERROR_BORDER = ft.Colors.RED_500
 
     # Neutral colors
     GREY_DARK = ft.Colors.GREY_900
@@ -97,6 +106,9 @@ class Colors:
     EVAL_NO = ft.Colors.RED_700
     EVAL_MAYBE = ft.Colors.ORANGE_700
     EVAL_NA = ft.Colors.GREY_600
+
+    # Highlighting colors
+    HIGHLIGHT_BG = ft.Colors.YELLOW_100
 
     # Base colors
     WHITE = ft.Colors.WHITE
@@ -192,7 +204,7 @@ class ContainerStyles:
             'padding': ft.padding.all(DPIScale.to_pt(DPIScale.CONTAINER_PADDING_SMALL)),
             'bgcolor': Colors.PRIMARY_BLUE_PALE,
             'border_radius': DPIScale.to_pt(DPIScale.CONTAINER_PADDING_SMALL * 0.8),
-            'border': ft.border.all(1, ft.Colors.BLUE_200),
+            'border': ft.border.all(1, Colors.PRIMARY_BLUE_BORDER),
             'width': DPIScale.to_pt(DPIScale.TIMER_WIDTH)
         }
 
@@ -300,8 +312,8 @@ class LayoutConfig:
 
     # Progress bar
     PROGRESS_BAR_WIDTH = DPIScale.to_pt(DPIScale.PROGRESS_BAR_WIDTH)
-    PROGRESS_BAR_COLOR = ft.Colors.BLUE_600
-    PROGRESS_BAR_BG = ft.Colors.BLUE_100
+    PROGRESS_BAR_COLOR = Colors.PRIMARY_BLUE_MEDIUM
+    PROGRESS_BAR_BG = Colors.PRIMARY_BLUE_BG
 
     # Window sizing
     WINDOW_WIDTH = 1400
