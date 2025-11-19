@@ -29,7 +29,7 @@ class StudyAssessmentLabPlugin(BaseTabPlugin):
             Plugin metadata including ID, name, and description
         """
         return TabPluginMetadata(
-            plugin_id="study_assessment_lab",
+            plugin_id="study_assessment",
             display_name="Study Assessment Lab",
             description="Interactive laboratory for evaluating research quality, study design, and trustworthiness of biomedical evidence",
             version="1.0.0",

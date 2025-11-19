@@ -1018,16 +1018,16 @@ class ResearchTabWidget(QWidget):
         return widget
 
     def _create_settings_tab(self) -> QWidget:
-        """Create Settings tab using the modular SettingsPlugin."""
-        from ..settings import SettingsPlugin
+        """Create Settings tab using the modular SettingsWidget."""
+        from ..settings.plugin import SettingsWidget
 
-        # Create the settings plugin
-        self.settings_plugin = SettingsPlugin(self)
+        # Create the settings widget
+        self.settings_widget = SettingsWidget(self)
 
         # Connect signal to reinitialize agents when settings change
-        self.settings_plugin.agents_need_reinit.connect(self._reinitialize_agents)
+        self.settings_widget.agents_need_reinit.connect(self._reinitialize_agents)
 
-        return self.settings_plugin
+        return self.settings_widget
 
     def _reinitialize_agents(self):
         """Reinitialize agents with new configuration from settings."""
