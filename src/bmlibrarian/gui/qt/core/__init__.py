@@ -6,6 +6,8 @@ from .plugin_manager import PluginManager, PluginLoadError
 from .tab_registry import TabRegistry, DependencyError, CircularDependencyError
 from .config_manager import GUIConfigManager
 from .event_bus import EventBus
+from .document_receiver import IDocumentReceiver
+from .document_receiver_registry import DocumentReceiverRegistry
 
 __all__ = [
     "BMLibrarianApplication",
@@ -18,4 +20,6 @@ __all__ = [
     "CircularDependencyError",
     "GUIConfigManager",
     "EventBus",
+    "IDocumentReceiver",
+    "DocumentReceiverRegistry",
 ]

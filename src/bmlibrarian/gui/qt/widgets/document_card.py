@@ -5,9 +5,11 @@ Displays document information in a card format using centralized
 styles and utility functions for consistent formatting.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QMenu
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 from typing import Optional, Dict, Any
+import logging
 
 from .card_utils import (
     DocumentData,
@@ -19,6 +21,8 @@ from .card_utils import (
     format_relevance_score,
     html_escape
 )
+from ..core.document_receiver_registry import DocumentReceiverRegistry
+from ..core.event_bus import EventBus
 
 
 class DocumentCard(QFrame):
@@ -62,6 +66,11 @@ class DocumentCard(QFrame):
 
         # Validate and store document data
         self.document_data = validate_document_data(document_data)
+
+        # Setup context menu support
+        self.logger = logging.getLogger("bmlibrarian.gui.qt.widgets.DocumentCard")
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
         # Configure frame (styling from QSS)
         self.setFrameShape(QFrame.StyledPanel)
@@ -166,3 +175,71 @@ class DocumentCard(QFrame):
                 score_text = format_relevance_score(score)
                 widget.setText(score_text)
                 break
+
+    def _show_context_menu(self, position):
+        """
+        Show context menu with "Send to" submenu for registered receivers.
+
+        Args:
+            position: Position where context menu was requested
+        """
+        # Get available document receivers
+        registry = DocumentReceiverRegistry()
+        receivers = registry.get_available_receivers(self.document_data)
+
+        if not receivers:
+            self.logger.debug("No document receivers available for context menu")
+            return
+
+        # Create context menu
+        context_menu = QMenu(self)
+
+        # Create "Send to" submenu
+        send_to_menu = context_menu.addMenu("Send to")
+
+        # Add action for each receiver
+        for receiver in receivers:
+            receiver_id = receiver.get_receiver_id()
+            receiver_name = receiver.get_receiver_name()
+            receiver_desc = receiver.get_receiver_description()
+
+            action = QAction(receiver_name, send_to_menu)
+
+            # Set tooltip if description available
+            if receiver_desc:
+                action.setToolTip(receiver_desc)
+
+            # Connect to handler with receiver_id
+            action.triggered.connect(
+                lambda checked=False, rid=receiver_id: self._send_to_receiver(rid)
+            )
+
+            send_to_menu.addAction(action)
+
+        # Show context menu at cursor position
+        context_menu.exec(self.mapToGlobal(position))
+
+    def _send_to_receiver(self, receiver_id: str):
+        """
+        Send this document to a specific receiver.
+
+        Args:
+            receiver_id: ID of the receiver to send document to
+        """
+        registry = DocumentReceiverRegistry()
+        event_bus = EventBus()
+
+        # Send document via registry
+        success = registry.send_document(receiver_id, self.document_data)
+
+        if success:
+            # Request navigation to the receiver's tab
+            event_bus.request_navigation(receiver_id)
+            self.logger.info(
+                f"Sent document {self.get_document_id()} to receiver '{receiver_id}'"
+            )
+        else:
+            self.logger.error(
+                f"Failed to send document {self.get_document_id()} "
+                f"to receiver '{receiver_id}'"
+            )

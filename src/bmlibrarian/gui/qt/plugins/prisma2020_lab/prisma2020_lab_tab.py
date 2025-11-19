@@ -21,6 +21,7 @@ from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
+from ...core.document_receiver import IDocumentReceiver
 from .constants import (
     SCORE_COLORS, COMPLIANCE_COLORS, SECTION_COLORS, COMPLIANCE_BG_COLORS,
     DEFAULT_SPLITTER_SIZES, DOC_ID_MIN_VALUE, DOC_ID_MAX_VALUE,
@@ -76,8 +77,8 @@ class PRISMA2020AssessmentWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
-class PRISMA2020LabTabWidget(QWidget):
-    """Main PRISMA 2020 Lab tab widget."""
+class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
+    """Main PRISMA 2020 Lab tab widget with document receiver capability."""
 
     status_message = Signal(str)
 
@@ -1126,6 +1127,50 @@ class PRISMA2020LabTabWidget(QWidget):
         self.current_assessment = None
         self.status_message.emit("Cleared all fields")
         logger.info("All fields cleared successfully")
+
+    # ========================================================================
+    # IDocumentReceiver Interface Implementation
+    # ========================================================================
+
+    def get_receiver_id(self) -> str:
+        """Get unique identifier for this receiver."""
+        return "prisma2020_lab"
+
+    def get_receiver_name(self) -> str:
+        """Get display name for this receiver."""
+        return "PRISMA 2020 Lab"
+
+    def get_receiver_description(self) -> Optional[str]:
+        """Get optional tooltip description for this receiver."""
+        return "Assess systematic reviews against PRISMA 2020 reporting guidelines"
+
+    def can_receive_document(self, document_data: Dict[str, Any]) -> bool:
+        """Check if this receiver can accept the given document.
+
+        PRISMA 2020 Lab can accept any document with an ID.
+
+        Args:
+            document_data: Document data dictionary
+
+        Returns:
+            bool: True if document has an ID
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        return doc_id is not None
+
+    def receive_document(self, document_data: Dict[str, Any]) -> None:
+        """Receive and load a document for PRISMA 2020 assessment.
+
+        Args:
+            document_data: Full document data dictionary
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        if doc_id:
+            logger.info(f"Received document {doc_id} from context menu")
+            # Set the document ID in the input field
+            self.doc_id_input.setText(str(doc_id))
+            # Trigger loading
+            self._load_document()
 
     def cleanup(self):
         """Cleanup resources."""

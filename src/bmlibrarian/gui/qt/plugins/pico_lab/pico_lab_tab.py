@@ -19,6 +19,7 @@ from bmlibrarian.agents.pico_agent import PICOExtraction
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px
+from ...core.document_receiver import IDocumentReceiver
 
 
 class PICOExtractionWorker(QThread):
@@ -54,8 +55,8 @@ class PICOExtractionWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
-class PICOLabTabWidget(QWidget):
-    """Main PICO Lab tab widget."""
+class PICOLabTabWidget(QWidget, IDocumentReceiver):
+    """Main PICO Lab tab widget with document receiver capability."""
 
     status_message = Signal(str)
 
@@ -611,6 +612,49 @@ class PICOLabTabWidget(QWidget):
         self.current_extraction = None
 
         self.status_message.emit("Cleared all fields")
+
+    # ========================================================================
+    # IDocumentReceiver Interface Implementation
+    # ========================================================================
+
+    def get_receiver_id(self) -> str:
+        """Get unique identifier for this receiver."""
+        return "pico_lab"
+
+    def get_receiver_name(self) -> str:
+        """Get display name for this receiver."""
+        return "PICO Lab"
+
+    def get_receiver_description(self) -> Optional[str]:
+        """Get optional tooltip description for this receiver."""
+        return "Extract Population, Intervention, Comparison, and Outcome components"
+
+    def can_receive_document(self, document_data: Dict[str, Any]) -> bool:
+        """Check if this receiver can accept the given document.
+
+        PICO Lab can accept any document with an ID.
+
+        Args:
+            document_data: Document data dictionary
+
+        Returns:
+            bool: True if document has an ID
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        return doc_id is not None
+
+    def receive_document(self, document_data: Dict[str, Any]) -> None:
+        """Receive and load a document for PICO analysis.
+
+        Args:
+            document_data: Full document data dictionary
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        if doc_id:
+            # Set the document ID in the input field
+            self.doc_id_input.setText(str(doc_id))
+            # Trigger loading
+            self._load_document()
 
     def cleanup(self):
         """Cleanup resources."""
