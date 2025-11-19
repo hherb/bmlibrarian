@@ -108,14 +108,22 @@ class CitationCard(QFrame):
         self.details.setVisible(False)
         main_layout.addWidget(self.details)
 
-        # Set up click handler
-        self.header.mousePressEvent = lambda event: self._toggle_expansion()
+        # Set up click handler on the entire card
+        self.mousePressEvent = lambda event: self._toggle_expansion()
 
-    def _create_header(self) -> QFrame:
-        """Create the header section (always visible)."""
+    def _create_header(self) -> QWidget:
+        """Create the header section (always visible) - title with frame and metadata without frame."""
         s = self.scale
-        header = QFrame()
-        header.setStyleSheet(f"""
+
+        # Container for both title frame and metadata
+        header_container = QWidget()
+        header_container_layout = QVBoxLayout(header_container)
+        header_container_layout.setContentsMargins(0, 0, 0, 0)
+        header_container_layout.setSpacing(s['spacing_tiny'])
+
+        # Title frame with blue left border
+        title_frame = QFrame()
+        title_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {self.COLOR_BACKGROUND_COLLAPSED};
                 border: 1px solid {self.COLOR_BORDER_GREY};
@@ -129,14 +137,11 @@ class CitationCard(QFrame):
             }}
         """)
 
-        header_layout = QVBoxLayout(header)
-        header_layout.setSpacing(s['spacing_small'])
-        header_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+        title_layout = QHBoxLayout(title_frame)
+        title_layout.setSpacing(s['spacing_medium'])
+        title_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
 
-        # Title row with relevance badge
-        title_row = QHBoxLayout()
-        title_row.setSpacing(s['spacing_medium'])
-
+        # Title label
         title = self.citation_data.get('document_title', self.citation_data.get('title', 'Untitled Document'))
         # Truncate long titles
         if len(title) > 80:
@@ -144,8 +149,8 @@ class CitationCard(QFrame):
 
         title_label = QLabel(f"<b>{self.index}. {html_escape(title)}</b>")
         title_label.setWordWrap(True)
-        title_label.setStyleSheet(f"color: {self.COLOR_PRIMARY_BLUE}; font-size: {s['font_large']}pt;")
-        title_row.addWidget(title_label, 1)
+        title_label.setStyleSheet(f"color: {self.COLOR_PRIMARY_BLUE}; font-size: {s['font_large']}pt; background-color: transparent; border: none;")
+        title_layout.addWidget(title_label, 1)
 
         # Relevance score badge
         relevance_score = self.citation_data.get('relevance_score', 0)
@@ -163,11 +168,18 @@ class CitationCard(QFrame):
                     padding: {s['padding_tiny']}px {s['padding_small']}px;
                 }}
             """)
-            title_row.addWidget(score_badge)
+            title_layout.addWidget(score_badge)
 
-        header_layout.addLayout(title_row)
+        header_container_layout.addWidget(title_frame)
 
-        # Subtitle row (authors and publication info)
+        # Metadata section (NO frame, NO blue border) - authors, journal, year
+        metadata_widget = QWidget()
+        metadata_widget.setStyleSheet("background-color: transparent; border: none;")
+        metadata_layout = QVBoxLayout(metadata_widget)
+        metadata_layout.setContentsMargins(s['padding_small'], s['padding_tiny'], s['padding_small'], s['padding_tiny'])
+        metadata_layout.setSpacing(s['spacing_tiny'])
+
+        # Authors
         authors = self.citation_data.get('authors', [])
         if isinstance(authors, list):
             if len(authors) > 2:
@@ -186,16 +198,24 @@ class CitationCard(QFrame):
         else:
             year_str = 'Unknown year'
 
+        # Publication (journal)
         publication = self.citation_data.get('publication', '')
-        pub_info = f"{publication} • {year_str}" if publication else year_str
 
-        subtitle = f"{authors_str} | {pub_info}"
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setWordWrap(True)
-        subtitle_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_normal']}pt;")
-        header_layout.addWidget(subtitle_label)
+        # Format metadata: "Authors. Journal, Year"
+        if publication and publication != 'Unknown journal':
+            pub_info = f"{publication}, {year_str}"
+        else:
+            pub_info = year_str
 
-        return header
+        metadata_text = f"{authors_str}. {pub_info}"
+        metadata_label = QLabel(metadata_text)
+        metadata_label.setWordWrap(True)
+        metadata_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
+        metadata_layout.addWidget(metadata_label)
+
+        header_container_layout.addWidget(metadata_widget)
+
+        return header_container
 
     def _create_details(self) -> QFrame:
         """Create the details section (collapsible)."""
