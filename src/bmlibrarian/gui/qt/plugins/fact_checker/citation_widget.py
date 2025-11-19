@@ -164,7 +164,7 @@ class CitationListWidget(QWidget):
                     cur.execute("""
                         SELECT
                             d.id, d.title, d.abstract, d.authors,
-                            d.journal, d.pub_year, d.external_id, d.doi
+                            d.publication, d.publication_date, d.external_id, d.doi
                         FROM document d
                         WHERE d.id = %s
                     """, (citation.get('document_id'),))
@@ -182,11 +182,21 @@ class CitationListWidget(QWidget):
                         if not enriched.get('title'):
                             enriched['title'] = row[1] or 'No title'
                         if not enriched.get('authors'):
-                            enriched['authors'] = row[3] or 'Unknown authors'
+                            # Convert array to string if needed
+                            authors = row[3]
+                            if isinstance(authors, list):
+                                enriched['authors'] = ', '.join(authors) if authors else 'Unknown authors'
+                            else:
+                                enriched['authors'] = authors or 'Unknown authors'
                         if not enriched.get('journal'):
                             enriched['journal'] = row[4] or 'Unknown journal'
                         if not enriched.get('pub_year'):
-                            enriched['pub_year'] = row[5] or 'N/A'
+                            # Extract year from publication_date
+                            pub_date = row[5]
+                            if pub_date:
+                                enriched['pub_year'] = pub_date.year if hasattr(pub_date, 'year') else str(pub_date)[:4]
+                            else:
+                                enriched['pub_year'] = 'N/A'
 
                         return enriched
 
