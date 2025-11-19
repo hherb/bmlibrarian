@@ -52,6 +52,7 @@ class FontScale:
 
             # Font sizes (in points, DPI-independent)
             # Increased by one size level for better readability
+            'font_micro': max(7, int(base_font_size * 0.75)),     # Extra small text (metadata, IDs)
             'font_tiny': max(8, int(base_font_size * 0.85)),      # Very small text (was 0.7)
             'font_small': max(10, int(base_font_size * 1.0)),     # Slightly smaller (was 0.85)
             'font_normal': max(11, int(base_font_size * 1.1)),    # System default (was 1.0)
@@ -79,6 +80,13 @@ class FontScale:
             'control_height_medium': max(30, int(base_line_height * 2.2)),
             'control_height_large': max(40, int(base_line_height * 2.8)),
             'control_height_xlarge': max(50, int(base_line_height * 3.5)),
+
+            # Control widths (in pixels, relative to character width)
+            'control_width_tiny': max(50, int(char_width * 6)),      # ~6 characters wide
+            'control_width_small': max(100, int(char_width * 12)),   # ~12 characters wide
+            'control_width_medium': max(200, int(char_width * 24)),  # ~24 characters wide
+            'control_width_large': max(300, int(char_width * 36)),   # ~36 characters wide
+            'control_width_xlarge': max(400, int(char_width * 48)),  # ~48 characters wide
 
             # Border radius (in pixels, relative to line height)
             'radius_tiny': max(2, int(base_line_height * 0.15)),
