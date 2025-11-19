@@ -39,6 +39,8 @@ CREATE TABLE statements (
     statement_text TEXT NOT NULL UNIQUE,
     input_statement_id TEXT,
     expected_answer TEXT CHECK (expected_answer IN ('yes', 'no', 'maybe')),
+    context TEXT,  -- Abstract/background from PubMedQA CONTEXTS
+    long_answer TEXT,  -- Reasoning from PubMedQA LONG_ANSWER
     created_at TEXT,  -- ISO 8601 timestamp
     source_file TEXT,
     review_status TEXT NOT NULL DEFAULT 'pending' CHECK (review_status IN ('pending', 'in_review', 'completed', 'flagged'))

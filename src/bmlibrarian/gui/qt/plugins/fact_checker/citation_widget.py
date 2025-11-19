@@ -146,67 +146,119 @@ class CitationListWidget(QWidget):
         # Check if we need to enrich (missing any important fields)
         needs_enrichment = (
             not citation.get('abstract') or
-            citation.get('abstract') in ('No abstract', 'No abstract available') or
+            citation.get('abstract') in ('No abstract', 'No abstract available', None) or
             not citation.get('pmid') or
-            citation.get('pmid') == 'N/A' or
+            citation.get('pmid') in ('N/A', None) or
             not citation.get('title') or
-            citation.get('title') == 'No title' or
+            citation.get('title') in ('No title', None) or
             not citation.get('authors') or
-            citation.get('authors') == 'Unknown' or
+            citation.get('authors') in ('Unknown', 'Unknown authors', None) or
             not citation.get('journal') or
-            citation.get('journal') == 'Unknown' or
+            citation.get('journal') in ('Unknown', 'Unknown journal', None) or
             not citation.get('pub_year') or
-            citation.get('pub_year') == 'N/A'
+            citation.get('pub_year') in ('N/A', None, 'Unknown')
         )
 
         if not needs_enrichment:
             return citation
 
         try:
-            # Fetch document from database
-            from bmlibrarian.database import get_db_manager
-            db_manager = get_db_manager()
+            # Determine if we're using PostgreSQL or SQLite
+            is_sqlite = hasattr(db, 'conn') and hasattr(db.conn, 'cursor')
 
-            with db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT
-                            d.id, d.title, d.abstract, d.authors,
-                            d.publication, d.publication_date, d.external_id, d.doi
-                        FROM document d
-                        WHERE d.id = %s
-                    """, (citation.get('document_id'),))
-                    row = cur.fetchone()
+            if is_sqlite:
+                # SQLite: Query from the local documents table
+                cursor = db.conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        id, title, abstract, authors,
+                        publication, publication_date, external_id, doi
+                    FROM documents
+                    WHERE id = ?
+                """, (citation.get('document_id'),))
+                row = cursor.fetchone()
+            else:
+                # PostgreSQL: Query from the main document table
+                from bmlibrarian.database import get_db_manager
+                db_manager = get_db_manager()
 
-                    if row:
-                        # Update missing fields
-                        enriched = citation.copy()
-                        if not enriched.get('abstract') or enriched['abstract'] == 'No abstract':
-                            enriched['abstract'] = row[2] or 'No abstract available'
-                        if not enriched.get('pmid') or enriched['pmid'] == 'N/A':
-                            enriched['pmid'] = row[6] or 'N/A'
-                        if not enriched.get('doi'):
-                            enriched['doi'] = row[7] or ''
-                        if not enriched.get('title'):
-                            enriched['title'] = row[1] or 'No title'
-                        if not enriched.get('authors'):
-                            # Convert array to string if needed
-                            authors = row[3]
-                            if isinstance(authors, list):
-                                enriched['authors'] = ', '.join(authors) if authors else 'Unknown authors'
-                            else:
-                                enriched['authors'] = authors or 'Unknown authors'
-                        if not enriched.get('journal'):
-                            enriched['journal'] = row[4] or 'Unknown journal'
-                        if not enriched.get('pub_year'):
-                            # Extract year from publication_date
-                            pub_date = row[5]
-                            if pub_date:
-                                enriched['pub_year'] = pub_date.year if hasattr(pub_date, 'year') else str(pub_date)[:4]
-                            else:
-                                enriched['pub_year'] = 'N/A'
+                with db_manager.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT
+                                d.id, d.title, d.abstract, d.authors,
+                                d.publication, d.publication_date, d.external_id, d.doi
+                            FROM document d
+                            WHERE d.id = %s
+                        """, (citation.get('document_id'),))
+                        row = cur.fetchone()
 
-                        return enriched
+            if row:
+                # Handle both SQLite (dict-like) and PostgreSQL (tuple) rows
+                if is_sqlite:
+                    # SQLite returns dict-like rows
+                    doc_id = row['id']
+                    title = row['title']
+                    abstract = row['abstract']
+                    authors_data = row['authors']
+                    publication = row['publication']
+                    pub_date = row['publication_date']
+                    external_id = row['external_id']
+                    doi = row['doi']
+
+                    # Parse JSON authors if it's a string
+                    import json
+                    if authors_data and isinstance(authors_data, str):
+                        try:
+                            authors_list = json.loads(authors_data)
+                            authors = ', '.join(authors_list) if isinstance(authors_list, list) else authors_data
+                        except json.JSONDecodeError:
+                            authors = authors_data
+                    else:
+                        authors = authors_data
+                else:
+                    # PostgreSQL returns tuple rows
+                    doc_id = row[0]
+                    title = row[1]
+                    abstract = row[2]
+                    authors_data = row[3]
+                    publication = row[4]
+                    pub_date = row[5]
+                    external_id = row[6]
+                    doi = row[7]
+
+                    # Convert array to string if needed
+                    if isinstance(authors_data, list):
+                        authors = ', '.join(authors_data) if authors_data else 'Unknown authors'
+                    else:
+                        authors = authors_data or 'Unknown authors'
+
+                # Update missing fields
+                enriched = citation.copy()
+                if not enriched.get('abstract') or enriched.get('abstract') in ('No abstract', None):
+                    enriched['abstract'] = abstract or 'No abstract available'
+                if not enriched.get('pmid') or enriched.get('pmid') in ('N/A', None):
+                    enriched['pmid'] = external_id or 'N/A'
+                if not enriched.get('doi') or enriched.get('doi') is None:
+                    enriched['doi'] = doi or ''
+                if not enriched.get('title') or enriched.get('title') in ('No title', None):
+                    enriched['title'] = title or 'No title'
+                if not enriched.get('authors') or enriched.get('authors') in ('Unknown', None):
+                    enriched['authors'] = authors or 'Unknown authors'
+                if not enriched.get('journal') or enriched.get('journal') in ('Unknown', None):
+                    enriched['journal'] = publication or 'Unknown journal'
+                if not enriched.get('pub_year') or enriched.get('pub_year') in ('N/A', None):
+                    # Extract year from publication_date
+                    if pub_date:
+                        # Handle both datetime objects and ISO date strings
+                        if hasattr(pub_date, 'year'):
+                            enriched['pub_year'] = pub_date.year
+                        else:
+                            enriched['pub_year'] = str(pub_date)[:4]
+                    else:
+                        enriched['pub_year'] = 'N/A'
+
+                return enriched
 
         except Exception as e:
             print(f"Warning: Failed to enrich citation from database: {e}")

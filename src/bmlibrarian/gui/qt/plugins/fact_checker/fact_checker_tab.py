@@ -534,7 +534,7 @@ class FactCheckerTabWidget(QWidget):
 
         self.original_text = QTextEdit()
         self.original_text.setReadOnly(True)
-        self.original_text.setPlaceholderText("Original long answer (to be added)")
+        self.original_text.setPlaceholderText("Original explanation/reasoning from dataset")
         self.original_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
         self.original_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
         self.original_text.setStyleSheet(self._get_text_edit_stylesheet())
@@ -739,6 +739,9 @@ class FactCheckerTabWidget(QWidget):
                     'statement_id': row['id'],
                     'statement': row['statement_text'],
                     'expected_answer': row['expected_answer'],
+                    'long_answer': row.get('long_answer'),
+                    'context': row.get('context'),
+                    'input_statement_id': row.get('input_statement_id'),
                     'evaluation': row.get('evaluation'),
                     'reason': row.get('reason'),
                     'confidence': row.get('confidence'),
@@ -747,17 +750,20 @@ class FactCheckerTabWidget(QWidget):
                 }
 
                 # Convert evidence
+                # Note: Evidence table only has document_id, pmid, doi, citation_text
+                # The citation widget will enrich from the main document table using document_id
                 for ev in row.get('evidence', []):
                     result['evidence_list'].append({
-                        'document_id': ev.get('document_id'),  # Include for database enrichment
-                        'pmid': ev.get('pmid', 'N/A'),
-                        'doi': ev.get('doi', ''),
-                        'title': ev.get('title', 'No title'),
-                        'abstract': ev.get('abstract', 'No abstract'),
-                        'authors': ev.get('authors', 'Unknown'),
-                        'journal': ev.get('journal', 'Unknown'),
-                        'pub_year': ev.get('pub_year', 'N/A'),
+                        'document_id': ev.get('document_id'),
+                        'pmid': ev.get('pmid'),
+                        'doi': ev.get('doi'),
                         'passage': ev.get('citation_text', ''),
+                        # Leave these empty/None to trigger enrichment
+                        'title': None,
+                        'abstract': None,
+                        'authors': None,
+                        'journal': None,
+                        'pub_year': None,
                     })
 
                 self.results.append(result)
@@ -821,7 +827,9 @@ class FactCheckerTabWidget(QWidget):
         # Update original answer column
         original_answer = result.get('expected_answer', 'N/A')
         self._update_tag(self.original_tag, original_answer)
-        self.original_text.setPlainText(result.get('original_explanation', ''))  # Will be added to DB
+        # Display long_answer from database
+        long_answer = result.get('long_answer', '')
+        self.original_text.setPlainText(long_answer if long_answer else 'No explanation available')
 
         # Update AI evaluation column
         ai_evaluation = result.get('evaluation', 'N/A')
@@ -845,14 +853,15 @@ class FactCheckerTabWidget(QWidget):
         self.human_dropdown.blockSignals(False)
         self.human_text.blockSignals(False)
 
-        # Update original article context
-        # TODO: Fetch from database if not present
-        article_context = result.get('article_context', '')
+        # Update original article context (from context field in database)
+        article_context = result.get('context', '')
         if not article_context:
-            # Get from input_statement_id if it's a PMID
+            # Fallback: Show input_statement_id if no context available
             input_id = result.get('input_statement_id', '')
             if input_id:
-                article_context = f"Original article ID: {input_id}\n\n(Full article text to be fetched from database)"
+                article_context = f"Original article ID: {input_id}\n\nNo abstract/context available"
+            else:
+                article_context = "No abstract/context available"
         self.article_text.setPlainText(article_context)
 
         # Update citations (with database enrichment if needed)

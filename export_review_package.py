@@ -86,6 +86,8 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                     s.statement_text,
                     s.input_statement_id,
                     s.expected_answer,
+                    s.context,
+                    s.long_answer,
                     s.created_at,
                     s.source_file,
                     s.review_status,
@@ -132,7 +134,7 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
             evaluation_ids = set()
 
             for row in results:
-                (stmt_id, stmt_text, input_id, expected_ans, created_at, source_file, review_status,
+                (stmt_id, stmt_text, input_id, expected_ans, context, long_answer, created_at, source_file, review_status,
                  eval_id, evaluation, reason, confidence, docs_reviewed, supp_citations, contra_citations,
                  neutral_citations, matches_expected, evaluated_at, model_used, model_version,
                  agent_config, eval_session_id, version) = row
@@ -141,10 +143,10 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                 sqlite_cursor.execute("""
                     INSERT OR IGNORE INTO statements (
                         statement_id, statement_text, input_statement_id, expected_answer,
-                        created_at, source_file, review_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        context, long_answer, created_at, source_file, review_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    stmt_id, stmt_text, input_id, expected_ans,
+                    stmt_id, stmt_text, input_id, expected_ans, context, long_answer,
                     created_at.isoformat() if created_at else None,
                     source_file, review_status
                 ))
