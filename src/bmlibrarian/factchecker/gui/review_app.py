@@ -17,6 +17,10 @@ from .statement_display import StatementDisplay
 from .annotation_manager import AnnotationManager
 from .citation_display import CitationDisplay
 from .timer_component import ReviewTimer
+from .styles import (
+    Colors, ButtonStyles, ContainerStyles, TextStyles,
+    LayoutConfig, DPIScale
+)
 
 
 class FactCheckerReviewApp:
@@ -86,89 +90,87 @@ class FactCheckerReviewApp:
     def _setup_page(self):
         """Configure the main page settings."""
         self.page.title = "BMLibrarian Fact-Checker Review"
-        self.page.window.width = 1400
-        self.page.window.height = 900
-        self.page.window.min_width = 1200
-        self.page.window.min_height = 700
+        self.page.window.width = LayoutConfig.WINDOW_WIDTH
+        self.page.window.height = LayoutConfig.WINDOW_HEIGHT
+        self.page.window.min_width = LayoutConfig.WINDOW_MIN_WIDTH
+        self.page.window.min_height = LayoutConfig.WINDOW_MIN_HEIGHT
         self.page.window.resizable = True
         self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.padding = 20
+        self.page.padding = LayoutConfig.PAGE_PADDING
         self.page.scroll = ft.ScrollMode.AUTO
 
     def _build_ui(self):
         """Build the main user interface."""
         # Toggle buttons for show/hide
+        toggle_style = ButtonStyles.toggle_button()
         self.toggle_reviews_button = ft.ElevatedButton(
             "Hide Reviews",
             icon=ft.Icons.VISIBILITY_OFF,
             on_click=self._on_toggle_reviews,
-            bgcolor=ft.Colors.ORANGE_700,
-            color=ft.Colors.WHITE
+            **toggle_style
         )
 
         self.toggle_citations_button = ft.ElevatedButton(
             "Hide Citations",
             icon=ft.Icons.VISIBILITY_OFF,
             on_click=self._on_toggle_citations,
-            bgcolor=ft.Colors.ORANGE_700,
-            color=ft.Colors.WHITE
+            **toggle_style
         )
 
         # Statistics button
+        primary_style = ButtonStyles.primary_button()
         statistics_button = ft.ElevatedButton(
             "Statistics",
             icon=ft.Icons.ANALYTICS,
             on_click=self._on_show_statistics,
-            bgcolor=ft.Colors.BLUE_700,
-            color=ft.Colors.WHITE
+            **primary_style
         )
 
         # Header
+        title_style = TextStyles.title_large()
+        subtitle_style = TextStyles.subtitle()
+
         header = ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Column([
                         ft.Text(
                             "Fact-Checker Review Interface",
-                            size=28,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.BLUE_900
+                            **title_style
                         ),
                         ft.Text(
                             "Review and annotate AI-generated fact-checking results" +
                             (" (SQLite Package)" if self.db_file else " (PostgreSQL Database)"),
-                            size=14,
-                            color=ft.Colors.GREY_700
+                            **subtitle_style
                         )
                     ], expand=True)
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Container(height=10),
+                ft.Container(height=LayoutConfig.SPACING_SMALL),
                 # Top row with controls: Hide/Show buttons, Timer, Statistics
                 ft.Row([
                     self.toggle_reviews_button,
                     self.toggle_citations_button,
                     ft.Container(expand=True),
                     self.timer.build_section(),
-                    ft.Container(width=10),
+                    ft.Container(width=LayoutConfig.SPACING_SMALL),
                     statistics_button
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            ], spacing=5),
-            padding=ft.padding.only(bottom=20)
+            ], spacing=LayoutConfig.SPACING_TINY),
+            padding=ft.padding.only(bottom=LayoutConfig.SPACING_LARGE)
         )
 
         # Database status section
+        status_style = TextStyles.status_text()
         self.status_text = ft.Text(
             "Loading from database...",
-            size=12,
-            color=ft.Colors.GREY_600,
-            italic=True
+            **status_style
         )
 
         status_section = ft.Container(
             content=self.status_text,
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.BLUE_50,
-            border_radius=10
+            padding=ft.padding.all(DPIScale.to_pt(DPIScale.CONTAINER_PADDING_MEDIUM)),
+            bgcolor=Colors.PRIMARY_BLUE_PALE,
+            border_radius=DPIScale.to_pt(DPIScale.CONTAINER_PADDING_SMALL)
         )
 
         # Review content (initially hidden)
@@ -179,9 +181,9 @@ class FactCheckerReviewApp:
         main_content = ft.Column([
             header,
             status_section,
-            ft.Container(height=20),
+            ft.Container(height=LayoutConfig.SPACING_LARGE),
             self.review_content
-        ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO)
+        ], spacing=LayoutConfig.SPACING_NONE, expand=True, scroll=ft.ScrollMode.AUTO)
 
         self.page.add(main_content)
 
@@ -203,33 +205,31 @@ class FactCheckerReviewApp:
         # Citations section with constant height
         self.citations_list = ft.Column(
             controls=[],
-            spacing=10,
+            spacing=LayoutConfig.SPACING_SMALL,
             scroll=ft.ScrollMode.AUTO
         )
 
-        # Inner container for citations list with constant height
+        # Inner container for citations list with constant height (DPI-aware)
+        citation_container_style = ContainerStyles.citation_container()
         self.citations_container = ft.Container(
             content=self.citations_list,
-            height=300,  # Constant height
-            bgcolor=ft.Colors.GREY_50,
-            border_radius=8,
-            padding=ft.padding.all(10)
+            **citation_container_style
         )
 
+        section_title_style = TextStyles.title_medium()
+        section_style = ContainerStyles.section_container(
+            Colors.ACCENT_ORANGE_LIGHT,
+            Colors.ACCENT_ORANGE_BORDER
+        )
         citations_section = ft.Container(
             content=ft.Column([
                 ft.Text(
                     "Supporting Citations",
-                    size=14,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.Colors.GREY_900
+                    **section_title_style
                 ),
                 self.citations_container
-            ], spacing=10),
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.ORANGE_50,
-            border_radius=8,
-            border=ft.border.all(1, ft.Colors.ORANGE_200)
+            ], spacing=LayoutConfig.SPACING_SMALL),
+            **section_style
         )
 
         # Navigation buttons
@@ -248,10 +248,11 @@ class FactCheckerReviewApp:
         )
 
         # Auto-save indicator
+        auto_save_style = TextStyles.status_text()
         auto_save_text = ft.Text(
             "✓ Annotations saved automatically to database",
-            size=12,
-            color=ft.Colors.GREEN_700,
+            size=auto_save_style['size'],
+            color=Colors.SUCCESS,
             italic=True
         )
 
@@ -260,25 +261,23 @@ class FactCheckerReviewApp:
             self.next_button,
             ft.Container(expand=True),
             auto_save_text
-        ], spacing=10, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ], spacing=LayoutConfig.SPACING_SMALL, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         # Combine all sections
+        card_style = ContainerStyles.card_container()
         return ft.Container(
             content=ft.Column([
                 progress_section,
-                ft.Container(height=10),
+                ft.Container(height=LayoutConfig.SPACING_SMALL),
                 statement_section,
-                ft.Container(height=15),
-                annotations_row,
-                ft.Container(height=15),
+                ft.Container(height=LayoutConfig.SPACING_MEDIUM),
+                self.annotations_row,
+                ft.Container(height=LayoutConfig.SPACING_MEDIUM),
                 citations_section,
-                ft.Container(height=20),
+                ft.Container(height=LayoutConfig.SPACING_LARGE),
                 navigation_section
-            ], spacing=0),
-            padding=ft.padding.all(20),
-            bgcolor=ft.Colors.WHITE,
-            border_radius=10,
-            border=ft.border.all(1, ft.Colors.GREY_300)
+            ], spacing=LayoutConfig.SPACING_NONE),
+            **card_style
         )
 
     def _on_annotator_complete(self, annotator_info: dict):
@@ -320,7 +319,7 @@ class FactCheckerReviewApp:
 
             self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from {db_source}{extra_info}{mode_indicator}"
             self.status_text.italic = False
-            self.status_text.color = ft.Colors.GREEN_700
+            self.status_text.color = Colors.SUCCESS
 
             # Show review interface
             self.current_index = 0
@@ -471,11 +470,12 @@ class FactCheckerReviewApp:
         if self.citations_container and hasattr(self.citations_container, 'content'):
             if not self.show_citations:
                 # Show placeholder message
+                placeholder_style = TextStyles.status_text()
                 placeholder = ft.Container(
                     content=ft.Text(
                         "Citations hidden. Click 'Show Citations' to view supporting evidence.",
-                        size=12,
-                        color=ft.Colors.GREY_500,
+                        size=placeholder_style['size'],
+                        color=Colors.GREY_PALE,
                         italic=True,
                         text_align=ft.TextAlign.CENTER
                     ),
