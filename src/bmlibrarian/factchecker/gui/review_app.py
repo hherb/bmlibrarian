@@ -65,6 +65,8 @@ class FactCheckerReviewApp:
         self.annotations_row = None
         self.toggle_reviews_button = None
         self.toggle_citations_button = None
+        self.username_field = None
+        self.load_button = None
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -72,9 +74,11 @@ class FactCheckerReviewApp:
         self._setup_page()
         self._build_ui()
 
-        # Show annotator dialog or use default username
+        # If default username provided, load data immediately
         if self.default_username:
-            # Skip dialog, use default username
+            self.username_field.value = self.default_username
+            self.username_field.disabled = True
+            self.load_button.disabled = True
             annotator_info = {
                 'username': self.default_username,
                 'full_name': self.default_username,
@@ -82,10 +86,6 @@ class FactCheckerReviewApp:
                 'expertise_level': None
             }
             self._on_annotator_complete(annotator_info)
-        else:
-            # Show annotator dialog at startup
-            annotator_dialog = AnnotatorDialog(self.page, self._on_annotator_complete)
-            annotator_dialog.show()
 
     def _setup_page(self):
         """Configure the main page settings."""
@@ -130,6 +130,21 @@ class FactCheckerReviewApp:
         title_style = TextStyles.title_large()
         subtitle_style = TextStyles.subtitle()
 
+        # Username field and load button
+        self.username_field = ft.TextField(
+            label="Username",
+            hint_text="Enter your username",
+            width=200,
+            on_submit=self._on_username_submit
+        )
+
+        self.load_button = ft.ElevatedButton(
+            "Load Reviews",
+            icon=ft.Icons.PERSON,
+            on_click=self._on_load_click,
+            **primary_style
+        )
+
         header = ft.Container(
             content=ft.Column([
                 ft.Row([
@@ -145,6 +160,12 @@ class FactCheckerReviewApp:
                         )
                     ], expand=True)
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=LayoutConfig.SPACING_SMALL),
+                # Username row
+                ft.Row([
+                    self.username_field,
+                    self.load_button
+                ], spacing=LayoutConfig.SPACING_SMALL),
                 ft.Container(height=LayoutConfig.SPACING_SMALL),
                 # Top row with controls: Hide/Show buttons, Timer, Statistics
                 ft.Row([
@@ -162,7 +183,7 @@ class FactCheckerReviewApp:
         # Database status section
         status_style = TextStyles.status_text()
         self.status_text = ft.Text(
-            "Loading from database...",
+            "Enter username to load reviews",
             **status_style
         )
 
@@ -173,9 +194,9 @@ class FactCheckerReviewApp:
             border_radius=DPIScale.to_pt(DPIScale.CONTAINER_PADDING_SMALL)
         )
 
-        # Review content (initially hidden)
+        # Review content (visible from the start)
         self.review_content = self._build_review_content()
-        self.review_content.visible = False
+        self.review_content.visible = True
 
         # Main layout
         main_content = ft.Column([
@@ -280,6 +301,26 @@ class FactCheckerReviewApp:
             **card_style
         )
 
+    def _on_username_submit(self, e):
+        """Handle username field submit (Enter key)."""
+        self._on_load_click(e)
+
+    def _on_load_click(self, e):
+        """Handle load button click."""
+        username = self.username_field.value
+        if not username or not username.strip():
+            show_error_dialog(self.page, "Please enter a username")
+            return
+
+        # Set annotator info
+        annotator_info = {
+            'username': username.strip(),
+            'full_name': username.strip(),
+            'email': None,
+            'expertise_level': None
+        }
+        self._on_annotator_complete(annotator_info)
+
     def _on_annotator_complete(self, annotator_info: dict):
         """
         Handle annotator dialog completion.
@@ -320,6 +361,10 @@ class FactCheckerReviewApp:
             self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from {db_source}{extra_info}{mode_indicator}"
             self.status_text.italic = False
             self.status_text.color = Colors.SUCCESS
+
+            # Disable username field and load button after loading
+            self.username_field.disabled = True
+            self.load_button.disabled = True
 
             # Show review interface
             self.current_index = 0

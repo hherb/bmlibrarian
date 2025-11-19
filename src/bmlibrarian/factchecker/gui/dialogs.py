@@ -7,6 +7,8 @@ Provides dialog windows for annotator information, file selection, and confirmat
 from typing import Optional, Callable
 import flet as ft
 
+from .styles import Colors
+
 
 class AnnotatorDialog:
     """Dialog for collecting annotator information at startup."""
@@ -82,7 +84,7 @@ class AnnotatorDialog:
                     ft.Text(
                         "Please enter your information for annotation tracking:",
                         size=13,
-                        color=ft.Colors.GREY_700
+                        color=Colors.GREY_MEDIUM
                     ),
                     ft.Container(height=15),
                     self.username_field,
@@ -97,8 +99,8 @@ class AnnotatorDialog:
                 ft.ElevatedButton(
                     "Continue",
                     on_click=on_continue,
-                    bgcolor=ft.Colors.BLUE_700,
-                    color=ft.Colors.WHITE
+                    bgcolor=Colors.PRIMARY_BLUE_LIGHT,
+                    color=Colors.WHITE
                 )
             ],
             modal=True
@@ -122,7 +124,7 @@ def show_error_dialog(page: ft.Page, message: str):
         page.update()
 
     dialog = ft.AlertDialog(
-        title=ft.Text("Error", color=ft.Colors.RED_700),
+        title=ft.Text("Error", color=Colors.ERROR),
         content=ft.Text(message),
         actions=[
             ft.TextButton("OK", on_click=close_dialog)
@@ -146,7 +148,7 @@ def show_success_dialog(page: ft.Page, message: str):
         page.update()
 
     dialog = ft.AlertDialog(
-        title=ft.Text("Success", color=ft.Colors.GREEN_700),
+        title=ft.Text("Success", color=Colors.SUCCESS),
         content=ft.Text(message),
         actions=[
             ft.TextButton("OK", on_click=close_dialog)
@@ -194,8 +196,8 @@ def show_save_dialog(page: ft.Page, default_path: str, on_save: Callable):
             ft.ElevatedButton(
                 "Save",
                 on_click=on_save_confirm,
-                bgcolor=ft.Colors.GREEN_700,
-                color=ft.Colors.WHITE
+                bgcolor=Colors.SUCCESS,
+                color=Colors.WHITE
             )
         ]
     )
@@ -218,7 +220,7 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
         page.update()
 
     # Create statistics display
-    def stat_row(label: str, percentage: float, count: int, color: str = ft.Colors.BLUE_700) -> ft.Container:
+    def stat_row(label: str, percentage: float, count: int, color: str = Colors.PRIMARY_BLUE_LIGHT) -> ft.Container:
         """Helper to create a formatted statistic row."""
         return ft.Container(
             content=ft.Row([
@@ -232,11 +234,11 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
                 ft.Text(
                     f"({count})",
                     size=12,
-                    color=ft.Colors.GREY_600
+                    color=Colors.GREY_LIGHT
                 )
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.symmetric(vertical=8, horizontal=10),
-            bgcolor=ft.Colors.GREY_50,
+            bgcolor=Colors.GREY_BG,
             border_radius=5
         )
 
@@ -249,22 +251,22 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
         ft.Text(
             f"Total Statements: {stats['total_statements']}",
             size=13,
-            color=ft.Colors.GREY_700
+            color=Colors.GREY_MEDIUM
         ),
         ft.Text(
             f"Human Annotated: {stats['human_annotated_count']}",
             size=13,
-            color=ft.Colors.GREY_700
+            color=Colors.GREY_MEDIUM
         ),
         ft.Container(height=10),
 
         # AI vs Original (all statements)
-        ft.Text("All Statements:", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+        ft.Text("All Statements:", size=14, weight=ft.FontWeight.BOLD, color=Colors.PRIMARY_BLUE),
         stat_row(
             "AI vs Original Agreement",
             stats['ai_vs_original_agreement'],
             stats['ai_vs_original_count'],
-            ft.Colors.BLUE_700
+            Colors.PRIMARY_BLUE_LIGHT
         ),
         ft.Container(height=10),
     ]
@@ -276,31 +278,31 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
                 f"Human-Annotated Statements ({stats['human_annotated_count']}):",
                 size=14,
                 weight=ft.FontWeight.BOLD,
-                color=ft.Colors.GREEN_900
+                color=Colors.SUCCESS_DARK
             ),
             stat_row(
                 "Human vs Original Agreement",
                 stats['human_vs_original_agreement'],
                 stats['human_vs_original_count'],
-                ft.Colors.GREEN_700
+                Colors.SUCCESS
             ),
             stat_row(
                 "Human vs AI Agreement",
                 stats['human_vs_ai_agreement'],
                 stats['human_vs_ai_count'],
-                ft.Colors.PURPLE_700
+                Colors.ANNOTATION_PURPLE
             ),
             stat_row(
                 "All Three Agree",
                 stats['all_three_agreement'],
                 stats['all_three_count'],
-                ft.Colors.ORANGE_700
+                Colors.ACCENT_ORANGE
             ),
             stat_row(
                 "All Three Disagree (3 different answers)",
                 stats['all_three_disagree'],
                 stats['all_three_disagree_count'],
-                ft.Colors.RED_700
+                Colors.ERROR
             ),
         ])
     else:
@@ -308,14 +310,14 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
             ft.Text(
                 "No human annotations yet. Start reviewing to see human vs AI/original agreement.",
                 size=13,
-                color=ft.Colors.GREY_600,
+                color=Colors.GREY_LIGHT,
                 italic=True
             )
         )
 
     dialog = ft.AlertDialog(
         title=ft.Row([
-            ft.Icon(ft.Icons.ANALYTICS, color=ft.Colors.BLUE_700),
+            ft.Icon(ft.Icons.ANALYTICS, color=Colors.PRIMARY_BLUE_LIGHT),
             ft.Text("Statistics", size=20, weight=ft.FontWeight.BOLD)
         ]),
         content=ft.Container(
@@ -332,8 +334,8 @@ def show_statistics_dialog(page: ft.Page, stats: dict):
             ft.ElevatedButton(
                 "Close",
                 on_click=close_dialog,
-                bgcolor=ft.Colors.BLUE_700,
-                color=ft.Colors.WHITE
+                bgcolor=Colors.PRIMARY_BLUE_LIGHT,
+                color=Colors.WHITE
             )
         ]
     )
