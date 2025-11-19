@@ -13,6 +13,7 @@ Available Agents:
 - EditorAgent: Creates balanced, comprehensive reports combining original findings with contradictory evidence
 - DocumentInterrogationAgent: Answers questions about documents using sliding window chunk processing
 - PICOAgent: Extracts Population, Intervention, Comparison, and Outcome components from research papers
+- StudyAssessmentAgent: Evaluates research quality, study type, and trustworthiness of evidence
 
 Note: FactCheckerAgent has been moved to bmlibrarian.factchecker module (import from there directly)
 
@@ -43,6 +44,7 @@ from .document_interrogation_agent import (
     DatabaseChunk
 )
 from .pico_agent import PICOAgent, PICOExtraction
+from .study_assessment_agent import StudyAssessmentAgent, StudyAssessment
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
@@ -74,6 +76,8 @@ __all__ = [
     "DatabaseChunk",
     "PICOAgent",
     "PICOExtraction",
+    "StudyAssessmentAgent",
+    "StudyAssessment",
     "TextChunker",
     "TextChunk",
     "chunk_text",
