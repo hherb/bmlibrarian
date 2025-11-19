@@ -19,6 +19,7 @@ from bmlibrarian.agents import StudyAssessmentAgent, AgentOrchestrator
 from bmlibrarian.agents.study_assessment_agent import StudyAssessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
+from bmlibrarian.lab.document_display_factory import create_document_display_simple
 
 
 class StudyAssessmentLab:
@@ -32,6 +33,7 @@ class StudyAssessmentLab:
         self.controls = {}
         self.current_document: Optional[Dict[str, Any]] = None
         self.current_assessment: Optional[StudyAssessment] = None
+        self.document_display = None  # Will hold document display widgets
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -215,42 +217,20 @@ class StudyAssessmentLab:
         )
 
     def _create_document_panel(self) -> ft.Column:
-        """Create document display panel."""
-
-        self.controls['doc_title'] = ft.Text(
-            "No document loaded",
-            size=16,
-            weight=ft.FontWeight.BOLD,
-            color=ft.Colors.GREY_700
+        """Create document display panel using document display factory."""
+        # Create document display using factory (with tabbed abstract/fulltext)
+        self.document_display = create_document_display_simple(
+            page=self.page,
+            initial_title="No document loaded",
+            width=450,
+            abstract_height=400
         )
 
-        self.controls['doc_metadata'] = ft.Text(
-            "",
-            size=12,
-            color=ft.Colors.GREY_600
-        )
+        # Store references for backward compatibility
+        self.controls['doc_title'] = self.document_display['title']
+        self.controls['doc_metadata'] = self.document_display['metadata']
 
-        self.controls['doc_abstract'] = ft.Text(
-            "Load a document to view its abstract and assess study quality.",
-            size=13,
-            color=ft.Colors.GREY_700
-        )
-
-        return ft.Column([
-            ft.Text("Document", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_800),
-            ft.Divider(),
-            self.controls['doc_title'],
-            self.controls['doc_metadata'],
-            ft.Divider(),
-            ft.Container(
-                self.controls['doc_abstract'],
-                height=400,
-                padding=ft.padding.all(10),
-                bgcolor=ft.Colors.WHITE,
-                border_radius=5,
-                border=ft.border.all(1, ft.Colors.GREY_300)
-            )
-        ], spacing=10, scroll=ft.ScrollMode.AUTO)
+        return self.document_display['container']
 
     def _create_assessment_panel(self) -> ft.Column:
         """Create assessment results panel."""
@@ -386,29 +366,16 @@ class StudyAssessmentLab:
             self.page.update()
 
     def _display_document(self):
-        """Display loaded document."""
+        """Display loaded document using document display factory."""
         if not self.current_document:
             return
 
-        # Update document title
-        self.controls['doc_title'].value = self.current_document.get('title', 'Untitled')
-
-        # Update metadata
-        metadata_parts = []
-        if self.current_document.get('pmid'):
-            metadata_parts.append(f"PMID: {self.current_document['pmid']}")
-        if self.current_document.get('doi'):
-            metadata_parts.append(f"DOI: {self.current_document['doi']}")
-        if self.current_document.get('publication_date'):
-            metadata_parts.append(f"Published: {self.current_document['publication_date']}")
-
-        self.controls['doc_metadata'].value = " | ".join(metadata_parts)
-
-        # Update abstract
-        abstract = self.current_document.get('abstract', 'No abstract available')
-        self.controls['doc_abstract'].value = abstract
-
-        self.page.update()
+        # Use the document display factory's update function
+        if self.document_display:
+            self.document_display['update_func'](self.current_document)
+        else:
+            # Fallback to manual update (shouldn't happen)
+            self.page.update()
 
     def _run_assessment(self):
         """Run study quality assessment."""
@@ -651,9 +618,10 @@ class StudyAssessmentLab:
     def _clear_all(self, e):
         """Clear all fields and results."""
         self.controls['doc_id_input'].value = ""
-        self.controls['doc_title'].value = "No document loaded"
-        self.controls['doc_metadata'].value = ""
-        self.controls['doc_abstract'].value = "Load a document to view its abstract and assess study quality."
+
+        # Clear document display using factory
+        if self.document_display:
+            self.document_display['update_func'](None)
 
         self.controls['assessment_results'].controls = [
             ft.Text(
