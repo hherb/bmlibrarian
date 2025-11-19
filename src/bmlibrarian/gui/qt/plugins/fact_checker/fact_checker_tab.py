@@ -29,7 +29,8 @@ from .timer_widget import TimerWidget
 from .....factchecker.db import get_fact_checker_db, Annotator, HumanAnnotation
 
 # Import DPI-aware styling
-from ...resources.styles import get_font_scale
+from ...resources.styles import get_font_scale, StylesheetGenerator
+from ...resources.constants import ScoreColors
 
 
 class FactCheckerTabWidget(QWidget):
@@ -37,6 +38,44 @@ class FactCheckerTabWidget(QWidget):
 
     # Signals
     status_changed = Signal(str)
+
+    # Color constants (DPI-independent)
+    COLOR_PRIMARY_BLUE = "#1976d2"
+    COLOR_DARK_BLUE = "#0d47a1"
+    COLOR_LIGHT_BLUE = "#1565c0"
+    COLOR_INFO_BG = "#bbdefb"
+    COLOR_TEXT_GREY = "#666"
+    COLOR_SUCCESS_GREEN = "#43a047"
+    COLOR_SUCCESS_GREEN_HOVER = "#388e3c"
+    COLOR_SUCCESS_TEXT = "#2e7d32"
+    COLOR_NAV_GREY = "#757575"
+    COLOR_NAV_GREY_HOVER = "#616161"
+    COLOR_DISABLED_BG = "#e0e0e0"
+    COLOR_DISABLED_TEXT = "#9e9e9e"
+
+    # Tag colors (evaluation states)
+    COLOR_TAG_YES = "#4caf50"  # Green
+    COLOR_TAG_NO = "#f44336"   # Red
+    COLOR_TAG_MAYBE = "#ff9800"  # Orange
+    COLOR_TAG_NA = "#9e9e9e"   # Grey
+
+    # Column background colors
+    COLOR_ORIGINAL_BG = "#e8eaf6"
+    COLOR_ORIGINAL_BORDER = "#c5cae9"
+    COLOR_AI_BG = "#ede7f6"
+    COLOR_AI_BORDER = "#d1c4e9"
+    COLOR_HUMAN_BG = "#e8f5e9"
+    COLOR_HUMAN_BORDER = "#66bb6a"
+    COLOR_BLIND_BG = "#e0e0e0"
+    COLOR_BLIND_BORDER = "#bdbdbd"
+
+    # Content area colors
+    COLOR_INPUT_BG = "#f5f5f5"
+    COLOR_INPUT_BORDER = "#ddd"
+    COLOR_ARTICLE_BG = "#fffde7"
+    COLOR_ARTICLE_BORDER = "#fdd835"
+    COLOR_CITATION_BG = "#fff8e1"
+    COLOR_CITATION_BORDER = "#ffb74d"
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -49,6 +88,7 @@ class FactCheckerTabWidget(QWidget):
 
         # DPI-aware scaling
         self.scale = get_font_scale()
+        self.style_gen = StylesheetGenerator(self.scale)
 
         # Configuration
         self.incremental = False
