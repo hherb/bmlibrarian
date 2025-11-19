@@ -11,6 +11,7 @@ from typing import Optional
 
 from ..base_tab import BaseTabPlugin, TabPluginMetadata
 from .prisma2020_lab_tab import PRISMA2020LabTabWidget
+from ...core.document_receiver_registry import DocumentReceiverRegistry
 
 
 class PRISMA2020LabPlugin(BaseTabPlugin):
@@ -54,6 +55,10 @@ class PRISMA2020LabPlugin(BaseTabPlugin):
             lambda msg: self.status_changed.emit(msg)
         )
 
+        # Register as document receiver
+        registry = DocumentReceiverRegistry()
+        registry.register_receiver(self.tab_widget)
+
         return self.tab_widget
 
     def on_tab_activated(self):
@@ -66,7 +71,10 @@ class PRISMA2020LabPlugin(BaseTabPlugin):
 
     def cleanup(self):
         """Cleanup resources when plugin is unloaded."""
+        # Unregister from document receiver registry
         if self.tab_widget:
+            registry = DocumentReceiverRegistry()
+            registry.unregister_receiver(self.tab_widget.get_receiver_id())
             self.tab_widget.cleanup()
 
 
