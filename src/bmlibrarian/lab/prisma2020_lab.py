@@ -20,6 +20,7 @@ from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment, SuitabilityAssessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
+from bmlibrarian.lab.document_display_factory import create_document_display_simple
 
 
 class PRISMA2020Lab:
@@ -34,6 +35,7 @@ class PRISMA2020Lab:
         self.current_document: Optional[Dict[str, Any]] = None
         self.current_suitability: Optional[SuitabilityAssessment] = None
         self.current_assessment: Optional[PRISMA2020Assessment] = None
+        self.document_display = None  # Will hold document display widgets
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -217,21 +219,8 @@ class PRISMA2020Lab:
         )
 
     def _create_document_panel(self) -> ft.Column:
-        """Create document display panel."""
-
-        self.controls['doc_title'] = ft.Text(
-            "No document loaded",
-            size=16,
-            weight=ft.FontWeight.BOLD,
-            color=ft.Colors.GREY_700
-        )
-
-        self.controls['doc_metadata'] = ft.Text(
-            "",
-            size=12,
-            color=ft.Colors.GREY_600
-        )
-
+        """Create document display panel using document display factory."""
+        # Create suitability card first (this is PRISMA-specific)
         self.controls['suitability_card'] = ft.Container(
             ft.Column([
                 ft.Text(
@@ -252,30 +241,31 @@ class PRISMA2020Lab:
             border=ft.border.all(1, ft.Colors.GREY_300)
         )
 
-        self.controls['doc_abstract'] = ft.Text(
-            "Load a document to check if it's a systematic review and assess PRISMA 2020 compliance.",
-            size=13,
-            color=ft.Colors.GREY_700
+        # Create document display using factory (with tabbed abstract/fulltext)
+        self.document_display = create_document_display_simple(
+            page=self.page,
+            initial_title="No document loaded",
+            width=500,
+            abstract_height=250  # Slightly smaller to make room for suitability card
         )
 
-        return ft.Column([
+        # Store references for backward compatibility
+        self.controls['doc_title'] = self.document_display['title']
+        self.controls['doc_metadata'] = self.document_display['metadata']
+
+        # Build the document panel with suitability card inserted
+        document_column = ft.Column([
             ft.Text("Document", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_800),
             ft.Divider(),
-            self.controls['doc_title'],
-            self.controls['doc_metadata'],
+            self.document_display['title'],
+            self.document_display['metadata'],
             ft.Divider(),
             self.controls['suitability_card'],
             ft.Divider(),
-            ft.Text("Abstract", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-            ft.Container(
-                self.controls['doc_abstract'],
-                height=300,
-                padding=ft.padding.all(10),
-                bgcolor=ft.Colors.WHITE,
-                border_radius=5,
-                border=ft.border.all(1, ft.Colors.GREY_300)
-            )
+            self.document_display['tabs']
         ], spacing=10, scroll=ft.ScrollMode.AUTO)
+
+        return document_column
 
     def _create_assessment_panel(self) -> ft.Column:
         """Create PRISMA assessment results panel."""
@@ -448,29 +438,16 @@ class PRISMA2020Lab:
             self.page.update()
 
     def _display_document(self):
-        """Display loaded document."""
+        """Display loaded document using document display factory."""
         if not self.current_document:
             return
 
-        # Update document title
-        self.controls['doc_title'].value = self.current_document.get('title', 'Untitled')
-
-        # Update metadata
-        metadata_parts = []
-        if self.current_document.get('pmid'):
-            metadata_parts.append(f"PMID: {self.current_document['pmid']}")
-        if self.current_document.get('doi'):
-            metadata_parts.append(f"DOI: {self.current_document['doi']}")
-        if self.current_document.get('id'):
-            metadata_parts.append(f"ID: {self.current_document['id']}")
-
-        self.controls['doc_metadata'].value = " | ".join(metadata_parts)
-
-        # Update abstract
-        abstract = self.current_document.get('abstract', 'No abstract available')
-        self.controls['doc_abstract'].value = abstract
-
-        self.page.update()
+        # Use the document display factory's update function
+        if self.document_display:
+            self.document_display['update_func'](self.current_document)
+        else:
+            # Fallback to manual update (shouldn't happen)
+            self.page.update()
 
     def _display_suitability(self):
         """Display suitability assessment results."""
@@ -730,9 +707,10 @@ class PRISMA2020Lab:
     def _clear_all(self, e):
         """Clear all inputs and results."""
         self.controls['doc_id_input'].value = ""
-        self.controls['doc_title'].value = "No document loaded"
-        self.controls['doc_metadata'].value = ""
-        self.controls['doc_abstract'].value = "Load a document to check if it's a systematic review and assess PRISMA 2020 compliance."
+
+        # Clear document display using factory
+        if self.document_display:
+            self.document_display['update_func'](None)
 
         # Reset suitability card
         self.controls['suitability_card'].content = ft.Column([
