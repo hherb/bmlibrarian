@@ -76,6 +76,14 @@ class FactCheckerTabWidget(QWidget):
     COLOR_ARTICLE_BORDER = "#fdd835"
     COLOR_CITATION_BG = "#fff8e1"
     COLOR_CITATION_BORDER = "#ffb74d"
+    # Text and border colors
+    COLOR_DARK_TEXT = "#263238"
+    COLOR_WHITE = "#fff"
+    COLOR_LIGHT_BORDER = "#ccc"
+    COLOR_COLUMN_TITLE_ORIGINAL = "#3949ab"  # Indigo
+    COLOR_COLUMN_TITLE_AI = "#5e35b1"  # Purple
+    COLOR_ERROR_RED = "#c62828"
+
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -141,7 +149,7 @@ class FactCheckerTabWidget(QWidget):
                 border: 1px solid {self.COLOR_INPUT_BORDER};
                 border-radius: {s['radius_small']}px;
                 font-size: {s['font_medium']}pt;
-                color: #263238;
+                color: {self.COLOR_DARK_TEXT};
             }}
         """
 
@@ -176,7 +184,7 @@ class FactCheckerTabWidget(QWidget):
             'ai': (self.COLOR_AI_BG, self.COLOR_AI_BORDER),
             'human': (self.COLOR_HUMAN_BG, self.COLOR_HUMAN_BORDER),
         }
-        bg, border = color_map.get(col_type, ('#fff', '#ccc'))
+        bg, border = color_map.get(col_type, ('{self.COLOR_WHITE}', '{self.COLOR_LIGHT_BORDER}'))
         border_width = '2px' if col_type == 'human' else '1px'
         return f"""
             QWidget {{
@@ -199,6 +207,211 @@ class FactCheckerTabWidget(QWidget):
             }}
         """
 
+
+    def _get_article_text_stylesheet(self) -> str:
+        """Generate stylesheet for article context text area."""
+        s = self.scale
+        return f"""
+            QTextEdit {{
+                background-color: {self.COLOR_ARTICLE_BG};
+                border: 1px solid {self.COLOR_ARTICLE_BORDER};
+                padding: {s['padding_medium']}px;
+                border-radius: {s['radius_medium']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """
+
+    def _get_citation_scroll_stylesheet(self) -> str:
+        """Generate stylesheet for citation scroll area."""
+        s = self.scale
+        return f"""
+            QScrollArea {{
+                background-color: {self.COLOR_CITATION_BG};
+                border: 1px solid {self.COLOR_CITATION_BORDER};
+                border-radius: {s['radius_medium']}px;
+            }}
+        """
+
+    def _get_column_title_stylesheet(self, col_type: str) -> str:
+        """Generate stylesheet for column title labels."""
+        s = self.scale
+        color_map = {
+            'original': self.COLOR_COLUMN_TITLE_ORIGINAL,  # Indigo
+            'ai': self.COLOR_COLUMN_TITLE_AI,        # Purple
+            'human': self.COLOR_SUCCESS_TEXT,  # Green
+        }
+        color = color_map.get(col_type, self.COLOR_DARK_TEXT)
+        return f"font-weight: bold; color: {color}; font-size: {s['font_small']}pt;"
+
+    def _get_tag_initial_stylesheet(self) -> str:
+        """Generate initial stylesheet for tag labels (before value is set)."""
+        s = self.scale
+        return f"""
+            QLabel {{
+                background-color: {self.COLOR_TAG_NA};
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+        """
+
+    def _get_human_text_edit_stylesheet(self) -> str:
+        """Generate stylesheet for human evaluation text edit (white background)."""
+        s = self.scale
+        return f"""
+            QTextEdit {{
+                background-color: white;
+                border: 1px solid {self.COLOR_LIGHT_BORDER};
+                padding: {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_small']}pt;
+            }}
+        """
+
+    def _get_human_dropdown_stylesheet(self) -> str:
+        """Generate stylesheet for human evaluation dropdown."""
+        s = self.scale
+        return f"""
+            QComboBox {{
+                background-color: white;
+                border: 1px solid {self.COLOR_LIGHT_BORDER};
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
+            }}
+        """
+
+    def _get_section_label_stylesheet(self) -> str:
+        """Generate stylesheet for section labels."""
+        s = self.scale
+        return f"font-weight: bold; color: {self.COLOR_DARK_TEXT}; font-size: {s['font_normal']}pt;"
+
+    def _get_auto_save_label_stylesheet(self) -> str:
+        """Generate stylesheet for auto-save indicator label."""
+        s = self.scale
+        return f"color: {self.COLOR_SUCCESS_TEXT}; font-size: {s['font_small']}pt; font-style: italic;"
+
+
+    def _get_title_stylesheet(self) -> str:
+        """Generate stylesheet for main title label."""
+        s = self.scale
+        return f"font-size: {s['font_xlarge']}pt; font-weight: bold; color: {self.COLOR_DARK_BLUE};"
+
+    def _get_subtitle_stylesheet(self) -> str:
+        """Generate stylesheet for subtitle label."""
+        s = self.scale
+        return f"font-size: {s['font_normal']}pt; color: {self.COLOR_TEXT_GREY};"
+
+    def _get_statistics_button_stylesheet(self) -> str:
+        """Generate stylesheet for statistics button."""
+        s = self.scale
+        return f"""
+            QPushButton {{
+                background-color: {self.COLOR_LIGHT_BLUE};
+                color: white;
+                padding: {s['padding_small']}px {s['padding_large']}px;
+                border: none;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {self.COLOR_DARK_BLUE};
+            }}
+        """
+
+    def _get_status_label_stylesheet(self, state: str = 'info') -> str:
+        """Generate stylesheet for status label.
+        
+        Args:
+            state: One of 'info', 'success', 'error'
+        """
+        color_map = {
+            'info': self.COLOR_TEXT_GREY,
+            'success': self.COLOR_SUCCESS_TEXT,
+            'error': self.COLOR_ERROR_RED,
+        }
+        color = color_map.get(state, self.COLOR_TEXT_GREY)
+        style = "color: " + color + ";"
+        if state == 'info':
+            style += " font-style: italic;"
+        else:
+            style += " font-weight: bold;"
+        return style
+
+    def _get_status_container_stylesheet(self) -> str:
+        """Generate stylesheet for status container."""
+        s = self.scale
+        return f"""
+            QWidget {{
+                background-color: {self.COLOR_INFO_BG};
+                border-radius: {s['radius_medium']}px;
+            }}
+        """
+
+    def _get_load_data_button_stylesheet(self) -> str:
+        """Generate stylesheet for load data button."""
+        s = self.scale
+        return f"""
+            QPushButton {{
+                background-color: {self.COLOR_SUCCESS_GREEN};
+                color: white;
+                padding: {s['padding_large']}px {s['padding_xlarge'] * 2}px;
+                border: none;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_medium']}pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {self.COLOR_SUCCESS_GREEN_HOVER};
+            }}
+        """
+
+    def _get_tag_stylesheet(self, value: str) -> str:
+        """Generate stylesheet for tag label based on value.
+        
+        Args:
+            value: Tag value ('yes', 'no', 'maybe', 'n/a')
+        """
+        s = self.scale
+        value_lower = value.lower() if value else 'n/a'
+        
+        color_map = {
+            'yes': self.COLOR_TAG_YES,
+            'no': self.COLOR_TAG_NO,
+            'maybe': self.COLOR_TAG_MAYBE,
+            'n/a': self.COLOR_TAG_NA,
+        }
+        
+        bg_color = color_map.get(value_lower, self.COLOR_TAG_NA)
+        return f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                border-radius: {s['radius_small']}px;
+                font-weight: bold;
+            }}
+        """
+
+    def _get_blind_mode_column_stylesheet(self) -> str:
+        """Generate stylesheet for columns in blind mode (grayed out)."""
+        s = self.scale
+        return f"""
+            QWidget {{
+                background-color: {self.COLOR_BLIND_BG};
+                border: 1px solid {self.COLOR_BLIND_BORDER};
+                border-radius: {s['radius_medium']}px;
+                opacity: 0.5;
+            }}
+        """
+
+
+
+    def _get_statement_label_stylesheet(self) -> str:
+        """Generate stylesheet for statement number label."""
+        s = self.scale
+        return f"font-weight: bold; color: {self.COLOR_PRIMARY_BLUE}; font-size: {s['font_normal']}pt;"
+
     def _setup_ui(self):
         """Setup the user interface."""
         s = self.scale
@@ -212,11 +425,11 @@ class FactCheckerTabWidget(QWidget):
 
         title_layout = QVBoxLayout()
         title = QLabel("Fact-Checker Review Interface")
-        title.setStyleSheet(f"font-size: {s['font_xlarge']}pt; font-weight: bold; color: #0d47a1;")
+        title.setStyleSheet(self._get_title_stylesheet())
         title_layout.addWidget(title)
 
         subtitle = QLabel("Review and annotate AI-generated fact-checking results")
-        subtitle.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #666;")
+        subtitle.setStyleSheet(self._get_subtitle_stylesheet())
         title_layout.addWidget(subtitle)
 
         header_layout.addLayout(title_layout)
@@ -226,19 +439,7 @@ class FactCheckerTabWidget(QWidget):
         self.statistics_button = QPushButton("📊 Statistics")
         self.statistics_button.setFixedWidth(int(s['control_height_medium'] * 3.3))
         self.statistics_button.clicked.connect(self._on_show_statistics)
-        self.statistics_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #1565c0;
-                color: white;
-                padding: {s['padding_small']}px {s['padding_large']}px;
-                border: none;
-                border-radius: {s['radius_small']}px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #0d47a1;
-            }}
-        """)
+        self.statistics_button.setStyleSheet(self._get_statistics_button_stylesheet())
         header_layout.addWidget(self.statistics_button)
 
         main_layout.addLayout(header_layout)
@@ -249,34 +450,16 @@ class FactCheckerTabWidget(QWidget):
         status_layout.setContentsMargins(s['spacing_xlarge'], s['spacing_medium'], s['spacing_xlarge'], s['spacing_medium'])
 
         self.status_label = QLabel("Click 'Load Data' to begin reviewing")
-        self.status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.status_label.setStyleSheet(self._get_status_label_stylesheet('info'))
         status_layout.addWidget(self.status_label)
 
-        status_container.setStyleSheet(f"""
-            QWidget {{
-                background-color: #bbdefb;
-                border-radius: {s['radius_medium']}px;
-            }}
-        """)
+        status_container.setStyleSheet(self._get_status_container_stylesheet())
         main_layout.addWidget(status_container)
 
         # Load data button (initially visible)
         self.load_data_button = QPushButton("Load Data from Database")
         self.load_data_button.clicked.connect(self._on_load_data)
-        self.load_data_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #43a047;
-                color: white;
-                padding: {s['padding_large']}px {s['padding_xlarge'] * 2}px;
-                border: none;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_medium']}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #388e3c;
-            }}
-        """)
+        self.load_data_button.setStyleSheet(self._get_load_data_button_stylesheet())
         main_layout.addWidget(self.load_data_button, alignment=Qt.AlignCenter)
 
         # Review content (initially hidden)
@@ -301,68 +484,27 @@ class FactCheckerTabWidget(QWidget):
 
         # Statement label and text
         self.statement_label = QLabel("Statement #1:")
-        self.statement_label.setStyleSheet(f"font-weight: bold; color: #1976d2; font-size: {s['font_normal']}pt;")
+        self.statement_label.setStyleSheet(self._get_statement_label_stylesheet())
         self.statement_label.setFixedWidth(int(s['control_height_medium'] * 3.3))
         statement_row.addWidget(self.statement_label)
 
         # Statement text (read-only, expandable)
         self.statement_text = QLineEdit()
         self.statement_text.setReadOnly(True)
-        self.statement_text.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: #f5f5f5;
-                padding: {s['padding_medium']}px;
-                border: 1px solid #ddd;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_medium']}pt;
-                color: #263238;
-            }}
-        """)
+        self.statement_text.setStyleSheet(self._get_statement_input_stylesheet())
         statement_row.addWidget(self.statement_text, stretch=1)
 
         # Navigation buttons (back/forward arrows)
         self.prev_button = QPushButton("←")
         self.prev_button.setFixedSize(int(s['control_height_medium'] * 1.1), int(s['control_height_medium'] * 1.1))
         self.prev_button.clicked.connect(self._on_previous)
-        self.prev_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #757575;
-                color: white;
-                border: none;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_large']}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #616161;
-            }}
-            QPushButton:disabled {{
-                background-color: #e0e0e0;
-                color: #9e9e9e;
-            }}
-        """)
+        self.prev_button.setStyleSheet(self._get_nav_button_stylesheet(is_next=False))
         statement_row.addWidget(self.prev_button)
 
         self.next_button = QPushButton("→")
         self.next_button.setFixedSize(int(s['control_height_medium'] * 1.1), int(s['control_height_medium'] * 1.1))
         self.next_button.clicked.connect(self._on_next)
-        self.next_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #1976d2;
-                color: white;
-                border: none;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_large']}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #1565c0;
-            }}
-            QPushButton:disabled {{
-                background-color: #e0e0e0;
-                color: #9e9e9e;
-            }}
-        """)
+        self.next_button.setStyleSheet(self._get_nav_button_stylesheet(is_next=True))
         statement_row.addWidget(self.next_button)
 
         layout.addLayout(statement_row)
@@ -381,21 +523,13 @@ class FactCheckerTabWidget(QWidget):
         original_layout.setSpacing(s['spacing_small'])
 
         original_title = QLabel("Original Answer")
-        original_title.setStyleSheet(f"font-weight: bold; color: #3949ab; font-size: {s['font_small']}pt;")
+        original_title.setStyleSheet(self._get_column_title_stylesheet('original'))
         original_layout.addWidget(original_title)
 
         self.original_tag = QLabel("N/A")
         self.original_tag.setAlignment(Qt.AlignCenter)
         self.original_tag.setFixedHeight(int(s['control_height_small'] * 0.83))
-        self.original_tag.setStyleSheet(f"""
-            QLabel {{
-                background-color: #9e9e9e;
-                color: white;
-                padding: {s['padding_tiny']}px {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-weight: bold;
-            }}
-        """)
+        self.original_tag.setStyleSheet(self._get_tag_initial_stylesheet())
         original_layout.addWidget(self.original_tag)
 
         self.original_text = QTextEdit()
@@ -403,24 +537,10 @@ class FactCheckerTabWidget(QWidget):
         self.original_text.setPlaceholderText("Original long answer (to be added)")
         self.original_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
         self.original_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
-        self.original_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_small']}pt;
-            }}
-        """)
+        self.original_text.setStyleSheet(self._get_text_edit_stylesheet())
         original_layout.addWidget(self.original_text)
 
-        original_col.setStyleSheet(f"""
-            QWidget {{
-                background-color: #e8eaf6;
-                border: 1px solid #c5cae9;
-                border-radius: {s['radius_medium']}px;
-            }}
-        """)
+        original_col.setStyleSheet(self._get_column_stylesheet('original'))
         evaluation_row.addWidget(original_col, stretch=1)
 
         # Column 2: AI Evaluation
@@ -430,21 +550,13 @@ class FactCheckerTabWidget(QWidget):
         ai_layout.setSpacing(s['spacing_small'])
 
         ai_title = QLabel("AI Evaluation")
-        ai_title.setStyleSheet(f"font-weight: bold; color: #5e35b1; font-size: {s['font_small']}pt;")
+        ai_title.setStyleSheet(self._get_column_title_stylesheet('ai'))
         ai_layout.addWidget(ai_title)
 
         self.ai_tag = QLabel("N/A")
         self.ai_tag.setAlignment(Qt.AlignCenter)
         self.ai_tag.setFixedHeight(int(s['control_height_small'] * 0.83))
-        self.ai_tag.setStyleSheet(f"""
-            QLabel {{
-                background-color: #9e9e9e;
-                color: white;
-                padding: {s['padding_tiny']}px {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-weight: bold;
-            }}
-        """)
+        self.ai_tag.setStyleSheet(self._get_tag_initial_stylesheet())
         ai_layout.addWidget(self.ai_tag)
 
         self.ai_text = QTextEdit()
@@ -452,24 +564,10 @@ class FactCheckerTabWidget(QWidget):
         self.ai_text.setPlaceholderText("AI rationale")
         self.ai_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
         self.ai_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
-        self.ai_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_small']}pt;
-            }}
-        """)
+        self.ai_text.setStyleSheet(self._get_text_edit_stylesheet())
         ai_layout.addWidget(self.ai_text)
 
-        ai_col.setStyleSheet(f"""
-            QWidget {{
-                background-color: #ede7f6;
-                border: 1px solid #d1c4e9;
-                border-radius: {s['radius_medium']}px;
-            }}
-        """)
+        ai_col.setStyleSheet(self._get_column_stylesheet('ai'))
         evaluation_row.addWidget(ai_col, stretch=1)
 
         # Column 3: Human Evaluation
@@ -479,7 +577,7 @@ class FactCheckerTabWidget(QWidget):
         human_layout.setSpacing(s['spacing_small'])
 
         human_title = QLabel("Human Review")
-        human_title.setStyleSheet(f"font-weight: bold; color: #2e7d32; font-size: {s['font_small']}pt;")
+        human_title.setStyleSheet(self._get_column_title_stylesheet('human'))
         human_layout.addWidget(human_title)
 
         self.human_dropdown = QComboBox()
@@ -490,14 +588,7 @@ class FactCheckerTabWidget(QWidget):
         self.human_dropdown.setCurrentIndex(0)
         self.human_dropdown.currentIndexChanged.connect(self._on_annotation_change)
         self.human_dropdown.setFixedHeight(int(s['control_height_small'] * 0.83))
-        self.human_dropdown.setStyleSheet(f"""
-            QComboBox {{
-                background-color: white;
-                border: 1px solid #ccc;
-                padding: {s['padding_tiny']}px;
-                border-radius: {s['radius_small']}px;
-            }}
-        """)
+        self.human_dropdown.setStyleSheet(self._get_human_dropdown_stylesheet())
         human_layout.addWidget(self.human_dropdown)
 
         self.human_text = QTextEdit()
@@ -505,24 +596,10 @@ class FactCheckerTabWidget(QWidget):
         self.human_text.textChanged.connect(self._on_annotation_change)
         self.human_text.setMinimumHeight(int(s['control_height_medium'] * 2.2))
         self.human_text.setMaximumHeight(int(s['control_height_medium'] * 2.2))
-        self.human_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: white;
-                border: 1px solid #ccc;
-                padding: {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_small']}pt;
-            }}
-        """)
+        self.human_text.setStyleSheet(self._get_human_text_edit_stylesheet())
         human_layout.addWidget(self.human_text)
 
-        human_col.setStyleSheet(f"""
-            QWidget {{
-                background-color: #e8f5e9;
-                border: 2px solid #66bb6a;
-                border-radius: {s['radius_medium']}px;
-            }}
-        """)
+        human_col.setStyleSheet(self._get_column_stylesheet('human'))
         evaluation_row.addWidget(human_col, stretch=1)
 
         # Store column widgets for blind mode
@@ -535,7 +612,7 @@ class FactCheckerTabWidget(QWidget):
         # ROW 3: Original article (fixed height ~12 lines, horizontally expandable)
         # ==============================================================================
         article_label = QLabel("Original Article Context:")
-        article_label.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
+        article_label.setStyleSheet(self._get_section_label_stylesheet())
         layout.addWidget(article_label)
 
         self.article_text = QTextEdit()
@@ -543,22 +620,14 @@ class FactCheckerTabWidget(QWidget):
         self.article_text.setPlaceholderText("Original article information will be shown here")
         self.article_text.setMinimumHeight(int(s['control_height_medium'] * 4.4))
         self.article_text.setMaximumHeight(int(s['control_height_medium'] * 4.4))
-        self.article_text.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: #fffde7;
-                border: 1px solid #fdd835;
-                padding: {s['padding_medium']}px;
-                border-radius: {s['radius_medium']}px;
-                font-size: {s['font_small']}pt;
-            }}
-        """)
+        self.article_text.setStyleSheet(self._get_article_text_stylesheet())
         layout.addWidget(self.article_text)
 
         # ==============================================================================
         # ROW 4: Citations (both ways expandable)
         # ==============================================================================
         citations_label = QLabel("Supporting Citations:")
-        citations_label.setStyleSheet(f"font-weight: bold; color: #263238; font-size: {s['font_normal']}pt;")
+        citations_label.setStyleSheet(self._get_section_label_stylesheet())
         layout.addWidget(citations_label)
 
         scroll_area = QScrollArea()
@@ -568,13 +637,7 @@ class FactCheckerTabWidget(QWidget):
         self.citation_widget = CitationListWidget()
         scroll_area.setWidget(self.citation_widget)
 
-        scroll_area.setStyleSheet(f"""
-            QScrollArea {{
-                background-color: #fff8e1;
-                border: 1px solid #ffb74d;
-                border-radius: {s['radius_medium']}px;
-            }}
-        """)
+        scroll_area.setStyleSheet(self._get_citation_scroll_stylesheet())
         layout.addWidget(scroll_area, stretch=1)
 
         # ==============================================================================
@@ -591,7 +654,7 @@ class FactCheckerTabWidget(QWidget):
 
         # Auto-save indicator
         auto_save_label = QLabel("✓ Annotations saved automatically")
-        auto_save_label.setStyleSheet(f"color: #2e7d32; font-size: {s['font_small']}pt; font-style: italic;")
+        auto_save_label.setStyleSheet(self._get_auto_save_label_stylesheet())
         footer_layout.addWidget(auto_save_label)
 
         layout.addLayout(footer_layout)
@@ -649,7 +712,7 @@ class FactCheckerTabWidget(QWidget):
         """Load fact-check results from database."""
         try:
             self.status_label.setText("Loading from database...")
-            self.status_label.setStyleSheet("color: #666; font-style: italic;")
+            self.status_label.setStyleSheet(self._get_status_label_stylesheet('info'))
 
             # Get database instance
             self.fact_checker_db = get_fact_checker_db(self.db_file)
@@ -719,7 +782,7 @@ class FactCheckerTabWidget(QWidget):
             self.status_label.setText(
                 f"✓ Loaded {len(self.results)} statements from {db_source}{mode_indicator}"
             )
-            self.status_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+            self.status_label.setStyleSheet(self._get_status_label_stylesheet('success'))
 
             # Hide load button, show review interface
             self.load_data_button.setVisible(False)
@@ -742,7 +805,7 @@ class FactCheckerTabWidget(QWidget):
                 f"Failed to load from database:\n\n{str(e)}",
             )
             self.status_label.setText("Error loading data")
-            self.status_label.setStyleSheet("color: #c62828; font-weight: bold;")
+            self.status_label.setStyleSheet(self._get_status_label_stylesheet('error'))
 
     def _display_current_statement(self):
         """Display the current statement and its annotations."""
@@ -812,28 +875,8 @@ class FactCheckerTabWidget(QWidget):
             tag_label: The QLabel to update
             value: The value ('yes', 'no', 'maybe', 'N/A')
         """
-        s = self.scale
-        value_lower = value.lower() if value else 'n/a'
-
-        # Color mapping
-        color_map = {
-            'yes': '#4caf50',    # Green
-            'no': '#f44336',     # Red
-            'maybe': '#ff9800',  # Orange
-            'n/a': '#9e9e9e',    # Gray
-        }
-
-        bg_color = color_map.get(value_lower, '#9e9e9e')
         tag_label.setText(value.upper() if value else 'N/A')
-        tag_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: {bg_color};
-                color: white;
-                padding: {s['padding_tiny']}px {s['padding_small']}px;
-                border-radius: {s['radius_small']}px;
-                font-weight: bold;
-            }}
-        """)
+        tag_label.setStyleSheet(self._get_tag_stylesheet(value))
 
     def _on_annotation_change(self):
         """Handle annotation change event."""
@@ -958,25 +1001,11 @@ Progress: {(annotated / total * 100):.1f}%
 
         # Gray out original column
         self.original_col.setEnabled(False)
-        self.original_col.setStyleSheet(f"""
-            QWidget {{
-                background-color: #e0e0e0;
-                border: 1px solid #bdbdbd;
-                border-radius: {s['radius_medium']}px;
-                opacity: 0.5;
-            }}
-        """)
+        self.original_col.setStyleSheet(self._get_blind_mode_column_stylesheet())
 
         # Gray out AI column
         self.ai_col.setEnabled(False)
-        self.ai_col.setStyleSheet(f"""
-            QWidget {{
-                background-color: #e0e0e0;
-                border: 1px solid #bdbdbd;
-                border-radius: {s['radius_medium']}px;
-                opacity: 0.5;
-            }}
-        """)
+        self.ai_col.setStyleSheet(self._get_blind_mode_column_stylesheet())
 
     def on_activated(self):
         """Called when tab is activated."""
