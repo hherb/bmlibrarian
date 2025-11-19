@@ -5,6 +5,7 @@ Interactive interface for assessing systematic reviews and meta-analyses
 against PRISMA 2020 reporting guidelines using PRISMA2020Agent.
 """
 
+import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QLineEdit, QComboBox, QSplitter,
@@ -19,29 +20,19 @@ from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
+from .constants import (
+    SCORE_COLORS, COMPLIANCE_COLORS, SECTION_COLORS, COMPLIANCE_BG_COLORS,
+    DEFAULT_SPLITTER_SIZES, DOC_ID_MIN_VALUE, DOC_ID_MAX_VALUE,
+    MIN_CONFIDENCE_LAB_MODE, SCORE_FULLY_REPORTED_THRESHOLD,
+    SCORE_PARTIALLY_REPORTED_THRESHOLD, COMPLIANCE_EXCELLENT_THRESHOLD,
+    COMPLIANCE_GOOD_THRESHOLD, COMPLIANCE_ADEQUATE_THRESHOLD,
+    COMPLIANCE_POOR_THRESHOLD, DEFAULT_PRISMA_MODEL, DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P, DEFAULT_MAX_TOKENS, DEFAULT_MAX_WORKERS,
+    SYMBOL_FULLY_REPORTED, SYMBOL_PARTIALLY_REPORTED, SYMBOL_NOT_REPORTED
+)
 
-
-# Color constants for scoring
-SCORE_COLORS = {
-    0.0: '#D32F2F',    # Red - Not reported
-    1.0: '#F57C00',    # Orange - Partially reported
-    2.0: '#388E3C',    # Green - Fully reported
-}
-
-COMPLIANCE_COLORS = {
-    'excellent': '#1B5E20',  # Dark green (≥90%)
-    'good': '#388E3C',       # Green (75-89%)
-    'adequate': '#F57C00',   # Orange (60-74%)
-    'poor': '#E65100',       # Dark orange (40-59%)
-    'very_poor': '#B71C1C',  # Dark red (<40%)
-}
-
-SECTION_COLORS = {
-    'title': '#1976D2',
-    'info': '#1976D2',
-    'success': '#2E7D32',
-    'error': '#C62828',
-}
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 
 class PRISMA2020AssessmentWorker(QThread):
@@ -64,16 +55,23 @@ class PRISMA2020AssessmentWorker(QThread):
 
     def run(self):
         """Execute PRISMA 2020 assessment in background thread."""
+        doc_id = self.document.get('id', 'unknown')
+        logger.info(f"Starting PRISMA 2020 assessment for document {doc_id}")
+
         try:
             assessment = self.prisma_agent.assess_prisma_compliance(
                 document=self.document,
-                min_confidence=0.0  # Show all assessments in lab mode
+                min_confidence=MIN_CONFIDENCE_LAB_MODE  # Show all assessments in lab mode
             )
             if assessment:
+                logger.info(f"PRISMA 2020 assessment completed for document {doc_id} - "
+                           f"{assessment.overall_compliance_percentage:.1f}% compliance")
                 self.result_ready.emit(assessment)
             else:
+                logger.warning(f"PRISMA 2020 assessment returned no results for document {doc_id}")
                 self.error_occurred.emit("PRISMA 2020 assessment returned no results (document may not be a systematic review)")
         except Exception as e:
+            logger.error(f"PRISMA 2020 assessment failed for document {doc_id}: {e}", exc_info=True)
             self.error_occurred.emit(str(e))
 
 
@@ -81,6 +79,9 @@ class PRISMA2020LabTabWidget(QWidget):
     """Main PRISMA 2020 Lab tab widget."""
 
     status_message = Signal(str)
+
+    # Class-level cache for score display text (performance optimization)
+    _score_display_cache: Dict[float, str] = {}
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -122,27 +123,57 @@ class PRISMA2020LabTabWidget(QWidget):
         self._init_agent()
         self._setup_ui()
 
+    def _validate_config(self):
+        """Validate required configuration is present and valid."""
+        logger.debug("Validating PRISMA 2020 Lab plugin configuration")
+
+        # Check Ollama config exists
+        ollama_config = self.config.get_ollama_config()
+        if not ollama_config or not ollama_config.get('host'):
+            logger.error("Missing required configuration: Ollama host")
+            raise ValueError("Missing required configuration: Ollama host")
+
+        logger.info(f"Ollama host configured: {ollama_config.get('host')}")
+
+        # Warn if agent config is missing (but don't fail - we have defaults)
+        agent_config = self.config.get_agent_config('prisma2020')
+        if not agent_config:
+            logger.warning("PRISMA2020 agent config not found, using defaults")
+            print("Warning: PRISMA2020 agent config not found, using defaults")
+        else:
+            logger.debug(f"PRISMA2020 agent config loaded: {agent_config}")
+
     def _init_agent(self):
         """Initialize PRISMA2020Agent with orchestrator."""
+        logger.info("Initializing PRISMA2020Agent")
+
         try:
-            self.orchestrator = AgentOrchestrator(max_workers=2)
+            # Validate configuration first
+            self._validate_config()
+
+            self.orchestrator = AgentOrchestrator(max_workers=DEFAULT_MAX_WORKERS)
+            logger.debug(f"Created AgentOrchestrator with {DEFAULT_MAX_WORKERS} workers")
 
             # Get configuration
-            default_model = self.config.get_model('prisma2020_agent') or "gpt-oss:20b"
+            default_model = self.config.get_model('prisma2020_agent') or DEFAULT_PRISMA_MODEL
             agent_config = self.config.get_agent_config('prisma2020') or {}
             host = self.config.get_ollama_config()['host']
+
+            logger.info(f"Initializing PRISMA2020Agent with model: {default_model}, host: {host}")
 
             self.prisma_agent = PRISMA2020Agent(
                 model=default_model,
                 host=host,
-                temperature=agent_config.get('temperature', 0.1),
-                top_p=agent_config.get('top_p', 0.9),
-                max_tokens=agent_config.get('max_tokens', 4000),
+                temperature=agent_config.get('temperature', DEFAULT_TEMPERATURE),
+                top_p=agent_config.get('top_p', DEFAULT_TOP_P),
+                max_tokens=agent_config.get('max_tokens', DEFAULT_MAX_TOKENS),
                 orchestrator=self.orchestrator,
                 show_model_info=True
             )
+            logger.info(f"✓ PRISMA2020Agent initialized successfully with model: {default_model}")
             print(f"✓ PRISMA2020Agent initialized with model: {default_model}")
         except Exception as e:
+            logger.error(f"Failed to initialize PRISMA2020Agent: {e}", exc_info=True)
             print(f"Warning: Failed to initialize PRISMA2020Agent: {e}")
             self.prisma_agent = None
 
@@ -172,7 +203,7 @@ class PRISMA2020LabTabWidget(QWidget):
         splitter.addWidget(assessment_panel)
 
         # Set initial sizes (40% document, 60% assessment)
-        splitter.setSizes([400, 600])
+        splitter.setSizes(DEFAULT_SPLITTER_SIZES)
 
         main_layout.addWidget(splitter, stretch=1)
 
@@ -268,7 +299,8 @@ class PRISMA2020LabTabWidget(QWidget):
         self.doc_id_input = QLineEdit()
         self.doc_id_input.setPlaceholderText("Enter document ID (e.g., 12345)")
         self.doc_id_input.setMaximumWidth(scale_px(200))
-        self.doc_id_input.setValidator(QIntValidator(1, 999999999))
+        # Use PostgreSQL INTEGER type limits (INT_MAX)
+        self.doc_id_input.setValidator(QIntValidator(DOC_ID_MIN_VALUE, DOC_ID_MAX_VALUE))
         self.doc_id_input.returnPressed.connect(self._load_document)
         self.doc_id_input.setStyleSheet(
             self.stylesheet_gen.input_stylesheet()
@@ -380,7 +412,10 @@ class PRISMA2020LabTabWidget(QWidget):
 
     def _refresh_models(self):
         """Refresh available models from Ollama using the agent's method."""
+        logger.debug("Refreshing available models from Ollama")
+
         if not self.prisma_agent:
+            logger.error("Cannot refresh models: PRISMA agent not initialized")
             QMessageBox.warning(
                 self,
                 "Agent Error",
@@ -391,6 +426,7 @@ class PRISMA2020LabTabWidget(QWidget):
         try:
             # Use agent's get_available_models method (uses ollama library internally)
             models = self.prisma_agent.get_available_models()
+            logger.info(f"Successfully refreshed {len(models)} models from Ollama")
 
             current = self.model_combo.currentText()
             self.model_combo.clear()
@@ -399,20 +435,24 @@ class PRISMA2020LabTabWidget(QWidget):
             # Restore selection if possible
             if current in models:
                 self.model_combo.setCurrentText(current)
+                logger.debug(f"Restored previous model selection: {current}")
             else:
                 # Set to configured model
-                default_model = self.config.get_model('prisma2020_agent') or "gpt-oss:20b"
+                default_model = self.config.get_model('prisma2020_agent') or DEFAULT_PRISMA_MODEL
                 if default_model in models:
                     self.model_combo.setCurrentText(default_model)
+                    logger.debug(f"Set to default model: {default_model}")
 
             self.status_message.emit(f"Refreshed models - {len(models)} available")
         except ConnectionError as e:
+            logger.error(f"Failed to connect to Ollama: {e}")
             QMessageBox.warning(
                 self,
                 "Connection Error",
                 f"Failed to connect to Ollama: {str(e)}\n\nPlease ensure Ollama is running."
             )
         except Exception as e:
+            logger.error(f"Unexpected error while refreshing models: {e}", exc_info=True)
             QMessageBox.warning(
                 self,
                 "Error",
@@ -424,6 +464,8 @@ class PRISMA2020LabTabWidget(QWidget):
         if not model_name or not self.prisma_agent:
             return
 
+        logger.info(f"Switching to model: {model_name}")
+
         try:
             # Reinitialize agent with new model
             agent_config = self.config.get_agent_config('prisma2020') or {}
@@ -432,20 +474,23 @@ class PRISMA2020LabTabWidget(QWidget):
             self.prisma_agent = PRISMA2020Agent(
                 model=model_name,
                 host=host,
-                temperature=agent_config.get('temperature', 0.1),
-                top_p=agent_config.get('top_p', 0.9),
-                max_tokens=agent_config.get('max_tokens', 4000),
+                temperature=agent_config.get('temperature', DEFAULT_TEMPERATURE),
+                top_p=agent_config.get('top_p', DEFAULT_TOP_P),
+                max_tokens=agent_config.get('max_tokens', DEFAULT_MAX_TOKENS),
                 orchestrator=self.orchestrator,
                 show_model_info=True
             )
+            logger.info(f"Successfully switched to model: {model_name}")
             self.status_message.emit(f"Switched to model: {model_name}")
         except ConnectionError as e:
+            logger.error(f"Connection error while switching to model {model_name}: {e}")
             QMessageBox.warning(
                 self,
                 "Connection Error",
                 f"Failed to connect to Ollama with model {model_name}: {str(e)}"
             )
         except Exception as e:
+            logger.error(f"Failed to switch to model {model_name}: {e}", exc_info=True)
             QMessageBox.warning(
                 self,
                 "Error",
@@ -457,18 +502,22 @@ class PRISMA2020LabTabWidget(QWidget):
         doc_id_str = self.doc_id_input.text().strip()
 
         if not doc_id_str:
+            logger.debug("Load document attempted with empty document ID")
             QMessageBox.warning(self, "Input Error", "Please enter a document ID.")
             return
 
         try:
             doc_id = int(doc_id_str)
         except ValueError:
+            logger.warning(f"Invalid document ID format: {doc_id_str}")
             QMessageBox.warning(
                 self,
                 "Input Error",
                 "Invalid document ID. Please enter a number."
             )
             return
+
+        logger.info(f"Loading document {doc_id} for PRISMA 2020 assessment")
 
         # Update status
         self._update_status(f"Loading document {doc_id}...", SECTION_COLORS['info'])
@@ -479,6 +528,7 @@ class PRISMA2020LabTabWidget(QWidget):
             documents = fetch_documents_by_ids({doc_id})
 
             if not documents:
+                logger.warning(f"Document {doc_id} not found in database")
                 QMessageBox.warning(
                     self,
                     "Not Found",
@@ -489,10 +539,13 @@ class PRISMA2020LabTabWidget(QWidget):
                 return
 
             self.current_document = documents[0]
+            doc_title = self.current_document.get('title', 'Untitled')
+            logger.info(f"Document {doc_id} loaded successfully: {doc_title[:100]}")
             self._display_document()
 
             # Check agent
             if not self.prisma_agent:
+                logger.error("PRISMA Agent not initialized, cannot perform assessment")
                 QMessageBox.warning(
                     self,
                     "Agent Error",
@@ -505,6 +558,12 @@ class PRISMA2020LabTabWidget(QWidget):
             # Start assessment in background
             self._update_status("Running PRISMA 2020 assessment...", SECTION_COLORS['info'])
 
+            # Cleanup previous worker if running to prevent resource conflicts
+            if self.worker and self.worker.isRunning():
+                logger.debug("Terminating previous worker thread")
+                self.worker.terminate()
+                self.worker.wait()
+
             self.worker = PRISMA2020AssessmentWorker(self.prisma_agent, self.current_document)
             self.worker.result_ready.connect(self._on_assessment_complete)
             self.worker.error_occurred.connect(self._on_assessment_error)
@@ -512,6 +571,7 @@ class PRISMA2020LabTabWidget(QWidget):
             self.worker.start()
 
         except ConnectionError as e:
+            logger.error(f"Database connection error while loading document {doc_id}: {e}", exc_info=True)
             QMessageBox.critical(
                 self,
                 "Database Error",
@@ -520,6 +580,7 @@ class PRISMA2020LabTabWidget(QWidget):
             self._update_status("Database connection failed", SECTION_COLORS['error'])
             self.load_button.setEnabled(True)
         except Exception as e:
+            logger.error(f"Unexpected error loading document {doc_id}: {e}", exc_info=True)
             QMessageBox.critical(
                 self,
                 "Error",
@@ -556,10 +617,13 @@ class PRISMA2020LabTabWidget(QWidget):
 
     def _on_assessment_complete(self, assessment: PRISMA2020Assessment):
         """Handle PRISMA 2020 assessment completion."""
+        compliance_pct = assessment.overall_compliance_percentage
+        logger.info(f"Assessment complete: {compliance_pct:.1f}% compliance, "
+                   f"{assessment.total_applicable_items} items assessed")
+
         self.current_assessment = assessment
         self._display_assessment()
 
-        compliance_pct = assessment.overall_compliance_percentage
         self._update_status(
             f"✓ Assessment complete ({compliance_pct:.1f}% compliance)",
             SECTION_COLORS['success']
@@ -568,6 +632,7 @@ class PRISMA2020LabTabWidget(QWidget):
 
     def _on_assessment_error(self, error_msg: str):
         """Handle PRISMA 2020 assessment error."""
+        logger.error(f"Assessment error: {error_msg}")
         QMessageBox.critical(
             self,
             "Assessment Error",
@@ -580,11 +645,8 @@ class PRISMA2020LabTabWidget(QWidget):
         if not self.current_assessment:
             return
 
-        # Clear previous results
-        while self.assessment_layout.count():
-            child = self.assessment_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        # Clear previous results (handles both widgets and nested layouts)
+        self._clear_layout(self.assessment_layout)
 
         a = self.current_assessment
 
@@ -644,18 +706,18 @@ class PRISMA2020LabTabWidget(QWidget):
         """Create overall compliance section."""
         section = QGroupBox("⭐ Overall Compliance")
 
-        # Get compliance category for color
+        # Get compliance category background color
         category = a.get_compliance_category()
         if '≥90%' in category:
-            bg_color = '#E8F5E9'
+            bg_color = COMPLIANCE_BG_COLORS['excellent']
         elif '75-89%' in category:
-            bg_color = '#F1F8E9'
+            bg_color = COMPLIANCE_BG_COLORS['good']
         elif '60-74%' in category:
-            bg_color = '#FFF3E0'
+            bg_color = COMPLIANCE_BG_COLORS['adequate']
         elif '40-59%' in category:
-            bg_color = '#FFE0B2'
+            bg_color = COMPLIANCE_BG_COLORS['poor']
         else:
-            bg_color = '#FFEBEE'
+            bg_color = COMPLIANCE_BG_COLORS['very_poor']
 
         section.setStyleSheet(
             self.stylesheet_gen.card_stylesheet(bg_color=bg_color)
@@ -870,34 +932,55 @@ class PRISMA2020LabTabWidget(QWidget):
 
     def _get_score_color(self, score: float) -> str:
         """Get color based on item score."""
-        if score >= 1.9:  # Treat ≥1.9 as fully reported
+        if score >= SCORE_FULLY_REPORTED_THRESHOLD:
             return SCORE_COLORS[2.0]
-        elif score >= 0.9:  # Treat ≥0.9 as partially reported
+        elif score >= SCORE_PARTIALLY_REPORTED_THRESHOLD:
             return SCORE_COLORS[1.0]
         else:
             return SCORE_COLORS[0.0]
 
     def _get_score_text(self, score: float) -> str:
-        """Get text description for score."""
-        if score >= 1.9:
-            return f"✓ Fully Reported ({score:.1f})"
-        elif score >= 0.9:
-            return f"◐ Partial ({score:.1f})"
+        """Get text description for score with caching for performance."""
+        # Check cache first
+        if score in self._score_display_cache:
+            return self._score_display_cache[score]
+
+        # Calculate and cache result
+        if score >= SCORE_FULLY_REPORTED_THRESHOLD:
+            text = f"{SYMBOL_FULLY_REPORTED} Fully Reported ({score:.1f})"
+        elif score >= SCORE_PARTIALLY_REPORTED_THRESHOLD:
+            text = f"{SYMBOL_PARTIALLY_REPORTED} Partial ({score:.1f})"
         else:
-            return f"✗ Not Reported ({score:.1f})"
+            text = f"{SYMBOL_NOT_REPORTED} Not Reported ({score:.1f})"
+
+        self._score_display_cache[score] = text
+        return text
 
     def _get_compliance_color(self, percentage: float) -> str:
         """Get color based on compliance percentage."""
-        if percentage >= 90:
+        if percentage >= COMPLIANCE_EXCELLENT_THRESHOLD:
             return COMPLIANCE_COLORS['excellent']
-        elif percentage >= 75:
+        elif percentage >= COMPLIANCE_GOOD_THRESHOLD:
             return COMPLIANCE_COLORS['good']
-        elif percentage >= 60:
+        elif percentage >= COMPLIANCE_ADEQUATE_THRESHOLD:
             return COMPLIANCE_COLORS['adequate']
-        elif percentage >= 40:
+        elif percentage >= COMPLIANCE_POOR_THRESHOLD:
             return COMPLIANCE_COLORS['poor']
         else:
             return COMPLIANCE_COLORS['very_poor']
+
+    def _clear_layout(self, layout):
+        """Recursively clear a layout and delete all child widgets and layouts."""
+        if layout is None:
+            return
+
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                # Recursively delete nested layouts
+                self._clear_layout(child.layout())
 
     def _update_status(self, message: str, color: str):
         """Update status label with message and color."""
@@ -911,16 +994,15 @@ class PRISMA2020LabTabWidget(QWidget):
 
     def _clear_all(self):
         """Clear all fields."""
+        logger.debug("Clearing all fields")
+
         self.doc_id_input.clear()
         self.doc_title_label.setText("No document loaded")
         self.doc_metadata_label.setText("")
         self.doc_abstract_edit.clear()
 
-        # Clear assessment results
-        while self.assessment_layout.count():
-            child = self.assessment_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        # Clear assessment results (handles both widgets and nested layouts)
+        self._clear_layout(self.assessment_layout)
 
         placeholder = QLabel("Assessment results will appear here after loading a document.")
         placeholder.setStyleSheet(
@@ -935,15 +1017,24 @@ class PRISMA2020LabTabWidget(QWidget):
         self.current_document = None
         self.current_assessment = None
         self.status_message.emit("Cleared all fields")
+        logger.info("All fields cleared successfully")
 
     def cleanup(self):
         """Cleanup resources."""
+        logger.info("Cleaning up PRISMA 2020 Lab plugin resources")
+
         if self.worker and self.worker.isRunning():
+            logger.debug("Terminating worker thread")
             self.worker.terminate()
             self.worker.wait()
 
         if self.orchestrator:
             try:
+                logger.debug("Shutting down orchestrator")
                 self.orchestrator.shutdown()
+                logger.info("Orchestrator shutdown complete")
             except Exception as e:
+                logger.error(f"Error during orchestrator shutdown: {e}", exc_info=True)
                 print(f"Warning: Error during orchestrator shutdown: {e}")
+
+        logger.info("PRISMA 2020 Lab plugin cleanup complete")
