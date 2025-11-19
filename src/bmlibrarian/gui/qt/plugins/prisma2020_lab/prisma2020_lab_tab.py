@@ -10,10 +10,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QLineEdit, QComboBox, QSplitter,
     QMessageBox, QScrollArea, QTableWidget, QTableWidgetItem,
-    QHeaderView
+    QHeaderView, QTabWidget, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QUrl
 from PySide6.QtGui import QFont, QIntValidator, QColor
+from PySide6.QtPdfWidgets import QPdfView
+from PySide6.QtPdf import QPdfDocument
 from typing import Optional, Dict, Any
 
 from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
@@ -113,7 +115,11 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         # Document display
         self.doc_title_label: Optional[QLabel] = None
         self.doc_metadata_label: Optional[QLabel] = None
+        self.doc_tabs: Optional[QTabWidget] = None
         self.doc_abstract_edit: Optional[QTextEdit] = None
+        self.doc_fulltext_edit: Optional[QTextEdit] = None
+        self.doc_pdf_view: Optional[QPdfView] = None
+        self.doc_pdf_document: Optional[QPdfDocument] = None
 
         # Assessment results
         self.assessment_scroll: Optional[QScrollArea] = None
@@ -336,7 +342,7 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         return input_row
 
     def _create_document_panel(self) -> QGroupBox:
-        """Create document display panel."""
+        """Create document display panel with tabbed interface."""
         group = QGroupBox("Document")
         layout = QVBoxLayout(group)
         layout.setSpacing(scale_px(10))
@@ -363,9 +369,16 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             )
         )
 
-        # Abstract
-        abstract_label = QLabel("Abstract:")
-        abstract_label.setFont(QFont("", 10, QFont.Bold))
+        # Tabbed interface for document content
+        self.doc_tabs = QTabWidget()
+        self.doc_tabs.setStyleSheet(
+            self.stylesheet_gen.input_stylesheet()
+        )
+
+        # Tab 1: Abstract
+        abstract_tab = QWidget()
+        abstract_layout = QVBoxLayout(abstract_tab)
+        abstract_layout.setContentsMargins(0, 0, 0, 0)
 
         self.doc_abstract_edit = QTextEdit()
         self.doc_abstract_edit.setReadOnly(True)
@@ -373,12 +386,36 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         self.doc_abstract_edit.setStyleSheet(
             self.stylesheet_gen.input_stylesheet()
         )
+        abstract_layout.addWidget(self.doc_abstract_edit)
+
+        self.doc_tabs.addTab(abstract_tab, "Abstract")
+
+        # Tab 2: Full Text (will contain either text or PDF viewer)
+        fulltext_tab = QWidget()
+        fulltext_layout = QVBoxLayout(fulltext_tab)
+        fulltext_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Text viewer for markdown/text full text
+        self.doc_fulltext_edit = QTextEdit()
+        self.doc_fulltext_edit.setReadOnly(True)
+        self.doc_fulltext_edit.setPlaceholderText("Full text not available for this document...")
+        self.doc_fulltext_edit.setStyleSheet(
+            self.stylesheet_gen.input_stylesheet()
+        )
+        self.doc_fulltext_edit.setVisible(False)
+        fulltext_layout.addWidget(self.doc_fulltext_edit)
+
+        # PDF viewer for PDF full text
+        self.doc_pdf_view = QPdfView()
+        self.doc_pdf_view.setVisible(False)
+        fulltext_layout.addWidget(self.doc_pdf_view)
+
+        self.doc_tabs.addTab(fulltext_tab, "Full Text")
 
         layout.addWidget(self.doc_title_label)
         layout.addWidget(self.doc_metadata_label)
         layout.addSpacing(scale_px(10))
-        layout.addWidget(abstract_label)
-        layout.addWidget(self.doc_abstract_edit)
+        layout.addWidget(self.doc_tabs, stretch=1)
 
         return group
 
@@ -387,16 +424,20 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         group = QGroupBox("PRISMA 2020 Assessment")
         layout = QVBoxLayout(group)
         layout.setSpacing(scale_px(10))
+        layout.setContentsMargins(scale_px(5), scale_px(5), scale_px(5), scale_px(5))
 
         # Scrollable assessment results
         self.assessment_scroll = QScrollArea()
         self.assessment_scroll.setWidgetResizable(True)
-        self.assessment_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.assessment_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        # Make scroll area expand to fill space
+        self.assessment_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.assessment_widget = QWidget()
         self.assessment_layout = QVBoxLayout(self.assessment_widget)
         self.assessment_layout.setSpacing(scale_px(10))
-        self.assessment_layout.setAlignment(Qt.AlignTop)
+        self.assessment_layout.setContentsMargins(0, 0, 0, 0)
+        # Don't set alignment to AlignTop - we want it to expand
 
         placeholder = QLabel("Assessment results will appear here after loading a document.")
         placeholder.setStyleSheet(
@@ -408,7 +449,7 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         self.assessment_layout.addWidget(placeholder)
 
         self.assessment_scroll.setWidget(self.assessment_widget)
-        layout.addWidget(self.assessment_scroll)
+        layout.addWidget(self.assessment_scroll, stretch=1)
 
         return group
 
@@ -592,7 +633,7 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             self.load_button.setEnabled(True)
 
     def _display_document(self):
-        """Display the loaded document."""
+        """Display the loaded document with abstract and full text tabs."""
         if not self.current_document:
             return
 
@@ -616,6 +657,70 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         # Abstract
         abstract = doc.get('abstract', 'No abstract available')
         self.doc_abstract_edit.setPlainText(abstract)
+
+        # Full Text handling
+        self._display_fulltext(doc)
+
+    def _display_fulltext(self, doc: Dict[str, Any]):
+        """Display full text content in the appropriate viewer (PDF or text)."""
+        import os
+        from pathlib import Path
+
+        # Reset visibility
+        if self.doc_fulltext_edit:
+            self.doc_fulltext_edit.setVisible(False)
+        if self.doc_pdf_view:
+            self.doc_pdf_view.setVisible(False)
+
+        # Check for PDF file first
+        pdf_filename = doc.get('pdf_filename')
+        if pdf_filename:
+            # Construct full path from PDF_BASE_DIR environment variable
+            pdf_base_dir = Path(os.path.expanduser(
+                os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
+            ))
+            pdf_path = pdf_base_dir / pdf_filename
+
+            if pdf_path.exists():
+                logger.info(f"Loading PDF from {pdf_path}")
+                try:
+                    # Create QPdfDocument if not exists
+                    if not self.doc_pdf_document:
+                        self.doc_pdf_document = QPdfDocument(self)
+
+                    # Load PDF
+                    self.doc_pdf_document.load(str(pdf_path))
+                    if self.doc_pdf_view:
+                        self.doc_pdf_view.setDocument(self.doc_pdf_document)
+                        self.doc_pdf_view.setVisible(True)
+
+                    # Update tab label to indicate PDF is available
+                    if self.doc_tabs:
+                        self.doc_tabs.setTabText(1, "Full Text (PDF)")
+                    logger.info(f"Successfully loaded PDF: {pdf_filename}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to load PDF {pdf_path}: {e}", exc_info=True)
+                    # Fall through to text display
+            else:
+                logger.warning(f"PDF file not found: {pdf_path}")
+
+        # Check for text full_text field
+        full_text = doc.get('full_text')
+        if full_text and self.doc_fulltext_edit:
+            logger.info(f"Displaying text full_text ({len(full_text)} characters)")
+            self.doc_fulltext_edit.setPlainText(full_text)
+            self.doc_fulltext_edit.setVisible(True)
+            if self.doc_tabs:
+                self.doc_tabs.setTabText(1, "Full Text")
+        else:
+            # No full text available
+            logger.info("No full text available for this document")
+            if self.doc_fulltext_edit:
+                self.doc_fulltext_edit.setPlaceholderText("Full text not available for this document...")
+                self.doc_fulltext_edit.setVisible(True)
+            if self.doc_tabs:
+                self.doc_tabs.setTabText(1, "Full Text")
 
     def _on_assessment_complete(self, assessment: PRISMA2020Assessment):
         """Handle PRISMA 2020 assessment completion."""
@@ -652,14 +757,12 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
 
         a = self.current_assessment
 
-        # Add suitability and overall compliance summary
-        self.assessment_layout.addWidget(self._create_suitability_section(a))
-        self.assessment_layout.addWidget(self._create_overall_section(a))
+        # Add suitability and overall compliance summary (fixed height)
+        self.assessment_layout.addWidget(self._create_suitability_section(a), stretch=0)
+        self.assessment_layout.addWidget(self._create_overall_section(a), stretch=0)
 
-        # Add tabular PRISMA criteria checklist
-        self.assessment_layout.addWidget(self._create_criteria_table(a))
-
-        self.assessment_layout.addStretch()
+        # Add tabular PRISMA criteria checklist (expands to fill remaining space)
+        self.assessment_layout.addWidget(self._create_criteria_table(a), stretch=1)
 
     def _create_suitability_section(self, a: PRISMA2020Assessment) -> QGroupBox:
         """Create suitability assessment section."""
@@ -782,8 +885,12 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         section.setStyleSheet(
             self.stylesheet_gen.card_stylesheet(bg_color='#FFFFFF')
         )
+        # Make section expand to fill available space
+        section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
         layout = QVBoxLayout(section)
         layout.setSpacing(scale_px(10))
+        layout.setContentsMargins(scale_px(10), scale_px(10), scale_px(10), scale_px(10))
 
         # Create table
         table = QTableWidget()
@@ -868,10 +975,10 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
 
         # Explanation column stretches to fill remaining space
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
         # Set row heights to accommodate text
         table.verticalHeader().setDefaultSectionSize(scale_px(60))
@@ -879,10 +986,12 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         # Enable text wrapping for explanation column
         table.setWordWrap(True)
 
-        # Set minimum height for table
-        table.setMinimumHeight(scale_px(400))
+        # Set size policy to expand and fill all available space
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Don't set minimum height - let it expand to fill available space
 
-        layout.addWidget(table)
+        # Add table with stretch factor to fill available space
+        layout.addWidget(table, stretch=1)
 
         return section
 
@@ -1105,10 +1214,31 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         """Clear all fields."""
         logger.debug("Clearing all fields")
 
-        self.doc_id_input.clear()
-        self.doc_title_label.setText("No document loaded")
-        self.doc_metadata_label.setText("")
-        self.doc_abstract_edit.clear()
+        if self.doc_id_input:
+            self.doc_id_input.clear()
+        if self.doc_title_label:
+            self.doc_title_label.setText("No document loaded")
+        if self.doc_metadata_label:
+            self.doc_metadata_label.setText("")
+        if self.doc_abstract_edit:
+            self.doc_abstract_edit.clear()
+
+        # Clear full text viewers
+        if self.doc_fulltext_edit:
+            self.doc_fulltext_edit.clear()
+            self.doc_fulltext_edit.setVisible(False)
+
+        # Clear PDF viewer
+        if self.doc_pdf_document:
+            self.doc_pdf_document.close()
+        if self.doc_pdf_view:
+            self.doc_pdf_view.setVisible(False)
+
+        # Reset tab label
+        if self.doc_tabs:
+            self.doc_tabs.setTabText(1, "Full Text")
+            # Switch back to Abstract tab
+            self.doc_tabs.setCurrentIndex(0)
 
         # Clear assessment results (handles both widgets and nested layouts)
         self._clear_layout(self.assessment_layout)
@@ -1176,6 +1306,14 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         """Cleanup resources."""
         logger.info("Cleaning up PRISMA 2020 Lab plugin resources")
 
+        # Close PDF document if open
+        if self.doc_pdf_document:
+            try:
+                self.doc_pdf_document.close()
+                logger.debug("PDF document closed")
+            except Exception as e:
+                logger.error(f"Error closing PDF document: {e}", exc_info=True)
+
         if self.worker and self.worker.isRunning():
             logger.debug("Terminating worker thread")
             self.worker.terminate()
@@ -1184,10 +1322,11 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         if self.orchestrator:
             try:
                 logger.debug("Shutting down orchestrator")
-                self.orchestrator.shutdown()
-                logger.info("Orchestrator shutdown complete")
+                # Note: AgentOrchestrator doesn't have a shutdown method in the current implementation
+                # self.orchestrator.shutdown()
+                logger.info("Orchestrator cleanup complete")
             except Exception as e:
-                logger.error(f"Error during orchestrator shutdown: {e}", exc_info=True)
-                print(f"Warning: Error during orchestrator shutdown: {e}")
+                logger.error(f"Error during orchestrator cleanup: {e}", exc_info=True)
+                print(f"Warning: Error during orchestrator cleanup: {e}")
 
         logger.info("PRISMA 2020 Lab plugin cleanup complete")
