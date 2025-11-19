@@ -297,6 +297,23 @@ class FactCheckerTabWidget(QWidget):
         s = self.scale
         return f"color: {self.COLOR_SUCCESS_TEXT}; font-size: {s['font_small']}pt; font-style: italic;"
 
+    def _get_username_label_stylesheet(self) -> str:
+        """Generate stylesheet for username label."""
+        s = self.scale
+        return f"font-weight: bold; font-size: {s['font_normal']}pt;"
+
+    def _get_username_field_stylesheet(self) -> str:
+        """Generate stylesheet for username input field."""
+        s = self.scale
+        return f"""
+            QLineEdit {{
+                background-color: white;
+                border: 1px solid {self.COLOR_LIGHT_BORDER};
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
+                font-size: {s['font_normal']}pt;
+            }}
+        """
 
     def _get_title_stylesheet(self) -> str:
         """Generate stylesheet for main title label."""
@@ -443,21 +460,13 @@ class FactCheckerTabWidget(QWidget):
 
         # Username field
         username_label = QLabel("Username:")
-        username_label.setStyleSheet(f"font-weight: bold; font-size: {s['font_normal']}pt;")
+        username_label.setStyleSheet(self._get_username_label_stylesheet())
         header_layout.addWidget(username_label)
 
         self.username_field = QLineEdit()
         self.username_field.setPlaceholderText("Enter your username...")
         self.username_field.setFixedWidth(int(s['control_height_medium'] * 4.4))
-        self.username_field.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: white;
-                border: 1px solid #ccc;
-                padding: {s['padding_tiny']}px;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_normal']}pt;
-            }}
-        """)
+        self.username_field.setStyleSheet(self._get_username_field_stylesheet())
         header_layout.addWidget(self.username_field)
 
         # Show Review toggle
