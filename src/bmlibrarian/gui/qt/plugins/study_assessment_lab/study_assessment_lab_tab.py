@@ -15,10 +15,25 @@ from PySide6.QtGui import QFont, QIntValidator
 from typing import Optional, Dict, Any
 
 from bmlibrarian.agents import StudyAssessmentAgent, AgentOrchestrator
-from bmlibrarian.agents.study_assessment_agent import StudyAssessment
+from bmlibrarian.agents.study_assessment_agent import (
+    StudyAssessment,
+    QUALITY_THRESHOLD_EXCEPTIONAL,
+    QUALITY_THRESHOLD_HIGH,
+    QUALITY_THRESHOLD_MODERATE,
+    QUALITY_THRESHOLD_LOW,
+)
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px
+
+# UI Constants
+ORCHESTRATOR_MAX_WORKERS = 2
+SPLITTER_DOC_WIDTH = 350
+SPLITTER_ASSESSMENT_WIDTH = 650
+MAX_DOCUMENT_ID = 999999999
+OLLAMA_REQUEST_TIMEOUT = 5  # seconds
+CONFIDENCE_THRESHOLD_HIGH = 0.8
+CONFIDENCE_THRESHOLD_MODERATE = 0.6
 
 
 class StudyAssessmentWorker(QThread):
@@ -120,7 +135,7 @@ class StudyAssessmentLabTabWidget(QWidget):
     def _init_agent(self):
         """Initialize StudyAssessmentAgent with orchestrator."""
         try:
-            self.orchestrator = AgentOrchestrator(max_workers=2)
+            self.orchestrator = AgentOrchestrator(max_workers=ORCHESTRATOR_MAX_WORKERS)
 
             # Get configuration
             default_model = self.config.get_model('study_assessment_agent') or "gpt-oss:20b"
@@ -174,7 +189,7 @@ class StudyAssessmentLabTabWidget(QWidget):
         splitter.addWidget(assessment_scroll)
 
         # Set initial sizes (35% document, 65% assessment)
-        splitter.setSizes([350, 650])
+        splitter.setSizes([SPLITTER_DOC_WIDTH, SPLITTER_ASSESSMENT_WIDTH])
 
         main_layout.addWidget(splitter, stretch=1)
 
@@ -238,7 +253,7 @@ class StudyAssessmentLabTabWidget(QWidget):
         self.doc_id_input = QLineEdit()
         self.doc_id_input.setPlaceholderText("Enter document ID (e.g., 12345)")
         self.doc_id_input.setMaximumWidth(scale_px(200))
-        self.doc_id_input.setValidator(QIntValidator(1, 999999999))
+        self.doc_id_input.setValidator(QIntValidator(1, MAX_DOCUMENT_ID))
         self.doc_id_input.returnPressed.connect(self._load_document)
 
         self.load_button = QPushButton("Load & Assess")
@@ -422,10 +437,15 @@ class StudyAssessmentLabTabWidget(QWidget):
         bias_layout.setSpacing(scale_px(5))
 
         self.selection_bias_label = QLabel("—")
+        self.selection_bias_label.setTextFormat(Qt.RichText)
         self.performance_bias_label = QLabel("—")
+        self.performance_bias_label.setTextFormat(Qt.RichText)
         self.detection_bias_label = QLabel("—")
+        self.detection_bias_label.setTextFormat(Qt.RichText)
         self.attrition_bias_label = QLabel("—")
+        self.attrition_bias_label.setTextFormat(Qt.RichText)
         self.reporting_bias_label = QLabel("—")
+        self.reporting_bias_label.setTextFormat(Qt.RichText)
 
         bias_layout.addRow("Selection Bias:", self.selection_bias_label)
         bias_layout.addRow("Performance Bias:", self.performance_bias_label)
@@ -445,7 +465,7 @@ class StudyAssessmentLabTabWidget(QWidget):
             # Get available models
             import requests
             host = self.config.get_ollama_config()['host']
-            response = requests.get(f"{host}/api/tags", timeout=5)
+            response = requests.get(f"{host}/api/tags", timeout=OLLAMA_REQUEST_TIMEOUT)
 
             if response.status_code == 200:
                 data = response.json()
@@ -611,14 +631,14 @@ class StudyAssessmentLabTabWidget(QWidget):
         # Quality Assessment
         self.quality_score_label.setText(f"{a.quality_score:.1f} / 10")
 
-        # Color-code quality score
-        if a.quality_score >= 9:
+        # Color-code quality score using thresholds from study_assessment_agent
+        if a.quality_score >= QUALITY_THRESHOLD_EXCEPTIONAL:
             self.quality_score_label.setStyleSheet("color: #1B5E20; font-weight: bold; font-size: 14px;")  # Dark green
-        elif a.quality_score >= 7:
+        elif a.quality_score >= QUALITY_THRESHOLD_HIGH:
             self.quality_score_label.setStyleSheet("color: #2E7D32; font-weight: bold; font-size: 14px;")  # Green
-        elif a.quality_score >= 5:
+        elif a.quality_score >= QUALITY_THRESHOLD_MODERATE:
             self.quality_score_label.setStyleSheet("color: #F57C00; font-weight: bold; font-size: 14px;")  # Orange
-        elif a.quality_score >= 3:
+        elif a.quality_score >= QUALITY_THRESHOLD_LOW:
             self.quality_score_label.setStyleSheet("color: #E64A19; font-weight: bold; font-size: 14px;")  # Dark orange
         else:
             self.quality_score_label.setStyleSheet("color: #C62828; font-weight: bold; font-size: 14px;")  # Red
@@ -627,9 +647,9 @@ class StudyAssessmentLabTabWidget(QWidget):
         self.confidence_label.setText(f"{confidence_pct:.1f}%")
 
         # Color-code confidence
-        if a.overall_confidence >= 0.8:
+        if a.overall_confidence >= CONFIDENCE_THRESHOLD_HIGH:
             self.confidence_label.setStyleSheet("color: #2E7D32; font-weight: bold; font-size: 14px;")
-        elif a.overall_confidence >= 0.6:
+        elif a.overall_confidence >= CONFIDENCE_THRESHOLD_MODERATE:
             self.confidence_label.setStyleSheet("color: #F57C00; font-weight: bold; font-size: 14px;")
         else:
             self.confidence_label.setStyleSheet("color: #C62828; font-weight: bold; font-size: 14px;")
@@ -675,7 +695,15 @@ class StudyAssessmentLabTabWidget(QWidget):
         self.reporting_bias_label.setText(self._format_bias_risk(a.reporting_bias_risk))
 
     def _format_bias_risk(self, risk: Optional[str]) -> str:
-        """Format bias risk with color coding."""
+        """
+        Format bias risk with color coding.
+
+        Args:
+            risk: Bias risk level (low, moderate, high, unclear, or None)
+
+        Returns:
+            HTML-formatted string with color-coded bias risk
+        """
         if not risk:
             return "—"
 
