@@ -168,6 +168,9 @@ class TestStudyAssessmentAgent:
 
     def test_assess_rct_success(self, assessment_agent):
         """Test successful assessment of high-quality RCT."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock successful LLM response
         assessment_agent.client.generate = Mock(return_value={
             'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
@@ -211,6 +214,9 @@ class TestStudyAssessmentAgent:
 
     def test_assess_case_report(self, assessment_agent):
         """Test assessment of case report (low-quality evidence)."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock LLM response for case report
         assessment_agent.client.generate = Mock(return_value={
             'response': json.dumps(EXPECTED_CASE_REPORT_ASSESSMENT)
@@ -252,6 +258,9 @@ class TestStudyAssessmentAgent:
 
     def test_assess_low_confidence_threshold(self, assessment_agent):
         """Test that assessments below confidence threshold are still returned."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock response with low confidence
         low_confidence_assessment = EXPECTED_RCT_ASSESSMENT.copy()
         low_confidence_assessment['overall_confidence'] = 0.3
@@ -273,6 +282,9 @@ class TestStudyAssessmentAgent:
 
     def test_assess_batch_success(self, assessment_agent):
         """Test successful batch assessment."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock LLM responses
         assessment_agent.client.generate = Mock(side_effect=[
             {'response': json.dumps(EXPECTED_RCT_ASSESSMENT)},
@@ -436,6 +448,9 @@ class TestStudyAssessmentAgent:
         assert stats['total_assessments'] == 0
         assert stats['success_rate'] == 0.0
 
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock successful assessment
         assessment_agent.client.generate = Mock(return_value={
             'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
@@ -517,6 +532,9 @@ class TestStudyAssessmentAgent:
 
     def test_json_parse_failure_retry(self, assessment_agent):
         """Test that JSON parse failures trigger retry."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Mock responses: first invalid JSON, then valid
         assessment_agent.client.generate = Mock(side_effect=[
             {'response': 'This is not valid JSON'},
@@ -542,6 +560,9 @@ class TestStudyAssessmentAgent:
 
     def test_text_truncation(self, assessment_agent):
         """Test that very long texts are truncated appropriately."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Create document with very long abstract
         long_document = {
             'id': '999',
@@ -606,6 +627,9 @@ class TestStudyAssessmentAgent:
 
     def test_assessment_with_full_text(self, assessment_agent):
         """Test that full text is preferred over abstract when available."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
         # Document with both abstract and full_text
         document_with_full_text = {
             'id': '123',
@@ -628,3 +652,48 @@ class TestStudyAssessmentAgent:
         prompt = call_args[1]['prompt']
         assert 'full text with much more detail' in prompt
         assert 'Short abstract' not in prompt
+
+    def test_assess_study_by_id_success(self, assessment_agent):
+        """Test successful assessment using document ID."""
+        # Mock connection test
+        assessment_agent.test_connection = Mock(return_value=True)
+
+        # Mock fetch_documents_by_ids
+        with patch('bmlibrarian.database.fetch_documents_by_ids') as mock_fetch:
+            mock_fetch.return_value = [SAMPLE_RCT_DOCUMENT]
+
+            # Mock LLM response
+            assessment_agent.client.generate = Mock(return_value={
+                'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
+            })
+
+            # Call assess_study_by_id
+            assessment = assessment_agent.assess_study_by_id(12345678, min_confidence=0.5)
+
+            # Verify fetch was called with correct ID
+            mock_fetch.assert_called_once_with({12345678})
+
+            # Verify assessment succeeded
+            assert assessment is not None
+            assert assessment.document_id == '12345678'
+            assert assessment.quality_score >= 7.0
+
+    def test_assess_study_by_id_not_found(self, assessment_agent):
+        """Test assess_study_by_id with non-existent document ID."""
+        # Mock fetch_documents_by_ids returning empty list
+        with patch('bmlibrarian.database.fetch_documents_by_ids') as mock_fetch:
+            mock_fetch.return_value = []
+
+            # Should raise ValueError
+            with pytest.raises(ValueError, match="not found in database"):
+                assessment_agent.assess_study_by_id(999999)
+
+    def test_assess_study_by_id_database_error(self, assessment_agent):
+        """Test assess_study_by_id with database connection error."""
+        # Mock fetch_documents_by_ids raising exception
+        with patch('bmlibrarian.database.fetch_documents_by_ids') as mock_fetch:
+            mock_fetch.side_effect = Exception("Database connection failed")
+
+            # Should raise ValueError
+            with pytest.raises(ValueError, match="Could not fetch document"):
+                assessment_agent.assess_study_by_id(12345)

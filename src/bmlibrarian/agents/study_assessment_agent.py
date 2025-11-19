@@ -22,6 +22,20 @@ from .base import BaseAgent
 logger = logging.getLogger(__name__)
 
 
+# Constants for configuration
+MAX_TEXT_LENGTH = 12000  # Maximum characters to analyze (fits within context window)
+DEFAULT_MIN_CONFIDENCE = 0.4  # Default minimum confidence threshold for assessments
+DEFAULT_CONFIDENCE_FALLBACK = 0.5  # Fallback confidence when not provided by LLM
+SUMMARY_SEPARATOR_WIDTH = 80  # Width of separator lines in formatted summaries
+
+# Quality score thresholds for distribution categorization
+QUALITY_THRESHOLD_EXCEPTIONAL = 9  # 9-10: Exceptional quality
+QUALITY_THRESHOLD_HIGH = 7  # 7-8: High quality
+QUALITY_THRESHOLD_MODERATE = 5  # 5-6: Moderate quality
+QUALITY_THRESHOLD_LOW = 3  # 3-4: Low quality
+# 0-2: Very low quality (implicit)
+
+
 @dataclass
 class StudyAssessment:
     """Represents a comprehensive quality assessment of a research study."""
@@ -142,7 +156,7 @@ class StudyAssessmentAgent(BaseAgent):
     def assess_study(
         self,
         document: Dict[str, Any],
-        min_confidence: float = 0.4
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE
     ) -> Optional[StudyAssessment]:
         """
         Assess the quality and trustworthiness of a single research study.
@@ -171,10 +185,10 @@ class StudyAssessmentAgent(BaseAgent):
             logger.warning(f"No text found for document {doc_id}")
             return None
 
-        # Truncate text if too long (keep first ~12000 chars to stay within context limits)
-        if len(text_to_analyze) > 12000:
-            text_to_analyze = text_to_analyze[:12000] + "..."
-            logger.debug(f"Truncated text for document {doc_id} to 12000 characters")
+        # Truncate text if too long (keep first chars to stay within context limits)
+        if len(text_to_analyze) > MAX_TEXT_LENGTH:
+            text_to_analyze = text_to_analyze[:MAX_TEXT_LENGTH] + "..."
+            logger.debug(f"Truncated text for document {doc_id} to {MAX_TEXT_LENGTH} characters")
 
         self._call_callback("study_assessment_started", f"Assessing study quality for document {doc_id}")
 
@@ -317,7 +331,7 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             return None
 
         # Get confidence score
-        overall_confidence = float(assessment_data.get('overall_confidence', 0.5))
+        overall_confidence = float(assessment_data.get('overall_confidence', DEFAULT_CONFIDENCE_FALLBACK))
 
         # Check confidence threshold
         if overall_confidence < min_confidence:
@@ -372,10 +386,59 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
 
         return assessment
 
+    def assess_study_by_id(
+        self,
+        document_id: int,
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    ) -> Optional[StudyAssessment]:
+        """
+        Assess a study by fetching it from the database using its document ID.
+
+        This is a convenience method that fetches the document from the database
+        and calls assess_study(). It provides a simpler interface when you only
+        have a document ID.
+
+        Args:
+            document_id: The database ID of the document to assess
+            min_confidence: Minimum confidence threshold to accept assessment (0-1)
+
+        Returns:
+            StudyAssessment object if successful and confidence >= threshold, None otherwise
+
+        Raises:
+            ValueError: If document ID is not found in database
+
+        Example:
+            >>> agent = StudyAssessmentAgent()
+            >>> assessment = agent.assess_study_by_id(12345, min_confidence=0.5)
+            >>> if assessment:
+            ...     print(f"Quality: {assessment.quality_score}/10")
+        """
+        # Import here to avoid circular dependency
+        from bmlibrarian.database import fetch_documents_by_ids
+
+        logger.debug(f"Fetching document {document_id} from database")
+
+        # Fetch document from database
+        try:
+            documents = fetch_documents_by_ids({document_id})
+        except Exception as e:
+            logger.error(f"Failed to fetch document {document_id} from database: {e}")
+            raise ValueError(f"Could not fetch document {document_id} from database") from e
+
+        if not documents:
+            logger.error(f"Document {document_id} not found in database")
+            raise ValueError(f"Document {document_id} not found in database")
+
+        document = documents[0]
+
+        # Call the standard assess_study method
+        return self.assess_study(document, min_confidence=min_confidence)
+
     def assess_batch(
         self,
         documents: List[Dict[str, Any]],
-        min_confidence: float = 0.4,
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> List[StudyAssessment]:
         """
@@ -444,9 +507,9 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             Formatted string summary
         """
         lines = [
-            f"\n{'='*80}",
+            f"\n{'='*SUMMARY_SEPARATOR_WIDTH}",
             f"STUDY QUALITY ASSESSMENT: {assessment.document_title}",
-            f"{'='*80}",
+            f"{'='*SUMMARY_SEPARATOR_WIDTH}",
             f"Document ID: {assessment.document_id}",
         ]
 
@@ -520,7 +583,7 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             for item in bias_items:
                 lines.append(f"  {item}")
 
-        lines.append(f"{'='*80}\n")
+        lines.append(f"{'='*SUMMARY_SEPARATOR_WIDTH}\n")
 
         return '\n'.join(lines)
 
@@ -604,13 +667,13 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
 
         for assessment in assessments:
             score = assessment.quality_score
-            if score >= 9:
+            if score >= QUALITY_THRESHOLD_EXCEPTIONAL:
                 distribution['exceptional (9-10)'] += 1
-            elif score >= 7:
+            elif score >= QUALITY_THRESHOLD_HIGH:
                 distribution['high (7-8)'] += 1
-            elif score >= 5:
+            elif score >= QUALITY_THRESHOLD_MODERATE:
                 distribution['moderate (5-6)'] += 1
-            elif score >= 3:
+            elif score >= QUALITY_THRESHOLD_LOW:
                 distribution['low (3-4)'] += 1
             else:
                 distribution['very_low (0-2)'] += 1
