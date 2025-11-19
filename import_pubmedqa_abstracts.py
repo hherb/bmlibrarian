@@ -21,6 +21,11 @@ from typing import Dict, List, Tuple, Optional
 import psycopg
 from dotenv import load_dotenv
 
+try:
+    from src.bmlibrarian.migrations import MigrationManager
+except ImportError:
+    MigrationManager = None
+
 
 class PubMedQAImporter:
     """Import PubMedQA abstracts into factcheck.statements table."""
@@ -55,8 +60,25 @@ class PubMedQAImporter:
         )
 
     def _get_connection(self) -> psycopg.Connection:
-        """Get a database connection."""
-        return psycopg.connect(**self.conn_params)
+        """Get a database connection.
+
+        Raises:
+            ConnectionError: If database connection fails (with sanitized error message)
+        """
+        try:
+            return psycopg.connect(**self.conn_params)
+        except psycopg.OperationalError as e:
+            # Sanitize error message to avoid exposing credentials
+            safe_host = self.conn_params.get("host", "unknown")
+            safe_db = self.conn_params.get("dbname", "unknown")
+            raise ConnectionError(
+                f"Failed to connect to PostgreSQL database '{safe_db}' at {safe_host}. "
+                f"Please check database credentials and ensure PostgreSQL is running."
+            ) from e
+        except Exception as e:
+            raise ConnectionError(
+                f"Unexpected error connecting to database: {type(e).__name__}"
+            ) from e
 
     def validate_table_structure(self) -> Tuple[bool, str]:
         """
@@ -66,7 +88,12 @@ class PubMedQAImporter:
             Tuple of (success, message)
         """
         try:
-            with self._get_connection() as conn:
+            conn = self._get_connection()
+        except ConnectionError as e:
+            return False, f"Database connection failed: {e}"
+
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     # Check if factcheck schema exists
                     cur.execute("""
@@ -113,8 +140,16 @@ class PubMedQAImporter:
             return False, f"Validation error: {e}"
 
     def count_existing_rows(self) -> int:
-        """Count existing rows in factcheck.statements table."""
-        with self._get_connection() as conn:
+        """Count existing rows in factcheck.statements table.
+
+        Returns:
+            Number of existing rows
+
+        Raises:
+            ConnectionError: If database connection fails
+        """
+        conn = self._get_connection()
+        with conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM factcheck.statements")
                 return cur.fetchone()[0]
@@ -169,7 +204,7 @@ class PubMedQAImporter:
 
         return True, f"JSON structure validated successfully ({len(json_data)} entries)"
 
-    def import_data(self, json_data: Dict, dry_run: bool = False) -> Tuple[int, int, int, List[str]]:
+    def import_data(self, json_data: Dict, source_file: str, dry_run: bool = False) -> Tuple[int, int, int, List[str]]:
         """
         Import or update data from JSON into factcheck.statements.
 
@@ -180,6 +215,7 @@ class PubMedQAImporter:
 
         Args:
             json_data: Dictionary with PubMedQA data
+            source_file: Name of the source JSON file
             dry_run: If True, don't actually modify the database
 
         Returns:
@@ -195,13 +231,13 @@ class PubMedQAImporter:
         if existing_row_count == 0:
             # Table is empty - use INSERT
             print(f"\nTable is empty. Inserting {len(json_data)} new records...")
-            return self._insert_data(json_data, dry_run)
+            return self._insert_data(json_data, source_file, dry_run)
         else:
             # Table has data - use UPDATE (upsert)
             print(f"\nTable has {existing_row_count} existing rows. Updating records...")
-            return self._update_data(json_data, dry_run)
+            return self._update_data(json_data, source_file, dry_run)
 
-    def _insert_data(self, json_data: Dict, dry_run: bool) -> Tuple[int, int, int, List[str]]:
+    def _insert_data(self, json_data: Dict, source_file: str, dry_run: bool) -> Tuple[int, int, int, List[str]]:
         """Insert new records into empty table."""
         inserted_count = 0
         skipped_count = 0
@@ -227,7 +263,7 @@ class PubMedQAImporter:
                             (statement_text, input_statement_id, expected_answer, source_file, context, long_answer)
                             VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (statement_text) DO NOTHING
-                        """, (question, pmid, expected_answer, 'ori_pqal.json', context, long_answer))
+                        """, (question, pmid, expected_answer, source_file, context, long_answer))
 
                         if cur.rowcount > 0:
                             inserted_count += 1
@@ -245,7 +281,7 @@ class PubMedQAImporter:
 
         return inserted_count, 0, skipped_count, errors
 
-    def _update_data(self, json_data: Dict, dry_run: bool) -> Tuple[int, int, int, List[str]]:
+    def _update_data(self, json_data: Dict, source_file: str, dry_run: bool) -> Tuple[int, int, int, List[str]]:
         """Update existing records with context and long_answer using PostgreSQL UPSERT."""
         inserted_count = 0
         updated_count = 0
@@ -254,19 +290,21 @@ class PubMedQAImporter:
 
         if dry_run:
             print("  [DRY RUN] Would update records...")
-            # Show what would be updated
+            # Show what would be updated - batch query for better performance
+            questions = [entry['QUESTION'] for entry in list(json_data.values())[:5]]
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    for pmid, entry in list(json_data.items())[:5]:  # Sample first 5
+                    cur.execute("""
+                        SELECT statement_id, statement_text, context IS NOT NULL, long_answer IS NOT NULL
+                        FROM factcheck.statements
+                        WHERE statement_text = ANY(%s)
+                    """, (questions,))
+                    results = {row[1]: (row[0], row[2], row[3]) for row in cur.fetchall()}
+
+                    for pmid, entry in list(json_data.items())[:5]:
                         question = entry['QUESTION']
-                        cur.execute("""
-                            SELECT statement_id, context IS NOT NULL, long_answer IS NOT NULL
-                            FROM factcheck.statements
-                            WHERE statement_text = %s
-                        """, (question,))
-                        result = cur.fetchone()
-                        if result:
-                            stmt_id, has_context, has_long_answer = result
+                        if question in results:
+                            stmt_id, has_context, has_long_answer = results[question]
                             print(f"  [DRY RUN] Would update statement_id={stmt_id} (PMID {pmid})")
                             print(f"    Current: context={'SET' if has_context else 'NULL'}, "
                                   f"long_answer={'SET' if has_long_answer else 'NULL'}")
@@ -295,7 +333,7 @@ class PubMedQAImporter:
                             SET context = EXCLUDED.context,
                                 long_answer = EXCLUDED.long_answer
                             RETURNING (xmax = 0) AS inserted
-                        """, (question, pmid, expected_answer, 'ori_pqal.json', context, long_answer))
+                        """, (question, pmid, expected_answer, source_file, context, long_answer))
 
                         # xmax = 0 means INSERT, xmax > 0 means UPDATE
                         result = cur.fetchone()
@@ -329,8 +367,11 @@ Examples:
   # Dry run to preview changes
   python import_pubmedqa_abstracts.py ori_pqal.json --dry-run
 
-Note: Run migration 009 first to add required columns:
-  python -m src.bmlibrarian.migrations
+  # Automatically run migration 009 if needed
+  python import_pubmedqa_abstracts.py ori_pqal.json --run-migration
+
+Note: Migration 009 adds required columns (context, long_answer).
+      Use --run-migration flag to automatically apply if missing.
         """
     )
 
@@ -344,6 +385,12 @@ Note: Run migration 009 first to add required columns:
         '--dry-run',
         action='store_true',
         help='Preview changes without modifying database'
+    )
+
+    parser.add_argument(
+        '--run-migration',
+        action='store_true',
+        help='Automatically apply migration 009 if required columns are missing'
     )
 
     args = parser.parse_args()
@@ -380,11 +427,57 @@ Note: Run migration 009 first to add required columns:
     success, message = importer.validate_table_structure()
     if not success:
         print(f"  ✗ {message}")
-        print("\n  Please run migration 009 first:")
-        print("    uv run python -c \"from src.bmlibrarian.migrations import MigrationManager; "
-              "mm = MigrationManager.from_env(); mm.apply_pending_migrations('migrations')\"")
-        return 1
-    print(f"  ✓ {message}")
+
+        # Check if --run-migration flag is set
+        if args.run_migration:
+            if MigrationManager is None:
+                print("\n  ✗ Error: Cannot import MigrationManager. Migration cannot be run automatically.")
+                print("  Please ensure src.bmlibrarian.migrations module is available.")
+                return 1
+
+            print("\n  → Running migration 009 automatically...")
+            try:
+                migration_manager = MigrationManager.from_env()
+                if migration_manager is None:
+                    print("  ✗ Error: Could not create MigrationManager from environment")
+                    return 1
+
+                # Find migrations directory
+                migrations_dir = Path(__file__).parent / "migrations"
+                if not migrations_dir.exists():
+                    migrations_dir = Path(__file__).parent / ".." / "migrations"
+                    if not migrations_dir.exists():
+                        print(f"  ✗ Error: Could not find migrations directory")
+                        return 1
+
+                # Apply pending migrations
+                applied_count = migration_manager.apply_pending_migrations(migrations_dir, silent=False)
+                if applied_count == 0:
+                    print("  ⚠ Warning: No migrations were applied. The issue may persist.")
+                else:
+                    print(f"  ✓ Successfully applied {applied_count} migration(s)")
+
+                # Re-validate table structure
+                print("\n  Re-validating table structure...")
+                success, message = importer.validate_table_structure()
+                if not success:
+                    print(f"  ✗ {message}")
+                    print("  Migration was applied but validation still failed.")
+                    return 1
+                print(f"  ✓ {message}")
+
+            except Exception as e:
+                print(f"  ✗ Error running migration: {e}")
+                return 1
+        else:
+            print("\n  Please run migration 009 first:")
+            print("    uv run python -c \"from src.bmlibrarian.migrations import MigrationManager; "
+                  "mm = MigrationManager.from_env(); mm.apply_pending_migrations('migrations')\"")
+            print("\n  Or use --run-migration flag to apply migrations automatically:")
+            print(f"    python {sys.argv[0]} {args.json_file} --run-migration")
+            return 1
+    else:
+        print(f"  ✓ {message}")
 
     # Validate JSON structure
     print("\n2. Validating JSON structure...")
@@ -399,7 +492,11 @@ Note: Run migration 009 first to add required columns:
     if args.dry_run:
         print("  [DRY RUN MODE - No changes will be made]")
 
-    inserted, updated, skipped, errors = importer.import_data(json_data, dry_run=args.dry_run)
+    inserted, updated, skipped, errors = importer.import_data(
+        json_data,
+        source_file=json_path.name,
+        dry_run=args.dry_run
+    )
 
     # Print summary
     print("\n" + "=" * 80)
