@@ -123,7 +123,7 @@ This will display:
 
 ## Import Output
 
-The script provides detailed output:
+The script provides detailed output with progress reporting:
 
 ```
 ================================================================================
@@ -141,6 +141,11 @@ Loading JSON file: src/bmlibrarian/factchecker/ori_pqal.json
 3. Importing data...
 
 Table has 1000 existing rows. Updating records...
+  Progress: 100/1000 records processed...
+  Progress: 200/1000 records processed...
+  Progress: 300/1000 records processed...
+  ...
+  Progress: 1000/1000 records processed...
 
 ================================================================================
 Import Summary
@@ -153,6 +158,8 @@ Import Summary
 
 ✓ Import completed successfully!
 ```
+
+**Progress Reporting**: The script reports progress every 100 records to provide feedback during long imports.
 
 ## Troubleshooting
 
@@ -243,9 +250,9 @@ This preserves paragraph structure while storing as a single text column for eas
 
 ### Upsert Logic
 
-The script uses different strategies based on table state:
+The script uses PostgreSQL's native UPSERT for efficient and atomic operations:
 
-**Empty table (INSERT)**:
+**Empty table (INSERT with conflict handling)**:
 ```sql
 INSERT INTO factcheck.statements
 (statement_text, input_statement_id, expected_answer, source_file, context, long_answer)
@@ -253,18 +260,22 @@ VALUES (%s, %s, %s, %s, %s, %s)
 ON CONFLICT (statement_text) DO NOTHING
 ```
 
-**Existing data (UPDATE then INSERT)**:
+**Existing data (PostgreSQL native UPSERT)**:
 ```sql
--- Try update first
-UPDATE factcheck.statements
-SET context = %s, long_answer = %s
-WHERE statement_text = %s
-
--- If no rows updated, insert new record
 INSERT INTO factcheck.statements
 (statement_text, input_statement_id, expected_answer, source_file, context, long_answer)
 VALUES (%s, %s, %s, %s, %s, %s)
+ON CONFLICT (statement_text) DO UPDATE
+SET context = EXCLUDED.context,
+    long_answer = EXCLUDED.long_answer
+RETURNING (xmax = 0) AS inserted
 ```
+
+**Benefits of UPSERT approach**:
+- Single atomic operation (no race conditions)
+- More efficient than separate UPDATE + INSERT queries
+- Only modifies `context` and `long_answer` on conflict
+- Uses `RETURNING (xmax = 0)` to distinguish INSERT vs UPDATE
 
 ## Support
 

@@ -211,9 +211,10 @@ class PubMedQAImporter:
             print("  [DRY RUN] Would insert records...")
             return len(json_data), 0, 0, []
 
+        total = len(json_data)
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                for pmid, entry in json_data.items():
+                for idx, (pmid, entry) in enumerate(json_data.items(), 1):
                     try:
                         # Join CONTEXTS array into single text
                         context = '\n\n'.join(entry['CONTEXTS']) if entry['CONTEXTS'] else None
@@ -233,6 +234,10 @@ class PubMedQAImporter:
                         else:
                             skipped_count += 1
 
+                        # Progress reporting every 100 records
+                        if idx % 100 == 0:
+                            print(f"  Progress: {idx}/{total} records processed...")
+
                     except Exception as e:
                         errors.append(f"PMID {pmid}: {e}")
 
@@ -241,7 +246,7 @@ class PubMedQAImporter:
         return inserted_count, 0, skipped_count, errors
 
     def _update_data(self, json_data: Dict, dry_run: bool) -> Tuple[int, int, int, List[str]]:
-        """Update existing records with context and long_answer."""
+        """Update existing records with context and long_answer using PostgreSQL UPSERT."""
         inserted_count = 0
         updated_count = 0
         skipped_count = 0
@@ -269,9 +274,10 @@ class PubMedQAImporter:
                             print(f"  [DRY RUN] Would insert new record (PMID {pmid})")
             return 0, 0, 0, []
 
+        total = len(json_data)
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                for pmid, entry in json_data.items():
+                for idx, (pmid, entry) in enumerate(json_data.items(), 1):
                     try:
                         # Join CONTEXTS array into single text
                         context = '\n\n'.join(entry['CONTEXTS']) if entry['CONTEXTS'] else None
@@ -279,28 +285,28 @@ class PubMedQAImporter:
                         question = entry['QUESTION']
                         expected_answer = entry['final_decision']
 
-                        # Try UPDATE first
+                        # Use PostgreSQL's native UPSERT (more efficient than UPDATE + INSERT)
+                        # ON CONFLICT: only update context and long_answer, preserve other fields
                         cur.execute("""
-                            UPDATE factcheck.statements
-                            SET context = %s,
-                                long_answer = %s
-                            WHERE statement_text = %s
-                        """, (context, long_answer, question))
+                            INSERT INTO factcheck.statements
+                            (statement_text, input_statement_id, expected_answer, source_file, context, long_answer)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (statement_text) DO UPDATE
+                            SET context = EXCLUDED.context,
+                                long_answer = EXCLUDED.long_answer
+                            RETURNING (xmax = 0) AS inserted
+                        """, (question, pmid, expected_answer, 'ori_pqal.json', context, long_answer))
 
-                        if cur.rowcount > 0:
-                            updated_count += 1
+                        # xmax = 0 means INSERT, xmax > 0 means UPDATE
+                        result = cur.fetchone()
+                        if result and result[0]:
+                            inserted_count += 1
                         else:
-                            # Record doesn't exist - INSERT it
-                            cur.execute("""
-                                INSERT INTO factcheck.statements
-                                (statement_text, input_statement_id, expected_answer, source_file, context, long_answer)
-                                VALUES (%s, %s, %s, %s, %s, %s)
-                            """, (question, pmid, expected_answer, 'ori_pqal.json', context, long_answer))
+                            updated_count += 1
 
-                            if cur.rowcount > 0:
-                                inserted_count += 1
-                            else:
-                                skipped_count += 1
+                        # Progress reporting every 100 records
+                        if idx % 100 == 0:
+                            print(f"  Progress: {idx}/{total} records processed...")
 
                     except Exception as e:
                         errors.append(f"PMID {pmid}: {e}")
