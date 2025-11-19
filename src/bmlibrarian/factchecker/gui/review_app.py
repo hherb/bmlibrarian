@@ -17,6 +17,10 @@ from .statement_display import StatementDisplay
 from .annotation_manager import AnnotationManager
 from .citation_display import CitationDisplay
 from .timer_component import ReviewTimer
+from .styles import (
+    Colors, ButtonStyles, ContainerStyles, TextStyles,
+    LayoutConfig, DPIScale
+)
 
 
 class FactCheckerReviewApp:
@@ -39,6 +43,10 @@ class FactCheckerReviewApp:
         self.db_file = db_file
         self.current_index = 0
 
+        # Visibility state for UI sections
+        self.show_reviews = True
+        self.show_citations = True
+
         # Initialize components
         self.data_manager = FactCheckDataManager(incremental=incremental, db_file=db_file)
         self.statement_display = StatementDisplay(blind_mode=blind_mode)
@@ -50,9 +58,13 @@ class FactCheckerReviewApp:
         # UI components
         self.status_text = None
         self.citations_list = None
+        self.citations_container = None
         self.prev_button = None
         self.next_button = None
         self.review_content = None
+        self.annotations_row = None
+        self.toggle_reviews_button = None
+        self.toggle_citations_button = None
 
     def main(self, page: ft.Page):
         """Main application entry point."""
@@ -78,63 +90,87 @@ class FactCheckerReviewApp:
     def _setup_page(self):
         """Configure the main page settings."""
         self.page.title = "BMLibrarian Fact-Checker Review"
-        self.page.window.width = 1400
-        self.page.window.height = 900
-        self.page.window.min_width = 1200
-        self.page.window.min_height = 700
+        self.page.window.width = LayoutConfig.WINDOW_WIDTH
+        self.page.window.height = LayoutConfig.WINDOW_HEIGHT
+        self.page.window.min_width = LayoutConfig.WINDOW_MIN_WIDTH
+        self.page.window.min_height = LayoutConfig.WINDOW_MIN_HEIGHT
         self.page.window.resizable = True
         self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.padding = 20
+        self.page.padding = LayoutConfig.PAGE_PADDING
         self.page.scroll = ft.ScrollMode.AUTO
 
     def _build_ui(self):
         """Build the main user interface."""
+        # Toggle buttons for show/hide
+        toggle_style = ButtonStyles.toggle_button()
+        self.toggle_reviews_button = ft.ElevatedButton(
+            "Hide Reviews",
+            icon=ft.Icons.VISIBILITY_OFF,
+            on_click=self._on_toggle_reviews,
+            **toggle_style
+        )
+
+        self.toggle_citations_button = ft.ElevatedButton(
+            "Hide Citations",
+            icon=ft.Icons.VISIBILITY_OFF,
+            on_click=self._on_toggle_citations,
+            **toggle_style
+        )
+
         # Statistics button
+        primary_style = ButtonStyles.primary_button()
         statistics_button = ft.ElevatedButton(
             "Statistics",
             icon=ft.Icons.ANALYTICS,
             on_click=self._on_show_statistics,
-            bgcolor=ft.Colors.BLUE_700,
-            color=ft.Colors.WHITE
+            **primary_style
         )
 
         # Header
+        title_style = TextStyles.title_large()
+        subtitle_style = TextStyles.subtitle()
+
         header = ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Column([
                         ft.Text(
                             "Fact-Checker Review Interface",
-                            size=28,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.BLUE_900
+                            **title_style
                         ),
                         ft.Text(
                             "Review and annotate AI-generated fact-checking results" +
                             (" (SQLite Package)" if self.db_file else " (PostgreSQL Database)"),
-                            size=14,
-                            color=ft.Colors.GREY_700
+                            **subtitle_style
                         )
-                    ], expand=True),
+                    ], expand=True)
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=LayoutConfig.SPACING_SMALL),
+                # Top row with controls: Hide/Show buttons, Timer, Statistics
+                ft.Row([
+                    self.toggle_reviews_button,
+                    self.toggle_citations_button,
+                    ft.Container(expand=True),
+                    self.timer.build_section(),
+                    ft.Container(width=LayoutConfig.SPACING_SMALL),
                     statistics_button
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            ], spacing=5),
-            padding=ft.padding.only(bottom=20)
+            ], spacing=LayoutConfig.SPACING_TINY),
+            padding=ft.padding.only(bottom=LayoutConfig.SPACING_LARGE)
         )
 
         # Database status section
+        status_style = TextStyles.status_text()
         self.status_text = ft.Text(
             "Loading from database...",
-            size=12,
-            color=ft.Colors.GREY_600,
-            italic=True
+            **status_style
         )
 
         status_section = ft.Container(
             content=self.status_text,
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.BLUE_50,
-            border_radius=10
+            padding=ft.padding.all(DPIScale.to_pt(DPIScale.CONTAINER_PADDING_MEDIUM)),
+            bgcolor=Colors.PRIMARY_BLUE_PALE,
+            border_radius=DPIScale.to_pt(DPIScale.CONTAINER_PADDING_SMALL)
         )
 
         # Review content (initially hidden)
@@ -145,56 +181,55 @@ class FactCheckerReviewApp:
         main_content = ft.Column([
             header,
             status_section,
-            ft.Container(height=20),
+            ft.Container(height=LayoutConfig.SPACING_LARGE),
             self.review_content
-        ], spacing=0, expand=True, scroll=ft.ScrollMode.AUTO)
+        ], spacing=LayoutConfig.SPACING_NONE, expand=True, scroll=ft.ScrollMode.AUTO)
 
         self.page.add(main_content)
 
     def _build_review_content(self) -> ft.Container:
         """Build the statement review interface."""
-        # Progress section with timer
-        progress_section = ft.Row([
-            ft.Column([
-                self.statement_display.build_progress_section()
-            ], expand=True),
-            self.timer.build_section()
-        ], spacing=20, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        # Progress section (timer now in top row)
+        progress_section = self.statement_display.build_progress_section()
 
         # Statement section
         statement_section = self.statement_display.build_statement_section()
 
         # Annotations section
         human_annotation_section = self.annotation_manager.build_section()
-        annotations_row = self.statement_display.build_annotations_section(human_annotation_section)
+        self.annotations_row = self.statement_display.build_annotations_section(
+            human_annotation_section,
+            show_reviews=self.show_reviews
+        )
 
-        # Citations section
+        # Citations section with constant height
         self.citations_list = ft.Column(
             controls=[],
-            spacing=10,
+            spacing=LayoutConfig.SPACING_SMALL,
             scroll=ft.ScrollMode.AUTO
         )
 
+        # Inner container for citations list with constant height (DPI-aware)
+        citation_container_style = ContainerStyles.citation_container()
+        self.citations_container = ft.Container(
+            content=self.citations_list,
+            **citation_container_style
+        )
+
+        section_title_style = TextStyles.title_medium()
+        section_style = ContainerStyles.section_container(
+            Colors.ACCENT_ORANGE_LIGHT,
+            Colors.ACCENT_ORANGE_BORDER
+        )
         citations_section = ft.Container(
             content=ft.Column([
                 ft.Text(
                     "Supporting Citations",
-                    size=14,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.Colors.GREY_900
+                    **section_title_style
                 ),
-                ft.Container(
-                    content=self.citations_list,
-                    height=300,
-                    bgcolor=ft.Colors.GREY_50,
-                    border_radius=8,
-                    padding=ft.padding.all(10)
-                )
-            ], spacing=10),
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.ORANGE_50,
-            border_radius=8,
-            border=ft.border.all(1, ft.Colors.ORANGE_200)
+                self.citations_container
+            ], spacing=LayoutConfig.SPACING_SMALL),
+            **section_style
         )
 
         # Navigation buttons
@@ -213,10 +248,11 @@ class FactCheckerReviewApp:
         )
 
         # Auto-save indicator
+        auto_save_style = TextStyles.status_text()
         auto_save_text = ft.Text(
             "✓ Annotations saved automatically to database",
-            size=12,
-            color=ft.Colors.GREEN_700,
+            size=auto_save_style['size'],
+            color=Colors.SUCCESS,
             italic=True
         )
 
@@ -225,25 +261,23 @@ class FactCheckerReviewApp:
             self.next_button,
             ft.Container(expand=True),
             auto_save_text
-        ], spacing=10, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ], spacing=LayoutConfig.SPACING_SMALL, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         # Combine all sections
+        card_style = ContainerStyles.card_container()
         return ft.Container(
             content=ft.Column([
                 progress_section,
-                ft.Container(height=10),
+                ft.Container(height=LayoutConfig.SPACING_SMALL),
                 statement_section,
-                ft.Container(height=15),
-                annotations_row,
-                ft.Container(height=15),
+                ft.Container(height=LayoutConfig.SPACING_MEDIUM),
+                self.annotations_row,
+                ft.Container(height=LayoutConfig.SPACING_MEDIUM),
                 citations_section,
-                ft.Container(height=20),
+                ft.Container(height=LayoutConfig.SPACING_LARGE),
                 navigation_section
-            ], spacing=0),
-            padding=ft.padding.all(20),
-            bgcolor=ft.Colors.WHITE,
-            border_radius=10,
-            border=ft.border.all(1, ft.Colors.GREY_300)
+            ], spacing=LayoutConfig.SPACING_NONE),
+            **card_style
         )
 
     def _on_annotator_complete(self, annotator_info: dict):
@@ -285,7 +319,7 @@ class FactCheckerReviewApp:
 
             self.status_text.value = f"✓ Loaded {len(self.data_manager.results)} statements from {db_source}{extra_info}{mode_indicator}"
             self.status_text.italic = False
-            self.status_text.color = ft.Colors.GREEN_700
+            self.status_text.color = Colors.SUCCESS
 
             # Show review interface
             self.current_index = 0
@@ -385,6 +419,100 @@ class FactCheckerReviewApp:
 
             self.current_index += 1
             self._display_current_statement()
+
+    def _on_toggle_reviews(self, e):
+        """Toggle visibility of review annotations (Original and AI)."""
+        self.show_reviews = not self.show_reviews
+
+        # Update button text and icon
+        if self.show_reviews:
+            self.toggle_reviews_button.text = "Hide Reviews"
+            self.toggle_reviews_button.icon = ft.Icons.VISIBILITY_OFF
+        else:
+            self.toggle_reviews_button.text = "Show Reviews"
+            self.toggle_reviews_button.icon = ft.Icons.VISIBILITY
+
+        # Rebuild annotations section with new visibility
+        human_annotation_section = self.annotation_manager.build_section()
+        new_annotations_row = self.statement_display.build_annotations_section(
+            human_annotation_section,
+            show_reviews=self.show_reviews
+        )
+
+        # Replace the old annotations_row with new one
+        self.annotations_row.visible = False
+        self.annotations_row = new_annotations_row
+
+        # Find parent container and update
+        if hasattr(self, 'review_content') and self.review_content:
+            # Rebuild the entire review content to update layout
+            self._refresh_review_layout()
+
+        self.page.update()
+
+    def _on_toggle_citations(self, e):
+        """Toggle visibility of citations section."""
+        self.show_citations = not self.show_citations
+
+        # Update button text and icon
+        if self.show_citations:
+            self.toggle_citations_button.text = "Hide Citations"
+            self.toggle_citations_button.icon = ft.Icons.VISIBILITY_OFF
+        else:
+            self.toggle_citations_button.text = "Show Citations"
+            self.toggle_citations_button.icon = ft.Icons.VISIBILITY
+
+        # Toggle visibility of citations list (height stays constant)
+        if self.citations_list:
+            self.citations_list.visible = self.show_citations
+
+        # Show placeholder when citations are hidden
+        if self.citations_container and hasattr(self.citations_container, 'content'):
+            if not self.show_citations:
+                # Show placeholder message
+                placeholder_style = TextStyles.status_text()
+                placeholder = ft.Container(
+                    content=ft.Text(
+                        "Citations hidden. Click 'Show Citations' to view supporting evidence.",
+                        size=placeholder_style['size'],
+                        color=Colors.GREY_PALE,
+                        italic=True,
+                        text_align=ft.TextAlign.CENTER
+                    ),
+                    alignment=ft.alignment.center,
+                    expand=True
+                )
+                # Store original content
+                if not hasattr(self, '_original_citations_content'):
+                    self._original_citations_content = self.citations_container.content
+                self.citations_container.content = placeholder
+            else:
+                # Restore original content
+                if hasattr(self, '_original_citations_content'):
+                    self.citations_container.content = self._original_citations_content
+
+        self.page.update()
+
+    def _refresh_review_layout(self):
+        """Refresh the review layout after visibility changes."""
+        # Rebuild annotations section
+        human_annotation_section = self.annotation_manager.build_section()
+        new_annotations_row = self.statement_display.build_annotations_section(
+            human_annotation_section,
+            show_reviews=self.show_reviews
+        )
+
+        # Replace annotations_row in the review content
+        # Find the Column in review_content and update the annotations_row
+        if self.review_content and hasattr(self.review_content, 'content'):
+            column = self.review_content.content
+            if hasattr(column, 'controls'):
+                # Find and replace the annotations_row (should be at index 4)
+                for i, control in enumerate(column.controls):
+                    if control == self.annotations_row:
+                        column.controls[i] = new_annotations_row
+                        self.annotations_row = new_annotations_row
+                        break
 
     def _on_show_statistics(self, e):
         """Display statistics dialog."""

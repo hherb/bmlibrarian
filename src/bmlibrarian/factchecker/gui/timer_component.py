@@ -8,6 +8,10 @@ import time
 from typing import Optional, Callable
 import flet as ft
 
+from .styles import (
+    Colors, ContainerStyles, TextStyles, LayoutConfig, DPIScale
+)
+
 
 class ReviewTimer:
     """Timer component for tracking review time."""
@@ -30,25 +34,25 @@ class ReviewTimer:
         self._is_paused: bool = False
 
         # UI components
+        timer_style = TextStyles.timer_display()
         self.timer_display = ft.Text(
             "00:00",
-            size=24,
-            weight=ft.FontWeight.BOLD,
-            color=ft.Colors.BLUE_900
+            **timer_style
         )
 
         self.pause_button = ft.IconButton(
             icon=ft.Icons.PAUSE,
-            icon_color=ft.Colors.BLUE_700,
-            icon_size=20,
+            icon_color=Colors.PRIMARY_BLUE_LIGHT,
+            icon_size=DPIScale.font_size(DPIScale.FONT_SIZE_LARGE),
             tooltip="Pause timer",
             on_click=self._on_pause_click
         )
 
+        status_style = TextStyles.label_small()
         self.status_text = ft.Text(
             "Timer ready",
-            size=11,
-            color=ft.Colors.GREY_600,
+            size=status_style['size'],
+            color=Colors.GREY_LIGHT,
             italic=True
         )
 
@@ -78,13 +82,13 @@ class ReviewTimer:
 
         if self._is_paused:
             self.status_text.value = "⏸ Paused"
-            self.status_text.color = ft.Colors.ORANGE_600
+            self.status_text.color = Colors.WARNING
         elif self._is_running:
             self.status_text.value = "⏱ Recording..."
-            self.status_text.color = ft.Colors.GREEN_600
+            self.status_text.color = Colors.SUCCESS
         else:
             self.status_text.value = "Timer stopped"
-            self.status_text.color = ft.Colors.GREY_600
+            self.status_text.color = Colors.GREY_LIGHT
 
     def start(self, previous_seconds: int = 0):
         """
@@ -183,21 +187,20 @@ class ReviewTimer:
 
     def build_section(self) -> ft.Container:
         """Build timer UI section."""
+        label_style = TextStyles.label_small()
+        timer_style = ContainerStyles.timer_container()
+
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.TIMER, size=20, color=ft.Colors.BLUE_700),
-                    ft.Text("Review Time", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700),
-                ], spacing=5),
+                    ft.Icon(ft.Icons.TIMER, size=DPIScale.font_size(DPIScale.FONT_SIZE_LARGE), color=Colors.PRIMARY_BLUE_LIGHT),
+                    ft.Text("Review Time", **label_style, color=Colors.PRIMARY_BLUE_LIGHT),
+                ], spacing=LayoutConfig.SPACING_TINY),
                 ft.Row([
                     self.timer_display,
                     self.pause_button
-                ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+                ], spacing=LayoutConfig.SPACING_SMALL, alignment=ft.MainAxisAlignment.CENTER),
                 self.status_text
-            ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.padding.all(10),
-            bgcolor=ft.Colors.BLUE_50,
-            border_radius=8,
-            border=ft.border.all(1, ft.Colors.BLUE_200),
-            width=180
+            ], spacing=LayoutConfig.SPACING_TINY, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            **timer_style
         )

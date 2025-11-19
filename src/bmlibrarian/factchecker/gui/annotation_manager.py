@@ -7,6 +7,10 @@ Handles user input for annotations and explanations.
 from typing import Callable, Optional
 import flet as ft
 
+from .styles import (
+    Colors, ContainerStyles, TextStyles, LayoutConfig, DPIScale
+)
+
 
 class AnnotationManager:
     """Manages annotation input components and callbacks."""
@@ -33,7 +37,7 @@ class AnnotationManager:
                 ft.dropdown.Option(key="unclear", text="Unclear")
             ],
             value="n/a",  # Default to n/a
-            width=250,
+            width=DPIScale.to_pt(DPIScale.PROGRESS_BAR_WIDTH * 0.75),  # 75% of progress bar width
             on_change=self._handle_annotation_change,
             filled=True
         )
@@ -55,7 +59,7 @@ class AnnotationManager:
                 ft.dropdown.Option(key="low", text="Low")
             ],
             value="n/a",  # Default to not selected
-            width=200,
+            width=DPIScale.to_pt(DPIScale.PROGRESS_BAR_WIDTH * 0.6),  # 60% of progress bar width
             on_change=self._handle_confidence_change,
             filled=True
         )
@@ -144,15 +148,19 @@ class AnnotationManager:
 
     def build_section(self) -> ft.Container:
         """Build annotation input section UI."""
+        label_style = TextStyles.label_small()
+        annotation_style = ContainerStyles.annotation_section(
+            Colors.ACCENT_GREEN_LIGHT,
+            Colors.ACCENT_GREEN_BORDER,
+            border_width=2
+        )
+
         return ft.Container(
             content=ft.Column([
-                ft.Text("Human Review", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_700),
+                ft.Text("Human Review", **label_style, color=Colors.ACCENT_GREEN),
                 self.annotation_dropdown,
                 self.confidence_dropdown,
                 self.explanation_field
-            ], spacing=10),
-            padding=ft.padding.all(15),
-            bgcolor=ft.Colors.GREEN_50,
-            border_radius=8,
-            border=ft.border.all(2, ft.Colors.GREEN_300)
+            ], spacing=LayoutConfig.SPACING_SMALL),
+            **annotation_style
         )
