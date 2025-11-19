@@ -28,12 +28,12 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 
 from .base import BaseAgent
+from bmlibrarian.config import get_model, get_agent_config, get_ollama_host
 
 logger = logging.getLogger(__name__)
 
 
 # Constants for configuration
-MAX_TEXT_LENGTH = 15000  # Maximum characters to analyze (systematic reviews are longer)
 DEFAULT_MIN_CONFIDENCE = 0.4  # Default minimum confidence threshold
 DEFAULT_CONFIDENCE_FALLBACK = 0.5  # Fallback confidence when not provided by LLM
 SUMMARY_SEPARATOR_WIDTH = 80  # Width of separator lines in formatted summaries
@@ -221,40 +221,54 @@ class PRISMA2020Agent(BaseAgent):
     """
 
     def __init__(self,
-                 model: str = "gpt-oss:20b",
-                 host: str = "http://localhost:11434",
-                 temperature: float = 0.1,
-                 top_p: float = 0.9,
-                 max_tokens: int = 4000,
+                 model: Optional[str] = None,
+                 host: Optional[str] = None,
+                 temperature: Optional[float] = None,
+                 top_p: Optional[float] = None,
+                 max_tokens: Optional[int] = None,
                  callback: Optional[Callable[[str, str], None]] = None,
                  orchestrator=None,
                  show_model_info: bool = True,
-                 max_retries: int = 3):
+                 max_retries: Optional[int] = None):
         """
         Initialize the PRISMA2020Agent.
 
         Args:
-            model: The name of the Ollama model to use (default: gpt-oss:20b)
-            host: The Ollama server host URL (default: http://localhost:11434)
-            temperature: Model temperature for assessment (default: 0.1 for consistent output)
-            top_p: Model top-p sampling parameter (default: 0.9)
-            max_tokens: Maximum tokens for response (default: 4000, PRISMA assessments are lengthy)
+            model: The name of the Ollama model to use (default: from config system)
+            host: The Ollama server host URL (default: from config system)
+            temperature: Model temperature for assessment (default: from config system)
+            top_p: Model top-p sampling parameter (default: from config system)
+            max_tokens: Maximum tokens for response (default: from config system, 4000 for PRISMA assessments)
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
-            max_retries: Maximum number of retry attempts for failed assessments (default: 3)
+            max_retries: Maximum number of retry attempts for failed assessments (default: from config system)
         """
-        super().__init__(
-            model=model,
-            host=host,
-            temperature=temperature,
-            top_p=top_p,
-            callback=callback,
-            orchestrator=orchestrator,
-            show_model_info=show_model_info
-        )
-        self.max_tokens = max_tokens
-        self.max_retries = max_retries
+        # Load configuration defaults
+        agent_config = get_agent_config("prisma2020")
+
+        # Use provided values or fall back to config
+        model = model or get_model("prisma2020_agent", default="gpt-oss:20b")
+        host = host or get_ollama_host()
+        temperature = temperature if temperature is not None else agent_config.get("temperature", 0.1)
+        top_p = top_p if top_p is not None else agent_config.get("top_p", 0.9)
+        max_tokens_value = max_tokens if max_tokens is not None else agent_config.get("max_tokens", 4000)
+        max_retries_value = max_retries if max_retries is not None else agent_config.get("max_retries", 3)
+
+        # Filter to only include supported BaseAgent parameters
+        base_params = {
+            "model": model,
+            "host": host,
+            "temperature": temperature,
+            "top_p": top_p,
+            "callback": callback,
+            "orchestrator": orchestrator,
+            "show_model_info": show_model_info
+        }
+
+        super().__init__(**base_params)
+        self.max_tokens = max_tokens_value
+        self.max_retries = max_retries_value
 
         # Statistics tracking
         self._assessment_stats = {
@@ -385,11 +399,8 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             self._assessment_stats['failed_assessments'] += 1
             return None
 
-        # Validate required fields
-        required_fields = ['is_systematic_review', 'is_meta_analysis', 'is_suitable',
-                          'confidence', 'rationale', 'document_type']
-        if not all(field in suitability_data for field in required_fields):
-            logger.error(f"Missing required fields in suitability response for document {doc_id}")
+        # Validate JSON schema and data types
+        if not self._validate_suitability_schema(suitability_data, doc_id):
             return None
 
         # Create SuitabilityAssessment object
@@ -480,10 +491,8 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             logger.warning(f"No text found for document {doc_id}")
             return None
 
-        # Truncate text if too long
-        if len(text_to_analyze) > MAX_TEXT_LENGTH:
-            text_to_analyze = text_to_analyze[:MAX_TEXT_LENGTH] + "..."
-            logger.debug(f"Truncated text for document {doc_id} to {MAX_TEXT_LENGTH} characters")
+        # Log text length for monitoring (but do NOT truncate - full text is essential for PRISMA assessment)
+        logger.debug(f"Analyzing {len(text_to_analyze)} characters for document {doc_id}")
 
         self._call_callback("prisma_assessment_started",
                            f"Assessing PRISMA 2020 compliance for document {doc_id}")
@@ -532,6 +541,9 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             )
             self._assessment_stats['low_confidence_assessments'] += 1
 
+        # Map all PRISMA fields using helper method
+        prisma_fields = self._map_prisma_fields(assessment_data)
+
         # Create PRISMA2020Assessment object
         assessment = PRISMA2020Assessment(
             # Suitability
@@ -539,87 +551,8 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             is_meta_analysis=is_meta_analysis,
             suitability_rationale=suitability_rationale,
 
-            # All 27 PRISMA items (score + explanation)
-            title_score=float(assessment_data['title_score']),
-            title_explanation=assessment_data['title_explanation'],
-
-            abstract_score=float(assessment_data['abstract_score']),
-            abstract_explanation=assessment_data['abstract_explanation'],
-
-            rationale_score=float(assessment_data['rationale_score']),
-            rationale_explanation=assessment_data['rationale_explanation'],
-
-            objectives_score=float(assessment_data['objectives_score']),
-            objectives_explanation=assessment_data['objectives_explanation'],
-
-            eligibility_criteria_score=float(assessment_data['eligibility_criteria_score']),
-            eligibility_criteria_explanation=assessment_data['eligibility_criteria_explanation'],
-
-            information_sources_score=float(assessment_data['information_sources_score']),
-            information_sources_explanation=assessment_data['information_sources_explanation'],
-
-            search_strategy_score=float(assessment_data['search_strategy_score']),
-            search_strategy_explanation=assessment_data['search_strategy_explanation'],
-
-            selection_process_score=float(assessment_data['selection_process_score']),
-            selection_process_explanation=assessment_data['selection_process_explanation'],
-
-            data_collection_score=float(assessment_data['data_collection_score']),
-            data_collection_explanation=assessment_data['data_collection_explanation'],
-
-            data_items_score=float(assessment_data['data_items_score']),
-            data_items_explanation=assessment_data['data_items_explanation'],
-
-            risk_of_bias_score=float(assessment_data['risk_of_bias_score']),
-            risk_of_bias_explanation=assessment_data['risk_of_bias_explanation'],
-
-            effect_measures_score=float(assessment_data['effect_measures_score']),
-            effect_measures_explanation=assessment_data['effect_measures_explanation'],
-
-            synthesis_methods_score=float(assessment_data['synthesis_methods_score']),
-            synthesis_methods_explanation=assessment_data['synthesis_methods_explanation'],
-
-            reporting_bias_assessment_score=float(assessment_data['reporting_bias_assessment_score']),
-            reporting_bias_assessment_explanation=assessment_data['reporting_bias_assessment_explanation'],
-
-            certainty_assessment_score=float(assessment_data['certainty_assessment_score']),
-            certainty_assessment_explanation=assessment_data['certainty_assessment_explanation'],
-
-            study_selection_score=float(assessment_data['study_selection_score']),
-            study_selection_explanation=assessment_data['study_selection_explanation'],
-
-            study_characteristics_score=float(assessment_data['study_characteristics_score']),
-            study_characteristics_explanation=assessment_data['study_characteristics_explanation'],
-
-            risk_of_bias_results_score=float(assessment_data['risk_of_bias_results_score']),
-            risk_of_bias_results_explanation=assessment_data['risk_of_bias_results_explanation'],
-
-            individual_studies_results_score=float(assessment_data['individual_studies_results_score']),
-            individual_studies_results_explanation=assessment_data['individual_studies_results_explanation'],
-
-            synthesis_results_score=float(assessment_data['synthesis_results_score']),
-            synthesis_results_explanation=assessment_data['synthesis_results_explanation'],
-
-            reporting_biases_results_score=float(assessment_data['reporting_biases_results_score']),
-            reporting_biases_results_explanation=assessment_data['reporting_biases_results_explanation'],
-
-            certainty_of_evidence_score=float(assessment_data['certainty_of_evidence_score']),
-            certainty_of_evidence_explanation=assessment_data['certainty_of_evidence_explanation'],
-
-            discussion_score=float(assessment_data['discussion_score']),
-            discussion_explanation=assessment_data['discussion_explanation'],
-
-            limitations_score=float(assessment_data['limitations_score']),
-            limitations_explanation=assessment_data['limitations_explanation'],
-
-            conclusions_score=float(assessment_data['conclusions_score']),
-            conclusions_explanation=assessment_data['conclusions_explanation'],
-
-            registration_score=float(assessment_data['registration_score']),
-            registration_explanation=assessment_data['registration_explanation'],
-
-            support_score=float(assessment_data['support_score']),
-            support_explanation=assessment_data['support_explanation'],
+            # All 27 PRISMA items (score + explanation) - mapped automatically
+            **prisma_fields,
 
             # Overall summary
             overall_compliance_score=overall_compliance_score,
@@ -813,8 +746,76 @@ Response format (JSON only):
 
 Respond ONLY with valid JSON. Do not include any explanatory text outside the JSON."""
 
+    def _validate_suitability_schema(self, data: Dict[str, Any], doc_id: str) -> bool:
+        """
+        Validate suitability response JSON schema and data types.
+
+        Args:
+            data: Parsed JSON data from LLM
+            doc_id: Document ID for error reporting
+
+        Returns:
+            True if schema is valid, False otherwise
+        """
+        required_fields = {
+            'is_systematic_review': bool,
+            'is_meta_analysis': bool,
+            'is_suitable': bool,
+            'confidence': (int, float),  # Allow both int and float
+            'rationale': str,
+            'document_type': str
+        }
+
+        # Check for missing fields
+        missing_fields = [field for field in required_fields.keys() if field not in data]
+        if missing_fields:
+            logger.error(
+                f"Missing required fields in suitability response for document {doc_id}: "
+                f"{', '.join(missing_fields)}. Got fields: {', '.join(data.keys())}"
+            )
+            self._assessment_stats['failed_assessments'] += 1
+            return False
+
+        # Validate data types
+        type_errors = []
+        for field, expected_type in required_fields.items():
+            value = data[field]
+            if not isinstance(value, expected_type):
+                type_errors.append(
+                    f"{field} (expected {expected_type.__name__}, got {type(value).__name__})"
+                )
+
+        if type_errors:
+            logger.error(
+                f"Type validation errors in suitability response for document {doc_id}: "
+                f"{', '.join(type_errors)}"
+            )
+            self._assessment_stats['failed_assessments'] += 1
+            return False
+
+        # Validate confidence range
+        confidence = float(data['confidence'])
+        if not (0.0 <= confidence <= 1.0):
+            logger.error(
+                f"Invalid confidence value in suitability response for document {doc_id}: "
+                f"{confidence} (must be between 0.0 and 1.0)"
+            )
+            self._assessment_stats['failed_assessments'] += 1
+            return False
+
+        return True
+
     def _validate_assessment_data(self, data: Dict[str, Any], doc_id: str) -> bool:
-        """Validate that all required fields are present in assessment data."""
+        """
+        Validate that all required fields are present in assessment data with correct types.
+
+        Args:
+            data: Parsed JSON data from LLM
+            doc_id: Document ID for error reporting
+
+        Returns:
+            True if validation passes, False otherwise
+        """
         required_score_fields = [
             'title_score', 'abstract_score', 'rationale_score', 'objectives_score',
             'eligibility_criteria_score', 'information_sources_score', 'search_strategy_score',
@@ -832,9 +833,67 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
 
         all_required = required_score_fields + required_explanation_fields + ['overall_confidence']
 
+        # Check for missing fields
         missing = [f for f in all_required if f not in data]
         if missing:
-            logger.error(f"Missing required PRISMA fields for document {doc_id}: {missing}")
+            logger.error(
+                f"Missing required PRISMA fields for document {doc_id}: "
+                f"{', '.join(missing)} ({len(missing)} fields missing). "
+                f"Got {len(data)} fields: {', '.join(sorted(data.keys())[:10])}{'...' if len(data) > 10 else ''}"
+            )
+            self._assessment_stats['failed_assessments'] += 1
+            return False
+
+        # Validate score field types and ranges
+        type_errors = []
+        range_errors = []
+        for score_field in required_score_fields:
+            value = data[score_field]
+            # Check if value is numeric
+            if not isinstance(value, (int, float)):
+                type_errors.append(
+                    f"{score_field} (expected numeric, got {type(value).__name__})"
+                )
+            else:
+                # Check if score is in valid range (0.0-2.0)
+                if not (0.0 <= float(value) <= 2.0):
+                    range_errors.append(
+                        f"{score_field}={value} (must be between 0.0 and 2.0)"
+                    )
+
+        # Validate explanation field types
+        for explanation_field in required_explanation_fields:
+            value = data[explanation_field]
+            if not isinstance(value, str):
+                type_errors.append(
+                    f"{explanation_field} (expected str, got {type(value).__name__})"
+                )
+
+        # Validate overall_confidence
+        confidence = data.get('overall_confidence')
+        if not isinstance(confidence, (int, float)):
+            type_errors.append(
+                f"overall_confidence (expected numeric, got {type(confidence).__name__})"
+            )
+        elif not (0.0 <= float(confidence) <= 1.0):
+            range_errors.append(
+                f"overall_confidence={confidence} (must be between 0.0 and 1.0)"
+            )
+
+        # Report validation errors
+        if type_errors:
+            logger.error(
+                f"Type validation errors for document {doc_id}: "
+                f"{', '.join(type_errors)}"
+            )
+            self._assessment_stats['failed_assessments'] += 1
+            return False
+
+        if range_errors:
+            logger.error(
+                f"Value range validation errors for document {doc_id}: "
+                f"{', '.join(range_errors)}"
+            )
             self._assessment_stats['failed_assessments'] += 1
             return False
 
@@ -856,6 +915,43 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         ]
 
         return [float(data[f]) for f in score_fields]
+
+    def _map_prisma_fields(self, assessment_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Map PRISMA assessment data fields to PRISMA2020Assessment constructor arguments.
+
+        This method uses a field list to automatically map score and explanation fields,
+        avoiding repetitive code and making maintenance easier.
+
+        Args:
+            assessment_data: Raw assessment data from LLM
+
+        Returns:
+            Dictionary of mapped field names to values for PRISMA2020Assessment constructor
+        """
+        # List of all PRISMA items (base field names without _score or _explanation suffix)
+        prisma_items = [
+            'title', 'abstract', 'rationale', 'objectives',
+            'eligibility_criteria', 'information_sources', 'search_strategy',
+            'selection_process', 'data_collection', 'data_items',
+            'risk_of_bias', 'effect_measures', 'synthesis_methods',
+            'reporting_bias_assessment', 'certainty_assessment',
+            'study_selection', 'study_characteristics', 'risk_of_bias_results',
+            'individual_studies_results', 'synthesis_results',
+            'reporting_biases_results', 'certainty_of_evidence',
+            'discussion', 'limitations', 'conclusions',
+            'registration', 'support'
+        ]
+
+        # Build field mapping using dictionary comprehension
+        field_mapping = {}
+        for item in prisma_items:
+            score_field = f"{item}_score"
+            explanation_field = f"{item}_explanation"
+            field_mapping[score_field] = float(assessment_data[score_field])
+            field_mapping[explanation_field] = assessment_data[explanation_field]
+
+        return field_mapping
 
     def assess_batch(
         self,
