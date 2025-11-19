@@ -9,10 +9,11 @@ import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QLineEdit, QComboBox, QSplitter,
-    QMessageBox, QScrollArea
+    QMessageBox, QScrollArea, QTableWidget, QTableWidgetItem,
+    QHeaderView
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont, QIntValidator
+from PySide6.QtGui import QFont, QIntValidator, QColor
 from typing import Optional, Dict, Any
 
 from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
@@ -641,7 +642,7 @@ class PRISMA2020LabTabWidget(QWidget):
         self._update_status("Assessment failed", SECTION_COLORS['error'])
 
     def _display_assessment(self):
-        """Display PRISMA 2020 assessment results."""
+        """Display PRISMA 2020 assessment results in tabular format."""
         if not self.current_assessment:
             return
 
@@ -650,15 +651,12 @@ class PRISMA2020LabTabWidget(QWidget):
 
         a = self.current_assessment
 
-        # Add result sections
+        # Add suitability and overall compliance summary
         self.assessment_layout.addWidget(self._create_suitability_section(a))
         self.assessment_layout.addWidget(self._create_overall_section(a))
-        self.assessment_layout.addWidget(self._create_title_abstract_section(a))
-        self.assessment_layout.addWidget(self._create_introduction_section(a))
-        self.assessment_layout.addWidget(self._create_methods_section(a))
-        self.assessment_layout.addWidget(self._create_results_section(a))
-        self.assessment_layout.addWidget(self._create_discussion_section(a))
-        self.assessment_layout.addWidget(self._create_other_info_section(a))
+
+        # Add tabular PRISMA criteria checklist
+        self.assessment_layout.addWidget(self._create_criteria_table(a))
 
         self.assessment_layout.addStretch()
 
@@ -774,6 +772,116 @@ class PRISMA2020LabTabWidget(QWidget):
             )
         )
         layout.addWidget(stats_label)
+
+        return section
+
+    def _create_criteria_table(self, a: PRISMA2020Assessment) -> QGroupBox:
+        """Create tabular display of all PRISMA 2020 criteria."""
+        section = QGroupBox("📋 PRISMA 2020 Checklist")
+        section.setStyleSheet(
+            self.stylesheet_gen.card_stylesheet(bg_color='#FFFFFF')
+        )
+        layout = QVBoxLayout(section)
+        layout.setSpacing(scale_px(10))
+
+        # Create table
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["#", "Criterion", "Status", "Explanation"])
+
+        # Define all 27 PRISMA items with their scores and explanations
+        items = [
+            (1, "Title", a.title_score, a.title_explanation),
+            (2, "Abstract", a.abstract_score, a.abstract_explanation),
+            (3, "Rationale", a.rationale_score, a.rationale_explanation),
+            (4, "Objectives", a.objectives_score, a.objectives_explanation),
+            (5, "Eligibility Criteria", a.eligibility_criteria_score, a.eligibility_criteria_explanation),
+            (6, "Information Sources", a.information_sources_score, a.information_sources_explanation),
+            (7, "Search Strategy", a.search_strategy_score, a.search_strategy_explanation),
+            (8, "Selection Process", a.selection_process_score, a.selection_process_explanation),
+            (9, "Data Collection", a.data_collection_score, a.data_collection_explanation),
+            (10, "Data Items", a.data_items_score, a.data_items_explanation),
+            (11, "Risk of Bias Assessment", a.risk_of_bias_score, a.risk_of_bias_explanation),
+            (12, "Effect Measures", a.effect_measures_score, a.effect_measures_explanation),
+            (13, "Synthesis Methods", a.synthesis_methods_score, a.synthesis_methods_explanation),
+            (14, "Reporting Bias Assessment", a.reporting_bias_assessment_score, a.reporting_bias_assessment_explanation),
+            (15, "Certainty Assessment", a.certainty_assessment_score, a.certainty_assessment_explanation),
+            (16, "Study Selection", a.study_selection_score, a.study_selection_explanation),
+            (17, "Study Characteristics", a.study_characteristics_score, a.study_characteristics_explanation),
+            (18, "Risk of Bias Results", a.risk_of_bias_results_score, a.risk_of_bias_results_explanation),
+            (19, "Individual Studies Results", a.individual_studies_results_score, a.individual_studies_results_explanation),
+            (20, "Synthesis Results", a.synthesis_results_score, a.synthesis_results_explanation),
+            (21, "Reporting Biases Results", a.reporting_biases_results_score, a.reporting_biases_results_explanation),
+            (22, "Certainty of Evidence", a.certainty_of_evidence_score, a.certainty_of_evidence_explanation),
+            (23, "Discussion", a.discussion_score, a.discussion_explanation),
+            (24, "Limitations", a.limitations_score, a.limitations_explanation),
+            (25, "Conclusions", a.conclusions_score, a.conclusions_explanation),
+            (26, "Registration & Protocol", a.registration_score, a.registration_explanation),
+            (27, "Support & Funding", a.support_score, a.support_explanation),
+        ]
+
+        table.setRowCount(len(items))
+
+        # Populate table
+        for row, (item_num, item_name, score, explanation) in enumerate(items):
+            # Column 0: Item number
+            num_item = QTableWidgetItem(str(item_num))
+            num_item.setTextAlignment(Qt.AlignCenter)
+            num_item.setFlags(num_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 0, num_item)
+
+            # Column 1: Criterion name
+            name_item = QTableWidgetItem(item_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            name_item.setFont(QFont("", 10, QFont.Bold))
+            table.setItem(row, 1, name_item)
+
+            # Column 2: Status with color coding
+            status_text = self._get_score_text(score)
+            status_item = QTableWidgetItem(status_text)
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            status_item.setTextAlignment(Qt.AlignCenter)
+
+            # Set background color based on score
+            color = self._get_score_color(score)
+            status_item.setBackground(QColor(color))
+            status_item.setForeground(QColor('white'))
+            status_item.setFont(QFont("", 10, QFont.Bold))
+
+            table.setItem(row, 2, status_item)
+
+            # Column 3: Explanation
+            explanation_item = QTableWidgetItem(explanation)
+            explanation_item.setFlags(explanation_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 3, explanation_item)
+
+        # Configure table appearance
+        table.setAlternatingRowColors(True)
+        table.setShowGrid(True)
+        table.verticalHeader().setVisible(False)
+
+        # Set column widths
+        table.setColumnWidth(0, scale_px(40))   # Item number - narrow
+        table.setColumnWidth(1, scale_px(200))  # Criterion name - medium
+        table.setColumnWidth(2, scale_px(150))  # Status - medium
+
+        # Explanation column stretches to fill remaining space
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+
+        # Set row heights to accommodate text
+        table.verticalHeader().setDefaultSectionSize(scale_px(60))
+
+        # Enable text wrapping for explanation column
+        table.setWordWrap(True)
+
+        # Set minimum height for table
+        table.setMinimumHeight(scale_px(400))
+
+        layout.addWidget(table)
 
         return section
 
