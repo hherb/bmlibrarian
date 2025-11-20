@@ -3,7 +3,7 @@ Section segmentation for biomedical publications using NLP and heuristics.
 """
 
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Pattern
 from bmlibrarian.pdf_processor.models import TextBlock, Section, SectionType, Document
 
 
@@ -76,6 +76,12 @@ class SectionSegmenter:
         self.font_size_threshold = font_size_threshold
         self.min_heading_size = min_heading_size
 
+        # Pre-compile regex patterns for better performance
+        self.compiled_patterns: Dict[SectionType, List[Pattern]] = {
+            section_type: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+            for section_type, patterns in self.SECTION_PATTERNS.items()
+        }
+
     def segment_document(self, blocks: List[TextBlock], metadata: dict) -> Document:
         """
         Segment a document into sections based on text blocks.
@@ -86,7 +92,23 @@ class SectionSegmenter:
 
         Returns:
             Document object with identified sections
+
+        Raises:
+            TypeError: If blocks is not a list or metadata is not a dict
+            ValueError: If blocks contains invalid TextBlock objects
         """
+        # Validate inputs
+        if not isinstance(blocks, list):
+            raise TypeError(f"blocks must be a list, got {type(blocks).__name__}")
+
+        if not isinstance(metadata, dict):
+            raise TypeError(f"metadata must be a dict, got {type(metadata).__name__}")
+
+        # Validate that all blocks are TextBlock instances
+        for i, block in enumerate(blocks):
+            if not isinstance(block, TextBlock):
+                raise ValueError(f"blocks[{i}] must be a TextBlock instance, got {type(block).__name__}")
+
         # Calculate average font size for body text
         avg_font_size = self._calculate_avg_font_size(blocks)
 
@@ -107,12 +129,23 @@ class SectionSegmenter:
         return doc
 
     def _calculate_avg_font_size(self, blocks: List[TextBlock]) -> float:
-        """Calculate the average font size for body text."""
+        """
+        Calculate the average font size for body text.
+
+        Returns:
+            Median font size, or 12.0 if no blocks or all have zero font size
+        """
         if not blocks:
             return 12.0
 
         # Use median to avoid outliers from headings
-        sizes = [block.font_size for block in blocks]
+        # Filter out zero or negative font sizes
+        sizes = [block.font_size for block in blocks if block.font_size > 0]
+
+        if not sizes:
+            # If all blocks have zero font size, return default
+            return 12.0
+
         sizes.sort()
         mid = len(sizes) // 2
 
@@ -176,7 +209,7 @@ class SectionSegmenter:
 
     def _match_section_type(self, text: str) -> Tuple[SectionType, float]:
         """
-        Match text against known section patterns.
+        Match text against known section patterns using pre-compiled regex.
 
         Returns:
             (section_type, confidence) tuple
@@ -188,10 +221,10 @@ class SectionSegmenter:
         normalized = re.sub(r'^[\d\.\s\)\]]+', '', normalized)
         normalized = re.sub(r'[:\.\?!]+$', '', normalized)
 
-        # Try exact matches first
-        for section_type, patterns in self.SECTION_PATTERNS.items():
-            for pattern in patterns:
-                if re.match(pattern, normalized, re.IGNORECASE):
+        # Try exact matches first using pre-compiled patterns
+        for section_type, compiled_patterns in self.compiled_patterns.items():
+            for pattern in compiled_patterns:
+                if pattern.match(normalized):
                     return (section_type, 1.0)
 
         # Try partial matches with lower confidence
