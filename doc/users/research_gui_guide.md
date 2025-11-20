@@ -1,5 +1,11 @@
 # Research GUI User Guide
 
+> **⚠️ DEPRECATED**: This guide documents the legacy Flet-based Research GUI (`bmlibrarian_research_gui.py`), which is deprecated and will be removed in future versions.
+>
+> **Please use the Qt GUI instead**: `uv run python bmlibrarian_qt.py` → Research tab
+>
+> **See**: [Qt GUI User Guide](qt_gui_user_guide.md) and [Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)
+
 ## Overview
 
 The BMLibrarian Research GUI is a desktop application that provides a visual interface for conducting AI-powered biomedical literature research. It features real-time workflow progress, interactive research question input, and comprehensive report generation with preview capabilities.

@@ -1,5 +1,11 @@
 # Configuration GUI User Guide
 
+> **⚠️ DEPRECATED**: This guide documents the legacy Flet-based Configuration GUI (`bmlibrarian_config_gui.py`), which is deprecated and will be removed in future versions.
+>
+> **Please use the Qt GUI instead**: `uv run python bmlibrarian_qt.py` → Configuration tab
+>
+> **See**: [Qt GUI User Guide](qt_gui_user_guide.md) and [Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)
+
 ## Overview
 
 The BMLibrarian Configuration GUI is a desktop application that provides a visual interface for managing all aspects of BMLibrarian configuration. It features tabbed interfaces for agent settings, model selection, parameter tuning, and system configuration.
