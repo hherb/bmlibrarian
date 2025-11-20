@@ -100,7 +100,10 @@ Since this project uses `uv` for package management:
   - `uv run python pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
-- **Demonstrations**: 
+- **PDF Processing Tools**:
+  - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
+  - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
+- **Demonstrations**:
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
   - `uv run python examples/reporting_demo.py` - Report generation examples
@@ -327,6 +330,12 @@ bmlibrarian/
 │   ├── embeddings/            # Document embedding generation
 │   │   ├── __init__.py        # Embeddings module exports
 │   │   └── document_embedder.py # Document embedder (uses Ollama)
+│   ├── pdf_processor/         # PDF processing and segmentation for biomedical publications
+│   │   ├── __init__.py        # PDF processor module exports
+│   │   ├── models.py          # Data models (TextBlock, Section, Document, SectionType)
+│   │   ├── extractor.py       # PDF text extraction with layout analysis (PyMuPDF)
+│   │   ├── segmenter.py       # Section segmentation using NLP and heuristics
+│   │   └── README.md          # PDF processor documentation
 │   └── cli/                   # Modular CLI architecture
 │       ├── __init__.py        # CLI module exports
 │       ├── config.py          # Configuration management
@@ -430,6 +439,8 @@ bmlibrarian/
 ├── pico_lab.py                # PICOAgent experimental laboratory GUI for PICO component extraction
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
 ├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
+├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
+├── test_pdf_processor.py      # Command-line test script for PDF processor library
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
 ├── migrations/                # Database migration scripts
