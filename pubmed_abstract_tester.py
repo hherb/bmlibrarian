@@ -125,7 +125,9 @@ class PubMedDatabase:
 
     def _init_database(self):
         """Create database schema if it doesn't exist."""
-        self.conn = sqlite3.connect(self.db_path)
+        # Use check_same_thread=False to allow multi-threaded access
+        # This is safe because we're only writing from one thread at a time
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
 
         cursor = self.conn.cursor()
@@ -606,25 +608,39 @@ class DownloadThread(QThread):
             files.sort()
             latest_file, file_size = files[-1]
 
-            self.status.emit(f"Downloading {latest_file}...")
-            logger.info(f"Selected file: {latest_file} ({file_size} bytes)")
-
             # Download file (with filename sanitization for security)
             safe_filename = sanitize_filename(latest_file)
             local_path = self.data_dir / safe_filename
 
-            downloaded = 0
-            with open(local_path, 'wb') as f:
-                def callback(chunk):
-                    nonlocal downloaded
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    # Calculate progress only if file size is known
-                    if file_size > 0:
-                        progress = int((downloaded / file_size) * PROGRESS_DOWNLOAD_MAX)
-                        self.progress.emit(progress)
+            # Check if file already exists with same size
+            skip_download = False
+            if local_path.exists():
+                local_size = local_path.stat().st_size
+                if file_size > 0 and local_size == file_size:
+                    skip_download = True
+                    self.status.emit(f"File already exists: {latest_file} ({file_size} bytes)")
+                    logger.info(f"Skipping download - file exists with matching size: {latest_file}")
+                    self.progress.emit(PROGRESS_DOWNLOAD_MAX)
+                else:
+                    logger.info(f"File exists but size mismatch: local={local_size}, remote={file_size}. Re-downloading.")
 
-                ftp.retrbinary(f'RETR {latest_file}', callback, blocksize=FTP_BLOCKSIZE)
+            # Download if needed
+            if not skip_download:
+                self.status.emit(f"Downloading {latest_file}...")
+                logger.info(f"Selected file: {latest_file} ({file_size} bytes)")
+
+                downloaded = 0
+                with open(local_path, 'wb') as f:
+                    def callback(chunk):
+                        nonlocal downloaded
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        # Calculate progress only if file size is known
+                        if file_size > 0:
+                            progress = int((downloaded / file_size) * PROGRESS_DOWNLOAD_MAX)
+                            self.progress.emit(progress)
+
+                    ftp.retrbinary(f'RETR {latest_file}', callback, blocksize=FTP_BLOCKSIZE)
 
             ftp.quit()
 
@@ -667,16 +683,10 @@ class DownloadThread(QThread):
                                     self.progress.emit(estimated_progress)
                                     last_progress_update = articles_count
 
-                        # Clear element to free memory (with safety checks)
+                        # Clear element to free memory
+                        # Note: Standard library ElementTree doesn't support getparent()/getprevious()
+                        # so we just clear the element itself
                         elem.clear()
-                        # Safely navigate parent tree to free memory
-                        if elem.getparent() is not None:
-                            while elem.getprevious() is not None:
-                                parent = elem.getparent()
-                                if parent is not None:
-                                    del parent[0]
-                                else:
-                                    break
 
                 # Insert remaining articles
                 if batch:
@@ -707,15 +717,9 @@ class DownloadThread(QThread):
             logger.error(f"FTP temporary error: {e}")
             self.error.emit(f"FTP server error (temporary): {e}\n\nPlease try again later.")
 
-        except (OSError, IOError, socket.error) as e:
-            logger.error(f"Network/IO error: {e}")
-            diagnostic = (f"Network or file system error: {e}\n\n"
-                         f"This could be:\n"
-                         f"1. Network connectivity issue\n"
-                         f"2. Firewall blocking FTP access\n"
-                         f"3. DNS resolution failure\n"
-                         f"4. Local disk space issue")
-            self.error.emit(diagnostic)
+        except gzip.BadGzipFile as e:
+            logger.error(f"Gzip decompression error: {e}")
+            self.error.emit(f"Invalid gzip file: {e}\n\nThe downloaded file may be corrupted.")
 
         except (FileNotFoundError, ValueError) as e:
             logger.error(f"File validation error: {e}")
@@ -725,9 +729,15 @@ class DownloadThread(QThread):
             logger.error(f"XML parsing error: {e}")
             self.error.emit(f"Invalid XML format: {e}\n\nThe downloaded file may be corrupted.")
 
-        except gzip.BadGzipFile as e:
-            logger.error(f"Gzip decompression error: {e}")
-            self.error.emit(f"Invalid gzip file: {e}\n\nThe downloaded file may be corrupted.")
+        except (OSError, IOError, socket.error) as e:
+            logger.error(f"Network/IO error: {e}")
+            diagnostic = (f"Network or file system error: {e}\n\n"
+                         f"This could be:\n"
+                         f"1. Network connectivity issue\n"
+                         f"2. Firewall blocking FTP access\n"
+                         f"3. DNS resolution failure\n"
+                         f"4. Local disk space issue")
+            self.error.emit(diagnostic)
 
         except Exception as e:
             logger.error(f"Unexpected error during download/parse: {e}", exc_info=True)
