@@ -2,631 +2,764 @@
 
 ## Overview
 
-BMLibrarian features a modern, modular GUI architecture built with the [Flet](https://flet.dev/) framework. The GUI system provides both configuration management and research workflow capabilities through two main applications with a shared component architecture.
+BMLibrarian features a modern Qt-based desktop application built with PySide6 (Qt for Python). The GUI uses a **plugin-based architecture** where each major feature is implemented as a separate plugin tab, providing modularity, extensibility, and native performance across platforms.
+
+## Architecture Status
+
+### Current: Qt GUI (PySide6)
+- **Entry Point**: `bmlibrarian_qt.py`
+- **Framework**: PySide6 (Qt 6.x for Python)
+- **Architecture**: Plugin-based tabbed interface
+- **Status**: **Active development**, all new features
+
+### Legacy: Flet GUI (Deprecated)
+- **Entry Points**: `bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`
+- **Framework**: Flet (web-based framework)
+- **Status**: **Deprecated**, maintenance mode only, will be removed in future versions
+- **Migration**: See `doc/users/flet_to_qt_migration_guide.md`
 
 ## Architecture Principles
 
-### Modular Design
-- **Component-based architecture** with reusable UI elements
-- **Separation of concerns** between UI, business logic, and data management
-- **Clean interfaces** between GUI and core BMLibrarian functionality
-- **Cross-platform compatibility** (desktop and web deployment modes)
+### 1. Plugin-Based Design
+- **Modular plugins**: Each tab is a self-contained plugin
+- **Hot-reloadable**: Plugins can be reloaded without restarting the app
+- **Independent development**: Plugins developed and tested independently
+- **Easy extension**: New tabs added by creating new plugin classes
 
-### Real-time Integration
-- **Live agent orchestration** with real-time progress updates
-- **Configuration synchronization** with BMLibrarian's config system
-- **Dynamic model refresh** from Ollama server
-- **Responsive UI updates** during long-running operations
+### 2. Native Performance
+- **Qt framework**: Battle-tested, mature GUI framework
+- **Native widgets**: Platform-native look and feel
+- **Efficient rendering**: No web overhead, direct GPU rendering
+- **Thread management**: QThread for background operations
 
-## GUI Applications
+### 3. Theme System
+- **Light and dark themes**: Professional color schemes
+- **QSS stylesheets**: CSS-like styling with Qt extensions
+- **Dynamic switching**: Theme changes applied at runtime
+- **Consistent styling**: All plugins inherit theme automatically
 
-### Configuration GUI (`config_app.py`)
+### 4. Signal/Slot Architecture
+- **Loose coupling**: Components communicate via signals
+- **Type-safe**: Qt's signal/slot system with type checking
+- **Thread-safe**: Cross-thread communication built-in
+- **Event-driven**: Responsive UI with async operations
 
-The Configuration GUI provides a comprehensive tabbed interface for managing BMLibrarian settings.
+## Directory Structure
 
-#### Key Features
-- **Tabbed Interface**: Separate configuration tabs for each agent type
-- **Model Management**: Live model selection from Ollama server
-- **Parameter Tuning**: Interactive controls for agent parameters
-- **Connection Testing**: Verify Ollama connectivity and model availability
-- **File Operations**: Save/load configuration files with validation
+```
+src/bmlibrarian/gui/qt/
+├── __init__.py                      # Main entry point and app initialization
+├── core/                            # Core application framework
+│   ├── __init__.py
+│   ├── main_window.py               # Main application window
+│   ├── plugin_manager.py            # Plugin discovery and loading
+│   ├── config_manager.py            # Configuration management
+│   ├── theme_manager.py             # Theme switching and stylesheet management
+│   └── status_bar.py                # Status bar with messages
+├── plugins/                         # Plugin-based tab system
+│   ├── __init__.py
+│   ├── base_tab.py                  # Abstract base class for all plugins
+│   ├── research/                    # Research workflow plugin
+│   │   ├── __init__.py
+│   │   ├── plugin.py                # Plugin entry point
+│   │   ├── research_tab.py          # Main tab widget
+│   │   ├── workflow_widget.py       # Workflow progress display
+│   │   └── report_viewer.py         # Report preview widget
+│   ├── search/                      # Document search plugin
+│   │   ├── __init__.py
+│   │   ├── plugin.py
+│   │   ├── search_tab.py            # Main search interface
+│   │   ├── filter_widget.py         # Search filters
+│   │   └── results_widget.py        # Search results display
+│   ├── fact_checker/                # Fact-checking review plugin
+│   │   ├── __init__.py
+│   │   ├── plugin.py
+│   │   ├── fact_checker_tab.py      # Main review interface
+│   │   ├── statement_widget.py      # Statement display
+│   │   └── annotation_widget.py     # Annotation controls
+│   ├── query_lab/                   # Query testing lab plugin
+│   │   ├── __init__.py
+│   │   ├── plugin.py
+│   │   └── query_lab_tab.py         # Query testing interface
+│   ├── configuration/               # Settings plugin
+│   │   ├── __init__.py
+│   │   ├── plugin.py
+│   │   ├── configuration_tab.py     # Main settings interface
+│   │   ├── agent_config_widget.py   # Agent configuration
+│   │   └── general_settings_widget.py # General settings
+│   ├── pico_lab/                    # PICO extraction lab
+│   ├── prisma2020_lab/              # PRISMA 2020 assessment lab
+│   ├── study_assessment/            # Study quality assessment
+│   ├── document_interrogation/      # Document Q&A interface
+│   ├── settings/                    # Advanced settings
+│   ├── plugins_manager/             # Plugin management UI
+│   └── example/                     # Example plugin for developers
+├── widgets/                         # Reusable Qt widgets
+│   ├── __init__.py
+│   ├── document_card.py             # Document display card
+│   ├── citation_card.py             # Citation display card
+│   ├── score_badge.py               # Relevance score badge
+│   ├── progress_bar.py              # Custom progress bars
+│   ├── collapsible_section.py       # Expandable/collapsible sections
+│   ├── markdown_viewer.py           # Markdown rendering widget
+│   └── text_highlighter.py          # Syntax highlighting
+├── dialogs/                         # Dialog windows
+│   ├── __init__.py
+│   ├── about_dialog.py              # About BMLibrarian dialog
+│   ├── settings_dialog.py           # Quick settings dialog
+│   ├── export_dialog.py             # Export options dialog
+│   └── error_dialog.py              # Error message display
+├── resources/                       # Resources (styles, icons, themes)
+│   ├── styles/                      # QSS stylesheets
+│   │   ├── default.qss              # Light theme stylesheet
+│   │   └── dark.qss                 # Dark theme stylesheet
+│   ├── icons/                       # Application icons
+│   │   ├── app_icon.png
+│   │   ├── tab_icons/               # Tab-specific icons
+│   │   └── action_icons/            # Action button icons
+│   └── themes/                      # Theme configuration files
+│       ├── light_theme.json
+│       └── dark_theme.json
+├── utils/                           # Utility modules
+│   ├── __init__.py
+│   ├── qt_helpers.py                # Qt convenience functions
+│   ├── async_worker.py              # QThread worker base class
+│   ├── signal_bus.py                # Application-wide signal bus
+│   └── resource_loader.py           # Resource file loading
+├── qt_document_card_factory.py      # Document card factory for Qt
+└── tabs/                            # Legacy tab components (deprecated)
+```
 
-#### Architecture Components
+## Core Components
+
+### Main Window (`core/main_window.py`)
+
+The main application window coordinates all GUI components.
+
+**Key Features**:
+- Menu bar with File, View, Tools, Help menus
+- Tab bar for plugin tabs
+- Central widget area for active tab
+- Status bar for messages and notifications
+- Keyboard shortcut management
+- Window geometry persistence
+
+**Architecture**:
 ```python
-class BMLibrarianConfigApp:
-    """Main configuration application using Flet."""
-    
+class MainWindow(QMainWindow):
+    """Main application window."""
+
     def __init__(self):
-        self.config = get_config()           # Configuration management
-        self.tabs: Dict[str, Any] = {}       # Tab registry
-        self.tab_objects: Dict[str, Any] = {} # Tab object references
+        super().__init__()
+        self.plugin_manager = PluginManager()
+        self.theme_manager = ThemeManager()
+        self.config_manager = ConfigManager()
+
+    def setup_ui(self):
+        """Initialize UI components."""
+        self._create_menu_bar()
+        self._create_tab_widget()
+        self._create_status_bar()
+        self._setup_shortcuts()
+
+    def load_plugins(self):
+        """Discover and load all enabled plugins."""
+        plugins = self.plugin_manager.discover_plugins()
+        for plugin in plugins:
+            if plugin.is_enabled():
+                tab_widget = plugin.create_tab()
+                self.tab_widget.addTab(tab_widget, plugin.tab_icon(), plugin.tab_name())
 ```
 
-#### Tab System
-- **GeneralSettingsTab**: Ollama server, database, and CLI defaults
-- **AgentConfigTab**: Individual agent configuration (one per agent type)
-- **Dynamic Tab Creation**: Tabs created programmatically based on agent types
-- **Shared State Management**: Configuration changes propagated across tabs
+### Plugin Manager (`core/plugin_manager.py`)
 
-### Research GUI (`research_app.py`) - Modular Architecture
+Discovers, loads, and manages plugins dynamically.
 
-The Research GUI provides a visual interface for executing BMLibrarian's multi-agent research workflows. **Recently refactored from a 2,325-line monolithic file into a modular architecture with 6 specialized modules.**
+**Key Features**:
+- Plugin discovery from `plugins/` directory
+- Dependency checking and validation
+- Plugin enable/disable management
+- Hot-reloading support
+- Error handling and recovery
 
-#### Key Features
-- **Interactive Workflow**: Visual progress through 11 research steps
-- **Real-time Execution**: Live agent orchestration with progress updates
-- **Report Preview**: Full markdown rendering with scrollable display
-- **File Management**: Direct file save with cross-platform compatibility
-- **Configuration Integration**: Uses models and settings from config system
-- **Modular Architecture**: 90% size reduction with specialized modules
-
-#### Modular Architecture Components
-
-**Main Application Class (227 lines):**
+**Plugin Lifecycle**:
 ```python
-class ResearchGUI:
-    """Refactored research GUI with modular architecture."""
-    
-    def __init__(self, agents=None):
-        # Managers and handlers (initialized in main())
-        self.tab_manager = None           # TabManager - handles tabs
-        self.event_handlers = None        # EventHandlers - handles events
-        self.data_updaters = None         # DataUpdaters - updates tab content
-        self.dialog_manager = None        # DialogManager - dialogs
-        self.workflow_executor = None     # WorkflowExecutor - execution
-        
-    def _build_ui(self):
-        """Build UI using modular components."""
-        header = create_header()
-        self.question_field = create_question_field(self.event_handlers.on_question_change)
-        controls_section = create_controls_section(...)
-        tabs_container = self.tab_manager.create_tabbed_interface(...)
+class PluginManager:
+    """Manages plugin discovery and lifecycle."""
+
+    def discover_plugins(self) -> List[BaseTab]:
+        """Scan plugins directory and load enabled plugins."""
+
+    def load_plugin(self, plugin_id: str) -> Optional[BaseTab]:
+        """Load a specific plugin by ID."""
+
+    def reload_plugin(self, plugin_id: str):
+        """Reload a plugin (for development)."""
+
+    def enable_plugin(self, plugin_id: str):
+        """Enable a disabled plugin."""
+
+    def disable_plugin(self, plugin_id: str):
+        """Disable an active plugin."""
 ```
 
-**Supporting Modules:**
+### Theme Manager (`core/theme_manager.py`)
 
-1. **`ui_builder.py` (354 lines)** - Reusable UI component builders
-2. **`tab_manager.py` (140 lines)** - Tabbed interface management  
-3. **`event_handlers.py` (330 lines)** - Event handling functions
-4. **`data_updaters.py` (290 lines)** - Tab content update logic
-5. **`display_utils.py` (570 lines)** - Display helper classes
+Manages application-wide theming and stylesheets.
 
-## Modular GUI Architecture
+**Key Features**:
+- Light and dark theme support
+- QSS stylesheet loading and parsing
+- Runtime theme switching
+- Color scheme management
+- Per-widget style overrides
 
-### Architecture Overview
-
-The Research GUI has been refactored from a single 2,325-line monolithic file into a **modular architecture** with 6 specialized modules, achieving a **90% size reduction** in the main application class while improving maintainability and reusability.
-
-#### Design Principles
-
-- **Single Responsibility**: Each module handles one specific concern
-- **Short Functions**: Most functions are 10-30 lines (vs 200+ lines before)
-- **Reusable Components**: UI builders can be used across different interfaces  
-- **Clean Separation**: UI, logic, data, and events are properly separated
-- **Dependency Injection**: Modules receive dependencies rather than creating them
-
-#### Module Organization
-
-```
-gui/
-├── research_app.py              # Main class (227 lines) - 90% reduction!
-├── ui_builder.py               # Reusable UI component builders (354 lines)
-├── tab_manager.py              # Tabbed interface management (140 lines)  
-├── event_handlers.py           # Event handling functions (330 lines)
-├── data_updaters.py            # Tab content update logic (290 lines)
-├── display_utils.py            # Display helper classes (570 lines)
-├── research_app_original_backup.py  # Backup of original
-├── components.py               # Existing step cards (unchanged)
-├── dialogs.py                  # Existing dialogs (unchanged)  
-└── workflow.py                 # Existing workflow (unchanged)
-```
-
-### Module Details
-
-#### 1. UI Builder Module (`ui_builder.py`)
-
-**Purpose**: Reusable UI component construction functions with consistent styling.
-
-**Key Functions**:
+**Theme Architecture**:
 ```python
-# Core UI components
-create_header() -> ft.Container
-create_question_field(on_change_handler) -> ft.TextField
-create_toggle_switch(label, value, on_change_handler) -> ft.Switch
-create_start_button(on_click_handler) -> ft.ElevatedButton
-create_controls_section(...) -> ft.Container
+class ThemeManager:
+    """Manages application themes and stylesheets."""
 
-# Standardized elements
-create_tab_header(title, count=None, subtitle="") -> List[ft.Control]
-create_empty_state(message) -> ft.Container
-create_expandable_card(title, subtitle, content, badges=None) -> ft.ExpansionTile
-
-# Badges and indicators
-create_score_badge(score, max_score=5.0) -> ft.Container
-create_relevance_badge(relevance) -> ft.Container  
-create_priority_badge(priority) -> ft.Container
-
-# Content sections
-create_metadata_section(items, bg_color) -> ft.Container
-create_text_content_section(title, content, bg_color, selectable, italic) -> ft.Container
-create_action_button_row(buttons) -> ft.Row
-
-# Utilities
-truncate_text(text, max_length=80) -> str
-extract_year_from_date(date_str) -> str
-format_authors_list(authors, max_count=3) -> str
-```
-
-#### 2. Tab Manager Module (`tab_manager.py`)
-
-**Purpose**: Manages the tabbed interface creation and content updates.
-
-**Key Class**:
-```python
-class TabManager:
     def __init__(self):
-        self.tabs_container: Optional[ft.Tabs] = None
-        self.tab_contents: Dict[str, ft.Container] = {}
-        
-    def create_tabbed_interface(self, step_cards) -> ft.Tabs:
-        """Create complete tabbed interface with 6 tabs."""
-        
-    def get_tab_content(self, tab_name: str) -> Optional[ft.Container]:
-        """Get specific tab's content container."""
-        
-    def update_tab_content(self, tab_name: str, new_content: ft.Column):
-        """Update a tab's content dynamically."""
+        self.current_theme = "light"
+        self.themes = self._load_themes()
+
+    def apply_theme(self, theme_name: str):
+        """Apply a theme to the application."""
+        stylesheet = self._load_stylesheet(theme_name)
+        QApplication.instance().setStyleSheet(stylesheet)
+
+    def get_color(self, role: str) -> QColor:
+        """Get a color from current theme."""
+        return self.themes[self.current_theme].colors[role]
 ```
 
-**Managed Tabs**: Workflow, Literature, Scoring, Citations, Counterfactual, Report
+## Plugin Architecture
 
-#### 3. Event Handlers Module (`event_handlers.py`)
+### Base Plugin Class (`plugins/base_tab.py`)
 
-**Purpose**: Handles all UI events with focused, single-purpose functions.
+All plugins inherit from `BaseTab` abstract class.
 
-**Key Class**:
+**Required Methods**:
 ```python
-class EventHandlers:
-    def __init__(self, app: 'ResearchGUI'):
-        self.app = app
-        
-    # Core event handlers
-    def on_question_change(self, e): """Handle research question input."""
-    def on_human_loop_toggle_change(self, e): """Handle interactive mode toggle."""  
-    def on_start_research(self, e): """Start the research workflow."""
-    def on_save_report(self, e): """Save final report to file."""
-    def on_copy_report(self, e): """Copy report to clipboard."""
-    def on_preview_report(self, e): """Show report preview overlay."""
-    
-    # Private helpers
-    def _run_workflow_thread(self): """Execute workflow in background."""
-    def _update_step_status(self, step, status, content): """Update step progress."""  
-    def _show_save_path_dialog(self): """Custom save dialog."""
-    def _show_preview_overlay(self): """Report preview overlay."""
+from abc import ABC, abstractmethod
+from PySide6.QtWidgets import QWidget
+
+class BaseTab(ABC, QWidget):
+    """Abstract base class for all tab plugins."""
+
+    @abstractmethod
+    def plugin_id(self) -> str:
+        """Unique plugin identifier (e.g., 'research', 'search')."""
+
+    @abstractmethod
+    def tab_name(self) -> str:
+        """Display name for the tab."""
+
+    @abstractmethod
+    def tab_icon(self) -> QIcon:
+        """Icon for the tab."""
+
+    @abstractmethod
+    def setup_ui(self):
+        """Initialize the plugin's UI components."""
+
+    @abstractmethod
+    def cleanup(self):
+        """Clean up resources when tab is closed."""
+
+    # Optional overrides
+    def on_tab_activated(self):
+        """Called when tab becomes active."""
+        pass
+
+    def on_tab_deactivated(self):
+        """Called when tab loses focus."""
+        pass
+
+    def save_state(self) -> dict:
+        """Save plugin state for persistence."""
+        return {}
+
+    def restore_state(self, state: dict):
+        """Restore plugin state from saved data."""
+        pass
 ```
 
-#### 4. Data Updaters Module (`data_updaters.py`)
+### Example Plugin: Research Tab
 
-**Purpose**: Handles tab content updates with workflow data.
-
-**Key Class**:
+**Plugin Entry Point** (`plugins/research/plugin.py`):
 ```python
-class DataUpdaters:
-    def __init__(self, app: 'ResearchGUI'):
-        self.app = app
-        
-    # Public update methods
-    def update_documents(self, documents: List[dict]): """Update literature tab."""
-    def update_scored_documents(self, scored_documents: List[tuple]): """Update scoring tab."""
-    def update_citations(self, citations: List[Any]): """Update citations tab."""
-    def update_counterfactual_analysis(self, analysis: Any): """Update counterfactual tab."""  
-    def update_report(self, report_content: str): """Update report tab."""
-    
-    # Conditional update methods
-    def update_documents_if_available(self): """Update if data exists in workflow executor."""
-    def update_all_tabs_if_data_available(self): """Update all tabs after workflow."""
-    
-    # Private update methods
-    def _update_literature_tab(self): """Internal literature tab update."""
-    def _update_scoring_tab(self): """Internal scoring tab update."""
-    def _create_report_components(self) -> List[ft.Control]: """Create report display."""
+from ..base_tab import BaseTab
+from .research_tab import ResearchTabWidget
+
+class ResearchPlugin(BaseTab):
+    """Research workflow plugin."""
+
+    def plugin_id(self) -> str:
+        return "research"
+
+    def tab_name(self) -> str:
+        return "Research"
+
+    def tab_icon(self) -> QIcon:
+        return QIcon(":/icons/research.png")
+
+    def setup_ui(self):
+        self.research_widget = ResearchTabWidget(self)
+        layout = QVBoxLayout()
+        layout.addWidget(self.research_widget)
+        self.setLayout(layout)
+
+    def cleanup(self):
+        self.research_widget.cancel_workflow()
+        self.research_widget.deleteLater()
 ```
 
-#### 5. Display Utils Module (`display_utils.py`)
-
-**Purpose**: Helper classes for creating complex display components.
-
-**Key Classes**:
+**Tab Widget** (`plugins/research/research_tab.py`):
 ```python
-class DocumentCardCreator:
-    """Creates document display cards."""
-    def create_document_cards_list(self, documents, show_score=False) -> List[ft.Control]
-    def create_scored_document_cards_list(self, scored_documents) -> List[ft.Control] 
-    def create_document_card(self, index, doc, show_score=False, scoring_result=None) -> ft.ExpansionTile
+class ResearchTabWidget(QWidget):
+    """Main research workflow interface."""
 
-class CitationCardCreator:
-    """Creates citation display cards."""
-    def create_citation_cards_list(self, citations) -> List[ft.Control]
-    def create_citation_card(self, index, citation) -> ft.ExpansionTile
-    
-class CounterfactualDisplayCreator:
-    """Creates counterfactual analysis displays."""  
-    def create_counterfactual_display(self, analysis) -> List[ft.Control]
-    def _create_comprehensive_analysis_components(self, analysis_dict) -> List[ft.Control]
-    def _create_basic_analysis_components(self, analysis) -> List[ft.Control]
+    # Signals
+    workflow_started = Signal()
+    workflow_completed = Signal(str)  # report
+    workflow_error = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_ui()
+        self.setup_agents()
+
+    def setup_ui(self):
+        """Build the research interface."""
+        # Question input
+        self.question_input = QTextEdit()
+
+        # Controls
+        self.start_button = QPushButton("Start Research")
+        self.start_button.clicked.connect(self.start_workflow)
+
+        # Workflow progress
+        self.workflow_widget = WorkflowProgressWidget()
+
+        # Results tabs
+        self.results_tabs = QTabWidget()
+
+        # Layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.question_input)
+        layout.addWidget(self.start_button)
+        layout.addWidget(self.workflow_widget)
+        layout.addWidget(self.results_tabs)
+        self.setLayout(layout)
+
+    def start_workflow(self):
+        """Start the research workflow in background thread."""
+        self.worker = ResearchWorker(self.question_input.toPlainText())
+        self.worker.progress_update.connect(self.update_progress)
+        self.worker.finished.connect(self.on_workflow_complete)
+        self.worker.start()
 ```
 
-### Benefits Achieved
+## Signal/Slot Communication
 
-#### Maintainability
-- **Easy Navigation**: Specific functionality is easy to locate
-- **Focused Changes**: Modifications affect only relevant modules
-- **Clear Dependencies**: Module relationships are explicit
-- **Reduced Complexity**: Each module handles a single concern
+### Application-Wide Signal Bus
 
-#### Reusability  
-- **Component Library**: UI builders can be used in other applications
-- **Shared Logic**: Display utilities work across different contexts
-- **Modular Updates**: Tab managers can handle different content types
-- **Event Patterns**: Event handlers demonstrate reusable patterns
-
-#### Testability
-- **Unit Testing**: Each module can be tested independently
-- **Mock Dependencies**: Easy to mock dependencies for testing
-- **Isolated Logic**: Business logic separated from UI concerns
-- **Clear Interfaces**: Well-defined APIs between modules
-
-#### Extensibility
-- **New Components**: Easy to add new UI builders
-- **Additional Events**: Simple to add new event handlers  
-- **More Tabs**: Tab manager easily handles new tab types
-- **Display Types**: Display utils support new data formats
-
-## Component Architecture
-
-### Legacy Components (Unchanged)
-
-#### Reusable Components (`components.py`)
-
-#### StepCard Component
-Provides visual representation of workflow steps with real-time status updates.
-
-```python
-class StepCard:
-    """Visual representation of a workflow step with status tracking."""
-    
-    def __init__(self, step: WorkflowStep, page: ft.Page):
-        self.step = step
-        self.status = StepStatus.PENDING
-        self.card = ft.Card(...)  # Flet UI component
-        
-    def update_status(self, status: StepStatus, message: str = ""):
-        """Update step status with visual feedback."""
-```
-
-**Features:**
-- **Status Visualization**: Pending, running, completed, error states
-- **Progress Indicators**: Visual feedback during execution
-- **Collapsible Design**: Space-efficient layout with expand/collapse
-- **Message Display**: Show step-specific status messages
-
-### Dialog Management (`dialogs.py`)
-
-Centralized dialog handling for consistent user experience.
+Central signal bus for cross-plugin communication:
 
 ```python
-class DialogManager:
-    """Manages all dialog interactions for the GUI."""
-    
-    def __init__(self, page: ft.Page):
-        self.page = page
-        self.dialogs: Dict[str, ft.AlertDialog] = {}
-        
-    def show_error_dialog(self, title: str, message: str):
-        """Display error dialog with consistent styling."""
-        
-    def show_save_dialog(self, callback: Callable):
-        """File save dialog with cross-platform compatibility."""
+class SignalBus(QObject):
+    """Application-wide signal bus for loosely-coupled communication."""
+
+    # Document signals
+    document_selected = Signal(int)  # document_id
+    document_updated = Signal(int)   # document_id
+
+    # Configuration signals
+    config_changed = Signal(str)     # config_key
+    theme_changed = Signal(str)      # theme_name
+
+    # Status signals
+    status_message = Signal(str, int)  # message, timeout_ms
+    error_occurred = Signal(str)       # error_message
+
+# Global instance
+signal_bus = SignalBus()
 ```
 
-**Key Dialogs:**
-- **Error Dialogs**: Consistent error reporting with actionable messages
-- **File Save Dialog**: Cross-platform file selection (macOS-compatible)
-- **Confirmation Dialogs**: User confirmation for destructive operations
-- **Progress Dialogs**: Long-running operation feedback
+**Usage in Plugins**:
+```python
+# Emit signal
+signal_bus.document_selected.emit(doc_id)
 
-### Tab Components (`tabs/`)
+# Connect to signal
+signal_bus.document_selected.connect(self.on_document_selected)
 
-Modular tab system for the configuration GUI.
+# Disconnect
+signal_bus.document_selected.disconnect(self.on_document_selected)
+```
 
-#### GeneralSettingsTab (`general_tab.py`)
-- **Ollama Configuration**: Server URL, connection testing
-- **Database Settings**: PostgreSQL connection parameters
-- **CLI Defaults**: Default values for command-line options
+## Background Operations
 
-#### AgentConfigTab (`agent_tab.py`)
-- **Model Selection**: Dropdown with live model refresh
-- **Parameter Controls**: Sliders and inputs for agent-specific settings
-- **Validation**: Real-time parameter validation
-- **Reset Functionality**: Restore default agent settings
+### Async Worker Pattern
 
-## Workflow Integration (`gui/workflow.py`)
-
-### WorkflowExecutor Class
-Bridges GUI components with BMLibrarian's agent orchestration system.
+Long-running operations use QThread workers:
 
 ```python
-class WorkflowExecutor:
-    """Executes research workflows with GUI integration."""
-    
-    def __init__(self, research_gui: 'ResearchGUI'):
-        self.gui = research_gui
-        self.agents = None
-        self.orchestrator = None
-        
-    async def execute_workflow_step(self, step: WorkflowStep, context: dict):
-        """Execute workflow step with GUI updates."""
+class AsyncWorker(QThread):
+    """Base class for background worker threads."""
+
+    # Signals
+    progress_update = Signal(int, str)  # percent, message
+    result_ready = Signal(object)       # result
+    error_occurred = Signal(str)        # error_message
+
+    def __init__(self, task_func, *args, **kwargs):
+        super().__init__()
+        self.task_func = task_func
+        self.args = args
+        self.kwargs = kwargs
+        self._cancelled = False
+
+    def run(self):
+        """Execute task in background thread."""
+        try:
+            result = self.task_func(*self.args, **self.kwargs)
+            if not self._cancelled:
+                self.result_ready.emit(result)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+    def cancel(self):
+        """Request cancellation."""
+        self._cancelled = True
 ```
 
-**Key Features:**
-- **Agent Initialization**: Configure agents from GUI settings
-- **Step Execution**: Execute workflow steps with visual feedback
-- **Context Management**: Maintain workflow state across steps
-- **Error Handling**: Graceful error recovery with user feedback
+**Usage**:
+```python
+# Create worker
+worker = AsyncWorker(query_agent.search_documents, user_question)
 
-## Cross-Platform Deployment
+# Connect signals
+worker.progress_update.connect(self.update_progress_bar)
+worker.result_ready.connect(self.display_results)
+worker.error_occurred.connect(self.show_error)
 
-### Desktop Mode (Default)
-```bash
-uv run python bmlibrarian_config_gui.py        # Native desktop app
-uv run python bmlibrarian_research_gui.py      # Desktop research interface
+# Start
+worker.start()
+
+# Cancel (if needed)
+worker.cancel()
+worker.wait()  # Wait for thread to finish
 ```
 
-### Web Mode
-```bash
-uv run python bmlibrarian_config_gui.py --view web --port 8080
+## Theme System
+
+### QSS Stylesheets
+
+Themes are defined using Qt Style Sheets (QSS), similar to CSS:
+
+**Light Theme** (`resources/styles/default.qss`):
+```css
+/* Main window */
+QMainWindow {
+    background-color: #ffffff;
+}
+
+/* Tab widget */
+QTabWidget::pane {
+    border: 1px solid #cccccc;
+    background-color: #ffffff;
+}
+
+QTabBar::tab {
+    background-color: #f0f0f0;
+    color: #333333;
+    padding: 8px 16px;
+    border: 1px solid #cccccc;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    border-bottom-color: #ffffff;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+}
+
+QPushButton:hover {
+    background-color: #0052a3;
+}
+
+QPushButton:pressed {
+    background-color: #003d7a;
+}
+
+/* Document cards */
+QFrame.document-card {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px;
+}
 ```
 
-**Features:**
-- **Native Desktop**: Platform-specific window management and file dialogs
-- **Web Interface**: Browser-based access with responsive design
-- **Port Configuration**: Customizable web server port
-- **Debug Mode**: Enhanced logging and error reporting
+**Dark Theme** (`resources/styles/dark.qss`):
+```css
+QMainWindow {
+    background-color: #1e1e1e;
+    color: #cccccc;
+}
 
-## State Management
+QTabWidget::pane {
+    border: 1px solid #3c3c3c;
+    background-color: #252526;
+}
 
-### Configuration Synchronization
-- **Automatic Loading**: Load configuration from `~/.bmlibrarian/config.json`
-- **Live Updates**: Real-time configuration changes without restart
-- **Validation**: Input validation with user feedback
-- **Persistence**: Automatic saving of configuration changes
+QPushButton {
+    background-color: #0e639c;
+    color: #ffffff;
+}
 
-### Workflow State
-- **Context Preservation**: Maintain workflow state across steps
-- **Progress Tracking**: Track completion status of each step
-- **Error Recovery**: Handle and recover from step execution errors
-- **Results Storage**: Store intermediate and final results
+QFrame.document-card {
+    background-color: #2d2d30;
+    border: 1px solid #3e3e42;
+}
+```
 
-## Performance Considerations
+### Applying Themes
 
-### Async Operations
-- **Non-blocking UI**: Agent execution doesn't freeze the interface
-- **Progress Updates**: Real-time feedback during long operations
-- **Cancellation Support**: Ability to cancel running workflows
-- **Resource Management**: Proper cleanup of background tasks
+```python
+# In ThemeManager
+def apply_theme(self, theme_name: str):
+    """Apply theme to application."""
+    stylesheet_path = f":/styles/{theme_name}.qss"
+    with open(stylesheet_path, 'r') as f:
+        stylesheet = f.read()
+    QApplication.instance().setStyleSheet(stylesheet)
 
-### Memory Management
-- **Component Lifecycle**: Proper initialization and cleanup
-- **Resource Disposal**: Release UI resources when no longer needed
-- **Agent Lifecycle**: Manage agent initialization and termination
-- **Queue Management**: Efficient handling of background tasks
+    # Update color palette
+    palette = self._create_palette(theme_name)
+    QApplication.instance().setPalette(palette)
+
+    # Notify plugins
+    signal_bus.theme_changed.emit(theme_name)
+```
+
+## Configuration Management
+
+### GUI Configuration
+
+GUI-specific configuration stored in `~/.bmlibrarian/gui_config.json`:
+
+```json
+{
+  "gui": {
+    "theme": "dark",
+    "window": {
+      "width": 1400,
+      "height": 900,
+      "maximized": false,
+      "remember_geometry": true
+    },
+    "tabs": {
+      "enabled_plugins": [
+        "research",
+        "search",
+        "fact_checker",
+        "query_lab",
+        "configuration"
+      ],
+      "tab_order": [
+        "research",
+        "search",
+        "fact_checker",
+        "query_lab",
+        "configuration"
+      ],
+      "default_tab": "research"
+    }
+  }
+}
+```
+
+### Agent Configuration
+
+Agent configuration shared with CLI (in `~/.bmlibrarian/config.json`):
+
+```json
+{
+  "ollama": {
+    "host": "http://localhost:11434"
+  },
+  "agents": {
+    "query_agent": {
+      "model": "medgemma4B_it_q8:latest",
+      "temperature": 0.1
+    },
+    "scoring_agent": {
+      "model": "gpt-oss:20b",
+      "temperature": 0.2
+    }
+  }
+}
+```
 
 ## Development Guidelines
 
-### Working with the Modular Architecture
+### Creating a New Plugin
 
-#### Adding New UI Components
-1. **Use UI Builder Functions**: Add new builders to `ui_builder.py`
-2. **Follow Naming Conventions**: `create_*` for builders, short descriptive names
-3. **Keep Functions Short**: Aim for 10-30 lines per function
-4. **Use Consistent Styling**: Follow established color and spacing patterns
-5. **Add Type Hints**: Include proper type annotations for all parameters
-6. **Document Parameters**: Clear docstrings with parameter descriptions
+1. **Create plugin directory**: `src/bmlibrarian/gui/qt/plugins/myplugin/`
 
-**Example**:
+2. **Implement `plugin.py`**:
 ```python
-def create_status_indicator(status: str, size: int = 12) -> ft.Container:
-    """Create a colored status indicator.
-    
-    Args:
-        status: Status string (pending, running, completed, error)
-        size: Icon size in pixels
-        
-    Returns:
-        Container with status icon and styling
-    """
-    # Implementation here...
+from ..base_tab import BaseTab
+
+class MyPlugin(BaseTab):
+    def plugin_id(self) -> str:
+        return "myplugin"
+
+    def tab_name(self) -> str:
+        return "My Plugin"
+
+    def tab_icon(self) -> QIcon:
+        return QIcon(":/icons/myplugin.png")
+
+    def setup_ui(self):
+        # Build your UI here
+        pass
+
+    def cleanup(self):
+        # Clean up resources
+        pass
 ```
 
-#### Adding New Event Handlers
-1. **Add to EventHandlers Class**: Keep all handlers in `event_handlers.py`
-2. **Use Descriptive Names**: `on_*` prefix for event handlers
-3. **Handle Errors Gracefully**: Include try-catch blocks and user feedback
-4. **Keep Handlers Focused**: One handler per specific user action
-5. **Use Private Helpers**: Break complex logic into private methods
+3. **Register plugin**: Plugin auto-discovered by `PluginManager`
 
-**Example**:
+4. **Enable in config**: Add to `enabled_plugins` in `gui_config.json`
+
+### Best Practices
+
+**Thread Safety**:
+- Use QThread for background operations
+- Update UI only from main thread
+- Use signal/slot for cross-thread communication
+
+**Memory Management**:
+- Call `deleteLater()` on widgets when done
+- Disconnect signals when objects are destroyed
+- Use weak references where appropriate
+
+**Error Handling**:
+- Catch exceptions in worker threads
+- Emit error signals instead of raising
+- Display user-friendly error messages
+
+**Performance**:
+- Use virtual scrolling for large lists
+- Lazy-load tab content (only when activated)
+- Cache expensive computations
+- Profile with Qt performance tools
+
+**Testing**:
+- Unit test plugin logic separately from UI
+- Use Qt Test framework for UI tests
+- Test with both light and dark themes
+- Test keyboard shortcuts
+
+## Migration from Flet
+
+For developers maintaining legacy Flet code or migrating features:
+
+### Key Differences
+
+| Aspect | Flet | Qt |
+|--------|------|-----|
+| **Framework** | Web-based (Flutter) | Native desktop |
+| **Language** | Python only | Python + QSS |
+| **Threading** | Async/await | QThread |
+| **Styling** | Inline properties | QSS stylesheets |
+| **Events** | Callbacks | Signal/slot |
+| **Performance** | Web overhead | Native performance |
+
+### Migration Strategy
+
+1. **Identify functionality**: Understand what the Flet component does
+2. **Find Qt equivalent**: Map to equivalent Qt widget
+3. **Reimplement UI**: Build UI using Qt widgets
+4. **Port business logic**: Keep logic, change UI code
+5. **Test thoroughly**: Ensure feature parity
+
+### Example Migration
+
+**Flet Code**:
 ```python
-def on_export_data(self, e):
-    """Handle data export button click."""
-    try:
-        self._validate_export_settings()
-        self._show_export_dialog()
-    except Exception as ex:
-        self.app.dialog_manager.show_error_dialog(f"Export failed: {str(ex)}")
-```
-
-#### Adding New Tabs
-1. **Use TabManager**: Add tab creation to `tab_manager.py`
-2. **Create Update Logic**: Add corresponding update methods to `data_updaters.py`
-3. **Use Display Utils**: Create card creators in `display_utils.py` if needed
-4. **Follow Tab Pattern**: Use `create_tab_header()` and `create_empty_state()`
-5. **Register Tab Content**: Store tab references in `tab_contents` dictionary
-
-**Example**:
-```python
-def _create_analysis_tab(self) -> ft.Container:
-    """Create the analysis results tab content."""
-    header_components = create_tab_header(
-        "Analysis Results",
-        subtitle="Statistical analysis and insights."
-    )
-    empty_state = create_empty_state("No analysis results yet.")
-    
-    self.tab_contents['analysis'] = ft.Container(
-        content=ft.Column([*header_components, empty_state], spacing=10, scroll=ft.ScrollMode.AUTO),
-        padding=ft.padding.all(15),
-        expand=True
-    )
-    return self.tab_contents['analysis']
-```
-
-#### Adding New Display Components
-1. **Create Helper Classes**: Add to `display_utils.py` for complex displays
-2. **Use Card Pattern**: Leverage `create_expandable_card()` for consistency
-3. **Implement Data Extraction**: Handle both objects and dictionaries
-4. **Include Error Handling**: Graceful fallbacks for missing data
-5. **Add Utility Methods**: Use existing utility functions for common operations
-
-**Example**:
-```python
-class AnalysisCardCreator:
-    """Creates analysis result display cards."""
-    
-    def create_analysis_card(self, index: int, analysis: Any) -> ft.ExpansionTile:
-        """Create expandable card for analysis result."""
-        title_text = f"{index + 1}. {truncate_text(analysis.title, 80)}"
-        subtitle_text = f"Confidence: {analysis.confidence:.2f}"
-        
-        content_sections = [
-            create_text_content_section("Analysis:", analysis.description),
-            create_metadata_section([
-                ("Type", analysis.type),
-                ("Date", extract_year_from_date(analysis.date))
-            ])
+def build_document_card(doc):
+    return ft.ExpansionTile(
+        title=ft.Text(doc["title"]),
+        subtitle=ft.Text(doc["authors"]),
+        controls=[
+            ft.Text(doc["abstract"])
         ]
-        
-        badges = [create_score_badge(analysis.confidence)]
-        
-        return create_expandable_card(title_text, subtitle_text, content_sections, badges)
+    )
 ```
 
-### Extending Workflow Integration
-1. **Update EventHandlers**: Add step completion handling in `_handle_step_completion()`
-2. **Update DataUpdaters**: Add methods to update tabs with new data types
-3. **Maintain Patterns**: Follow existing patterns for step status updates
-4. **Add Progress Tracking**: Include visual progress indicators
-5. **Handle Context**: Proper state management across workflow steps
-
-### Configuration Integration
-1. **Follow Config Schema**: Use established configuration patterns
-2. **Add Validation**: Input validation and error feedback
-3. **Include Defaults**: Sensible default values
-4. **Document Settings**: Clear documentation for new settings
-5. **Test Persistence**: Verify configuration save/load functionality
-
-### Testing Modular Components
-
-#### Unit Testing Strategy
-1. **Test Each Module**: Independent tests for each module
-2. **Mock Dependencies**: Use mocks for external dependencies
-3. **Test Public APIs**: Focus on public methods and interfaces
-4. **Include Edge Cases**: Test error conditions and boundary cases
-5. **UI Testing**: Test UI components with Flet testing framework
-
-**Example Test Structure**:
+**Qt Code**:
 ```python
-# test_ui_builder.py
-def test_create_header():
-    """Test header creation with proper styling."""
-    header = create_header()
-    assert isinstance(header, ft.Container)
-    assert header.content.controls[0].value == "BMLibrarian Research Assistant"
+def build_document_card(doc):
+    card = QFrame()
+    card.setObjectName("document-card")
 
-# test_event_handlers.py  
-def test_on_question_change():
-    """Test question change event handling."""
-    mock_app = Mock()
-    handlers = EventHandlers(mock_app)
-    mock_event = Mock()
-    mock_event.control.value = "test question"
-    
-    handlers.on_question_change(mock_event)
-    
-    assert mock_app.research_question == "test question"
+    layout = QVBoxLayout(card)
+
+    title = QLabel(doc["title"])
+    title.setStyleSheet("font-weight: bold;")
+    layout.addWidget(title)
+
+    authors = QLabel(doc["authors"])
+    authors.setStyleSheet("color: #666;")
+    layout.addWidget(authors)
+
+    # Collapsible abstract
+    abstract_button = QToolButton()
+    abstract_button.setText("Show Abstract")
+    abstract_button.setCheckable(True)
+
+    abstract_text = QLabel(doc["abstract"])
+    abstract_text.setWordWrap(True)
+    abstract_text.setVisible(False)
+
+    abstract_button.toggled.connect(abstract_text.setVisible)
+
+    layout.addWidget(abstract_button)
+    layout.addWidget(abstract_text)
+
+    return card
 ```
 
-#### Integration Testing
-1. **Test Module Interactions**: Verify modules work together correctly
-2. **Test Workflow**: End-to-end testing of research workflow
-3. **Test UI Updates**: Verify tab updates work with real data
-4. **Test Error Handling**: Ensure graceful error recovery
-5. **Performance Testing**: Check responsiveness with large datasets
+## Resources
 
-## Best Practices
+### Qt Documentation
+- [Qt for Python Documentation](https://doc.qt.io/qtforpython/)
+- [Qt Widgets Module](https://doc.qt.io/qt-6/qtwidgets-module.html)
+- [Qt Style Sheets Reference](https://doc.qt.io/qt-6/stylesheet-reference.html)
 
-### UI Design
-- **Consistent Styling**: Follow established visual patterns
-- **Responsive Layout**: Adapt to different screen sizes and resolutions
-- **Accessibility**: Include proper ARIA labels and keyboard navigation
-- **User Feedback**: Provide clear feedback for all user actions
-- **Error Prevention**: Validate inputs and prevent invalid states
+### BMLibrarian Documentation
+- [Qt GUI User Guide](../users/qt_gui_user_guide.md)
+- [Qt Plugin Development Guide](qt_plugin_development_guide.md)
+- [Flet to Qt Migration Guide](../users/flet_to_qt_migration_guide.md)
 
-### Code Organization
-- **Separation of Concerns**: Keep UI logic separate from business logic
-- **Modular Architecture**: Create reusable components and modules
-- **Clean Interfaces**: Well-defined APIs between components
-- **Documentation**: Comprehensive code documentation
-- **Testing**: Unit tests for critical GUI functionality
-
-### Performance
-- **Lazy Loading**: Load components and data only when needed
-- **Efficient Updates**: Minimize unnecessary UI updates
-- **Background Processing**: Keep long operations off the main thread
-- **Resource Cleanup**: Proper disposal of UI resources
-- **Memory Monitoring**: Track and optimize memory usage
-
-## Future Enhancements
-
-### Planned Features
-- **Plugin Architecture**: Support for custom GUI extensions using modular system
-- **Theme System**: Multiple UI themes leveraging UI builder functions
-- **Advanced Visualizations**: Enhanced charts and graphs using display utilities
-- **Collaborative Features**: Multi-user workflow coordination through event handlers
-- **Mobile Support**: Responsive design using existing modular components
-
-### Architecture Evolution
-
-#### Leveraging Modular Architecture
-- **Component Library**: Export UI builders as standalone library for other applications
-- **Extended Display Utils**: Add more card creators for different data types
-- **Event Handler Registry**: Plugin system for custom event handlers
-- **Tab Plugin System**: Allow third-party tabs using TabManager interface
-- **Theming System**: UI builder functions with theme parameter support
-
-#### Enhanced Modularity
-- **Service Layer**: Extract business logic into service modules
-- **State Management**: Centralized state management using existing data updaters pattern
-- **Configuration Framework**: Extend modular config system to support plugins
-- **Testing Infrastructure**: Comprehensive testing using module-based structure
-- **API Gateway**: Clean APIs between GUI modules and core functionality
-
-#### Backward Compatibility
-- **Migration Path**: Gradual migration from legacy components to modular system
-- **Adapter Pattern**: Adapt existing components to work with new modular architecture
-- **Version Support**: Support both old and new component patterns during transition
-- **Documentation Updates**: Maintain docs for both legacy and modular approaches
+### Example Code
+- Example plugin: `src/bmlibrarian/gui/qt/plugins/example/`
+- Research tab: `src/bmlibrarian/gui/qt/plugins/research/`
+- Reusable widgets: `src/bmlibrarian/gui/qt/widgets/`
 
 ---
 
-This GUI architecture provides a solid foundation for BMLibrarian's visual interfaces while maintaining the flexibility to evolve and expand as the system grows.
+**This architecture provides a solid foundation for building feature-rich, performant desktop applications with BMLibrarian's Qt GUI system.**

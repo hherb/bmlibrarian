@@ -14,18 +14,26 @@ Start here if you're new to BMLibrarian:
 
 ## User Interfaces
 
-### GUI Applications
+### Qt GUI Application (Current)
 
-🖥️ **[Research GUI Guide](research_gui_guide.md)**
-- Desktop research application with visual workflow
-- Interactive research question input
-- Real-time progress tracking
-- Report preview and export
+🖥️ **[Qt GUI User Guide](qt_gui_user_guide.md)**
+- Modern PySide6-based desktop application
+- Plugin-based tabbed interface for multiple workflows
+- Research, Search, Fact-Checking, Query Lab, and Configuration tabs
+- Light and dark theme support
+- Comprehensive keyboard shortcuts
+- Native performance and stability
 
-🔧 **[Configuration GUI Guide](config_gui_guide.md)**
-- Visual agent configuration interface
-- Model selection and parameter tuning
-- Connection testing and validation
+**Launch**: `uv run python bmlibrarian_qt.py`
+
+### Legacy GUIs (Deprecated)
+
+⚠️ **Note**: The Flet-based GUI applications are deprecated and will be removed in future versions. Please migrate to the Qt GUI.
+
+📖 **[Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)**
+- How to transition from Flet to Qt GUI
+- Feature comparison and workflow changes
+- Configuration migration steps
 
 ### Command Line Interface
 
@@ -71,6 +79,23 @@ Start here if you're new to BMLibrarian:
 - Research question generation
 - Evidence strength assessment
 
+### Fact-Checking System
+
+✅ **[Fact Checker Guide](fact_checker_guide.md)**
+- Automated verification of biomedical statements
+- Evidence extraction from literature database
+- Multi-user annotation and review system
+- Batch processing for LLM training data auditing
+- PostgreSQL-based storage with inter-rater reliability support
+- CLI and GUI interfaces
+
+🔍 **[Fact Checker Review Guide](fact_checker_review_guide.md)**
+- Human annotation and review interface
+- Comparing AI evaluations with human judgments
+- Citation evidence examination
+- Inter-rater reliability analysis
+- Export annotations for statistical analysis
+
 ### Configuration Management
 
 ⚙️ **[Configuration Guide](configuration_guide.md)**
@@ -102,14 +127,14 @@ cp .env.example .env
 
 ### Running Applications
 ```bash
+# Qt GUI (desktop application with all features)
+uv run python bmlibrarian_qt.py
+
 # Interactive CLI research
 uv run python bmlibrarian_cli.py
 
-# Research GUI (desktop)
-uv run python bmlibrarian_research_gui.py
-
-# Configuration GUI
-uv run python bmlibrarian_config_gui.py
+# Fact-checker CLI (batch processing)
+uv run python fact_checker_cli.py statements.json
 
 # Quick testing mode
 uv run python bmlibrarian_cli.py --quick
