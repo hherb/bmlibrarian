@@ -8,6 +8,10 @@ from typing import Dict, Any, Optional
 from PySide6.QtCore import QObject, Signal, QRunnable, Slot
 import logging
 
+# Default threshold constants
+DEFAULT_SCORING_THRESHOLD = 3.0  # Minimum score for citation extraction
+DEFAULT_CITATION_EXTRACTION_THRESHOLD = 0.7  # Citation relevance threshold
+
 
 class WorkflowSignals(QObject):
     """
@@ -109,6 +113,8 @@ class QtWorkflowExecutor(QObject):
         self.min_relevant: int = 10
         self.interactive_mode: bool = False
         self.counterfactual_enabled: bool = True
+        self.scoring_threshold: float = DEFAULT_SCORING_THRESHOLD
+        self.citation_extraction_threshold: float = DEFAULT_CITATION_EXTRACTION_THRESHOLD
 
         # Lifecycle state tracking
         self._is_active: bool = True  # False after cleanup() is called
@@ -161,7 +167,9 @@ class QtWorkflowExecutor(QObject):
         max_results: int = 100,
         min_relevant: int = 10,
         interactive: bool = False,
-        counterfactual: bool = True
+        counterfactual: bool = True,
+        scoring_threshold: float = DEFAULT_SCORING_THRESHOLD,
+        citation_extraction_threshold: float = DEFAULT_CITATION_EXTRACTION_THRESHOLD
     ) -> None:
         """
         Start the research workflow (Phase 2: just validate, don't execute).
@@ -172,6 +180,8 @@ class QtWorkflowExecutor(QObject):
             min_relevant: Minimum relevant documents to find
             interactive: Enable interactive mode
             counterfactual: Enable counterfactual analysis
+            scoring_threshold: Minimum score for citation extraction
+            citation_extraction_threshold: Citation relevance threshold
         """
         try:
             # Validate agents
@@ -186,6 +196,8 @@ class QtWorkflowExecutor(QObject):
             self.min_relevant = min_relevant
             self.interactive_mode = interactive
             self.counterfactual_enabled = counterfactual
+            self.scoring_threshold = scoring_threshold
+            self.citation_extraction_threshold = citation_extraction_threshold
 
             # Log workflow start
             self.logger.info(f"Workflow started: {question[:100]}")
@@ -355,12 +367,12 @@ class QtWorkflowExecutor(QObject):
             # Step 4: Extract citations from high-scoring documents (NEW in Milestone 3)
             high_scoring = len([
                 d for d, s in scored_documents
-                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= 3.0
+                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.scoring_threshold
             ])
             self.status_message.emit(
                 f"💬 Extracting citations from {high_scoring} high-scoring documents..."
             )
-            citations = self.extract_citations(scored_documents, score_threshold=3.0)
+            citations = self.extract_citations(scored_documents, score_threshold=self.scoring_threshold)
 
             # Emit citations signal for UI update
             self.citations_extracted.emit(citations)
@@ -657,7 +669,7 @@ class QtWorkflowExecutor(QObject):
         # Calculate documents above threshold
         documents_above_threshold = sum(
             count for score, count in documents_by_score.items()
-            if score >= 3.0  # Default threshold
+            if score >= self.scoring_threshold
         )
 
         # Get model names from agents
@@ -677,14 +689,14 @@ class QtWorkflowExecutor(QObject):
             human_question=self.current_question,
             generated_query=self.generated_query,
             total_documents_found=len(self.documents),
-            scoring_threshold=3.0,  # Default threshold
+            scoring_threshold=self.scoring_threshold,
             documents_by_score=documents_by_score,
             documents_above_threshold=documents_above_threshold,
             documents_processed_for_citations=len([
                 d for d, s in self.scored_documents
-                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= 3.0
+                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.scoring_threshold
             ]),
-            citation_extraction_threshold=0.7,  # Default threshold
+            citation_extraction_threshold=self.citation_extraction_threshold,
             counterfactual_performed=False,
             counterfactual_queries_generated=0,
             counterfactual_documents_found=0,
