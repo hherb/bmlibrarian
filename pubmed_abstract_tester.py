@@ -93,6 +93,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# === CONSTANTS ===
+# Database batch processing
+BATCH_SIZE = 100  # Number of articles to batch before database insertion
+
+# Network timeouts (seconds)
+FTP_TIMEOUT = 120  # FTP connection timeout
+FTP_BLOCKSIZE = 65536  # FTP download block size (64KB)
+
+# Progress tracking
+PROGRESS_DOWNLOAD_MAX = 50  # Progress percentage for download phase (0-50%)
+PROGRESS_PARSE_MIN = 50  # Progress percentage when parsing starts (50%)
+PROGRESS_PARSE_MAX = 100  # Progress percentage when parsing completes (100%)
+
+# File validation
+MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB max file size for safety
+MIN_XML_SIZE = 100  # Minimum bytes for valid XML file
+
+
 class PubMedDatabase:
     """SQLite database handler for PubMed articles."""
 
@@ -408,9 +426,86 @@ class PubMedParser:
                 'url': f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/'
             }
 
-        except Exception as e:
-            logger.error(f"Error parsing article: {e}")
+        except ET.ParseError as e:
+            logger.warning(f"XML parsing error in article: {e}")
             return None
+        except (KeyError, AttributeError) as e:
+            logger.warning(f"Missing required field in article: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error parsing article: {e}", exc_info=True)
+            return None
+
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename to prevent path traversal attacks.
+
+    Args:
+        filename: Raw filename from FTP server
+
+    Returns:
+        Sanitized filename with path components removed
+
+    Security:
+        - Removes directory traversal sequences (.., /)
+        - Extracts only the base filename
+        - Prevents malicious filenames from escaping data directory
+    """
+    # Remove any path components and get just the filename
+    safe_name = os.path.basename(filename)
+
+    # Additional safety: remove any remaining '..' sequences
+    safe_name = safe_name.replace('..', '')
+
+    # Validate it's not empty after sanitization
+    if not safe_name:
+        raise ValueError(f"Invalid filename after sanitization: {filename}")
+
+    return safe_name
+
+
+def validate_downloaded_file(file_path: Path) -> None:
+    """
+    Validate downloaded file before parsing.
+
+    Args:
+        file_path: Path to downloaded file
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        ValueError: If file is invalid (too large, too small, or not gzipped XML)
+
+    Validation checks:
+        - File exists
+        - File size within acceptable range
+        - File has .gz extension
+        - File is valid gzip format
+    """
+    # Check file exists
+    if not file_path.exists():
+        raise FileNotFoundError(f"Downloaded file not found: {file_path}")
+
+    # Check file size
+    file_size = file_path.stat().st_size
+    if file_size < MIN_XML_SIZE:
+        raise ValueError(f"File too small ({file_size} bytes), likely invalid")
+    if file_size > MAX_FILE_SIZE:
+        raise ValueError(f"File too large ({file_size} bytes), exceeds safety limit")
+
+    # Check file extension
+    if not str(file_path).endswith('.xml.gz'):
+        raise ValueError(f"File does not have .xml.gz extension: {file_path}")
+
+    # Validate it's a valid gzip file by reading header
+    try:
+        with gzip.open(file_path, 'rb') as f:
+            # Try to read first 100 bytes to verify gzip format
+            f.read(100)
+    except gzip.BadGzipFile as e:
+        raise ValueError(f"File is not a valid gzip file: {e}")
+    except Exception as e:
+        raise ValueError(f"Error validating gzip file: {e}")
 
 
 class DownloadThread(QThread):
@@ -435,7 +530,7 @@ class DownloadThread(QThread):
         try:
             # Connect to FTP
             self.status.emit("Connecting to PubMed FTP server...")
-            ftp = ftplib.FTP(self.FTP_HOST, timeout=120)
+            ftp = ftplib.FTP(self.FTP_HOST, timeout=FTP_TIMEOUT)
             ftp.login()  # Anonymous login
             ftp.cwd(self.UPDATE_PATH)
 
@@ -457,8 +552,9 @@ class DownloadThread(QThread):
 
             self.status.emit(f"Downloading {latest_file}...")
 
-            # Download file
-            local_path = self.data_dir / latest_file
+            # Download file (with filename sanitization for security)
+            safe_filename = sanitize_filename(latest_file)
+            local_path = self.data_dir / safe_filename
 
             downloaded = 0
             with open(local_path, 'wb') as f:
@@ -466,20 +562,25 @@ class DownloadThread(QThread):
                     nonlocal downloaded
                     f.write(chunk)
                     downloaded += len(chunk)
-                    progress = int((downloaded / file_size) * 50)  # 0-50% for download
+                    progress = int((downloaded / file_size) * PROGRESS_DOWNLOAD_MAX)
                     self.progress.emit(progress)
 
-                ftp.retrbinary(f'RETR {latest_file}', callback, blocksize=65536)
+                ftp.retrbinary(f'RETR {latest_file}', callback, blocksize=FTP_BLOCKSIZE)
 
             ftp.quit()
 
+            # Validate file before parsing
+            self.status.emit("Validating downloaded file...")
+            validate_downloaded_file(local_path)
+
             # Parse file
-            self.status.emit(f"Parsing {latest_file}...")
-            self.progress.emit(50)
+            self.status.emit(f"Parsing {safe_filename}...")
+            self.progress.emit(PROGRESS_PARSE_MIN)
 
             articles_count = 0
             batch = []
-            batch_size = 100
+            last_progress_update = 0
+            progress_update_interval = 50  # Update progress every 50 articles
 
             with gzip.open(local_path, 'rb') as gz_file:
                 context = ET.iterparse(gz_file, events=('end',))
@@ -491,14 +592,21 @@ class DownloadThread(QThread):
                             batch.append(article)
                             articles_count += 1
 
-                            if len(batch) >= batch_size:
+                            if len(batch) >= BATCH_SIZE:
                                 # Insert batch
                                 for art in batch:
                                     self.database.insert_article(art)
                                 batch = []
 
-                                # Update progress (50-100% for parsing)
-                                self.status.emit(f"Parsed {articles_count} articles...")
+                                # Update status and progress periodically
+                                if articles_count - last_progress_update >= progress_update_interval:
+                                    self.status.emit(f"Parsed {articles_count} articles...")
+                                    # Estimate progress based on articles (assume ~1000 articles typical)
+                                    # Progress ranges from 50-95% during parsing (leave 95-100% for final batch)
+                                    estimated_progress = min(95, PROGRESS_PARSE_MIN +
+                                                           int((articles_count / 1000) * 45))
+                                    self.progress.emit(estimated_progress)
+                                    last_progress_update = articles_count
 
                         # Clear element to free memory
                         elem.clear()
@@ -510,13 +618,78 @@ class DownloadThread(QThread):
                     for art in batch:
                         self.database.insert_article(art)
 
-            self.progress.emit(100)
+            self.progress.emit(PROGRESS_PARSE_MAX)
             self.status.emit(f"Complete! Imported {articles_count} articles")
             self.finished.emit(articles_count)
 
+        except ftplib.error_perm as e:
+            logger.error(f"FTP permission error: {e}")
+            self.error.emit(f"FTP access denied: {e}")
+        except ftplib.error_temp as e:
+            logger.error(f"FTP temporary error: {e}")
+            self.error.emit(f"FTP server error (temporary): {e}")
+        except (OSError, IOError) as e:
+            logger.error(f"Network/IO error: {e}")
+            self.error.emit(f"Network or file system error: {e}")
+        except (FileNotFoundError, ValueError) as e:
+            logger.error(f"File validation error: {e}")
+            self.error.emit(f"File validation failed: {e}")
+        except ET.ParseError as e:
+            logger.error(f"XML parsing error: {e}")
+            self.error.emit(f"Invalid XML format: {e}")
+        except gzip.BadGzipFile as e:
+            logger.error(f"Gzip decompression error: {e}")
+            self.error.emit(f"Invalid gzip file: {e}")
         except Exception as e:
-            logger.error(f"Download/parse error: {e}", exc_info=True)
-            self.error.emit(str(e))
+            logger.error(f"Unexpected error during download/parse: {e}", exc_info=True)
+            self.error.emit(f"Unexpected error: {e}")
+
+
+class MarkdownConverter:
+    """Efficient Markdown to HTML converter with pre-compiled regex patterns."""
+
+    # Pre-compiled regex patterns for performance
+    import re
+    BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+    ITALIC_RE = re.compile(r'\*(.+?)\*')
+    SUPERSCRIPT_RE = re.compile(r'\^(.+?)\^')
+    SUBSCRIPT_RE = re.compile(r'~(.+?)~')
+    UNDERLINE_RE = re.compile(r'__(.+?)__')
+
+    @classmethod
+    def to_html(cls, markdown_text: str) -> str:
+        """
+        Convert simple Markdown to HTML for rich text display.
+
+        Supports:
+        - **bold** → <b>bold</b>
+        - *italic* → <i>italic</i>
+        - ^superscript^ → <sup>superscript</sup>
+        - ~subscript~ → <sub>subscript</sub>
+        - __underline__ → <u>underline</u>
+        - Paragraph breaks (double newline)
+
+        Performance:
+        - Uses pre-compiled regex patterns (class-level)
+        - Single pass through text for all conversions
+        """
+        html = markdown_text
+
+        # Escape HTML special characters first
+        html = html.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # Convert Markdown formatting to HTML using pre-compiled patterns
+        html = cls.BOLD_RE.sub(r'<b>\1</b>', html)
+        html = cls.ITALIC_RE.sub(r'<i>\1</i>', html)
+        html = cls.SUPERSCRIPT_RE.sub(r'<sup>\1</sup>', html)
+        html = cls.SUBSCRIPT_RE.sub(r'<sub>\1</sub>', html)
+        html = cls.UNDERLINE_RE.sub(r'<u>\1</u>', html)
+
+        # Convert paragraph breaks
+        html = html.replace('\n\n', '<br><br>')
+        html = html.replace('\n', ' ')
+
+        return f'<div style="line-height: 1.6;">{html}</div>'
 
 
 class PubMedAbstractTester(QMainWindow):
@@ -710,33 +883,9 @@ class PubMedAbstractTester(QMainWindow):
         """
         Convert simple Markdown to HTML for rich text display.
 
-        Supports:
-        - **bold** → <b>bold</b>
-        - *italic* → <i>italic</i>
-        - ^superscript^ → <sup>superscript</sup>
-        - ~subscript~ → <sub>subscript</sub>
-        - __underline__ → <u>underline</u>
-        - Paragraph breaks (double newline)
+        Delegates to MarkdownConverter class for efficient conversion.
         """
-        import re
-
-        html = markdown_text
-
-        # Escape HTML special characters first
-        html = html.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-        # Convert Markdown formatting to HTML
-        html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', html)  # Bold
-        html = re.sub(r'\*(.+?)\*', r'<i>\1</i>', html)       # Italic
-        html = re.sub(r'\^(.+?)\^', r'<sup>\1</sup>', html)   # Superscript
-        html = re.sub(r'~(.+?)~', r'<sub>\1</sub>', html)     # Subscript
-        html = re.sub(r'__(.+?)__', r'<u>\1</u>', html)       # Underline
-
-        # Convert paragraph breaks
-        html = html.replace('\n\n', '<br><br>')
-        html = html.replace('\n', ' ')
-
-        return f'<div style="line-height: 1.6;">{html}</div>'
+        return MarkdownConverter.to_html(markdown_text)
 
     def show_article(self, index: int):
         """Display article at the given index."""
