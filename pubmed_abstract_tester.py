@@ -1,0 +1,823 @@
+#!/usr/bin/env python3
+"""
+PubMed Abstract Tester - Standalone PySide6 Application
+
+This application downloads PubMed update files and displays articles with
+properly formatted abstracts in Markdown format. It serves as a test bed for
+improving abstract extraction and formatting before integrating into the
+main BMLibrarian importer.
+
+=== KEY IMPROVEMENTS OVER EXISTING IMPORTERS ===
+
+1. **Structured Abstract Preservation**
+   - Extracts both Label and NlmCategory attributes from AbstractText elements
+   - Maintains section organization (BACKGROUND, METHODS, RESULTS, CONCLUSIONS)
+   - Adds paragraph breaks between sections for better readability
+
+2. **Inline Formatting Support**
+   - Converts <b>, <bold> tags to Markdown bold: **text**
+   - Converts <i>, <italic> tags to Markdown italic: *text*
+   - Preserves subscripts with <sub>: ~text~
+   - Preserves superscripts with <sup>: ^text^
+   - Handles underline with <u>: __text__
+
+3. **Proper Mixed Content Handling**
+   - Recursively processes nested XML elements
+   - Preserves text before, within, and after inline formatting tags
+   - Prevents truncation issues from earlier importers
+
+4. **Complete Data Extraction**
+   - Title, authors, journal, publication date
+   - PMID and DOI for reference
+   - Full abstract with all formatting preserved
+
+5. **Lightweight Testing**
+   - Uses SQLite (no PostgreSQL dependency)
+   - Downloads latest PubMed update file via FTP
+   - Interactive GUI for browsing and inspecting results
+
+=== COMMON ISSUES FIXED ===
+
+- **Truncated abstracts**: Old code only extracted first child text
+- **Missing line breaks**: Sections ran together without spacing
+- **Lost formatting**: Subscripts, superscripts, emphasis were stripped
+- **Incomplete sections**: Label attributes were not checked
+
+=== USAGE ===
+
+    uv run python pubmed_abstract_tester.py
+
+1. Click "Download Latest Update File" to fetch and parse PubMed data
+2. Use navigation buttons to browse articles
+3. Inspect abstract formatting in the text display
+4. Compare with production importer results
+
+=== DTD REFERENCE ===
+
+PubMed DTD: https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd
+
+AbstractText attributes:
+- Label: Section heading (e.g., "OBJECTIVE", "METHODS")
+- NlmCategory: NLM-assigned category (BACKGROUND, METHODS, RESULTS, CONCLUSIONS, UNASSIGNED)
+
+Inline formatting elements:
+- <b>, <bold>: Bold text
+- <i>, <italic>: Italic text
+- <sup>: Superscript (e.g., CO₂, m²)
+- <sub>: Subscript (e.g., H₂O)
+- <u>, <underline>: Underlined text
+"""
+
+import ftplib
+import gzip
+import logging
+import os
+import sqlite3
+import sys
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QTextEdit, QProgressBar, QMessageBox,
+    QSpinBox, QGroupBox
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class PubMedDatabase:
+    """SQLite database handler for PubMed articles."""
+
+    def __init__(self, db_path: str = 'pubmed_test.db'):
+        """Initialize database connection."""
+        self.db_path = db_path
+        self.conn = None
+        self._init_database()
+
+    def _init_database(self):
+        """Create database schema if it doesn't exist."""
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pmid TEXT UNIQUE NOT NULL,
+                doi TEXT,
+                title TEXT NOT NULL,
+                abstract_markdown TEXT,
+                authors TEXT,
+                publication_date TEXT,
+                journal TEXT,
+                import_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pmid ON articles(pmid)
+        """)
+
+        self.conn.commit()
+        logger.info(f"Database initialized: {self.db_path}")
+
+    def insert_article(self, article_data: Dict) -> bool:
+        """Insert or update an article in the database."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO articles
+                (pmid, doi, title, abstract_markdown, authors, publication_date, journal)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                article_data['pmid'],
+                article_data.get('doi'),
+                article_data['title'],
+                article_data.get('abstract_markdown', ''),
+                article_data.get('authors', ''),
+                article_data.get('publication_date'),
+                article_data.get('journal', 'Unknown')
+            ))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error inserting article PMID {article_data.get('pmid')}: {e}")
+            return False
+
+    def get_article_count(self) -> int:
+        """Get total number of articles in database."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM articles")
+        return cursor.fetchone()[0]
+
+    def get_article_by_index(self, index: int) -> Optional[Dict]:
+        """Get article by index (0-based)."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, pmid, doi, title, abstract_markdown, authors, publication_date, journal
+            FROM articles
+            ORDER BY id
+            LIMIT 1 OFFSET ?
+        """, (index,))
+
+        row = cursor.fetchone()
+        if row:
+            return {
+                'id': row['id'],
+                'pmid': row['pmid'],
+                'doi': row['doi'],
+                'title': row['title'],
+                'abstract_markdown': row['abstract_markdown'],
+                'authors': row['authors'],
+                'publication_date': row['publication_date'],
+                'journal': row['journal']
+            }
+        return None
+
+    def clear_articles(self):
+        """Clear all articles from database."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM articles")
+        self.conn.commit()
+        logger.info("All articles cleared from database")
+
+    def close(self):
+        """Close database connection."""
+        if self.conn:
+            self.conn.close()
+
+
+class PubMedParser:
+    """Parser for PubMed XML files with improved abstract formatting."""
+
+    @staticmethod
+    def _get_element_text_with_formatting(elem: Optional[ET.Element]) -> str:
+        """
+        Extract text from XML element and convert inline formatting to Markdown.
+
+        Handles HTML-style inline elements:
+        - <b> or <bold> → **text**
+        - <i> or <italic> → *text*
+        - <sup> → ^text^
+        - <sub> → ~text~
+        - <u> or <underline> → __text__
+
+        This preserves scientific notation, chemical formulas, and emphasis.
+        """
+        if elem is None:
+            return ''
+
+        # Leaf node optimization (no children)
+        if not list(elem):
+            return (elem.text or '').strip()
+
+        # Handle mixed content (text + nested formatting elements)
+        parts = []
+
+        # Add element's direct text (before first child)
+        if elem.text:
+            parts.append(elem.text)
+
+        # Process each child element
+        for child in elem:
+            tag = child.tag.lower()
+            child_text = PubMedParser._get_element_text_with_formatting(child)
+
+            # Convert HTML/XML tags to Markdown
+            if tag in ('b', 'bold'):
+                parts.append(f'**{child_text}**')
+            elif tag in ('i', 'italic'):
+                parts.append(f'*{child_text}*')
+            elif tag == 'sup':
+                parts.append(f'^{child_text}^')
+            elif tag == 'sub':
+                parts.append(f'~{child_text}~')
+            elif tag in ('u', 'underline'):
+                parts.append(f'__{child_text}__')
+            else:
+                # Unknown tag - just keep the text
+                parts.append(child_text)
+
+            # Add tail text (text after closing tag)
+            if child.tail:
+                parts.append(child.tail)
+
+        return ''.join(parts).strip()
+
+    @staticmethod
+    def _get_element_text(elem: Optional[ET.Element]) -> str:
+        """
+        Extract complete text from XML element (plain text, no formatting).
+
+        Alias for backward compatibility and simple text extraction.
+        """
+        return PubMedParser._get_element_text_with_formatting(elem)
+
+    @staticmethod
+    def _format_abstract_markdown(abstract_elem: Optional[ET.Element]) -> str:
+        """
+        Extract and format abstract with proper Markdown formatting.
+
+        This preserves:
+        - Section labels from both Label and NlmCategory attributes
+        - Paragraph breaks between sections
+        - Inline formatting (bold, italic, subscript, superscript)
+        - Handles both structured and unstructured abstracts
+
+        Returns:
+            Markdown-formatted abstract with section headers and paragraph breaks
+        """
+        if abstract_elem is None:
+            return ''
+
+        # Find all AbstractText elements
+        abstract_texts = abstract_elem.findall('.//AbstractText')
+        if not abstract_texts:
+            return ''
+
+        markdown_parts = []
+
+        for abstract_text in abstract_texts:
+            # Get label attributes (prefer Label, fallback to NlmCategory)
+            label = abstract_text.get('Label', '').strip()
+            if not label:
+                nlm_category = abstract_text.get('NlmCategory', '').strip()
+                if nlm_category and nlm_category not in ('UNASSIGNED', 'UNLABELLED'):
+                    label = nlm_category
+
+            # Get text content with inline formatting
+            text = PubMedParser._get_element_text(abstract_text)
+
+            if not text:
+                continue
+
+            # Format with label as header if present
+            if label:
+                # Capitalize label for consistency
+                label_formatted = label.upper()
+                markdown_parts.append(f"**{label_formatted}:** {text}")
+            else:
+                # Unstructured abstract
+                markdown_parts.append(text)
+
+        # Join sections with double newline for paragraph breaks
+        return '\n\n'.join(markdown_parts)
+
+    @staticmethod
+    def _extract_date(pub_date_elem: Optional[ET.Element]) -> Optional[str]:
+        """Extract publication date from PubDate element."""
+        if pub_date_elem is None:
+            return None
+
+        year = pub_date_elem.findtext('Year')
+        if not year:
+            return None
+
+        month = pub_date_elem.findtext('Month', '01')
+        day = pub_date_elem.findtext('Day', '01')
+
+        # Convert month name to number
+        month_map = {
+            'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+            'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+            'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+        }
+        if month in month_map:
+            month = month_map[month]
+        elif month.isdigit() and len(month) == 1:
+            month = f'0{month}'
+
+        if day.isdigit() and len(day) == 1:
+            day = f'0{day}'
+
+        try:
+            return f'{year}-{month}-{day}'
+        except:
+            return f'{year}-01-01'
+
+    @staticmethod
+    def parse_article(article_elem: ET.Element) -> Optional[Dict]:
+        """
+        Parse PubmedArticle XML element into article dictionary.
+
+        Returns:
+            Dict with article data including markdown-formatted abstract
+        """
+        try:
+            medline = article_elem.find('.//MedlineCitation')
+            if medline is None:
+                return None
+
+            pmid = medline.findtext('.//PMID')
+            if not pmid:
+                return None
+
+            article = medline.find('.//Article')
+            if article is None:
+                return None
+
+            # Extract title
+            title = PubMedParser._get_element_text(article.find('.//ArticleTitle'))
+
+            # Extract abstract with markdown formatting
+            abstract_elem = article.find('.//Abstract')
+            abstract_markdown = PubMedParser._format_abstract_markdown(abstract_elem)
+
+            # Extract authors
+            authors_list = []
+            for author in article.findall('.//AuthorList/Author'):
+                last = author.findtext('LastName', '')
+                first = author.findtext('ForeName', '')
+                if last or first:
+                    authors_list.append(f'{last} {first}'.strip())
+            authors = ', '.join(authors_list)
+
+            # Extract journal
+            journal = article.findtext('.//Journal/Title', 'Unknown')
+
+            # Extract publication date
+            pub_date = PubMedParser._extract_date(
+                article.find('.//Journal/JournalIssue/PubDate')
+            )
+
+            # Extract DOI
+            doi = None
+            pubmed_data = article_elem.find('.//PubmedData')
+            if pubmed_data is not None:
+                for article_id in pubmed_data.findall('.//ArticleIdList/ArticleId'):
+                    if article_id.get('IdType') == 'doi':
+                        doi = article_id.text
+                        break
+
+            return {
+                'pmid': pmid,
+                'doi': doi,
+                'title': title,
+                'abstract_markdown': abstract_markdown,
+                'authors': authors,
+                'publication_date': pub_date,
+                'journal': journal,
+                'url': f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/'
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing article: {e}")
+            return None
+
+
+class DownloadThread(QThread):
+    """Background thread for downloading and parsing PubMed files."""
+
+    progress = Signal(int)  # Progress percentage (0-100)
+    status = Signal(str)    # Status message
+    finished = Signal(int)  # Number of articles processed
+    error = Signal(str)     # Error message
+
+    FTP_HOST = 'ftp.ncbi.nlm.nih.gov'
+    UPDATE_PATH = '/pubmed/updatefiles'
+
+    def __init__(self, database: PubMedDatabase, data_dir: Path):
+        super().__init__()
+        self.database = database
+        self.data_dir = data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def run(self):
+        """Download and parse latest PubMed update file."""
+        try:
+            # Connect to FTP
+            self.status.emit("Connecting to PubMed FTP server...")
+            ftp = ftplib.FTP(self.FTP_HOST, timeout=120)
+            ftp.login()  # Anonymous login
+            ftp.cwd(self.UPDATE_PATH)
+
+            # Get list of files
+            self.status.emit("Fetching file list...")
+            files = []
+            for name, facts in ftp.mlsd():
+                if name.endswith('.xml.gz') and name.startswith('pubmed24n'):
+                    size = int(facts.get('size', 0))
+                    files.append((name, size))
+
+            if not files:
+                self.error.emit("No update files found")
+                return
+
+            # Get the latest file (highest number)
+            files.sort()
+            latest_file, file_size = files[-1]
+
+            self.status.emit(f"Downloading {latest_file}...")
+
+            # Download file
+            local_path = self.data_dir / latest_file
+
+            downloaded = 0
+            with open(local_path, 'wb') as f:
+                def callback(chunk):
+                    nonlocal downloaded
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    progress = int((downloaded / file_size) * 50)  # 0-50% for download
+                    self.progress.emit(progress)
+
+                ftp.retrbinary(f'RETR {latest_file}', callback, blocksize=65536)
+
+            ftp.quit()
+
+            # Parse file
+            self.status.emit(f"Parsing {latest_file}...")
+            self.progress.emit(50)
+
+            articles_count = 0
+            batch = []
+            batch_size = 100
+
+            with gzip.open(local_path, 'rb') as gz_file:
+                context = ET.iterparse(gz_file, events=('end',))
+
+                for event, elem in context:
+                    if elem.tag == 'PubmedArticle':
+                        article = PubMedParser.parse_article(elem)
+                        if article:
+                            batch.append(article)
+                            articles_count += 1
+
+                            if len(batch) >= batch_size:
+                                # Insert batch
+                                for art in batch:
+                                    self.database.insert_article(art)
+                                batch = []
+
+                                # Update progress (50-100% for parsing)
+                                self.status.emit(f"Parsed {articles_count} articles...")
+
+                        # Clear element to free memory
+                        elem.clear()
+                        while elem.getprevious() is not None:
+                            del elem.getparent()[0]
+
+                # Insert remaining articles
+                if batch:
+                    for art in batch:
+                        self.database.insert_article(art)
+
+            self.progress.emit(100)
+            self.status.emit(f"Complete! Imported {articles_count} articles")
+            self.finished.emit(articles_count)
+
+        except Exception as e:
+            logger.error(f"Download/parse error: {e}", exc_info=True)
+            self.error.emit(str(e))
+
+
+class PubMedAbstractTester(QMainWindow):
+    """Main application window."""
+
+    def __init__(self):
+        super().__init__()
+
+        self.db = PubMedDatabase()
+        self.data_dir = Path.home() / 'pubmed_test_data'
+        self.current_index = 0
+        self.total_articles = 0
+
+        self.init_ui()
+        self.load_initial_stats()
+
+    def init_ui(self):
+        """Initialize the user interface."""
+        self.setWindowTitle("PubMed Abstract Tester")
+        self.setGeometry(100, 100, 1200, 800)
+
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        main_layout = QVBoxLayout(central_widget)
+
+        # === Download Section ===
+        download_group = QGroupBox("Download PubMed Update File")
+        download_layout = QVBoxLayout()
+
+        download_btn_layout = QHBoxLayout()
+        self.download_btn = QPushButton("Download Latest Update File")
+        self.download_btn.clicked.connect(self.start_download)
+        download_btn_layout.addWidget(self.download_btn)
+
+        self.clear_btn = QPushButton("Clear Database")
+        self.clear_btn.clicked.connect(self.clear_database)
+        download_btn_layout.addWidget(self.clear_btn)
+
+        download_layout.addLayout(download_btn_layout)
+
+        self.progress_bar = QProgressBar()
+        download_layout.addWidget(self.progress_bar)
+
+        self.status_label = QLabel("Ready")
+        download_layout.addWidget(self.status_label)
+
+        download_group.setLayout(download_layout)
+        main_layout.addWidget(download_group)
+
+        # === Navigation Section ===
+        nav_group = QGroupBox("Article Navigation")
+        nav_layout = QHBoxLayout()
+
+        self.prev_btn = QPushButton("← Previous")
+        self.prev_btn.clicked.connect(self.show_previous)
+        nav_layout.addWidget(self.prev_btn)
+
+        nav_layout.addWidget(QLabel("Go to:"))
+        self.index_spinbox = QSpinBox()
+        self.index_spinbox.setMinimum(1)
+        self.index_spinbox.setMaximum(1)
+        self.index_spinbox.valueChanged.connect(self.go_to_index)
+        nav_layout.addWidget(self.index_spinbox)
+
+        self.article_counter = QLabel("0 / 0")
+        nav_layout.addWidget(self.article_counter)
+
+        self.next_btn = QPushButton("Next →")
+        self.next_btn.clicked.connect(self.show_next)
+        nav_layout.addWidget(self.next_btn)
+
+        nav_group.setLayout(nav_layout)
+        main_layout.addWidget(nav_group)
+
+        # === Article Display Section ===
+        display_group = QGroupBox("Article Details")
+        display_layout = QVBoxLayout()
+
+        # PMID and DOI
+        meta_layout = QHBoxLayout()
+        self.pmid_label = QLabel("<b>PMID:</b> —")
+        meta_layout.addWidget(self.pmid_label)
+        self.doi_label = QLabel("<b>DOI:</b> —")
+        meta_layout.addWidget(self.doi_label)
+        meta_layout.addStretch()
+        display_layout.addLayout(meta_layout)
+
+        # Title
+        self.title_label = QLabel("<i>No article loaded</i>")
+        self.title_label.setWordWrap(True)
+        self.title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        display_layout.addWidget(self.title_label)
+
+        # Authors and Journal
+        self.authors_label = QLabel("")
+        self.authors_label.setWordWrap(True)
+        display_layout.addWidget(self.authors_label)
+
+        self.journal_label = QLabel("")
+        display_layout.addWidget(self.journal_label)
+
+        # Abstract
+        abstract_header = QLabel("<b>Abstract:</b>")
+        display_layout.addWidget(abstract_header)
+
+        self.abstract_display = QTextEdit()
+        self.abstract_display.setReadOnly(True)
+        self.abstract_display.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 11pt;
+                line-height: 1.6;
+                padding: 10px;
+                background-color: #f9f9f9;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+        """)
+        # Enable Markdown rendering
+        self.abstract_display.setAcceptRichText(True)
+        display_layout.addWidget(self.abstract_display)
+
+        display_group.setLayout(display_layout)
+        main_layout.addWidget(display_group)
+
+        # Set initial button states
+        self.update_navigation_state()
+
+    def load_initial_stats(self):
+        """Load initial database statistics."""
+        self.total_articles = self.db.get_article_count()
+        self.update_counter()
+
+        if self.total_articles > 0:
+            self.index_spinbox.setMaximum(self.total_articles)
+            self.current_index = 0
+            self.show_article(self.current_index)
+        else:
+            self.status_label.setText(f"Database is empty. Download an update file to begin.")
+
+    def start_download(self):
+        """Start downloading and parsing PubMed update file."""
+        self.download_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+
+        self.download_thread = DownloadThread(self.db, self.data_dir)
+        self.download_thread.progress.connect(self.progress_bar.setValue)
+        self.download_thread.status.connect(self.status_label.setText)
+        self.download_thread.finished.connect(self.download_finished)
+        self.download_thread.error.connect(self.download_error)
+        self.download_thread.start()
+
+    def download_finished(self, count: int):
+        """Handle download completion."""
+        self.download_btn.setEnabled(True)
+        self.load_initial_stats()
+        QMessageBox.information(
+            self,
+            "Download Complete",
+            f"Successfully imported {count} articles!"
+        )
+
+    def download_error(self, error_msg: str):
+        """Handle download error."""
+        self.download_btn.setEnabled(True)
+        self.status_label.setText(f"Error: {error_msg}")
+        QMessageBox.critical(
+            self,
+            "Download Error",
+            f"Failed to download file:\n{error_msg}"
+        )
+
+    def clear_database(self):
+        """Clear all articles from database."""
+        reply = QMessageBox.question(
+            self,
+            "Clear Database",
+            "Are you sure you want to clear all articles from the database?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.db.clear_articles()
+            self.load_initial_stats()
+            self.status_label.setText("Database cleared")
+
+    def _markdown_to_html(self, markdown_text: str) -> str:
+        """
+        Convert simple Markdown to HTML for rich text display.
+
+        Supports:
+        - **bold** → <b>bold</b>
+        - *italic* → <i>italic</i>
+        - ^superscript^ → <sup>superscript</sup>
+        - ~subscript~ → <sub>subscript</sub>
+        - __underline__ → <u>underline</u>
+        - Paragraph breaks (double newline)
+        """
+        import re
+
+        html = markdown_text
+
+        # Escape HTML special characters first
+        html = html.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # Convert Markdown formatting to HTML
+        html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', html)  # Bold
+        html = re.sub(r'\*(.+?)\*', r'<i>\1</i>', html)       # Italic
+        html = re.sub(r'\^(.+?)\^', r'<sup>\1</sup>', html)   # Superscript
+        html = re.sub(r'~(.+?)~', r'<sub>\1</sub>', html)     # Subscript
+        html = re.sub(r'__(.+?)__', r'<u>\1</u>', html)       # Underline
+
+        # Convert paragraph breaks
+        html = html.replace('\n\n', '<br><br>')
+        html = html.replace('\n', ' ')
+
+        return f'<div style="line-height: 1.6;">{html}</div>'
+
+    def show_article(self, index: int):
+        """Display article at the given index."""
+        article = self.db.get_article_by_index(index)
+
+        if not article:
+            self.title_label.setText("<i>No article found</i>")
+            self.authors_label.setText("")
+            self.journal_label.setText("")
+            self.abstract_display.setHtml("")
+            self.pmid_label.setText("<b>PMID:</b> —")
+            self.doi_label.setText("<b>DOI:</b> —")
+            return
+
+        # Update display
+        self.title_label.setText(article['title'])
+        self.authors_label.setText(f"<b>Authors:</b> {article['authors']}")
+
+        journal_text = f"<b>Journal:</b> {article['journal']}"
+        if article['publication_date']:
+            journal_text += f" ({article['publication_date']})"
+        self.journal_label.setText(journal_text)
+
+        self.pmid_label.setText(f"<b>PMID:</b> {article['pmid']}")
+        self.doi_label.setText(f"<b>DOI:</b> {article['doi'] or '—'}")
+
+        # Display abstract with rich formatting
+        abstract_html = self._markdown_to_html(article['abstract_markdown'])
+        self.abstract_display.setHtml(abstract_html)
+
+        self.current_index = index
+        self.update_counter()
+        self.update_navigation_state()
+
+    def show_next(self):
+        """Show next article."""
+        if self.current_index < self.total_articles - 1:
+            self.show_article(self.current_index + 1)
+            self.index_spinbox.setValue(self.current_index + 1)
+
+    def show_previous(self):
+        """Show previous article."""
+        if self.current_index > 0:
+            self.show_article(self.current_index - 1)
+            self.index_spinbox.setValue(self.current_index + 1)
+
+    def go_to_index(self, spinbox_value: int):
+        """Jump to specific article (1-based index from spinbox)."""
+        index = spinbox_value - 1  # Convert to 0-based
+        if 0 <= index < self.total_articles:
+            self.show_article(index)
+
+    def update_counter(self):
+        """Update article counter display."""
+        if self.total_articles > 0:
+            self.article_counter.setText(f"{self.current_index + 1} / {self.total_articles}")
+            self.index_spinbox.setMaximum(self.total_articles)
+        else:
+            self.article_counter.setText("0 / 0")
+            self.index_spinbox.setMaximum(1)
+
+    def update_navigation_state(self):
+        """Enable/disable navigation buttons based on current state."""
+        has_articles = self.total_articles > 0
+        self.prev_btn.setEnabled(has_articles and self.current_index > 0)
+        self.next_btn.setEnabled(has_articles and self.current_index < self.total_articles - 1)
+        self.index_spinbox.setEnabled(has_articles)
+
+    def closeEvent(self, event):
+        """Handle application close."""
+        self.db.close()
+        event.accept()
+
+
+def main():
+    """Main entry point."""
+    app = QApplication(sys.argv)
+    window = PubMedAbstractTester()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()
