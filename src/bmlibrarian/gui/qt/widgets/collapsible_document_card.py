@@ -149,6 +149,8 @@ class CollapsibleDocumentCard(QFrame):
         self.title_label.setObjectName("title")
         self.title_label.setWordWrap(False)  # No wrap when collapsed
         self.title_label.setTextFormat(Qt.RichText)
+        # Don't enable text selection on title - it interferes with click-to-expand
+        # Title becomes selectable when card is expanded (via details section)
 
         # Enable text elision for long titles
         self.title_label.setMinimumWidth(s['control_width_large'])
@@ -232,6 +234,8 @@ class CollapsibleDocumentCard(QFrame):
         authors_label.setObjectName("authors")
         authors_label.setWordWrap(True)
         authors_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: {s['font_small']}pt;")
+        # Enable text selection for copy/paste
+        authors_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.details_layout.addWidget(authors_label)
 
         # Journal and year
@@ -243,6 +247,8 @@ class CollapsibleDocumentCard(QFrame):
             journal_label = QLabel(html_escape(journal_year))
             journal_label.setObjectName("journal")
             journal_label.setStyleSheet(f"color: {COLOR_TEXT_TERTIARY}; font-size: {s['font_tiny']}pt;")
+            # Enable text selection for copy/paste
+            journal_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.details_layout.addWidget(journal_label)
 
         # PMID/DOI
@@ -255,6 +261,8 @@ class CollapsibleDocumentCard(QFrame):
             ids_label = QLabel(ids_text)
             ids_label.setObjectName("metadata")
             ids_label.setStyleSheet(f"color: {COLOR_TEXT_METADATA}; font-size: {s['font_micro']}pt;")
+            # Enable text selection for copy/paste
+            ids_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.details_layout.addWidget(ids_label)
 
         # Abstract (if available)
@@ -270,6 +278,8 @@ class CollapsibleDocumentCard(QFrame):
             # Abstract label
             abstract_header = QLabel("<b>Abstract:</b>")
             abstract_header.setStyleSheet(f"color: {COLOR_TEXT_DARK}; font-size: {s['font_tiny']}pt; margin-top: {s['spacing_tiny']}px;")
+            # Enable text selection for copy/paste
+            abstract_header.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.details_layout.addWidget(abstract_header)
 
             # Abstract text (read-only, scrollable for very long abstracts)

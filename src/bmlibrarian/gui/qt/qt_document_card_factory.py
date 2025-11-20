@@ -141,26 +141,37 @@ class PDFButtonWidget(QPushButton):
             raise
 
     def _handle_fetch(self):
-        """Handle fetch PDF action with error handling and retry logic."""
+        """Handle fetch PDF action with progress feedback and error handling."""
         try:
             if self.config.on_fetch:
-                result = self.config.on_fetch()
-                if result:
-                    # Callback should return the downloaded path
-                    if isinstance(result, Path):
-                        if not result.exists():
-                            raise FileNotFoundError(
-                                f"Downloaded PDF not found: {result}"
+                # Show progress indicator
+                original_text = self.text()
+                self.setText("Downloading...")
+                self.setEnabled(False)
+
+                try:
+                    result = self.config.on_fetch()
+                    if result:
+                        # Callback should return the downloaded path
+                        if isinstance(result, Path):
+                            if not result.exists():
+                                raise FileNotFoundError(
+                                    f"Downloaded PDF not found: {result}"
+                                )
+                            self._transition_to_view(result)
+                            self.pdf_fetched.emit(result)
+                            logger.info(f"Successfully fetched PDF: {result}")
+                        else:
+                            raise TypeError(
+                                f"Fetch handler returned invalid type: {type(result)}"
                             )
-                        self._transition_to_view(result)
-                        self.pdf_fetched.emit(result)
-                        logger.info(f"Successfully fetched PDF: {result}")
                     else:
-                        raise TypeError(
-                            f"Fetch handler returned invalid type: {type(result)}"
-                        )
-                else:
-                    raise RuntimeError("Fetch operation returned no result")
+                        raise RuntimeError("Fetch operation returned no result")
+                finally:
+                    # Always restore button state
+                    self.setEnabled(True)
+                    if self.config.state != PDFButtonState.VIEW:
+                        self.setText(original_text)
             else:
                 raise ValueError("No fetch handler configured")
 
@@ -474,15 +485,51 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         # Create button
         button = PDFButtonWidget(config)
 
-        # Connect error signal for logging
+        # Connect error signal for user feedback
         button.error_occurred.connect(
-            lambda msg: logger.error(f"PDF button error: {msg}")
+            lambda msg: self._handle_pdf_button_error(msg, card_data.doc_id)
         )
 
         # Wrap in container for consistent layout
         container = self._create_button_container(button)
 
         return container
+
+    def _handle_pdf_button_error(self, error_msg: str, doc_id: int):
+        """
+        Handle PDF button errors with appropriate user feedback.
+
+        Args:
+            error_msg: Error message from PDF operation
+            doc_id: Document ID
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        logger.error(f"PDF button error for document {doc_id}: {error_msg}")
+
+        # Check if this is an expected error (access denied, not found, etc.)
+        expected_errors = [
+            "403",  # Forbidden (paywall/access restriction)
+            "404",  # Not found
+            "401",  # Unauthorized
+            "HTTP 403",
+            "HTTP 404",
+            "HTTP 401",
+        ]
+
+        is_expected_error = any(err in error_msg for err in expected_errors)
+
+        # Only show dialog for unexpected errors
+        if not is_expected_error:
+            # Show error dialog for unexpected failures
+            msg_box = QMessageBox()
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("PDF Download Failed")
+            msg_box.setText(f"Failed to download PDF for document {doc_id}")
+            msg_box.setInformativeText(error_msg)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec()
+        # For expected errors (403, 404), just log - user can see button didn't change state
 
     def _create_button_container(self, button: QPushButton) -> QWidget:
         """
@@ -581,15 +628,30 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
                 # Default fetch behavior using pdf_manager
                 if self.pdf_manager and card_data.pdf_url:
-                    pdf_path = self.pdf_manager.download_pdf(
-                        card_data.doc_id,
-                        card_data.pdf_url
-                    )
+                    # Create document dictionary for pdf_manager
+                    document = {
+                        'id': card_data.doc_id,
+                        'pdf_url': card_data.pdf_url,
+                        'title': card_data.title,
+                        'authors': card_data.authors,
+                        'publication_date': str(card_data.year) if card_data.year else None,
+                    }
+
+                    pdf_path = self.pdf_manager.download_pdf(document)
 
                     if not pdf_path or not pdf_path.exists():
-                        raise FileNotFoundError(
-                            f"Downloaded PDF not found for document {card_data.doc_id}"
-                        )
+                        # Provide a helpful error message
+                        # Check if URL is accessible (common failure: 403 Forbidden)
+                        error_msg = f"Failed to download PDF for document {card_data.doc_id}"
+                        if card_data.pdf_url:
+                            if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
+                                error_msg += " (HTTP 403 - Access restricted, likely requires institutional subscription)"
+                            else:
+                                error_msg += f" from {card_data.pdf_url}"
+                        raise FileNotFoundError(error_msg)
+
+                    # Update database with pdf_filename (pass document dict for PDFManager methods)
+                    self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
 
                     # Update cache
                     self._pdf_path_cache[card_data.doc_id] = pdf_path
@@ -655,3 +717,57 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         if doc_id in self._pdf_path_cache:
             del self._pdf_path_cache[doc_id]
             logger.debug(f"Invalidated PDF cache for document {doc_id}")
+
+    def _update_pdf_filename_in_database(self, doc_id: int, pdf_path: Path, document: Dict[str, Any]) -> None:
+        """
+        Update the pdf_filename in the database after downloading a PDF.
+
+        Args:
+            doc_id: Document ID
+            pdf_path: Path to the downloaded PDF file
+            document: Document dictionary (for PDFManager's get_relative_pdf_path)
+        """
+        try:
+            # Get relative path using PDFManager's method
+            # Update document dict with the actual pdf_filename for relative path calculation
+            document['pdf_filename'] = pdf_path.name
+            relative_path = self.pdf_manager.get_relative_pdf_path(document)
+
+            if not relative_path:
+                logger.error(f"PDFManager.get_relative_pdf_path returned None for document {doc_id}")
+                # Fallback: calculate manually
+                if self.base_pdf_dir and pdf_path.is_relative_to(self.base_pdf_dir):
+                    relative_path = str(pdf_path.relative_to(self.base_pdf_dir))
+                else:
+                    relative_path = pdf_path.name
+
+            logger.info(f"[PDF DEBUG] Document ID: {doc_id}")
+            logger.info(f"[PDF DEBUG] PDF saved to absolute path: {pdf_path}")
+            logger.info(f"[PDF DEBUG] Relative path for database: {relative_path}")
+
+            # Update database using PDFManager's method if it has db connection
+            if hasattr(self.pdf_manager, 'db_conn') and self.pdf_manager.db_conn:
+                success = self.pdf_manager.update_database_pdf_path(doc_id, relative_path)
+                if success:
+                    logger.info(f"[PDF DEBUG] Successfully updated document.pdf_filename in database via PDFManager")
+                else:
+                    logger.error(f"[PDF DEBUG] PDFManager.update_database_pdf_path failed for document {doc_id}")
+            else:
+                # Fallback: update directly
+                from bmlibrarian.database import get_db_manager
+                db_manager = get_db_manager()
+
+                with db_manager.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE document SET pdf_filename = %s WHERE id = %s",
+                            (relative_path, doc_id)
+                        )
+                        conn.commit()
+                        logger.info(f"[PDF DEBUG] Successfully updated document.pdf_filename in database directly")
+
+        except Exception as e:
+            logger.error(f"[PDF DEBUG] Failed to update pdf_filename in database for document {doc_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't raise - the PDF was successfully downloaded, database update is secondary

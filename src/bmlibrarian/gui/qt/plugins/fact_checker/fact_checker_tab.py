@@ -123,7 +123,6 @@ class FactCheckerTabWidget(QWidget):
         # UI elements - new layout
         self.status_label: Optional[QLabel] = None
         self.review_container: Optional[QWidget] = None
-        self.load_data_button: Optional[QPushButton] = None
         self.statistics_button: Optional[QPushButton] = None
         self.username_field: Optional[QLineEdit] = None
         self.show_review_toggle: Optional[QPushButton] = None
@@ -144,6 +143,12 @@ class FactCheckerTabWidget(QWidget):
         self.ai_col: Optional[QWidget] = None
 
         self._setup_ui()
+
+        # Connect username field changes (only when focus leaves field)
+        self.username_field.editingFinished.connect(self._on_username_changed)
+
+        # Auto-load data from database on startup
+        self._auto_load_data()
 
     def _get_statement_input_stylesheet(self) -> str:
         """Generate stylesheet for statement input field."""
@@ -371,24 +376,6 @@ class FactCheckerTabWidget(QWidget):
             }}
         """
 
-    def _get_load_data_button_stylesheet(self) -> str:
-        """Generate stylesheet for load data button."""
-        s = self.scale
-        return f"""
-            QPushButton {{
-                background-color: {self.COLOR_SUCCESS_GREEN};
-                color: white;
-                padding: {s['padding_large']}px {s['padding_xlarge'] * 2}px;
-                border: none;
-                border-radius: {s['radius_small']}px;
-                font-size: {s['font_medium']}pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {self.COLOR_SUCCESS_GREEN_HOVER};
-            }}
-        """
-
     def _get_tag_stylesheet(self, value: str) -> str:
         """Generate stylesheet for tag label based on value.
         
@@ -501,22 +488,15 @@ class FactCheckerTabWidget(QWidget):
         status_layout = QHBoxLayout(status_container)
         status_layout.setContentsMargins(s['spacing_xlarge'], s['spacing_medium'], s['spacing_xlarge'], s['spacing_medium'])
 
-        self.status_label = QLabel("Click 'Load Data' to begin reviewing")
+        self.status_label = QLabel("Initializing fact-checker review interface...")
         self.status_label.setStyleSheet(self._get_status_label_stylesheet('info'))
         status_layout.addWidget(self.status_label)
 
         status_container.setStyleSheet(self._get_status_container_stylesheet())
         main_layout.addWidget(status_container)
 
-        # Load data button (initially visible)
-        self.load_data_button = QPushButton("Load Data from Database")
-        self.load_data_button.clicked.connect(self._on_load_data)
-        self.load_data_button.setStyleSheet(self._get_load_data_button_stylesheet())
-        main_layout.addWidget(self.load_data_button, alignment=Qt.AlignCenter)
-
-        # Review content (initially hidden)
+        # Review content (always visible)
         self.review_container = self._build_review_container()
-        self.review_container.setVisible(False)
         main_layout.addWidget(self.review_container)
 
     def _build_review_container(self) -> QWidget:
@@ -725,16 +705,134 @@ class FactCheckerTabWidget(QWidget):
         return container
 
     @Slot()
-    def _on_load_data(self):
-        """Handle load data button click - use PostgreSQL by default."""
-        # Get username from text field (optional at load time)
+    def _on_username_changed(self):
+        """Handle username field changes - switch to that user's annotations."""
+        username = self.username_field.text().strip()
+
+        if not username or not self.fact_checker_db or not self.results:
+            return
+
+        # Don't trigger if username hasn't actually changed
+        if username == self.annotator_username:
+            return
+
+        # Save current annotation before switching users
+        if self.annotator_id and self.current_index < len(self.results):
+            self._save_current_annotation()
+
+        # Switch to new user
+        try:
+            # Check if user already exists
+            existing_annotator = self.fact_checker_db.get_annotator(username)
+
+            if not existing_annotator:
+                # User doesn't exist - confirm creation
+                reply = QMessageBox.question(
+                    self,
+                    "Create New User?",
+                    f"The username '{username}' does not exist in the database.\n\n"
+                    f"Do you want to create a new user with this name?\n\n"
+                    f"(Click 'No' if this was a typing error)",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No  # Default to No for safety
+                )
+
+                if reply == QMessageBox.No:
+                    # User cancelled - restore previous username
+                    if self.annotator_username:
+                        self.username_field.blockSignals(True)
+                        self.username_field.setText(self.annotator_username)
+                        self.username_field.blockSignals(False)
+                    else:
+                        self.username_field.clear()
+                    return
+
+            self.annotator_username = username
+
+            # Get or create annotator
+            annotator = Annotator(
+                username=username,
+                full_name=username,
+                email=None,
+                expertise_level=None,
+            )
+            self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+
+            # Reload reviews for this user
+            self.reviews = [{}] * len(self.results)
+            for i, result in enumerate(self.results):
+                for annot in result.get('human_annotations', []):
+                    if annot.get('annotator_id') == self.annotator_id:
+                        self.reviews[i] = {
+                            'human_annotation': annot.get('annotation'),
+                            'human_explanation': annot.get('explanation', ''),
+                            'confidence': annot.get('confidence', ''),
+                            'review_duration_seconds': annot.get('review_duration_seconds'),
+                        }
+                        break
+
+            # Reload the database to get fresh annotations
+            all_data = self.fact_checker_db.get_all_statements_with_evaluations()
+            for i, row in enumerate(all_data):
+                if i < len(self.results):
+                    self.results[i]['human_annotations'] = row.get('human_annotations', [])
+
+            # Update reviews with fresh data
+            self.reviews = [{}] * len(self.results)
+            for i, result in enumerate(self.results):
+                for annot in result.get('human_annotations', []):
+                    if annot.get('annotator_id') == self.annotator_id:
+                        self.reviews[i] = {
+                            'human_annotation': annot.get('annotation'),
+                            'human_explanation': annot.get('explanation', ''),
+                            'confidence': annot.get('confidence', ''),
+                            'review_duration_seconds': annot.get('review_duration_seconds'),
+                        }
+                        break
+
+            # Refresh the current display
+            self._display_current_statement()
+
+            self.status_label.setText(f"✓ Switched to user: {username}")
+            self.status_label.setStyleSheet(self._get_status_label_stylesheet('success'))
+
+        except Exception as e:
+            print(f"ERROR switching user: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(
+                self,
+                "Error Switching User",
+                f"Failed to switch to user '{username}':\n\n{str(e)}",
+            )
+
+    def _auto_load_data(self):
+        """Auto-load data from PostgreSQL database on startup."""
+        # Use PostgreSQL by default (no dialogs)
+        self.db_file = None
+        self.db_type = "postgresql"
+
+        # Try to get existing annotators
+        try:
+            temp_db = get_fact_checker_db(self.db_file)
+            with temp_db.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username FROM factcheck.annotators ORDER BY created_at DESC")
+                    annotators = cur.fetchall()
+
+                    # If there's exactly one annotator, use it automatically
+                    if len(annotators) == 1:
+                        username = annotators[0][0]
+                        self.username_field.setText(username)
+                        self.annotator_username = username
+        except Exception as e:
+            print(f"Note: Could not check for existing annotators: {e}")
+
+        # Get username from text field if set
         username = self.username_field.text().strip()
         if username:
             self.annotator_username = username
 
-        # Use PostgreSQL by default (no dialogs)
-        self.db_file = None
-        self.db_type = "postgresql"
         self._load_from_database()
 
     def _load_from_database(self):
@@ -763,7 +861,11 @@ class FactCheckerTabWidget(QWidget):
             all_data = self.fact_checker_db.get_all_statements_with_evaluations()
 
             if not all_data:
-                raise ValueError("No statements found in database")
+                raise ValueError(
+                    "No statements found in database.\n\n"
+                    "Please import fact-checker data first using:\n"
+                    "uv run python fact_checker_cli.py statements.json"
+                )
 
             # Convert to display format
             self.results = []
@@ -822,10 +924,6 @@ class FactCheckerTabWidget(QWidget):
                 f"✓ Loaded {len(self.results)} statements from {db_source}{mode_indicator}"
             )
             self.status_label.setStyleSheet(self._get_status_label_stylesheet('success'))
-
-            # Hide load button, show review interface
-            self.load_data_button.setVisible(False)
-            self.review_container.setVisible(True)
 
             # Display first statement
             self.current_index = 0
@@ -926,6 +1024,18 @@ class FactCheckerTabWidget(QWidget):
         annotation = self.human_dropdown.currentData()
         explanation = self.human_text.toPlainText()
 
+        # Check if user is trying to annotate without a username
+        if annotation and annotation != "n/a" and not self.annotator_id:
+            username = self.username_field.text().strip()
+            if not username:
+                QMessageBox.warning(
+                    self,
+                    "Username Required",
+                    "Annotations will only be recorded if you enter a username.\n\n"
+                    "Please enter your username in the field at the top of the page.",
+                )
+                return
+
         # Only record time if an evaluation has been selected
         review_duration = None
         if annotation and annotation != "n/a":
@@ -945,59 +1055,32 @@ class FactCheckerTabWidget(QWidget):
         if not self.fact_checker_db or self.current_index >= len(self.results):
             return
 
-        # Check if username is required (user is making a real annotation)
+        # Ensure annotator is registered (safety check)
         if annotation and annotation != "n/a" and not self.annotator_id:
             # Get username from field
             username = self.username_field.text().strip()
 
-            # If still no username, prompt the user
+            # If no username, don't save (should have been caught earlier)
             if not username:
-                username, ok = QInputDialog.getText(
-                    self,
-                    "Username Required",
-                    "Please enter your username to save annotations:",
-                )
-                if ok and username:
-                    self.username_field.setText(username)
-                    self.annotator_username = username
+                return
 
-                    # Register annotator
-                    try:
-                        annotator = Annotator(
-                            username=username,
-                            full_name=username,
-                            email=None,
-                            expertise_level=None,
-                        )
-                        self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
-                    except Exception as e:
-                        QMessageBox.critical(
-                            self,
-                            "Error",
-                            f"Failed to register annotator: {str(e)}",
-                        )
-                        return
-                else:
-                    # User cancelled - don't save annotation
-                    return
-            else:
-                # Username in field but not registered yet
-                self.annotator_username = username
-                try:
-                    annotator = Annotator(
-                        username=username,
-                        full_name=username,
-                        email=None,
-                        expertise_level=None,
-                    )
-                    self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
-                except Exception as e:
-                    QMessageBox.critical(
-                        self,
-                        "Error",
-                        f"Failed to register annotator: {str(e)}",
-                    )
-                    return
+            # Register annotator
+            self.annotator_username = username
+            try:
+                annotator = Annotator(
+                    username=username,
+                    full_name=username,
+                    email=None,
+                    expertise_level=None,
+                )
+                self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to register annotator: {str(e)}",
+                )
+                return
 
         try:
             result = self.results[self.current_index]
@@ -1005,7 +1088,8 @@ class FactCheckerTabWidget(QWidget):
 
             # Convert 'n/a' to empty string for database
             db_annotation = "" if annotation == "n/a" else annotation
-            db_confidence = "" if confidence == "n/a" else confidence
+            # Convert empty string or 'n/a' to None for confidence (database constraint requires NULL not empty string)
+            db_confidence = None if (not confidence or confidence == "n/a" or confidence == "") else confidence
 
             # Create annotation object
             human_annotation = HumanAnnotation(
@@ -1017,8 +1101,8 @@ class FactCheckerTabWidget(QWidget):
                 review_duration_seconds=review_duration,
             )
 
-            # Insert or update
-            self.fact_checker_db.insert_or_update_human_annotation(human_annotation)
+            # Insert or update (method handles both via ON CONFLICT)
+            self.fact_checker_db.insert_human_annotation(human_annotation)
 
             # Update local review
             self.reviews[self.current_index] = {

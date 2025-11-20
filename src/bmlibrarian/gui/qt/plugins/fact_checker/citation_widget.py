@@ -7,9 +7,15 @@ Displays citation cards using the standard CitationCard widget with data convers
 from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt
+from pathlib import Path
+import os
 
-# Import standard citation card widget
-from ...widgets.citation_card import CitationCard
+# Import document card factory
+from ...qt_document_card_factory import QtDocumentCardFactory
+from bmlibrarian.gui.document_card_factory_base import DocumentCardData
+
+# Import PDF manager
+from bmlibrarian.utils.pdf_manager import PDFManager
 
 # Import DPI-aware styling
 from ...resources.styles import get_font_scale
@@ -18,17 +24,32 @@ from ...resources.styles import get_font_scale
 class CitationListWidget(QWidget):
     """Widget for displaying a list of citations using standard CitationCard widgets."""
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, pdf_base_dir: Optional[Path] = None):
         """
         Initialize citation list widget.
 
         Args:
             parent: Optional parent widget
+            pdf_base_dir: Base directory for PDF files (defaults to PDF_BASE_DIR env var)
         """
         super().__init__(parent)
 
         # DPI-aware scaling
         self.scale = get_font_scale()
+
+        # Get PDF base directory from parameter or environment
+        if pdf_base_dir is None:
+            pdf_dir_str = os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
+            pdf_base_dir = Path(pdf_dir_str).expanduser()
+
+        # Initialize PDF manager for handling PDF downloads and storage
+        self.pdf_manager = PDFManager(base_dir=str(pdf_base_dir))
+
+        # Initialize document card factory with PDF manager and base directory
+        self.card_factory = QtDocumentCardFactory(
+            pdf_manager=self.pdf_manager,
+            base_pdf_dir=pdf_base_dir
+        )
 
         self._setup_ui()
 
@@ -79,54 +100,91 @@ class CitationListWidget(QWidget):
             )
             self.layout.addWidget(self.empty_label)
         else:
-            # Create citation cards
+            # Create citation cards using document card factory
             for index, citation in enumerate(citations, start=1):
                 # Enrich citation with database data if needed
                 enriched_citation = self._enrich_citation(citation, db)
 
-                # Convert to CitationCard format
-                card_data = self._convert_to_card_format(enriched_citation)
+                # Convert to DocumentCardData format
+                card_data = self._convert_to_card_data(enriched_citation)
 
-                # Create and add card
-                card = CitationCard(card_data, index=index)
+                # Create and add card using factory
+                card = self.card_factory.create_card(card_data)
                 self.layout.addWidget(card)
 
             # Add stretch at the end
             self.layout.addStretch()
 
-    def _convert_to_card_format(self, citation: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_to_card_data(self, citation: Dict[str, Any]) -> DocumentCardData:
         """
-        Convert fact-checker citation format to CitationCard format.
+        Convert fact-checker citation format to DocumentCardData.
 
         Fact-checker format:
             - title, authors, journal, pub_year, pmid, doi
             - abstract, passage (citation_text)
-
-        CitationCard format:
-            - document_title, authors, publication, publication_date
-            - abstract, passage, summary, relevance_score
+            - document_id
 
         Args:
             citation: Citation in fact-checker format
 
         Returns:
-            Citation in CitationCard format
+            DocumentCardData instance
         """
-        return {
-            'document_title': citation.get('title', 'Untitled'),
-            'title': citation.get('title', 'Untitled'),  # Fallback
-            'authors': citation.get('authors', 'Unknown authors'),
-            'publication': citation.get('journal', 'Unknown journal'),
-            'publication_date': str(citation.get('pub_year', 'Unknown')),
-            'abstract': citation.get('abstract', 'No abstract available'),
-            'passage': citation.get('passage', ''),
-            'summary': '',  # Fact-checker doesn't have summaries
-            'relevance_score': citation.get('relevance_score', 0),  # May be missing
-            # Keep original fields for reference
-            'pmid': citation.get('pmid', ''),
-            'doi': citation.get('doi', ''),
-            'document_id': citation.get('document_id'),
-        }
+        # Parse authors
+        authors = citation.get('authors', 'Unknown authors')
+        if isinstance(authors, str):
+            authors_list = [a.strip() for a in authors.split(',')]
+        else:
+            authors_list = authors if isinstance(authors, list) else []
+
+        # Get year
+        pub_year = citation.get('pub_year')
+        year = None
+        if pub_year and pub_year not in ('Unknown', 'N/A', None):
+            try:
+                if isinstance(pub_year, (int, float)):
+                    year = int(pub_year)
+                else:
+                    # Try to extract year from string (first 4 digits)
+                    year_str = str(pub_year)[:4]
+                    if year_str.isdigit():
+                        year = int(year_str)
+            except (ValueError, TypeError):
+                year = None
+
+        # Get PDF path if available
+        doc_id = citation.get('document_id')
+        pdf_path = None
+        if doc_id and self.card_factory.base_pdf_dir:
+            # Check if database has pdf_filename (e.g., "2023/paper.pdf")
+            pdf_filename = citation.get('pdf_filename')
+            if pdf_filename:
+                # Use the pdf_filename from database
+                potential_path = self.card_factory.base_pdf_dir / pdf_filename
+                if potential_path.exists():
+                    pdf_path = potential_path
+            else:
+                # Fallback: try direct doc_id.pdf in base dir (old style)
+                potential_path = self.card_factory.base_pdf_dir / f"{doc_id}.pdf"
+                if potential_path.exists():
+                    pdf_path = potential_path
+
+        # Get PDF URL for download capability
+        pdf_url = citation.get('pdf_url', '')
+
+        return DocumentCardData(
+            doc_id=doc_id,
+            title=citation.get('title', 'Untitled'),
+            authors=authors_list,
+            journal=citation.get('journal', 'Unknown journal'),
+            year=year,
+            abstract=citation.get('abstract', 'No abstract available'),
+            pmid=citation.get('pmid', ''),
+            doi=citation.get('doi', ''),
+            pdf_path=pdf_path,
+            pdf_url=pdf_url,
+            show_pdf_button=True  # Show PDF button if available
+        )
 
     def _enrich_citation(self, citation: Dict[str, Any], db) -> Dict[str, Any]:
         """
@@ -172,7 +230,7 @@ class CitationListWidget(QWidget):
                 cursor.execute("""
                     SELECT
                         id, title, abstract, authors,
-                        publication, publication_date, external_id, doi
+                        publication, publication_date, external_id, doi, pdf_url, pdf_filename
                     FROM documents
                     WHERE id = ?
                 """, (citation.get('document_id'),))
@@ -187,7 +245,7 @@ class CitationListWidget(QWidget):
                         cur.execute("""
                             SELECT
                                 d.id, d.title, d.abstract, d.authors,
-                                d.publication, d.publication_date, d.external_id, d.doi
+                                d.publication, d.publication_date, d.external_id, d.doi, d.pdf_url, d.pdf_filename
                             FROM document d
                             WHERE d.id = %s
                         """, (citation.get('document_id'),))
@@ -205,6 +263,8 @@ class CitationListWidget(QWidget):
                     pub_date = row['publication_date']
                     external_id = row['external_id']
                     doi = row['doi']
+                    pdf_url = row['pdf_url']
+                    pdf_filename = row['pdf_filename']
 
                     # Parse JSON authors if it's a string
                     import json
@@ -226,6 +286,8 @@ class CitationListWidget(QWidget):
                     pub_date = row[5]
                     external_id = row[6]
                     doi = row[7]
+                    pdf_url = row[8]
+                    pdf_filename = row[9]
 
                     # Convert array to string if needed
                     if isinstance(authors_data, list):
@@ -241,6 +303,10 @@ class CitationListWidget(QWidget):
                     enriched['pmid'] = external_id or 'N/A'
                 if not enriched.get('doi') or enriched.get('doi') is None:
                     enriched['doi'] = doi or ''
+                if not enriched.get('pdf_url') or enriched.get('pdf_url') is None:
+                    enriched['pdf_url'] = pdf_url or ''
+                if not enriched.get('pdf_filename') or enriched.get('pdf_filename') is None:
+                    enriched['pdf_filename'] = pdf_filename or ''
                 if not enriched.get('title') or enriched.get('title') in ('No title', None):
                     enriched['title'] = title or 'No title'
                 if not enriched.get('authors') or enriched.get('authors') in ('Unknown', None):

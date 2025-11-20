@@ -5,7 +5,7 @@ Specialized collapsible card for displaying citations with passage highlighting 
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal
 from typing import Optional, Dict, Any
@@ -170,12 +170,12 @@ class CitationCard(QFrame):
 
         header_container_layout.addWidget(title_frame)
 
-        # Metadata section (NO frame, NO blue border) - authors, journal, year
+        # Metadata section (NO frame, NO blue border) - authors, journal, year on ONE LINE
         metadata_widget = QWidget()
         metadata_widget.setStyleSheet("background-color: transparent; border: none;")
         metadata_layout = QVBoxLayout(metadata_widget)
-        metadata_layout.setContentsMargins(s['padding_small'], s['padding_tiny'], s['padding_small'], s['padding_tiny'])
-        metadata_layout.setSpacing(s['spacing_tiny'])
+        metadata_layout.setContentsMargins(s['padding_small'], 0, s['padding_small'], s['padding_tiny'])  # No top padding
+        metadata_layout.setSpacing(0)
 
         # Authors
         authors = self.citation_data.get('authors', [])
@@ -192,28 +192,42 @@ class CitationCard(QFrame):
         # Extract year from publication_date
         publication_date = self.citation_data.get('publication_date', '')
         if publication_date and publication_date != 'Unknown':
-            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else 'Unknown year'
+            year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else ''
         else:
-            year_str = 'Unknown year'
+            year_str = ''
 
         # Publication (journal)
         publication = self.citation_data.get('publication', '')
 
-        # Format metadata: "Authors. Journal, Year"
+        # Format metadata: "Authors. Journal, Year" - all on ONE line
+        metadata_parts = [authors_str]
         if publication and publication != 'Unknown journal':
-            pub_info = f"{publication}, {year_str}"
-        else:
-            pub_info = year_str
+            if year_str:
+                metadata_parts.append(f"{publication}, {year_str}")
+            else:
+                metadata_parts.append(publication)
+        elif year_str:
+            metadata_parts.append(year_str)
 
-        metadata_text = f"{authors_str}. {pub_info}"
+        metadata_text = '. '.join(metadata_parts)
         metadata_label = QLabel(metadata_text)
         metadata_label.setWordWrap(True)
-        metadata_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
+        metadata_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_small']}pt; background-color: transparent; border: none;")
         metadata_layout.addWidget(metadata_label)
 
         header_container_layout.addWidget(metadata_widget)
 
         return header_container
+
+    def _create_abstract_scroll_area(self, min_height: int) -> QScrollArea:
+        """Create a scroll area for abstract display with minimum height."""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setMinimumHeight(min_height)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+        return scroll_area
 
     def _create_details(self) -> QFrame:
         """Create the details section (collapsible)."""
@@ -308,19 +322,34 @@ class CitationCard(QFrame):
         return abstract_container
 
     def _create_highlighted_abstract_widget(self, abstract: str, passage: str) -> QWidget:
-        """Create widget showing abstract with passage highlighted."""
+        """Create widget showing abstract with passage highlighted with minimum 6 lines visible."""
         s = self.scale
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(s['spacing_small'])
 
+        # Calculate minimum height for 6 lines of text
+        # Use base line height from font metrics (already includes proper line spacing)
+        line_height = s['base_line_height']
+        min_abstract_height = line_height * 6
+
         if not abstract or not passage:
+            # Create scroll area for simple abstract
+            scroll_area = self._create_abstract_scroll_area(min_abstract_height)
             label = QLabel(abstract or "No abstract available")
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
-            layout.addWidget(label)
+
+            # Wrap in widget for scroll area
+            widget = QWidget()
+            widget_layout = QVBoxLayout(widget)
+            widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+            widget_layout.addWidget(label)
+            scroll_area.setWidget(widget)
+
+            layout.addWidget(scroll_area)
             return container
 
         # Clean up passage for matching (remove extra whitespace)
@@ -352,7 +381,15 @@ class CitationCard(QFrame):
             label = QLabel(html)
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            layout.addWidget(label)
+
+            # Wrap in scroll area with minimum height
+            scroll_area = self._create_abstract_scroll_area(min_abstract_height)
+            widget = QWidget()
+            widget_layout = QVBoxLayout(widget)
+            widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+            widget_layout.addWidget(label)
+            scroll_area.setWidget(widget)
+            layout.addWidget(scroll_area)
 
         else:
             # Try fuzzy matching with first 10 words
@@ -386,7 +423,15 @@ class CitationCard(QFrame):
                 label = QLabel(html)
                 label.setWordWrap(True)
                 label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                layout.addWidget(label)
+
+                # Wrap in scroll area with minimum height
+                scroll_area = self._create_abstract_scroll_area(min_abstract_height)
+                widget = QWidget()
+                widget_layout = QVBoxLayout(widget)
+                widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+                widget_layout.addWidget(label)
+                scroll_area.setWidget(widget)
+                layout.addWidget(scroll_area)
 
             else:
                 # No match - show separately
@@ -417,7 +462,15 @@ class CitationCard(QFrame):
                 abstract_label.setWordWrap(True)
                 abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 abstract_label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
-                layout.addWidget(abstract_label)
+
+                # Wrap in scroll area with minimum height
+                scroll_area = self._create_abstract_scroll_area(min_abstract_height)
+                widget = QWidget()
+                widget_layout = QVBoxLayout(widget)
+                widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+                widget_layout.addWidget(abstract_label)
+                scroll_area.setWidget(widget)
+                layout.addWidget(scroll_area)
 
         return container
 
