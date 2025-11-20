@@ -8,6 +8,10 @@ from typing import Dict, Any, Optional
 from PySide6.QtCore import QObject, Signal, QRunnable, Slot
 import logging
 
+# Default threshold constants
+DEFAULT_SCORING_THRESHOLD = 3.0  # Minimum score for citation extraction
+DEFAULT_CITATION_EXTRACTION_THRESHOLD = 0.7  # Citation relevance threshold
+
 
 class WorkflowSignals(QObject):
     """
@@ -96,6 +100,7 @@ class QtWorkflowExecutor(QObject):
 
         # Workflow state
         self.current_question: str = ""
+        self.generated_query: str = ""  # Store the generated query for methodology
         self.documents: list = []
         self.scored_documents: list = []
         self.citations: list = []
@@ -108,6 +113,8 @@ class QtWorkflowExecutor(QObject):
         self.min_relevant: int = 10
         self.interactive_mode: bool = False
         self.counterfactual_enabled: bool = True
+        self.scoring_threshold: float = DEFAULT_SCORING_THRESHOLD
+        self.citation_extraction_threshold: float = DEFAULT_CITATION_EXTRACTION_THRESHOLD
 
         # Lifecycle state tracking
         self._is_active: bool = True  # False after cleanup() is called
@@ -160,7 +167,9 @@ class QtWorkflowExecutor(QObject):
         max_results: int = 100,
         min_relevant: int = 10,
         interactive: bool = False,
-        counterfactual: bool = True
+        counterfactual: bool = True,
+        scoring_threshold: float = DEFAULT_SCORING_THRESHOLD,
+        citation_extraction_threshold: float = DEFAULT_CITATION_EXTRACTION_THRESHOLD
     ) -> None:
         """
         Start the research workflow (Phase 2: just validate, don't execute).
@@ -171,6 +180,8 @@ class QtWorkflowExecutor(QObject):
             min_relevant: Minimum relevant documents to find
             interactive: Enable interactive mode
             counterfactual: Enable counterfactual analysis
+            scoring_threshold: Minimum score for citation extraction
+            citation_extraction_threshold: Citation relevance threshold
         """
         try:
             # Validate agents
@@ -185,6 +196,8 @@ class QtWorkflowExecutor(QObject):
             self.min_relevant = min_relevant
             self.interactive_mode = interactive
             self.counterfactual_enabled = counterfactual
+            self.scoring_threshold = scoring_threshold
+            self.citation_extraction_threshold = citation_extraction_threshold
 
             # Log workflow start
             self.logger.info(f"Workflow started: {question[:100]}")
@@ -354,12 +367,12 @@ class QtWorkflowExecutor(QObject):
             # Step 4: Extract citations from high-scoring documents (NEW in Milestone 3)
             high_scoring = len([
                 d for d, s in scored_documents
-                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= 3.0
+                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.scoring_threshold
             ])
             self.status_message.emit(
                 f"💬 Extracting citations from {high_scoring} high-scoring documents..."
             )
-            citations = self.extract_citations(scored_documents, score_threshold=3.0)
+            citations = self.extract_citations(scored_documents, score_threshold=self.scoring_threshold)
 
             # Emit citations signal for UI update
             self.citations_extracted.emit(citations)
@@ -463,6 +476,9 @@ class QtWorkflowExecutor(QObject):
                 raise ValueError("QueryAgent returned empty query string")
 
             self.logger.info(f"Generated query: {query}")
+
+            # Store query for methodology metadata
+            self.generated_query = query
 
             # Emit query_generated signal for UI update
             self.query_generated.emit(query)
@@ -629,6 +645,77 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Citation extraction failed: {e}", exc_info=True)
             raise
 
+    def _generate_methodology_metadata(self) -> Optional['MethodologyMetadata']:
+        """
+        Generate methodology metadata for the report.
+
+        Returns:
+            MethodologyMetadata object or None if insufficient data
+        """
+        # Import here to avoid circular imports
+        from bmlibrarian.agents.reporting_agent import MethodologyMetadata
+
+        if not self.current_question:
+            return None
+
+        # Calculate documents by score distribution
+        documents_by_score = {}
+        for doc, score_result in self.scored_documents:
+            score_value = score_result.get('score', 0)
+            if isinstance(score_value, (int, float)):
+                score_int = int(score_value)
+                documents_by_score[score_int] = documents_by_score.get(score_int, 0) + 1
+
+        # Calculate documents above threshold
+        documents_above_threshold = sum(
+            count for score, count in documents_by_score.items()
+            if score >= self.scoring_threshold
+        )
+
+        # Get model names from agents
+        query_model = getattr(self.query_agent, 'model', None) if self.query_agent else None
+        scoring_model = getattr(self.scoring_agent, 'model', None) if self.scoring_agent else None
+        citation_model = getattr(self.citation_agent, 'model', None) if self.citation_agent else None
+        reporting_model = getattr(self.reporting_agent, 'model', None) if self.reporting_agent else None
+        counterfactual_model = getattr(self.counterfactual_agent, 'model', None) if self.counterfactual_agent else None
+        editor_model = getattr(self.editor_agent, 'model', None) if self.editor_agent else None
+
+        # Get model parameters (temperature, top_p) from reporting agent
+        model_temperature = getattr(self.reporting_agent, 'temperature', None) if self.reporting_agent else None
+        model_top_p = getattr(self.reporting_agent, 'top_p', None) if self.reporting_agent else None
+
+        # Create metadata
+        metadata = MethodologyMetadata(
+            human_question=self.current_question,
+            generated_query=self.generated_query,
+            total_documents_found=len(self.documents),
+            scoring_threshold=self.scoring_threshold,
+            documents_by_score=documents_by_score,
+            documents_above_threshold=documents_above_threshold,
+            documents_processed_for_citations=len([
+                d for d, s in self.scored_documents
+                if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.scoring_threshold
+            ]),
+            citation_extraction_threshold=self.citation_extraction_threshold,
+            counterfactual_performed=False,
+            counterfactual_queries_generated=0,
+            counterfactual_documents_found=0,
+            counterfactual_citations_extracted=0,
+            iterative_processing_used=True,
+            context_window_management=True,
+            # Model information
+            query_model=query_model,
+            scoring_model=scoring_model,
+            citation_model=citation_model,
+            reporting_model=reporting_model,
+            counterfactual_model=counterfactual_model,
+            editor_model=editor_model,
+            model_temperature=model_temperature,
+            model_top_p=model_top_p
+        )
+
+        return metadata
+
     def generate_preliminary_report(self, citations: list) -> str:
         """
         Generate preliminary report from citations.
@@ -653,11 +740,15 @@ class QtWorkflowExecutor(QObject):
         try:
             self.logger.info(f"Generating preliminary report from {len(citations)} citations")
 
-            # Call reporting agent to generate report
+            # Generate methodology metadata with model information
+            methodology_metadata = self._generate_methodology_metadata()
+
+            # Call reporting agent to generate report with metadata
             report = self.reporting_agent.generate_citation_based_report(
                 user_question=self.current_question,
                 citations=citations,
-                format_output=True  # Get markdown formatted output
+                format_output=True,  # Get markdown formatted output
+                methodology_metadata=methodology_metadata
             )
 
             if not report or not isinstance(report, str):
@@ -702,6 +793,7 @@ class QtWorkflowExecutor(QObject):
 
             # Clear workflow state
             self.current_question = ""
+            self.generated_query = ""
             self.documents = []
             self.scored_documents = []
             self.citations = []
