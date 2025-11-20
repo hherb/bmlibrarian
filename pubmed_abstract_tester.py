@@ -72,6 +72,7 @@ import ftplib
 import gzip
 import logging
 import os
+import re
 import socket
 import sqlite3
 import sys
@@ -106,6 +107,7 @@ FTP_BLOCKSIZE = 65536  # FTP download block size (64KB)
 PROGRESS_DOWNLOAD_MAX = 50  # Progress percentage for download phase (0-50%)
 PROGRESS_PARSE_MIN = 50  # Progress percentage when parsing starts (50%)
 PROGRESS_PARSE_MAX = 100  # Progress percentage when parsing completes (100%)
+PROGRESS_ESTIMATE_ARTICLES = 1000  # Estimated articles per file for progress calculation
 
 # File validation
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB max file size for safety
@@ -167,8 +169,17 @@ class PubMedDatabase:
             ))
             self.conn.commit()
             return True
+        except sqlite3.IntegrityError as e:
+            logger.error(f"Database integrity error for PMID {article_data.get('pmid')}: {e}")
+            return False
+        except sqlite3.OperationalError as e:
+            logger.error(f"Database operational error for PMID {article_data.get('pmid')}: {e}")
+            return False
+        except (KeyError, TypeError) as e:
+            logger.error(f"Invalid article data for PMID {article_data.get('pmid')}: {e}")
+            return False
         except Exception as e:
-            logger.error(f"Error inserting article PMID {article_data.get('pmid')}: {e}")
+            logger.error(f"Unexpected database error for PMID {article_data.get('pmid')}: {e}", exc_info=True)
             return False
 
     def get_article_count(self) -> int:
@@ -359,7 +370,8 @@ class PubMedParser:
 
         try:
             return f'{year}-{month}-{day}'
-        except:
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.debug(f"Date formatting error: {e}, using fallback {year}-01-01")
             return f'{year}-01-01'
 
     @staticmethod
@@ -555,7 +567,8 @@ class DownloadThread(QThread):
                 # Try MLSD first (modern FTP servers) - provides size info
                 logger.debug("Attempting to list files with MLSD")
                 for name, facts in ftp.mlsd():
-                    if name.endswith('.xml.gz') and name.startswith('pubmed24n'):
+                    # Match pattern: pubmed<YY>n<NUMBER>.xml.gz (e.g., pubmed24n1234.xml.gz, pubmed25n5678.xml.gz)
+                    if name.endswith('.xml.gz') and name.startswith('pubmed') and 'n' in name:
                         size = int(facts.get('size', 0))
                         files.append((name, size))
                         logger.debug(f"Found file via MLSD: {name} ({size} bytes)")
@@ -569,14 +582,16 @@ class DownloadThread(QThread):
                 ftp.retrlines('NLST', file_names.append)
 
                 for name in file_names:
-                    if name.endswith('.xml.gz') and name.startswith('pubmed24n'):
+                    # Match pattern: pubmed<YY>n<NUMBER>.xml.gz (e.g., pubmed24n1234.xml.gz, pubmed25n5678.xml.gz)
+                    if name.endswith('.xml.gz') and name.startswith('pubmed') and 'n' in name:
                         # Get file size with SIZE command
                         try:
                             size = ftp.size(name)
                             files.append((name, size if size else 0))
                             logger.debug(f"Found file via NLST: {name} ({size} bytes)")
-                        except:
-                            # If SIZE fails, use 0 (will still download)
+                        except ftplib.error_perm as e:
+                            # If SIZE command not supported or permission denied, use 0 (will still download)
+                            logger.debug(f"SIZE command failed for {name}: {e}")
                             files.append((name, 0))
                             logger.debug(f"Found file via NLST: {name} (size unknown)")
 
@@ -645,17 +660,23 @@ class DownloadThread(QThread):
                                 # Update status and progress periodically
                                 if articles_count - last_progress_update >= progress_update_interval:
                                     self.status.emit(f"Parsed {articles_count} articles...")
-                                    # Estimate progress based on articles (assume ~1000 articles typical)
+                                    # Estimate progress based on articles (configurable via PROGRESS_ESTIMATE_ARTICLES)
                                     # Progress ranges from 50-95% during parsing (leave 95-100% for final batch)
                                     estimated_progress = min(95, PROGRESS_PARSE_MIN +
-                                                           int((articles_count / 1000) * 45))
+                                                           int((articles_count / PROGRESS_ESTIMATE_ARTICLES) * 45))
                                     self.progress.emit(estimated_progress)
                                     last_progress_update = articles_count
 
-                        # Clear element to free memory
+                        # Clear element to free memory (with safety checks)
                         elem.clear()
-                        while elem.getprevious() is not None:
-                            del elem.getparent()[0]
+                        # Safely navigate parent tree to free memory
+                        if elem.getparent() is not None:
+                            while elem.getprevious() is not None:
+                                parent = elem.getparent()
+                                if parent is not None:
+                                    del parent[0]
+                                else:
+                                    break
 
                 # Insert remaining articles
                 if batch:
@@ -716,8 +737,7 @@ class DownloadThread(QThread):
 class MarkdownConverter:
     """Efficient Markdown to HTML converter with pre-compiled regex patterns."""
 
-    # Pre-compiled regex patterns for performance
-    import re
+    # Pre-compiled regex patterns for performance (module-level re import)
     BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
     ITALIC_RE = re.compile(r'\*(.+?)\*')
     SUPERSCRIPT_RE = re.compile(r'\^(.+?)\^')
