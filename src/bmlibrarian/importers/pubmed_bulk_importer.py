@@ -11,6 +11,13 @@ targeted imports, this bulk importer:
 - Detects and applies metadata updates to existing records
 - Supports offline operation after initial download
 - Handles multi-GB XML files efficiently with streaming parsing
+- Preserves abstract structure and inline formatting as Markdown
+
+Abstract Formatting Features:
+- Structured abstracts: Preserves section labels (BACKGROUND, METHODS, RESULTS, CONCLUSIONS)
+- Inline formatting: Converts XML tags to Markdown (bold, italic, subscript, superscript)
+- Scientific notation: Preserves chemical formulas (H₂O → H~2~O) and units (m² → m^2^)
+- Paragraph breaks: Maintains section separation with double newlines
 
 Usage:
     from bmlibrarian.importers import PubMedBulkImporter
@@ -450,6 +457,117 @@ class PubMedBulkImporter:
 
         return text
 
+    def _get_element_text_with_formatting(self, elem: Optional[ET.Element]) -> str:
+        """
+        Extract text from XML element and convert inline formatting to Markdown.
+
+        Handles HTML-style inline elements:
+        - <b> or <bold> → **text**
+        - <i> or <italic> → *text*
+        - <sup> → ^text^
+        - <sub> → ~text~
+        - <u> or <underline> → __text__
+
+        This preserves scientific notation, chemical formulas, and emphasis.
+
+        Args:
+            elem: XML element to extract text from
+
+        Returns:
+            Text with inline formatting converted to Markdown
+        """
+        if elem is None:
+            return ''
+
+        # Leaf node optimization (no children)
+        if not list(elem):
+            return (elem.text or '').strip()
+
+        # Handle mixed content (text + nested formatting elements)
+        parts = []
+
+        # Add element's direct text (before first child)
+        if elem.text:
+            parts.append(elem.text)
+
+        # Process each child element
+        for child in elem:
+            tag = child.tag.lower()
+            child_text = self._get_element_text_with_formatting(child)
+
+            # Convert HTML/XML tags to Markdown
+            if tag in ('b', 'bold'):
+                parts.append(f'**{child_text}**')
+            elif tag in ('i', 'italic'):
+                parts.append(f'*{child_text}*')
+            elif tag == 'sup':
+                parts.append(f'^{child_text}^')
+            elif tag == 'sub':
+                parts.append(f'~{child_text}~')
+            elif tag in ('u', 'underline'):
+                parts.append(f'__{child_text}__')
+            else:
+                # Unknown tag - just keep the text
+                parts.append(child_text)
+
+            # Add tail text (text after closing tag)
+            if child.tail:
+                parts.append(child.tail)
+
+        return ''.join(parts).strip()
+
+    def _format_abstract_markdown(self, abstract_elem: Optional[ET.Element]) -> str:
+        """
+        Extract and format abstract with proper Markdown formatting.
+
+        This preserves:
+        - Section labels from both Label and NlmCategory attributes
+        - Paragraph breaks between sections
+        - Inline formatting (bold, italic, subscript, superscript)
+        - Handles both structured and unstructured abstracts
+
+        Args:
+            abstract_elem: Abstract XML element
+
+        Returns:
+            Markdown-formatted abstract with section headers and paragraph breaks
+        """
+        if abstract_elem is None:
+            return ''
+
+        # Find all AbstractText elements
+        abstract_texts = abstract_elem.findall('.//AbstractText')
+        if not abstract_texts:
+            return ''
+
+        markdown_parts = []
+
+        for abstract_text in abstract_texts:
+            # Get label attributes (prefer Label, fallback to NlmCategory)
+            label = abstract_text.get('Label', '').strip()
+            if not label:
+                nlm_category = abstract_text.get('NlmCategory', '').strip()
+                if nlm_category and nlm_category not in ('UNASSIGNED', 'UNLABELLED'):
+                    label = nlm_category
+
+            # Get text content with inline formatting
+            text = self._get_element_text_with_formatting(abstract_text)
+
+            if not text:
+                continue
+
+            # Format with label as header if present
+            if label:
+                # Capitalize label for consistency
+                label_formatted = label.upper()
+                markdown_parts.append(f"**{label_formatted}:** {text}")
+            else:
+                # Unstructured abstract
+                markdown_parts.append(text)
+
+        # Join sections with double newline for paragraph breaks
+        return '\n\n'.join(markdown_parts)
+
     def _extract_date(self, pub_date_elem: Optional[ET.Element]) -> Optional[str]:
         """Extract publication date from PubDate element."""
         if pub_date_elem is None:
@@ -496,18 +614,12 @@ class PubMedBulkImporter:
             if article is None:
                 return None
 
-            # Extract basic fields
-            title = self._get_element_text(article.find('.//ArticleTitle'))
+            # Extract title with inline formatting preservation
+            title = self._get_element_text_with_formatting(article.find('.//ArticleTitle'))
 
-            # Abstract - use proper text extraction to handle mixed content
-            # Use .//AbstractText (not .//Abstract/AbstractText) to be more robust
-            abstract_parts = []
-            for abstract_text in article.findall('.//AbstractText'):
-                if abstract_text is not None:
-                    text = self._get_element_text(abstract_text)
-                    if text:
-                        abstract_parts.append(text)
-            abstract = ' '.join(abstract_parts) if abstract_parts else ''
+            # Extract abstract with markdown formatting (structured sections + inline formatting)
+            abstract_elem = article.find('.//Abstract')
+            abstract = self._format_abstract_markdown(abstract_elem)
 
             # Authors
             authors = []
@@ -694,9 +806,9 @@ class PubMedBulkImporter:
                             stats['errors'] += 1
 
                         # Clear element to free memory
+                        # Note: Standard library ElementTree doesn't support getparent()/getprevious()
+                        # (those are lxml-specific methods), so we just clear the element itself
                         elem.clear()
-                        while elem.getprevious() is not None:
-                            del elem.getparent()[0]
 
                 # Process remaining batch
                 if batch:
@@ -708,6 +820,25 @@ class PubMedBulkImporter:
             # Mark as processed in tracker
             if self.tracker:
                 self.tracker.mark_processed(filepath.name, stats['articles_parsed'])
+
+        except gzip.BadGzipFile as e:
+            # Must catch BadGzipFile before OSError (it's a subclass)
+            logger.error(f"{filepath.name}: Gzip decompression error: {e}")
+            if self.tracker:
+                self.tracker.mark_processed(filepath.name, 0, f"Invalid gzip file: {e}")
+            stats['errors'] += 1
+
+        except ET.ParseError as e:
+            logger.error(f"{filepath.name}: XML parsing error: {e}")
+            if self.tracker:
+                self.tracker.mark_processed(filepath.name, 0, f"Invalid XML format: {e}")
+            stats['errors'] += 1
+
+        except (OSError, IOError) as e:
+            logger.error(f"{filepath.name}: File system error: {e}")
+            if self.tracker:
+                self.tracker.mark_processed(filepath.name, 0, f"File system error: {e}")
+            stats['errors'] += 1
 
         except Exception as e:
             logger.error(f"{filepath.name}: Import error: {e}", exc_info=True)
