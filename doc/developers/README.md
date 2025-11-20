@@ -24,10 +24,26 @@ Welcome to BMLibrarian developer documentation! This section provides technical 
 - Context management and state preservation
 
 🖥️ **[GUI Architecture](gui_architecture.md)**
-- Modular GUI design with Flet framework
-- Component-based architecture
+- Modern Qt (PySide6) framework architecture
+- Plugin-based tabbed interface system
+- Component-based architecture with reusable widgets
+- Native performance and cross-platform compatibility
+- Theme system with light and dark modes
 - Dialog management and user interactions
 - Real-time workflow visualization
+
+📦 **[Qt Plugin Development Guide](qt_plugin_development_guide.md)**
+- Creating custom plugins for the Qt GUI
+- Plugin lifecycle and registration
+- Tab interface implementation
+- Signal/slot communication patterns
+
+✅ **[Fact Checker System](fact_checker_system.md)**
+- Multi-agent orchestration for statement verification
+- PostgreSQL-based storage architecture
+- Multi-user annotation and review system
+- CLI and GUI interfaces
+- Inter-rater reliability support
 
 ## API Reference
 
@@ -89,12 +105,43 @@ bmlibrarian/
 │   │   └── workflow_steps.py  # Enum-based workflow step definitions
 │   ├── gui/                   # Graphical user interfaces
 │   │   ├── __init__.py        # GUI module exports
-│   │   ├── config_app.py      # Configuration GUI application
-│   │   ├── research_app.py    # Main research GUI application
-│   │   ├── components.py      # Reusable UI components
-│   │   ├── dialogs.py         # Dialog management and interactions
-│   │   ├── workflow.py        # Real agent orchestration and execution
-│   │   └── tabs/              # Configuration GUI tab components
+│   │   ├── qt/                # Qt (PySide6) GUI - Current
+│   │   │   ├── __init__.py    # Qt GUI main entry point
+│   │   │   ├── core/          # Core Qt application framework
+│   │   │   ├── plugins/       # Plugin-based tab system
+│   │   │   │   ├── research/  # Research workflow tab
+│   │   │   │   ├── search/    # Document search tab
+│   │   │   │   ├── fact_checker/ # Fact-checking review tab
+│   │   │   │   ├── query_lab/ # Query testing lab tab
+│   │   │   │   ├── configuration/ # Settings tab
+│   │   │   │   └── ...        # Other plugin tabs
+│   │   │   ├── widgets/       # Reusable Qt widgets
+│   │   │   ├── dialogs/       # Dialog windows
+│   │   │   ├── resources/     # Stylesheets, icons, themes
+│   │   │   └── utils/         # Qt utility functions
+│   │   ├── config_app.py      # Legacy Flet config GUI (deprecated)
+│   │   ├── research_app.py    # Legacy Flet research GUI (deprecated)
+│   │   ├── components.py      # Legacy Flet components
+│   │   ├── dialogs.py         # Legacy Flet dialogs
+│   │   ├── workflow.py        # Real agent orchestration
+│   │   └── tabs/              # Legacy Flet tab components
+│   ├── factchecker/           # Fact-checking system
+│   │   ├── __init__.py        # Fact-checker module exports
+│   │   ├── agent/             # Fact-checking agent
+│   │   │   └── fact_checker_agent.py  # Multi-agent orchestration
+│   │   ├── db/                # Database operations
+│   │   │   └── database.py    # PostgreSQL factcheck schema
+│   │   ├── cli/               # CLI application
+│   │   │   ├── app.py         # Main CLI entry point
+│   │   │   ├── commands.py    # Command handlers
+│   │   │   └── formatters.py  # Output formatting
+│   │   └── gui/               # Review GUI (standalone Flet app)
+│   │       ├── review_app.py  # Main review application
+│   │       ├── data_manager.py    # Database queries
+│   │       ├── annotation_manager.py  # Annotation logic
+│   │       ├── statement_display.py   # Statement UI
+│   │       ├── citation_display.py    # Citation cards
+│   │       └── dialogs.py     # Login/export dialogs
 │   └── lab/                   # Experimental tools and interfaces
 ├── tests/                     # Comprehensive test suite
 ├── doc/                       # Documentation
@@ -116,8 +163,8 @@ uv run pytest tests/test_counterfactual_agent.py # Counterfactual analysis tests
 
 # Run GUI applications for testing
 uv run python bmlibrarian_cli.py --quick                     # Interactive CLI testing
-uv run python bmlibrarian_research_gui.py --quick            # Research GUI testing
-uv run python bmlibrarian_config_gui.py                      # Configuration GUI testing
+uv run python bmlibrarian_qt.py                              # Qt GUI testing (current)
+uv run python fact_checker_cli.py test_statements.json      # Fact-checker CLI testing
 ```
 
 Current test coverage: **>95%** across all agent modules
@@ -136,13 +183,42 @@ Current test coverage: **>95%** across all agent modules
 - **Key Classes**: `CLIConfig`, `UserInterface`, `QueryProcessor`, `ReportFormatter`, `WorkflowOrchestrator`
 - **Workflow System**: Enum-based step definitions with repeatable and conditional execution
 
-### GUI Applications
-- **Directory**: `src/bmlibrarian/gui/`
-- **Purpose**: Desktop applications for configuration and research
-- **Key Applications**: 
-  - `ConfigApp` - Tabbed configuration interface for agents and settings
-  - `ResearchGUI` - Visual research workflow with real-time progress
-- **Components**: Modular design with reusable UI components and dialog management
+### Qt GUI Application (Current)
+- **Directory**: `src/bmlibrarian/gui/qt/`
+- **Purpose**: Modern desktop application with plugin-based architecture
+- **Framework**: PySide6 (Qt for Python)
+- **Entry Point**: `bmlibrarian_qt.py`
+- **Key Features**:
+  - Plugin-based tabbed interface
+  - Research, Search, Fact-Checking, Query Lab, Configuration tabs
+  - Light and dark theme support
+  - Native performance and cross-platform compatibility
+  - Comprehensive keyboard shortcuts
+- **Architecture**:
+  - Core application framework in `core/`
+  - Plugin system with base class in `plugins/base_tab.py`
+  - Reusable widgets in `widgets/`
+  - Theme and resource management in `resources/`
+
+### Legacy GUI (Deprecated)
+- **Directory**: `src/bmlibrarian/gui/` (Flet-based files)
+- **Status**: Deprecated, maintenance mode only
+- **Note**: Will be removed in future versions. Use Qt GUI instead.
+
+### Fact-Checking System
+- **Directory**: `src/bmlibrarian/factchecker/`
+- **Purpose**: Automated verification of biomedical statements
+- **Key Components**:
+  - `FactCheckerAgent` - Multi-agent orchestration for statement verification
+  - `FactCheckerDB` - PostgreSQL storage with factcheck schema
+  - CLI interface in `cli/`
+  - GUI review interface in `gui/` (standalone Flet app)
+- **Features**:
+  - Batch processing from JSON files
+  - Literature evidence extraction
+  - Multi-user annotation support
+  - Inter-rater reliability analysis
+  - Incremental processing mode
 
 ### Workflow Orchestration System
 - **File**: `src/bmlibrarian/cli/workflow_steps.py`
@@ -168,11 +244,16 @@ Current test coverage: **>95%** across all agent modules
 - **No Artificial Limits**: Process ALL documents unless explicitly configured otherwise
 
 ### GUI Development Standards
-- **Modular Design**: Use component-based architecture with reusable UI elements
-- **Flet Framework**: Follow Flet best practices for cross-platform desktop applications
-- **Real-time Updates**: Support live progress updates during workflow execution
-- **Dialog Management**: Centralized dialog handling for consistent user experience
+- **Qt Framework**: Use PySide6 for modern, native desktop applications
+- **Plugin Architecture**: Create plugins that inherit from `BaseTab` for the tabbed interface
+- **Modular Design**: Use component-based architecture with reusable widgets
+- **Signal/Slot Pattern**: Follow Qt's signal/slot mechanism for event communication
+- **Thread Safety**: Use QThread for long-running operations to prevent UI freezing
+- **Theme Support**: Ensure widgets work with both light and dark themes
+- **Keyboard Shortcuts**: Implement standard shortcuts using QKeySequence
 - **Configuration Integration**: Respect agent models and parameters from `~/.bmlibrarian/config.json`
+- **Real-time Updates**: Use Qt signals for live progress updates during workflow execution
+- **Plugin Development**: See `qt_plugin_development_guide.md` for detailed instructions
 
 ### Workflow Development Guidelines
 - **WorkflowStep Enum**: Use meaningful names for new workflow steps
