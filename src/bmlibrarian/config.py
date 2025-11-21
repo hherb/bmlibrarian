@@ -8,10 +8,79 @@ Supports both environment variables and configuration files.
 import json
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Paper Weight Assessment Configuration Defaults
+# =============================================================================
+
+DEFAULT_PAPER_WEIGHT_CONFIG = {
+    "model": "gpt-oss:20b",
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "version": "1.0.0",
+    "dimension_weights": {
+        "study_design": 0.25,
+        "sample_size": 0.15,
+        "methodological_quality": 0.30,
+        "risk_of_bias": 0.20,
+        "replication_status": 0.10
+    },
+    "study_type_hierarchy": {
+        "systematic_review": 10.0,
+        "meta_analysis": 10.0,
+        "rct": 8.0,
+        "cohort_prospective": 6.0,
+        "cohort_retrospective": 5.0,
+        "case_control": 4.0,
+        "cross_sectional": 3.0,
+        "case_series": 2.0,
+        "case_report": 1.0
+    },
+    "study_type_keywords": {
+        "systematic_review": ["systematic review", "systematic literature review"],
+        "meta_analysis": ["meta-analysis", "meta analysis", "pooled analysis"],
+        "rct": [
+            "randomized controlled trial", "randomised controlled trial", "RCT",
+            "randomized trial", "randomised trial", "random allocation", "randomly assigned"
+        ],
+        "cohort_prospective": ["prospective cohort", "prospective study", "longitudinal cohort"],
+        "cohort_retrospective": ["retrospective cohort", "retrospective study"],
+        "case_control": ["case-control", "case control study"],
+        "cross_sectional": ["cross-sectional", "cross sectional study", "prevalence study"],
+        "case_series": ["case series", "case-series"],
+        "case_report": ["case report", "case study"]
+    },
+    "sample_size_scoring": {
+        "log_base": 10,
+        "log_multiplier": 2.0,
+        "power_calculation_bonus": 2.0,
+        "ci_reported_bonus": 0.5
+    },
+    "methodological_quality_weights": {
+        "randomization": 2.0,
+        "blinding": 3.0,
+        "allocation_concealment": 1.5,
+        "protocol_preregistration": 1.5,
+        "itt_analysis": 1.0,
+        "attrition_handling": 1.0
+    },
+    "risk_of_bias_weights": {
+        "selection_bias": 2.5,
+        "performance_bias": 2.5,
+        "detection_bias": 2.5,
+        "reporting_bias": 2.5
+    },
+    "attrition_thresholds": {
+        "excellent": 0.05,
+        "good": 0.10,
+        "acceptable": 0.20
+    }
+}
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -28,6 +97,7 @@ DEFAULT_CONFIG = {
         "pico_agent": "gpt-oss:20b",  # Use larger model for PICO extraction
         "study_assessment_agent": "gpt-oss:20b",  # Use larger model for study quality assessment
         "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
+        "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
         "paper_checker_agent": "gpt-oss:20b",  # Use larger model for abstract fact-checking
         "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
 
@@ -175,6 +245,7 @@ DEFAULT_CONFIG = {
                 "acceptable": 0.20
             }
         },
+        "paper_weight_assessment": DEFAULT_PAPER_WEIGHT_CONFIG,
         "paper_checker": {
             "temperature": 0.3,
             "top_p": 0.9,
@@ -551,3 +622,137 @@ def get_openathens_config() -> Dict[str, Any]:
         - headless (bool): Run browser in headless mode
     """
     return get_config().get("openathens", DEFAULT_CONFIG["openathens"])
+
+
+def get_paper_weight_config() -> Dict[str, Any]:
+    """Get paper weight assessment configuration.
+
+    Returns:
+        Dictionary with paper weight assessment configuration including:
+        - model (str): Ollama model to use
+        - temperature (float): LLM temperature
+        - top_p (float): Nucleus sampling parameter
+        - version (str): Assessor version for database versioning
+        - dimension_weights (dict): Weights for each assessment dimension
+        - study_type_hierarchy (dict): Baseline scores for study types
+        - study_type_keywords (dict): Keywords for study type detection
+        - sample_size_scoring (dict): Parameters for sample size scoring
+        - methodological_quality_weights (dict): Sub-component weights
+        - risk_of_bias_weights (dict): Risk of bias domain weights
+        - attrition_thresholds (dict): Attrition rate quality thresholds
+    """
+    return get_config().get_agent_config("paper_weight_assessment")
+
+
+def validate_paper_weight_config(config: Dict[str, Any]) -> bool:
+    """
+    Validate paper weight assessment configuration.
+
+    Validates that:
+    - Dimension weights sum to 1.0
+    - All dimension weights are non-negative
+    - Study type hierarchy scores are in valid range (0-10)
+    - Methodological quality weights sum to 10.0
+    - Risk of bias weights sum to 10.0
+    - Attrition thresholds are in ascending order
+
+    Args:
+        config: Paper weight assessment configuration dictionary
+
+    Returns:
+        True if configuration is valid
+
+    Raises:
+        ValueError: If configuration is invalid with descriptive message
+    """
+    # Check dimension weights sum to 1.0
+    weights = config.get("dimension_weights", {})
+    if not weights:
+        raise ValueError("dimension_weights is required")
+
+    weight_sum = sum(weights.values())
+    if not (0.99 <= weight_sum <= 1.01):  # Allow small floating point error
+        raise ValueError(f"Dimension weights must sum to 1.0, got {weight_sum:.4f}")
+
+    # Check all dimension weights are non-negative
+    for key, value in weights.items():
+        if value < 0:
+            raise ValueError(f"Dimension weight '{key}' must be non-negative, got {value}")
+
+    # Check study type hierarchy scores are 0-10
+    hierarchy = config.get("study_type_hierarchy", {})
+    for study_type, score in hierarchy.items():
+        if not (0 <= score <= 10):
+            raise ValueError(
+                f"Study type hierarchy score for '{study_type}' must be between 0 and 10, got {score}"
+            )
+
+    # Check methodological quality weights sum to 10.0
+    mq_weights = config.get("methodological_quality_weights", {})
+    if mq_weights:
+        mq_sum = sum(mq_weights.values())
+        if not (9.9 <= mq_sum <= 10.1):  # Allow small floating point error
+            raise ValueError(
+                f"Methodological quality weights must sum to 10.0, got {mq_sum:.4f}"
+            )
+        # Check all weights are non-negative
+        for key, value in mq_weights.items():
+            if value < 0:
+                raise ValueError(
+                    f"Methodological quality weight '{key}' must be non-negative, got {value}"
+                )
+
+    # Check risk of bias weights sum to 10.0
+    rob_weights = config.get("risk_of_bias_weights", {})
+    if rob_weights:
+        rob_sum = sum(rob_weights.values())
+        if not (9.9 <= rob_sum <= 10.1):  # Allow small floating point error
+            raise ValueError(f"Risk of bias weights must sum to 10.0, got {rob_sum:.4f}")
+        # Check all weights are non-negative
+        for key, value in rob_weights.items():
+            if value < 0:
+                raise ValueError(
+                    f"Risk of bias weight '{key}' must be non-negative, got {value}"
+                )
+
+    # Check attrition thresholds are in ascending order
+    thresholds = config.get("attrition_thresholds", {})
+    if thresholds:
+        excellent = thresholds.get("excellent", 0)
+        good = thresholds.get("good", 0)
+        acceptable = thresholds.get("acceptable", 0)
+
+        if not (excellent < good < acceptable):
+            raise ValueError(
+                f"Attrition thresholds must be in ascending order "
+                f"(excellent < good < acceptable), got excellent={excellent}, "
+                f"good={good}, acceptable={acceptable}"
+            )
+
+        # Check thresholds are valid proportions (0-1)
+        for key, value in thresholds.items():
+            if not (0 <= value <= 1):
+                raise ValueError(
+                    f"Attrition threshold '{key}' must be between 0 and 1, got {value}"
+                )
+
+    # Check sample size scoring parameters if present
+    sample_scoring = config.get("sample_size_scoring", {})
+    if sample_scoring:
+        log_multiplier = sample_scoring.get("log_multiplier", 2.0)
+        if log_multiplier <= 0:
+            raise ValueError(f"sample_size_scoring.log_multiplier must be positive, got {log_multiplier}")
+
+        power_bonus = sample_scoring.get("power_calculation_bonus", 0)
+        if power_bonus < 0:
+            raise ValueError(
+                f"sample_size_scoring.power_calculation_bonus must be non-negative, got {power_bonus}"
+            )
+
+        ci_bonus = sample_scoring.get("ci_reported_bonus", 0)
+        if ci_bonus < 0:
+            raise ValueError(
+                f"sample_size_scoring.ci_reported_bonus must be non-negative, got {ci_bonus}"
+            )
+
+    return True
