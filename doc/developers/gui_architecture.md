@@ -316,7 +316,13 @@ class ResearchPlugin(BaseTab):
         self.setLayout(layout)
 
     def cleanup(self):
-        self.research_widget.cancel_workflow()
+        # Cancel any running workflow thread
+        if hasattr(self.research_widget, 'workflow_thread') and self.research_widget.workflow_thread:
+            self.research_widget.workflow_thread.cancel()
+            self.research_widget.workflow_thread.wait()
+        # Clean up executor resources
+        if hasattr(self.research_widget, 'executor') and self.research_widget.executor:
+            self.research_widget.executor.cleanup()
         self.research_widget.deleteLater()
 ```
 
@@ -430,20 +436,43 @@ The Research plugin demonstrates best practices for complex plugin organization,
 
 ```python
 class QtWorkflowExecutor(QObject):
-    """Coordinates agent-based workflow with Qt signals."""
+    """Coordinates agent-based workflow with Qt signals.
 
-    # Workflow steps
+    Note: Counterfactual analysis and final report generation are handled
+    by WorkflowThread, which calls agent methods directly for these steps.
+    """
+
+    # Core workflow steps (used by WorkflowThread)
     def generate_query(self, question: str) -> str
     def search_documents(self, query: str) -> List[dict]
     def score_documents(self, documents: List[dict]) -> List[Tuple[dict, dict]]
     def extract_citations(self, scored_docs: List) -> List[dict]
     def generate_preliminary_report(self, citations: List) -> str
-    def perform_counterfactual_analysis(self, report: str) -> Optional[dict]
-    def generate_final_report(self, preliminary: str, counterfactual: dict) -> str
 
-    # Lifecycle
+    # Lifecycle management
+    def check_agents_ready(self) -> bool
     def cleanup(self) -> None
-    def cancel_workflow(self) -> None
+```
+
+**WorkflowThread Methods** (handles background execution):
+
+```python
+class WorkflowThread(QThread):
+    """Background thread for complete workflow execution.
+
+    Handles counterfactual analysis and final report generation
+    internally by calling agent methods directly.
+    """
+
+    # Control
+    def cancel(self) -> None  # Request cancellation
+
+    # Signals for progress/results
+    step_started = Signal(str, str)  # (step_name, description)
+    step_completed = Signal(str)
+    workflow_completed = Signal(dict)
+    workflow_error = Signal(Exception)
+    workflow_cancelled = Signal()
 ```
 
 ## Signal/Slot Communication
