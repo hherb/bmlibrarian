@@ -98,7 +98,7 @@ CREATE TABLE papercheck.abstracts_checked (
     source_doi TEXT,
     source_title TEXT,
     source_authors TEXT[],
-    source_year INTEGER CHECK (source_year IS NULL OR (source_year >= 1800 AND source_year <= 2100)),
+    source_year INTEGER,  -- No constraints - allows historical documents and future dates
     source_journal TEXT,
 
     -- Processing metadata with duration tracking
@@ -126,6 +126,9 @@ CREATE INDEX idx_abstracts_checked_pmid ON papercheck.abstracts_checked(source_p
 CREATE INDEX idx_abstracts_checked_doi ON papercheck.abstracts_checked(source_doi);
 CREATE INDEX idx_abstracts_checked_date ON papercheck.abstracts_checked(checked_at DESC);
 CREATE INDEX idx_abstracts_checked_status ON papercheck.abstracts_checked(status);
+-- Partial index for monitoring failed/processing abstracts (common operational query)
+CREATE INDEX idx_abstracts_error_status ON papercheck.abstracts_checked(status)
+    WHERE status IN ('failed', 'processing');
 
 COMMENT ON TABLE papercheck.abstracts_checked IS 'Abstracts being checked with processing metadata and status';
 COMMENT ON COLUMN papercheck.abstracts_checked.abstract_text IS 'Full abstract text being evaluated';
@@ -143,9 +146,9 @@ CREATE TABLE papercheck.statements (
     id SERIAL PRIMARY KEY,
     abstract_id INTEGER NOT NULL REFERENCES papercheck.abstracts_checked(id) ON DELETE CASCADE,
 
-    -- Statement content with length validation (min 10 chars, max 10KB)
+    -- Statement content with minimum length validation
     statement_text TEXT NOT NULL CHECK (length(statement_text) >= 10 AND length(statement_text) <= 10240),
-    context TEXT CHECK (context IS NULL OR length(context) <= 20480),  -- Max 20KB for context
+    context TEXT,  -- No length limit - contexts may be extensive for complex papers
 
     -- Classification using enum type
     statement_type papercheck.statement_type NOT NULL,
@@ -183,11 +186,8 @@ CREATE TABLE papercheck.counter_statements (
         array_length(hyde_abstracts, 1) > 0 AND
         array_length(hyde_abstracts, 1) <= 50
     ),
-    -- Keywords: at least 1, max 100 to prevent abuse
-    keywords TEXT[] NOT NULL CHECK (
-        array_length(keywords, 1) > 0 AND
-        array_length(keywords, 1) <= 100
-    ),
+    -- Keywords: at least 1 required (no upper limit - keyword expansion with synonyms is encouraged)
+    keywords TEXT[] NOT NULL CHECK (array_length(keywords, 1) > 0),
 
     -- Generation metadata
     generation_model VARCHAR(100),
@@ -595,6 +595,6 @@ BEGIN
     RAISE NOTICE 'Created tables: 8 (abstracts_checked, statements, counter_statements, search_results, scored_documents, citations, counter_reports, verdicts)';
     RAISE NOTICE 'Created views: 3 (v_complete_results, v_search_strategy_stats, v_verdict_distribution)';
     RAISE NOTICE 'Created functions: 2 (get_complete_result, cleanup_orphaned_search_results)';
-    RAISE NOTICE 'Created indexes: 22 (including 7 composite indexes for common query patterns)';
+    RAISE NOTICE 'Created indexes: 23 (including 7 composite indexes and 1 partial index for error monitoring)';
     RAISE NOTICE 'Migration tracking: Recorded in public.schema_migrations';
 END $$;
