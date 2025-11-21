@@ -39,7 +39,13 @@ class MigrationManager:
         """
         try:
             from dotenv import load_dotenv
-            load_dotenv()
+            # Check ~/.bmlibrarian/.env first (primary user configuration location),
+            # then fall back to .env in current directory (for development convenience)
+            user_env_path = Path.home() / ".bmlibrarian" / ".env"
+            if user_env_path.exists():
+                load_dotenv(user_env_path)
+            else:
+                load_dotenv()
 
             user = os.getenv("POSTGRES_USER")
             password = os.getenv("POSTGRES_PASSWORD")
