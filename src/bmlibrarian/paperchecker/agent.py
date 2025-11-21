@@ -579,19 +579,38 @@ class PaperCheckerAgent(BaseAgent):
         """
         Step 3: Multi-strategy search for counter-evidence.
 
-        Executes semantic, HyDE, and keyword searches in parallel,
-        then deduplicates results.
+        Executes three parallel search strategies:
+        1. Semantic search (embedding-based)
+        2. HyDE search (hypothetical document matching)
+        3. Keyword search (full-text)
 
         Args:
-            counter_stmt: Counter-statement with search materials
+            counter_stmt: CounterStatement with search materials including:
+                - negated_text: The counter-claim for semantic search
+                - hyde_abstracts: Hypothetical abstracts for HyDE search
+                - keywords: Search keywords for full-text search
 
         Returns:
-            SearchResults with documents from all strategies
+            SearchResults with deduplicated docs and provenance tracking
 
-        Note:
-            Full implementation in Step 07 (07_MULTI_STRATEGY_SEARCH.md)
+        Raises:
+            RuntimeError: If search fails (all strategies fail)
         """
-        raise NotImplementedError("Implemented in Step 07")
+        try:
+            search_results = self.search_coordinator.search(counter_stmt)
+
+            logger.info(
+                f"Search found {len(search_results.deduplicated_docs)} unique documents:\n"
+                f"  Semantic: {len(search_results.semantic_docs)}\n"
+                f"  HyDE: {len(search_results.hyde_docs)}\n"
+                f"  Keyword: {len(search_results.keyword_docs)}"
+            )
+
+            return search_results
+
+        except RuntimeError as e:
+            logger.error(f"Counter-evidence search failed: {e}")
+            raise
 
     def _score_documents(
         self, counter_stmt: CounterStatement, search_results: SearchResults
