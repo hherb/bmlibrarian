@@ -16,9 +16,21 @@ class PDFExtractor:
 
         Args:
             pdf_path: Path to the PDF file
+
+        Raises:
+            FileNotFoundError: If the PDF file does not exist
+            ValueError: If the file is not a valid PDF or is corrupted
         """
         self.pdf_path = pdf_path
-        self.doc = fitz.open(pdf_path)
+
+        try:
+            self.doc = fitz.open(pdf_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        except RuntimeError as e:
+            raise ValueError(f"Failed to open PDF (file may be corrupted or encrypted): {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to open PDF: {e}")
 
     def __enter__(self):
         return self
@@ -37,13 +49,19 @@ class PDFExtractor:
 
         Returns:
             List of TextBlock objects with text and formatting info
+
+        Raises:
+            RuntimeError: If extraction fails due to corrupted PDF content
         """
         blocks = []
 
-        for page_num in range(len(self.doc)):
-            page = self.doc[page_num]
-            page_blocks = self._extract_page_blocks(page, page_num)
-            blocks.extend(page_blocks)
+        try:
+            for page_num in range(len(self.doc)):
+                page = self.doc[page_num]
+                page_blocks = self._extract_page_blocks(page, page_num)
+                blocks.extend(page_blocks)
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract text blocks from PDF: {e}")
 
         return blocks
 
@@ -81,8 +99,8 @@ class PDFExtractor:
 
                     # Determine bold and italic from flags
                     # Flags: bit 0 = superscript, bit 1 = italic, bit 2 = serifed, bit 3 = monospaced, bit 4 = bold
-                    is_bold = bool(flags & 2**4)
-                    is_italic = bool(flags & 2**1)
+                    is_bold = bool(flags & (1 << 4))  # Bit 4 for bold (value 16)
+                    is_italic = bool(flags & (1 << 1))  # Bit 1 for italic (value 2)
 
                     # Get bounding box
                     bbox = span.get("bbox", (0, 0, 0, 0))
@@ -112,20 +130,26 @@ class PDFExtractor:
 
         Returns:
             Dictionary with metadata (title, author, subject, etc.)
-        """
-        metadata = self.doc.metadata
 
-        return {
-            'title': metadata.get('title', ''),
-            'author': metadata.get('author', ''),
-            'subject': metadata.get('subject', ''),
-            'keywords': metadata.get('keywords', ''),
-            'creator': metadata.get('creator', ''),
-            'producer': metadata.get('producer', ''),
-            'creation_date': metadata.get('creationDate', ''),
-            'modification_date': metadata.get('modDate', ''),
-            'num_pages': len(self.doc),
-        }
+        Raises:
+            RuntimeError: If metadata extraction fails
+        """
+        try:
+            metadata = self.doc.metadata
+
+            return {
+                'title': metadata.get('title', ''),
+                'author': metadata.get('author', ''),
+                'subject': metadata.get('subject', ''),
+                'keywords': metadata.get('keywords', ''),
+                'creator': metadata.get('creator', ''),
+                'producer': metadata.get('producer', ''),
+                'creation_date': metadata.get('creationDate', ''),
+                'modification_date': metadata.get('modDate', ''),
+                'num_pages': len(self.doc),
+            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract PDF metadata: {e}")
 
     def extract_raw_text(self) -> str:
         """
@@ -133,13 +157,19 @@ class PDFExtractor:
 
         Returns:
             Combined text from all pages
-        """
-        text_parts = []
-        for page_num in range(len(self.doc)):
-            page = self.doc[page_num]
-            text_parts.append(page.get_text())
 
-        return '\n\n'.join(text_parts)
+        Raises:
+            RuntimeError: If text extraction fails
+        """
+        try:
+            text_parts = []
+            for page_num in range(len(self.doc)):
+                page = self.doc[page_num]
+                text_parts.append(page.get_text())
+
+            return '\n\n'.join(text_parts)
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract raw text from PDF: {e}")
 
     def get_page_count(self) -> int:
         """Get the total number of pages."""

@@ -7,7 +7,39 @@ Usage:
 
 import sys
 from pathlib import Path
+import os
 from bmlibrarian.pdf_processor import PDFExtractor, SectionSegmenter
+
+
+def validate_output_path(pdf_path: str) -> Path:
+    """
+    Validate and sanitize the output file path to prevent path injection.
+
+    Args:
+        pdf_path: Path to the input PDF file
+
+    Returns:
+        Safe output path for the markdown file
+
+    Raises:
+        ValueError: If the path is unsafe or invalid
+    """
+    pdf_path_obj = Path(pdf_path).resolve()
+
+    # Ensure the PDF path is not trying to traverse directories maliciously
+    if not pdf_path_obj.exists():
+        raise ValueError(f"Input file does not exist: {pdf_path}")
+
+    # Create output path in the same directory as the input PDF
+    # Use resolve() to get the absolute path and prevent directory traversal
+    output_path = pdf_path_obj.with_suffix('.md')
+
+    # Verify the output path is in an expected location
+    # (same directory as input or subdirectory)
+    if not str(output_path.resolve()).startswith(str(pdf_path_obj.parent.resolve())):
+        raise ValueError("Output path would be outside the expected directory")
+
+    return output_path
 
 
 def main():
@@ -67,7 +99,7 @@ def main():
 
         # Export to markdown
         print("\n4. Exporting to markdown...")
-        markdown_path = Path(pdf_path).with_suffix('.md')
+        markdown_path = validate_output_path(pdf_path)
         markdown_content = document.to_markdown()
 
         with open(markdown_path, 'w', encoding='utf-8') as f:
