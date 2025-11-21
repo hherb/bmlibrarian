@@ -8,10 +8,169 @@ Supports both environment variables and configuration files.
 import json
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List, TypedDict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Paper Weight Assessment Configuration Type Definitions
+# =============================================================================
+
+class DimensionWeights(TypedDict):
+    """Type definition for dimension weights in paper weight assessment.
+
+    Each weight represents the relative importance of a dimension in the
+    final weighted score calculation. All weights must be non-negative
+    and sum to 1.0.
+    """
+    study_design: float
+    sample_size: float
+    methodological_quality: float
+    risk_of_bias: float
+    replication_status: float
+
+
+class StudyTypeHierarchy(TypedDict, total=False):
+    """Type definition for study type hierarchy scores.
+
+    Each score represents the evidence quality baseline (0-10) for a
+    particular study type. Higher scores indicate stronger evidence.
+    """
+    systematic_review: float
+    meta_analysis: float
+    rct: float
+    cohort_prospective: float
+    cohort_retrospective: float
+    case_control: float
+    cross_sectional: float
+    case_series: float
+    case_report: float
+
+
+class SampleSizeScoring(TypedDict):
+    """Type definition for sample size scoring parameters.
+
+    Formula: min(10, log_base(n) * log_multiplier) + bonuses
+    """
+    log_base: int
+    log_multiplier: float
+    power_calculation_bonus: float
+    ci_reported_bonus: float
+
+
+class MethodologicalQualityWeights(TypedDict):
+    """Type definition for methodological quality sub-component weights.
+
+    Weights must sum to 10.0 for normalized scoring.
+    """
+    randomization: float
+    blinding: float
+    allocation_concealment: float
+    protocol_preregistration: float
+    itt_analysis: float
+    attrition_handling: float
+
+
+class RiskOfBiasWeights(TypedDict):
+    """Type definition for risk of bias domain weights.
+
+    Weights must sum to 10.0 for normalized scoring.
+    """
+    selection_bias: float
+    performance_bias: float
+    detection_bias: float
+    reporting_bias: float
+
+
+class AttritionThresholds(TypedDict):
+    """Type definition for attrition rate quality thresholds.
+
+    Values represent dropout rate proportions (0.0-1.0).
+    Must be in ascending order: excellent < good < acceptable.
+    """
+    excellent: float
+    good: float
+    acceptable: float
+
+
+class PaperWeightConfig(TypedDict, total=False):
+    """Complete type definition for paper weight assessment configuration."""
+    model: str
+    temperature: float
+    top_p: float
+    version: str
+    dimension_weights: DimensionWeights
+    study_type_hierarchy: StudyTypeHierarchy
+    study_type_keywords: Dict[str, List[str]]
+    sample_size_scoring: SampleSizeScoring
+    methodological_quality_weights: MethodologicalQualityWeights
+    risk_of_bias_weights: RiskOfBiasWeights
+    attrition_thresholds: AttritionThresholds
+
+
+# =============================================================================
+# Paper Weight Validation Constants
+# =============================================================================
+
+# Floating point tolerance for weight sum validation.
+# ±0.01 chosen to handle typical JSON serialization precision loss while
+# still catching configuration errors (e.g., typos that cause significant drift).
+# JSON parsers typically preserve ~15 significant digits, so 0.01 provides
+# ample margin while detecting errors like 0.9 vs 1.0.
+FLOAT_TOLERANCE = 0.01
+
+# Expected sum for dimension weights (normalized to 1.0 for probability-like interpretation)
+WEIGHT_SUM_EXPECTED = 1.0
+
+# Expected sum for quality and bias weights (scaled to 10.0 for easier human readability)
+QUALITY_WEIGHT_SUM_EXPECTED = 10.0
+
+# Valid range for LLM temperature parameter (0.0 = deterministic, 1.0+ = creative)
+TEMPERATURE_MIN = 0.0
+TEMPERATURE_MAX = 2.0  # Some models support up to 2.0
+
+# Valid range for nucleus sampling top_p parameter
+TOP_P_MIN = 0.0
+TOP_P_MAX = 1.0
+
+
+# =============================================================================
+# Validation Result Type
+# =============================================================================
+
+@dataclass
+class ValidationResult:
+    """Result of configuration validation.
+
+    Provides structured output for validation operations, enabling
+    consistent error handling and detailed error reporting.
+
+    Attributes:
+        valid: True if configuration passed all validation checks
+        errors: List of validation error messages (empty if valid)
+        warnings: List of non-fatal validation warnings
+    """
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        """Allow ValidationResult to be used in boolean context."""
+        return self.valid
+
+    def raise_if_invalid(self) -> None:
+        """Raise ValueError if validation failed.
+
+        Convenience method for callers who prefer exception-based error handling.
+
+        Raises:
+            ValueError: If validation failed, with all errors as message
+        """
+        if not self.valid:
+            raise ValueError("; ".join(self.errors))
 
 
 # =============================================================================
@@ -583,17 +742,229 @@ def get_paper_weight_config() -> Dict[str, Any]:
     return get_config().get_agent_config("paper_weight_assessment")
 
 
-def validate_paper_weight_config(config: Dict[str, Any]) -> bool:
+def validate_paper_weight_config(config: Dict[str, Any]) -> ValidationResult:
     """
     Validate paper weight assessment configuration.
 
     Validates that:
-    - Dimension weights sum to 1.0
+    - Model name is in valid format (non-empty string with model:tag pattern)
+    - Temperature is within valid range (0.0-2.0)
+    - Top_p is within valid range (0.0-1.0)
+    - Dimension weights sum to 1.0 (±FLOAT_TOLERANCE for JSON serialization precision)
     - All dimension weights are non-negative
     - Study type hierarchy scores are in valid range (0-10)
+    - Study type keywords lists are non-empty when defined
     - Methodological quality weights sum to 10.0
     - Risk of bias weights sum to 10.0
     - Attrition thresholds are in ascending order
+
+    Args:
+        config: Paper weight assessment configuration dictionary
+
+    Returns:
+        ValidationResult with valid=True if configuration is valid,
+        or valid=False with errors list containing all validation failures
+
+    Note:
+        For backward compatibility, callers can use result.raise_if_invalid()
+        to get the previous exception-based behavior.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    # ==========================================================================
+    # Model name validation
+    # ==========================================================================
+    model = config.get("model", "")
+    if model:
+        # Basic format check: model name should be non-empty and reasonably formatted
+        # Ollama models typically follow "name:tag" or "name" pattern
+        if not isinstance(model, str) or len(model.strip()) == 0:
+            errors.append("model must be a non-empty string")
+        elif len(model) > 256:
+            errors.append(f"model name exceeds maximum length (256 chars), got {len(model)}")
+        elif not all(c.isalnum() or c in '-_:./' for c in model):
+            warnings.append(
+                f"model '{model}' contains unusual characters; "
+                "typical format is 'name:tag' (e.g., 'gpt-oss:20b')"
+            )
+
+    # ==========================================================================
+    # Temperature validation
+    # ==========================================================================
+    temperature = config.get("temperature")
+    if temperature is not None:
+        if not isinstance(temperature, (int, float)):
+            errors.append(f"temperature must be a number, got {type(temperature).__name__}")
+        elif not (TEMPERATURE_MIN <= temperature <= TEMPERATURE_MAX):
+            errors.append(
+                f"temperature must be between {TEMPERATURE_MIN} and {TEMPERATURE_MAX}, "
+                f"got {temperature}"
+            )
+
+    # ==========================================================================
+    # Top_p validation
+    # ==========================================================================
+    top_p = config.get("top_p")
+    if top_p is not None:
+        if not isinstance(top_p, (int, float)):
+            errors.append(f"top_p must be a number, got {type(top_p).__name__}")
+        elif not (TOP_P_MIN <= top_p <= TOP_P_MAX):
+            errors.append(
+                f"top_p must be between {TOP_P_MIN} and {TOP_P_MAX}, got {top_p}"
+            )
+
+    # ==========================================================================
+    # Dimension weights validation
+    # ==========================================================================
+    weights = config.get("dimension_weights", {})
+    if not weights:
+        errors.append("dimension_weights is required")
+    else:
+        weight_sum = sum(weights.values())
+        weight_lower = WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE
+        weight_upper = WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE
+        if not (weight_lower <= weight_sum <= weight_upper):
+            errors.append(
+                f"Dimension weights must sum to {WEIGHT_SUM_EXPECTED} "
+                f"(±{FLOAT_TOLERANCE} for floating point precision), got {weight_sum:.4f}"
+            )
+
+        # Check all dimension weights are non-negative
+        for key, value in weights.items():
+            if value < 0:
+                errors.append(f"Dimension weight '{key}' must be non-negative, got {value}")
+
+    # ==========================================================================
+    # Study type hierarchy validation
+    # ==========================================================================
+    hierarchy = config.get("study_type_hierarchy", {})
+    for study_type, score in hierarchy.items():
+        if not (0 <= score <= 10):
+            errors.append(
+                f"Study type hierarchy score for '{study_type}' must be between 0 and 10, "
+                f"got {score}"
+            )
+
+    # ==========================================================================
+    # Study type keywords validation
+    # ==========================================================================
+    keywords = config.get("study_type_keywords", {})
+    for study_type, keyword_list in keywords.items():
+        if not isinstance(keyword_list, list):
+            errors.append(
+                f"study_type_keywords['{study_type}'] must be a list, "
+                f"got {type(keyword_list).__name__}"
+            )
+        elif len(keyword_list) == 0:
+            errors.append(
+                f"study_type_keywords['{study_type}'] must contain at least one keyword"
+            )
+        else:
+            # Check that all keywords are non-empty strings
+            for i, kw in enumerate(keyword_list):
+                if not isinstance(kw, str) or len(kw.strip()) == 0:
+                    errors.append(
+                        f"study_type_keywords['{study_type}'][{i}] must be a non-empty string"
+                    )
+
+    # ==========================================================================
+    # Methodological quality weights validation
+    # ==========================================================================
+    mq_weights = config.get("methodological_quality_weights", {})
+    if mq_weights:
+        mq_sum = sum(mq_weights.values())
+        mq_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * 10
+        mq_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * 10
+        if not (mq_lower <= mq_sum <= mq_upper):
+            errors.append(
+                f"Methodological quality weights must sum to {QUALITY_WEIGHT_SUM_EXPECTED}, "
+                f"got {mq_sum:.4f}"
+            )
+        # Check all weights are non-negative
+        for key, value in mq_weights.items():
+            if value < 0:
+                errors.append(
+                    f"Methodological quality weight '{key}' must be non-negative, got {value}"
+                )
+
+    # ==========================================================================
+    # Risk of bias weights validation
+    # ==========================================================================
+    rob_weights = config.get("risk_of_bias_weights", {})
+    if rob_weights:
+        rob_sum = sum(rob_weights.values())
+        rob_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * 10
+        rob_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * 10
+        if not (rob_lower <= rob_sum <= rob_upper):
+            errors.append(
+                f"Risk of bias weights must sum to {QUALITY_WEIGHT_SUM_EXPECTED}, "
+                f"got {rob_sum:.4f}"
+            )
+        # Check all weights are non-negative
+        for key, value in rob_weights.items():
+            if value < 0:
+                errors.append(
+                    f"Risk of bias weight '{key}' must be non-negative, got {value}"
+                )
+
+    # ==========================================================================
+    # Attrition thresholds validation
+    # ==========================================================================
+    thresholds = config.get("attrition_thresholds", {})
+    if thresholds:
+        excellent = thresholds.get("excellent", 0)
+        good = thresholds.get("good", 0)
+        acceptable = thresholds.get("acceptable", 0)
+
+        if not (excellent < good < acceptable):
+            errors.append(
+                f"Attrition thresholds must be in ascending order "
+                f"(excellent < good < acceptable), got excellent={excellent}, "
+                f"good={good}, acceptable={acceptable}"
+            )
+
+        # Check thresholds are valid proportions (0-1)
+        for key, value in thresholds.items():
+            if not (0 <= value <= 1):
+                errors.append(
+                    f"Attrition threshold '{key}' must be between 0 and 1, got {value}"
+                )
+
+    # ==========================================================================
+    # Sample size scoring parameters validation
+    # ==========================================================================
+    sample_scoring = config.get("sample_size_scoring", {})
+    if sample_scoring:
+        log_multiplier = sample_scoring.get("log_multiplier", 2.0)
+        if log_multiplier <= 0:
+            errors.append(
+                f"sample_size_scoring.log_multiplier must be positive, got {log_multiplier}"
+            )
+
+        power_bonus = sample_scoring.get("power_calculation_bonus", 0)
+        if power_bonus < 0:
+            errors.append(
+                f"sample_size_scoring.power_calculation_bonus must be non-negative, "
+                f"got {power_bonus}"
+            )
+
+        ci_bonus = sample_scoring.get("ci_reported_bonus", 0)
+        if ci_bonus < 0:
+            errors.append(
+                f"sample_size_scoring.ci_reported_bonus must be non-negative, got {ci_bonus}"
+            )
+
+    return ValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def validate_paper_weight_config_legacy(config: Dict[str, Any]) -> bool:
+    """
+    Legacy validation function that raises ValueError on failure.
+
+    This function provides backward compatibility with code that expects
+    exception-based validation. New code should use validate_paper_weight_config()
+    and handle the ValidationResult directly.
 
     Args:
         config: Paper weight assessment configuration dictionary
@@ -604,94 +975,6 @@ def validate_paper_weight_config(config: Dict[str, Any]) -> bool:
     Raises:
         ValueError: If configuration is invalid with descriptive message
     """
-    # Check dimension weights sum to 1.0
-    weights = config.get("dimension_weights", {})
-    if not weights:
-        raise ValueError("dimension_weights is required")
-
-    weight_sum = sum(weights.values())
-    if not (0.99 <= weight_sum <= 1.01):  # Allow small floating point error
-        raise ValueError(f"Dimension weights must sum to 1.0, got {weight_sum:.4f}")
-
-    # Check all dimension weights are non-negative
-    for key, value in weights.items():
-        if value < 0:
-            raise ValueError(f"Dimension weight '{key}' must be non-negative, got {value}")
-
-    # Check study type hierarchy scores are 0-10
-    hierarchy = config.get("study_type_hierarchy", {})
-    for study_type, score in hierarchy.items():
-        if not (0 <= score <= 10):
-            raise ValueError(
-                f"Study type hierarchy score for '{study_type}' must be between 0 and 10, got {score}"
-            )
-
-    # Check methodological quality weights sum to 10.0
-    mq_weights = config.get("methodological_quality_weights", {})
-    if mq_weights:
-        mq_sum = sum(mq_weights.values())
-        if not (9.9 <= mq_sum <= 10.1):  # Allow small floating point error
-            raise ValueError(
-                f"Methodological quality weights must sum to 10.0, got {mq_sum:.4f}"
-            )
-        # Check all weights are non-negative
-        for key, value in mq_weights.items():
-            if value < 0:
-                raise ValueError(
-                    f"Methodological quality weight '{key}' must be non-negative, got {value}"
-                )
-
-    # Check risk of bias weights sum to 10.0
-    rob_weights = config.get("risk_of_bias_weights", {})
-    if rob_weights:
-        rob_sum = sum(rob_weights.values())
-        if not (9.9 <= rob_sum <= 10.1):  # Allow small floating point error
-            raise ValueError(f"Risk of bias weights must sum to 10.0, got {rob_sum:.4f}")
-        # Check all weights are non-negative
-        for key, value in rob_weights.items():
-            if value < 0:
-                raise ValueError(
-                    f"Risk of bias weight '{key}' must be non-negative, got {value}"
-                )
-
-    # Check attrition thresholds are in ascending order
-    thresholds = config.get("attrition_thresholds", {})
-    if thresholds:
-        excellent = thresholds.get("excellent", 0)
-        good = thresholds.get("good", 0)
-        acceptable = thresholds.get("acceptable", 0)
-
-        if not (excellent < good < acceptable):
-            raise ValueError(
-                f"Attrition thresholds must be in ascending order "
-                f"(excellent < good < acceptable), got excellent={excellent}, "
-                f"good={good}, acceptable={acceptable}"
-            )
-
-        # Check thresholds are valid proportions (0-1)
-        for key, value in thresholds.items():
-            if not (0 <= value <= 1):
-                raise ValueError(
-                    f"Attrition threshold '{key}' must be between 0 and 1, got {value}"
-                )
-
-    # Check sample size scoring parameters if present
-    sample_scoring = config.get("sample_size_scoring", {})
-    if sample_scoring:
-        log_multiplier = sample_scoring.get("log_multiplier", 2.0)
-        if log_multiplier <= 0:
-            raise ValueError(f"sample_size_scoring.log_multiplier must be positive, got {log_multiplier}")
-
-        power_bonus = sample_scoring.get("power_calculation_bonus", 0)
-        if power_bonus < 0:
-            raise ValueError(
-                f"sample_size_scoring.power_calculation_bonus must be non-negative, got {power_bonus}"
-            )
-
-        ci_bonus = sample_scoring.get("ci_reported_bonus", 0)
-        if ci_bonus < 0:
-            raise ValueError(
-                f"sample_size_scoring.ci_reported_bonus must be non-negative, got {ci_bonus}"
-            )
-
+    result = validate_paper_weight_config(config)
+    result.raise_if_invalid()
     return True
