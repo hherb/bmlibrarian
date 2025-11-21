@@ -128,6 +128,11 @@ WEIGHT_SUM_EXPECTED = 1.0
 # Expected sum for quality and bias weights (scaled to 10.0 for easier human readability)
 QUALITY_WEIGHT_SUM_EXPECTED = 10.0
 
+# Tolerance multiplier for quality/bias weights validation.
+# Quality weights use a scale of 10.0 (vs 1.0 for dimension weights), so we need
+# 10x the tolerance to account for proportionally larger floating point errors.
+QUALITY_WEIGHT_TOLERANCE_MULTIPLIER = 10
+
 # Valid range for LLM temperature parameter (0.0 = deterministic, 1.0+ = creative)
 TEMPERATURE_MIN = 0.0
 TEMPERATURE_MAX = 2.0  # Some models support up to 2.0
@@ -403,7 +408,6 @@ DEFAULT_CONFIG = {
                 "acceptable": 0.20
             }
         },
-        "paper_weight_assessment": DEFAULT_PAPER_WEIGHT_CONFIG,
         "paper_checker": {
             "temperature": 0.3,
             "top_p": 0.9,
@@ -934,8 +938,8 @@ def validate_paper_weight_config(config: Dict[str, Any]) -> ValidationResult:
     mq_weights = config.get("methodological_quality_weights", {})
     if mq_weights:
         mq_sum = sum(mq_weights.values())
-        mq_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * 10
-        mq_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * 10
+        mq_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * QUALITY_WEIGHT_TOLERANCE_MULTIPLIER
+        mq_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * QUALITY_WEIGHT_TOLERANCE_MULTIPLIER
         if not (mq_lower <= mq_sum <= mq_upper):
             errors.append(
                 f"Methodological quality weights must sum to {QUALITY_WEIGHT_SUM_EXPECTED}, "
@@ -954,8 +958,8 @@ def validate_paper_weight_config(config: Dict[str, Any]) -> ValidationResult:
     rob_weights = config.get("risk_of_bias_weights", {})
     if rob_weights:
         rob_sum = sum(rob_weights.values())
-        rob_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * 10
-        rob_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * 10
+        rob_lower = QUALITY_WEIGHT_SUM_EXPECTED - FLOAT_TOLERANCE * QUALITY_WEIGHT_TOLERANCE_MULTIPLIER
+        rob_upper = QUALITY_WEIGHT_SUM_EXPECTED + FLOAT_TOLERANCE * QUALITY_WEIGHT_TOLERANCE_MULTIPLIER
         if not (rob_lower <= rob_sum <= rob_upper):
             errors.append(
                 f"Risk of bias weights must sum to {QUALITY_WEIGHT_SUM_EXPECTED}, "
@@ -996,6 +1000,18 @@ def validate_paper_weight_config(config: Dict[str, Any]) -> ValidationResult:
     # ==========================================================================
     sample_scoring = config.get("sample_size_scoring", {})
     if sample_scoring:
+        # Validate log_base (must be a positive integer >= 2)
+        log_base = sample_scoring.get("log_base")
+        if log_base is not None:
+            if not isinstance(log_base, int):
+                errors.append(
+                    f"sample_size_scoring.log_base must be an integer, got {type(log_base).__name__}"
+                )
+            elif log_base < 2:
+                errors.append(
+                    f"sample_size_scoring.log_base must be >= 2, got {log_base}"
+                )
+
         log_multiplier = sample_scoring.get("log_multiplier", 2.0)
         if log_multiplier <= 0:
             errors.append(
@@ -1015,4 +1031,29 @@ def validate_paper_weight_config(config: Dict[str, Any]) -> ValidationResult:
                 f"sample_size_scoring.ci_reported_bonus must be non-negative, got {ci_bonus}"
             )
 
-    return True
+    return ValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings
+    )
+
+
+def validate_paper_weight_config_legacy(config: Dict[str, Any]) -> None:
+    """
+    Legacy validation function that raises ValueError on validation failure.
+
+    This function provides backward compatibility for code that expects
+    exception-based error handling rather than the ValidationResult approach.
+
+    Args:
+        config: Paper weight assessment configuration dictionary
+
+    Raises:
+        ValueError: If validation fails, with all errors concatenated as message
+
+    Example:
+        >>> validate_paper_weight_config_legacy(invalid_config)
+        ValueError: dimension_weights is required; temperature must be between 0.0 and 2.0
+    """
+    result = validate_paper_weight_config(config)
+    result.raise_if_invalid()
