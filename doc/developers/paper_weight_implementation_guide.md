@@ -252,8 +252,8 @@ final_weight = (
 - **GUI:** PySide6 (Qt for Python)
 
 ### Key Libraries
-- `psycopg` - PostgreSQL connectivity
-- `requests` - Ollama API communication
+- `psycopg` - PostgreSQL connectivity: required, but do not use directly. All Postgres interactin must happen via BMLibrarian's database manager and migration system
+- `ollama` - Ollama API communication via python library (do NOT use the requests library for this!)
 - `PySide6` - Qt GUI framework
 - `matplotlib` - Visualization (future)
 
@@ -388,5 +388,5 @@ Once user approves this master plan, proceed with Step 1 (Database Migration).
 ---
 
 **Document Status:** Complete - Ready for Implementation
-**Last Updated:** 2025-01-15
-**Version:** 1.0.0
+**Last Updated:** 2025-01-21
+**Version:** 1.1.0
