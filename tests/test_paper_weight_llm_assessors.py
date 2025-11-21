@@ -429,6 +429,133 @@ class TestJsonParsing:
 
 
 # ============================================================================
+# Unit Tests - Edge Cases
+# ============================================================================
+
+class TestEdgeCases:
+    """Tests for edge cases and boundary conditions."""
+
+    def test_empty_components_dict(self, agent):
+        """Test score calculation with empty components dict."""
+        result = agent._calculate_methodological_quality_score({})
+
+        assert result.dimension_name == 'methodological_quality'
+        assert result.score == 0.0
+        assert len(result.details) == 0
+
+    def test_components_missing_score_key(self, agent):
+        """Test handling of components missing score key."""
+        components = {
+            "randomization": {"evidence": "test", "reasoning": "test"},  # No score
+            "blinding": {"score": 2.0, "evidence": "test", "reasoning": "test"}
+        }
+
+        result = agent._calculate_methodological_quality_score(components)
+
+        # Should use default score of 0.0 for missing score
+        assert result.score == 2.0  # Only blinding contributes
+
+    def test_components_with_negative_score(self, agent):
+        """Test handling of negative score values."""
+        components = {
+            "randomization": {"score": -1.0, "evidence": "test", "reasoning": "test"}
+        }
+
+        result = agent._calculate_methodological_quality_score(components)
+
+        # Negative scores should still be used (clamping happens at final score)
+        assert result.details[0].score_contribution == -1.0
+
+    def test_score_capped_at_10(self, agent):
+        """Test that total score is capped at 10.0."""
+        components = {
+            "randomization": {"score": 5.0, "evidence": "test", "reasoning": "test"},
+            "blinding": {"score": 5.0, "evidence": "test", "reasoning": "test"},
+            "allocation": {"score": 5.0, "evidence": "test", "reasoning": "test"}
+        }
+
+        result = agent._calculate_methodological_quality_score(components)
+
+        assert result.score == 10.0  # Capped at 10
+
+    def test_empty_document(self, agent):
+        """Test text preparation with empty document."""
+        document = {}
+
+        text = agent._prepare_text_for_analysis(document)
+
+        assert 'TITLE:' in text
+        assert 'ABSTRACT:' in text
+
+    def test_extract_mq_with_none_quality_score(self, agent):
+        """Test MQ extraction when quality_score is None."""
+        study_assessment = {
+            'is_randomized': True,
+            'is_double_blinded': True,
+            'quality_score': None  # Explicit None
+        }
+        document = {'title': 'Test'}
+
+        result = agent._extract_mq_from_study_assessment(study_assessment, document)
+
+        assert result is not None
+        # Should use default of 5.0 for None quality_score
+        other_component = next(d for d in result.details if d.component == 'other_components')
+        assert 'quality_score=5.0' in other_component.extracted_value
+
+    def test_extract_mq_with_extreme_quality_score(self, agent):
+        """Test MQ extraction with extreme quality_score values."""
+        # Test with quality_score > 10
+        study_assessment = {
+            'is_randomized': False,
+            'quality_score': 15.0  # Out of range
+        }
+        document = {'title': 'Test'}
+
+        result = agent._extract_mq_from_study_assessment(study_assessment, document)
+
+        # Should clamp to 10.0
+        assert result.score <= 10.0
+
+    def test_extract_rob_with_unknown_risk_level(self, agent):
+        """Test RoB extraction with unknown risk levels."""
+        study_assessment = {
+            'selection_bias_risk': 'unknown',
+            'performance_bias_risk': 'very_high',  # Not in mapping
+            'detection_bias_risk': 'low',
+            'reporting_bias_risk': None
+        }
+        document = {'title': 'Test'}
+
+        result = agent._extract_rob_from_study_assessment(study_assessment, document)
+
+        assert result is not None
+        # Unknown risk levels should get default score (0.625)
+
+    def test_components_with_string_score(self, agent):
+        """Test handling of string score values (should convert to float)."""
+        components = {
+            "randomization": {"score": "2.0", "evidence": "test", "reasoning": "test"}
+        }
+
+        result = agent._calculate_methodological_quality_score(components)
+
+        assert result.score == 2.0  # String converted to float
+
+    def test_risk_of_bias_with_mixed_risk_levels(self, agent):
+        """Test RoB calculation with mixed risk levels."""
+        components = {
+            "selection_bias": {"score": 2.5, "risk_level": "low", "evidence": "", "reasoning": ""},
+            "performance_bias": {"score": 0, "risk_level": "high", "evidence": "", "reasoning": ""},
+            "detection_bias": {"score": 1.25, "risk_level": "moderate", "evidence": "", "reasoning": ""}
+        }
+
+        result = agent._calculate_risk_of_bias_score(components)
+
+        assert result.score == 3.75  # 2.5 + 0 + 1.25
+
+
+# ============================================================================
 # Integration Tests (require Ollama)
 # ============================================================================
 

@@ -10,7 +10,7 @@ assessments. The agent implementation will be added in later steps.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Callable, TYPE_CHECKING
+from typing import Optional, List, Dict, Callable, Any, TYPE_CHECKING
 from datetime import datetime
 import json
 
@@ -854,7 +854,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
     # Constants for LLM assessors
     MAX_TEXT_LENGTH = 8000  # Maximum characters to send to LLM (avoids token limits)
 
-    def _prepare_text_for_analysis(self, document: dict) -> str:
+    def _prepare_text_for_analysis(self, document: Dict[str, Any]) -> str:
         """
         Prepare document text for LLM analysis.
 
@@ -977,7 +977,7 @@ CRITICAL REQUIREMENTS:
 
 Provide ONLY the JSON output, no additional text."""
 
-    def _calculate_methodological_quality_score(self, components: dict) -> DimensionScore:
+    def _calculate_methodological_quality_score(self, components: Dict[str, Any]) -> DimensionScore:
         """
         Calculate methodological quality score from component assessments.
 
@@ -1025,8 +1025,8 @@ Provide ONLY the JSON output, no additional text."""
 
     def _assess_methodological_quality(
         self,
-        document: dict,
-        study_assessment: Optional[dict] = None
+        document: Dict[str, Any],
+        study_assessment: Optional[Dict[str, Any]] = None
     ) -> DimensionScore:
         """
         Assess methodological quality using LLM analysis.
@@ -1162,7 +1162,7 @@ CRITICAL REQUIREMENTS:
 
 Provide ONLY the JSON output, no additional text."""
 
-    def _calculate_risk_of_bias_score(self, components: dict) -> DimensionScore:
+    def _calculate_risk_of_bias_score(self, components: Dict[str, Any]) -> DimensionScore:
         """
         Calculate risk of bias score from component assessments.
 
@@ -1204,8 +1204,8 @@ Provide ONLY the JSON output, no additional text."""
 
     def _assess_risk_of_bias(
         self,
-        document: dict,
-        study_assessment: Optional[dict] = None
+        document: Dict[str, Any],
+        study_assessment: Optional[Dict[str, Any]] = None
     ) -> DimensionScore:
         """
         Assess risk of bias using LLM analysis.
@@ -1272,8 +1272,8 @@ Provide ONLY the JSON output, no additional text."""
 
     def _extract_mq_from_study_assessment(
         self,
-        study_assessment: dict,
-        document: dict
+        study_assessment: Dict[str, Any],
+        document: Dict[str, Any]
     ) -> Optional[DimensionScore]:
         """
         Extract methodological quality from StudyAssessmentAgent output.
@@ -1345,7 +1345,11 @@ Provide ONLY the JSON output, no additional text."""
                 )
 
             # Check quality_score to estimate remaining components
-            quality_score = study_assessment.get('quality_score', 5.0)
+            quality_score_raw = study_assessment.get('quality_score', 5.0)
+            # Handle None or invalid values
+            quality_score = float(quality_score_raw) if quality_score_raw is not None else 5.0
+            # Clamp to valid range
+            quality_score = max(0.0, min(10.0, quality_score))
 
             # Map quality_score (0-10) to remaining components estimate
             # quality_score reflects overall methodological quality
@@ -1377,8 +1381,8 @@ Provide ONLY the JSON output, no additional text."""
 
     def _extract_rob_from_study_assessment(
         self,
-        study_assessment: dict,
-        document: dict
+        study_assessment: Dict[str, Any],
+        document: Dict[str, Any]
     ) -> Optional[DimensionScore]:
         """
         Extract risk of bias from StudyAssessmentAgent output.
