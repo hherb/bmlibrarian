@@ -98,6 +98,7 @@ DEFAULT_CONFIG = {
         "study_assessment_agent": "gpt-oss:20b",  # Use larger model for study quality assessment
         "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
         "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
+        "paper_checker_agent": "gpt-oss:20b",  # Use larger model for abstract fact-checking
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -184,6 +185,26 @@ DEFAULT_CONFIG = {
             "max_retries": 3  # Maximum retry attempts for failed assessments
         },
         "paper_weight_assessment": DEFAULT_PAPER_WEIGHT_CONFIG,
+        "paper_checker": {
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "max_statements": 2,  # Maximum statements to extract from abstract
+            "score_threshold": 3.0,  # Minimum relevance score for document inclusion
+            "search": {
+                "semantic_limit": 50,  # Maximum documents from semantic search
+                "hyde_limit": 50,  # Maximum documents from HyDE search
+                "keyword_limit": 50,  # Maximum documents from keyword search
+                "max_deduplicated": 100  # Maximum unique documents after deduplication
+            },
+            "citation": {
+                "min_score": 3,  # Minimum score for citation extraction
+                "max_citations_per_statement": 10  # Maximum citations per statement
+            },
+            "hyde": {
+                "num_abstracts": 2,  # Number of hypothetical abstracts to generate
+                "max_keywords": 10  # Maximum keywords to generate
+            }
+        },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
             "temporal_precision": True  # Enforce precise temporal references in reports
