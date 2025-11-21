@@ -2,6 +2,25 @@
 -- Description: Creates papercheck schema for comprehensive paper quality assessment using multi-agent workflow
 -- Author: BMLibrarian
 -- Date: 2025-11-21
+-- Version: 010
+
+-- ============================================================================
+-- Migration Tracking Setup
+-- ============================================================================
+
+-- Create schema_migrations table if it doesn't exist (for tracking applied migrations)
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+    version VARCHAR(100) PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    description TEXT
+);
+
+COMMENT ON TABLE public.schema_migrations IS 'Tracks applied database migrations for version control';
+
+-- Record this migration (idempotent - won't fail if re-run)
+INSERT INTO public.schema_migrations (version, applied_at, description)
+VALUES ('010_create_papercheck_schema', NOW(), 'PaperChecker: Paper abstract quality assessment with counter-evidence analysis')
+ON CONFLICT (version) DO NOTHING;
 
 -- ============================================================================
 -- Create papercheck schema
@@ -21,38 +40,86 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA papercheck
 COMMENT ON SCHEMA papercheck IS 'PaperChecker: Comprehensive paper abstract quality assessment with counter-evidence analysis';
 
 -- ============================================================================
+-- Enum Types for Type Safety
+-- ============================================================================
+
+-- Statement types for classification
+DO $$ BEGIN
+    CREATE TYPE papercheck.statement_type AS ENUM ('hypothesis', 'finding', 'conclusion');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Verdict types for final assessment
+DO $$ BEGIN
+    CREATE TYPE papercheck.verdict_type AS ENUM ('supports', 'contradicts', 'undecided');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Confidence levels for verdict certainty
+DO $$ BEGIN
+    CREATE TYPE papercheck.confidence_level AS ENUM ('high', 'medium', 'low');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Processing status tracking
+DO $$ BEGIN
+    CREATE TYPE papercheck.processing_status AS ENUM ('pending', 'processing', 'completed', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Search strategy types
+DO $$ BEGIN
+    CREATE TYPE papercheck.search_strategy AS ENUM ('semantic', 'hyde', 'keyword');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+COMMENT ON TYPE papercheck.statement_type IS 'Types of statements extracted from abstracts';
+COMMENT ON TYPE papercheck.verdict_type IS 'Possible verdicts for statement validation';
+COMMENT ON TYPE papercheck.confidence_level IS 'Confidence levels for verdict assessment';
+COMMENT ON TYPE papercheck.processing_status IS 'Status tracking for abstract processing';
+COMMENT ON TYPE papercheck.search_strategy IS 'Search strategy types for counter-evidence';
+
+-- ============================================================================
 -- 1. abstracts_checked - Main table for abstracts being evaluated
 -- ============================================================================
 
 CREATE TABLE papercheck.abstracts_checked (
     id SERIAL PRIMARY KEY,
-    abstract_text TEXT NOT NULL CHECK (length(abstract_text) > 0),
+    -- Abstract content with reasonable length validation (min 50 chars, max 50KB)
+    abstract_text TEXT NOT NULL CHECK (length(abstract_text) >= 50 AND length(abstract_text) <= 51200),
 
     -- Source metadata (optional if checking external abstracts)
     source_pmid INTEGER,
     source_doi TEXT,
     source_title TEXT,
     source_authors TEXT[],
-    source_year INTEGER,
+    source_year INTEGER CHECK (source_year IS NULL OR (source_year >= 1800 AND source_year <= 2100)),
     source_journal TEXT,
 
-    -- Processing metadata
+    -- Processing metadata with duration tracking
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
     checked_at TIMESTAMP DEFAULT NOW() NOT NULL,
     model_used VARCHAR(100) NOT NULL,
     config JSONB DEFAULT '{}'::jsonb,
 
     -- Results summary
-    num_statements INTEGER,
+    num_statements INTEGER CHECK (num_statements IS NULL OR num_statements >= 0),
     overall_assessment TEXT,
-    processing_time_seconds FLOAT,
+    processing_time_seconds FLOAT CHECK (processing_time_seconds IS NULL OR processing_time_seconds >= 0),
 
-    -- Status tracking
-    status VARCHAR(20) DEFAULT 'pending'
-        CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    -- Status tracking using enum type
+    status papercheck.processing_status DEFAULT 'pending' NOT NULL,
     error_message TEXT,
 
     UNIQUE(source_pmid, checked_at),  -- Prevent duplicate checks
-    CHECK (source_pmid IS NOT NULL OR source_doi IS NOT NULL)  -- Must have identifier
+    CHECK (source_pmid IS NOT NULL OR source_doi IS NOT NULL),  -- Must have identifier
+    CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at)  -- Duration sanity
 );
 
 CREATE INDEX idx_abstracts_checked_pmid ON papercheck.abstracts_checked(source_pmid);
@@ -76,14 +143,13 @@ CREATE TABLE papercheck.statements (
     id SERIAL PRIMARY KEY,
     abstract_id INTEGER NOT NULL REFERENCES papercheck.abstracts_checked(id) ON DELETE CASCADE,
 
-    -- Statement content
-    statement_text TEXT NOT NULL CHECK (length(statement_text) > 0),
-    context TEXT,  -- Surrounding sentences
+    -- Statement content with length validation (min 10 chars, max 10KB)
+    statement_text TEXT NOT NULL CHECK (length(statement_text) >= 10 AND length(statement_text) <= 10240),
+    context TEXT CHECK (context IS NULL OR length(context) <= 20480),  -- Max 20KB for context
 
-    -- Classification
-    statement_type VARCHAR(50) NOT NULL
-        CHECK (statement_type IN ('hypothesis', 'finding', 'conclusion')),
-    statement_order INTEGER NOT NULL CHECK (statement_order >= 1),
+    -- Classification using enum type
+    statement_type papercheck.statement_type NOT NULL,
+    statement_order INTEGER NOT NULL CHECK (statement_order >= 1 AND statement_order <= 100),
 
     -- Extraction metadata
     extraction_confidence FLOAT CHECK (extraction_confidence BETWEEN 0.0 AND 1.0),
@@ -110,10 +176,18 @@ CREATE TABLE papercheck.counter_statements (
     id SERIAL PRIMARY KEY,
     statement_id INTEGER NOT NULL REFERENCES papercheck.statements(id) ON DELETE CASCADE,
 
-    -- Counter-claim content
-    negated_text TEXT NOT NULL CHECK (length(negated_text) > 0),
-    hyde_abstracts TEXT[] NOT NULL CHECK (array_length(hyde_abstracts, 1) > 0),
-    keywords TEXT[] NOT NULL CHECK (array_length(keywords, 1) > 0),
+    -- Counter-claim content with security constraints
+    negated_text TEXT NOT NULL CHECK (length(negated_text) >= 10 AND length(negated_text) <= 10240),
+    -- HyDE abstracts: at least 1, max 50 to prevent abuse
+    hyde_abstracts TEXT[] NOT NULL CHECK (
+        array_length(hyde_abstracts, 1) > 0 AND
+        array_length(hyde_abstracts, 1) <= 50
+    ),
+    -- Keywords: at least 1, max 100 to prevent abuse
+    keywords TEXT[] NOT NULL CHECK (
+        array_length(keywords, 1) > 0 AND
+        array_length(keywords, 1) <= 100
+    ),
 
     -- Generation metadata
     generation_model VARCHAR(100),
@@ -142,11 +216,10 @@ CREATE TABLE papercheck.search_results (
     -- Document reference
     doc_id INTEGER NOT NULL,  -- FK to public.documents (not enforced for flexibility)
 
-    -- Search provenance
-    search_strategy VARCHAR(20) NOT NULL
-        CHECK (search_strategy IN ('semantic', 'hyde', 'keyword')),
-    search_rank INTEGER CHECK (search_rank >= 1),
-    search_score FLOAT,
+    -- Search provenance using enum type
+    search_strategy papercheck.search_strategy NOT NULL,
+    search_rank INTEGER CHECK (search_rank IS NULL OR (search_rank >= 1 AND search_rank <= 1000)),
+    search_score FLOAT CHECK (search_score IS NULL OR search_score >= 0),
 
     -- Metadata
     searched_at TIMESTAMP DEFAULT NOW()
@@ -284,12 +357,10 @@ CREATE TABLE papercheck.verdicts (
     statement_id INTEGER NOT NULL
         REFERENCES papercheck.statements(id) ON DELETE CASCADE,
 
-    -- Verdict
-    verdict VARCHAR(20) NOT NULL
-        CHECK (verdict IN ('supports', 'contradicts', 'undecided')),
-    rationale TEXT NOT NULL CHECK (length(rationale) > 0),
-    confidence VARCHAR(20) NOT NULL
-        CHECK (confidence IN ('high', 'medium', 'low')),
+    -- Verdict using enum types for type safety
+    verdict papercheck.verdict_type NOT NULL,
+    rationale TEXT NOT NULL CHECK (length(rationale) >= 10 AND length(rationale) <= 20480),
+    confidence papercheck.confidence_level NOT NULL,
 
     -- Analysis metadata
     analysis_model VARCHAR(100),
@@ -307,6 +378,32 @@ COMMENT ON TABLE papercheck.verdicts IS 'Final verdicts on statement validity ba
 COMMENT ON COLUMN papercheck.verdicts.verdict IS 'Assessment: supports (confirmed), contradicts (refuted), or undecided';
 COMMENT ON COLUMN papercheck.verdicts.rationale IS 'Explanation of verdict based on evidence';
 COMMENT ON COLUMN papercheck.verdicts.confidence IS 'Confidence level in verdict: high, medium, or low';
+
+-- ============================================================================
+-- Composite Indexes for Common Query Patterns
+-- ============================================================================
+
+-- For filtering statements by abstract and type (common in reports)
+CREATE INDEX idx_statements_abstract_type ON papercheck.statements(abstract_id, statement_type);
+
+-- For scoring queries - finding high-scoring documents for counter-statements
+CREATE INDEX idx_scored_docs_counter_score ON papercheck.scored_documents(counter_statement_id, relevance_score);
+
+-- For finding supporting documents above threshold
+CREATE INDEX idx_scored_docs_counter_supports ON papercheck.scored_documents(counter_statement_id, supports_counter)
+    WHERE supports_counter = true;
+
+-- For verdict analysis by confidence and verdict type
+CREATE INDEX idx_verdicts_verdict_confidence ON papercheck.verdicts(verdict, confidence);
+
+-- For search results by strategy and score (common in analytics)
+CREATE INDEX idx_search_results_strategy_score ON papercheck.search_results(search_strategy, search_score DESC);
+
+-- For citations ordered by counter-statement and relevance
+CREATE INDEX idx_citations_counter_score ON papercheck.citations(counter_statement_id, relevance_score DESC);
+
+-- For abstracts by status and date (operational queries)
+CREATE INDEX idx_abstracts_status_date ON papercheck.abstracts_checked(status, checked_at DESC);
 
 -- ============================================================================
 -- Views for Convenient Queries
@@ -380,17 +477,36 @@ COMMENT ON VIEW papercheck.v_verdict_distribution IS 'Distribution of verdicts b
 -- ============================================================================
 
 -- Function to get complete result for an abstract
+-- Enhanced with error handling and validation
 CREATE OR REPLACE FUNCTION papercheck.get_complete_result(p_abstract_id INTEGER)
 RETURNS TABLE (
     statement_text TEXT,
     counter_statement TEXT,
-    verdict VARCHAR(20),
-    confidence VARCHAR(20),
+    verdict papercheck.verdict_type,
+    confidence papercheck.confidence_level,
     rationale TEXT,
     num_citations INTEGER,
     counter_report TEXT
 ) AS $$
+DECLARE
+    abstract_exists BOOLEAN;
 BEGIN
+    -- Validate input parameter
+    IF p_abstract_id IS NULL THEN
+        RAISE EXCEPTION 'abstract_id parameter cannot be NULL';
+    END IF;
+
+    -- Check if abstract exists
+    SELECT EXISTS (
+        SELECT 1 FROM papercheck.abstracts_checked WHERE id = p_abstract_id
+    ) INTO abstract_exists;
+
+    IF NOT abstract_exists THEN
+        RAISE WARNING 'Abstract with id % does not exist', p_abstract_id;
+        RETURN;  -- Return empty result set
+    END IF;
+
+    -- Return results
     RETURN QUERY
     SELECT
         s.statement_text,
@@ -409,28 +525,62 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION papercheck.get_complete_result(INTEGER) IS 'Retrieve complete results for a specific abstract';
+COMMENT ON FUNCTION papercheck.get_complete_result(INTEGER) IS 'Retrieve complete results for a specific abstract. Returns empty set if abstract not found.';
 
 -- Function to clean up orphaned search results (docs not in main table)
+-- Enhanced with error handling and transaction safety
 CREATE OR REPLACE FUNCTION papercheck.cleanup_orphaned_search_results()
 RETURNS INTEGER AS $$
 DECLARE
     deleted_count INTEGER;
+    table_exists BOOLEAN;
 BEGIN
-    WITH deleted AS (
-        DELETE FROM papercheck.search_results sr
-        WHERE NOT EXISTS (
-            SELECT 1 FROM public.documents d WHERE d.id = sr.doc_id
-        )
-        RETURNING *
-    )
-    SELECT COUNT(*) INTO deleted_count FROM deleted;
+    -- Verify public.documents table exists before attempting cleanup
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'documents'
+    ) INTO table_exists;
 
-    RETURN deleted_count;
+    IF NOT table_exists THEN
+        RAISE EXCEPTION 'public.documents table does not exist - cannot verify orphaned search results';
+    END IF;
+
+    -- Verify papercheck.search_results table exists
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'papercheck' AND table_name = 'search_results'
+    ) INTO table_exists;
+
+    IF NOT table_exists THEN
+        RAISE NOTICE 'papercheck.search_results table does not exist - nothing to clean up';
+        RETURN 0;
+    END IF;
+
+    -- Perform the cleanup with transaction safety
+    BEGIN
+        WITH deleted AS (
+            DELETE FROM papercheck.search_results sr
+            WHERE NOT EXISTS (
+                SELECT 1 FROM public.documents d WHERE d.id = sr.doc_id
+            )
+            RETURNING *
+        )
+        SELECT COUNT(*) INTO deleted_count FROM deleted;
+
+        IF deleted_count > 0 THEN
+            RAISE NOTICE 'Cleaned up % orphaned search results', deleted_count;
+        END IF;
+
+        RETURN deleted_count;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE WARNING 'Error during cleanup: % - %', SQLSTATE, SQLERRM;
+            RETURN -1;  -- Indicate error condition
+    END;
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION papercheck.cleanup_orphaned_search_results() IS 'Remove search results referencing deleted documents';
+COMMENT ON FUNCTION papercheck.cleanup_orphaned_search_results() IS 'Remove search results referencing deleted documents. Returns -1 on error.';
 
 -- ============================================================================
 -- Migration Complete
@@ -441,7 +591,10 @@ DO $$
 BEGIN
     RAISE NOTICE 'PaperCheck schema migration completed successfully';
     RAISE NOTICE 'Created schema: papercheck';
-    RAISE NOTICE 'Created tables: 8';
-    RAISE NOTICE 'Created views: 3';
-    RAISE NOTICE 'Created functions: 2';
+    RAISE NOTICE 'Created types: 5 (statement_type, verdict_type, confidence_level, processing_status, search_strategy)';
+    RAISE NOTICE 'Created tables: 8 (abstracts_checked, statements, counter_statements, search_results, scored_documents, citations, counter_reports, verdicts)';
+    RAISE NOTICE 'Created views: 3 (v_complete_results, v_search_strategy_stats, v_verdict_distribution)';
+    RAISE NOTICE 'Created functions: 2 (get_complete_result, cleanup_orphaned_search_results)';
+    RAISE NOTICE 'Created indexes: 22 (including 7 composite indexes for common query patterns)';
+    RAISE NOTICE 'Migration tracking: Recorded in public.schema_migrations';
 END $$;
