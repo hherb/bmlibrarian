@@ -1,0 +1,508 @@
+"""
+Paper Weight Database Operations
+
+Functions for database persistence and caching of paper weight assessments:
+- Caching: retrieve cached assessments by document_id and version
+- Storage: store assessments with full audit trail
+- Document retrieval: fetch documents from database
+- Replication status: query replication information
+
+Uses psycopg for PostgreSQL connectivity.
+"""
+
+import json
+import logging
+import os
+from typing import Optional, Callable, Dict, List
+
+from .paper_weight_models import (
+    AssessmentDetail,
+    DimensionScore,
+    PaperWeightResult,
+    DIMENSION_STUDY_DESIGN,
+    DIMENSION_SAMPLE_SIZE,
+    DIMENSION_METHODOLOGICAL_QUALITY,
+    DIMENSION_RISK_OF_BIAS,
+    DIMENSION_REPLICATION_STATUS,
+)
+
+
+logger = logging.getLogger(__name__)
+
+# Replication scoring constants
+# Score depends on number of replications and their quality relative to the original
+REPLICATION_SCORE_SINGLE_COMPARABLE = 5.0   # One replication of comparable quality
+REPLICATION_SCORE_SINGLE_HIGHER = 8.0       # One replication of higher quality
+REPLICATION_SCORE_MULTIPLE_COMPARABLE = 8.0  # 2+ replications of comparable quality
+REPLICATION_SCORE_MULTIPLE_HIGHER = 10.0     # 2+ replications of higher quality
+REPLICATION_SCORE_LOWER_QUALITY = 3.0        # Lower quality replications
+
+
+def get_default_db_connection():
+    """
+    Create database connection using environment variables.
+
+    Returns:
+        psycopg connection object
+    """
+    import psycopg
+
+    return psycopg.connect(
+        dbname=os.getenv('POSTGRES_DB', 'knowledgebase'),
+        user=os.getenv('POSTGRES_USER'),
+        password=os.getenv('POSTGRES_PASSWORD'),
+        host=os.getenv('POSTGRES_HOST', 'localhost'),
+        port=os.getenv('POSTGRES_PORT', '5432')
+    )
+
+
+def get_cached_assessment(
+    document_id: int,
+    version: str,
+    conn_factory: Optional[Callable] = None
+) -> Optional[PaperWeightResult]:
+    """
+    Retrieve cached assessment from database.
+
+    Checks for existing assessment with matching document_id and assessor_version.
+
+    Args:
+        document_id: Database ID of document
+        version: Assessor version to match
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        PaperWeightResult if cached, None otherwise
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                # Fetch assessment
+                cur.execute("""
+                    SELECT
+                        assessment_id,
+                        document_id,
+                        assessed_at,
+                        assessor_version,
+                        study_design_score,
+                        sample_size_score,
+                        methodological_quality_score,
+                        risk_of_bias_score,
+                        replication_status_score,
+                        final_weight,
+                        dimension_weights,
+                        study_type,
+                        sample_size
+                    FROM paper_weights.assessments
+                    WHERE document_id = %s AND assessor_version = %s
+                """, (document_id, version))
+
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                assessment_id = row[0]
+
+                # Fetch assessment details
+                cur.execute("""
+                    SELECT
+                        dimension,
+                        component,
+                        extracted_value,
+                        score_contribution,
+                        evidence_text,
+                        reasoning
+                    FROM paper_weights.assessment_details
+                    WHERE assessment_id = %s
+                    ORDER BY detail_id
+                """, (assessment_id,))
+
+                details = cur.fetchall()
+
+                # Convert to PaperWeightResult
+                return _reconstruct_result_from_db(row, details)
+
+    except Exception as e:
+        logger.error(f"Error fetching cached assessment: {e}")
+        return None
+
+
+def _reconstruct_result_from_db(
+    assessment_row: tuple,
+    detail_rows: List[tuple]
+) -> PaperWeightResult:
+    """
+    Reconstruct PaperWeightResult from database rows.
+
+    Args:
+        assessment_row: Row from paper_weights.assessments
+        detail_rows: Rows from paper_weights.assessment_details
+
+    Returns:
+        Reconstructed PaperWeightResult
+    """
+    # Unpack assessment row
+    (assessment_id, document_id, assessed_at, assessor_version,
+     study_design_score, sample_size_score, methodological_quality_score,
+     risk_of_bias_score, replication_status_score, final_weight,
+     dimension_weights, study_type, sample_size_n) = assessment_row
+
+    # Parse dimension weights (JSONB)
+    if isinstance(dimension_weights, str):
+        dimension_weights = json.loads(dimension_weights)
+
+    # Group details by dimension
+    dimension_details: Dict[str, List[AssessmentDetail]] = {
+        DIMENSION_STUDY_DESIGN: [],
+        DIMENSION_SAMPLE_SIZE: [],
+        DIMENSION_METHODOLOGICAL_QUALITY: [],
+        DIMENSION_RISK_OF_BIAS: [],
+        DIMENSION_REPLICATION_STATUS: []
+    }
+
+    for detail_row in detail_rows:
+        (dimension, component, extracted_value, score_contribution,
+         evidence_text, reasoning) = detail_row
+
+        if dimension in dimension_details:
+            dimension_details[dimension].append(AssessmentDetail(
+                dimension=dimension,
+                component=component,
+                extracted_value=extracted_value,
+                score_contribution=float(score_contribution) if score_contribution else 0.0,
+                evidence_text=evidence_text,
+                reasoning=reasoning
+            ))
+
+    # Create dimension scores
+    study_design = DimensionScore(
+        dimension_name=DIMENSION_STUDY_DESIGN,
+        score=float(study_design_score),
+        details=dimension_details[DIMENSION_STUDY_DESIGN]
+    )
+
+    sample_size_dim = DimensionScore(
+        dimension_name=DIMENSION_SAMPLE_SIZE,
+        score=float(sample_size_score),
+        details=dimension_details[DIMENSION_SAMPLE_SIZE]
+    )
+
+    methodological_quality = DimensionScore(
+        dimension_name=DIMENSION_METHODOLOGICAL_QUALITY,
+        score=float(methodological_quality_score),
+        details=dimension_details[DIMENSION_METHODOLOGICAL_QUALITY]
+    )
+
+    risk_of_bias = DimensionScore(
+        dimension_name=DIMENSION_RISK_OF_BIAS,
+        score=float(risk_of_bias_score),
+        details=dimension_details[DIMENSION_RISK_OF_BIAS]
+    )
+
+    replication_status = DimensionScore(
+        dimension_name=DIMENSION_REPLICATION_STATUS,
+        score=float(replication_status_score),
+        details=dimension_details[DIMENSION_REPLICATION_STATUS]
+    )
+
+    # Create result
+    return PaperWeightResult(
+        document_id=document_id,
+        assessor_version=assessor_version,
+        assessed_at=assessed_at,
+        study_design=study_design,
+        sample_size=sample_size_dim,
+        methodological_quality=methodological_quality,
+        risk_of_bias=risk_of_bias,
+        replication_status=replication_status,
+        final_weight=float(final_weight),
+        dimension_weights=dimension_weights,
+        study_type=study_type,
+        sample_size_n=sample_size_n
+    )
+
+
+def store_assessment(
+    result: PaperWeightResult,
+    conn_factory: Optional[Callable] = None
+) -> None:
+    """
+    Store assessment in database with full audit trail.
+
+    Inserts into both paper_weights.assessments and paper_weights.assessment_details.
+    Uses ON CONFLICT to handle re-assessments with same version.
+
+    Args:
+        result: PaperWeightResult to store
+        conn_factory: Optional factory function to create database connection
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                # Insert/update assessment
+                cur.execute("""
+                    INSERT INTO paper_weights.assessments (
+                        document_id,
+                        assessor_version,
+                        assessed_at,
+                        study_design_score,
+                        sample_size_score,
+                        methodological_quality_score,
+                        risk_of_bias_score,
+                        replication_status_score,
+                        final_weight,
+                        dimension_weights,
+                        study_type,
+                        sample_size
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (document_id, assessor_version)
+                    DO UPDATE SET
+                        assessed_at = EXCLUDED.assessed_at,
+                        study_design_score = EXCLUDED.study_design_score,
+                        sample_size_score = EXCLUDED.sample_size_score,
+                        methodological_quality_score = EXCLUDED.methodological_quality_score,
+                        risk_of_bias_score = EXCLUDED.risk_of_bias_score,
+                        replication_status_score = EXCLUDED.replication_status_score,
+                        final_weight = EXCLUDED.final_weight,
+                        dimension_weights = EXCLUDED.dimension_weights,
+                        study_type = EXCLUDED.study_type,
+                        sample_size = EXCLUDED.sample_size
+                    RETURNING assessment_id
+                """, (
+                    result.document_id,
+                    result.assessor_version,
+                    result.assessed_at,
+                    result.study_design.score,
+                    result.sample_size.score,
+                    result.methodological_quality.score,
+                    result.risk_of_bias.score,
+                    result.replication_status.score,
+                    result.final_weight,
+                    json.dumps(result.dimension_weights),
+                    result.study_type,
+                    result.sample_size_n
+                ))
+
+                assessment_id = cur.fetchone()[0]
+
+                # Delete old details (if updating)
+                cur.execute("""
+                    DELETE FROM paper_weights.assessment_details
+                    WHERE assessment_id = %s
+                """, (assessment_id,))
+
+                # Insert new details
+                all_details = result.get_all_details()
+                for detail in all_details:
+                    cur.execute("""
+                        INSERT INTO paper_weights.assessment_details (
+                            assessment_id,
+                            dimension,
+                            component,
+                            extracted_value,
+                            score_contribution,
+                            evidence_text,
+                            reasoning
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        assessment_id,
+                        detail.dimension,
+                        detail.component,
+                        detail.extracted_value,
+                        detail.score_contribution,
+                        detail.evidence_text,
+                        detail.reasoning
+                    ))
+
+                conn.commit()
+
+    except Exception as e:
+        logger.error(f"Error storing assessment: {e}")
+        raise
+
+
+def get_document(
+    document_id: int,
+    conn_factory: Optional[Callable] = None
+) -> dict:
+    """
+    Fetch document from database by ID.
+
+    Args:
+        document_id: Database ID of document
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        Document dict with title, abstract, and full_text fields
+
+    Raises:
+        ValueError: If document not found
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id,
+                        title,
+                        abstract,
+                        full_text
+                    FROM public.document
+                    WHERE id = %s
+                """, (document_id,))
+
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"Document {document_id} not found")
+
+                return {
+                    'id': row[0],
+                    'title': row[1],
+                    'abstract': row[2],
+                    'full_text': row[3]
+                }
+
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching document {document_id}: {e}")
+        raise
+
+
+def check_replication_status(
+    document_id: int,
+    conn_factory: Optional[Callable] = None
+) -> DimensionScore:
+    """
+    Check replication status from database.
+
+    Queries paper_weights.replications table for this document.
+    Initially manual entry only - automated discovery is future work.
+
+    Args:
+        document_id: Database ID of document
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        DimensionScore for replication status
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                # Check for replications
+                cur.execute("""
+                    SELECT
+                        replication_id,
+                        replication_type,
+                        quality_comparison,
+                        confidence
+                    FROM paper_weights.replications
+                    WHERE source_document_id = %s
+                    AND replication_type = 'confirms'
+                """, (document_id,))
+
+                replications = cur.fetchall()
+
+                if not replications:
+                    # No replications found
+                    dimension_score = DimensionScore(
+                        dimension_name=DIMENSION_REPLICATION_STATUS,
+                        score=0.0
+                    )
+                    dimension_score.add_detail(
+                        component='replication_count',
+                        value='0',
+                        contribution=0.0,
+                        reasoning='No confirming replications found in database'
+                    )
+                    return dimension_score
+
+                # Calculate score based on replications
+                replication_count = len(replications)
+                quality_comparison = replications[0][2]  # First replication quality
+
+                # Scoring logic
+                score = _calculate_replication_score(replication_count, quality_comparison)
+
+                dimension_score = DimensionScore(
+                    dimension_name=DIMENSION_REPLICATION_STATUS,
+                    score=score
+                )
+
+                dimension_score.add_detail(
+                    component='replication_count',
+                    value=str(replication_count),
+                    contribution=score,
+                    reasoning=f'{replication_count} confirming replications found (quality: {quality_comparison})'
+                )
+
+                return dimension_score
+
+    except Exception as e:
+        logger.error(f"Error checking replication status: {e}")
+
+        # Return zero score on error
+        dimension_score = DimensionScore(
+            dimension_name=DIMENSION_REPLICATION_STATUS,
+            score=0.0
+        )
+        dimension_score.add_detail(
+            component='error',
+            value='query_failed',
+            contribution=0.0,
+            reasoning=f'Database query failed: {str(e)}'
+        )
+        return dimension_score
+
+
+def _calculate_replication_score(replication_count: int, quality_comparison: str) -> float:
+    """
+    Calculate replication status score based on count and quality.
+
+    Scoring rubric:
+    - Single replication of comparable quality: 5.0
+    - Single replication of higher quality: 8.0
+    - Multiple (2+) replications of comparable quality: 8.0
+    - Multiple (2+) replications of higher quality: 10.0
+    - Lower quality replications: 3.0
+
+    Args:
+        replication_count: Number of confirming replications
+        quality_comparison: Quality comparison ('higher', 'comparable', 'lower')
+
+    Returns:
+        Score (0-10)
+    """
+    if replication_count == 1 and quality_comparison == 'comparable':
+        return REPLICATION_SCORE_SINGLE_COMPARABLE
+    elif replication_count == 1 and quality_comparison == 'higher':
+        return REPLICATION_SCORE_SINGLE_HIGHER
+    elif replication_count >= 2 and quality_comparison == 'comparable':
+        return REPLICATION_SCORE_MULTIPLE_COMPARABLE
+    elif replication_count >= 2 and quality_comparison == 'higher':
+        return REPLICATION_SCORE_MULTIPLE_HIGHER
+    else:
+        return REPLICATION_SCORE_LOWER_QUALITY
+
+
+__all__ = [
+    'get_default_db_connection',
+    'get_cached_assessment',
+    'store_assessment',
+    'get_document',
+    'check_replication_status',
+]
