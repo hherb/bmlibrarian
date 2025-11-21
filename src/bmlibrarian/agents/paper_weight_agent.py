@@ -14,6 +14,10 @@ from typing import Optional, List, Dict
 from datetime import datetime
 import json
 
+# Constants for formatting and display
+EVIDENCE_TRUNCATION_LENGTH = 100  # Max characters for evidence text in markdown output
+DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'  # Standard datetime format for reports
+
 
 @dataclass
 class AssessmentDetail:
@@ -241,7 +245,7 @@ class PaperWeightResult:
             f"**Document ID:** {self.document_id}",
             f"**Study Type:** {self.study_type or 'Unknown'}",
             f"**Sample Size:** {self.sample_size_n or 'Not extracted'}",
-            f"**Assessed:** {self.assessed_at.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Assessed:** {self.assessed_at.strftime(DATETIME_FORMAT)}",
             f"**Assessor Version:** {self.assessor_version}",
             f"",
             f"## Final Weight: {self.final_weight:.2f}/10",
@@ -270,8 +274,8 @@ class PaperWeightResult:
                     if detail.evidence_text:
                         # Truncate evidence text if too long
                         evidence = detail.evidence_text
-                        if len(evidence) > 100:
-                            evidence = evidence[:100] + "..."
+                        if len(evidence) > EVIDENCE_TRUNCATION_LENGTH:
+                            evidence = evidence[:EVIDENCE_TRUNCATION_LENGTH] + "..."
                         lines.append(f"  - Evidence: *\"{evidence}\"*")
                     lines.append("")
             else:
