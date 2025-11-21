@@ -7,11 +7,19 @@ multi-strategy search (semantic, HyDE, keyword), document scoring, citation
 extraction, and evidence synthesis to generate verdicts on research claims.
 
 Main components:
+    - PaperCheckerAgent: Main agent orchestrating the fact-checking workflow
     - Data models: Type-safe dataclasses for the entire workflow
-    - Agent: PaperCheckerAgent orchestrating the fact-checking process
     - Database: PostgreSQL schema for storing results
-    - CLI: Batch processing interface
-    - Lab: Interactive testing interface
+    - Components: Sub-components for each workflow step
+
+Example:
+    >>> from bmlibrarian.paperchecker import PaperCheckerAgent
+    >>> agent = PaperCheckerAgent()
+    >>> result = agent.check_abstract(
+    ...     abstract="Metformin shows superior efficacy...",
+    ...     source_metadata={"pmid": 12345678}
+    ... )
+    >>> print(result.overall_assessment)
 """
 
 from .data_models import (
@@ -39,7 +47,29 @@ from .data_models import (
     DEFAULT_DOCUMENTS_SCORED,
 )
 
+from .agent import PaperCheckerAgent
+
+from .database import PaperCheckDB
+
+from .components import (
+    StatementExtractor,
+    CounterStatementGenerator,
+    HyDEGenerator,
+    SearchCoordinator,
+    VerdictAnalyzer,
+)
+
 __all__ = [
+    # Main Agent
+    "PaperCheckerAgent",
+    # Database
+    "PaperCheckDB",
+    # Components
+    "StatementExtractor",
+    "CounterStatementGenerator",
+    "HyDEGenerator",
+    "SearchCoordinator",
+    "VerdictAnalyzer",
     # Data models
     "Statement",
     "CounterStatement",
