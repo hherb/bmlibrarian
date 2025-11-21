@@ -485,33 +485,93 @@ class PaperCheckerAgent(BaseAgent):
         """
         Step 1: Extract core statements from abstract.
 
+        Uses the StatementExtractor component to analyze the abstract and
+        identify the most important research claims, hypotheses, and conclusions.
+
         Args:
             abstract: The abstract text to extract statements from
 
         Returns:
             List of Statement objects extracted from the abstract
 
-        Note:
-            Full implementation in Step 04 (04_STATEMENT_EXTRACTION.md)
+        Raises:
+            ValueError: If abstract is invalid or too short
+            RuntimeError: If extraction fails
         """
-        raise NotImplementedError("Implemented in Step 04")
+        logger.info(f"Extracting statements from abstract ({len(abstract)} chars)")
+
+        try:
+            statements = self.statement_extractor.extract(abstract)
+            logger.info(f"Extracted {len(statements)} statements")
+            return statements
+
+        except Exception as e:
+            logger.error(f"Statement extraction failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to extract statements: {e}") from e
 
     def _generate_counter_statements(
         self, statements: List[Statement]
     ) -> List[CounterStatement]:
         """
-        Step 2: Generate counter-statements for each statement.
+        Step 2: Generate counter-statements for all extracted statements.
+
+        For each statement, generates:
+        - Semantically precise negation
+        - HyDE abstracts that would support the counter-claim
+        - Keywords for literature search
 
         Args:
-            statements: List of statements to generate counters for
+            statements: List of extracted Statement objects
 
         Returns:
             List of CounterStatement objects with search materials
 
-        Note:
-            Full implementation in Step 05 (05_COUNTER_STATEMENT_GENERATION.md)
+        Raises:
+            RuntimeError: If counter-statement generation fails
         """
-        raise NotImplementedError("Implemented in Step 05")
+        counter_statements = []
+
+        for i, statement in enumerate(statements, 1):
+            logger.info(f"Generating counter-statement {i}/{len(statements)}")
+
+            try:
+                # Generate negation using CounterStatementGenerator
+                negated_text = self.counter_generator.generate(statement)
+
+                # Generate HyDE materials using HyDEGenerator
+                hyde_materials = self.hyde_generator.generate(statement, negated_text)
+
+                # Create CounterStatement object
+                counter_stmt = CounterStatement(
+                    original_statement=statement,
+                    negated_text=negated_text,
+                    hyde_abstracts=hyde_materials["hyde_abstracts"],
+                    keywords=hyde_materials["keywords"],
+                    generation_metadata={
+                        "model": self.model,
+                        "temperature": self.agent_config.get("temperature", DEFAULT_TEMPERATURE),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+
+                counter_statements.append(counter_stmt)
+
+                logger.info(
+                    f"Counter-statement generated: {negated_text[:50]}... "
+                    f"({len(hyde_materials['hyde_abstracts'])} HyDE abstracts, "
+                    f"{len(hyde_materials['keywords'])} keywords)"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to generate counter-statement for statement {i}: {e}",
+                    exc_info=True
+                )
+                raise RuntimeError(
+                    f"Counter-statement generation failed for statement {i}: {e}"
+                ) from e
+
+        return counter_statements
 
     def _search_counter_evidence(
         self, counter_stmt: CounterStatement
