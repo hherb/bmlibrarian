@@ -687,8 +687,8 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 - **Security**: Audit trail via export_history, encrypted distribution recommended
 
 **Documentation**:
-- Quick Start Guide: `FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`
-- Implementation Plan: `FACT_CHECKER_DISTRIBUTION_PLAN.md`
+- Quick Start Guide: `doc/users/FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`
+- Implementation Plan: `doc/developers/FACT_CHECKER_DISTRIBUTION_PLAN.md`
 - User Guide: `doc/users/fact_checker_distribution_guide.md` (if exists)
 
 **Architecture**:
@@ -752,7 +752,7 @@ uv run python fact_checker_stats.py --export-csv stats_output/ --plot
 - Landis & Koch (1977) interpretation scale for kappa values
 
 **Documentation**:
-- Complete guide: `FACT_CHECKER_STATS_GUIDE.md`
+- Complete guide: `doc/users/FACT_CHECKER_STATS_GUIDE.md`
 - Statistical methods and interpretation guidelines included
 - Example output with real-world interpretation
 
