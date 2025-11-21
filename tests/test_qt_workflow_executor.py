@@ -9,15 +9,34 @@ from unittest.mock import Mock, patch, MagicMock, call
 import sys
 from pathlib import Path
 
+import pytest
+
 # Ensure src is in path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtTest import QSignalSpy
+# Try to import Qt - skip tests if Qt libraries not available
+try:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt, Signal, QObject
+    from PySide6.QtTest import QSignalSpy
+    PYSIDE6_AVAILABLE = True
+except ImportError:
+    PYSIDE6_AVAILABLE = False
+    QApplication = None
+    Signal = None
+    QSignalSpy = None
 
-# Import the class to test
-from bmlibrarian.gui.qt.plugins.research.workflow_executor import QtWorkflowExecutor
+# Skip all tests in this module if PySide6 is not available
+pytestmark = pytest.mark.skipif(
+    not PYSIDE6_AVAILABLE,
+    reason="PySide6 not available or Qt libraries missing"
+)
+
+# Import the class to test (only if PySide6 available)
+if PYSIDE6_AVAILABLE:
+    from bmlibrarian.gui.qt.plugins.research.workflow_executor import QtWorkflowExecutor
+else:
+    QtWorkflowExecutor = None
 
 
 class TestQtWorkflowExecutor(unittest.TestCase):
