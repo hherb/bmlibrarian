@@ -10,7 +10,7 @@ from datetime import datetime
 import flet as ft
 from typing import TYPE_CHECKING, Optional, Callable, Any
 from .components import StepCard
-from ..cli.workflow_steps import WorkflowStep
+from ...cli.workflow_steps import WorkflowStep
 
 if TYPE_CHECKING:
     from .research_app import ResearchGUI

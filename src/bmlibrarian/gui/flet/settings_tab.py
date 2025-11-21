@@ -8,7 +8,7 @@ as a nested tab interface within a single Settings tab.
 import flet as ft
 from typing import TYPE_CHECKING, Optional
 
-from ..config import get_config
+from ...config import get_config
 from .tabs import GeneralSettingsTab, AgentConfigTab, SearchSettingsTab
 
 if TYPE_CHECKING:
