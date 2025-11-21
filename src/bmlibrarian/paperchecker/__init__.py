@@ -49,17 +49,17 @@ from .data_models import (
     DEFAULT_DOCUMENTS_SCORED,
 )
 
-from .components import StatementExtractor
 from .agent import PaperCheckerAgent
 
 from .database import PaperCheckDB
 
 from .components import (
     StatementExtractor,
-    CounterStatementGenerator,
-    HyDEGenerator,
-    SearchCoordinator,
-    VerdictAnalyzer,
+# STILL TO BE IMPLEMENTED - uncomment once done
+#    CounterStatementGenerator,
+#    HyDEGenerator,
+#    SearchCoordinator,
+#    VerdictAnalyzer,
 )
 
 __all__ = [
