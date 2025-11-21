@@ -11,7 +11,7 @@ Create a PostgreSQL migration script to add the `paper_weights` schema with all 
 ## Implementation Details
 
 ### File to Create
-- `migrations/add_paper_weight_schema.sql`
+- `migrations/011_add_paper_weight_schema.sql`
 
 ### Schema Components
 
