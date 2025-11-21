@@ -11,9 +11,10 @@ categorizing them as hypotheses, findings, or conclusions.
 import json
 import logging
 import re
-from typing import List
+import time
+from typing import Any, Dict, List
 
-import requests
+import ollama
 
 from ..data_models import Statement, VALID_STATEMENT_TYPES
 
@@ -23,8 +24,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STATEMENTS: int = 2
 DEFAULT_TEMPERATURE: float = 0.3
 DEFAULT_OLLAMA_URL: str = "http://localhost:11434"
-DEFAULT_TIMEOUT_SECONDS: int = 120
+DEFAULT_CONNECTION_TEST_TIMEOUT_SECONDS: int = 10
 MIN_ABSTRACT_LENGTH: int = 50
+DEFAULT_CONFIDENCE: float = 0.5
+DEFAULT_MAX_RETRIES: int = 3
+DEFAULT_RETRY_DELAY_SECONDS: float = 1.0
 
 
 class StatementExtractor:
@@ -38,8 +42,8 @@ class StatementExtractor:
         model: Ollama model name to use for extraction
         max_statements: Maximum number of statements to extract
         temperature: LLM temperature (lower = more deterministic)
-        ollama_url: Ollama server URL
-        timeout: Request timeout in seconds
+        host: Ollama server URL
+        client: Ollama client instance
     """
 
     def __init__(
@@ -47,8 +51,7 @@ class StatementExtractor:
         model: str,
         max_statements: int = DEFAULT_MAX_STATEMENTS,
         temperature: float = DEFAULT_TEMPERATURE,
-        ollama_url: str = DEFAULT_OLLAMA_URL,
-        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        host: str = DEFAULT_OLLAMA_URL,
     ):
         """
         Initialize StatementExtractor.
@@ -57,14 +60,13 @@ class StatementExtractor:
             model: Ollama model name (e.g., "gpt-oss:20b")
             max_statements: Maximum statements to extract (default: 2)
             temperature: LLM temperature (lower = more deterministic)
-            ollama_url: Ollama server URL
-            timeout: Request timeout in seconds
+            host: Ollama server URL
         """
         self.model = model
         self.max_statements = max_statements
         self.temperature = temperature
-        self.ollama_url = ollama_url.rstrip("/")
-        self.timeout = timeout
+        self.host = host.rstrip("/")
+        self.client = ollama.Client(host=self.host)
 
     def extract(self, abstract: str) -> List[Statement]:
         """
@@ -166,45 +168,110 @@ Return ONLY valid JSON in this exact format (no additional text, no markdown cod
 
 Extract exactly {self.max_statements} statements. Return ONLY the JSON, nothing else."""
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(
+        self,
+        prompt: str,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY_SECONDS,
+    ) -> str:
         """
-        Call Ollama API with prompt.
+        Call Ollama API with prompt using the ollama library.
 
         Args:
             prompt: The prompt to send to the LLM
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Initial delay between retries in seconds (default: 1.0)
 
         Returns:
             LLM response text
 
         Raises:
-            RuntimeError: If API call fails
+            RuntimeError: If API call fails after all retries
         """
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "temperature": self.temperature,
-                    "stream": False,
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("response", "")
+        last_exception: Exception | None = None
+        current_delay = retry_delay
 
-        except requests.exceptions.Timeout:
-            logger.error(f"Ollama API call timed out after {self.timeout}s")
-            raise RuntimeError(f"LLM call timed out after {self.timeout} seconds")
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Failed to connect to Ollama at {self.ollama_url}: {e}")
-            raise RuntimeError(
-                f"Failed to connect to Ollama server at {self.ollama_url}"
-            ) from e
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama API call failed: {e}")
-            raise RuntimeError(f"LLM call failed: {e}") from e
+        for attempt in range(max_retries):
+            start_time = time.time()
+
+            log_msg = f"Ollama request to {self.model}"
+            if attempt > 0:
+                log_msg += f" (retry {attempt}/{max_retries - 1})"
+            logger.info(log_msg)
+
+            try:
+                response = self.client.chat(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={
+                        "temperature": self.temperature,
+                    },
+                )
+
+                content = response.get("message", {}).get("content", "")
+                if not content or not content.strip():
+                    raise ValueError("Empty response from model")
+
+                response_time = (time.time() - start_time) * 1000
+                logger.info(f"Ollama response received in {response_time:.2f}ms")
+                return content.strip()
+
+            except ollama.ResponseError as e:
+                last_exception = e
+                response_time = (time.time() - start_time) * 1000
+
+                is_retryable = (
+                    "timeout" in str(e).lower() or "connection" in str(e).lower()
+                )
+
+                if attempt < max_retries - 1 and is_retryable:
+                    logger.warning(
+                        f"Transient error in Ollama request after {response_time:.2f}ms, "
+                        f"retrying in {current_delay:.1f}s: {e}"
+                    )
+                    time.sleep(current_delay)
+                    current_delay *= 2
+                else:
+                    logger.error(
+                        f"Ollama request failed after {response_time:.2f}ms "
+                        f"(attempt {attempt + 1}/{max_retries}): {e}"
+                    )
+
+            except ValueError as e:
+                # Empty response - retry
+                last_exception = e
+                response_time = (time.time() - start_time) * 1000
+
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Empty response after {response_time:.2f}ms, "
+                        f"retrying in {current_delay:.1f}s"
+                    )
+                    time.sleep(current_delay)
+                    current_delay *= 2
+                else:
+                    logger.error(f"Empty response after {max_retries} attempts")
+
+            except Exception as e:
+                last_exception = e
+                response_time = (time.time() - start_time) * 1000
+                logger.error(
+                    f"Unexpected error in Ollama request after {response_time:.2f}ms: {e}"
+                )
+
+                # Check for connection-related errors
+                error_str = str(e).lower()
+                if "connection" in error_str or "refused" in error_str:
+                    raise RuntimeError(
+                        f"Failed to connect to Ollama server at {self.host}"
+                    ) from e
+                raise RuntimeError(f"LLM call failed: {e}") from e
+
+        # All retries exhausted
+        raise RuntimeError(
+            f"Failed to get response from Ollama after {max_retries} attempts: "
+            f"{last_exception}"
+        )
 
     def _parse_response(self, response: str) -> List[Statement]:
         """
@@ -297,7 +364,7 @@ Extract exactly {self.max_statements} statements. Return ONLY the JSON, nothing 
         return response
 
     def _parse_single_statement(
-        self, stmt_data: dict, order: int
+        self, stmt_data: Dict[str, Any], order: int
     ) -> Statement | None:
         """
         Parse a single statement from the response data.
@@ -338,9 +405,10 @@ Extract exactly {self.max_statements} statements. Return ONLY the JSON, nothing 
                 confidence = max(0.0, min(1.0, confidence))
         except (ValueError, TypeError):
             logger.warning(
-                f"Statement {order} has non-numeric confidence, defaulting to 0.5"
+                f"Statement {order} has non-numeric confidence, "
+                f"defaulting to {DEFAULT_CONFIDENCE}"
             )
-            confidence = 0.5
+            confidence = DEFAULT_CONFIDENCE
 
         # Extract text and context
         text = stmt_data["text"].strip()
@@ -408,10 +476,8 @@ Extract exactly {self.max_statements} statements. Return ONLY the JSON, nothing 
             True if connection successful, False otherwise
         """
         try:
-            response = requests.get(
-                f"{self.ollama_url}/api/tags",
-                timeout=10,
-            )
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
+            # Use ollama library to list models - this tests connectivity
+            self.client.list()
+            return True
+        except Exception:
             return False

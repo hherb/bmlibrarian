@@ -8,7 +8,9 @@ optionally run against a real Ollama server.
 
 import json
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
+
+import ollama
 
 from bmlibrarian.paperchecker.components import StatementExtractor
 from bmlibrarian.paperchecker.data_models import Statement, VALID_STATEMENT_TYPES
@@ -201,6 +203,14 @@ I hope this helps!"""
             with pytest.raises(ValueError, match="No valid statements"):
                 extractor.extract(sample_abstract)
 
+    def test_parse_response_statements_not_list(self, extractor, sample_abstract):
+        """Test parsing fails when statements is not a list."""
+        invalid_response = json.dumps({"statements": "not a list"})
+
+        with patch.object(extractor, "_call_llm", return_value=invalid_response):
+            with pytest.raises(ValueError, match="must be a list"):
+                extractor.extract(sample_abstract)
+
 
 # Unit Tests - Statement Validation
 
@@ -232,15 +242,15 @@ class TestStatementValidation:
             orders = [s.statement_order for s in statements]
             assert orders == list(range(1, len(statements) + 1))
 
-    def test_confidence_clamping(self, extractor, sample_abstract):
-        """Test that out-of-range confidence is clamped."""
+    def test_confidence_clamping_high(self, extractor, sample_abstract):
+        """Test that confidence > 1.0 is clamped to 1.0."""
         response = json.dumps({
             "statements": [
                 {
                     "text": "Test statement",
                     "context": "Context",
                     "statement_type": "finding",
-                    "confidence": 1.5,  # Out of range
+                    "confidence": 1.5,  # Out of range (too high)
                 }
             ]
         })
@@ -248,6 +258,40 @@ class TestStatementValidation:
         with patch.object(extractor, "_call_llm", return_value=response):
             statements = extractor.extract(sample_abstract)
             assert statements[0].confidence == 1.0  # Should be clamped
+
+    def test_confidence_clamping_low(self, extractor, sample_abstract):
+        """Test that confidence < 0.0 is clamped to 0.0."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "Test statement",
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": -0.5,  # Out of range (negative)
+                }
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert statements[0].confidence == 0.0  # Should be clamped
+
+    def test_non_numeric_confidence_defaults(self, extractor, sample_abstract):
+        """Test that non-numeric confidence defaults to 0.5."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "Test statement",
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": "high",  # Non-numeric
+                }
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert statements[0].confidence == 0.5  # Default value
 
     def test_statement_type_normalization(self, extractor, sample_abstract):
         """Test that statement types are normalized."""
@@ -296,6 +340,96 @@ class TestStatementValidation:
             # Only valid statement should be returned
             assert len(statements) == 1
             assert statements[0].text == "Valid statement"
+
+    def test_empty_text_skipped(self, extractor, sample_abstract):
+        """Test that statements with empty text are skipped."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "",  # Empty text
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                },
+                {
+                    "text": "Valid statement",
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                },
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert len(statements) == 1
+            assert statements[0].text == "Valid statement"
+
+    def test_whitespace_only_text_skipped(self, extractor, sample_abstract):
+        """Test that statements with whitespace-only text are skipped."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "   \n\t   ",  # Whitespace only
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                },
+                {
+                    "text": "Valid statement",
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                },
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert len(statements) == 1
+            assert statements[0].text == "Valid statement"
+
+    def test_unrecognized_statement_type_skipped(self, extractor, sample_abstract):
+        """Test that statements with unrecognized types are skipped."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "Statement with unknown type",
+                    "context": "Context",
+                    "statement_type": "unknown_type",  # Invalid type
+                    "confidence": 0.8,
+                },
+                {
+                    "text": "Valid statement",
+                    "context": "Context",
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                },
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert len(statements) == 1
+            assert statements[0].text == "Valid statement"
+
+    def test_missing_context_defaults_to_empty(self, extractor, sample_abstract):
+        """Test that missing context field defaults to empty string."""
+        response = json.dumps({
+            "statements": [
+                {
+                    "text": "Statement without context",
+                    # context is missing
+                    "statement_type": "finding",
+                    "confidence": 0.8,
+                }
+            ]
+        })
+
+        with patch.object(extractor, "_call_llm", return_value=response):
+            statements = extractor.extract(sample_abstract)
+            assert len(statements) == 1
+            assert statements[0].context == ""
 
 
 # Unit Tests - Max Statements Limit
@@ -350,23 +484,20 @@ class TestConnectionTesting:
 
     def test_connection_success(self, extractor):
         """Test successful connection check."""
-        mock_response = Mock()
-        mock_response.status_code = 200
+        mock_client = MagicMock()
+        mock_client.list.return_value = {"models": []}
+        extractor.client = mock_client
 
-        with patch(
-            "bmlibrarian.paperchecker.components.statement_extractor.requests.get",
-            return_value=mock_response,
-        ):
-            assert extractor.test_connection() is True
+        assert extractor.test_connection() is True
+        mock_client.list.assert_called_once()
 
     def test_connection_failure(self, extractor):
         """Test failed connection check."""
-        import requests
-        with patch(
-            "bmlibrarian.paperchecker.components.statement_extractor.requests.get",
-            side_effect=requests.exceptions.ConnectionError("Connection refused"),
-        ):
-            assert extractor.test_connection() is False
+        mock_client = MagicMock()
+        mock_client.list.side_effect = Exception("Connection refused")
+        extractor.client = mock_client
+
+        assert extractor.test_connection() is False
 
 
 # Unit Tests - Error Handling
@@ -377,8 +508,6 @@ class TestErrorHandling:
 
     def test_llm_timeout(self, extractor, sample_abstract):
         """Test handling of LLM timeout."""
-        import requests
-
         with patch.object(
             extractor,
             "_call_llm",
@@ -389,8 +518,6 @@ class TestErrorHandling:
 
     def test_llm_connection_error(self, extractor, sample_abstract):
         """Test handling of connection error."""
-        import requests
-
         with patch.object(
             extractor,
             "_call_llm",
@@ -398,6 +525,46 @@ class TestErrorHandling:
         ):
             with pytest.raises(RuntimeError, match="connect"):
                 extractor.extract(sample_abstract)
+
+    def test_llm_ollama_response_error(self, extractor, sample_abstract):
+        """Test handling of Ollama ResponseError."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = ollama.ResponseError("Model not found")
+        extractor.client = mock_client
+
+        with pytest.raises(RuntimeError, match="Failed to get response"):
+            extractor.extract(sample_abstract)
+
+    def test_llm_connection_error_actual(self, extractor, sample_abstract):
+        """Test actual connection error handling in _call_llm."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = Exception("Connection refused")
+        extractor.client = mock_client
+
+        with pytest.raises(RuntimeError, match="Failed to connect"):
+            extractor.extract(sample_abstract)
+
+    def test_llm_empty_response_retries(self, extractor, sample_abstract):
+        """Test that empty responses trigger retries."""
+        mock_client = MagicMock()
+        # Return empty response all 3 times (max_retries=3)
+        mock_client.chat.return_value = {"message": {"content": ""}}
+        extractor.client = mock_client
+
+        with pytest.raises(RuntimeError, match="Failed to get response"):
+            extractor.extract(sample_abstract)
+
+        # Should have been called 3 times (initial + 2 retries)
+        assert mock_client.chat.call_count == 3
+
+    def test_llm_generic_error(self, extractor, sample_abstract):
+        """Test handling of generic unexpected errors."""
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = Exception("Unexpected error occurred")
+        extractor.client = mock_client
+
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            extractor.extract(sample_abstract)
 
 
 # Integration Tests - These require a running Ollama server
