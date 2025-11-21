@@ -75,6 +75,16 @@ The expandable tree view shows:
 - Extracted values and evidence text
 - LLM reasoning (where applicable)
 
+#### Accessing Full Text
+
+No information is hidden by truncation. To view complete text:
+
+1. **Tooltips**: Hover over any cell to see the full untruncated text
+2. **Double-click**: Double-click any row to open a dialog with full details
+3. **Right-click**: Right-click for context menu options:
+   - "Copy Cell Text" - Copy the cell content to clipboard
+   - "View Full Details..." - Open the full text dialog
+
 ### Export Options
 
 - **Export Report (Markdown)**: Generate a human-readable report
