@@ -218,7 +218,7 @@ CREATE TABLE papercheck.search_results (
 
     -- Search provenance using enum type
     search_strategy papercheck.search_strategy NOT NULL,
-    search_rank INTEGER CHECK (search_rank IS NULL OR (search_rank >= 1 AND search_rank <= 1000)),
+    search_rank INTEGER CHECK (search_rank IS NULL OR search_rank >= 1),  -- No upper bound - supports exhaustive searches
     search_score FLOAT CHECK (search_score IS NULL OR search_score >= 0),
 
     -- Metadata
