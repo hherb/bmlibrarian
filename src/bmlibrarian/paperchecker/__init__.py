@@ -55,11 +55,10 @@ from .database import PaperCheckDB
 
 from .components import (
     StatementExtractor,
-# STILL TO BE IMPLEMENTED - uncomment once done
-#    CounterStatementGenerator,
-#    HyDEGenerator,
-#    SearchCoordinator,
-#    VerdictAnalyzer,
+    CounterStatementGenerator,
+    HyDEGenerator,
+    SearchCoordinator,
+    VerdictAnalyzer,
 )
 
 __all__ = [
