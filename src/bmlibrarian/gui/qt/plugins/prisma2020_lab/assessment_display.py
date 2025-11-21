@@ -17,7 +17,7 @@ from PySide6.QtGui import QFont, QColor
 
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from ...resources.styles import StylesheetGenerator, scale_px
-from .constants import SECTION_COLORS, ITEM_LABELS
+from .constants import ITEM_LABELS, SEPARATOR_COLOR
 from .score_utils import (
     get_score_color,
     get_score_text,
@@ -403,7 +403,7 @@ def create_item_row(
     # Add separator line
     separator = QWidget()
     separator.setFixedHeight(1)
-    separator.setStyleSheet("background-color: #E0E0E0;")
+    separator.setStyleSheet(f"background-color: {SEPARATOR_COLOR};")
     layout.addWidget(separator)
 
     return widget

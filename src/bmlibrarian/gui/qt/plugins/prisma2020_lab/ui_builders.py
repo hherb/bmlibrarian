@@ -11,9 +11,8 @@ from typing import Callable, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QLineEdit, QComboBox, QTextEdit, QTabWidget,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QLayout
 )
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIntValidator
 from PySide6.QtPdfWidgets import QPdfView
 
@@ -25,6 +24,7 @@ from .constants import (
     NO_DOCUMENT_LOADED,
     ASSESSMENT_PLACEHOLDER,
     DOC_ID_PLACEHOLDER,
+    LOAD_BUTTON_BG_COLOR, LOAD_BUTTON_HOVER_COLOR,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,8 +182,8 @@ def create_document_input_row(
     components.load_button.setMaximumWidth(scale_px(150))
     components.load_button.setStyleSheet(
         stylesheet_gen.button_stylesheet(
-            bg_color='#43A047',
-            hover_color='#2E7D32'
+            bg_color=LOAD_BUTTON_BG_COLOR,
+            hover_color=LOAD_BUTTON_HOVER_COLOR
         )
     )
 
@@ -398,12 +398,12 @@ def create_status_label(stylesheet_gen: StylesheetGenerator) -> QLabel:
     return status_label
 
 
-def clear_layout(layout: Optional[QVBoxLayout]) -> None:
+def clear_layout(layout: Optional[QLayout]) -> None:
     """
     Recursively clear a layout and delete all child widgets and layouts.
 
     Args:
-        layout: Layout to clear, or None
+        layout: Any QLayout to clear, or None
     """
     if layout is None:
         return

@@ -4,7 +4,6 @@ Pure utility functions for PRISMA 2020 score and compliance color calculations.
 These functions are stateless and can be reused across different UI components.
 """
 
-from typing import Dict
 from functools import lru_cache
 
 from .constants import (
