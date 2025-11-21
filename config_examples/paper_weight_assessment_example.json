@@ -1,0 +1,117 @@
+{
+  "_comment": "Paper Weight Assessment Agent Configuration Example",
+  "_documentation": "See doc/developers/paper_weight_step3_configuration.md for full documentation",
+  "_version_note": "Increment 'version' when methodology changes to trigger re-assessment of cached papers",
+
+  "agents": {
+    "paper_weight_assessment": {
+      "model": "gpt-oss:20b",
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "version": "1.0.0",
+
+      "_dimension_weights_note": "Must sum to 1.0. Controls final weight calculation: final_weight = sum(dimension_score * weight)",
+      "dimension_weights": {
+        "study_design": 0.25,
+        "sample_size": 0.15,
+        "methodological_quality": 0.30,
+        "risk_of_bias": 0.20,
+        "replication_status": 0.10
+      },
+
+      "_study_type_hierarchy_note": "Baseline scores (0-10) for different study types based on evidence hierarchy",
+      "study_type_hierarchy": {
+        "systematic_review": 10.0,
+        "meta_analysis": 10.0,
+        "rct": 8.0,
+        "cohort_prospective": 6.0,
+        "cohort_retrospective": 5.0,
+        "case_control": 4.0,
+        "cross_sectional": 3.0,
+        "case_series": 2.0,
+        "case_report": 1.0
+      },
+
+      "_study_type_keywords_note": "Case-insensitive patterns matched against abstract + methods section",
+      "study_type_keywords": {
+        "systematic_review": [
+          "systematic review",
+          "systematic literature review"
+        ],
+        "meta_analysis": [
+          "meta-analysis",
+          "meta analysis",
+          "pooled analysis"
+        ],
+        "rct": [
+          "randomized controlled trial",
+          "randomised controlled trial",
+          "RCT",
+          "randomized trial",
+          "randomised trial",
+          "random allocation",
+          "randomly assigned"
+        ],
+        "cohort_prospective": [
+          "prospective cohort",
+          "prospective study",
+          "longitudinal cohort"
+        ],
+        "cohort_retrospective": [
+          "retrospective cohort",
+          "retrospective study"
+        ],
+        "case_control": [
+          "case-control",
+          "case control study"
+        ],
+        "cross_sectional": [
+          "cross-sectional",
+          "cross sectional study",
+          "prevalence study"
+        ],
+        "case_series": [
+          "case series",
+          "case-series"
+        ],
+        "case_report": [
+          "case report",
+          "case study"
+        ]
+      },
+
+      "_sample_size_scoring_note": "Formula: min(10, log10(n) * log_multiplier) + bonuses. Examples: n=100 -> 4.0, n=1000 -> 6.0, n=10000 -> 8.0",
+      "sample_size_scoring": {
+        "log_base": 10,
+        "log_multiplier": 2.0,
+        "power_calculation_bonus": 2.0,
+        "ci_reported_bonus": 0.5
+      },
+
+      "_methodological_quality_note": "Must sum to 10.0. LLM assesses each component based on paper content.",
+      "methodological_quality_weights": {
+        "randomization": 2.0,
+        "blinding": 3.0,
+        "allocation_concealment": 1.5,
+        "protocol_preregistration": 1.5,
+        "itt_analysis": 1.0,
+        "attrition_handling": 1.0
+      },
+
+      "_risk_of_bias_note": "Must sum to 10.0. Inverted scale: 10=low risk (good), 0=high risk (bad)",
+      "risk_of_bias_weights": {
+        "selection_bias": 2.5,
+        "performance_bias": 2.5,
+        "detection_bias": 2.5,
+        "reporting_bias": 2.5
+      },
+
+      "_attrition_thresholds_note": "Dropout rate quality levels as proportions (0.0-1.0). Must be in ascending order.",
+      "attrition_thresholds": {
+        "excellent": 0.05,
+        "good": 0.10,
+        "acceptable": 0.20
+      }
+    }
+  }
+}
