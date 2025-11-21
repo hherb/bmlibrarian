@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
 
 from PySide6.QtWidgets import QWidget, QMessageBox, QFileDialog
 
@@ -81,7 +81,7 @@ def show_save_success(
     content: str,
     file_type: str = "Report",
     logger: Optional[logging.Logger] = None,
-    status_callback: Optional[callable] = None
+    status_callback: Optional[Callable[[str], None]] = None
 ) -> None:
     """
     Show a standardized success message for file saves.
@@ -151,7 +151,7 @@ def save_markdown_report(
     parent: QWidget,
     report_content: str,
     logger: Optional[logging.Logger] = None,
-    status_callback: Optional[callable] = None
+    status_callback: Optional[Callable[[str], None]] = None
 ) -> bool:
     """
     Save a markdown report to file with user dialog.
@@ -209,7 +209,7 @@ def export_json_report(
     results: dict,
     report_content: str,
     logger: Optional[logging.Logger] = None,
-    status_callback: Optional[callable] = None
+    status_callback: Optional[Callable[[str], None]] = None
 ) -> bool:
     """
     Export research results to JSON file with user dialog.

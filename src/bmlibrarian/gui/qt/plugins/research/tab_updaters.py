@@ -7,7 +7,7 @@ analysis results.
 """
 
 import logging
-from typing import Optional, Any
+from typing import Optional, Any, List, Tuple, Protocol, Union
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QFrame,
+    QLayout,
 )
 from PySide6.QtCore import Qt
 
@@ -22,7 +23,15 @@ from .constants import UIConstants, StyleSheets
 from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
 
 
-def clear_layout_widgets(layout: QVBoxLayout) -> None:
+class CardFactoryProtocol(Protocol):
+    """Protocol defining the interface for document card factories."""
+
+    def create_card(self, card_data: DocumentCardData) -> QWidget:
+        """Create a document card from card data."""
+        ...
+
+
+def clear_layout_widgets(layout: Union[QVBoxLayout, QHBoxLayout, QLayout]) -> None:
     """
     Safely clear all widgets from a layout with proper cleanup.
 
@@ -138,10 +147,13 @@ def add_reasoning_section(
         return
 
     reasoning_container = QFrame()
-    reasoning_container.setStyleSheet(StyleSheets.reasoning_box())
+    reasoning_container.setStyleSheet(StyleSheets.reasoning_box(ui))
     reasoning_layout = QVBoxLayout(reasoning_container)
-    reasoning_layout.setContentsMargins(8, 8, 8, 8)
-    reasoning_layout.setSpacing(5)
+    reasoning_layout.setContentsMargins(
+        ui.CARD_PADDING, ui.CARD_PADDING,
+        ui.CARD_PADDING, ui.CARD_PADDING
+    )
+    reasoning_layout.setSpacing(ui.CARD_INTERNAL_SPACING)
 
     reasoning_title = QLabel("<b>AI Reasoning:</b>")
     reasoning_layout.addWidget(reasoning_title)
@@ -157,8 +169,8 @@ def add_reasoning_section(
 
 def populate_unscored_documents(
     layout: QVBoxLayout,
-    documents: list,
-    card_factory: Any,
+    documents: List[dict],
+    card_factory: CardFactoryProtocol,
     ui: UIConstants,
     logger: Optional[logging.Logger] = None
 ) -> int:
@@ -188,7 +200,7 @@ def populate_unscored_documents(
     if not documents:
         # Show empty state
         empty_label = QLabel("No documents to display")
-        empty_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+        empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(empty_label)
         layout.addStretch()
@@ -222,8 +234,8 @@ def populate_unscored_documents(
 
 def update_literature_tab(
     layout: QVBoxLayout,
-    scored_documents: list,
-    card_factory: Any,
+    scored_documents: List[Tuple[dict, dict]],
+    card_factory: CardFactoryProtocol,
     ui: UIConstants,
     logger: Optional[logging.Logger] = None
 ) -> int:
@@ -250,7 +262,7 @@ def update_literature_tab(
     if not scored_documents:
         # Show empty state
         empty_label = QLabel("No documents to display")
-        empty_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+        empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(empty_label)
         layout.addStretch()
@@ -286,7 +298,7 @@ def create_document_score_card(
     index: int,
     doc: dict,
     score_result: dict,
-    card_factory: Any,
+    card_factory: CardFactoryProtocol,
     ui: UIConstants,
     logger: Optional[logging.Logger] = None
 ) -> QWidget:
@@ -336,13 +348,13 @@ def create_document_score_card(
         logger.error(f"Error creating document card using factory: {e}", exc_info=True)
         # Fallback to a simple error card
         error_widget = QLabel(f"Error displaying document: {str(e)}")
-        error_widget.setStyleSheet("color: red; padding: 10px;")
+        error_widget.setStyleSheet(StyleSheets.error_label())
         return error_widget
 
 
 def update_citations_tab(
     layout: QVBoxLayout,
-    citations: list,
+    citations: List[Any],
     ui: UIConstants,
     logger: Optional[logging.Logger] = None
 ) -> int:
@@ -368,7 +380,7 @@ def update_citations_tab(
     if not citations:
         # Show empty state
         empty_label = QLabel("No citations to display")
-        empty_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+        empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(empty_label)
         layout.addStretch()
@@ -398,7 +410,7 @@ def update_counterfactual_tab(
     layout: QVBoxLayout,
     summary_label: QLabel,
     results: dict,
-    card_factory: Any,
+    card_factory: CardFactoryProtocol,
     ui: UIConstants,
     logger: Optional[logging.Logger] = None
 ) -> None:
@@ -430,7 +442,7 @@ def update_counterfactual_tab(
         if question_count == 0:
             # Show message if no questions generated
             no_questions_label = QLabel("No counterfactual questions were generated.")
-            no_questions_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+            no_questions_label.setStyleSheet(StyleSheets.empty_state_label(ui))
             no_questions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(no_questions_label)
             layout.addStretch()
@@ -480,10 +492,10 @@ def _create_counterfactual_question_card(
     """
     card = QFrame()
     card.setFrameShape(QFrame.Shape.StyledPanel)
-    card.setStyleSheet(StyleSheets.counterfactual_card())
+    card.setStyleSheet(StyleSheets.counterfactual_card(ui))
 
     card_layout = QVBoxLayout(card)
-    card_layout.setSpacing(8)
+    card_layout.setSpacing(ui.CARD_SPACING)
 
     # Question number and priority
     header_layout = QHBoxLayout()
@@ -492,12 +504,7 @@ def _create_counterfactual_question_card(
 
     priority = getattr(question, 'priority', 'MEDIUM')
     priority_label = QLabel(f"Priority: {priority}")
-    priority_colors = {
-        'HIGH': '#F44336',
-        'MEDIUM': '#FF9800',
-        'LOW': '#9E9E9E'
-    }
-    priority_color = priority_colors.get(priority, '#9E9E9E')
+    priority_color = ui.PRIORITY_COLORS.get(priority, ui.PRIORITY_COLORS['LOW'])
     priority_label.setStyleSheet(f"color: {priority_color}; font-weight: bold;")
     header_layout.addWidget(priority_label)
     header_layout.addStretch()
@@ -508,7 +515,7 @@ def _create_counterfactual_question_card(
     question_text = getattr(question, 'question', 'No question text')
     question_label = QLabel(f"<b>Research Question:</b><br>{question_text}")
     question_label.setWordWrap(True)
-    question_label.setStyleSheet("padding: 4px;")
+    question_label.setStyleSheet(StyleSheets.card_label_padding(ui))
     card_layout.addWidget(question_label)
 
     # Counterfactual statement
@@ -516,7 +523,9 @@ def _create_counterfactual_question_card(
     if cf_statement:
         statement_label = QLabel(f"<b>Counterfactual Statement:</b><br>{cf_statement}")
         statement_label.setWordWrap(True)
-        statement_label.setStyleSheet(f"padding: 4px; color: {ui.COLOR_TEXT_GREY};")
+        statement_label.setStyleSheet(
+            f"{StyleSheets.card_label_padding(ui)} color: {ui.COLOR_TEXT_GREY};"
+        )
         card_layout.addWidget(statement_label)
 
     # Reasoning
@@ -524,13 +533,13 @@ def _create_counterfactual_question_card(
     if reasoning:
         reasoning_label = QLabel(f"<b>Reasoning:</b><br>{reasoning}")
         reasoning_label.setWordWrap(True)
-        reasoning_label.setStyleSheet("padding: 4px; font-style: italic;")
+        reasoning_label.setStyleSheet(f"{StyleSheets.card_label_padding(ui)} font-style: italic;")
         card_layout.addWidget(reasoning_label)
 
     # Search keywords
     keywords = getattr(question, 'search_keywords', [])
     if keywords:
-        keywords_text = ", ".join(keywords[:10])  # Limit display
+        keywords_text = ", ".join(keywords[:ui.MAX_KEYWORDS_DISPLAY])
         keywords_label = QLabel(f"<b>Search Keywords:</b> {keywords_text}")
         keywords_label.setWordWrap(True)
         card_layout.addWidget(keywords_label)
@@ -540,8 +549,8 @@ def _create_counterfactual_question_card(
 
 def _add_contradictory_documents_section(
     layout: QVBoxLayout,
-    documents: list,
-    card_factory: Any,
+    documents: List[dict],
+    card_factory: CardFactoryProtocol,
     ui: UIConstants,
     logger: logging.Logger
 ) -> int:
@@ -583,7 +592,7 @@ def _add_contradictory_documents_section(
             cf_question = doc.get('_counterfactual_question')
             cf_priority = doc.get('_counterfactual_priority')
             if cf_question and hasattr(card, 'details_layout'):
-                _add_counterfactual_info_to_card(card, cf_question, cf_priority)
+                _add_counterfactual_info_to_card(card, cf_question, cf_priority, ui)
 
             layout.addWidget(card)
             cards_created += 1
@@ -597,7 +606,8 @@ def _add_contradictory_documents_section(
 def _add_counterfactual_info_to_card(
     card: QWidget,
     cf_question: str,
-    cf_priority: Optional[str]
+    cf_priority: Optional[str],
+    ui: UIConstants
 ) -> None:
     """
     Add counterfactual question info to a document card.
@@ -606,17 +616,20 @@ def _add_counterfactual_info_to_card(
         card: Document card widget (must have details_layout attribute)
         cf_question: Counterfactual question text
         cf_priority: Optional priority level (HIGH, MEDIUM, LOW)
+        ui: UI constants for styling
     """
     cf_info_container = QFrame()
-    cf_info_container.setStyleSheet(StyleSheets.counterfactual_info_box())
+    cf_info_container.setStyleSheet(StyleSheets.counterfactual_info_box(ui))
     cf_info_layout = QVBoxLayout(cf_info_container)
-    cf_info_layout.setContentsMargins(8, 8, 8, 8)
-    cf_info_layout.setSpacing(5)
+    cf_info_layout.setContentsMargins(
+        ui.CARD_PADDING, ui.CARD_PADDING,
+        ui.CARD_PADDING, ui.CARD_PADDING
+    )
+    cf_info_layout.setSpacing(ui.CARD_INTERNAL_SPACING)
 
     cf_title = QLabel("<b>Related Counterfactual Question:</b>")
     if cf_priority:
-        priority_colors = {'HIGH': '#F44336', 'MEDIUM': '#FF9800', 'LOW': '#9E9E9E'}
-        priority_color = priority_colors.get(cf_priority, '#9E9E9E')
+        priority_color = ui.PRIORITY_COLORS.get(cf_priority, ui.PRIORITY_COLORS['LOW'])
         cf_title.setText(
             f"<b>Related Counterfactual Question</b> "
             f"<span style='color: {priority_color};'>[{cf_priority} Priority]</span>"
@@ -634,7 +647,7 @@ def _add_counterfactual_info_to_card(
 
 def _add_contradictory_citations_section(
     layout: QVBoxLayout,
-    citations: list,
+    citations: List[Any],
     ui: UIConstants,
     logger: logging.Logger
 ) -> int:
@@ -682,7 +695,7 @@ def _add_contradictory_citations_section(
 
             # Add context information if available
             if (original_claim or cf_question) and hasattr(citation_card, 'main_layout'):
-                _add_citation_context(citation_card, original_claim, cf_question)
+                _add_citation_context(citation_card, original_claim, cf_question, ui)
 
             layout.addWidget(citation_card)
             cards_created += 1
@@ -697,7 +710,8 @@ def _add_contradictory_citations_section(
 def _add_citation_context(
     citation_card: QWidget,
     original_claim: str,
-    cf_question: str
+    cf_question: str,
+    ui: UIConstants
 ) -> None:
     """
     Add context information to a citation card.
@@ -706,12 +720,16 @@ def _add_citation_context(
         citation_card: Citation card widget (must have main_layout attribute)
         original_claim: Original claim being challenged
         cf_question: Counterfactual research question
+        ui: UI constants for styling
     """
     context_frame = QFrame()
-    context_frame.setStyleSheet(StyleSheets.counterfactual_info_box())
+    context_frame.setStyleSheet(StyleSheets.counterfactual_info_box(ui))
     context_layout = QVBoxLayout(context_frame)
-    context_layout.setContentsMargins(8, 8, 8, 8)
-    context_layout.setSpacing(5)
+    context_layout.setContentsMargins(
+        ui.CARD_PADDING, ui.CARD_PADDING,
+        ui.CARD_PADDING, ui.CARD_PADDING
+    )
+    context_layout.setSpacing(ui.CARD_INTERNAL_SPACING)
 
     if original_claim:
         claim_label = QLabel(f"<b>Challenges Claim:</b> {original_claim}")

@@ -243,7 +243,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.cancel_button.setMinimumWidth(140)
         self.cancel_button.setEnabled(False)
         self.cancel_button.setVisible(False)
-        self.cancel_button.setStyleSheet(StyleSheets.cancel_button())
+        self.cancel_button.setStyleSheet(StyleSheets.cancel_button(self.ui))
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
         row2.addWidget(self.cancel_button)
 
@@ -251,7 +251,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.new_button = QPushButton("New")
         self.new_button.setMinimumHeight(60)
         self.new_button.setMinimumWidth(80)
-        self.new_button.setStyleSheet(StyleSheets.new_button())
+        self.new_button.setStyleSheet(StyleSheets.new_button(self.ui))
         self.new_button.clicked.connect(self._on_new_research)
         row2.addWidget(self.new_button)
 

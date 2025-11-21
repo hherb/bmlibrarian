@@ -7,7 +7,7 @@ UI element references that need to be accessed later.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Any
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -29,8 +29,12 @@ from ...widgets.markdown_viewer import MarkdownViewer
 
 @dataclass
 class TabRefs:
-    """Container for UI element references from a tab builder."""
-    widgets: dict = field(default_factory=dict)
+    """Container for UI element references from a tab builder.
+
+    Attributes:
+        widgets: Dictionary mapping widget names to QWidget instances
+    """
+    widgets: Dict[str, QWidget] = field(default_factory=dict)
 
 
 def build_placeholder_tab(
@@ -70,7 +74,7 @@ def build_placeholder_tab(
 
     # Description
     desc_label = QLabel(description)
-    desc_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; margin-top: 10px;")
+    desc_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; margin-top: {ui.SECTION_SPACING}px;")
     desc_label.setWordWrap(True)
     layout.addWidget(desc_label)
 
@@ -121,9 +125,9 @@ def build_search_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     # Query text display
     query_text_display = QTextEdit()
     query_text_display.setReadOnly(True)
-    query_text_display.setMaximumHeight(100)
+    query_text_display.setMaximumHeight(ui.QUERY_DISPLAY_MAX_HEIGHT)
     query_text_display.setPlaceholderText("Query will appear here after clicking 'Start Research'...")
-    query_text_display.setStyleSheet(StyleSheets.query_display())
+    query_text_display.setStyleSheet(StyleSheets.query_display(ui))
     layout.addWidget(query_text_display)
     refs.widgets['query_text_display'] = query_text_display
 
@@ -193,7 +197,7 @@ def build_literature_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     progress_bar = QProgressBar()
     progress_bar.setTextVisible(True)
     progress_bar.setFormat("Scoring document %v/%m")
-    progress_bar.setStyleSheet(StyleSheets.progress_bar())
+    progress_bar.setStyleSheet(StyleSheets.progress_bar(ui))
     progress_bar.setVisible(False)
     layout.addWidget(progress_bar)
     refs.widgets['progress_bar'] = progress_bar
@@ -206,12 +210,12 @@ def build_literature_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     # Container widget for document cards
     container = QWidget()
     container_layout = QVBoxLayout(container)
-    container_layout.setSpacing(8)
-    container_layout.setContentsMargins(0, 10, 0, 0)
+    container_layout.setSpacing(ui.CARD_SPACING)
+    container_layout.setContentsMargins(0, ui.CARD_CONTENT_MARGIN_TOP, 0, 0)
 
     # Empty state message
     empty_label = QLabel("No documents to display")
-    empty_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+    empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
     empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     container_layout.addWidget(empty_label)
 
@@ -229,7 +233,14 @@ def build_literature_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
 
 
 def build_scoring_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
-    """Create Scoring tab (document relevance scoring)."""
+    """Create Scoring tab (document relevance scoring).
+
+    Args:
+        ui: UI constants for styling
+
+    Returns:
+        Tuple of (widget, refs) - refs is empty for placeholder tabs
+    """
     return build_placeholder_tab(
         ui,
         "",
@@ -274,8 +285,10 @@ def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     header_label.setFont(header_font)
     layout.addWidget(header_label)
 
-    # Subtitle
-    subtitle_label = QLabel("Relevant passages from high-scoring documents (score >= 3.0)")
+    # Subtitle - use score threshold from constants
+    subtitle_label = QLabel(
+        f"Relevant passages from high-scoring documents (score >= {ui.SCORE_THRESHOLD_RELEVANT})"
+    )
     subtitle_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY};")
     layout.addWidget(subtitle_label)
 
@@ -293,12 +306,12 @@ def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     # Container widget for citation cards
     container = QWidget()
     container_layout = QVBoxLayout(container)
-    container_layout.setSpacing(8)
-    container_layout.setContentsMargins(0, 10, 0, 0)
+    container_layout.setSpacing(ui.CARD_SPACING)
+    container_layout.setContentsMargins(0, ui.CARD_CONTENT_MARGIN_TOP, 0, 0)
 
     # Empty state message
     empty_label = QLabel("No citations to display")
-    empty_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+    empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
     empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     container_layout.addWidget(empty_label)
 
@@ -374,14 +387,17 @@ def build_counterfactual_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     Returns:
         Tuple of (widget, refs) where refs.widgets contains:
         - 'summary_label': QLabel for summary
-        - 'layout': QVBoxLayout for adding content
+        - 'content_layout': QVBoxLayout for adding content
     """
     refs = TabRefs()
 
     widget = QWidget()
     layout = QVBoxLayout(widget)
-    layout.setContentsMargins(15, 15, 15, 15)
-    layout.setSpacing(10)
+    layout.setContentsMargins(
+        ui.TAB_WIDGET_MARGIN, ui.TAB_WIDGET_MARGIN,
+        ui.TAB_WIDGET_MARGIN, ui.TAB_WIDGET_MARGIN
+    )
+    layout.setSpacing(ui.SECTION_SPACING)
 
     # Header
     header = QLabel("Counterfactual Analysis")
@@ -405,7 +421,7 @@ def build_counterfactual_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     # Content widget
     content_widget = QWidget()
     content_layout = QVBoxLayout(content_widget)
-    content_layout.setSpacing(10)
+    content_layout.setSpacing(ui.SECTION_SPACING)
     content_layout.setContentsMargins(0, 0, 0, 0)
 
     # Initial placeholder
@@ -417,7 +433,7 @@ def build_counterfactual_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
         "- Searches for documents that might contradict the findings\n"
         "- Provides a balanced view of the evidence"
     )
-    placeholder.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY}; padding: 20px;")
+    placeholder.setStyleSheet(StyleSheets.empty_state_label(ui))
     placeholder.setWordWrap(True)
     placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
     content_layout.addWidget(placeholder)
@@ -449,8 +465,11 @@ def build_report_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
 
     widget = QWidget()
     layout = QVBoxLayout(widget)
-    layout.setContentsMargins(10, 10, 10, 10)
-    layout.setSpacing(10)
+    layout.setContentsMargins(
+        ui.SECTION_SPACING, ui.SECTION_SPACING,
+        ui.SECTION_SPACING, ui.SECTION_SPACING
+    )
+    layout.setSpacing(ui.SECTION_SPACING)
 
     # Header row with title and export buttons
     header_row = QHBoxLayout()
@@ -463,18 +482,18 @@ def build_report_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
 
     # Export buttons container
     export_buttons_layout = QHBoxLayout()
-    export_buttons_layout.setSpacing(10)
+    export_buttons_layout.setSpacing(ui.BUTTON_SPACING)
 
     # Save Markdown button
     save_markdown_button = QPushButton("Save Report (Markdown)")
-    save_markdown_button.setStyleSheet(StyleSheets.save_button())
+    save_markdown_button.setStyleSheet(StyleSheets.save_button(ui))
     save_markdown_button.setEnabled(False)  # Disabled until report is ready
     export_buttons_layout.addWidget(save_markdown_button)
     refs.widgets['save_markdown_button'] = save_markdown_button
 
     # Export JSON button
     export_json_button = QPushButton("Export as JSON")
-    export_json_button.setStyleSheet(StyleSheets.export_button())
+    export_json_button.setStyleSheet(StyleSheets.export_button(ui))
     export_json_button.setEnabled(False)  # Disabled until report is ready
     export_buttons_layout.addWidget(export_json_button)
     refs.widgets['export_json_button'] = export_json_button
@@ -490,7 +509,9 @@ def build_report_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
 
     # Markdown viewer
     report_viewer = MarkdownViewer()
-    report_viewer.set_markdown("_No final report available yet. The final report will be generated after counterfactual analysis._")
+    report_viewer.set_markdown(
+        "_No final report available yet. The final report will be generated after counterfactual analysis._"
+    )
     layout.addWidget(report_viewer)
     refs.widgets['report_viewer'] = report_viewer
 
