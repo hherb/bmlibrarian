@@ -84,6 +84,7 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_stats.py --export-csv stats_output/` - Export statistics to CSV files
   - `uv run python fact_checker_stats.py --export-csv stats_output/ --plot` - Create visualization plots
 - **GUI Applications**:
+  - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
   - `uv run python bmlibrarian_config_gui.py` - Graphical configuration interface for agents and settings
   - `uv run python fact_checker_review_gui.py` - Human review and annotation interface for fact-checking results (PostgreSQL-based)
