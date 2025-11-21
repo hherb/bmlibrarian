@@ -847,6 +847,627 @@ class PaperWeightAssessmentAgent(BaseAgent):
             'replication_status': 0.10
         })
 
+    # ========================================================================
+    # LLM-Based Assessors (Step 5)
+    # ========================================================================
+
+    # Constants for LLM assessors
+    MAX_TEXT_LENGTH = 8000  # Maximum characters to send to LLM (avoids token limits)
+
+    def _prepare_text_for_analysis(self, document: dict) -> str:
+        """
+        Prepare document text for LLM analysis.
+
+        Combines title, abstract and full text (if available), limits length
+        to avoid token limits.
+
+        Args:
+            document: Document dict with 'title', 'abstract', 'full_text' fields
+
+        Returns:
+            Prepared text string suitable for LLM prompt
+        """
+        title = document.get('title', '') or ''
+        abstract = document.get('abstract', '') or ''
+        full_text = document.get('full_text', '') or ''
+
+        # Prefer full text if available, otherwise use abstract
+        if full_text:
+            text = f"TITLE: {title}\n\nFULL TEXT:\n{full_text}"
+        else:
+            text = f"TITLE: {title}\n\nABSTRACT:\n{abstract}"
+
+        # Limit to MAX_TEXT_LENGTH characters to avoid token limits
+        if len(text) > self.MAX_TEXT_LENGTH:
+            text = text[:self.MAX_TEXT_LENGTH] + "\n\n[Text truncated...]"
+            logger.debug(f"Truncated text to {self.MAX_TEXT_LENGTH} characters")
+
+        return text
+
+    def _build_methodological_quality_prompt(self, text: str) -> str:
+        """
+        Build prompt for methodological quality assessment.
+
+        Args:
+            text: Prepared document text
+
+        Returns:
+            Prompt string for LLM
+        """
+        return f"""You are an expert in biomedical research methodology. Analyze the following research paper and assess its methodological quality across six components.
+
+PAPER TEXT:
+{text}
+
+TASK:
+Analyze the methodological quality and provide assessments for each component:
+
+1. RANDOMIZATION (0-2 points):
+   - 0: No randomization or inadequate sequence generation
+   - 1: Randomization mentioned but method unclear
+   - 2: Proper random sequence generation (e.g., computer-generated, random number table)
+
+2. BLINDING (0-3 points):
+   - 0: No blinding
+   - 1: Single-blind (participants OR assessors)
+   - 2: Double-blind (participants AND assessors)
+   - 3: Triple-blind (participants, assessors, AND data analysts)
+
+3. ALLOCATION CONCEALMENT (0-1.5 points):
+   - 0: No allocation concealment or inadequate
+   - 0.75: Unclear or partially described
+   - 1.5: Proper allocation concealment (e.g., sealed envelopes, central randomization)
+
+4. PROTOCOL PREREGISTRATION (0-1.5 points):
+   - 0: No protocol registration mentioned
+   - 0.75: Protocol mentioned but not verified
+   - 1.5: Protocol clearly registered before study (e.g., ClinicalTrials.gov, registry number provided)
+
+5. ITT ANALYSIS (0-1 points):
+   - 0: No ITT analysis or per-protocol only
+   - 0.5: Modified ITT or unclear
+   - 1: Clear intention-to-treat analysis
+
+6. ATTRITION HANDLING (0-1 points):
+   - Extract dropout/attrition rate
+   - Assess quality of handling (imputation methods, sensitivity analysis)
+   - Score based on rate and handling quality
+
+OUTPUT FORMAT (JSON):
+{{
+  "randomization": {{
+    "score": <0-2>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "blinding": {{
+    "score": <0-3>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "allocation_concealment": {{
+    "score": <0-1.5>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "protocol_preregistration": {{
+    "score": <0-1.5>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "itt_analysis": {{
+    "score": <0-1>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "attrition_handling": {{
+    "score": <0-1>,
+    "attrition_rate": <decimal or null>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }}
+}}
+
+CRITICAL REQUIREMENTS:
+- Extract ONLY information that is ACTUALLY PRESENT in the text
+- DO NOT invent, assume, or fabricate any information
+- If information is unclear or not mentioned, score it as 0 and explain why
+- Be specific and evidence-based in your assessment
+- Provide exact quotes from the paper as evidence when available
+
+Provide ONLY the JSON output, no additional text."""
+
+    def _calculate_methodological_quality_score(self, components: dict) -> DimensionScore:
+        """
+        Calculate methodological quality score from component assessments.
+
+        Args:
+            components: Parsed component assessments from LLM
+
+        Returns:
+            DimensionScore with full audit trail
+        """
+        dimension_score = DimensionScore(
+            dimension_name='methodological_quality',
+            score=0.0
+        )
+
+        # Add each component
+        for component_name, component_data in components.items():
+            if not isinstance(component_data, dict):
+                continue
+
+            score_contribution = float(component_data.get('score', 0.0))
+            evidence = component_data.get('evidence', '')
+            reasoning = component_data.get('reasoning', '')
+
+            # Handle attrition_rate if present
+            value = str(score_contribution)
+            if component_name == 'attrition_handling':
+                attrition_rate = component_data.get('attrition_rate')
+                if attrition_rate is not None:
+                    value = f"{score_contribution} (attrition rate: {attrition_rate})"
+
+            dimension_score.add_detail(
+                component=component_name,
+                value=value,
+                contribution=score_contribution,
+                evidence=evidence,
+                reasoning=reasoning
+            )
+
+            dimension_score.score += score_contribution
+
+        # Cap at 10.0
+        dimension_score.score = min(10.0, dimension_score.score)
+
+        return dimension_score
+
+    def _assess_methodological_quality(
+        self,
+        document: dict,
+        study_assessment: Optional[dict] = None
+    ) -> DimensionScore:
+        """
+        Assess methodological quality using LLM analysis.
+
+        Evaluates: randomization, blinding, allocation concealment,
+        protocol preregistration, ITT analysis, attrition handling.
+
+        Args:
+            document: Document dict with 'abstract', 'full_text' fields
+            study_assessment: Optional StudyAssessmentAgent output to leverage
+
+        Returns:
+            DimensionScore for methodological quality with detailed audit trail
+        """
+        # Check if we can leverage StudyAssessmentAgent output
+        if study_assessment:
+            result = self._extract_mq_from_study_assessment(study_assessment, document)
+            if result is not None:
+                return result
+
+        try:
+            # Prepare text for analysis
+            text = self._prepare_text_for_analysis(document)
+
+            # Build LLM prompt
+            prompt = self._build_methodological_quality_prompt(text)
+
+            # Call LLM with JSON parsing and retry logic
+            components = self._generate_and_parse_json(
+                prompt,
+                max_retries=3,
+                retry_context="methodological quality assessment",
+                num_predict=self.max_tokens
+            )
+
+            # Calculate score
+            dimension_score = self._calculate_methodological_quality_score(components)
+
+            logger.info(
+                f"Methodological quality assessment complete: score={dimension_score.score:.2f}/10"
+            )
+
+            return dimension_score
+
+        except Exception as e:
+            # Log error and return degraded score
+            logger.error(f"Error in methodological quality assessment: {e}")
+
+            dimension_score = DimensionScore(
+                dimension_name='methodological_quality',
+                score=5.0  # Neutral score on error
+            )
+            dimension_score.add_detail(
+                component='error',
+                value='assessment_failed',
+                contribution=5.0,
+                reasoning=f'LLM assessment failed: {str(e)}'
+            )
+            return dimension_score
+
+    def _build_risk_of_bias_prompt(self, text: str) -> str:
+        """
+        Build prompt for risk of bias assessment.
+
+        Args:
+            text: Prepared document text
+
+        Returns:
+            Prompt string for LLM
+        """
+        return f"""You are an expert in biomedical research methodology and bias assessment. Analyze the following research paper and assess its risk of bias across four domains.
+
+PAPER TEXT:
+{text}
+
+TASK:
+Assess risk of bias using INVERTED SCALE (higher score = lower risk of bias):
+
+1. SELECTION BIAS (0-2.5 points):
+   - 0: High risk (convenience sampling, no clear criteria)
+   - 1.25: Moderate risk (some limitations in sampling)
+   - 2.5: Low risk (random/consecutive sampling, clear inclusion/exclusion criteria)
+
+2. PERFORMANCE BIAS (0-2.5 points):
+   - 0: High risk (no blinding, unstandardized interventions)
+   - 1.25: Moderate risk (partial blinding or standardization)
+   - 2.5: Low risk (proper blinding, standardized protocols)
+
+3. DETECTION BIAS (0-2.5 points):
+   - 0: High risk (unblinded outcome assessment)
+   - 1.25: Moderate risk (partially blinded or objective outcomes only)
+   - 2.5: Low risk (blinded outcome assessment for all outcomes)
+
+4. REPORTING BIAS (0-2.5 points):
+   - 0: High risk (selective reporting, outcomes not pre-specified)
+   - 1.25: Moderate risk (some evidence of selective reporting)
+   - 2.5: Low risk (all pre-specified outcomes reported, protocol available)
+
+OUTPUT FORMAT (JSON):
+{{
+  "selection_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "performance_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "detection_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "reporting_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }}
+}}
+
+CRITICAL REQUIREMENTS:
+- Extract ONLY information that is ACTUALLY PRESENT in the text
+- DO NOT invent, assume, or fabricate any information
+- If information is unclear or not mentioned, assume high risk (score 0) and explain why
+- Be specific and evidence-based in your assessment
+- Provide exact quotes from the paper as evidence when available
+
+Provide ONLY the JSON output, no additional text."""
+
+    def _calculate_risk_of_bias_score(self, components: dict) -> DimensionScore:
+        """
+        Calculate risk of bias score from component assessments.
+
+        Args:
+            components: Parsed component assessments from LLM
+
+        Returns:
+            DimensionScore with full audit trail
+        """
+        dimension_score = DimensionScore(
+            dimension_name='risk_of_bias',
+            score=0.0
+        )
+
+        # Add each component
+        for component_name, component_data in components.items():
+            if not isinstance(component_data, dict):
+                continue
+
+            score_contribution = float(component_data.get('score', 0.0))
+            risk_level = component_data.get('risk_level', 'unknown')
+            evidence = component_data.get('evidence', '')
+            reasoning = component_data.get('reasoning', '')
+
+            dimension_score.add_detail(
+                component=component_name,
+                value=f"{risk_level} risk ({score_contribution})",
+                contribution=score_contribution,
+                evidence=evidence,
+                reasoning=reasoning
+            )
+
+            dimension_score.score += score_contribution
+
+        # Cap at 10.0
+        dimension_score.score = min(10.0, dimension_score.score)
+
+        return dimension_score
+
+    def _assess_risk_of_bias(
+        self,
+        document: dict,
+        study_assessment: Optional[dict] = None
+    ) -> DimensionScore:
+        """
+        Assess risk of bias using LLM analysis.
+
+        Evaluates: selection bias, performance bias, detection bias, reporting bias.
+        Uses INVERTED SCALE: 10 = low risk, 0 = high risk.
+
+        Args:
+            document: Document dict with 'abstract', 'full_text' fields
+            study_assessment: Optional StudyAssessmentAgent output to leverage
+
+        Returns:
+            DimensionScore for risk of bias with detailed audit trail
+        """
+        # Check if we can leverage StudyAssessmentAgent output
+        if study_assessment:
+            result = self._extract_rob_from_study_assessment(study_assessment, document)
+            if result is not None:
+                return result
+
+        try:
+            # Prepare text
+            text = self._prepare_text_for_analysis(document)
+
+            # Build LLM prompt
+            prompt = self._build_risk_of_bias_prompt(text)
+
+            # Call LLM with JSON parsing and retry logic
+            components = self._generate_and_parse_json(
+                prompt,
+                max_retries=3,
+                retry_context="risk of bias assessment",
+                num_predict=self.max_tokens
+            )
+
+            # Calculate score
+            dimension_score = self._calculate_risk_of_bias_score(components)
+
+            logger.info(
+                f"Risk of bias assessment complete: score={dimension_score.score:.2f}/10 (higher=lower risk)"
+            )
+
+            return dimension_score
+
+        except Exception as e:
+            # Log error and return degraded score
+            logger.error(f"Error in risk of bias assessment: {e}")
+
+            dimension_score = DimensionScore(
+                dimension_name='risk_of_bias',
+                score=5.0  # Neutral score on error
+            )
+            dimension_score.add_detail(
+                component='error',
+                value='assessment_failed',
+                contribution=5.0,
+                reasoning=f'LLM assessment failed: {str(e)}'
+            )
+            return dimension_score
+
+    # ========================================================================
+    # StudyAssessmentAgent Integration (Step 5)
+    # ========================================================================
+
+    def _extract_mq_from_study_assessment(
+        self,
+        study_assessment: dict,
+        document: dict
+    ) -> Optional[DimensionScore]:
+        """
+        Extract methodological quality from StudyAssessmentAgent output.
+
+        If StudyAssessmentAgent has already analyzed the paper, reuse
+        relevant assessments to avoid duplicate LLM calls.
+
+        Args:
+            study_assessment: Output from StudyAssessmentAgent (as dict)
+            document: Document dict (for fallback if needed)
+
+        Returns:
+            DimensionScore for methodological quality, or None if extraction fails
+        """
+        try:
+            dimension_score = DimensionScore(
+                dimension_name='methodological_quality',
+                score=0.0
+            )
+
+            total_score = 0.0
+
+            # Extract randomization from is_randomized
+            is_randomized = study_assessment.get('is_randomized', False)
+            if is_randomized:
+                randomization_score = 2.0
+                dimension_score.add_detail(
+                    component='randomization',
+                    value='yes',
+                    contribution=randomization_score,
+                    reasoning='Extracted from StudyAssessmentAgent: is_randomized=True'
+                )
+                total_score += randomization_score
+            else:
+                dimension_score.add_detail(
+                    component='randomization',
+                    value='no',
+                    contribution=0.0,
+                    reasoning='Extracted from StudyAssessmentAgent: is_randomized=False or not specified'
+                )
+
+            # Extract blinding
+            is_double_blinded = study_assessment.get('is_double_blinded', False)
+            is_blinded = study_assessment.get('is_blinded', False)
+            if is_double_blinded:
+                blinding_score = 2.0  # Double-blind
+                dimension_score.add_detail(
+                    component='blinding',
+                    value='double-blind',
+                    contribution=blinding_score,
+                    reasoning='Extracted from StudyAssessmentAgent: is_double_blinded=True'
+                )
+                total_score += blinding_score
+            elif is_blinded:
+                blinding_score = 1.0  # Single-blind
+                dimension_score.add_detail(
+                    component='blinding',
+                    value='single-blind',
+                    contribution=blinding_score,
+                    reasoning='Extracted from StudyAssessmentAgent: is_blinded=True (not double)'
+                )
+                total_score += blinding_score
+            else:
+                dimension_score.add_detail(
+                    component='blinding',
+                    value='no blinding',
+                    contribution=0.0,
+                    reasoning='Extracted from StudyAssessmentAgent: no blinding detected'
+                )
+
+            # Check quality_score to estimate remaining components
+            quality_score = study_assessment.get('quality_score', 5.0)
+
+            # Map quality_score (0-10) to remaining components estimate
+            # quality_score reflects overall methodological quality
+            # We allocate remaining 5 points (allocation_concealment + protocol + ITT + attrition)
+            # based on quality_score proportion
+            remaining_max = 5.0  # Max remaining points
+            remaining_proportion = quality_score / 10.0
+            remaining_estimate = remaining_max * remaining_proportion
+
+            dimension_score.add_detail(
+                component='other_components',
+                value=f'estimated from quality_score={quality_score:.1f}',
+                contribution=remaining_estimate,
+                reasoning=f'Estimated from StudyAssessmentAgent quality_score ({quality_score:.1f}/10) - covers allocation concealment, protocol registration, ITT analysis, and attrition handling'
+            )
+            total_score += remaining_estimate
+
+            dimension_score.score = min(10.0, total_score)
+
+            logger.info(
+                f"Extracted methodological quality from StudyAssessmentAgent: score={dimension_score.score:.2f}/10"
+            )
+
+            return dimension_score
+
+        except Exception as e:
+            logger.warning(f"Failed to extract MQ from StudyAssessmentAgent: {e}")
+            return None  # Fall back to direct LLM assessment
+
+    def _extract_rob_from_study_assessment(
+        self,
+        study_assessment: dict,
+        document: dict
+    ) -> Optional[DimensionScore]:
+        """
+        Extract risk of bias from StudyAssessmentAgent output.
+
+        Similar to methodological quality extraction.
+
+        Args:
+            study_assessment: Output from StudyAssessmentAgent (as dict)
+            document: Document dict (for fallback if needed)
+
+        Returns:
+            DimensionScore for risk of bias, or None if extraction fails
+        """
+        try:
+            dimension_score = DimensionScore(
+                dimension_name='risk_of_bias',
+                score=0.0
+            )
+
+            total_score = 0.0
+
+            # Risk level mapping to scores (inverted: high risk = low score)
+            risk_level_scores = {
+                'low': 2.5,
+                'moderate': 1.25,
+                'high': 0.0,
+                'unclear': 0.625  # Between moderate and high
+            }
+
+            # Extract selection bias
+            selection_risk = study_assessment.get('selection_bias_risk', 'unclear')
+            if selection_risk:
+                selection_score = risk_level_scores.get(selection_risk.lower(), 0.625)
+                dimension_score.add_detail(
+                    component='selection_bias',
+                    value=f'{selection_risk} risk ({selection_score})',
+                    contribution=selection_score,
+                    reasoning=f'Extracted from StudyAssessmentAgent: selection_bias_risk={selection_risk}'
+                )
+                total_score += selection_score
+
+            # Extract performance bias
+            performance_risk = study_assessment.get('performance_bias_risk', 'unclear')
+            if performance_risk:
+                performance_score = risk_level_scores.get(performance_risk.lower(), 0.625)
+                dimension_score.add_detail(
+                    component='performance_bias',
+                    value=f'{performance_risk} risk ({performance_score})',
+                    contribution=performance_score,
+                    reasoning=f'Extracted from StudyAssessmentAgent: performance_bias_risk={performance_risk}'
+                )
+                total_score += performance_score
+
+            # Extract detection bias
+            detection_risk = study_assessment.get('detection_bias_risk', 'unclear')
+            if detection_risk:
+                detection_score = risk_level_scores.get(detection_risk.lower(), 0.625)
+                dimension_score.add_detail(
+                    component='detection_bias',
+                    value=f'{detection_risk} risk ({detection_score})',
+                    contribution=detection_score,
+                    reasoning=f'Extracted from StudyAssessmentAgent: detection_bias_risk={detection_risk}'
+                )
+                total_score += detection_score
+
+            # Extract reporting bias
+            reporting_risk = study_assessment.get('reporting_bias_risk', 'unclear')
+            if reporting_risk:
+                reporting_score = risk_level_scores.get(reporting_risk.lower(), 0.625)
+                dimension_score.add_detail(
+                    component='reporting_bias',
+                    value=f'{reporting_risk} risk ({reporting_score})',
+                    contribution=reporting_score,
+                    reasoning=f'Extracted from StudyAssessmentAgent: reporting_bias_risk={reporting_risk}'
+                )
+                total_score += reporting_score
+
+            dimension_score.score = min(10.0, total_score)
+
+            logger.info(
+                f"Extracted risk of bias from StudyAssessmentAgent: score={dimension_score.score:.2f}/10"
+            )
+
+            return dimension_score
+
+        except Exception as e:
+            logger.warning(f"Failed to extract RoB from StudyAssessmentAgent: {e}")
+            return None  # Fall back to direct LLM assessment
+
 
 # Export all dataclasses and the agent class
 __all__ = ['AssessmentDetail', 'DimensionScore', 'PaperWeightResult', 'PaperWeightAssessmentAgent']
