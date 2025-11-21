@@ -52,19 +52,43 @@ CREATE TABLE paper_weights.assessments (
 
     -- Dimension weights used for calculation (JSONB for flexibility)
     -- Example: {"study_design": 0.25, "sample_size": 0.15, ...}
-    dimension_weights JSONB NOT NULL,
+    -- Required keys: study_design, sample_size, methodological_quality, risk_of_bias, replication_status
+    dimension_weights JSONB NOT NULL
+        CHECK (
+            dimension_weights ? 'study_design' AND
+            dimension_weights ? 'sample_size' AND
+            dimension_weights ? 'methodological_quality' AND
+            dimension_weights ? 'risk_of_bias' AND
+            dimension_weights ? 'replication_status' AND
+            -- Ensure values are numeric (between 0 and 1 for weights)
+            (dimension_weights->>'study_design')::NUMERIC >= 0 AND
+            (dimension_weights->>'study_design')::NUMERIC <= 1 AND
+            (dimension_weights->>'sample_size')::NUMERIC >= 0 AND
+            (dimension_weights->>'sample_size')::NUMERIC <= 1 AND
+            (dimension_weights->>'methodological_quality')::NUMERIC >= 0 AND
+            (dimension_weights->>'methodological_quality')::NUMERIC <= 1 AND
+            (dimension_weights->>'risk_of_bias')::NUMERIC >= 0 AND
+            (dimension_weights->>'risk_of_bias')::NUMERIC <= 1 AND
+            (dimension_weights->>'replication_status')::NUMERIC >= 0 AND
+            (dimension_weights->>'replication_status')::NUMERIC <= 1
+        ),
 
     -- Extracted metadata from paper
     study_type TEXT,      -- e.g., "RCT", "cohort", "case-control"
-    sample_size INTEGER,  -- Extracted n value
+    sample_size INTEGER   -- Extracted n value
 
-    -- One assessment per (document, version) combination
-    -- Allows re-assessment when methodology improves
-    UNIQUE(document_id, assessor_version)
+    -- Note: Unique constraint handled via CREATE UNIQUE INDEX below for optimization
+    -- This approach is more efficient than inline UNIQUE(document_id, assessor_version)
 );
 
--- Indexes for common query patterns
-CREATE INDEX idx_assessments_document ON paper_weights.assessments(document_id);
+-- Composite unique index: enforces uniqueness AND provides efficient lookups
+-- This replaces both the inline UNIQUE constraint and eliminates need for separate document_id index
+-- One assessment per (document, version) combination - allows re-assessment when methodology improves
+CREATE UNIQUE INDEX idx_assessments_doc_version
+    ON paper_weights.assessments(document_id, assessor_version);
+
+-- Additional indexes for common query patterns
+-- Note: idx_assessments_document is NOT needed - covered by idx_assessments_doc_version (leftmost column)
 CREATE INDEX idx_assessments_version ON paper_weights.assessments(assessor_version);
 CREATE INDEX idx_assessments_final_weight ON paper_weights.assessments(final_weight DESC);
 CREATE INDEX idx_assessments_study_type ON paper_weights.assessments(study_type);
@@ -248,6 +272,15 @@ RETURNS TABLE (
     dimension_weights JSONB
 ) AS $$
 BEGIN
+    -- Validate input parameters
+    IF p_document_id IS NULL THEN
+        RAISE EXCEPTION 'p_document_id cannot be NULL';
+    END IF;
+
+    IF p_document_id <= 0 THEN
+        RAISE EXCEPTION 'p_document_id must be a positive integer, got: %', p_document_id;
+    END IF;
+
     RETURN QUERY
     SELECT
         a.assessment_id,
@@ -283,17 +316,44 @@ RETURNS TABLE (
     highest_quality_comparison TEXT
 ) AS $$
 BEGIN
+    -- Validate input parameters
+    IF p_document_id IS NULL THEN
+        RAISE EXCEPTION 'p_document_id cannot be NULL';
+    END IF;
+
+    IF p_document_id <= 0 THEN
+        RAISE EXCEPTION 'p_document_id must be a positive integer, got: %', p_document_id;
+    END IF;
+
     RETURN QUERY
     SELECT
         COUNT(*)::INTEGER as total_replications,
-        SUM(CASE WHEN replication_type = 'confirms' THEN 1 ELSE 0 END)::INTEGER as confirming,
-        SUM(CASE WHEN replication_type = 'contradicts' THEN 1 ELSE 0 END)::INTEGER as contradicting,
-        SUM(CASE WHEN replication_type = 'extends' THEN 1 ELSE 0 END)::INTEGER as extending,
-        MAX(CASE
-            WHEN quality_comparison = 'higher' THEN 'higher'
-            WHEN quality_comparison = 'comparable' THEN 'comparable'
-            ELSE 'lower'
-        END) as highest_quality_comparison
+        COALESCE(SUM(CASE WHEN replication_type = 'confirms' THEN 1 ELSE 0 END), 0)::INTEGER as confirming,
+        COALESCE(SUM(CASE WHEN replication_type = 'contradicts' THEN 1 ELSE 0 END), 0)::INTEGER as contradicting,
+        COALESCE(SUM(CASE WHEN replication_type = 'extends' THEN 1 ELSE 0 END), 0)::INTEGER as extending,
+        -- Use explicit ordering for quality comparison to handle NULLs properly
+        -- Returns NULL if no replications exist (no rows to aggregate)
+        CASE
+            WHEN MAX(CASE quality_comparison
+                WHEN 'higher' THEN 3
+                WHEN 'comparable' THEN 2
+                WHEN 'lower' THEN 1
+                ELSE NULL
+            END) = 3 THEN 'higher'
+            WHEN MAX(CASE quality_comparison
+                WHEN 'higher' THEN 3
+                WHEN 'comparable' THEN 2
+                WHEN 'lower' THEN 1
+                ELSE NULL
+            END) = 2 THEN 'comparable'
+            WHEN MAX(CASE quality_comparison
+                WHEN 'higher' THEN 3
+                WHEN 'comparable' THEN 2
+                WHEN 'lower' THEN 1
+                ELSE NULL
+            END) = 1 THEN 'lower'
+            ELSE NULL
+        END as highest_quality_comparison
     FROM paper_weights.replications
     WHERE source_document_id = p_document_id;
 END;
@@ -308,15 +368,31 @@ DECLARE
     v_total INTEGER;
     v_confirming INTEGER;
     v_contradicting INTEGER;
-    v_highest_quality TEXT;
+    v_highest_quality_rank INTEGER;
     v_score NUMERIC;
 BEGIN
+    -- Validate input parameters
+    IF p_document_id IS NULL THEN
+        RAISE EXCEPTION 'p_document_id cannot be NULL';
+    END IF;
+
+    IF p_document_id <= 0 THEN
+        RAISE EXCEPTION 'p_document_id must be a positive integer, got: %', p_document_id;
+    END IF;
+
     SELECT
         COUNT(*),
-        SUM(CASE WHEN replication_type = 'confirms' THEN 1 ELSE 0 END),
-        SUM(CASE WHEN replication_type = 'contradicts' THEN 1 ELSE 0 END),
-        MAX(quality_comparison)
-    INTO v_total, v_confirming, v_contradicting, v_highest_quality
+        COALESCE(SUM(CASE WHEN replication_type = 'confirms' THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN replication_type = 'contradicts' THEN 1 ELSE 0 END), 0),
+        -- Use numeric ranking to properly order quality comparisons
+        -- (MAX on strings would give 'lower' > 'higher' due to alphabetical ordering)
+        MAX(CASE quality_comparison
+            WHEN 'higher' THEN 3
+            WHEN 'comparable' THEN 2
+            WHEN 'lower' THEN 1
+            ELSE NULL
+        END)
+    INTO v_total, v_confirming, v_contradicting, v_highest_quality_rank
     FROM paper_weights.replications
     WHERE source_document_id = p_document_id;
 
@@ -334,8 +410,8 @@ BEGIN
         v_score := 0.0;
     END IF;
 
-    -- Bonus for higher quality replication
-    IF v_highest_quality = 'higher' THEN
+    -- Bonus for higher quality replication (rank 3 = 'higher')
+    IF v_highest_quality_rank = 3 THEN
         v_score := v_score + 2.0;
     END IF;
 
