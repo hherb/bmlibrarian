@@ -14,11 +14,41 @@ Classes:
     CounterReport: Synthesized counter-evidence report
     Verdict: Final verdict on original statement
     PaperCheckResult: Complete result for one abstract check
+
+Constants:
+    MIN_CONFIDENCE: Minimum confidence value (0.0)
+    MAX_CONFIDENCE: Maximum confidence value (1.0)
+    MIN_SCORE: Minimum relevance score (1)
+    MAX_SCORE: Maximum relevance score (5)
+    MIN_ORDER: Minimum statement/citation order (1)
+    MIN_DOC_ID: Minimum valid document ID (1)
+    VALID_STATEMENT_TYPES: Valid statement type values
+    VALID_SEARCH_STRATEGIES: Valid search strategy names
+    VALID_VERDICT_VALUES: Valid verdict classifications
+    VALID_CONFIDENCE_LEVELS: Valid confidence level labels
 """
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
+
+# Validation Constants
+MIN_CONFIDENCE: float = 0.0
+MAX_CONFIDENCE: float = 1.0
+MIN_SCORE: int = 1
+MAX_SCORE: int = 5
+MIN_ORDER: int = 1
+MIN_DOC_ID: int = 1
+
+# Valid Values
+VALID_STATEMENT_TYPES: Set[str] = {"hypothesis", "finding", "conclusion"}
+VALID_SEARCH_STRATEGIES: Set[str] = {"semantic", "hyde", "keyword"}
+VALID_VERDICT_VALUES: Set[str] = {"supports", "contradicts", "undecided"}
+VALID_CONFIDENCE_LEVELS: Set[str] = {"high", "medium", "low"}
+
+# Default Values for Search Statistics
+DEFAULT_DOCUMENTS_FOUND: int = 0
+DEFAULT_DOCUMENTS_SCORED: int = 0
 
 
 @dataclass
@@ -42,12 +72,19 @@ class Statement:
     confidence: float
     statement_order: int
 
-    def __post_init__(self):
-        """Validate statement fields."""
-        assert 0.0 <= self.confidence <= 1.0, "Confidence must be 0.0-1.0"
-        assert self.statement_type in ["hypothesis", "finding", "conclusion"], \
-            f"Invalid statement type: {self.statement_type}"
-        assert self.statement_order >= 1, "Order must be >= 1"
+    def __post_init__(self) -> None:
+        """Validate statement fields.
+
+        Raises:
+            AssertionError: If confidence is outside valid range, statement_type is invalid,
+                          or statement_order is less than minimum.
+        """
+        assert MIN_CONFIDENCE <= self.confidence <= MAX_CONFIDENCE, \
+            f"Confidence must be between {MIN_CONFIDENCE} and {MAX_CONFIDENCE}"
+        assert self.statement_type in VALID_STATEMENT_TYPES, \
+            f"Invalid statement type: {self.statement_type}. Must be one of {VALID_STATEMENT_TYPES}"
+        assert self.statement_order >= MIN_ORDER, \
+            f"Order must be >= {MIN_ORDER}"
 
 
 @dataclass
@@ -72,8 +109,13 @@ class CounterStatement:
     keywords: List[str]
     generation_metadata: Dict[str, Any]
 
-    def __post_init__(self):
-        """Validate counter-statement fields."""
+    def __post_init__(self) -> None:
+        """Validate counter-statement fields.
+
+        Raises:
+            AssertionError: If negated_text is empty, hyde_abstracts list is empty,
+                          or keywords list is empty.
+        """
         assert len(self.negated_text.strip()) > 0, "Negated text cannot be empty"
         assert len(self.hyde_abstracts) > 0, "Must have at least one HyDE abstract"
         assert len(self.keywords) > 0, "Must have at least one keyword"
@@ -103,17 +145,22 @@ class SearchResults:
     provenance: Dict[int, List[str]]
     search_metadata: Dict[str, Any]
 
-    def __post_init__(self):
-        """Validate and verify provenance consistency."""
+    def __post_init__(self) -> None:
+        """Validate and verify provenance consistency.
+
+        Raises:
+            AssertionError: If provenance keys don't match deduplicated_docs or if
+                          provenance contains invalid search strategies.
+        """
         # Verify all deduplicated docs are in provenance
         assert set(self.deduplicated_docs) == set(self.provenance.keys()), \
             "Provenance must include all deduplicated docs"
 
         # Verify provenance values are valid
-        valid_strategies = {"semantic", "hyde", "keyword"}
         for doc_id, strategies in self.provenance.items():
-            assert set(strategies).issubset(valid_strategies), \
-                f"Invalid strategy for doc {doc_id}: {strategies}"
+            assert set(strategies).issubset(VALID_SEARCH_STRATEGIES), \
+                f"Invalid strategy for doc {doc_id}: {strategies}. " \
+                f"Must be subset of {VALID_SEARCH_STRATEGIES}"
 
     @classmethod
     def from_strategy_results(
@@ -183,13 +230,20 @@ class ScoredDocument:
     supports_counter: bool
     found_by: List[str]
 
-    def __post_init__(self):
-        """Validate scored document fields."""
-        assert 1 <= self.score <= 5, f"Score must be 1-5, got {self.score}"
-        assert self.doc_id > 0, "Document ID must be positive"
-        valid_strategies = {"semantic", "hyde", "keyword"}
-        assert set(self.found_by).issubset(valid_strategies), \
-            f"Invalid search strategy in found_by: {self.found_by}"
+    def __post_init__(self) -> None:
+        """Validate scored document fields.
+
+        Raises:
+            AssertionError: If score is outside valid range, doc_id is invalid,
+                          or found_by contains invalid search strategies.
+        """
+        assert MIN_SCORE <= self.score <= MAX_SCORE, \
+            f"Score must be between {MIN_SCORE} and {MAX_SCORE}, got {self.score}"
+        assert self.doc_id >= MIN_DOC_ID, \
+            f"Document ID must be >= {MIN_DOC_ID}"
+        assert set(self.found_by).issubset(VALID_SEARCH_STRATEGIES), \
+            f"Invalid search strategy in found_by: {self.found_by}. " \
+            f"Must be subset of {VALID_SEARCH_STRATEGIES}"
 
 
 @dataclass
@@ -215,12 +269,18 @@ class ExtractedCitation:
     metadata: Dict[str, Any]
     citation_order: int
 
-    def __post_init__(self):
-        """Validate citation fields."""
+    def __post_init__(self) -> None:
+        """Validate citation fields.
+
+        Raises:
+            AssertionError: If passage is empty, relevance_score is outside valid range,
+                          or citation_order is less than minimum.
+        """
         assert len(self.passage.strip()) > 0, "Passage cannot be empty"
-        assert 1 <= self.relevance_score <= 5, \
-            f"Score must be 1-5, got {self.relevance_score}"
-        assert self.citation_order >= 1, "Order must be >= 1"
+        assert MIN_SCORE <= self.relevance_score <= MAX_SCORE, \
+            f"Score must be between {MIN_SCORE} and {MAX_SCORE}, got {self.relevance_score}"
+        assert self.citation_order >= MIN_ORDER, \
+            f"Order must be >= {MIN_ORDER}"
 
     def to_markdown_reference(self) -> str:
         """Format citation as markdown reference with links.
@@ -257,8 +317,13 @@ class CounterReport:
     search_stats: Dict[str, Any]
     generation_metadata: Dict[str, Any]
 
-    def __post_init__(self):
-        """Validate counter-report fields."""
+    def __post_init__(self) -> None:
+        """Validate counter-report fields.
+
+        Raises:
+            AssertionError: If summary is empty, num_citations doesn't match citations list
+                          length, or citations contains non-ExtractedCitation objects.
+        """
         assert len(self.summary.strip()) > 0, "Summary cannot be empty"
         assert self.num_citations == len(self.citations), \
             f"num_citations ({self.num_citations}) must match citations list length ({len(self.citations)})"
@@ -276,8 +341,10 @@ class CounterReport:
         for citation in self.citations:
             md += f"{citation.to_markdown_reference()}\n"
         md += f"\n---\n"
-        md += f"*Search statistics: {self.search_stats.get('documents_found', 0)} found, "
-        md += f"{self.search_stats.get('documents_scored', 0)} scored, "
+        docs_found = self.search_stats.get('documents_found', DEFAULT_DOCUMENTS_FOUND)
+        docs_scored = self.search_stats.get('documents_scored', DEFAULT_DOCUMENTS_SCORED)
+        md += f"*Search statistics: {docs_found} found, "
+        md += f"{docs_scored} scored, "
         md += f"{self.num_citations} cited*\n"
         return md
 
@@ -303,12 +370,17 @@ class Verdict:
     counter_report: CounterReport
     analysis_metadata: Dict[str, Any]
 
-    def __post_init__(self):
-        """Validate verdict fields."""
-        assert self.verdict in ["supports", "contradicts", "undecided"], \
-            f"Invalid verdict value: {self.verdict}"
-        assert self.confidence in ["high", "medium", "low"], \
-            f"Invalid confidence value: {self.confidence}"
+    def __post_init__(self) -> None:
+        """Validate verdict fields.
+
+        Raises:
+            AssertionError: If verdict value is invalid, confidence level is invalid,
+                          or rationale is empty.
+        """
+        assert self.verdict in VALID_VERDICT_VALUES, \
+            f"Invalid verdict value: {self.verdict}. Must be one of {VALID_VERDICT_VALUES}"
+        assert self.confidence in VALID_CONFIDENCE_LEVELS, \
+            f"Invalid confidence value: {self.confidence}. Must be one of {VALID_CONFIDENCE_LEVELS}"
         assert len(self.rationale.strip()) > 0, "Rationale cannot be empty"
 
     def to_dict(self) -> Dict[str, Any]:
@@ -358,8 +430,13 @@ class PaperCheckResult:
     overall_assessment: str
     processing_metadata: Dict[str, Any]
 
-    def __post_init__(self):
-        """Validate result consistency across all components."""
+    def __post_init__(self) -> None:
+        """Validate result consistency across all components.
+
+        Raises:
+            AssertionError: If any result component lists have mismatched lengths
+                          compared to the number of statements.
+        """
         n = len(self.statements)
         assert len(self.counter_statements) == n, \
             f"Mismatched counter_statements: {len(self.counter_statements)} vs {n}"

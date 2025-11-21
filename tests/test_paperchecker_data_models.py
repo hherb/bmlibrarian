@@ -14,7 +14,17 @@ from bmlibrarian.paperchecker.data_models import (
     ExtractedCitation,
     CounterReport,
     Verdict,
-    PaperCheckResult
+    PaperCheckResult,
+    MIN_CONFIDENCE,
+    MAX_CONFIDENCE,
+    MIN_SCORE,
+    MAX_SCORE,
+    MIN_ORDER,
+    MIN_DOC_ID,
+    VALID_STATEMENT_TYPES,
+    VALID_SEARCH_STRATEGIES,
+    VALID_VERDICT_VALUES,
+    VALID_CONFIDENCE_LEVELS,
 )
 
 
@@ -36,8 +46,8 @@ class TestStatement:
         assert stmt.statement_order == 1
 
     def test_invalid_confidence_low(self):
-        """Test that confidence < 0 raises error."""
-        with pytest.raises(AssertionError, match="Confidence must be 0.0-1.0"):
+        """Test that confidence < MIN_CONFIDENCE raises error."""
+        with pytest.raises(AssertionError, match="Confidence must be between"):
             Statement(
                 text="Test statement",
                 context="Test context",
@@ -47,8 +57,8 @@ class TestStatement:
             )
 
     def test_invalid_confidence_high(self):
-        """Test that confidence > 1 raises error."""
-        with pytest.raises(AssertionError, match="Confidence must be 0.0-1.0"):
+        """Test that confidence > MAX_CONFIDENCE raises error."""
+        with pytest.raises(AssertionError, match="Confidence must be between"):
             Statement(
                 text="Test statement",
                 context="Test context",
@@ -254,8 +264,8 @@ class TestScoredDocument:
         assert set(doc.found_by) == {"semantic", "hyde"}
 
     def test_invalid_score_low(self):
-        """Test that score < 1 raises error."""
-        with pytest.raises(AssertionError, match="Score must be 1-5"):
+        """Test that score < MIN_SCORE raises error."""
+        with pytest.raises(AssertionError, match="Score must be between"):
             ScoredDocument(
                 doc_id=1,
                 document={},
@@ -266,8 +276,8 @@ class TestScoredDocument:
             )
 
     def test_invalid_score_high(self):
-        """Test that score > 5 raises error."""
-        with pytest.raises(AssertionError, match="Score must be 1-5"):
+        """Test that score > MAX_SCORE raises error."""
+        with pytest.raises(AssertionError, match="Score must be between"):
             ScoredDocument(
                 doc_id=1,
                 document={},
@@ -278,8 +288,8 @@ class TestScoredDocument:
             )
 
     def test_invalid_doc_id(self):
-        """Test that doc_id <= 0 raises error."""
-        with pytest.raises(AssertionError, match="Document ID must be positive"):
+        """Test that doc_id < MIN_DOC_ID raises error."""
+        with pytest.raises(AssertionError, match="Document ID must be >="):
             ScoredDocument(
                 doc_id=0,
                 document={},
@@ -346,7 +356,7 @@ class TestExtractedCitation:
 
     def test_invalid_relevance_score(self):
         """Test that invalid scores raise errors."""
-        with pytest.raises(AssertionError, match="Score must be 1-5"):
+        with pytest.raises(AssertionError, match="Score must be between"):
             ExtractedCitation(
                 doc_id=1,
                 passage="Test passage",
@@ -841,3 +851,220 @@ class TestPaperCheckResult:
         assert "**Rationale:** Test rationale" in md
         assert "## Overall Assessment" in md
         assert "Overall assessment" in md
+
+
+class TestConstants:
+    """Tests for module-level constants."""
+
+    def test_confidence_range(self):
+        """Test confidence constants are valid."""
+        assert MIN_CONFIDENCE == 0.0
+        assert MAX_CONFIDENCE == 1.0
+        assert MIN_CONFIDENCE < MAX_CONFIDENCE
+
+    def test_score_range(self):
+        """Test score constants are valid."""
+        assert MIN_SCORE == 1
+        assert MAX_SCORE == 5
+        assert MIN_SCORE < MAX_SCORE
+
+    def test_order_minimum(self):
+        """Test order minimum is positive."""
+        assert MIN_ORDER == 1
+        assert MIN_ORDER > 0
+
+    def test_doc_id_minimum(self):
+        """Test document ID minimum is positive."""
+        assert MIN_DOC_ID == 1
+        assert MIN_DOC_ID > 0
+
+    def test_valid_statement_types(self):
+        """Test valid statement types set."""
+        assert isinstance(VALID_STATEMENT_TYPES, set)
+        assert "hypothesis" in VALID_STATEMENT_TYPES
+        assert "finding" in VALID_STATEMENT_TYPES
+        assert "conclusion" in VALID_STATEMENT_TYPES
+        assert len(VALID_STATEMENT_TYPES) == 3
+
+    def test_valid_search_strategies(self):
+        """Test valid search strategies set."""
+        assert isinstance(VALID_SEARCH_STRATEGIES, set)
+        assert "semantic" in VALID_SEARCH_STRATEGIES
+        assert "hyde" in VALID_SEARCH_STRATEGIES
+        assert "keyword" in VALID_SEARCH_STRATEGIES
+        assert len(VALID_SEARCH_STRATEGIES) == 3
+
+    def test_valid_verdict_values(self):
+        """Test valid verdict values set."""
+        assert isinstance(VALID_VERDICT_VALUES, set)
+        assert "supports" in VALID_VERDICT_VALUES
+        assert "contradicts" in VALID_VERDICT_VALUES
+        assert "undecided" in VALID_VERDICT_VALUES
+        assert len(VALID_VERDICT_VALUES) == 3
+
+    def test_valid_confidence_levels(self):
+        """Test valid confidence levels set."""
+        assert isinstance(VALID_CONFIDENCE_LEVELS, set)
+        assert "high" in VALID_CONFIDENCE_LEVELS
+        assert "medium" in VALID_CONFIDENCE_LEVELS
+        assert "low" in VALID_CONFIDENCE_LEVELS
+        assert len(VALID_CONFIDENCE_LEVELS) == 3
+
+
+class TestEdgeCases:
+    """Tests for edge cases and boundary conditions."""
+
+    def test_statement_boundary_confidence_values(self):
+        """Test statement creation with boundary confidence values."""
+        # Test MIN_CONFIDENCE
+        stmt = Statement(
+            text="Test",
+            context="Context",
+            statement_type="finding",
+            confidence=MIN_CONFIDENCE,
+            statement_order=1
+        )
+        assert stmt.confidence == MIN_CONFIDENCE
+
+        # Test MAX_CONFIDENCE
+        stmt = Statement(
+            text="Test",
+            context="Context",
+            statement_type="finding",
+            confidence=MAX_CONFIDENCE,
+            statement_order=1
+        )
+        assert stmt.confidence == MAX_CONFIDENCE
+
+    def test_scored_document_boundary_scores(self):
+        """Test scored document with boundary score values."""
+        # Test MIN_SCORE
+        doc = ScoredDocument(
+            doc_id=1,
+            document={},
+            score=MIN_SCORE,
+            explanation="Test",
+            supports_counter=False,
+            found_by=["semantic"]
+        )
+        assert doc.score == MIN_SCORE
+
+        # Test MAX_SCORE
+        doc = ScoredDocument(
+            doc_id=1,
+            document={},
+            score=MAX_SCORE,
+            explanation="Test",
+            supports_counter=True,
+            found_by=["semantic"]
+        )
+        assert doc.score == MAX_SCORE
+
+    def test_citation_boundary_score_and_order(self):
+        """Test citation with boundary score and order values."""
+        # Test MIN_SCORE and MIN_ORDER
+        citation = ExtractedCitation(
+            doc_id=1,
+            passage="Test passage",
+            relevance_score=MIN_SCORE,
+            full_citation="Test citation",
+            metadata={},
+            citation_order=MIN_ORDER
+        )
+        assert citation.relevance_score == MIN_SCORE
+        assert citation.citation_order == MIN_ORDER
+
+        # Test MAX_SCORE
+        citation = ExtractedCitation(
+            doc_id=1,
+            passage="Test passage",
+            relevance_score=MAX_SCORE,
+            full_citation="Test citation",
+            metadata={},
+            citation_order=MIN_ORDER
+        )
+        assert citation.relevance_score == MAX_SCORE
+
+    def test_empty_search_results(self):
+        """Test SearchResults with empty lists."""
+        results = SearchResults.from_strategy_results(
+            semantic=[],
+            hyde=[],
+            keyword=[]
+        )
+        assert len(results.deduplicated_docs) == 0
+        assert len(results.provenance) == 0
+
+    def test_counter_report_with_zero_citations(self):
+        """Test CounterReport with zero citations."""
+        report = CounterReport(
+            summary="Summary with no citations",
+            num_citations=0,
+            citations=[],
+            search_stats={"documents_found": 10, "documents_scored": 5},
+            generation_metadata={}
+        )
+        assert report.num_citations == 0
+        assert len(report.citations) == 0
+        md = report.to_markdown()
+        assert "0 cited" in md
+
+    def test_single_search_strategy_provenance(self):
+        """Test SearchResults when document found by only one strategy."""
+        results = SearchResults.from_strategy_results(
+            semantic=[1, 2],
+            hyde=[],
+            keyword=[]
+        )
+        assert len(results.provenance[1]) == 1
+        assert results.provenance[1] == ["semantic"]
+
+    def test_all_strategies_find_same_document(self):
+        """Test SearchResults when all strategies find same document."""
+        results = SearchResults.from_strategy_results(
+            semantic=[1],
+            hyde=[1],
+            keyword=[1]
+        )
+        assert len(results.deduplicated_docs) == 1
+        assert set(results.provenance[1]) == VALID_SEARCH_STRATEGIES
+
+    def test_very_long_text_fields(self):
+        """Test data models with very long text fields."""
+        long_text = "A" * 10000
+        stmt = Statement(
+            text=long_text,
+            context=long_text,
+            statement_type="finding",
+            confidence=0.9,
+            statement_order=1
+        )
+        assert len(stmt.text) == 10000
+        assert len(stmt.context) == 10000
+
+    def test_unicode_characters_in_text(self):
+        """Test data models handle unicode characters correctly."""
+        unicode_text = "测试 тест اختبار 🧬 α-helix β-sheet"
+        stmt = Statement(
+            text=unicode_text,
+            context=unicode_text,
+            statement_type="finding",
+            confidence=0.9,
+            statement_order=1
+        )
+        assert stmt.text == unicode_text
+
+    def test_metadata_with_none_values(self):
+        """Test citation metadata with None values."""
+        citation = ExtractedCitation(
+            doc_id=1,
+            passage="Test",
+            relevance_score=3,
+            full_citation="Test",
+            metadata={"pmid": None, "doi": None, "year": None},
+            citation_order=1
+        )
+        ref = citation.to_markdown_reference()
+        # Should handle None values gracefully
+        assert "[PMID:" not in ref or "[PMID: None]" not in ref
+        assert "[DOI:" not in ref or "[DOI: None]" not in ref
