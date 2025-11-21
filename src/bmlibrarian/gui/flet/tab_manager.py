@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from .components import StepCard
 from .ui_builder import create_tab_header, create_empty_state
 from .scoring_interface import ScoringInterface
-from ..cli.workflow_steps import WorkflowStep
+from ...cli.workflow_steps import WorkflowStep
 
 
 class TabManager:

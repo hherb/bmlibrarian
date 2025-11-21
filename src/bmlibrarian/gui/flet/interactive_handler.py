@@ -7,7 +7,7 @@ and step-by-step user review processes.
 
 import time
 from typing import Optional, Callable, Dict, Any, List
-from ..cli.workflow_steps import WorkflowStep
+from ...cli.workflow_steps import WorkflowStep
 
 
 class InteractiveHandler:

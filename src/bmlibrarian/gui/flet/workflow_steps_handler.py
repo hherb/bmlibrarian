@@ -6,7 +6,7 @@ processing, scoring, citation extraction, and agent coordination.
 """
 
 from typing import Dict, Any, Callable, List, Tuple, Optional, Generator
-from ..cli.workflow_steps import WorkflowStep
+from ...cli.workflow_steps import WorkflowStep
 
 
 class WorkflowStepsHandler:

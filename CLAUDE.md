@@ -345,20 +345,32 @@ bmlibrarian/
 │       ├── formatting.py      # Report formatting and export
 │       ├── workflow.py        # Workflow orchestration
 │       └── workflow_steps.py  # Enum-based workflow step definitions
-│   └── gui/                   # Graphical user interfaces using Flet
-│       ├── __init__.py        # GUI module exports
-│       ├── config_app.py      # Configuration GUI application
-│       ├── research_app.py    # Main research GUI application (457 lines)
-│       ├── components.py      # Reusable UI components (StepCard, etc.)
-│       ├── dialogs.py         # Dialog management and interactions
-│       ├── workflow.py        # Real agent orchestration and execution
-│       └── tabs/              # Configuration GUI tab components
-│           ├── __init__.py
-│           ├── general_tab.py # General settings tab
-│           ├── agent_tab.py   # Agent-specific configuration tabs
-│           ├── query_generation_tab.py  # Multi-model query generation tab
-│           ├── search_tab.py  # Search settings tab
-│           └── document_interrogation_tab.py  # Document interrogation interface
+│   └── gui/                   # Graphical user interfaces (Flet and Qt)
+│       ├── __init__.py        # GUI module exports (re-exports from flet/ for backwards compatibility)
+│       ├── flet/              # Flet-based GUI components
+│       │   ├── __init__.py    # Flet module exports
+│       │   ├── config_app.py  # Configuration GUI application
+│       │   ├── research_app.py # Main research GUI application
+│       │   ├── components.py  # Reusable UI components (StepCard, etc.)
+│       │   ├── dialogs.py     # Dialog management and interactions
+│       │   ├── workflow.py    # Real agent orchestration and execution
+│       │   ├── document_card_factory_base.py  # Base classes for document cards
+│       │   ├── flet_document_card_factory.py  # Flet document card factory
+│       │   ├── unified_document_card.py       # Unified document card interface
+│       │   └── tabs/          # Configuration GUI tab components
+│       │       ├── __init__.py
+│       │       ├── general_tab.py # General settings tab
+│       │       ├── agent_tab.py   # Agent-specific configuration tabs
+│       │       ├── query_generation_tab.py  # Multi-model query generation tab
+│       │       ├── search_tab.py  # Search settings tab
+│       │       └── document_interrogation_tab.py  # Document interrogation interface
+│       └── qt/                # Qt/PySide6-based GUI components
+│           ├── __init__.py    # Qt module entry point
+│           ├── core/          # Core application infrastructure
+│           ├── plugins/       # Plugin system (research, fact_checker, etc.)
+│           ├── widgets/       # Reusable Qt widgets
+│           ├── resources/     # Resources and styling (dpi_scale, stylesheets)
+│           └── qt_document_card_factory.py  # Qt document card factory
 │   └── lab/                   # Experimental tools and interfaces
 │       ├── __init__.py        # Lab module exports
 │       ├── query_lab.py       # QueryAgent experimental GUI
