@@ -9,6 +9,8 @@ extraction, and evidence synthesis to generate verdicts on research claims.
 Main components:
     - PaperCheckerAgent: Main agent orchestrating the fact-checking workflow
     - Data models: Type-safe dataclasses for the entire workflow
+    - Components: Modular workflow components (StatementExtractor, etc.)
+    - Agent: PaperCheckerAgent orchestrating the fact-checking process
     - Database: PostgreSQL schema for storing results
     - Components: Sub-components for each workflow step
 
@@ -47,6 +49,7 @@ from .data_models import (
     DEFAULT_DOCUMENTS_SCORED,
 )
 
+from .components import StatementExtractor
 from .agent import PaperCheckerAgent
 
 from .database import PaperCheckDB
@@ -79,6 +82,8 @@ __all__ = [
     "CounterReport",
     "Verdict",
     "PaperCheckResult",
+    # Components
+    "StatementExtractor",
     # Constants
     "MIN_CONFIDENCE",
     "MAX_CONFIDENCE",
