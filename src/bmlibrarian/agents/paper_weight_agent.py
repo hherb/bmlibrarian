@@ -15,7 +15,6 @@ from datetime import datetime
 import json
 
 # Constants for formatting and display
-EVIDENCE_TRUNCATION_LENGTH = 100  # Max characters for evidence text in markdown output
 DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'  # Standard datetime format for reports
 
 
@@ -272,11 +271,8 @@ class PaperWeightResult:
                     if detail.reasoning:
                         lines.append(f"  - Reasoning: {detail.reasoning}")
                     if detail.evidence_text:
-                        # Truncate evidence text if too long
-                        evidence = detail.evidence_text
-                        if len(evidence) > EVIDENCE_TRUNCATION_LENGTH:
-                            evidence = evidence[:EVIDENCE_TRUNCATION_LENGTH] + "..."
-                        lines.append(f"  - Evidence: *\"{evidence}\"*")
+                        # Preserve full evidence text for audit trail integrity
+                        lines.append(f"  - Evidence: *\"{detail.evidence_text}\"*")
                     lines.append("")
             else:
                 lines.append("*No detailed breakdown available*")

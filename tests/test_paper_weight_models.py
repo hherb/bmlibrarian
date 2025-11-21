@@ -8,8 +8,7 @@ import pytest
 from datetime import datetime
 import json
 from bmlibrarian.agents.paper_weight_agent import (
-    AssessmentDetail, DimensionScore, PaperWeightResult,
-    EVIDENCE_TRUNCATION_LENGTH
+    AssessmentDetail, DimensionScore, PaperWeightResult
 )
 
 
@@ -321,12 +320,13 @@ class TestPaperWeightResult:
         # Should indicate no detailed breakdown
         assert "*No detailed breakdown available*" in markdown
 
-    def test_to_markdown_truncates_long_evidence(self):
-        """Test that long evidence text is truncated in Markdown."""
+    def test_to_markdown_preserves_full_evidence(self):
+        """Test that full evidence text is preserved in Markdown (no truncation)."""
         study_design = DimensionScore("study_design", 8.0)
-        # Create evidence longer than truncation threshold
-        long_evidence_length = EVIDENCE_TRUNCATION_LENGTH * 2
-        long_evidence = "A" * long_evidence_length
+        # Create substantial evidence text - should be fully preserved
+        long_evidence = "This is a detailed evidence excerpt from the paper that describes " \
+                        "the randomization procedure in full detail including the specific " \
+                        "method used for sequence generation and allocation concealment."
         study_design.add_detail(
             "study_type", "RCT", 8.0,
             evidence=long_evidence
@@ -347,12 +347,10 @@ class TestPaperWeightResult:
 
         markdown = result.to_markdown()
 
-        # Evidence should be truncated with "..."
-        assert "..." in markdown
-        # Should not contain full evidence string
-        assert "A" * long_evidence_length not in markdown
-        # Should contain truncated version
-        assert "A" * EVIDENCE_TRUNCATION_LENGTH in markdown
+        # Full evidence should be preserved for audit trail integrity
+        assert long_evidence in markdown
+        # Should not have truncation indicator
+        assert "..." not in markdown or long_evidence in markdown
 
     def test_from_db_row(self):
         """Test reconstructing PaperWeightResult from database rows."""
