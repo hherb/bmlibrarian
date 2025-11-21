@@ -765,16 +765,6 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Preliminary report generation failed: {e}", exc_info=True)
             raise
 
-    def perform_counterfactual_analysis(self, report: str) -> None:
-        """Perform counterfactual analysis (Phase 3)."""
-        # TODO Phase 3: Call counterfactual_agent.generate_counterfactual_questions()
-        pass
-
-    def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
-        """Generate final comprehensive report (Phase 3)."""
-        # TODO Phase 3: Call editor_agent.edit_comprehensive_report()
-        pass
-
     def cleanup(self) -> None:
         """
         Cleanup workflow executor resources.
@@ -815,17 +805,3 @@ class QtWorkflowExecutor(QObject):
 
         except Exception as e:
             self.logger.error(f"Error during workflow executor cleanup: {e}", exc_info=True)
-
-    def cancel_workflow(self) -> None:
-        """
-        Cancel ongoing workflow execution.
-
-        This method will be implemented in Phase 3 when workflow threading is added.
-        For now, it's a placeholder for future cancellation logic.
-        """
-        # TODO Phase 3: Implement workflow cancellation
-        # - Set cancellation flag
-        # - Stop background threads/workers
-        # - Emit workflow_error signal with cancellation exception
-        self.logger.warning("Workflow cancellation not yet implemented (Phase 3)")
-        pass
