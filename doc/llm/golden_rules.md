@@ -13,3 +13,5 @@
 10. **All errors must be reported to the user**: No exceptions.
 11. **we prefer reusable pure functions over more comlex larger structures.** Where possible, such pure functions shoudl be factored out into generally useful libraries
 12. **All modules need to be documented in markdown format** in doc/users for the end user, and doc/debvelopers for developers. Importantinformation for the AI assistantgo into doc/llm.
+13. **All tests must be written**: No exceptions.
+14. **No truncation of data**: Never truncate data unless explicitly specified by the user. If in doubt, do not introduce truncation before consulting with the team.
