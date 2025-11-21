@@ -59,12 +59,17 @@ src/bmlibrarian/gui/qt/
 ├── plugins/                         # Plugin-based tab system
 │   ├── __init__.py
 │   ├── base_tab.py                  # Abstract base class for all plugins
-│   ├── research/                    # Research workflow plugin
-│   │   ├── __init__.py
-│   │   ├── plugin.py                # Plugin entry point
-│   │   ├── research_tab.py          # Main tab widget
-│   │   ├── workflow_widget.py       # Workflow progress display
-│   │   └── report_viewer.py         # Report preview widget
+│   ├── research/                    # Research workflow plugin (modular architecture)
+│   │   ├── __init__.py              # Module exports
+│   │   ├── plugin.py                # Plugin entry point and registration
+│   │   ├── research_tab.py          # Main tab widget and UI orchestration
+│   │   ├── constants.py             # UI constants, colors, and stylesheet generators
+│   │   ├── tab_builders.py          # Tab construction and UI building functions
+│   │   ├── tab_updaters.py          # Tab state update handlers
+│   │   ├── workflow_executor.py     # Qt workflow executor (agents, scoring, reports)
+│   │   ├── workflow_handlers.py     # Workflow event handlers and signal connections
+│   │   ├── workflow_thread.py       # QThread-based background workflow execution
+│   │   └── export_utils.py          # Report export functionality
 │   ├── search/                      # Document search plugin
 │   │   ├── __init__.py
 │   │   ├── plugin.py
@@ -359,6 +364,86 @@ class ResearchTabWidget(QWidget):
         self.worker.progress_update.connect(self.update_progress)
         self.worker.finished.connect(self.on_workflow_complete)
         self.worker.start()
+```
+
+### Research Plugin Modular Architecture
+
+The Research plugin demonstrates best practices for complex plugin organization, separating concerns into focused modules:
+
+**Module Responsibilities**:
+
+| Module | Responsibility |
+|--------|----------------|
+| `plugin.py` | Plugin registration, metadata, lifecycle management |
+| `research_tab.py` | Main widget orchestration, UI layout, component coordination |
+| `constants.py` | UI constants, color schemes, stylesheet generators |
+| `tab_builders.py` | Tab construction functions, widget creation |
+| `tab_updaters.py` | State update handlers, UI refresh logic |
+| `workflow_executor.py` | Agent coordination, workflow state, business logic |
+| `workflow_handlers.py` | Signal connections, event response handlers |
+| `workflow_thread.py` | Background thread execution, cancellation support |
+| `export_utils.py` | Report export, file operations |
+
+**Architecture Diagram**:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      ResearchPlugin                          │
+│                       (plugin.py)                            │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│                   ResearchTabWidget                          │
+│                   (research_tab.py)                          │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ │
+│  │ tab_builders │ │ tab_updaters │ │  workflow_handlers   │ │
+│  │   (.py)      │ │    (.py)     │ │       (.py)          │ │
+│  └──────────────┘ └──────────────┘ └──────────────────────┘ │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│                   WorkflowThread                             │
+│                 (workflow_thread.py)                         │
+│         Background execution with cancellation               │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│               QtWorkflowExecutor                             │
+│              (workflow_executor.py)                          │
+│  ┌────────────┐ ┌───────────────┐ ┌───────────────────────┐ │
+│  │ QueryAgent │ │ ScoringAgent  │ │ CitationFinderAgent   │ │
+│  └────────────┘ └───────────────┘ └───────────────────────┘ │
+│  ┌────────────┐ ┌───────────────┐ ┌───────────────────────┐ │
+│  │ReportAgent │ │Counterfactual │ │    EditorAgent        │ │
+│  └────────────┘ └───────────────┘ └───────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Design Patterns**:
+
+1. **Separation of Concerns**: UI construction, state management, and business logic in separate files
+2. **Mixin-Style Handlers**: `workflow_handlers.py` adds methods to `ResearchTabWidget` via composition
+3. **Threaded Execution**: `WorkflowThread` runs agents in background, emits signals for UI updates
+4. **Centralized Constants**: All UI constants in `constants.py` for consistent theming
+5. **Cancellation Support**: `WorkflowCancelledException` and `_should_cancel` flag for graceful termination
+
+**Workflow Executor Methods**:
+
+```python
+class QtWorkflowExecutor(QObject):
+    """Coordinates agent-based workflow with Qt signals."""
+
+    # Workflow steps
+    def generate_query(self, question: str) -> str
+    def search_documents(self, query: str) -> List[dict]
+    def score_documents(self, documents: List[dict]) -> List[Tuple[dict, dict]]
+    def extract_citations(self, scored_docs: List) -> List[dict]
+    def generate_preliminary_report(self, citations: List) -> str
+    def perform_counterfactual_analysis(self, report: str) -> Optional[dict]
+    def generate_final_report(self, preliminary: str, counterfactual: dict) -> str
+
+    # Lifecycle
+    def cleanup(self) -> None
+    def cancel_workflow(self) -> None
 ```
 
 ## Signal/Slot Communication
