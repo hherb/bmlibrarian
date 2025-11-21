@@ -44,6 +44,11 @@ from . import export_utils
 from ...qt_document_card_factory import QtDocumentCardFactory
 from ...resources.styles import get_font_scale
 
+# Import PDF manager
+from bmlibrarian.utils.pdf_manager import PDFManager
+from pathlib import Path
+import os
+
 
 class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
     """
@@ -110,8 +115,15 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.workflow_thread: Optional['WorkflowThread'] = None
 
         # Document card factory for creating consistent document cards
-        self.document_card_factory = QtDocumentCardFactory()
-        self.logger.info("Document card factory initialized")
+        # Initialize PDF manager for handling PDF downloads and storage
+        pdf_dir_str = os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
+        pdf_base_dir = Path(pdf_dir_str).expanduser()
+        self.pdf_manager = PDFManager(base_dir=str(pdf_base_dir))
+        self.document_card_factory = QtDocumentCardFactory(
+            pdf_manager=self.pdf_manager,
+            base_pdf_dir=pdf_base_dir
+        )
+        self.logger.info("Document card factory initialized with PDF manager")
 
         # UI Components (initialized in _setup_ui)
         self.question_input: Optional[QTextEdit] = None

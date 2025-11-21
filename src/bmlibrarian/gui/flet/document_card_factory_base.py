@@ -63,6 +63,7 @@ class PDFButtonConfig:
     on_fetch: Optional[Callable] = None  # Callback for fetching PDF
     on_upload: Optional[Callable] = None  # Callback for uploading PDF
     show_notifications: bool = True  # Show success/error notifications
+    doc_id: Optional[int] = None  # Document ID for error reporting
 
 
 @dataclass

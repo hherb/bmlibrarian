@@ -43,7 +43,7 @@ def initialize_agents_in_main_thread():
         print("🔧 Initializing BMLibrarian agents with config.json settings...")
 
         # Get database connection for audit tracking
-        from ..database import get_db_manager
+        from ...database import get_db_manager
         audit_conn = None
         db_manager = None
 
