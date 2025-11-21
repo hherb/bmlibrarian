@@ -22,7 +22,7 @@ Create a comprehensive PostgreSQL schema (`papercheck`) that stores:
 
 ## Implementation Location
 
-Create: `migrations/papercheck_schema.sql`
+Create: `migrations/010_papercheck_schema.sql`
 
 ## Schema Design
 
