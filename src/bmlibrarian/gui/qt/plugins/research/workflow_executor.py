@@ -809,9 +809,10 @@ class QtWorkflowExecutor(QObject):
             self.logger.info("Starting counterfactual analysis...")
 
             # Call the counterfactual agent to analyze the report
+            # Note: Full question used in title - never truncate for audit trail integrity
             analysis = self.counterfactual_agent.analyze_document(
                 document_content=report,
-                document_title=f"Research Report: {self.current_question[:50]}..."
+                document_title=f"Research Report: {self.current_question}"
             )
 
             if analysis is None:
