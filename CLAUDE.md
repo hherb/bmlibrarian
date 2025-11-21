@@ -13,9 +13,9 @@ The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides f
 - **Python**: Requires Python >=3.12
 - **Database**: PostgreSQL with pgvector extension for semantic search
 - **AI/LLM**: Ollama for local language model inference
-- **Main dependencies**: 
-  - psycopg >=3.2.9 for PostgreSQL connectivity
-  - requests >=2.31.0 for HTTP communication with Ollama
+- **Main dependencies**:
+  - psycopg >=3.2.9 for PostgreSQL connectivity (via DatabaseManager)
+  - ollama - Python library for Ollama LLM communication (never use raw HTTP requests)
   - flet >=0.24.1 for GUI configuration interface
 - **Package manager**: Uses `uv` for dependency management (uv.lock present)
 
