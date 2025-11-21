@@ -23,10 +23,10 @@ Example:
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from bmlibrarian.database import get_db_manager, DatabaseManager
-from bmlibrarian.config import get_config, get_ollama_host
+from bmlibrarian.config import get_ollama_host
 
 from ..data_models import CounterStatement, SearchResults
 
@@ -427,8 +427,18 @@ class SearchCoordinator:
         logger.debug(f"Keyword search: {len(keywords)} keywords, limit={limit}")
 
         # Build ts_query from keywords using OR logic
-        # Escape special characters and join with OR operator
-        escaped_keywords = [self._escape_tsquery_term(kw) for kw in keywords]
+        # Escape special characters and filter out invalid terms
+        escaped_keywords = [
+            self._escape_tsquery_term(kw) for kw in keywords
+            if kw and kw.strip()
+        ]
+        # Filter out fallback terms that won't match anything useful
+        escaped_keywords = [kw for kw in escaped_keywords if kw != "dummy_search_term"]
+
+        if not escaped_keywords:
+            logger.warning("No valid keywords after escaping, returning empty results")
+            return []
+
         query_expression = f" {KEYWORD_SEARCH_OPERATOR} ".join(escaped_keywords)
 
         try:
