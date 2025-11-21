@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List
+from typing import Dict, List
 
 import ollama
 
@@ -79,7 +79,7 @@ class HyDEGenerator:
         self,
         original_statement: Statement,
         counter_text: str,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, List[str]]:
         """
         Generate HyDE abstracts and keywords for counter-statement.
 
@@ -285,7 +285,7 @@ Return ONLY the JSON, nothing else."""
             f"{last_exception}"
         )
 
-    def _parse_response(self, response: str) -> Dict[str, Any]:
+    def _parse_response(self, response: str) -> Dict[str, List[str]]:
         """
         Parse HyDE response into abstracts and keywords.
 

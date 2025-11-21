@@ -12,7 +12,6 @@ The generator produces logical negations rather than simple grammatical negation
 """
 
 import logging
-import re
 import time
 from typing import Any, Dict
 
