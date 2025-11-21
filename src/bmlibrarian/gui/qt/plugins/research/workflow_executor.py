@@ -13,12 +13,6 @@ DEFAULT_SCORING_THRESHOLD = 3.0  # Minimum score for citation extraction
 DEFAULT_CITATION_EXTRACTION_THRESHOLD = 0.7  # Citation relevance threshold
 
 
-class WorkflowCancelledException(Exception):
-    """Exception raised when workflow is cancelled by user."""
-
-    pass
-
-
 class WorkflowSignals(QObject):
     """
     Signals for workflow execution progress and results.
@@ -771,228 +765,29 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Preliminary report generation failed: {e}", exc_info=True)
             raise
 
-    def perform_counterfactual_analysis(self, report: str) -> Optional[dict]:
+    def perform_counterfactual_analysis(self, report: str) -> None:
         """
-        Perform counterfactual analysis to identify contradictory research questions.
+        Stub for counterfactual analysis.
 
-        This method analyzes the preliminary report to generate research questions
-        that could help find contradictory evidence in the literature.
-
-        Args:
-            report: The preliminary report markdown content to analyze
-
-        Returns:
-            dict: Counterfactual analysis results containing:
-                - main_claims: List of key claims identified in the report
-                - counterfactual_questions: List of research questions for finding contradictions
-                - overall_assessment: Summary assessment of claim testability
-                - confidence_level: HIGH/MEDIUM/LOW confidence in the claims
-            Returns None if analysis fails or counterfactual agent is not available
-
-        Raises:
-            RuntimeError: If CounterfactualAgent is not initialized
-            Exception: If counterfactual analysis fails
+        Note: The actual implementation is in workflow_thread.py which calls
+        counterfactual_agent.find_contradictory_literature() directly.
+        This method exists as a potential alternative entry point but is not
+        currently used by the threaded workflow.
         """
-        if not self.counterfactual_agent:
-            self.logger.warning("CounterfactualAgent not initialized, skipping counterfactual analysis")
-            return None
+        # Implementation in workflow_thread.py lines 279-362
+        pass
 
-        if not report or not report.strip():
-            self.logger.warning("No report content for counterfactual analysis")
-            return None
-
-        if not self.counterfactual_enabled:
-            self.logger.info("Counterfactual analysis is disabled")
-            return None
-
-        try:
-            self.logger.info("Starting counterfactual analysis...")
-
-            # Call the counterfactual agent to analyze the report
-            # Note: Full question used in title - never truncate for audit trail integrity
-            analysis = self.counterfactual_agent.analyze_document(
-                document_content=report,
-                document_title=f"Research Report: {self.current_question}"
-            )
-
-            if analysis is None:
-                self.logger.warning("Counterfactual analysis returned no results")
-                return None
-
-            # Convert CounterfactualAnalysis dataclass to dictionary for storage and signals
-            analysis_dict = {
-                'document_title': analysis.document_title,
-                'main_claims': analysis.main_claims,
-                'counterfactual_questions': [
-                    {
-                        'counterfactual_statement': q.counterfactual_statement,
-                        'question': q.question,
-                        'reasoning': q.reasoning,
-                        'target_claim': q.target_claim,
-                        'search_keywords': q.search_keywords,
-                        'priority': q.priority
-                    }
-                    for q in analysis.counterfactual_questions
-                ],
-                'overall_assessment': analysis.overall_assessment,
-                'confidence_level': analysis.confidence_level
-            }
-
-            # Store in workflow state
-            self.counterfactual_analysis = analysis_dict
-
-            num_questions = len(analysis.counterfactual_questions)
-            self.logger.info(
-                f"Counterfactual analysis complete: {len(analysis.main_claims)} claims identified, "
-                f"{num_questions} research questions generated, "
-                f"confidence: {analysis.confidence_level}"
-            )
-
-            return analysis_dict
-
-        except Exception as e:
-            self.logger.error(f"Counterfactual analysis failed: {e}", exc_info=True)
-            raise
-
-    def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> str:
+    def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
         """
-        Generate final comprehensive report integrating counterfactual analysis.
+        Stub for final report generation.
 
-        This method uses the EditorAgent to create a balanced, comprehensive report
-        that integrates the preliminary findings with counterfactual analysis results.
-
-        Args:
-            preliminary: The preliminary report markdown content
-            counterfactual: Optional counterfactual analysis results dictionary
-
-        Returns:
-            str: The final comprehensive markdown report
-
-        Raises:
-            RuntimeError: If EditorAgent is not initialized
-            Exception: If report generation fails
+        Note: The actual implementation is in workflow_thread.py which uses
+        ReportBuilder.build_final_report() directly.
+        This method exists as a potential alternative entry point but is not
+        currently used by the threaded workflow.
         """
-        if not self.editor_agent:
-            raise RuntimeError("EditorAgent not initialized")
-
-        if not preliminary or not preliminary.strip():
-            self.logger.warning("No preliminary report for final report generation")
-            return preliminary or ""
-
-        try:
-            self.logger.info("Generating final comprehensive report...")
-
-            # Create a simple report-like object for the editor agent
-            # The editor agent expects an object with content and references attributes
-            class SimpleReport:
-                def __init__(self, content: str, references: list):
-                    self.content = content
-                    self.references = references
-
-            # Use citations as references for the report object
-            report_object = SimpleReport(
-                content=preliminary,
-                references=[]  # References are already embedded in citations
-            )
-
-            # Call editor agent to create comprehensive report
-            edited_report = self.editor_agent.create_comprehensive_report(
-                original_report=report_object,
-                research_question=self.current_question,
-                supporting_citations=self.citations,
-                contradictory_evidence=counterfactual,
-                confidence_analysis=None  # CounterfactualAnalysis object not available as dict
-            )
-
-            if edited_report is None:
-                self.logger.warning("Editor agent returned no result, using preliminary report")
-                self.final_report = preliminary
-                return preliminary
-
-            # Format the edited report as markdown
-            if hasattr(self.editor_agent, 'format_comprehensive_markdown'):
-                final_markdown = self.editor_agent.format_comprehensive_markdown(edited_report)
-            elif hasattr(edited_report, 'content'):
-                final_markdown = edited_report.content
-            else:
-                # Fallback: construct basic markdown from EditedReport fields
-                final_markdown = self._format_edited_report_fallback(edited_report)
-
-            # Store in workflow state
-            self.final_report = final_markdown
-
-            self.logger.info(
-                f"Final comprehensive report generated: {len(final_markdown)} characters, "
-                f"confidence: {getattr(edited_report, 'confidence_assessment', 'N/A')}"
-            )
-
-            return final_markdown
-
-        except Exception as e:
-            self.logger.error(f"Final report generation failed: {e}", exc_info=True)
-            # Fallback to preliminary report on error
-            self.final_report = preliminary
-            raise
-
-    def _format_edited_report_fallback(self, edited_report) -> str:
-        """
-        Fallback formatter for EditedReport when format_comprehensive_markdown is unavailable.
-
-        Args:
-            edited_report: EditedReport object to format
-
-        Returns:
-            str: Markdown-formatted report
-        """
-        lines = []
-
-        # Title
-        if hasattr(edited_report, 'title') and edited_report.title:
-            lines.append(f"# {edited_report.title}")
-            lines.append("")
-
-        # Executive Summary
-        if hasattr(edited_report, 'executive_summary') and edited_report.executive_summary:
-            lines.append("## Executive Summary")
-            lines.append(edited_report.executive_summary)
-            lines.append("")
-
-        # Methodology
-        if hasattr(edited_report, 'methodology_section') and edited_report.methodology_section:
-            lines.append("## Methodology")
-            lines.append(edited_report.methodology_section)
-            lines.append("")
-
-        # Findings
-        if hasattr(edited_report, 'findings_section') and edited_report.findings_section:
-            lines.append("## Findings")
-            lines.append(edited_report.findings_section)
-            lines.append("")
-
-        # Contradictory Evidence
-        if hasattr(edited_report, 'contradictory_evidence_section') and edited_report.contradictory_evidence_section:
-            lines.append("## Contradictory Evidence")
-            lines.append(edited_report.contradictory_evidence_section)
-            lines.append("")
-
-        # Limitations
-        if hasattr(edited_report, 'limitations_section') and edited_report.limitations_section:
-            lines.append("## Limitations")
-            lines.append(edited_report.limitations_section)
-            lines.append("")
-
-        # Conclusions
-        if hasattr(edited_report, 'conclusions_section') and edited_report.conclusions_section:
-            lines.append("## Conclusions")
-            lines.append(edited_report.conclusions_section)
-            lines.append("")
-
-        # Confidence Assessment
-        if hasattr(edited_report, 'confidence_assessment') and edited_report.confidence_assessment:
-            lines.append(f"**Evidence Confidence:** {edited_report.confidence_assessment}")
-            lines.append("")
-
-        return "\n".join(lines)
+        # Implementation in workflow_thread.py lines 364-430
+        pass
 
     def cleanup(self) -> None:
         """
@@ -1037,23 +832,15 @@ class QtWorkflowExecutor(QObject):
 
     def cancel_workflow(self) -> None:
         """
-        Cancel ongoing workflow execution.
+        Stub for workflow cancellation.
 
-        This method sets the cancellation flag and emits appropriate signals.
-        The actual thread/worker cancellation is handled by WorkflowThread.cancel().
+        Note: The actual cancellation is handled by WorkflowThread.cancel() which
+        sets the _should_cancel flag. The thread checks this flag between steps
+        and exits gracefully. See workflow_thread.py lines 95-103 and 106-118.
 
-        This method can be called to:
-        - Mark the executor as cancelled (prevents further processing)
-        - Emit cancellation signal for UI updates
-        - Clean up partial workflow state if needed
+        This method exists as a potential alternative entry point but is not
+        currently used - call WorkflowThread.cancel() directly instead.
         """
-        self.logger.info("Workflow cancellation requested")
-
-        # Mark executor as inactive to prevent further method calls
-        self._is_active = False
-
-        # Emit cancellation error signal for UI notification
-        cancellation_error = WorkflowCancelledException("Workflow cancelled by user")
-        self.workflow_error.emit(cancellation_error)
-
-        self.logger.info("Workflow executor marked as cancelled")
+        # Cancellation implemented in WorkflowThread.cancel()
+        self.logger.info("cancel_workflow() called - use WorkflowThread.cancel() instead")
+        pass
