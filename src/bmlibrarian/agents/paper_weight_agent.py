@@ -56,7 +56,6 @@ from .paper_weight_llm_assessors import (
 
 # Import database operations
 from .paper_weight_db import (
-    get_default_db_connection,
     get_cached_assessment,
     store_assessment,
     get_document,

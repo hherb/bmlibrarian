@@ -29,6 +29,14 @@ from .paper_weight_models import (
 
 logger = logging.getLogger(__name__)
 
+# Replication scoring constants
+# Score depends on number of replications and their quality relative to the original
+REPLICATION_SCORE_SINGLE_COMPARABLE = 5.0   # One replication of comparable quality
+REPLICATION_SCORE_SINGLE_HIGHER = 8.0       # One replication of higher quality
+REPLICATION_SCORE_MULTIPLE_COMPARABLE = 8.0  # 2+ replications of comparable quality
+REPLICATION_SCORE_MULTIPLE_HIGHER = 10.0     # 2+ replications of higher quality
+REPLICATION_SCORE_LOWER_QUALITY = 3.0        # Lower quality replications
+
 
 def get_default_db_connection():
     """
@@ -465,6 +473,13 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
     """
     Calculate replication status score based on count and quality.
 
+    Scoring rubric:
+    - Single replication of comparable quality: 5.0
+    - Single replication of higher quality: 8.0
+    - Multiple (2+) replications of comparable quality: 8.0
+    - Multiple (2+) replications of higher quality: 10.0
+    - Lower quality replications: 3.0
+
     Args:
         replication_count: Number of confirming replications
         quality_comparison: Quality comparison ('higher', 'comparable', 'lower')
@@ -473,15 +488,15 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
         Score (0-10)
     """
     if replication_count == 1 and quality_comparison == 'comparable':
-        return 5.0
+        return REPLICATION_SCORE_SINGLE_COMPARABLE
     elif replication_count == 1 and quality_comparison == 'higher':
-        return 8.0
+        return REPLICATION_SCORE_SINGLE_HIGHER
     elif replication_count >= 2 and quality_comparison == 'comparable':
-        return 8.0
+        return REPLICATION_SCORE_MULTIPLE_COMPARABLE
     elif replication_count >= 2 and quality_comparison == 'higher':
-        return 10.0
+        return REPLICATION_SCORE_MULTIPLE_HIGHER
     else:
-        return 3.0  # Lower quality replications
+        return REPLICATION_SCORE_LOWER_QUALITY
 
 
 __all__ = [

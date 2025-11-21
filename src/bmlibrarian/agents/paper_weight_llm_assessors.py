@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 # Maximum text length for LLM prompts
 DEFAULT_MAX_TEXT_LENGTH = 8000
 
+# Score constants for methodological quality extraction from StudyAssessmentAgent
+# These values match the scoring rubric in the LLM prompts
+RANDOMIZATION_SCORE = 2.0  # Points for proper randomization
+DOUBLE_BLIND_SCORE = 2.0   # Points for double-blind design
+SINGLE_BLIND_SCORE = 1.0   # Points for single-blind design
+REMAINING_COMPONENTS_MAX = 5.0  # Max points for other MQ components (allocation, protocol, ITT, attrition)
+QUALITY_SCORE_MAX = 10.0   # Maximum quality score from StudyAssessmentAgent
+
 
 def prepare_text_for_analysis(
     document: Dict[str, Any],
@@ -190,14 +198,13 @@ def extract_mq_from_study_assessment(
         # Extract randomization from is_randomized
         is_randomized = study_assessment.get('is_randomized', False)
         if is_randomized:
-            randomization_score = 2.0
             dimension_score.add_detail(
                 component='randomization',
                 value='yes',
-                contribution=randomization_score,
+                contribution=RANDOMIZATION_SCORE,
                 reasoning='Extracted from StudyAssessmentAgent: is_randomized=True'
             )
-            total_score += randomization_score
+            total_score += RANDOMIZATION_SCORE
         else:
             dimension_score.add_detail(
                 component='randomization',
@@ -210,23 +217,21 @@ def extract_mq_from_study_assessment(
         is_double_blinded = study_assessment.get('is_double_blinded', False)
         is_blinded = study_assessment.get('is_blinded', False)
         if is_double_blinded:
-            blinding_score = 2.0
             dimension_score.add_detail(
                 component='blinding',
                 value='double-blind',
-                contribution=blinding_score,
+                contribution=DOUBLE_BLIND_SCORE,
                 reasoning='Extracted from StudyAssessmentAgent: is_double_blinded=True'
             )
-            total_score += blinding_score
+            total_score += DOUBLE_BLIND_SCORE
         elif is_blinded:
-            blinding_score = 1.0
             dimension_score.add_detail(
                 component='blinding',
                 value='single-blind',
-                contribution=blinding_score,
+                contribution=SINGLE_BLIND_SCORE,
                 reasoning='Extracted from StudyAssessmentAgent: is_blinded=True (not double)'
             )
-            total_score += blinding_score
+            total_score += SINGLE_BLIND_SCORE
         else:
             dimension_score.add_detail(
                 component='blinding',
@@ -236,14 +241,13 @@ def extract_mq_from_study_assessment(
             )
 
         # Check quality_score to estimate remaining components
-        quality_score_raw = study_assessment.get('quality_score', 5.0)
-        quality_score = float(quality_score_raw) if quality_score_raw is not None else 5.0
-        quality_score = max(0.0, min(10.0, quality_score))
+        quality_score_raw = study_assessment.get('quality_score', REMAINING_COMPONENTS_MAX)
+        quality_score = float(quality_score_raw) if quality_score_raw is not None else REMAINING_COMPONENTS_MAX
+        quality_score = max(0.0, min(QUALITY_SCORE_MAX, quality_score))
 
         # Map quality_score (0-10) to remaining components estimate
-        remaining_max = 5.0
-        remaining_proportion = quality_score / 10.0
-        remaining_estimate = remaining_max * remaining_proportion
+        remaining_proportion = quality_score / QUALITY_SCORE_MAX
+        remaining_estimate = REMAINING_COMPONENTS_MAX * remaining_proportion
 
         dimension_score.add_detail(
             component='other_components',
