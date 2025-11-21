@@ -30,15 +30,72 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIntValidator
 
 from ..resources.styles.dpi_scale import get_font_scale
+from ..resources.styles.stylesheet_generator import StylesheetGenerator
+from .constants import (
+    DEFAULT_POSTGRES_HOST,
+    DEFAULT_POSTGRES_PORT,
+    DB_CONNECTION_TIMEOUT_SECONDS,
+    MEDRXIV_DEFAULT_DAYS,
+    MEDRXIV_MIN_DAYS,
+    MEDRXIV_MAX_DAYS,
+    MEDRXIV_FULL_IMPORT_DAYS,
+    PUBMED_DEFAULT_MAX_RESULTS,
+    PUBMED_MIN_RESULTS,
+    PUBMED_MAX_RESULTS,
+    PUBMED_TEST_QUERY,
+    TABLE_DISPLAY_LIMIT,
+    SQL_TEXT_HEIGHT_MULTIPLIER,
+    LOG_TEXT_HEIGHT_MULTIPLIER,
+    PROGRESS_MEDRXIV_START,
+    PROGRESS_PUBMED_START,
+    PROGRESS_COMPLETE,
+    REQUIRED_EXTENSIONS,
+    COLOR_ERROR,
+    COLOR_WARNING,
+    COLOR_SUCCESS,
+    COLOR_MUTED,
+    FRAME_NOTE_BG,
+    FRAME_NOTE_BORDER,
+    FRAME_WARNING_BG,
+    FRAME_WARNING_BORDER,
+    FRAME_SUCCESS_BG,
+    FRAME_SUCCESS_BORDER,
+)
 
 if TYPE_CHECKING:
     from .wizard import SetupWizard
 
 
 logger = logging.getLogger(__name__)
+
+
+def _create_frame_stylesheet(
+    scale: dict, bg_color: str, border_color: str, object_name: str
+) -> str:
+    """
+    Create a stylesheet for a colored frame using StylesheetGenerator.
+
+    Args:
+        scale: Font scale dictionary
+        bg_color: Background color hex code
+        border_color: Border color hex code
+        object_name: QFrame object name for CSS selector
+
+    Returns:
+        str: Generated stylesheet string
+    """
+    gen = StylesheetGenerator(scale)
+    return gen.custom(f"""
+        QFrame#{object_name} {{
+            background-color: {bg_color};
+            border: 1px solid {border_color};
+            border-radius: {{radius_small}}px;
+            padding: {{padding_medium}}px;
+        }}
+    """)
 
 
 # =============================================================================
@@ -91,14 +148,7 @@ class WelcomePage(QWizardPage):
         note_frame = QFrame()
         note_frame.setObjectName("noteFrame")
         note_frame.setStyleSheet(
-            f"""
-            QFrame#noteFrame {{
-                background-color: #FFF3E0;
-                border: 1px solid #FFB74D;
-                border-radius: {scale['radius_small']}px;
-                padding: {scale['padding_medium']}px;
-            }}
-        """
+            _create_frame_stylesheet(scale, FRAME_NOTE_BG, FRAME_NOTE_BORDER, "noteFrame")
         )
 
         note_layout = QVBoxLayout(note_frame)
@@ -179,7 +229,7 @@ GRANT ALL PRIVILEGES ON DATABASE bmlibrarian TO your_user;"""
         sql_text.setPlainText(sql_commands)
         sql_text.setReadOnly(True)
         sql_text.setFont(QFont("Monospace", scale["font_small"]))
-        sql_text.setMinimumHeight(scale["control_height_xlarge"] * 3)
+        sql_text.setMinimumHeight(scale["control_height_xlarge"] * SQL_TEXT_HEIGHT_MULTIPLIER)
         sql_layout.addWidget(sql_text)
 
         # Copy button
@@ -255,18 +305,19 @@ class DatabaseConfigPage(QWizardPage):
         host_layout = QHBoxLayout()
         host_label = QLabel("Host:")
         host_label.setMinimumWidth(scale["control_width_small"])
-        self.host_edit = QLineEdit("localhost")
-        self.host_edit.setPlaceholderText("localhost")
+        self.host_edit = QLineEdit(DEFAULT_POSTGRES_HOST)
+        self.host_edit.setPlaceholderText(DEFAULT_POSTGRES_HOST)
         host_layout.addWidget(host_label)
         host_layout.addWidget(self.host_edit)
         conn_layout.addLayout(host_layout)
 
-        # Port
+        # Port (with integer validation)
         port_layout = QHBoxLayout()
         port_label = QLabel("Port:")
         port_label.setMinimumWidth(scale["control_width_small"])
-        self.port_edit = QLineEdit("5432")
-        self.port_edit.setPlaceholderText("5432")
+        self.port_edit = QLineEdit(DEFAULT_POSTGRES_PORT)
+        self.port_edit.setPlaceholderText(DEFAULT_POSTGRES_PORT)
+        self.port_edit.setValidator(QIntValidator(1, 65535))  # Valid port range
         port_layout.addWidget(port_label)
         port_layout.addWidget(self.port_edit)
         conn_layout.addLayout(port_layout)
@@ -333,7 +384,7 @@ class DatabaseConfigPage(QWizardPage):
 
         if not all([host, port, dbname, user, password]):
             self.status_label.setText(
-                '<span style="color: #D32F2F;">Please fill in all fields.</span>'
+                f'<span style="color: {COLOR_ERROR};">Please fill in all fields.</span>'
             )
             return
 
@@ -344,40 +395,36 @@ class DatabaseConfigPage(QWizardPage):
 
             conninfo = f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
-            with psycopg.connect(conninfo, connect_timeout=10) as conn:
+            with psycopg.connect(conninfo, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS) as conn:
                 with conn.cursor() as cur:
                     # Test basic connectivity
                     cur.execute("SELECT version()")
                     version = cur.fetchone()[0]
 
                     # Check for required extensions
+                    ext_placeholders = ", ".join([f"'{ext}'" for ext in REQUIRED_EXTENSIONS])
                     cur.execute(
-                        """
-                        SELECT extname FROM pg_extension
-                        WHERE extname IN ('vector', 'plpython3u', 'pg_trgm')
-                    """
+                        f"SELECT extname FROM pg_extension WHERE extname IN ({ext_placeholders})"
                     )
                     extensions = [row[0] for row in cur.fetchall()]
 
-            missing = []
-            for ext in ["vector", "plpython3u", "pg_trgm"]:
-                if ext not in extensions:
-                    missing.append(ext)
+            missing = [ext for ext in REQUIRED_EXTENSIONS if ext not in extensions]
 
             if missing:
                 self.status_label.setText(
-                    f'<span style="color: #FF9800;">Connection successful, but missing extensions: '
+                    f'<span style="color: {COLOR_WARNING};">Connection successful, but missing extensions: '
                     f'{", ".join(missing)}</span>'
                 )
             else:
                 self.status_label.setText(
-                    f'<span style="color: #4CAF50;">Connection successful! '
+                    f'<span style="color: {COLOR_SUCCESS};">Connection successful! '
                     f"All required extensions present.</span>"
                 )
 
         except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
             self.status_label.setText(
-                f'<span style="color: #D32F2F;">Connection failed: {str(e)}</span>'
+                f'<span style="color: {COLOR_ERROR};">Connection failed: {str(e)}</span>'
             )
 
     def validatePage(self) -> bool:
@@ -453,7 +500,7 @@ class DatabaseSetupWorker(QThread):
 
             self.progress.emit("Connecting to database...")
 
-            with psycopg.connect(conninfo, connect_timeout=10) as conn:
+            with psycopg.connect(conninfo, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS) as conn:
                 with conn.cursor() as cur:
                     # Check for existing tables
                     self.progress.emit("Checking for existing tables...")
@@ -603,14 +650,7 @@ class DatabaseSetupPage(QWizardPage):
         self.warning_frame = QFrame()
         self.warning_frame.setObjectName("warningFrame")
         self.warning_frame.setStyleSheet(
-            f"""
-            QFrame#warningFrame {{
-                background-color: #FFEBEE;
-                border: 1px solid #EF5350;
-                border-radius: {scale['radius_small']}px;
-                padding: {scale['padding_medium']}px;
-            }}
-        """
+            _create_frame_stylesheet(scale, FRAME_WARNING_BG, FRAME_WARNING_BORDER, "warningFrame")
         )
         self.warning_frame.setVisible(False)
 
@@ -625,14 +665,7 @@ class DatabaseSetupPage(QWizardPage):
         self.success_frame = QFrame()
         self.success_frame.setObjectName("successFrame")
         self.success_frame.setStyleSheet(
-            f"""
-            QFrame#successFrame {{
-                background-color: #E8F5E9;
-                border: 1px solid #66BB6A;
-                border-radius: {scale['radius_small']}px;
-                padding: {scale['padding_medium']}px;
-            }}
-        """
+            _create_frame_stylesheet(scale, FRAME_SUCCESS_BG, FRAME_SUCCESS_BORDER, "successFrame")
         )
         self.success_frame.setVisible(False)
 
@@ -687,10 +720,11 @@ class DatabaseSetupPage(QWizardPage):
             self.progress_bar.setValue(100)
 
             self.warning_frame.setVisible(True)
+            displayed_tables = tables[:TABLE_DISPLAY_LIMIT]
             self.warning_label.setText(
                 f"The database already contains {len(tables)} table(s):\n\n"
-                f"{', '.join(tables[:10])}"
-                f"{'...' if len(tables) > 10 else ''}\n\n"
+                f"{', '.join(displayed_tables)}"
+                f"{'...' if len(tables) > TABLE_DISPLAY_LIMIT else ''}\n\n"
                 "Please go back and specify a different (empty) database name, "
                 "or drop the existing tables before proceeding."
             )
@@ -784,9 +818,10 @@ class ImportOptionsPage(QWizardPage):
         mode_layout.addWidget(self.quick_radio)
 
         quick_note = QLabel(
-            "    Downloads ~7 days of medRxiv preprints and ~100 PubMed articles"
+            f"    Downloads ~{MEDRXIV_DEFAULT_DAYS} days of medRxiv preprints and "
+            f"~{PUBMED_DEFAULT_MAX_RESULTS} PubMed articles"
         )
-        quick_note.setStyleSheet("color: #666666; font-style: italic;")
+        quick_note.setStyleSheet(f"color: {COLOR_MUTED}; font-style: italic;")
         mode_layout.addWidget(quick_note)
 
         # Full medRxiv option
@@ -795,7 +830,7 @@ class ImportOptionsPage(QWizardPage):
         mode_layout.addWidget(self.medrxiv_radio)
 
         medrxiv_note = QLabel("    Downloads all available medRxiv preprints (~500K+)")
-        medrxiv_note.setStyleSheet("color: #666666; font-style: italic;")
+        medrxiv_note.setStyleSheet(f"color: {COLOR_MUTED}; font-style: italic;")
         mode_layout.addWidget(medrxiv_note)
 
         # Full PubMed option
@@ -806,7 +841,7 @@ class ImportOptionsPage(QWizardPage):
         pubmed_note = QLabel(
             "    Downloads complete PubMed baseline (~38M articles, ~400GB)"
         )
-        pubmed_note.setStyleSheet("color: #666666; font-style: italic;")
+        pubmed_note.setStyleSheet(f"color: {COLOR_MUTED}; font-style: italic;")
         mode_layout.addWidget(pubmed_note)
 
         layout.addWidget(mode_group)
@@ -819,8 +854,8 @@ class ImportOptionsPage(QWizardPage):
         medrxiv_days_layout = QHBoxLayout()
         medrxiv_days_label = QLabel("medRxiv days to fetch (for quick test):")
         self.medrxiv_days_spin = QSpinBox()
-        self.medrxiv_days_spin.setRange(1, 365)
-        self.medrxiv_days_spin.setValue(7)
+        self.medrxiv_days_spin.setRange(MEDRXIV_MIN_DAYS, MEDRXIV_MAX_DAYS)
+        self.medrxiv_days_spin.setValue(MEDRXIV_DEFAULT_DAYS)
         medrxiv_days_layout.addWidget(medrxiv_days_label)
         medrxiv_days_layout.addWidget(self.medrxiv_days_spin)
         medrxiv_days_layout.addStretch()
@@ -830,8 +865,8 @@ class ImportOptionsPage(QWizardPage):
         pubmed_max_layout = QHBoxLayout()
         pubmed_max_label = QLabel("PubMed max results (for quick test):")
         self.pubmed_max_spin = QSpinBox()
-        self.pubmed_max_spin.setRange(10, 10000)
-        self.pubmed_max_spin.setValue(100)
+        self.pubmed_max_spin.setRange(PUBMED_MIN_RESULTS, PUBMED_MAX_RESULTS)
+        self.pubmed_max_spin.setValue(PUBMED_DEFAULT_MAX_RESULTS)
         pubmed_max_layout.addWidget(pubmed_max_label)
         pubmed_max_layout.addWidget(self.pubmed_max_spin)
         pubmed_max_layout.addStretch()
@@ -846,16 +881,9 @@ class ImportOptionsPage(QWizardPage):
 
         # Warning for large imports
         warning_frame = QFrame()
-        warning_frame.setObjectName("warningFrame")
+        warning_frame.setObjectName("importWarningFrame")
         warning_frame.setStyleSheet(
-            f"""
-            QFrame#warningFrame {{
-                background-color: #FFF3E0;
-                border: 1px solid #FFB74D;
-                border-radius: {scale['radius_small']}px;
-                padding: {scale['padding_medium']}px;
-            }}
-        """
+            _create_frame_stylesheet(scale, FRAME_NOTE_BG, FRAME_NOTE_BORDER, "importWarningFrame")
         )
 
         warning_layout = QVBoxLayout(warning_frame)
@@ -947,7 +975,7 @@ class ImportWorker(QThread):
         """Run quick test import."""
         # MedRxiv
         self.progress.emit("Importing medRxiv preprints...")
-        self.progress_percent.emit(10)
+        self.progress_percent.emit(PROGRESS_MEDRXIV_START)
 
         try:
             from bmlibrarian.importers import MedRxivImporter
@@ -955,14 +983,14 @@ class ImportWorker(QThread):
             importer = MedRxivImporter()
             medrxiv_stats = importer.update_database(
                 download_pdfs=self.settings.get("download_pdfs", False),
-                days_to_fetch=self.settings.get("medrxiv_days", 7),
+                days_to_fetch=self.settings.get("medrxiv_days", MEDRXIV_DEFAULT_DAYS),
             )
             stats["medrxiv"] = medrxiv_stats
             self.progress.emit(
                 f"medRxiv: {medrxiv_stats.get('total_processed', 0)} papers imported"
             )
         except Exception as e:
-            logger.error(f"medRxiv import failed: {e}")
+            logger.error(f"medRxiv import failed: {e}", exc_info=True)
             stats["medrxiv_error"] = str(e)
 
         if self._cancelled:
@@ -970,25 +998,25 @@ class ImportWorker(QThread):
 
         # PubMed
         self.progress.emit("Importing PubMed articles...")
-        self.progress_percent.emit(50)
+        self.progress_percent.emit(PROGRESS_PUBMED_START)
 
         try:
             from bmlibrarian.importers import PubMedImporter
 
             importer = PubMedImporter()
             pubmed_stats = importer.import_by_search(
-                query="COVID-19 vaccine",
-                max_results=self.settings.get("pubmed_max_results", 100),
+                query=PUBMED_TEST_QUERY,
+                max_results=self.settings.get("pubmed_max_results", PUBMED_DEFAULT_MAX_RESULTS),
             )
             stats["pubmed"] = pubmed_stats
             self.progress.emit(
                 f"PubMed: {pubmed_stats.get('imported', 0)} articles imported"
             )
         except Exception as e:
-            logger.error(f"PubMed import failed: {e}")
+            logger.error(f"PubMed import failed: {e}", exc_info=True)
             stats["pubmed_error"] = str(e)
 
-        self.progress_percent.emit(100)
+        self.progress_percent.emit(PROGRESS_COMPLETE)
 
     def _run_medrxiv_full(self, stats: dict) -> None:
         """Run full medRxiv import."""
@@ -999,17 +1027,17 @@ class ImportWorker(QThread):
             from bmlibrarian.importers import MedRxivImporter
 
             importer = MedRxivImporter()
-            # Use a large days_to_fetch for full import
+            # Use a large days_to_fetch for full historical import
             medrxiv_stats = importer.update_database(
                 download_pdfs=self.settings.get("download_pdfs", False),
-                days_to_fetch=3650,  # ~10 years
+                days_to_fetch=MEDRXIV_FULL_IMPORT_DAYS,
             )
             stats["medrxiv"] = medrxiv_stats
         except Exception as e:
-            logger.error(f"medRxiv full import failed: {e}")
+            logger.error(f"medRxiv full import failed: {e}", exc_info=True)
             stats["medrxiv_error"] = str(e)
 
-        self.progress_percent.emit(100)
+        self.progress_percent.emit(PROGRESS_COMPLETE)
 
     def _run_pubmed_full(self, stats: dict) -> None:
         """Run full PubMed baseline import."""
@@ -1033,10 +1061,10 @@ class ImportWorker(QThread):
             pubmed_stats = importer.import_files(file_type="baseline")
             stats["pubmed"] = pubmed_stats
         except Exception as e:
-            logger.error(f"PubMed full import failed: {e}")
+            logger.error(f"PubMed full import failed: {e}", exc_info=True)
             stats["pubmed_error"] = str(e)
 
-        self.progress_percent.emit(100)
+        self.progress_percent.emit(PROGRESS_COMPLETE)
 
 
 class ImportProgressPage(QWizardPage):
@@ -1081,7 +1109,7 @@ class ImportProgressPage(QWizardPage):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(scale["control_height_xlarge"] * 2)
+        self.log_text.setMinimumHeight(scale["control_height_xlarge"] * LOG_TEXT_HEIGHT_MULTIPLIER)
         log_layout.addWidget(self.log_text)
 
         layout.addWidget(log_group)
