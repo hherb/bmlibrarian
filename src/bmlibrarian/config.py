@@ -29,6 +29,7 @@ DEFAULT_CONFIG = {
         "study_assessment_agent": "gpt-oss:20b",  # Use larger model for study quality assessment
         "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
         "paper_checker_agent": "gpt-oss:20b",  # Use larger model for abstract fact-checking
+        "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -113,6 +114,66 @@ DEFAULT_CONFIG = {
             "max_tokens": 4000,  # PRISMA assessments need more tokens (27 items)
             "min_confidence": 0.4,  # Minimum confidence threshold for assessments
             "max_retries": 3  # Maximum retry attempts for failed assessments
+        },
+        "paper_weight_assessment": {
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "max_tokens": 3000,
+            "version": "1.0.0",  # Increment when methodology changes
+            "dimension_weights": {
+                "study_design": 0.25,
+                "sample_size": 0.15,
+                "methodological_quality": 0.30,
+                "risk_of_bias": 0.20,
+                "replication_status": 0.10
+            },
+            "study_type_hierarchy": {
+                "systematic_review": 10.0,
+                "meta_analysis": 10.0,
+                "rct": 8.0,
+                "cohort_prospective": 6.0,
+                "cohort_retrospective": 5.0,
+                "case_control": 4.0,
+                "cross_sectional": 3.0,
+                "case_series": 2.0,
+                "case_report": 1.0
+            },
+            "study_type_keywords": {
+                "systematic_review": ["systematic review", "systematic literature review"],
+                "meta_analysis": ["meta-analysis", "meta analysis", "pooled analysis"],
+                "rct": ["randomized controlled trial", "randomised controlled trial", "RCT", "randomized trial", "randomised trial", "random allocation", "randomly assigned"],
+                "cohort_prospective": ["prospective cohort", "prospective study", "longitudinal cohort"],
+                "cohort_retrospective": ["retrospective cohort", "retrospective study"],
+                "case_control": ["case-control", "case control study"],
+                "cross_sectional": ["cross-sectional", "cross sectional study", "prevalence study"],
+                "case_series": ["case series", "case-series"],
+                "case_report": ["case report", "case study"]
+            },
+            "sample_size_scoring": {
+                "log_base": 10,
+                "log_multiplier": 2.0,
+                "power_calculation_bonus": 2.0,
+                "ci_reported_bonus": 0.5
+            },
+            "methodological_quality_weights": {
+                "randomization": 2.0,
+                "blinding": 3.0,
+                "allocation_concealment": 1.5,
+                "protocol_preregistration": 1.5,
+                "itt_analysis": 1.0,
+                "attrition_handling": 1.0
+            },
+            "risk_of_bias_weights": {
+                "selection_bias": 2.5,
+                "performance_bias": 2.5,
+                "detection_bias": 2.5,
+                "reporting_bias": 2.5
+            },
+            "attrition_thresholds": {
+                "excellent": 0.05,
+                "good": 0.10,
+                "acceptable": 0.20
+            }
         },
         "paper_checker": {
             "temperature": 0.3,
