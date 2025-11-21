@@ -99,7 +99,6 @@ DEFAULT_CONFIG = {
         "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
         "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
         "paper_checker_agent": "gpt-oss:20b",  # Use larger model for abstract fact-checking
-        "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
