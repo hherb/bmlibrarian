@@ -37,6 +37,11 @@ SECTION_COLORS = {
     'error': '#C62828',
 }
 
+# UI Element Colors
+SEPARATOR_COLOR = '#E0E0E0'  # Light gray for divider lines
+LOAD_BUTTON_BG_COLOR = '#43A047'  # Green for primary action buttons
+LOAD_BUTTON_HOVER_COLOR = '#2E7D32'  # Darker green on hover
+
 # Section Background Colors (for compliance display)
 COMPLIANCE_BG_COLORS = {
     'excellent': '#E8F5E9',     # Light green
