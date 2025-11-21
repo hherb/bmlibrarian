@@ -765,30 +765,6 @@ class QtWorkflowExecutor(QObject):
             self.logger.error(f"Preliminary report generation failed: {e}", exc_info=True)
             raise
 
-    def perform_counterfactual_analysis(self, report: str) -> None:
-        """
-        Stub for counterfactual analysis.
-
-        Note: The actual implementation is in workflow_thread.py which calls
-        counterfactual_agent.find_contradictory_literature() directly.
-        This method exists as a potential alternative entry point but is not
-        currently used by the threaded workflow.
-        """
-        # Implementation in workflow_thread.py lines 279-362
-        pass
-
-    def generate_final_report(self, preliminary: str, counterfactual: Optional[dict]) -> None:
-        """
-        Stub for final report generation.
-
-        Note: The actual implementation is in workflow_thread.py which uses
-        ReportBuilder.build_final_report() directly.
-        This method exists as a potential alternative entry point but is not
-        currently used by the threaded workflow.
-        """
-        # Implementation in workflow_thread.py lines 364-430
-        pass
-
     def cleanup(self) -> None:
         """
         Cleanup workflow executor resources.
@@ -829,18 +805,3 @@ class QtWorkflowExecutor(QObject):
 
         except Exception as e:
             self.logger.error(f"Error during workflow executor cleanup: {e}", exc_info=True)
-
-    def cancel_workflow(self) -> None:
-        """
-        Stub for workflow cancellation.
-
-        Note: The actual cancellation is handled by WorkflowThread.cancel() which
-        sets the _should_cancel flag. The thread checks this flag between steps
-        and exits gracefully. See workflow_thread.py lines 95-103 and 106-118.
-
-        This method exists as a potential alternative entry point but is not
-        currently used - call WorkflowThread.cancel() directly instead.
-        """
-        # Cancellation implemented in WorkflowThread.cancel()
-        self.logger.info("cancel_workflow() called - use WorkflowThread.cancel() instead")
-        pass
