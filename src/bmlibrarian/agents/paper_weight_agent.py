@@ -847,6 +847,1056 @@ class PaperWeightAssessmentAgent(BaseAgent):
             'replication_status': 0.10
         })
 
+    # ========================================================================
+    # LLM Helper Methods (Step 5)
+    # ========================================================================
+
+    def _call_llm(self, prompt: str) -> str:
+        """
+        Call Ollama LLM with prompt.
+
+        Args:
+            prompt: Prompt string
+
+        Returns:
+            LLM response text
+
+        Raises:
+            requests.RequestException: If LLM call fails
+        """
+        import requests
+        import os
+
+        model = self.model
+        temperature = self.config.get('temperature', 0.3)
+        top_p = self.config.get('top_p', 0.9)
+
+        ollama_url = self.host or os.getenv('OLLAMA_HOST', 'http://localhost:11434')
+
+        response = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                'model': model,
+                'prompt': prompt,
+                'temperature': temperature,
+                'top_p': top_p,
+                'stream': False
+            },
+            timeout=120  # 2 minute timeout for complex analysis
+        )
+
+        response.raise_for_status()
+        return response.json()['response']
+
+    def _prepare_text_for_analysis(self, document: dict) -> str:
+        """
+        Prepare document text for LLM analysis.
+
+        Combines abstract and full text (if available), limits length.
+
+        Args:
+            document: Document dict
+
+        Returns:
+            Prepared text string
+        """
+        title = document.get('title', '') or ''
+        abstract = document.get('abstract', '') or ''
+        full_text = document.get('full_text', '') or ''
+
+        # Prefer full text, fall back to abstract
+        if full_text:
+            text = f"TITLE: {title}\n\nFULL TEXT:\n{full_text}"
+        else:
+            text = f"TITLE: {title}\n\nABSTRACT:\n{abstract}"
+
+        # Limit to ~8000 characters to avoid token limits
+        return text[:8000]
+
+    # ========================================================================
+    # LLM-Based Assessors (Step 5)
+    # ========================================================================
+
+    def _assess_methodological_quality(
+        self,
+        document: dict,
+        study_assessment: Optional[dict] = None
+    ) -> DimensionScore:
+        """
+        Assess methodological quality using LLM analysis.
+
+        Evaluates: randomization, blinding, allocation concealment,
+        protocol preregistration, ITT analysis, attrition handling.
+
+        Args:
+            document: Document dict with 'abstract', 'full_text' fields
+            study_assessment: Optional StudyAssessmentAgent output to leverage
+
+        Returns:
+            DimensionScore for methodological quality with detailed audit trail
+        """
+        try:
+            # Prepare text for analysis
+            text = self._prepare_text_for_analysis(document)
+
+            # Check if we can leverage StudyAssessmentAgent output
+            if study_assessment:
+                # Try to extract relevant info from existing assessment
+                return self._extract_mq_from_study_assessment(study_assessment, document)
+
+            # Build LLM prompt
+            prompt = self._build_methodological_quality_prompt(text)
+
+            # Call LLM
+            response = self._call_llm(prompt)
+
+            # Parse response
+            components = self._parse_llm_json_response(response)
+
+            # Calculate score
+            dimension_score = self._calculate_methodological_quality_score(components)
+
+            return dimension_score
+
+        except Exception as e:
+            # Log error and return degraded score
+            logger.error(f"Error in methodological quality assessment: {e}")
+
+            dimension_score = DimensionScore(
+                dimension_name='methodological_quality',
+                score=5.0  # Neutral score on error
+            )
+            dimension_score.add_detail(
+                component='error',
+                value='assessment_failed',
+                contribution=5.0,
+                reasoning=f'LLM assessment failed: {str(e)}'
+            )
+            return dimension_score
+
+    def _build_methodological_quality_prompt(self, text: str) -> str:
+        """
+        Build prompt for methodological quality assessment.
+
+        Args:
+            text: Prepared text from document
+
+        Returns:
+            Prompt string for LLM
+        """
+        return f"""You are an expert in biomedical research methodology. Analyze the following research paper and assess its methodological quality across six components.
+
+PAPER TEXT:
+{text}
+
+TASK:
+Analyze the methodological quality and provide assessments for each component:
+
+1. RANDOMIZATION (0-2 points):
+   - 0: No randomization or inadequate sequence generation
+   - 1: Randomization mentioned but method unclear
+   - 2: Proper random sequence generation (e.g., computer-generated, random number table)
+
+2. BLINDING (0-3 points):
+   - 0: No blinding
+   - 1: Single-blind (participants OR assessors)
+   - 2: Double-blind (participants AND assessors)
+   - 3: Triple-blind (participants, assessors, AND data analysts)
+
+3. ALLOCATION CONCEALMENT (0-1.5 points):
+   - 0: No allocation concealment or inadequate
+   - 0.75: Unclear or partially described
+   - 1.5: Proper allocation concealment (e.g., sealed envelopes, central randomization)
+
+4. PROTOCOL PREREGISTRATION (0-1.5 points):
+   - 0: No protocol registration mentioned
+   - 0.75: Protocol mentioned but not verified
+   - 1.5: Protocol clearly registered before study (e.g., ClinicalTrials.gov, registry number provided)
+
+5. ITT ANALYSIS (0-1 points):
+   - 0: No ITT analysis or per-protocol only
+   - 0.5: Modified ITT or unclear
+   - 1: Clear intention-to-treat analysis
+
+6. ATTRITION HANDLING (0-1 points):
+   - Extract dropout/attrition rate
+   - Assess quality of handling (imputation methods, sensitivity analysis)
+   - Score based on rate and handling quality
+
+OUTPUT FORMAT (JSON):
+{{
+  "randomization": {{
+    "score": <0-2>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "blinding": {{
+    "score": <0-3>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "allocation_concealment": {{
+    "score": <0-1.5>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "protocol_preregistration": {{
+    "score": <0-1.5>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "itt_analysis": {{
+    "score": <0-1>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "attrition_handling": {{
+    "score": <0-1>,
+    "attrition_rate": <decimal or null>,
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }}
+}}
+
+Provide ONLY the JSON output, no additional text."""
+
+    def _parse_llm_json_response(self, response: str) -> dict:
+        """
+        Parse LLM response expecting JSON format.
+
+        Handles both markdown code blocks and bare JSON.
+
+        Args:
+            response: LLM response string (expected to be JSON)
+
+        Returns:
+            Parsed components dict
+
+        Raises:
+            ValueError: If JSON cannot be extracted or parsed
+        """
+        # Extract JSON from response (handle markdown code blocks)
+        json_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            # Try to find JSON directly
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                raise ValueError("Could not find JSON in LLM response")
+
+        try:
+            components = json.loads(json_str)
+            return components
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse JSON from LLM response: {e}")
+
+    def _calculate_methodological_quality_score(self, components: dict) -> DimensionScore:
+        """
+        Calculate methodological quality score from component assessments.
+
+        Args:
+            components: Parsed component assessments from LLM
+
+        Returns:
+            DimensionScore with full audit trail
+        """
+        dimension_score = DimensionScore(
+            dimension_name='methodological_quality',
+            score=0.0
+        )
+
+        # Add each component
+        for component_name, component_data in components.items():
+            score_contribution = float(component_data.get('score', 0.0))
+            evidence = component_data.get('evidence', '')
+            reasoning = component_data.get('reasoning', '')
+
+            dimension_score.add_detail(
+                component=component_name,
+                value=str(score_contribution),
+                contribution=score_contribution,
+                evidence=evidence,
+                reasoning=reasoning
+            )
+
+            dimension_score.score += score_contribution
+
+        # Cap at 10.0
+        dimension_score.score = min(10.0, dimension_score.score)
+
+        return dimension_score
+
+    def _extract_mq_from_study_assessment(
+        self,
+        study_assessment: dict,
+        document: dict
+    ) -> DimensionScore:
+        """
+        Extract methodological quality from StudyAssessmentAgent output.
+
+        If StudyAssessmentAgent has already analyzed the paper, reuse
+        relevant assessments to avoid duplicate LLM calls.
+
+        Args:
+            study_assessment: Output from StudyAssessmentAgent
+            document: Document dict (for fallback if needed)
+
+        Returns:
+            DimensionScore for methodological quality
+        """
+        # TODO: Implement extraction from StudyAssessmentAgent output
+        # when integration is ready
+
+        # Fallback to direct assessment
+        return self._assess_methodological_quality(document, study_assessment=None)
+
+    def _assess_risk_of_bias(
+        self,
+        document: dict,
+        study_assessment: Optional[dict] = None
+    ) -> DimensionScore:
+        """
+        Assess risk of bias using LLM analysis.
+
+        Evaluates: selection bias, performance bias, detection bias, reporting bias.
+        Uses INVERTED SCALE: 10 = low risk, 0 = high risk.
+
+        Args:
+            document: Document dict with 'abstract', 'full_text' fields
+            study_assessment: Optional StudyAssessmentAgent output to leverage
+
+        Returns:
+            DimensionScore for risk of bias with detailed audit trail
+        """
+        try:
+            # Prepare text
+            text = self._prepare_text_for_analysis(document)
+
+            # Check if we can leverage StudyAssessmentAgent output
+            if study_assessment:
+                return self._extract_rob_from_study_assessment(study_assessment, document)
+
+            # Build LLM prompt
+            prompt = self._build_risk_of_bias_prompt(text)
+
+            # Call LLM
+            response = self._call_llm(prompt)
+
+            # Parse response
+            components = self._parse_llm_json_response(response)
+
+            # Calculate score
+            dimension_score = self._calculate_risk_of_bias_score(components)
+
+            return dimension_score
+
+        except Exception as e:
+            # Log error and return degraded score
+            logger.error(f"Error in risk of bias assessment: {e}")
+
+            dimension_score = DimensionScore(
+                dimension_name='risk_of_bias',
+                score=5.0  # Neutral score on error
+            )
+            dimension_score.add_detail(
+                component='error',
+                value='assessment_failed',
+                contribution=5.0,
+                reasoning=f'LLM assessment failed: {str(e)}'
+            )
+            return dimension_score
+
+    def _build_risk_of_bias_prompt(self, text: str) -> str:
+        """
+        Build prompt for risk of bias assessment.
+
+        Args:
+            text: Prepared text from document
+
+        Returns:
+            Prompt string for LLM
+        """
+        return f"""You are an expert in biomedical research methodology and bias assessment. Analyze the following research paper and assess its risk of bias across four domains.
+
+PAPER TEXT:
+{text}
+
+TASK:
+Assess risk of bias using INVERTED SCALE (higher = lower risk):
+
+1. SELECTION BIAS (0-2.5 points):
+   - 0: High risk (convenience sampling, no clear criteria)
+   - 1.25: Moderate risk (some limitations in sampling)
+   - 2.5: Low risk (random/consecutive sampling, clear inclusion/exclusion criteria)
+
+2. PERFORMANCE BIAS (0-2.5 points):
+   - 0: High risk (no blinding, unstandardized interventions)
+   - 1.25: Moderate risk (partial blinding or standardization)
+   - 2.5: Low risk (proper blinding, standardized protocols)
+
+3. DETECTION BIAS (0-2.5 points):
+   - 0: High risk (unblinded outcome assessment)
+   - 1.25: Moderate risk (partially blinded or objective outcomes only)
+   - 2.5: Low risk (blinded outcome assessment for all outcomes)
+
+4. REPORTING BIAS (0-2.5 points):
+   - 0: High risk (selective reporting, outcomes not pre-specified)
+   - 1.25: Moderate risk (some evidence of selective reporting)
+   - 2.5: Low risk (all pre-specified outcomes reported, protocol available)
+
+OUTPUT FORMAT (JSON):
+{{
+  "selection_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "performance_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "detection_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }},
+  "reporting_bias": {{
+    "score": <0-2.5>,
+    "risk_level": "<high|moderate|low>",
+    "evidence": "<quote from paper>",
+    "reasoning": "<explanation>"
+  }}
+}}
+
+Provide ONLY the JSON output, no additional text."""
+
+    def _calculate_risk_of_bias_score(self, components: dict) -> DimensionScore:
+        """
+        Calculate risk of bias score from component assessments.
+
+        Args:
+            components: Parsed component assessments from LLM
+
+        Returns:
+            DimensionScore with full audit trail
+        """
+        dimension_score = DimensionScore(
+            dimension_name='risk_of_bias',
+            score=0.0
+        )
+
+        # Add each component
+        for component_name, component_data in components.items():
+            score_contribution = float(component_data.get('score', 0.0))
+            risk_level = component_data.get('risk_level', 'unknown')
+            evidence = component_data.get('evidence', '')
+            reasoning = component_data.get('reasoning', '')
+
+            dimension_score.add_detail(
+                component=component_name,
+                value=f"{risk_level} ({score_contribution})",
+                contribution=score_contribution,
+                evidence=evidence,
+                reasoning=reasoning
+            )
+
+            dimension_score.score += score_contribution
+
+        # Cap at 10.0
+        dimension_score.score = min(10.0, dimension_score.score)
+
+        return dimension_score
+
+    def _extract_rob_from_study_assessment(
+        self,
+        study_assessment: dict,
+        document: dict
+    ) -> DimensionScore:
+        """
+        Extract risk of bias from StudyAssessmentAgent output.
+
+        Similar to methodological quality extraction.
+
+        Args:
+            study_assessment: Output from StudyAssessmentAgent
+            document: Document dict (for fallback if needed)
+
+        Returns:
+            DimensionScore for risk of bias
+        """
+        # TODO: Implement extraction from StudyAssessmentAgent output
+
+        # Fallback
+        return self._assess_risk_of_bias(document, study_assessment=None)
+
+    # ========================================================================
+    # Database Persistence and Caching (Step 6)
+    # ========================================================================
+
+    def _get_db_connection(self):
+        """
+        Create database connection using environment variables.
+
+        Returns:
+            psycopg connection object
+        """
+        import psycopg
+        import os
+
+        return psycopg.connect(
+            dbname=os.getenv('POSTGRES_DB', 'knowledgebase'),
+            user=os.getenv('POSTGRES_USER'),
+            password=os.getenv('POSTGRES_PASSWORD'),
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            port=os.getenv('POSTGRES_PORT', '5432')
+        )
+
+    def _get_cached_assessment(self, document_id: int) -> Optional[PaperWeightResult]:
+        """
+        Retrieve cached assessment from database.
+
+        Checks for existing assessment with matching document_id and assessor_version.
+
+        Args:
+            document_id: Database ID of document
+
+        Returns:
+            PaperWeightResult if cached, None otherwise
+        """
+        version = self.config.get('version', '1.0.0')
+
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Fetch assessment
+                    cur.execute("""
+                        SELECT
+                            assessment_id,
+                            document_id,
+                            assessed_at,
+                            assessor_version,
+                            study_design_score,
+                            sample_size_score,
+                            methodological_quality_score,
+                            risk_of_bias_score,
+                            replication_status_score,
+                            final_weight,
+                            dimension_weights,
+                            study_type,
+                            sample_size
+                        FROM paper_weights.assessments
+                        WHERE document_id = %s AND assessor_version = %s
+                    """, (document_id, version))
+
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+
+                    assessment_id = row[0]
+
+                    # Fetch assessment details
+                    cur.execute("""
+                        SELECT
+                            dimension,
+                            component,
+                            extracted_value,
+                            score_contribution,
+                            evidence_text,
+                            reasoning
+                        FROM paper_weights.assessment_details
+                        WHERE assessment_id = %s
+                        ORDER BY detail_id
+                    """, (assessment_id,))
+
+                    details = cur.fetchall()
+
+                    # Convert to PaperWeightResult
+                    return self._reconstruct_result_from_db(row, details)
+
+        except Exception as e:
+            logger.error(f"Error fetching cached assessment: {e}")
+            return None
+
+    def _reconstruct_result_from_db(self, assessment_row: tuple, detail_rows: list) -> PaperWeightResult:
+        """
+        Reconstruct PaperWeightResult from database rows.
+
+        Args:
+            assessment_row: Row from paper_weights.assessments
+            detail_rows: Rows from paper_weights.assessment_details
+
+        Returns:
+            Reconstructed PaperWeightResult
+        """
+        # Unpack assessment row
+        (assessment_id, document_id, assessed_at, assessor_version,
+         study_design_score, sample_size_score, methodological_quality_score,
+         risk_of_bias_score, replication_status_score, final_weight,
+         dimension_weights, study_type, sample_size_n) = assessment_row
+
+        # Parse dimension weights (JSONB)
+        if isinstance(dimension_weights, str):
+            dimension_weights = json.loads(dimension_weights)
+
+        # Group details by dimension
+        dimension_details: Dict[str, List[AssessmentDetail]] = {
+            'study_design': [],
+            'sample_size': [],
+            'methodological_quality': [],
+            'risk_of_bias': [],
+            'replication_status': []
+        }
+
+        for detail_row in detail_rows:
+            (dimension, component, extracted_value, score_contribution,
+             evidence_text, reasoning) = detail_row
+
+            if dimension in dimension_details:
+                dimension_details[dimension].append(AssessmentDetail(
+                    dimension=dimension,
+                    component=component,
+                    extracted_value=extracted_value,
+                    score_contribution=float(score_contribution) if score_contribution else 0.0,
+                    evidence_text=evidence_text,
+                    reasoning=reasoning
+                ))
+
+        # Create dimension scores
+        study_design = DimensionScore(
+            dimension_name='study_design',
+            score=float(study_design_score),
+            details=dimension_details['study_design']
+        )
+
+        sample_size_dim = DimensionScore(
+            dimension_name='sample_size',
+            score=float(sample_size_score),
+            details=dimension_details['sample_size']
+        )
+
+        methodological_quality = DimensionScore(
+            dimension_name='methodological_quality',
+            score=float(methodological_quality_score),
+            details=dimension_details['methodological_quality']
+        )
+
+        risk_of_bias = DimensionScore(
+            dimension_name='risk_of_bias',
+            score=float(risk_of_bias_score),
+            details=dimension_details['risk_of_bias']
+        )
+
+        replication_status = DimensionScore(
+            dimension_name='replication_status',
+            score=float(replication_status_score),
+            details=dimension_details['replication_status']
+        )
+
+        # Create result
+        return PaperWeightResult(
+            document_id=document_id,
+            assessor_version=assessor_version,
+            assessed_at=assessed_at,
+            study_design=study_design,
+            sample_size=sample_size_dim,
+            methodological_quality=methodological_quality,
+            risk_of_bias=risk_of_bias,
+            replication_status=replication_status,
+            final_weight=float(final_weight),
+            dimension_weights=dimension_weights,
+            study_type=study_type,
+            sample_size_n=sample_size_n
+        )
+
+    def _store_assessment(self, result: PaperWeightResult) -> None:
+        """
+        Store assessment in database with full audit trail.
+
+        Inserts into both paper_weights.assessments and paper_weights.assessment_details.
+        Uses ON CONFLICT to handle re-assessments with same version.
+
+        Args:
+            result: PaperWeightResult to store
+        """
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Insert/update assessment
+                    cur.execute("""
+                        INSERT INTO paper_weights.assessments (
+                            document_id,
+                            assessor_version,
+                            assessed_at,
+                            study_design_score,
+                            sample_size_score,
+                            methodological_quality_score,
+                            risk_of_bias_score,
+                            replication_status_score,
+                            final_weight,
+                            dimension_weights,
+                            study_type,
+                            sample_size
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (document_id, assessor_version)
+                        DO UPDATE SET
+                            assessed_at = EXCLUDED.assessed_at,
+                            study_design_score = EXCLUDED.study_design_score,
+                            sample_size_score = EXCLUDED.sample_size_score,
+                            methodological_quality_score = EXCLUDED.methodological_quality_score,
+                            risk_of_bias_score = EXCLUDED.risk_of_bias_score,
+                            replication_status_score = EXCLUDED.replication_status_score,
+                            final_weight = EXCLUDED.final_weight,
+                            dimension_weights = EXCLUDED.dimension_weights,
+                            study_type = EXCLUDED.study_type,
+                            sample_size = EXCLUDED.sample_size
+                        RETURNING assessment_id
+                    """, (
+                        result.document_id,
+                        result.assessor_version,
+                        result.assessed_at,
+                        result.study_design.score,
+                        result.sample_size.score,
+                        result.methodological_quality.score,
+                        result.risk_of_bias.score,
+                        result.replication_status.score,
+                        result.final_weight,
+                        json.dumps(result.dimension_weights),
+                        result.study_type,
+                        result.sample_size_n
+                    ))
+
+                    assessment_id = cur.fetchone()[0]
+
+                    # Delete old details (if updating)
+                    cur.execute("""
+                        DELETE FROM paper_weights.assessment_details
+                        WHERE assessment_id = %s
+                    """, (assessment_id,))
+
+                    # Insert new details
+                    all_details = result.get_all_details()
+                    for detail in all_details:
+                        cur.execute("""
+                            INSERT INTO paper_weights.assessment_details (
+                                assessment_id,
+                                dimension,
+                                component,
+                                extracted_value,
+                                score_contribution,
+                                evidence_text,
+                                reasoning
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            assessment_id,
+                            detail.dimension,
+                            detail.component,
+                            detail.extracted_value,
+                            detail.score_contribution,
+                            detail.evidence_text,
+                            detail.reasoning
+                        ))
+
+                    conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error storing assessment: {e}")
+            raise
+
+    def _get_document(self, document_id: int) -> dict:
+        """
+        Fetch document from database by ID.
+
+        Args:
+            document_id: Database ID of document
+
+        Returns:
+            Document dict with title, abstract, and full_text fields
+
+        Raises:
+            ValueError: If document not found
+        """
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT
+                            id,
+                            title,
+                            abstract,
+                            full_text
+                        FROM public.document
+                        WHERE id = %s
+                    """, (document_id,))
+
+                    row = cur.fetchone()
+                    if not row:
+                        raise ValueError(f"Document {document_id} not found")
+
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'abstract': row[2],
+                        'full_text': row[3]
+                    }
+
+        except Exception as e:
+            logger.error(f"Error fetching document {document_id}: {e}")
+            raise
+
+    def _check_replication_status(self, document_id: int) -> DimensionScore:
+        """
+        Check replication status from database.
+
+        Queries paper_weights.replications table for this document.
+        Initially manual entry only - automated discovery is future work.
+
+        Args:
+            document_id: Database ID of document
+
+        Returns:
+            DimensionScore for replication status
+        """
+        try:
+            with self._get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Check for replications
+                    cur.execute("""
+                        SELECT
+                            replication_id,
+                            replication_type,
+                            quality_comparison,
+                            confidence
+                        FROM paper_weights.replications
+                        WHERE source_document_id = %s
+                        AND replication_type = 'confirms'
+                    """, (document_id,))
+
+                    replications = cur.fetchall()
+
+                    if not replications:
+                        # No replications found
+                        dimension_score = DimensionScore(
+                            dimension_name='replication_status',
+                            score=0.0
+                        )
+                        dimension_score.add_detail(
+                            component='replication_count',
+                            value='0',
+                            contribution=0.0,
+                            reasoning='No confirming replications found in database'
+                        )
+                        return dimension_score
+
+                    # Calculate score based on replications
+                    replication_count = len(replications)
+                    quality_comparison = replications[0][2]  # First replication quality
+
+                    # Scoring logic
+                    if replication_count == 1 and quality_comparison == 'comparable':
+                        score = 5.0
+                    elif replication_count == 1 and quality_comparison == 'higher':
+                        score = 8.0
+                    elif replication_count >= 2 and quality_comparison == 'comparable':
+                        score = 8.0
+                    elif replication_count >= 2 and quality_comparison == 'higher':
+                        score = 10.0
+                    else:
+                        score = 3.0  # Lower quality replications
+
+                    dimension_score = DimensionScore(
+                        dimension_name='replication_status',
+                        score=score
+                    )
+
+                    dimension_score.add_detail(
+                        component='replication_count',
+                        value=str(replication_count),
+                        contribution=score,
+                        reasoning=f'{replication_count} confirming replications found (quality: {quality_comparison})'
+                    )
+
+                    return dimension_score
+
+        except Exception as e:
+            logger.error(f"Error checking replication status: {e}")
+
+            # Return zero score on error
+            dimension_score = DimensionScore(
+                dimension_name='replication_status',
+                score=0.0
+            )
+            dimension_score.add_detail(
+                component='error',
+                value='query_failed',
+                contribution=0.0,
+                reasoning=f'Database query failed: {str(e)}'
+            )
+            return dimension_score
+
+    def _compute_final_weight(self, dimension_scores: Dict[str, DimensionScore]) -> float:
+        """
+        Compute final weight from dimension scores.
+
+        Formula: final_weight = sum(dimension_score * weight)
+
+        Args:
+            dimension_scores: Dict mapping dimension names to DimensionScore objects
+
+        Returns:
+            Final weight (0-10)
+        """
+        weights = self.get_dimension_weights()
+
+        final_weight = 0.0
+        for dim_name, dim_score in dimension_scores.items():
+            weight = weights.get(dim_name, 0.0)
+            final_weight += dim_score.score * weight
+
+        return min(10.0, max(0.0, final_weight))
+
+    def _create_error_result(self, document_id: int, error_message: str) -> PaperWeightResult:
+        """
+        Create minimal result on error.
+
+        Args:
+            document_id: Database ID of document
+            error_message: Error message to include
+
+        Returns:
+            PaperWeightResult with error information
+        """
+        error_score = DimensionScore('error', 0.0)
+        error_score.add_detail('error', 'assessment_failed', 0.0, reasoning=error_message)
+
+        return PaperWeightResult(
+            document_id=document_id,
+            assessor_version=self.config.get('version', '1.0.0'),
+            assessed_at=datetime.now(),
+            study_design=error_score,
+            sample_size=error_score,
+            methodological_quality=error_score,
+            risk_of_bias=error_score,
+            replication_status=error_score,
+            final_weight=0.0,
+            dimension_weights=self.get_dimension_weights()
+        )
+
+    # ========================================================================
+    # Main Entry Point (Step 6)
+    # ========================================================================
+
+    def assess_paper(
+        self,
+        document_id: int,
+        force_reassess: bool = False,
+        study_assessment: Optional[dict] = None
+    ) -> PaperWeightResult:
+        """
+        Assess paper weight with intelligent caching.
+
+        This is the main entry point for paper weight assessment.
+
+        Args:
+            document_id: Database ID of document to assess
+            force_reassess: If True, skip cache and re-assess
+            study_assessment: Optional StudyAssessmentAgent output to leverage
+
+        Returns:
+            PaperWeightResult with full audit trail
+
+        Workflow:
+            1. Check cache (unless force_reassess=True)
+            2. If cached and version matches, return cached result
+            3. Otherwise, perform full assessment:
+               a. Fetch document from database
+               b. Extract study type (rule-based)
+               c. Extract sample size (rule-based + LLM)
+               d. Assess methodological quality (LLM)
+               e. Assess risk of bias (LLM)
+               f. Check replication status (database query)
+               g. Compute final weight
+               h. Store in database
+            4. Return result
+        """
+        version = self.config.get('version', '1.0.0')
+
+        try:
+            # Check cache
+            if not force_reassess:
+                cached = self._get_cached_assessment(document_id)
+                if cached:
+                    logger.info(f"Using cached assessment for document {document_id} (version {version})")
+                    return cached
+
+            logger.info(f"Performing fresh assessment for document {document_id}...")
+
+            # Fetch document
+            document = self._get_document(document_id)
+
+            # Perform assessments
+            study_design_score = self._extract_study_type(document)
+            sample_size_score = self._extract_sample_size(document)
+            methodological_quality_score = self._assess_methodological_quality(document, study_assessment)
+            risk_of_bias_score = self._assess_risk_of_bias(document, study_assessment)
+            replication_status_score = self._check_replication_status(document_id)
+
+            # Compute final weight
+            dimension_scores = {
+                'study_design': study_design_score,
+                'sample_size': sample_size_score,
+                'methodological_quality': methodological_quality_score,
+                'risk_of_bias': risk_of_bias_score,
+                'replication_status': replication_status_score
+            }
+            final_weight = self._compute_final_weight(dimension_scores)
+
+            # Extract study type and sample size from dimension scores
+            study_type = None
+            sample_size_n = None
+
+            if study_design_score.details:
+                study_type = study_design_score.details[0].extracted_value
+
+            if sample_size_score.details:
+                extracted_value = sample_size_score.details[0].extracted_value
+                if extracted_value and extracted_value.isdigit():
+                    sample_size_n = int(extracted_value)
+
+            # Create result
+            result = PaperWeightResult(
+                document_id=document_id,
+                assessor_version=version,
+                assessed_at=datetime.now(),
+                study_design=study_design_score,
+                sample_size=sample_size_score,
+                methodological_quality=methodological_quality_score,
+                risk_of_bias=risk_of_bias_score,
+                replication_status=replication_status_score,
+                final_weight=final_weight,
+                dimension_weights=self.get_dimension_weights(),
+                study_type=study_type,
+                sample_size_n=sample_size_n
+            )
+
+            # Store in database
+            self._store_assessment(result)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error assessing paper {document_id}: {e}")
+            # Return degraded assessment with error noted
+            return self._create_error_result(document_id, str(e))
+
 
 # Export all dataclasses and the agent class
 __all__ = ['AssessmentDetail', 'DimensionScore', 'PaperWeightResult', 'PaperWeightAssessmentAgent']
