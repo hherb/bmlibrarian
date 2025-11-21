@@ -100,6 +100,7 @@ Since this project uses `uv` for package management:
   - `uv run python pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
+  - `uv run python paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
 - **PDF Processing Tools**:
   - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
@@ -439,6 +440,7 @@ bmlibrarian/
 ├── pico_lab.py                # PICOAgent experimental laboratory GUI for PICO component extraction
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
 ├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
+├── paper_weight_lab.py        # PaperWeightAssessmentAgent laboratory GUI (PySide6/Qt) for evaluating evidential weight
 ├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
 ├── test_pdf_processor.py      # Command-line test script for PDF processor library
 ├── initial_setup_and_download.py  # Database setup and battle-testing script

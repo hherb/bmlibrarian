@@ -499,10 +499,188 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
         return REPLICATION_SCORE_LOWER_QUALITY
 
 
+# Search and query limits
+SEARCH_RESULT_LIMIT = 50
+RECENT_ASSESSMENTS_LIMIT = 20
+
+
+def search_documents(
+    query: str,
+    limit: int = SEARCH_RESULT_LIMIT,
+    conn_factory: Optional[Callable] = None
+) -> List[Dict]:
+    """
+    Search documents by PMID, DOI, or title.
+
+    Args:
+        query: Search query (PMID, DOI, or title keywords)
+        limit: Maximum number of results to return
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        List of document dictionaries with id, title, pmid, doi, year
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                # Try PMID first (numeric)
+                if query.isdigit():
+                    cur.execute("""
+                        SELECT id, title, pmid, doi,
+                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        FROM public.document
+                        WHERE pmid = %s
+                        LIMIT %s
+                    """, (int(query), limit))
+                # Try DOI pattern
+                elif query.startswith('10.') or '/' in query:
+                    cur.execute("""
+                        SELECT id, title, pmid, doi,
+                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        FROM public.document
+                        WHERE doi ILIKE %s
+                        LIMIT %s
+                    """, (f'%{query}%', limit))
+                # Title search
+                else:
+                    cur.execute("""
+                        SELECT id, title, pmid, doi,
+                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        FROM public.document
+                        WHERE title ILIKE %s
+                        ORDER BY date_published DESC NULLS LAST
+                        LIMIT %s
+                    """, (f'%{query}%', limit))
+
+                rows = cur.fetchall()
+                return [
+                    {
+                        'id': row[0],
+                        'title': row[1],
+                        'pmid': row[2],
+                        'doi': row[3],
+                        'year': row[4]
+                    }
+                    for row in rows
+                ]
+
+    except Exception as e:
+        logger.error(f"Error searching documents: {e}")
+        return []
+
+
+def get_recent_assessments(
+    limit: int = RECENT_ASSESSMENTS_LIMIT,
+    conn_factory: Optional[Callable] = None
+) -> List[Dict]:
+    """
+    Get recently assessed documents.
+
+    Args:
+        limit: Maximum number of results to return
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        List of dictionaries with assessment info and document metadata
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        a.document_id,
+                        d.title,
+                        d.pmid,
+                        d.doi,
+                        a.final_weight,
+                        a.assessed_at,
+                        a.assessor_version
+                    FROM paper_weights.assessments a
+                    JOIN public.document d ON a.document_id = d.id
+                    ORDER BY a.assessed_at DESC
+                    LIMIT %s
+                """, (limit,))
+
+                rows = cur.fetchall()
+                return [
+                    {
+                        'document_id': row[0],
+                        'title': row[1],
+                        'pmid': row[2],
+                        'doi': row[3],
+                        'final_weight': row[4],
+                        'assessed_at': row[5],
+                        'version': row[6]
+                    }
+                    for row in rows
+                ]
+
+    except Exception as e:
+        logger.error(f"Error fetching recent assessments: {e}")
+        return []
+
+
+def get_document_metadata(
+    document_id: int,
+    conn_factory: Optional[Callable] = None
+) -> Optional[Dict]:
+    """
+    Get document metadata by ID.
+
+    Args:
+        document_id: Database ID of document
+        conn_factory: Optional factory function to create database connection
+
+    Returns:
+        Document metadata dictionary or None if not found
+    """
+    if conn_factory is None:
+        conn_factory = get_default_db_connection
+
+    try:
+        with conn_factory() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id, title, abstract, pmid, doi, authors,
+                        EXTRACT(YEAR FROM date_published)::INTEGER as year
+                    FROM public.document
+                    WHERE id = %s
+                """, (document_id,))
+
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'abstract': row[2],
+                        'pmid': row[3],
+                        'doi': row[4],
+                        'authors': row[5],
+                        'year': row[6]
+                    }
+                return None
+
+    except Exception as e:
+        logger.error(f"Error fetching document metadata: {e}")
+        return None
+
+
 __all__ = [
     'get_default_db_connection',
     'get_cached_assessment',
     'store_assessment',
     'get_document',
     'check_replication_status',
+    'search_documents',
+    'get_recent_assessments',
+    'get_document_metadata',
+    'SEARCH_RESULT_LIMIT',
+    'RECENT_ASSESSMENTS_LIMIT',
 ]
