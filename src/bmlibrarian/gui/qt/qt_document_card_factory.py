@@ -466,7 +466,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             on_view=self._create_view_handler(card_data),
             on_fetch=self._create_fetch_handler(card_data),
             on_upload=self._create_upload_handler(card_data),
-            show_notifications=True
+            show_notifications=True,
+            doc_id=card_data.doc_id
         )
 
     def create_pdf_button(self, config: PDFButtonConfig) -> Optional[QWidget]:
@@ -487,7 +488,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         # Connect error signal for user feedback
         button.error_occurred.connect(
-            lambda msg: self._handle_pdf_button_error(msg, card_data.doc_id)
+            lambda msg, doc_id=config.doc_id: self._handle_pdf_button_error(msg, doc_id)
         )
 
         # Wrap in container for consistent layout

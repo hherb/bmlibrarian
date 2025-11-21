@@ -22,6 +22,9 @@ from bmlibrarian.database import search_hybrid
 from ...qt_document_card_factory import QtDocumentCardFactory
 from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
 from ...resources.styles import get_font_scale, scale_px
+from bmlibrarian.utils.pdf_manager import PDFManager
+from pathlib import Path
+import os
 
 
 # ============================================================================
@@ -398,8 +401,14 @@ class SearchTabWidget(QWidget):
         self.worker: Optional[SearchWorker] = None
         self.current_results: List[Dict[str, Any]] = []
 
-        # Initialize document card factory
-        self.card_factory = QtDocumentCardFactory()
+        # Initialize document card factory with PDF manager
+        pdf_dir_str = os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
+        pdf_base_dir = Path(pdf_dir_str).expanduser()
+        self.pdf_manager = PDFManager(base_dir=str(pdf_base_dir))
+        self.card_factory = QtDocumentCardFactory(
+            pdf_manager=self.pdf_manager,
+            base_pdf_dir=pdf_base_dir
+        )
 
         # Load search strategy settings from config
         search_strategy_config = self.config.get('search_strategy', {})
