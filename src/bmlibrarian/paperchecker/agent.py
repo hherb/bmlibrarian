@@ -61,6 +61,7 @@ DEFAULT_MAX_CITATIONS_PER_STATEMENT: int = 10
 DEFAULT_SCORING_BATCH_SIZE: int = 20
 DEFAULT_EARLY_STOP_COUNT: int = 20
 DEFAULT_EXPLANATION_TITLE_MAX_LEN: int = 100
+DEFAULT_MIN_CITATION_RELEVANCE: float = 0.7
 
 
 class PaperCheckerAgent(BaseAgent):
@@ -891,12 +892,17 @@ class PaperCheckerAgent(BaseAgent):
 
         # Extract citations using CitationFinderAgent
         try:
+            # Get min_relevance from config or use default
+            min_relevance = self.citation_config.get(
+                "min_relevance", DEFAULT_MIN_CITATION_RELEVANCE
+            )
+
             # Use existing agent's batch extraction capability
             citation_results = self.citation_agent.process_scored_documents_for_citations(
                 user_question=extraction_question,
                 scored_documents=scored_tuples,
                 score_threshold=self.min_citation_score,
-                min_relevance=0.7  # Use default min_relevance for citation extraction
+                min_relevance=min_relevance
             )
 
             # Convert to ExtractedCitation objects
@@ -1166,5 +1172,6 @@ class PaperCheckerAgent(BaseAgent):
         """
         return self.agent_config.get("citation", {
             "min_score": DEFAULT_MIN_CITATION_SCORE,
-            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT
+            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT,
+            "min_relevance": DEFAULT_MIN_CITATION_RELEVANCE
         })
