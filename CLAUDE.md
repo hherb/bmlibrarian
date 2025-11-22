@@ -44,6 +44,35 @@ The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides f
   - Requires Playwright: `uv add playwright && uv run python -m playwright install chromium`
   - See: `doc/OPENATHENS_QUICKSTART.md` and `doc/users/openathens_guide.md`
 
+### Database-Backed User Settings
+
+BMLibrarian supports database-backed settings for authenticated users:
+
+- **User Authentication**: Login system with username/password stored in `public.users` table
+- **Per-User Settings**: Each user has personalized settings in `bmlsettings.user_settings`
+- **Default Settings**: System-wide defaults in `bmlsettings.default_settings`
+- **Session Management**: Session tokens for persistent authentication
+
+**Resolution Priority Order**:
+1. User's database settings (when authenticated)
+2. Default database settings (if DB connected)
+3. JSON file settings (`~/.bmlibrarian/config.json`)
+4. Hardcoded `DEFAULT_CONFIG`
+
+**Valid Settings Categories**:
+`models`, `ollama`, `agents`, `database`, `search`, `query_generation`, `gui`, `openathens`, `pdf`, `general`
+
+**Key Components**:
+- `UserService`: User registration, authentication, session management
+- `UserSettingsManager`: Per-user settings CRUD operations
+- `BMLibrarianConfig.set_user_context()`: Enables database-backed settings
+- `migrate_config_to_db.py`: CLI tool for migrating JSON configs to database
+
+**Documentation**:
+- User guide: `doc/users/settings_migration_guide.md`
+- Architecture: `doc/developers/db_settings_architecture.md`
+- Planning: `doc/planning/db_settings_refactor_plan.md`
+
 ## Development Commands
 
 Since this project uses `uv` for package management:
@@ -89,6 +118,10 @@ Since this project uses `uv` for package management:
   - `uv run python paper_checker_cli.py --pmid 12345678 23456789` - Check abstracts by PMID from database
   - `uv run python paper_checker_cli.py abstracts.json --quick` - Quick test mode (max 5 abstracts)
   - `uv run python paper_checker_cli.py abstracts.json --continue-on-error` - Continue processing on failures
+  - `uv run python migrate_config_to_db.py --interactive` - Interactive settings migration wizard
+  - `uv run python migrate_config_to_db.py --user alice --config ~/.bmlibrarian/config.json` - Migrate JSON config to user database settings
+  - `uv run python migrate_config_to_db.py --defaults --config config.json` - Set default settings (admin)
+  - `uv run python migrate_config_to_db.py --export --user alice -o backup.json` - Export user settings to JSON
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview

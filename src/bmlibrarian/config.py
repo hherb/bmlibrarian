@@ -9,10 +9,55 @@ import json
 import os
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, TypedDict
+from typing import Dict, Any, Optional, List, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
+# Type checking imports to avoid circular dependencies
+if TYPE_CHECKING:
+    from psycopg import Connection
+    from .auth.user_settings import UserSettingsManager
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# User Context for Database-Backed Settings
+# =============================================================================
+
+@dataclass
+class UserContext:
+    """Holds user session information for database-backed configuration.
+
+    When a user is authenticated, this context enables the configuration system
+    to load and save settings from the PostgreSQL database instead of JSON files.
+
+    Attributes:
+        user_id: The authenticated user's database ID.
+        connection: Active psycopg database connection for settings operations.
+        session_token: Optional session token for session validation.
+
+    Example:
+        from bmlibrarian.config import get_config, UserContext
+        from bmlibrarian.database import get_db_manager
+
+        config = get_config()
+        db = get_db_manager()
+        with db.get_connection() as conn:
+            config.set_user_context(user_id=1, connection=conn)
+            # Config now loads from database
+            model = config.get_model("query_agent")
+    """
+    user_id: int
+    connection: 'Connection'
+    session_token: Optional[str] = None
+
+
+# Valid settings categories for database storage
+# Must match bmlsettings schema constraints
+VALID_SETTINGS_CATEGORIES = frozenset([
+    'models', 'ollama', 'agents', 'database', 'search',
+    'query_generation', 'gui', 'openathens', 'pdf', 'general'
+])
 
 
 # =============================================================================
@@ -513,16 +558,45 @@ DEFAULT_CONFIG = {
 }
 
 class BMLibrarianConfig:
+    """Configuration manager for BMLibrarian.
+
+    Handles loading configuration from files, environment variables, and
+    database-backed user settings. Supports per-user configuration when
+    a user context is set.
+
+    The configuration resolution priority is:
+    1. User settings from database (if user context is set)
+    2. Default settings from database (if connected)
+    3. JSON configuration file (~/.bmlibrarian/config.json)
+    4. Environment variable overrides
+    5. Hardcoded DEFAULT_CONFIG
+
+    Attributes:
+        _config: In-memory configuration dictionary.
+        _config_loaded: Whether configuration has been loaded from files.
+        _user_context: Optional user context for database-backed settings.
+        _settings_manager: UserSettingsManager instance when user context is set.
+
+    Example:
+        # Without user context (uses JSON/defaults)
+        config = get_config()
+        model = config.get_model("query_agent")
+
+        # With user context (uses database)
+        config.set_user_context(user_id=1, connection=conn)
+        model = config.get_model("query_agent")  # Now loads from DB
     """
-    Configuration manager for BMLibrarian.
-    
-    Handles loading configuration from files, environment variables,
-    and provides easy access to configuration values.
-    """
-    
-    def __init__(self):
-        self._config = DEFAULT_CONFIG.copy()
-        self._config_loaded = False
+
+    def __init__(self) -> None:
+        """Initialize the configuration manager.
+
+        Loads configuration from JSON files and environment variables.
+        User context can be set later via set_user_context().
+        """
+        self._config: Dict[str, Any] = self._deep_copy_config(DEFAULT_CONFIG)
+        self._config_loaded: bool = False
+        self._user_context: Optional[UserContext] = None
+        self._settings_manager: Optional['UserSettingsManager'] = None
         self._load_config()
     
     def _load_config(self):
@@ -584,7 +658,109 @@ class BMLibrarianConfig:
                 
                 current[config_path[-1]] = value
                 logger.info(f"Environment override: {env_var} = {value}")
-    
+
+    @staticmethod
+    def _deep_copy_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a deep copy of a configuration dictionary.
+
+        Args:
+            config: Configuration dictionary to copy.
+
+        Returns:
+            Deep copy of the configuration.
+        """
+        import copy
+        return copy.deepcopy(config)
+
+    # =========================================================================
+    # User Context Management
+    # =========================================================================
+
+    def set_user_context(
+        self,
+        user_id: int,
+        connection: 'Connection',
+        session_token: Optional[str] = None
+    ) -> None:
+        """Set user context for database-backed settings.
+
+        When user context is set, configuration values are loaded from the
+        user's settings in the PostgreSQL database, with fallback to system
+        defaults and then to in-memory/JSON configuration.
+
+        Args:
+            user_id: The authenticated user's database ID.
+            connection: Active psycopg database connection.
+            session_token: Optional session token for validation.
+
+        Example:
+            from bmlibrarian.database import get_db_manager
+
+            config = get_config()
+            db = get_db_manager()
+            with db.get_connection() as conn:
+                config.set_user_context(user_id=1, connection=conn)
+                # Config now uses database-backed settings
+        """
+        from .auth.user_settings import UserSettingsManager
+
+        self._user_context = UserContext(
+            user_id=user_id,
+            connection=connection,
+            session_token=session_token
+        )
+        self._settings_manager = UserSettingsManager(connection, user_id)
+
+        # Sync settings from database to in-memory config
+        self._sync_from_database()
+
+        logger.info(f"User context set for user_id={user_id}")
+
+    def clear_user_context(self) -> None:
+        """Clear user context, reverting to JSON/default configuration.
+
+        After clearing, configuration values will be loaded from JSON files
+        and hardcoded defaults instead of the database.
+        """
+        if self._user_context is not None:
+            logger.info(f"Clearing user context for user_id={self._user_context.user_id}")
+
+        self._user_context = None
+        self._settings_manager = None
+
+        # Reload from JSON/defaults
+        self._config = self._deep_copy_config(DEFAULT_CONFIG)
+        self._config_loaded = False
+        self._load_config()
+
+    def has_user_context(self) -> bool:
+        """Check if user context is currently set.
+
+        Returns:
+            True if a user is authenticated and context is set.
+        """
+        return self._user_context is not None
+
+    def get_user_id(self) -> Optional[int]:
+        """Get the current user ID if context is set.
+
+        Returns:
+            User ID if context is set, None otherwise.
+        """
+        return self._user_context.user_id if self._user_context else None
+
+    def get_user_context(self) -> Optional[UserContext]:
+        """Get the current user context.
+
+        Returns:
+            UserContext if set, None otherwise.
+        """
+        return self._user_context
+
+    # =========================================================================
+    # Configuration Access Methods
+    # =========================================================================
+
     def get_model(self, agent_type: str, default: Optional[str] = None) -> str:
         """
         Get the model name for a specific agent type.
@@ -725,6 +901,159 @@ class BMLibrarianConfig:
             print("📝 Edit this file to customize your model settings")
         except IOError as e:
             logger.error(f"Failed to create sample configuration: {e}")
+
+    # =========================================================================
+    # Database Sync Operations
+    # =========================================================================
+
+    def _sync_from_database(self) -> None:
+        """Sync settings from database to in-memory configuration.
+
+        Called internally when user context is set. Loads all user settings
+        from the database and merges them into the in-memory configuration.
+
+        Note:
+            This is an internal method. Use set_user_context() to trigger
+            database synchronization.
+        """
+        if self._settings_manager is None:
+            logger.warning("Cannot sync from database: no user context set")
+            return
+
+        try:
+            db_settings = self._settings_manager.get_all(use_cache=False)
+            for category, settings in db_settings.items():
+                if category in self._config and settings:
+                    # Merge database settings with defaults
+                    self._merge_config({category: settings})
+            logger.debug("Synced settings from database to in-memory config")
+        except Exception as e:
+            logger.warning(f"Failed to sync settings from database: {e}")
+            # Continue with in-memory/JSON settings
+
+    def sync_to_database(self) -> bool:
+        """Push current in-memory configuration to user's database settings.
+
+        Saves all valid settings categories from the in-memory configuration
+        to the database. Requires user context to be set.
+
+        Returns:
+            True if sync was successful, False otherwise.
+
+        Raises:
+            RuntimeError: If no user context is set.
+
+        Example:
+            config = get_config()
+            config.set_user_context(user_id=1, connection=conn)
+            config.set("models.query_agent", "gpt-oss:20b")
+            config.sync_to_database()  # Persists the change
+        """
+        if self._settings_manager is None:
+            raise RuntimeError("Cannot sync to database: no user context set")
+
+        success = True
+        for category in VALID_SETTINGS_CATEGORIES:
+            if category in self._config:
+                try:
+                    self._settings_manager.set(category, self._config[category])
+                except Exception as e:
+                    logger.error(f"Failed to sync category '{category}' to database: {e}")
+                    success = False
+
+        if success:
+            logger.info("Successfully synced all settings to database")
+        return success
+
+    def export_to_json(self, file_path: Path) -> None:
+        """Export current configuration to a JSON file.
+
+        Exports the effective configuration (merged user settings + defaults).
+        Useful for backing up settings or sharing configuration.
+
+        Args:
+            file_path: Path to the JSON file to create/overwrite.
+
+        Example:
+            config = get_config()
+            config.export_to_json(Path("~/backup_config.json"))
+        """
+        from .utils.config_loader import save_json_config
+        from .utils.path_utils import expand_path
+
+        expanded_path = expand_path(str(file_path))
+        save_json_config(self._config, expanded_path)
+        logger.info(f"Exported configuration to: {expanded_path}")
+
+    def import_from_json(self, file_path: Path, sync_to_db: bool = True) -> None:
+        """Import configuration from a JSON file.
+
+        Loads settings from a JSON file and merges them into the current
+        configuration. If user context is set and sync_to_db is True,
+        the imported settings are also saved to the database.
+
+        Args:
+            file_path: Path to the JSON configuration file.
+            sync_to_db: If True and user context is set, sync to database.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            json.JSONDecodeError: If the file is not valid JSON.
+
+        Example:
+            config = get_config()
+            config.set_user_context(user_id=1, connection=conn)
+            config.import_from_json(Path("~/backup_config.json"))
+            # Settings are now loaded and saved to database
+        """
+        from .utils.config_loader import load_json_config
+        from .utils.path_utils import expand_path
+
+        expanded_path = expand_path(str(file_path))
+        imported_config = load_json_config(expanded_path)
+
+        if imported_config:
+            self._merge_config(imported_config)
+            logger.info(f"Imported configuration from: {expanded_path}")
+
+            # Optionally sync to database if user context is set
+            if sync_to_db and self._settings_manager is not None:
+                self.sync_to_database()
+        else:
+            logger.warning(f"No valid configuration found in: {expanded_path}")
+
+    def reset_to_defaults(self, categories: Optional[List[str]] = None) -> None:
+        """Reset configuration to defaults.
+
+        If user context is set, deletes user settings from database for
+        the specified categories (or all categories if not specified).
+        Always resets in-memory configuration.
+
+        Args:
+            categories: List of category names to reset. If None, resets all.
+
+        Example:
+            config = get_config()
+            config.reset_to_defaults(['models', 'agents'])  # Reset specific
+            config.reset_to_defaults()  # Reset all
+        """
+        target_categories = categories or list(VALID_SETTINGS_CATEGORIES)
+
+        # Reset in-memory config for specified categories
+        for category in target_categories:
+            if category in DEFAULT_CONFIG:
+                self._config[category] = self._deep_copy_config(DEFAULT_CONFIG[category])
+
+        # If user context is set, also reset database settings
+        if self._settings_manager is not None:
+            for category in target_categories:
+                if category in VALID_SETTINGS_CATEGORIES:
+                    try:
+                        self._settings_manager.reset_category(category)
+                    except Exception as e:
+                        logger.error(f"Failed to reset category '{category}' in database: {e}")
+
+        logger.info(f"Reset configuration to defaults for categories: {target_categories}")
 
 
 # Global configuration instance
