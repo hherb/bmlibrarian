@@ -83,6 +83,12 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_stats.py` - Generate comprehensive statistical analysis report (console output)
   - `uv run python fact_checker_stats.py --export-csv stats_output/` - Export statistics to CSV files
   - `uv run python fact_checker_stats.py --export-csv stats_output/ --plot` - Create visualization plots
+  - `uv run python paper_checker_cli.py abstracts.json` - PaperChecker: fact-check medical abstracts against literature
+  - `uv run python paper_checker_cli.py abstracts.json -o results.json` - Export PaperChecker results to JSON
+  - `uv run python paper_checker_cli.py abstracts.json --export-markdown reports/` - Export markdown reports per abstract
+  - `uv run python paper_checker_cli.py --pmid 12345678 23456789` - Check abstracts by PMID from database
+  - `uv run python paper_checker_cli.py abstracts.json --quick` - Quick test mode (max 5 abstracts)
+  - `uv run python paper_checker_cli.py abstracts.json --continue-on-error` - Continue processing on failures
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
@@ -102,6 +108,7 @@ Since this project uses `uv` for package management:
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
   - `uv run python paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
+  - `uv run python paper_checker_lab.py` - Interactive PaperChecker laboratory (Flet) for medical abstract fact-checking with step-by-step visualization
 - **PDF Processing Tools**:
   - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
@@ -441,6 +448,7 @@ bmlibrarian/
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
+├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
 ├── export_review_package.py   # Export SQLite review packages for distribution
 ├── export_human_evaluations.py # Export human annotations to JSON
 ├── import_human_evaluations.py # Re-import human evaluations to PostgreSQL
@@ -454,6 +462,7 @@ bmlibrarian/
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
 ├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
 ├── paper_weight_lab.py        # PaperWeightAssessmentAgent laboratory GUI (PySide6/Qt) for evaluating evidential weight
+├── paper_checker_lab.py       # PaperChecker laboratory GUI (Flet) for medical abstract fact-checking
 ├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
 ├── test_pdf_processor.py      # Command-line test script for PDF processor library
 ├── initial_setup_and_download.py  # Database setup and battle-testing script

@@ -15,6 +15,7 @@ from PySide6.QtGui import QFont
 
 from .main_window import BMLibrarianMainWindow
 from .config_manager import GUIConfigManager
+from ..dialogs import LoginDialog, LoginResult
 
 
 class BMLibrarianApplication:
@@ -62,8 +63,12 @@ class BMLibrarianApplication:
         # Load theme/stylesheet
         self._load_theme()
 
-        # Create main window
+        # Create main window (will be created after login)
         self.main_window: Optional[BMLibrarianMainWindow] = None
+
+        # Login state
+        self._login_result: Optional[LoginResult] = None
+        self._db_connection = None
 
         self.logger.info("Application initialized")
 
@@ -135,8 +140,16 @@ class BMLibrarianApplication:
             int: Exit code (0 for success)
         """
         try:
+            # Show login dialog first
+            if not self._show_login_dialog():
+                self.logger.info("Login cancelled, exiting")
+                return 0
+
             # Create and show main window
-            self.main_window = BMLibrarianMainWindow()
+            self.main_window = BMLibrarianMainWindow(
+                user_id=self._login_result.user_id if self._login_result else None,
+                username=self._login_result.username if self._login_result else None,
+            )
             self.main_window.show()
 
             self.logger.info("Application running")
@@ -148,7 +161,55 @@ class BMLibrarianApplication:
             self.logger.error(f"Application error: {e}", exc_info=True)
             return 1
         finally:
+            self._cleanup()
             self.logger.info("Application shutdown")
+
+    def _show_login_dialog(self) -> bool:
+        """Show the login dialog and authenticate the user.
+
+        Returns:
+            True if login was successful, False if cancelled.
+        """
+        dialog = LoginDialog()
+        result = dialog.exec()
+
+        if result == LoginDialog.DialogCode.Accepted:
+            self._login_result = dialog.get_login_result()
+            self._db_connection = dialog.get_connection()
+
+            if self._login_result:
+                self.logger.info(
+                    f"User logged in: {self._login_result.username} "
+                    f"(id={self._login_result.user_id})"
+                )
+                return True
+
+        return False
+
+    def _cleanup(self) -> None:
+        """Cleanup resources on shutdown."""
+        # Close database connection if open
+        if self._db_connection:
+            try:
+                self._db_connection.close()
+                self.logger.debug("Database connection closed")
+            except Exception as e:
+                self.logger.warning(f"Error closing database connection: {e}")
+
+    @property
+    def current_user_id(self) -> Optional[int]:
+        """Get the current logged-in user's ID."""
+        return self._login_result.user_id if self._login_result else None
+
+    @property
+    def current_username(self) -> Optional[str]:
+        """Get the current logged-in user's username."""
+        return self._login_result.username if self._login_result else None
+
+    @property
+    def login_result(self) -> Optional[LoginResult]:
+        """Get the full login result."""
+        return self._login_result
 
 
 def main(argv: Optional[List[str]] = None) -> int:
