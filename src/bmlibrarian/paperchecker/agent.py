@@ -885,15 +885,18 @@ class PaperCheckerAgent(BaseAgent):
             for doc in eligible_docs
         ]
 
+        # Cache citation config to avoid repeated property access
+        citation_config = self.citation_config
+
         # Get max_citations limit from config
-        max_citations = self.citation_config.get(
+        max_citations = citation_config.get(
             "max_citations_per_statement", DEFAULT_MAX_CITATIONS_PER_STATEMENT
         )
 
         # Extract citations using CitationFinderAgent
         try:
             # Get min_relevance from config or use default
-            min_relevance = self.citation_config.get(
+            min_relevance = citation_config.get(
                 "min_relevance", DEFAULT_MIN_CITATION_RELEVANCE
             )
 
@@ -907,17 +910,26 @@ class PaperCheckerAgent(BaseAgent):
 
             # Convert to ExtractedCitation objects
             citations: List[ExtractedCitation] = []
+
+            # Pre-build doc_id → ScoredDocument mapping for O(1) lookup
+            # This avoids O(n²) complexity when processing many citations
+            scored_docs_map = {doc.doc_id: doc for doc in eligible_docs}
+
             for i, citation_obj in enumerate(citation_results, 1):
                 # Find corresponding ScoredDocument for metadata
                 doc_id = int(citation_obj.document_id)
-                scored_doc = next(
-                    (d for d in eligible_docs if d.doc_id == doc_id),
-                    None
-                )
+                scored_doc = scored_docs_map.get(doc_id)
 
                 if not scored_doc:
+                    # This can happen if CitationFinderAgent returns a document_id
+                    # that wasn't in our eligible_docs list (e.g., due to ID mismatch
+                    # or if the agent hallucinated a document ID). The citation is
+                    # skipped to maintain data integrity.
                     logger.warning(
-                        f"Could not find scored_doc for citation {i} (doc_id={doc_id})"
+                        f"Citation {i} references doc_id={doc_id} which is not in the "
+                        f"eligible documents list ({len(eligible_docs)} docs). "
+                        "This may indicate an ID mismatch or hallucinated reference. "
+                        "Skipping this citation."
                     )
                     continue
 
