@@ -39,6 +39,7 @@ LOG_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
 # Default values for configuration
 DEFAULT_OLLAMA_HOST: str = "http://localhost:11434"
 QUICK_MODE_MAX_ABSTRACTS: int = 5
+MAX_FAILED_EXPORTS_DISPLAYED: int = 5
 
 logger = logging.getLogger(__name__)
 
@@ -196,21 +197,29 @@ def create_agent(config_path: Optional[str] = None):
         Initialized PaperCheckerAgent instance
 
     Raises:
+        FileNotFoundError: If specified config file does not exist
         ImportError: If paperchecker module cannot be imported
         RuntimeError: If agent initialization fails
     """
     try:
         from bmlibrarian.paperchecker import PaperCheckerAgent
 
-        # Load config if specified
+        # Validate config file exists before attempting to load
         config = None
         if config_path:
+            config_file = Path(config_path)
+            if not config_file.exists():
+                raise FileNotFoundError(f"Config file not found: {config_path}")
+            if not config_file.is_file():
+                raise ValueError(f"Config path is not a file: {config_path}")
             from bmlibrarian.config import Config
             config = Config(config_path=config_path)._config
 
         agent = PaperCheckerAgent(config=config)
         return agent
 
+    except FileNotFoundError:
+        raise
     except ImportError as e:
         logger.error(f"Failed to import PaperCheckerAgent: {e}")
         raise
@@ -309,8 +318,16 @@ def main() -> int:
 
         if args.export_markdown and results:
             try:
-                created_files = export_markdown_reports(results, args.export_markdown)
+                created_files, failed_exports = export_markdown_reports(results, args.export_markdown)
                 print(f"+ {len(created_files)} markdown reports exported to: {args.export_markdown}")
+                if failed_exports:
+                    print(f"  ! {len(failed_exports)} exports failed:")
+                    for failed in failed_exports[:MAX_FAILED_EXPORTS_DISPLAYED]:
+                        pmid_info = f" (PMID: {failed['pmid']})" if failed.get('pmid') else ""
+                        print(f"    - {failed['filename']}{pmid_info}: {failed['error']}")
+                    if len(failed_exports) > MAX_FAILED_EXPORTS_DISPLAYED:
+                        remaining = len(failed_exports) - MAX_FAILED_EXPORTS_DISPLAYED
+                        print(f"    ... and {remaining} more failures")
             except Exception as e:
                 logger.error(f"Failed to export markdown: {e}")
                 print(f"X Error exporting markdown: {e}")
