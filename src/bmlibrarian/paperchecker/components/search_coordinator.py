@@ -26,15 +26,8 @@ import time
 from typing import Any, Dict, List, Optional, Set
 
 from bmlibrarian.database import get_db_manager, DatabaseManager
-from bmlibrarian.config import get_ollama_host
 
 from ..data_models import CounterStatement, SearchResults
-
-# Import ollama library for embeddings (Golden Rule 4)
-try:
-    import ollama
-except ImportError:
-    ollama = None
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +81,8 @@ class SearchCoordinator:
         self,
         config: Dict[str, Any],
         db_connection: Optional[Any] = None,  # Legacy parameter, not used
-        embedding_model: Optional[str] = None,
-        ollama_host: Optional[str] = None
+        embedding_model: Optional[str] = None,  # Legacy - embedding done server-side
+        ollama_host: Optional[str] = None  # Legacy - embedding done server-side
     ) -> None:
         """
         Initialize SearchCoordinator.
@@ -97,33 +90,24 @@ class SearchCoordinator:
         Args:
             config: Search configuration with limits and parameters.
                    Expected keys: semantic_limit, hyde_limit, keyword_limit,
-                                 max_deduplicated, embedding_model
+                                 max_deduplicated, query_timeout_ms
             db_connection: Legacy parameter, ignored. Uses DatabaseManager.
-            embedding_model: Ollama embedding model name (optional).
-                           Defaults to config value or snowflake-arctic-embed2.
-            ollama_host: Ollama server URL (optional).
-                        Defaults to config value.
+            embedding_model: Legacy parameter. Embedding is now done server-side
+                           by PostgreSQL's ollama_embedding() function.
+            ollama_host: Legacy parameter. Embedding is now done server-side.
 
-        Raises:
-            ImportError: If ollama library is not installed
+        Note:
+            Semantic and HyDE searches now use PostgreSQL's semantic_docsearch()
+            function which handles embedding generation server-side using the
+            HNSW index for fast approximate nearest neighbor search.
         """
-        if ollama is None:
-            raise ImportError(
-                "ollama package required for SearchCoordinator. "
-                "Install with: pip install ollama"
-            )
-
         self.config = config
 
         # Get database manager (Golden Rule 5 - Use DatabaseManager)
         self.db_manager: DatabaseManager = get_db_manager()
 
-        # Get Ollama configuration
-        self.ollama_host = ollama_host or get_ollama_host()
-        self.embedding_model = (
-            embedding_model or
-            config.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
-        )
+        # Store embedding model for reference (actual model used by server-side function)
+        self.embedding_model = config.get("embedding_model", DEFAULT_EMBEDDING_MODEL)
 
         # Extract limits from config with defaults (Golden Rule 2)
         self.semantic_limit: int = config.get("semantic_limit", DEFAULT_SEMANTIC_LIMIT)
@@ -272,35 +256,30 @@ class SearchCoordinator:
         """
         Execute semantic (embedding-based) search.
 
-        Generates an embedding for the input text using Ollama, then
-        queries the database for documents with similar embeddings
-        using pgvector cosine distance.
+        Uses the PostgreSQL semantic_docsearch() function which generates
+        embeddings server-side and leverages the HNSW index for fast
+        approximate nearest neighbor search.
 
         Args:
-            text: Query text to embed and search for
+            text: Query text to search for
             limit: Maximum number of document IDs to return
 
         Returns:
             List of document IDs ordered by similarity (highest first)
 
         Raises:
-            RuntimeError: If embedding generation or database query fails
+            RuntimeError: If database query fails
         """
         logger.debug(f"Semantic search: text length={len(text)}, limit={limit}")
 
-        # Generate embedding using ollama library (Golden Rule 4)
-        embedding = self._generate_embedding(text)
-
-        if not embedding:
-            logger.warning("Failed to generate embedding, returning empty results")
-            return []
-
-        # Query database using DatabaseManager (Golden Rule 5)
+        # Use the PostgreSQL semantic_docsearch function which:
+        # 1. Generates embeddings server-side via ollama_embedding()
+        # 2. Uses HNSW index for fast search (sub-second)
+        # 3. Returns document metadata directly
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Set statement timeout to prevent indefinite hangs
-                    # This is critical for large embedding tables
                     cur.execute(
                         "SET LOCAL statement_timeout = %s",
                         (self.query_timeout_ms,)
@@ -310,19 +289,14 @@ class SearchCoordinator:
                         f"for semantic search"
                     )
 
-                    # Use pgvector cosine distance operator
-                    # <=> returns cosine distance (0=identical, 2=opposite)
-                    # We look for chunks with embeddings, then get distinct documents
+                    # Use semantic_docsearch function which handles embedding
+                    # generation and uses HNSW index for fast search
+                    # threshold=0.0 to get all results up to limit, sorted by score
                     cur.execute("""
-                        SELECT DISTINCT c.document_id,
-                               MIN(e.embedding <=> %s::vector) AS distance
-                        FROM emb_1024 e
-                        JOIN chunks c ON e.chunk_id = c.id
-                        WHERE e.embedding IS NOT NULL
-                        GROUP BY c.document_id
-                        ORDER BY distance ASC
-                        LIMIT %s
-                    """, (embedding, limit))
+                        SELECT DISTINCT document_id
+                        FROM semantic_docsearch(%s, %s, %s)
+                        ORDER BY score DESC
+                    """, (text, DEFAULT_SIMILARITY_THRESHOLD, limit))
 
                     results = cur.fetchall()
                     doc_ids = [row[0] for row in results]
@@ -334,11 +308,14 @@ class SearchCoordinator:
             error_str = str(e).lower()
             if "statement timeout" in error_str or "canceling statement" in error_str:
                 logger.warning(
-                    f"Semantic search query timed out after {self.query_timeout_ms}ms. "
-                    "Consider optimizing the emb_1024 table with proper indexes "
-                    "(e.g., CREATE INDEX ON emb_1024 USING ivfflat (embedding vector_cosine_ops))."
+                    f"Semantic search query timed out after {self.query_timeout_ms}ms"
                 )
                 # Return empty results on timeout - don't fail the entire search
+                return []
+            if "failed to generate embedding" in error_str:
+                logger.warning(
+                    f"Failed to generate embedding for semantic search: {e}"
+                )
                 return []
             logger.error(f"Semantic search database query failed: {e}")
             raise RuntimeError(f"Semantic search failed: {e}") from e
@@ -347,9 +324,9 @@ class SearchCoordinator:
         """
         Execute HyDE (hypothetical document embedding) search.
 
-        For each hypothetical abstract, generates an embedding and searches
-        for similar documents. Results are deduplicated across all HyDE
-        abstracts while preserving order.
+        Uses the PostgreSQL semantic_docsearch() function for each hypothetical
+        abstract. Results are deduplicated across all HyDE abstracts while
+        preserving order.
 
         Args:
             hyde_abstracts: List of hypothetical abstracts to search with
@@ -357,9 +334,6 @@ class SearchCoordinator:
 
         Returns:
             List of unique document IDs found across all HyDE searches
-
-        Raises:
-            RuntimeError: If all HyDE searches fail
         """
         if not hyde_abstracts:
             logger.warning("No HyDE abstracts provided, returning empty results")
@@ -376,14 +350,8 @@ class SearchCoordinator:
             logger.debug(f"HyDE search {i}/{len(hyde_abstracts)}")
 
             try:
-                # Generate embedding for HyDE abstract
-                embedding = self._generate_embedding(hyde_abstract)
-
-                if not embedding:
-                    logger.warning(f"Failed to generate embedding for HyDE abstract {i}")
-                    continue
-
-                # Query database
+                # Use semantic_docsearch which handles embedding generation
+                # server-side and uses HNSW index for fast search
                 with self.db_manager.get_connection() as conn:
                     with conn.cursor() as cur:
                         # Set statement timeout to prevent indefinite hangs
@@ -393,15 +361,10 @@ class SearchCoordinator:
                         )
 
                         cur.execute("""
-                            SELECT DISTINCT c.document_id,
-                                   MIN(e.embedding <=> %s::vector) AS distance
-                            FROM emb_1024 e
-                            JOIN chunks c ON e.chunk_id = c.id
-                            WHERE e.embedding IS NOT NULL
-                            GROUP BY c.document_id
-                            ORDER BY distance ASC
-                            LIMIT %s
-                        """, (embedding, limit))
+                            SELECT DISTINCT document_id
+                            FROM semantic_docsearch(%s, %s, %s)
+                            ORDER BY score DESC
+                        """, (hyde_abstract, DEFAULT_SIMILARITY_THRESHOLD, limit))
 
                         results = cur.fetchall()
                         doc_ids = [row[0] for row in results]
@@ -418,6 +381,11 @@ class SearchCoordinator:
                     logger.warning(
                         f"HyDE search {i} timed out after {self.query_timeout_ms}ms, "
                         "continuing with next abstract"
+                    )
+                    continue
+                if "failed to generate embedding" in error_str:
+                    logger.warning(
+                        f"Failed to generate embedding for HyDE abstract {i}"
                     )
                     continue
                 logger.error(f"HyDE search {i} failed: {e}")
@@ -523,47 +491,6 @@ class SearchCoordinator:
                 return []
             logger.error(f"Keyword search failed: {e}")
             raise RuntimeError(f"Keyword search failed: {e}") from e
-
-    def _generate_embedding(self, text: str) -> List[float]:
-        """
-        Generate embedding for text using Ollama.
-
-        Uses the ollama library for embedding generation (Golden Rule 4).
-
-        Args:
-            text: Text to embed
-
-        Returns:
-            Embedding vector as list of floats, or empty list on failure
-
-        Note:
-            Does not raise exceptions - returns empty list on failure
-            to allow graceful degradation.
-        """
-        if not text or not text.strip():
-            logger.warning("Empty text provided for embedding")
-            return []
-
-        try:
-            # Use ollama library (Golden Rule 4 - no raw HTTP requests)
-            response = ollama.embeddings(
-                model=self.embedding_model,
-                prompt=text
-            )
-
-            if "embedding" in response:
-                embedding = response["embedding"]
-                logger.debug(
-                    f"Generated embedding with {len(embedding)} dimensions"
-                )
-                return embedding
-            else:
-                logger.error(f"Unexpected response format from Ollama: {response}")
-                return []
-
-        except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
-            return []
 
     def _escape_tsquery_term(self, term: str) -> str:
         """
@@ -673,28 +600,48 @@ class SearchCoordinator:
 
         Verifies that:
         1. Database connection is working
-        2. Ollama is reachable and embedding model is available
+        2. semantic_docsearch function is available and working
+           (tests both Ollama and pgvector integration)
 
         Returns:
             True if all connections are successful, False otherwise
         """
         try:
-            # Test database connection
+            # Test database connection and semantic_docsearch function
+            # This tests: database, ollama_embedding(), and HNSW index
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Basic connection test
                     cur.execute("SELECT 1")
                     cur.fetchone()
                     logger.debug("Database connection test passed")
 
-            # Test Ollama connection
-            test_embedding = self._generate_embedding("test connection")
-            if not test_embedding:
-                logger.error("Ollama embedding test failed")
-                return False
+                    # Test semantic_docsearch function (tests Ollama + pgvector)
+                    # Use a very short timeout for the test
+                    cur.execute("SET LOCAL statement_timeout = '30s'")
+                    cur.execute("""
+                        SELECT document_id FROM semantic_docsearch(
+                            'test connection', 0.9, 1
+                        ) LIMIT 1
+                    """)
+                    cur.fetchall()  # Result doesn't matter, just verify no error
+                    logger.debug("semantic_docsearch function test passed")
 
             logger.info("SearchCoordinator connection test passed")
             return True
 
         except Exception as e:
-            logger.error(f"Connection test failed: {e}")
+            error_str = str(e).lower()
+            if "failed to generate embedding" in error_str:
+                logger.error(
+                    "Ollama embedding generation failed. "
+                    "Check that Ollama is running and the embedding model is available."
+                )
+            elif "function semantic_docsearch" in error_str:
+                logger.error(
+                    "semantic_docsearch function not found. "
+                    "Run migration 007_create_semantic_docsearch.sql"
+                )
+            else:
+                logger.error(f"Connection test failed: {e}")
             return False
