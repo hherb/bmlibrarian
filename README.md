@@ -103,6 +103,67 @@ uv run python fact_checker_review_gui.py --input-file results.db --incremental -
 uv run python analyze_factcheck_progress.py results_annotated.json
 ```
 
+## PaperChecker System
+
+The **BMLibrarian PaperChecker** is a sophisticated fact-checking system for medical abstracts that validates research claims by systematically searching for and analyzing contradictory evidence.
+
+### Core Capabilities
+
+- **Statement Extraction**: Identifies core research claims (hypothesis, finding, conclusion) from abstracts
+- **Counter-Evidence Search**: Multi-strategy search (semantic + HyDE + keyword) for contradictory literature
+- **Evidence-Based Verdicts**: Three-class classification (supports/contradicts/undecided) with confidence levels
+- **Complete Audit Trail**: Full provenance tracking from search to final verdict
+- **Batch Processing**: CLI for processing multiple abstracts with database persistence
+
+### Key Features
+
+#### CLI Tool (`paper_checker_cli.py`)
+- **Batch fact-checking** of medical abstracts from JSON or by PMID
+- **Multi-strategy search** combining semantic, HyDE, and keyword approaches
+- **Counter-report generation** synthesizing contradictory evidence
+- **Markdown export** for detailed reports per abstract
+- **Database persistence** in PostgreSQL `papercheck` schema
+
+#### Laboratory GUI (`paper_checker_lab.py`)
+- **Interactive testing** with step-by-step workflow visualization
+- **Real-time progress** showing each processing stage
+- **Results inspection** for all intermediate outputs
+- **Desktop and web modes** for flexible deployment
+
+### Workflow Overview
+
+```
+Abstract → Statement Extraction → Counter-Statement Generation →
+Multi-Strategy Search → Document Scoring → Citation Extraction →
+Counter-Report Generation → Verdict Analysis → JSON/Markdown Output
+```
+
+### Example Usage
+
+```bash
+# Check abstracts from JSON file
+uv run python paper_checker_cli.py abstracts.json -o results.json
+
+# Export detailed markdown reports
+uv run python paper_checker_cli.py abstracts.json --export-markdown reports/
+
+# Check abstracts by PMID from database
+uv run python paper_checker_cli.py --pmid 12345678 23456789
+
+# Quick mode for testing
+uv run python paper_checker_cli.py abstracts.json --quick
+
+# Interactive laboratory
+uv run python paper_checker_lab.py
+```
+
+### Documentation
+
+- [User Guide](doc/users/paper_checker_guide.md) - Overview and quick start
+- [CLI Guide](doc/users/paper_checker_cli_guide.md) - Command-line reference
+- [Laboratory Guide](doc/users/paper_checker_lab_guide.md) - Interactive testing
+- [Architecture](doc/developers/paper_checker_architecture.md) - System design
+
 ## Key Features
 
 ### 🤖 Multi-Agent AI System
@@ -113,6 +174,7 @@ uv run python analyze_factcheck_progress.py results_annotated.json
 - **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
 - **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
 - **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
+- **PaperCheckerAgent**: Validates medical abstract claims against contradictory literature evidence
 
 ### 🔄 Advanced Workflow Orchestration
 - **Enum-Based Workflow**: Flexible step orchestration with meaningful names

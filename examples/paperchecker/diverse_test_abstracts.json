@@ -1,0 +1,52 @@
+[
+  {
+    "abstract": "Background: Regular physical exercise has been proposed as a protective factor against cardiovascular disease. This randomized controlled trial investigated the effects of structured aerobic exercise on cardiovascular outcomes in sedentary adults aged 45-65 years. Methods: We enrolled 500 participants and randomly assigned them to either an exercise intervention group (n=250) receiving supervised moderate-intensity aerobic exercise 3 times weekly for 12 months, or a control group (n=250) receiving standard lifestyle counseling. Primary outcomes were changes in blood pressure, lipid profiles, and cardiorespiratory fitness measured by VO2max. Results: After 12 months, the exercise group showed significant reductions in systolic blood pressure (-8.2 mmHg, p<0.001), LDL cholesterol (-15.3 mg/dL, p<0.001), and improvements in VO2max (+4.8 mL/kg/min, p<0.001) compared to controls. Adverse events were rare and similar between groups. Conclusions: Structured aerobic exercise significantly improves cardiovascular risk factors in sedentary middle-aged adults and should be recommended as a primary prevention strategy.",
+    "metadata": {
+      "title": "Effects of Structured Aerobic Exercise on Cardiovascular Risk Factors in Sedentary Adults: A Randomized Controlled Trial",
+      "year": 2023,
+      "study_type": "RCT",
+      "pmid": null,
+      "doi": null
+    }
+  },
+  {
+    "abstract": "Objective: To systematically review and meta-analyze the efficacy of statin therapy for primary prevention of cardiovascular events in adults without established cardiovascular disease. Data Sources: PubMed, EMBASE, and Cochrane Library were searched from inception to December 2023. Study Selection: Randomized controlled trials comparing statins to placebo in adults without prior cardiovascular disease with follow-up of at least 2 years were included. Data Extraction: Two reviewers independently extracted data on major adverse cardiovascular events (MACE), all-cause mortality, and serious adverse events. Results: Twenty-three trials with 186,854 participants were included. Statin therapy significantly reduced MACE (RR 0.75, 95% CI 0.70-0.81, p<0.00001) and all-cause mortality (RR 0.91, 95% CI 0.85-0.97, p=0.006). The number needed to treat to prevent one MACE over 5 years was 62. Serious adverse events did not differ significantly between groups. Heterogeneity was moderate (I2=48%). Conclusions: Statin therapy reduces cardiovascular events and mortality in primary prevention populations, though the absolute benefit is modest. Shared decision-making considering individual risk profiles is recommended.",
+    "metadata": {
+      "title": "Statins for Primary Prevention of Cardiovascular Disease: A Systematic Review and Meta-Analysis",
+      "year": 2024,
+      "study_type": "Meta-analysis",
+      "pmid": null,
+      "doi": null
+    }
+  },
+  {
+    "abstract": "Background: The association between sleep duration and type 2 diabetes risk remains incompletely understood. We examined the relationship between self-reported sleep duration and incident type 2 diabetes in a large prospective cohort. Methods: This prospective cohort study followed 156,284 participants from the UK Biobank without diabetes at baseline. Sleep duration was assessed via questionnaire and categorized as short (<6 hours), optimal (7-8 hours), or long (>9 hours). Incident type 2 diabetes was identified through health records over a median 8.2-year follow-up. Cox proportional hazards models were adjusted for age, sex, BMI, physical activity, diet, and socioeconomic factors. Results: During follow-up, 6,892 participants developed type 2 diabetes. Compared to optimal sleepers, short sleepers had increased diabetes risk (HR 1.32, 95% CI 1.22-1.43) as did long sleepers (HR 1.26, 95% CI 1.14-1.40). These associations persisted after adjustment for BMI. The population attributable fraction for non-optimal sleep was 8.4%. Conclusions: Both short and long sleep durations are independently associated with increased type 2 diabetes risk, suggesting sleep optimization may be a modifiable target for diabetes prevention.",
+    "metadata": {
+      "title": "Sleep Duration and Risk of Type 2 Diabetes: A Prospective Cohort Study of 156,284 UK Adults",
+      "year": 2023,
+      "study_type": "Observational cohort",
+      "pmid": null,
+      "doi": null
+    }
+  },
+  {
+    "abstract": "Introduction: Spontaneous coronary artery dissection (SCAD) is an increasingly recognized cause of acute coronary syndrome, particularly in young women. We report a case of recurrent SCAD with atypical presentation. Case Presentation: A 38-year-old previously healthy woman presented with substernal chest pain and mild troponin elevation. Initial coronary angiography revealed a long dissection of the mid-left anterior descending artery treated conservatively. She was discharged on aspirin and beta-blocker therapy. Three months later, she returned with similar symptoms. Repeat angiography showed new dissection involving the right coronary artery with complete vessel occlusion. Conservative management with medical therapy was continued due to vessel size. At 6-month follow-up, she remained symptom-free with healing of both dissections on CT angiography. Discussion: This case illustrates that SCAD can recur in multiple coronary territories and highlights the importance of long-term surveillance. Conservative management remains the preferred approach in stable patients. Conclusion: Recurrent SCAD presents diagnostic and management challenges requiring individualized approaches and long-term cardiovascular follow-up.",
+    "metadata": {
+      "title": "Recurrent Spontaneous Coronary Artery Dissection Affecting Multiple Vessels: A Case Report",
+      "year": 2023,
+      "study_type": "Case report",
+      "pmid": null,
+      "doi": null
+    }
+  },
+  {
+    "abstract": "The gut microbiome has emerged as a critical regulator of human health and disease. This review synthesizes current evidence on the bidirectional relationship between gut microbiota and cardiovascular health. We discuss how microbial metabolites, particularly trimethylamine N-oxide (TMAO), short-chain fatty acids, and bile acids, influence cardiovascular risk through effects on inflammation, lipid metabolism, and endothelial function. The gut microbiome is altered in patients with hypertension, heart failure, and atherosclerosis, though causality remains to be fully established. Dietary interventions including Mediterranean diet, fiber supplementation, and probiotics show promise for modulating cardiovascular risk through microbiome modification. We also review emerging therapeutic strategies including fecal microbiota transplantation and engineered probiotics. Key knowledge gaps include the need for standardized microbiome assessment methods, long-term intervention studies, and mechanistic understanding of host-microbiome interactions. Future directions should focus on personalized microbiome-based interventions for cardiovascular disease prevention and treatment.",
+    "metadata": {
+      "title": "The Gut Microbiome and Cardiovascular Health: Current Evidence and Future Directions",
+      "year": 2024,
+      "study_type": "Review",
+      "pmid": null,
+      "doi": null
+    }
+  }
+]
