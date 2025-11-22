@@ -111,14 +111,19 @@ def _create_frame_stylesheet(
         str: Generated stylesheet string
     """
     gen = StylesheetGenerator(scale)
-    return gen.custom(f"""
-        QFrame#{object_name} {{
-            background-color: {bg_color};
-            border: 1px solid {border_color};
-            border-radius: {{radius_small}}px;
-            padding: {{padding_medium}}px;
+    # Use double braces for CSS syntax, single braces for format placeholders
+    # Note: f-string is NOT used here to avoid conflicts with .format()
+    template = """
+        QFrame#OBJECT_NAME {{
+            background-color: BG_COLOR;
+            border: 1px solid BORDER_COLOR;
+            border-radius: {radius_small}px;
+            padding: {padding_medium}px;
         }}
-    """)
+    """
+    # First substitute scale values, then replace our placeholders
+    styled = gen.custom(template)
+    return styled.replace("OBJECT_NAME", object_name).replace("BG_COLOR", bg_color).replace("BORDER_COLOR", border_color)
 
 
 # =============================================================================
@@ -194,9 +199,9 @@ class WelcomePage(QWizardPage):
 
 class DatabaseInstructionsPage(QWizardPage):
     """
-    Page displaying PostgreSQL setup instructions.
+    Page explaining the automated database setup process.
 
-    Shows commands for creating database with required extensions.
+    Informs the user what will be created automatically.
     """
 
     def __init__(self, parent: Optional["SetupWizard"] = None):
@@ -210,119 +215,104 @@ class DatabaseInstructionsPage(QWizardPage):
 
         self.setTitle("PostgreSQL Database Setup")
         self.setSubTitle(
-            "Please ensure your PostgreSQL database is configured with the required extensions."
+            "The wizard will automatically set up your database."
         )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(scale["spacing_large"])
 
-        # Instructions
-        instructions = QLabel(
-            "BMLibrarian requires PostgreSQL with the following extensions:\n\n"
-            "  - pgvector: For semantic similarity search\n"
-            "  - plpython3u: For embedding generation within the database\n"
-            "  - pg_trgm: For trigram-based text search\n\n"
-            "If you haven't already, create a new database with these extensions:"
+        # What will be created
+        overview = QLabel(
+            "BMLibrarian requires PostgreSQL with specific extensions for "
+            "semantic search and text processing.\n\n"
+            "On the next page, you'll provide PostgreSQL superuser credentials, "
+            "and the wizard will automatically:"
         )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
+        overview.setWordWrap(True)
+        layout.addWidget(overview)
 
-        # SQL Commands box
-        sql_group = QGroupBox("SQL Commands")
-        sql_layout = QVBoxLayout(sql_group)
-
-        sql_commands = """-- Connect to PostgreSQL as superuser (e.g., postgres)
--- Then run these commands:
-
--- Create the database
-CREATE DATABASE bmlibrarian;
-
--- Connect to the new database
-\\c bmlibrarian
-
--- Install required extensions
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS plpython3u;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
--- Grant privileges to your user (replace 'your_user')
-GRANT ALL PRIVILEGES ON DATABASE bmlibrarian TO your_user;"""
-
-        sql_text = QTextEdit()
-        sql_text.setPlainText(sql_commands)
-        sql_text.setReadOnly(True)
-        sql_text.setFont(QFont("Monospace", scale["font_small"]))
-        sql_text.setMinimumHeight(scale["control_height_xlarge"] * SQL_TEXT_HEIGHT_MULTIPLIER)
-        sql_layout.addWidget(sql_text)
-
-        # Copy button
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.clicked.connect(lambda: self._copy_to_clipboard(sql_commands))
-        sql_layout.addWidget(copy_btn)
-
-        layout.addWidget(sql_group)
-
-        # Additional notes
-        notes = QLabel(
-            "Important Notes:\n\n"
-            "  - You need superuser privileges to create the plpython3u extension\n"
-            "  - pgvector may require separate installation depending on your OS\n"
-            "  - On Ubuntu/Debian: sudo apt install postgresql-16-pgvector\n"
-            "  - On macOS with Homebrew: brew install pgvector"
+        # Steps that will be performed
+        steps_frame = QFrame()
+        steps_frame.setObjectName("stepsFrame")
+        steps_frame.setStyleSheet(
+            _create_frame_stylesheet(scale, FRAME_NOTE_BG, FRAME_NOTE_BORDER, "stepsFrame")
         )
-        notes.setWordWrap(True)
-        layout.addWidget(notes)
+        steps_layout = QVBoxLayout(steps_frame)
+
+        steps = [
+            "1. Create the 'bmlibrarian' database",
+            "2. Install required extensions:",
+            "      • pgvector (semantic similarity search)",
+            "      • plpython3u (embedding generation)",
+            "      • pg_trgm (trigram text search)",
+            "3. Create a 'bmlibrarian' database user",
+            "4. Grant appropriate permissions",
+            "5. Apply the database schema",
+        ]
+        for step in steps:
+            step_label = QLabel(step)
+            steps_layout.addWidget(step_label)
+
+        layout.addWidget(steps_frame)
+
+        # Prerequisites note
+        prereq_label = QLabel(
+            "\nPrerequisites:\n\n"
+            "  • PostgreSQL must be installed and running\n"
+            "  • You need superuser credentials (e.g., 'postgres' user)\n"
+            "  • pgvector extension must be available on your system:\n"
+            "      - macOS (Homebrew): brew install pgvector\n"
+            "      - Ubuntu/Debian: sudo apt install postgresql-16-pgvector\n"
+            "      - Or compile from source: github.com/pgvector/pgvector"
+        )
+        prereq_label.setWordWrap(True)
+        layout.addWidget(prereq_label)
 
         layout.addStretch()
-
-    def _copy_to_clipboard(self, text: str) -> None:
-        """Copy text to clipboard."""
-        from PySide6.QtWidgets import QApplication
-
-        clipboard = QApplication.clipboard()
-        clipboard.setText(text)
-
-        # Show brief notification
-        QMessageBox.information(
-            self,
-            "Copied",
-            "SQL commands copied to clipboard.",
-            QMessageBox.StandardButton.Ok,
-        )
 
 
 # =============================================================================
 # Database Configuration Page
 # =============================================================================
 
+# Default database name and application user
+DEFAULT_DATABASE_NAME = "bmlibrarian"
+DEFAULT_APP_USER = "bmlibrarian"
+
 
 class DatabaseConfigPage(QWizardPage):
     """
-    Page for entering PostgreSQL connection details.
+    Page for entering PostgreSQL superuser credentials and bmlibrarian user password.
 
-    Collects database credentials and validates connection.
+    Simplified setup flow:
+    - User provides superuser credentials to connect to PostgreSQL
+    - User chooses a password for the bmlibrarian application user
+    - The wizard will create the database, extensions, and user automatically
     """
 
     def __init__(self, parent: Optional["SetupWizard"] = None):
         """Initialize database configuration page."""
         super().__init__(parent)
         self._wizard = parent
+        self._connection_tested = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         """Set up the configuration page UI."""
         scale = get_font_scale()
 
-        self.setTitle("Database Configuration")
-        self.setSubTitle("Enter your PostgreSQL connection details.")
+        self.setTitle("Database Credentials")
+        self.setSubTitle(
+            "Enter PostgreSQL superuser credentials and choose a password for BMLibrarian."
+        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(scale["spacing_large"])
 
-        # Connection settings group
-        conn_group = QGroupBox("Connection Settings")
-        conn_layout = QVBoxLayout(conn_group)
-        conn_layout.setSpacing(scale["spacing_medium"])
+        # Superuser connection settings group
+        superuser_group = QGroupBox("PostgreSQL Superuser Connection")
+        superuser_layout = QVBoxLayout(superuser_group)
+        superuser_layout.setSpacing(scale["spacing_medium"])
 
         # Host
         host_layout = QHBoxLayout()
@@ -332,7 +322,7 @@ class DatabaseConfigPage(QWizardPage):
         self.host_edit.setPlaceholderText(DEFAULT_POSTGRES_HOST)
         host_layout.addWidget(host_label)
         host_layout.addWidget(self.host_edit)
-        conn_layout.addLayout(host_layout)
+        superuser_layout.addLayout(host_layout)
 
         # Port (with integer validation)
         port_layout = QHBoxLayout()
@@ -343,137 +333,222 @@ class DatabaseConfigPage(QWizardPage):
         self.port_edit.setValidator(QIntValidator(1, 65535))  # Valid port range
         port_layout.addWidget(port_label)
         port_layout.addWidget(self.port_edit)
-        conn_layout.addLayout(port_layout)
+        superuser_layout.addLayout(port_layout)
 
-        # Database name
-        db_layout = QHBoxLayout()
-        db_label = QLabel("Database:")
-        db_label.setMinimumWidth(scale["control_width_small"])
-        self.db_edit = QLineEdit()
-        self.db_edit.setPlaceholderText("bmlibrarian")
-        db_layout.addWidget(db_label)
-        db_layout.addWidget(self.db_edit)
-        conn_layout.addLayout(db_layout)
+        # Superuser username
+        superuser_user_layout = QHBoxLayout()
+        superuser_user_label = QLabel("Superuser:")
+        superuser_user_label.setMinimumWidth(scale["control_width_small"])
+        self.superuser_edit = QLineEdit()
+        self.superuser_edit.setPlaceholderText("postgres")
+        superuser_user_layout.addWidget(superuser_user_label)
+        superuser_user_layout.addWidget(self.superuser_edit)
+        superuser_layout.addLayout(superuser_user_layout)
 
-        # Username
-        user_layout = QHBoxLayout()
-        user_label = QLabel("Username:")
-        user_label.setMinimumWidth(scale["control_width_small"])
-        self.user_edit = QLineEdit()
-        self.user_edit.setPlaceholderText("your_username")
-        user_layout.addWidget(user_label)
-        user_layout.addWidget(self.user_edit)
-        conn_layout.addLayout(user_layout)
+        # Superuser password
+        superuser_pass_layout = QHBoxLayout()
+        superuser_pass_label = QLabel("Password:")
+        superuser_pass_label.setMinimumWidth(scale["control_width_small"])
+        self.superuser_pass_edit = QLineEdit()
+        self.superuser_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.superuser_pass_edit.setPlaceholderText("superuser password")
+        superuser_pass_layout.addWidget(superuser_pass_label)
+        superuser_pass_layout.addWidget(self.superuser_pass_edit)
+        superuser_layout.addLayout(superuser_pass_layout)
 
-        # Password
-        pass_layout = QHBoxLayout()
-        pass_label = QLabel("Password:")
-        pass_label.setMinimumWidth(scale["control_width_small"])
-        self.pass_edit = QLineEdit()
-        self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.pass_edit.setPlaceholderText("your_password")
-        pass_layout.addWidget(pass_label)
-        pass_layout.addWidget(self.pass_edit)
-        conn_layout.addLayout(pass_layout)
+        layout.addWidget(superuser_group)
 
-        layout.addWidget(conn_group)
+        # Test connection button and status
+        test_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self._test_connection)
+        test_layout.addWidget(self.test_btn)
+        test_layout.addStretch()
+        layout.addLayout(test_layout)
 
-        # Test connection button
-        test_btn = QPushButton("Test Connection")
-        test_btn.clicked.connect(self._test_connection)
-        layout.addWidget(test_btn)
-
-        # Status label
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # BMLibrarian user password group
+        app_user_group = QGroupBox(f"BMLibrarian Application User")
+        app_user_layout = QVBoxLayout(app_user_group)
+        app_user_layout.setSpacing(scale["spacing_medium"])
+
+        app_user_info = QLabel(
+            f"A dedicated '{DEFAULT_APP_USER}' user will be created for the application.\n"
+            "Choose a secure password for this user:"
+        )
+        app_user_info.setWordWrap(True)
+        app_user_layout.addWidget(app_user_info)
+
+        # App user password
+        app_pass_layout = QHBoxLayout()
+        app_pass_label = QLabel("Password:")
+        app_pass_label.setMinimumWidth(scale["control_width_small"])
+        self.app_pass_edit = QLineEdit()
+        self.app_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.app_pass_edit.setPlaceholderText("bmlibrarian user password")
+        app_pass_layout.addWidget(app_pass_label)
+        app_pass_layout.addWidget(self.app_pass_edit)
+        app_user_layout.addLayout(app_pass_layout)
+
+        # Confirm password
+        confirm_pass_layout = QHBoxLayout()
+        confirm_pass_label = QLabel("Confirm:")
+        confirm_pass_label.setMinimumWidth(scale["control_width_small"])
+        self.confirm_pass_edit = QLineEdit()
+        self.confirm_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_pass_edit.setPlaceholderText("confirm password")
+        confirm_pass_layout.addWidget(confirm_pass_label)
+        confirm_pass_layout.addWidget(self.confirm_pass_edit)
+        app_user_layout.addLayout(confirm_pass_layout)
+
+        layout.addWidget(app_user_group)
+
         layout.addStretch()
 
         # Register fields for wizard
-        self.registerField("postgres_host*", self.host_edit)
-        self.registerField("postgres_port*", self.port_edit)
-        self.registerField("postgres_db*", self.db_edit)
-        self.registerField("postgres_user*", self.user_edit)
-        self.registerField("postgres_password*", self.pass_edit)
+        self.registerField("postgres_host", self.host_edit)
+        self.registerField("postgres_port", self.port_edit)
+        self.registerField("superuser_name", self.superuser_edit)
+        self.registerField("superuser_password", self.superuser_pass_edit)
+        self.registerField("app_user_password", self.app_pass_edit)
+
+        # Connect text changes to trigger isComplete() re-evaluation
+        self.host_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+        self.port_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+        self.superuser_edit.textChanged.connect(lambda _: self._on_credentials_changed())
+        self.superuser_pass_edit.textChanged.connect(lambda _: self._on_credentials_changed())
+        self.app_pass_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+        self.confirm_pass_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+
+    def _on_credentials_changed(self) -> None:
+        """Handle changes to superuser credentials."""
+        # Reset connection test status when credentials change
+        self._connection_tested = False
+        self.status_label.setText("")
+        self.completeChanged.emit()
 
     def _test_connection(self) -> None:
-        """Test the database connection."""
+        """Test the superuser connection to PostgreSQL."""
         host = self.host_edit.text().strip()
         port = self.port_edit.text().strip()
-        dbname = self.db_edit.text().strip()
-        user = self.user_edit.text().strip()
-        password = self.pass_edit.text()
+        superuser = self.superuser_edit.text().strip()
+        superuser_pass = self.superuser_pass_edit.text()
 
-        if not all([host, port, dbname, user, password]):
+        if not all([host, port, superuser, superuser_pass]):
             self.status_label.setText(
-                f'<span style="color: {COLOR_ERROR};">Please fill in all fields.</span>'
+                f'<span style="color: {COLOR_ERROR};">Please fill in all superuser fields.</span>'
             )
             return
 
         self.status_label.setText("Testing connection...")
+        self._connection_tested = False
 
         try:
             import psycopg
 
             # NOTE: Direct psycopg usage is necessary here during bootstrapping
             # before DatabaseManager is available. This is an exception to Golden
-            # Rule #5 ("All postgres database communication happens through the
-            # database manager") because we need to validate credentials and check
-            # for required extensions BEFORE the database is set up.
+            # Rule #5 because we need to validate superuser credentials BEFORE
+            # the database is set up.
             #
-            # Using parameterized connection (dict approach) to safely handle
-            # passwords with special characters and prevent injection.
+            # Connect to 'postgres' database (always exists) to test superuser access
             conn_params = {
                 'host': host,
                 'port': int(port),
-                'dbname': dbname,
-                'user': user,
-                'password': password,
+                'dbname': 'postgres',  # Default database that always exists
+                'user': superuser,
+                'password': superuser_pass,
                 'connect_timeout': DB_CONNECTION_TIMEOUT_SECONDS,
             }
 
             with psycopg.connect(**conn_params) as conn:
                 with conn.cursor() as cur:
-                    # Test basic connectivity
-                    cur.execute("SELECT version()")
-                    version = cur.fetchone()[0]
+                    # Check if user has superuser privileges
+                    cur.execute("SELECT usesuper FROM pg_user WHERE usename = current_user")
+                    result = cur.fetchone()
+                    is_superuser = result[0] if result else False
 
-                    # Check for required extensions
-                    ext_placeholders = ", ".join([f"'{ext}'" for ext in REQUIRED_EXTENSIONS])
-                    cur.execute(
-                        f"SELECT extname FROM pg_extension WHERE extname IN ({ext_placeholders})"
-                    )
-                    extensions = [row[0] for row in cur.fetchall()]
+                    # Check for required extensions availability
+                    cur.execute("""
+                        SELECT name FROM pg_available_extensions
+                        WHERE name IN ('vector', 'plpython3u', 'pg_trgm')
+                    """)
+                    available_exts = [row[0] for row in cur.fetchall()]
 
-            missing = [ext for ext in REQUIRED_EXTENSIONS if ext not in extensions]
+            missing_exts = [ext for ext in REQUIRED_EXTENSIONS if ext not in available_exts]
 
-            if missing:
+            if not is_superuser:
                 self.status_label.setText(
-                    f'<span style="color: {COLOR_WARNING};">Connection successful, but missing extensions: '
-                    f'{", ".join(missing)}</span>'
+                    f'<span style="color: {COLOR_WARNING};">Connection successful, but user '
+                    f"'{superuser}' is not a superuser. Superuser privileges are required "
+                    f"to create extensions.</span>"
+                )
+            elif missing_exts:
+                self.status_label.setText(
+                    f'<span style="color: {COLOR_WARNING};">Connection successful, but these '
+                    f'extensions are not available: {", ".join(missing_exts)}. '
+                    f"Please install them before proceeding.</span>"
                 )
             else:
+                self._connection_tested = True
                 self.status_label.setText(
                     f'<span style="color: {COLOR_SUCCESS};">Connection successful! '
-                    f"All required extensions present.</span>"
+                    f"Superuser access verified, all required extensions available.</span>"
                 )
+                self.completeChanged.emit()
 
         except Exception as e:
-            logger.error(f"Database connection test failed: {e}")
+            logger.error(f"Superuser connection test failed: {e}")
             self.status_label.setText(
                 f'<span style="color: {COLOR_ERROR};">Connection failed: {str(e)}</span>'
             )
 
+    def isComplete(self) -> bool:
+        """
+        Check if all required fields are filled and connection tested.
+
+        Returns:
+            bool: True if all requirements are met
+        """
+        # Check all fields are filled
+        fields_filled = all([
+            self.host_edit.text().strip(),
+            self.port_edit.text().strip(),
+            self.superuser_edit.text().strip(),
+            self.superuser_pass_edit.text(),
+            self.app_pass_edit.text(),
+            self.confirm_pass_edit.text(),
+        ])
+
+        # Check passwords match
+        passwords_match = self.app_pass_edit.text() == self.confirm_pass_edit.text()
+
+        # Check connection was tested successfully
+        return fields_filled and passwords_match and self._connection_tested
+
     def validatePage(self) -> bool:
         """Validate the page before proceeding."""
+        # Verify passwords match
+        if self.app_pass_edit.text() != self.confirm_pass_edit.text():
+            QMessageBox.warning(
+                self,
+                "Password Mismatch",
+                "The BMLibrarian user passwords do not match. Please try again.",
+            )
+            return False
+
         # Store values in wizard config
         if self._wizard:
             self._wizard.set_config_value("postgres_host", self.host_edit.text().strip())
             self._wizard.set_config_value("postgres_port", self.port_edit.text().strip())
-            self._wizard.set_config_value("postgres_db", self.db_edit.text().strip())
-            self._wizard.set_config_value("postgres_user", self.user_edit.text().strip())
-            self._wizard.set_config_value("postgres_password", self.pass_edit.text())
+            self._wizard.set_config_value("superuser_name", self.superuser_edit.text().strip())
+            self._wizard.set_config_value("superuser_password", self.superuser_pass_edit.text())
+            self._wizard.set_config_value("postgres_db", DEFAULT_DATABASE_NAME)
+            self._wizard.set_config_value("postgres_user", DEFAULT_APP_USER)
+            self._wizard.set_config_value("postgres_password", self.app_pass_edit.text())
 
         return True
 
@@ -485,25 +560,30 @@ class DatabaseConfigPage(QWizardPage):
 
 class DatabaseSetupWorker(QThread):
     """
-    Worker thread for database setup operations.
+    Worker thread for complete database setup operations.
 
-    Performs:
-    1. Check if database has existing tables
-    2. Create .env file
-    3. Apply database schema
+    Performs (using superuser credentials):
+    1. Create the bmlibrarian database (if not exists)
+    2. Create required extensions (vector, plpython3u, pg_trgm)
+    3. Create the bmlibrarian application user
+    4. Grant appropriate permissions
+    5. Create .env file
+    6. Apply database schema (using app user)
     """
 
     progress = Signal(str)  # Progress message
     finished = Signal(bool, str)  # Success, message
-    table_check = Signal(bool, list)  # Has tables, table list
+    table_check = Signal(bool, list)  # Has tables, table list (for compatibility)
 
     def __init__(
         self,
         host: str,
         port: str,
+        superuser: str,
+        superuser_password: str,
+        app_user: str,
+        app_password: str,
         dbname: str,
-        user: str,
-        password: str,
         pdf_dir: str,
         parent: Optional[object] = None,
     ):
@@ -511,85 +591,169 @@ class DatabaseSetupWorker(QThread):
         super().__init__(parent)
         self.host = host
         self.port = port
+        self.superuser = superuser
+        self.superuser_password = superuser_password
+        self.app_user = app_user
+        self.app_password = app_password
         self.dbname = dbname
-        self.user = user
-        self.password = password
         self.pdf_dir = pdf_dir
-        self._check_only = False
-        self._skip_schema = False
-
-    def set_check_only(self, check_only: bool) -> None:
-        """Set whether to only check for tables."""
-        self._check_only = check_only
-
-    def set_skip_schema(self, skip: bool) -> None:
-        """Set whether to skip schema setup."""
-        self._skip_schema = skip
 
     def run(self) -> None:
-        """Execute database setup."""
+        """Execute complete database setup."""
         try:
             import psycopg
 
             # NOTE: Direct psycopg usage is necessary here during bootstrapping
             # before DatabaseManager is available. This is an exception to Golden
             # Rule #5 ("All postgres database communication happens through the
-            # database manager") because we need to check for existing tables
-            # BEFORE the database schema is applied.
-            #
-            # Using parameterized connection (dict approach) to safely handle
-            # passwords with special characters and prevent injection.
-            conn_params = {
+            # database manager") because we need to create the database itself.
+
+            # Step 1: Connect to postgres database as superuser
+            self.progress.emit("Connecting as superuser...")
+            postgres_conn_params = {
+                'host': self.host,
+                'port': int(self.port),
+                'dbname': 'postgres',
+                'user': self.superuser,
+                'password': self.superuser_password,
+                'connect_timeout': DB_CONNECTION_TIMEOUT_SECONDS,
+                'autocommit': True,  # Required for CREATE DATABASE
+            }
+
+            with psycopg.connect(**postgres_conn_params) as conn:
+                with conn.cursor() as cur:
+                    # Step 2: Check if database exists
+                    self.progress.emit(f"Checking if database '{self.dbname}' exists...")
+                    cur.execute(
+                        "SELECT 1 FROM pg_database WHERE datname = %s",
+                        (self.dbname,)
+                    )
+                    db_exists = cur.fetchone() is not None
+
+                    if not db_exists:
+                        # Create the database
+                        self.progress.emit(f"Creating database '{self.dbname}'...")
+                        # Use SQL identifier quoting for safety
+                        cur.execute(
+                            psycopg.sql.SQL("CREATE DATABASE {}").format(
+                                psycopg.sql.Identifier(self.dbname)
+                            )
+                        )
+                        logger.info(f"Created database '{self.dbname}'")
+                    else:
+                        self.progress.emit(f"Database '{self.dbname}' already exists")
+
+                    # Step 3: Check if user exists
+                    self.progress.emit(f"Checking if user '{self.app_user}' exists...")
+                    cur.execute(
+                        "SELECT 1 FROM pg_roles WHERE rolname = %s",
+                        (self.app_user,)
+                    )
+                    user_exists = cur.fetchone() is not None
+
+                    if not user_exists:
+                        # Create the application user
+                        # Using sql.Literal for password to safely escape it
+                        self.progress.emit(f"Creating user '{self.app_user}'...")
+                        cur.execute(
+                            psycopg.sql.SQL("CREATE USER {} WITH PASSWORD {}").format(
+                                psycopg.sql.Identifier(self.app_user),
+                                psycopg.sql.Literal(self.app_password)
+                            )
+                        )
+                        logger.info(f"Created user '{self.app_user}'")
+                    else:
+                        # Update password for existing user
+                        # Using sql.Literal for password to safely escape it
+                        self.progress.emit(f"Updating password for user '{self.app_user}'...")
+                        cur.execute(
+                            psycopg.sql.SQL("ALTER USER {} WITH PASSWORD {}").format(
+                                psycopg.sql.Identifier(self.app_user),
+                                psycopg.sql.Literal(self.app_password)
+                            )
+                        )
+                        logger.info(f"Updated password for existing user '{self.app_user}'")
+
+            # Step 4: Connect to the new database to create extensions and grant permissions
+            self.progress.emit(f"Connecting to '{self.dbname}' database...")
+            db_conn_params = {
                 'host': self.host,
                 'port': int(self.port),
                 'dbname': self.dbname,
-                'user': self.user,
-                'password': self.password,
+                'user': self.superuser,
+                'password': self.superuser_password,
                 'connect_timeout': DB_CONNECTION_TIMEOUT_SECONDS,
             }
 
-            self.progress.emit("Connecting to database...")
-
-            with psycopg.connect(**conn_params) as conn:
+            with psycopg.connect(**db_conn_params) as conn:
                 with conn.cursor() as cur:
-                    # Check for existing tables
-                    self.progress.emit("Checking for existing tables...")
+                    # Create extensions
+                    for ext in REQUIRED_EXTENSIONS:
+                        self.progress.emit(f"Creating extension '{ext}'...")
+                        cur.execute(
+                            psycopg.sql.SQL("CREATE EXTENSION IF NOT EXISTS {}").format(
+                                psycopg.sql.Identifier(ext)
+                            )
+                        )
+                        logger.info(f"Created extension '{ext}'")
+
+                    # Grant privileges on database
+                    self.progress.emit(f"Granting database privileges to '{self.app_user}'...")
                     cur.execute(
-                        """
+                        psycopg.sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}").format(
+                            psycopg.sql.Identifier(self.dbname),
+                            psycopg.sql.Identifier(self.app_user)
+                        )
+                    )
+
+                    # Grant privileges on public schema (required for PostgreSQL 15+)
+                    self.progress.emit(f"Granting schema privileges to '{self.app_user}'...")
+                    cur.execute(
+                        psycopg.sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {}").format(
+                            psycopg.sql.Identifier(self.app_user)
+                        )
+                    )
+
+                    # Set default privileges for future tables
+                    cur.execute(
+                        psycopg.sql.SQL(
+                            "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                            "GRANT ALL ON TABLES TO {}"
+                        ).format(psycopg.sql.Identifier(self.app_user))
+                    )
+                    cur.execute(
+                        psycopg.sql.SQL(
+                            "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                            "GRANT ALL ON SEQUENCES TO {}"
+                        ).format(psycopg.sql.Identifier(self.app_user))
+                    )
+
+                    # Check for existing tables (for table_check signal compatibility)
+                    cur.execute("""
                         SELECT table_name FROM information_schema.tables
                         WHERE table_schema = 'public'
                         AND table_type = 'BASE TABLE'
-                    """
-                    )
+                    """)
                     tables = [row[0] for row in cur.fetchall()]
-
                     self.table_check.emit(len(tables) > 0, tables)
 
-                    if self._check_only:
-                        self.finished.emit(True, "Table check complete")
-                        return
+                conn.commit()
 
-                    if tables:
-                        self.finished.emit(
-                            False,
-                            f"Database already contains {len(tables)} tables. "
-                            "Please use an empty database.",
-                        )
-                        return
-
-            if self._skip_schema:
-                self.finished.emit(True, "Setup complete (schema skipped)")
-                return
-
-            # Create .env file
-            self.progress.emit("Creating .env file...")
+            # Step 5: Create .env file
+            self.progress.emit("Creating configuration files...")
             self._create_env_file()
 
-            # Apply schema
+            # Step 6: Apply schema using app user credentials
             self.progress.emit("Applying database schema...")
             self._apply_schema()
 
-            self.finished.emit(True, "Database setup completed successfully!")
+            self.finished.emit(
+                True,
+                f"Database setup completed successfully!\n\n"
+                f"• Database: {self.dbname}\n"
+                f"• User: {self.app_user}\n"
+                f"• Extensions: {', '.join(REQUIRED_EXTENSIONS)}"
+            )
 
         except Exception as e:
             logger.error(f"Database setup failed: {e}", exc_info=True)
@@ -609,12 +773,12 @@ class DatabaseSetupWorker(QThread):
         env_content = f"""# BMLibrarian Configuration
 # Generated by Setup Wizard
 
-# PostgreSQL Connection
+# PostgreSQL Connection (application user)
 POSTGRES_HOST={self.host}
 POSTGRES_PORT={self.port}
 POSTGRES_DB={self.dbname}
-POSTGRES_USER={self.user}
-POSTGRES_PASSWORD={self.password}
+POSTGRES_USER={self.app_user}
+POSTGRES_PASSWORD={self.app_password}
 
 # File System
 PDF_BASE_DIR={self.pdf_dir}
@@ -646,41 +810,116 @@ OLLAMA_HOST=http://localhost:11434
         os.environ["POSTGRES_HOST"] = self.host
         os.environ["POSTGRES_PORT"] = self.port
         os.environ["POSTGRES_DB"] = self.dbname
-        os.environ["POSTGRES_USER"] = self.user
-        os.environ["POSTGRES_PASSWORD"] = self.password
+        os.environ["POSTGRES_USER"] = self.app_user
+        os.environ["POSTGRES_PASSWORD"] = self.app_password
         os.environ["PDF_BASE_DIR"] = self.pdf_dir
 
     def _apply_schema(self) -> None:
-        """Apply the database schema."""
-        from bmlibrarian.migrations import MigrationManager
+        """
+        Apply the database schema.
 
-        manager = MigrationManager(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.dbname,
-        )
+        Uses superuser credentials for baseline schema (may contain extension
+        commands requiring superuser), then grants ownership to app user.
+        """
+        from bmlibrarian.migrations import MigrationManager
 
         # Get paths using robust project root detection
         project_root = find_project_root()
         baseline_path = project_root / "baseline_schema.sql"
         migrations_dir = project_root / "migrations"
 
+        # Apply baseline schema as superuser (may contain extension commands)
         if baseline_path.exists():
-            self.progress.emit("Initializing baseline schema...")
-            manager.initialize_database(baseline_path)
+            self.progress.emit("Initializing baseline schema (as superuser)...")
+            superuser_manager = MigrationManager(
+                host=self.host,
+                port=self.port,
+                user=self.superuser,
+                password=self.superuser_password,
+                database=self.dbname,
+            )
+            superuser_manager.initialize_database(baseline_path)
 
+            # Grant ownership of all tables/sequences to app user
+            self.progress.emit("Transferring table ownership to app user...")
+            self._transfer_ownership()
+
+        # Apply migrations as app user (should not need superuser)
         if migrations_dir.exists():
             self.progress.emit("Applying migrations...")
-            manager.apply_pending_migrations(migrations_dir, silent=True)
+            app_manager = MigrationManager(
+                host=self.host,
+                port=self.port,
+                user=self.app_user,
+                password=self.app_password,
+                database=self.dbname,
+            )
+            app_manager.apply_pending_migrations(migrations_dir, silent=True)
+
+    def _transfer_ownership(self) -> None:
+        """Transfer ownership of all tables, sequences, and functions to app user."""
+        import psycopg
+
+        conn_params = {
+            'host': self.host,
+            'port': int(self.port),
+            'dbname': self.dbname,
+            'user': self.superuser,
+            'password': self.superuser_password,
+            'connect_timeout': DB_CONNECTION_TIMEOUT_SECONDS,
+        }
+
+        with psycopg.connect(**conn_params) as conn:
+            with conn.cursor() as cur:
+                # Transfer ownership of all tables in public schema
+                cur.execute("""
+                    SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+                """)
+                tables = [row[0] for row in cur.fetchall()]
+                for table in tables:
+                    cur.execute(
+                        psycopg.sql.SQL("ALTER TABLE {} OWNER TO {}").format(
+                            psycopg.sql.Identifier(table),
+                            psycopg.sql.Identifier(self.app_user)
+                        )
+                    )
+
+                # Transfer ownership of all sequences
+                cur.execute("""
+                    SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'
+                """)
+                sequences = [row[0] for row in cur.fetchall()]
+                for seq in sequences:
+                    cur.execute(
+                        psycopg.sql.SQL("ALTER SEQUENCE {} OWNER TO {}").format(
+                            psycopg.sql.Identifier(seq),
+                            psycopg.sql.Identifier(self.app_user)
+                        )
+                    )
+
+                # Grant usage on all schemas that may have been created
+                cur.execute("""
+                    SELECT nspname FROM pg_namespace
+                    WHERE nspname NOT LIKE 'pg_%' AND nspname != 'information_schema'
+                """)
+                schemas = [row[0] for row in cur.fetchall()]
+                for schema in schemas:
+                    cur.execute(
+                        psycopg.sql.SQL("GRANT ALL ON SCHEMA {} TO {}").format(
+                            psycopg.sql.Identifier(schema),
+                            psycopg.sql.Identifier(self.app_user)
+                        )
+                    )
+
+            conn.commit()
+        logger.info(f"Transferred ownership of {len(tables)} tables and {len(sequences)} sequences to '{self.app_user}'")
 
 
 class DatabaseSetupPage(QWizardPage):
     """
-    Page for database schema setup.
+    Page for complete database setup.
 
-    Checks for existing tables and applies schema if database is empty.
+    Creates the database, user, extensions, and applies schema.
     """
 
     def __init__(self, parent: Optional["SetupWizard"] = None):
@@ -696,8 +935,8 @@ class DatabaseSetupPage(QWizardPage):
         """Set up the setup page UI."""
         scale = get_font_scale()
 
-        self.setTitle("Database Schema Setup")
-        self.setSubTitle("Setting up the database schema...")
+        self.setTitle("Creating Database")
+        self.setSubTitle("Setting up the database, user, and schema...")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(scale["spacing_large"])
@@ -757,16 +996,26 @@ class DatabaseSetupPage(QWizardPage):
         if self._wizard:
             host = self._wizard.get_config_value("postgres_host", "localhost")
             port = self._wizard.get_config_value("postgres_port", "5432")
-            dbname = self._wizard.get_config_value("postgres_db", "")
-            user = self._wizard.get_config_value("postgres_user", "")
-            password = self._wizard.get_config_value("postgres_password", "")
+            superuser = self._wizard.get_config_value("superuser_name", "")
+            superuser_password = self._wizard.get_config_value("superuser_password", "")
+            dbname = self._wizard.get_config_value("postgres_db", DEFAULT_DATABASE_NAME)
+            app_user = self._wizard.get_config_value("postgres_user", DEFAULT_APP_USER)
+            app_password = self._wizard.get_config_value("postgres_password", "")
             pdf_dir = self._wizard.get_config_value(
                 "pdf_base_dir", str(Path.home() / "knowledgebase" / "pdf")
             )
 
-            # Start worker
+            # Start worker with new parameters
             self._worker = DatabaseSetupWorker(
-                host, port, dbname, user, password, pdf_dir, self
+                host=host,
+                port=port,
+                superuser=superuser,
+                superuser_password=superuser_password,
+                app_user=app_user,
+                app_password=app_password,
+                dbname=dbname,
+                pdf_dir=pdf_dir,
+                parent=self,
             )
             self._worker.progress.connect(self._on_progress)
             self._worker.finished.connect(self._on_finished)
@@ -778,23 +1027,15 @@ class DatabaseSetupPage(QWizardPage):
         self.status_label.setText(message)
 
     def _on_table_check(self, has_tables: bool, tables: list) -> None:
-        """Handle table check result."""
+        """
+        Handle table check result.
+
+        In the new simplified setup flow, existing tables are informational only.
+        The setup will proceed regardless (schema migrations handle existing tables).
+        """
         self._has_tables = has_tables
-
         if has_tables:
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(100)
-
-            self.warning_frame.setVisible(True)
-            displayed_tables = tables[:TABLE_DISPLAY_LIMIT]
-            self.warning_label.setText(
-                f"The database already contains {len(tables)} table(s):\n\n"
-                f"{', '.join(displayed_tables)}"
-                f"{'...' if len(tables) > TABLE_DISPLAY_LIMIT else ''}\n\n"
-                "Please go back and specify a different (empty) database name, "
-                "or drop the existing tables before proceeding."
-            )
-            self.status_label.setText("Database is not empty")
+            logger.info(f"Database has {len(tables)} existing tables")
 
     def _on_finished(self, success: bool, message: str) -> None:
         """Handle setup completion."""
@@ -803,11 +1044,11 @@ class DatabaseSetupPage(QWizardPage):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100 if success else 0)
 
-        if success and not self._has_tables:
+        if success:
             self.success_frame.setVisible(True)
             self.success_label.setText(message)
             self.status_label.setText("Setup complete!")
-        elif not success and not self._has_tables:
+        else:
             self.warning_frame.setVisible(True)
             self.warning_label.setText(message)
             self.status_label.setText("Setup failed")
@@ -816,19 +1057,10 @@ class DatabaseSetupPage(QWizardPage):
 
     def isComplete(self) -> bool:
         """Check if page is complete."""
-        return self._setup_complete and not self._has_tables
+        return self._setup_complete
 
     def validatePage(self) -> bool:
         """Validate the page."""
-        if self._has_tables:
-            QMessageBox.warning(
-                self,
-                "Database Not Empty",
-                "The database contains existing tables.\n\n"
-                "Please go back and specify a different database name.",
-            )
-            return False
-
         return self._setup_complete
 
 

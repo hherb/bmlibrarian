@@ -12,14 +12,8 @@ BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS paper_weights;
 
--- Grant permissions
-GRANT USAGE ON SCHEMA paper_weights TO bmlibrarian_user;
-GRANT ALL ON ALL TABLES IN SCHEMA paper_weights TO bmlibrarian_user;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA paper_weights TO bmlibrarian_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA paper_weights
-    GRANT ALL ON TABLES TO bmlibrarian_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA paper_weights
-    GRANT ALL ON SEQUENCES TO bmlibrarian_user;
+-- Note: Schema permissions are managed at database level by the setup wizard.
+-- The application user running migrations already has full privileges.
 
 COMMENT ON SCHEMA paper_weights IS 'PaperWeightAssessment: Multi-dimensional paper quality assessment for evidence weighting';
 

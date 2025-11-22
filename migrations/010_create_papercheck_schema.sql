@@ -28,14 +28,8 @@ ON CONFLICT (version) DO NOTHING;
 
 CREATE SCHEMA IF NOT EXISTS papercheck;
 
--- Grant permissions
-GRANT USAGE ON SCHEMA papercheck TO bmlibrarian_user;
-GRANT ALL ON ALL TABLES IN SCHEMA papercheck TO bmlibrarian_user;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA papercheck TO bmlibrarian_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA papercheck
-    GRANT ALL ON TABLES TO bmlibrarian_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA papercheck
-    GRANT ALL ON SEQUENCES TO bmlibrarian_user;
+-- Note: Schema permissions are managed at database level by the setup wizard.
+-- The application user running migrations already has full privileges.
 
 COMMENT ON SCHEMA papercheck IS 'PaperChecker: Comprehensive paper abstract quality assessment with counter-evidence analysis';
 
@@ -446,16 +440,16 @@ COMMENT ON VIEW papercheck.v_complete_results IS 'Complete results for all check
 -- Search strategy effectiveness view
 CREATE OR REPLACE VIEW papercheck.v_search_strategy_stats AS
 SELECT
-    search_strategy,
+    sr.search_strategy,
     COUNT(*) as total_docs_found,
-    COUNT(DISTINCT doc_id) as unique_docs,
+    COUNT(DISTINCT sr.doc_id) as unique_docs,
     AVG(sd.relevance_score) as avg_relevance_score,
     SUM(CASE WHEN sd.supports_counter THEN 1 ELSE 0 END) as docs_above_threshold
 FROM papercheck.search_results sr
 LEFT JOIN papercheck.scored_documents sd
     ON sd.counter_statement_id = sr.counter_statement_id
     AND sd.doc_id = sr.doc_id
-GROUP BY search_strategy;
+GROUP BY sr.search_strategy;
 
 COMMENT ON VIEW papercheck.v_search_strategy_stats IS 'Statistics on effectiveness of different search strategies';
 

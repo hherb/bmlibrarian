@@ -60,9 +60,13 @@ class SetupWizard(QWizard):
         self._config = {
             "postgres_host": "localhost",
             "postgres_port": "5432",
-            "postgres_user": "",
+            # Superuser credentials (used only during setup, not stored in .env)
+            "superuser_name": "",
+            "superuser_password": "",
+            # Application user credentials (stored in .env for runtime use)
+            "postgres_user": "bmlibrarian",
             "postgres_password": "",
-            "postgres_db": "",
+            "postgres_db": "bmlibrarian",
             "pdf_base_dir": str(Path.home() / "knowledgebase" / "pdf"),
             "ncbi_email": "",
             "ncbi_api_key": "",

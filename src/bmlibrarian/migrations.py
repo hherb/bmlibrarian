@@ -268,8 +268,8 @@ class MigrationManager:
                         logger.error(msg)
                     else:
                         print(msg)
-                    # Don't exit in silent mode, just log error
-                    if not silent:
-                        sys.exit(1)
+                    # Re-raise to let caller handle the error
+                    # Previously this was silently swallowed in silent mode
+                    raise RuntimeError(msg) from e
 
         return applied_count
