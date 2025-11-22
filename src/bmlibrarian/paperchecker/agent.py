@@ -61,6 +61,7 @@ DEFAULT_MAX_CITATIONS_PER_STATEMENT: int = 10
 DEFAULT_SCORING_BATCH_SIZE: int = 20
 DEFAULT_EARLY_STOP_COUNT: int = 20
 DEFAULT_EXPLANATION_TITLE_MAX_LEN: int = 100
+DEFAULT_MIN_CITATION_RELEVANCE: float = 0.7
 
 
 class PaperCheckerAgent(BaseAgent):
@@ -841,21 +842,212 @@ class PaperCheckerAgent(BaseAgent):
         self, counter_stmt: CounterStatement, scored_docs: List[ScoredDocument]
     ) -> List[ExtractedCitation]:
         """
-        Step 5: Extract supporting citations from scored documents.
+        Step 5: Extract citations from high-scoring documents.
 
-        Uses CitationFinderAgent to extract relevant passages.
+        Uses CitationFinderAgent to extract specific passages that support
+        the counter-statement. Only documents above the min_citation_score
+        are processed.
 
         Args:
-            counter_stmt: Counter-statement to find citations for
-            scored_docs: Documents above score threshold
+            counter_stmt: CounterStatement being supported
+            scored_docs: List of ScoredDocument objects (sorted by score descending)
 
         Returns:
-            List of ExtractedCitation objects
+            List of ExtractedCitation objects (ordered by relevance)
 
-        Note:
-            Full implementation in Step 09 (09_CITATION_EXTRACTION.md)
+        Raises:
+            RuntimeError: If citation extraction fails unrecoverably
         """
-        raise NotImplementedError("Implemented in Step 09")
+        logger.info(
+            f"Extracting citations from {len(scored_docs)} scored documents "
+            f"(min score: {self.min_citation_score})"
+        )
+
+        # Filter to documents above min_citation_score
+        eligible_docs = [
+            doc for doc in scored_docs
+            if doc.score >= self.min_citation_score
+        ]
+
+        logger.info(f"{len(eligible_docs)} documents eligible for citation extraction")
+
+        if not eligible_docs:
+            logger.warning("No documents above min_citation_score for citation extraction")
+            return []
+
+        # Prepare for citation extraction
+        extraction_question = self._build_extraction_question(counter_stmt)
+
+        # Convert to format expected by CitationFinderAgent
+        # CitationFinderAgent expects: List[Tuple[Dict, Dict]] where Dict is (document, scoring_result)
+        scored_tuples = [
+            (doc.document, {"score": doc.score, "reasoning": doc.explanation})
+            for doc in eligible_docs
+        ]
+
+        # Get max_citations limit from config
+        max_citations = self.citation_config.get(
+            "max_citations_per_statement", DEFAULT_MAX_CITATIONS_PER_STATEMENT
+        )
+
+        # Extract citations using CitationFinderAgent
+        try:
+            # Get min_relevance from config or use default
+            min_relevance = self.citation_config.get(
+                "min_relevance", DEFAULT_MIN_CITATION_RELEVANCE
+            )
+
+            # Use existing agent's batch extraction capability
+            citation_results = self.citation_agent.process_scored_documents_for_citations(
+                user_question=extraction_question,
+                scored_documents=scored_tuples,
+                score_threshold=self.min_citation_score,
+                min_relevance=min_relevance
+            )
+
+            # Convert to ExtractedCitation objects
+            citations: List[ExtractedCitation] = []
+            for i, citation_obj in enumerate(citation_results, 1):
+                # Find corresponding ScoredDocument for metadata
+                doc_id = int(citation_obj.document_id)
+                scored_doc = next(
+                    (d for d in eligible_docs if d.doc_id == doc_id),
+                    None
+                )
+
+                if not scored_doc:
+                    logger.warning(
+                        f"Could not find scored_doc for citation {i} (doc_id={doc_id})"
+                    )
+                    continue
+
+                # Create ExtractedCitation
+                citation = ExtractedCitation(
+                    doc_id=doc_id,
+                    passage=citation_obj.passage,
+                    relevance_score=scored_doc.score,
+                    full_citation=self._format_citation(scored_doc.document),
+                    metadata=self._extract_metadata(scored_doc.document),
+                    citation_order=len(citations) + 1
+                )
+
+                citations.append(citation)
+
+                # Respect max_citations limit
+                if len(citations) >= max_citations:
+                    logger.info(f"Reached max_citations limit ({max_citations})")
+                    break
+
+            logger.info(f"Extracted {len(citations)} citations from {len(eligible_docs)} eligible documents")
+
+            return citations
+
+        except Exception as e:
+            logger.error(f"Citation extraction failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to extract citations: {e}") from e
+
+    def _build_extraction_question(self, counter_stmt: CounterStatement) -> str:
+        """
+        Build question for citation extraction in counter-evidence context.
+
+        Frames the extraction to focus on passages that support the counter-claim.
+
+        Args:
+            counter_stmt: CounterStatement object
+
+        Returns:
+            Question string for CitationFinderAgent
+        """
+        return (
+            f"Extract specific passages that provide evidence for this claim: "
+            f"{counter_stmt.negated_text}. "
+            f"We are looking for evidence that contradicts the statement: "
+            f"{counter_stmt.original_statement.text}"
+        )
+
+    def _format_citation(self, document: Dict[str, Any]) -> str:
+        """
+        Format document as AMA-style citation.
+
+        AMA (American Medical Association) format:
+        Authors. Title. Journal. Year;Volume(Issue):Pages. DOI
+
+        Args:
+            document: Document data dict
+
+        Returns:
+            Formatted citation string
+        """
+        parts: List[str] = []
+
+        # Authors (limit to first 3, then et al)
+        authors = document.get("authors")
+        if authors:
+            if isinstance(authors, list):
+                if len(authors) <= 3:
+                    authors_str = ", ".join(authors)
+                else:
+                    authors_str = ", ".join(authors[:3]) + ", et al"
+            else:
+                authors_str = str(authors)
+            parts.append(authors_str)
+
+        # Title
+        title = document.get("title")
+        if title:
+            parts.append(title)
+
+        # Journal
+        journal = document.get("journal") or document.get("publication")
+        if journal:
+            parts.append(journal)
+
+        # Year (from publication_date)
+        pub_date = document.get("publication_date")
+        if pub_date:
+            # Extract year from publication_date (could be "2023", "2023-01-15", etc.)
+            year_str = str(pub_date)[:4] if pub_date else None
+            if year_str and year_str.isdigit():
+                parts.append(year_str)
+
+        # DOI (if available)
+        doi = document.get("doi")
+        if doi:
+            parts.append(f"doi:{doi}")
+
+        # Join parts with periods
+        if parts:
+            return ". ".join(parts) + "."
+        else:
+            return "Citation information unavailable."
+
+    def _extract_metadata(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract metadata from document for citation tracking.
+
+        Args:
+            document: Document data dict
+
+        Returns:
+            Metadata dict with pmid, doi, authors, year, journal, etc.
+        """
+        # Extract year from publication_date
+        pub_date = document.get("publication_date")
+        year = None
+        if pub_date:
+            year_str = str(pub_date)[:4]
+            if year_str.isdigit():
+                year = int(year_str)
+
+        return {
+            "pmid": document.get("pmid"),
+            "doi": document.get("doi"),
+            "authors": document.get("authors", []),
+            "year": year,
+            "journal": document.get("journal") or document.get("publication"),
+            "title": document.get("title"),
+            "source": document.get("source_id")
+        }
 
     def _generate_counter_report(
         self,
@@ -980,5 +1172,6 @@ class PaperCheckerAgent(BaseAgent):
         """
         return self.agent_config.get("citation", {
             "min_score": DEFAULT_MIN_CITATION_SCORE,
-            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT
+            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT,
+            "min_relevance": DEFAULT_MIN_CITATION_RELEVANCE
         })
