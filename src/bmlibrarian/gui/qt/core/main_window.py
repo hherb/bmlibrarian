@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Slot, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
-from typing import Dict
+from typing import Dict, Optional
 import logging
 
 from .plugin_manager import PluginManager, PluginLoadError
@@ -43,11 +43,24 @@ class BMLibrarianMainWindow(QMainWindow):
     creates tabs for each plugin in the specified order.
     """
 
-    def __init__(self):
-        """Initialize the main window."""
+    def __init__(
+        self,
+        user_id: Optional[int] = None,
+        username: Optional[str] = None
+    ):
+        """Initialize the main window.
+
+        Args:
+            user_id: The logged-in user's ID (None for anonymous/legacy mode).
+            username: The logged-in user's username.
+        """
         super().__init__()
 
         self.logger = logging.getLogger("bmlibrarian.gui.qt.core.MainWindow")
+
+        # Store user information
+        self._user_id = user_id
+        self._username = username
 
         # Initialize core components
         self.config_manager = GUIConfigManager()
@@ -112,7 +125,10 @@ class BMLibrarianMainWindow(QMainWindow):
 
     def _setup_ui(self):
         """Setup the main window UI."""
-        self.setWindowTitle("BMLibrarian - Biomedical Literature Research")
+        title = "BMLibrarian - Biomedical Literature Research"
+        if self._username:
+            title = f"BMLibrarian - {self._username}"
+        self.setWindowTitle(title)
 
         # Set minimum size
         self.setMinimumSize(800, 600)
@@ -226,8 +242,21 @@ class BMLibrarianMainWindow(QMainWindow):
         """Create the status bar."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready")
+        if self._username:
+            self.status_bar.showMessage(f"Logged in as {self._username}")
+        else:
+            self.status_bar.showMessage("Ready")
         self.logger.debug("Status bar created")
+
+    @property
+    def user_id(self) -> Optional[int]:
+        """Get the current user's ID."""
+        return self._user_id
+
+    @property
+    def username(self) -> Optional[str]:
+        """Get the current user's username."""
+        return self._username
 
     def _setup_keyboard_shortcuts(self):
         """Setup global keyboard shortcuts."""
