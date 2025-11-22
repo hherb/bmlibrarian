@@ -32,6 +32,8 @@ dependencies = [
     "pymupdf-layout>=0.1.0",
     "tqdm>=4.66.0",
     "pymupdf-layout>=1.26.6",
+    "opencv-python>=4.11.0.86",
+    "marker-pdf>=1.10.1",
 ]
 
 [project.optional-dependencies]
