@@ -289,7 +289,7 @@ class BMLibrarianApplication:
             # Access private method for auto-login (testing mode only)
             session_token = user_service._create_session(
                 user_id=user.id,
-                client_type="qt_gui_autologin",
+                client_type="qt_gui",
                 hostname=socket.gethostname()
             )
 
