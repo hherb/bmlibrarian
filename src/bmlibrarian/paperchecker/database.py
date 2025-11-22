@@ -45,6 +45,9 @@ MIN_LIMIT_VALUE: int = 1
 MAX_LIMIT_VALUE: int = 10000
 MIN_OFFSET_VALUE: int = 0
 
+# Password masking constant
+PASSWORD_MASK: str = "********"
+
 
 class PaperCheckDB:
     """
@@ -126,7 +129,29 @@ class PaperCheckDB:
         if self._db_password:
             conninfo += f" password={self._db_password}"
 
-        return psycopg.connect(conninfo, row_factory=dict_row)
+        try:
+            return psycopg.connect(conninfo, row_factory=dict_row)
+        except psycopg.Error:
+            # Log error with masked password for security
+            # Note: We don't log the original exception as it may contain the password
+            logger.error(
+                f"Failed to connect to database: {self._get_safe_conninfo()}"
+            )
+            raise
+
+    def _get_safe_conninfo(self) -> str:
+        """
+        Get connection info string with password masked for logging.
+
+        Returns:
+            Connection info string safe for logging (password replaced with mask)
+        """
+        safe_conninfo = f"dbname={self.db_name} host={self.db_host} port={self.db_port}"
+        if self._db_user:
+            safe_conninfo += f" user={self._db_user}"
+        if self._db_password:
+            safe_conninfo += f" password={PASSWORD_MASK}"
+        return safe_conninfo
 
     def get_connection(self) -> psycopg.Connection:
         """
@@ -301,27 +326,8 @@ class PaperCheckDB:
                     )
                 """)
 
-                # Create indexes for common queries
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_abstracts_pmid
-                    ON {self.schema}.abstracts_checked(source_pmid)
-                """)
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_abstracts_doi
-                    ON {self.schema}.abstracts_checked(source_doi)
-                """)
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_statements_abstract
-                    ON {self.schema}.statements(abstract_id)
-                """)
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_search_results_counter
-                    ON {self.schema}.search_results(counter_statement_id)
-                """)
-                cur.execute(f"""
-                    CREATE INDEX IF NOT EXISTS idx_verdicts_statement
-                    ON {self.schema}.verdicts(statement_id)
-                """)
+                # Note: Indexes are managed by the migration system (010_create_papercheck_schema.sql)
+                # Do not create indexes here - use migrations for all schema changes
 
                 self.conn.commit()
                 logger.info(f"Schema '{self.schema}' created/verified successfully")
@@ -629,6 +635,7 @@ class PaperCheckDB:
 
         try:
             with self.conn.cursor() as cur:
+                # Use subquery for statement count to avoid slow GROUP BY on large datasets
                 cur.execute(f"""
                     SELECT
                         a.id,
@@ -639,10 +646,9 @@ class PaperCheckDB:
                         a.overall_assessment,
                         a.model_used,
                         a.processing_time_seconds,
-                        COUNT(s.id) as num_statements
+                        (SELECT COUNT(*) FROM {self.schema}.statements s
+                         WHERE s.abstract_id = a.id) as num_statements
                     FROM {self.schema}.abstracts_checked a
-                    LEFT JOIN {self.schema}.statements s ON s.abstract_id = a.id
-                    GROUP BY a.id
                     ORDER BY a.checked_at DESC
                     LIMIT %s OFFSET %s
                 """, (limit, offset))
