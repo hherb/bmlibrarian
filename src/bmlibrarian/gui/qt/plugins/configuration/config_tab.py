@@ -2,6 +2,7 @@
 Configuration tab widget for BMLibrarian Qt GUI.
 
 Main interface for configuration and settings.
+Supports both JSON file storage and database-backed user settings.
 """
 
 from PySide6.QtWidgets import (
@@ -12,10 +13,13 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QMessageBox,
     QFileDialog,
+    QLabel,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal, Slot
 from typing import Optional
 import json
+import logging
 from pathlib import Path
 import ollama
 
@@ -24,6 +28,8 @@ from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
 from .....config import get_config, DEFAULT_CONFIG
 from ...resources.styles import get_font_scale
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigurationTabWidget(QWidget):
@@ -73,6 +79,9 @@ class ConfigurationTabWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
 
+        # Add database sync status bar
+        self._create_sync_status_bar(main_layout)
+
         # Create tab widget for configuration sections
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabPosition(QTabWidget.North)
@@ -108,6 +117,64 @@ class ConfigurationTabWidget(QWidget):
         # Action buttons
         button_layout = self._create_button_layout()
         main_layout.addLayout(button_layout)
+
+    def _create_sync_status_bar(self, parent_layout: QVBoxLayout) -> None:
+        """Create the database sync status bar.
+
+        Shows whether the user is authenticated and settings are database-backed.
+
+        Args:
+            parent_layout: Parent layout to add the status bar to
+        """
+        s = self.scale
+        bmlib_config = get_config()
+
+        # Create status frame
+        status_frame = QFrame()
+        status_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        status_layout = QHBoxLayout(status_frame)
+        status_layout.setContentsMargins(
+            s['padding_small'], s['padding_small'],
+            s['padding_small'], s['padding_small']
+        )
+
+        # Status label
+        if bmlib_config.has_user_context():
+            user_id = bmlib_config.get_user_id()
+            status_text = f"✓ Database-backed settings (User ID: {user_id})"
+            status_color = "#27ae60"  # Green
+            self._db_sync_enabled = True
+        else:
+            status_text = "⚠ Using local JSON settings (not authenticated)"
+            status_color = "#f39c12"  # Orange
+            self._db_sync_enabled = False
+
+        self.sync_status_label = QLabel(status_text)
+        self.sync_status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
+        status_layout.addWidget(self.sync_status_label)
+
+        status_layout.addStretch()
+
+        # Sync buttons (only enabled when authenticated)
+        self.sync_to_db_btn = QPushButton("Sync to Database")
+        self.sync_to_db_btn.clicked.connect(self._sync_to_database)
+        self.sync_to_db_btn.setEnabled(self._db_sync_enabled)
+        self.sync_to_db_btn.setToolTip(
+            "Save current settings to database" if self._db_sync_enabled
+            else "Login required for database sync"
+        )
+        status_layout.addWidget(self.sync_to_db_btn)
+
+        self.sync_from_db_btn = QPushButton("Sync from Database")
+        self.sync_from_db_btn.clicked.connect(self._sync_from_database)
+        self.sync_from_db_btn.setEnabled(self._db_sync_enabled)
+        self.sync_from_db_btn.setToolTip(
+            "Load settings from database" if self._db_sync_enabled
+            else "Login required for database sync"
+        )
+        status_layout.addWidget(self.sync_from_db_btn)
+
+        parent_layout.addWidget(status_frame)
 
     def _create_button_layout(self) -> QHBoxLayout:
         """
@@ -184,23 +251,42 @@ class ConfigurationTabWidget(QWidget):
 
     @Slot()
     def _save_to_default(self):
-        """Save configuration to default location (~/.bmlibrarian/config.json)."""
+        """Save configuration to default location (~/.bmlibrarian/config.json).
+
+        If user is authenticated, also syncs to database automatically.
+        """
         try:
             config = self._collect_config()
+            bmlib_config = get_config()
 
-            # Save configuration to file manually since save_config doesn't exist
+            # Update the BMLibrarianConfig with collected settings
+            for category, settings in config.items():
+                if isinstance(settings, dict):
+                    for key, value in settings.items():
+                        bmlib_config.set(f"{category}.{key}", value)
+
+            # Export to JSON file
             config_path = Path.home() / ".bmlibrarian" / "config.json"
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            bmlib_config.export_to_json(config_path)
 
-            self.status_message.emit("Configuration saved to ~/.bmlibrarian/config.json")
-            self.config_saved.emit(str(Path.home() / ".bmlibrarian" / "config.json"))
+            # If authenticated, also sync to database
+            sync_msg = ""
+            if bmlib_config.has_user_context():
+                try:
+                    bmlib_config.sync_to_database()
+                    sync_msg = " and synced to database"
+                    logger.info("Configuration synced to database")
+                except Exception as db_e:
+                    logger.warning(f"Failed to sync to database: {db_e}")
+                    sync_msg = " (database sync failed)"
+
+            self.status_message.emit(f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}")
+            self.config_saved.emit(str(config_path))
 
             QMessageBox.information(
                 self,
                 "Success",
-                "Configuration saved to ~/.bmlibrarian/config.json",
+                f"Configuration saved to ~/.bmlibrarian/config.json{sync_msg}",
             )
 
         except Exception as e:
@@ -339,6 +425,96 @@ class ConfigurationTabWidget(QWidget):
                 f"Failed to connect to Ollama server:\n\n{str(e)}",
             )
             self.status_message.emit(f"Ollama connection failed: {str(e)}")
+
+    @Slot()
+    def _sync_to_database(self) -> None:
+        """Sync current configuration to database.
+
+        Requires user to be authenticated.
+        """
+        if not self._db_sync_enabled:
+            QMessageBox.warning(
+                self,
+                "Authentication Required",
+                "You must be logged in to sync settings to the database."
+            )
+            return
+
+        try:
+            config = self._collect_config()
+            bmlib_config = get_config()
+
+            # Update the BMLibrarianConfig with collected settings
+            for category, settings in config.items():
+                if isinstance(settings, dict):
+                    for key, value in settings.items():
+                        bmlib_config.set(f"{category}.{key}", value)
+
+            # Sync to database
+            bmlib_config.sync_to_database()
+
+            self.status_message.emit("Configuration synced to database")
+            logger.info("Configuration synced to database successfully")
+
+            QMessageBox.information(
+                self,
+                "Success",
+                "Configuration has been synced to the database."
+            )
+
+        except Exception as e:
+            error_msg = f"Failed to sync to database: {str(e)}"
+            QMessageBox.critical(self, "Error", error_msg)
+            self.status_message.emit(error_msg)
+            logger.error(error_msg)
+
+    @Slot()
+    def _sync_from_database(self) -> None:
+        """Load configuration from database and update UI.
+
+        Requires user to be authenticated.
+        """
+        if not self._db_sync_enabled:
+            QMessageBox.warning(
+                self,
+                "Authentication Required",
+                "You must be logged in to sync settings from the database."
+            )
+            return
+
+        try:
+            bmlib_config = get_config()
+
+            # Sync from database (this updates the internal config)
+            bmlib_config._sync_from_database()
+
+            # Get the updated config and refresh UI
+            if hasattr(bmlib_config, '_config'):
+                config = bmlib_config._config.copy()
+            else:
+                config = DEFAULT_CONFIG.copy()
+
+            # Update all widgets with loaded config
+            for widget in self.config_widgets.values():
+                if hasattr(widget, 'update_from_config'):
+                    widget.update_from_config(config)
+
+            self.config = config
+            self.config_changed.emit(config)
+            self.status_message.emit("Configuration loaded from database")
+            logger.info("Configuration synced from database successfully")
+
+            QMessageBox.information(
+                self,
+                "Success",
+                "Configuration has been loaded from the database."
+            )
+
+        except Exception as e:
+            error_msg = f"Failed to sync from database: {str(e)}"
+            QMessageBox.critical(self, "Error", error_msg)
+            self.status_message.emit(error_msg)
+            logger.error(error_msg)
 
     def refresh_models(self):
         """Refresh available models from Ollama server."""

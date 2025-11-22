@@ -145,6 +145,9 @@ class BMLibrarianApplication:
                 self.logger.info("Login cancelled, exiting")
                 return 0
 
+            # Set user context on the global config for database-backed settings
+            self._setup_user_context()
+
             # Create and show main window
             self.main_window = BMLibrarianMainWindow(
                 user_id=self._login_result.user_id if self._login_result else None,
@@ -186,8 +189,45 @@ class BMLibrarianApplication:
 
         return False
 
+    def _setup_user_context(self) -> None:
+        """Set up user context on the global config for database-backed settings.
+
+        This connects the authenticated user session to the config system,
+        enabling database-backed settings storage and retrieval.
+        """
+        if not self._login_result or not self._db_connection:
+            self.logger.warning("Cannot setup user context: no login result or connection")
+            return
+
+        try:
+            from ....config import get_config
+
+            config = get_config()
+            config.set_user_context(
+                user_id=self._login_result.user_id,
+                connection=self._db_connection,
+                session_token=self._login_result.session_token
+            )
+            self.logger.info(
+                f"User context set for user_id={self._login_result.user_id}, "
+                "database-backed settings enabled"
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to set user context: {e}")
+            # Continue without database-backed settings - fall back to JSON/defaults
+
     def _cleanup(self) -> None:
         """Cleanup resources on shutdown."""
+        # Clear user context from config
+        try:
+            from ....config import get_config
+            config = get_config()
+            if config.has_user_context():
+                config.clear_user_context()
+                self.logger.debug("User context cleared")
+        except Exception as e:
+            self.logger.warning(f"Error clearing user context: {e}")
+
         # Close database connection if open
         if self._db_connection:
             try:
