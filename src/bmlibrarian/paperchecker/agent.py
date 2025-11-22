@@ -19,7 +19,10 @@ from typing import Dict, List, Optional, Any, Callable
 import logging
 from datetime import datetime
 
+from psycopg.rows import dict_row
+
 from bmlibrarian.agents.base import BaseAgent
+from bmlibrarian.database import get_db_manager
 from bmlibrarian.agents.orchestrator import AgentOrchestrator
 from bmlibrarian.agents.scoring_agent import DocumentScoringAgent
 from bmlibrarian.agents.citation_agent import CitationFinderAgent
@@ -55,6 +58,9 @@ DEFAULT_HYDE_LIMIT: int = 50
 DEFAULT_KEYWORD_LIMIT: int = 50
 DEFAULT_MAX_DEDUPLICATED: int = 100
 DEFAULT_MAX_CITATIONS_PER_STATEMENT: int = 10
+DEFAULT_SCORING_BATCH_SIZE: int = 20
+DEFAULT_EARLY_STOP_COUNT: int = 20
+DEFAULT_EXPLANATION_TITLE_MAX_LEN: int = 100
 
 
 class PaperCheckerAgent(BaseAgent):
@@ -616,21 +622,220 @@ class PaperCheckerAgent(BaseAgent):
         self, counter_stmt: CounterStatement, search_results: SearchResults
     ) -> List[ScoredDocument]:
         """
-        Step 4: Score documents for relevance to counter-statement.
+        Step 4: Score documents for counter-statement support.
 
-        Uses DocumentScoringAgent to evaluate each document.
+        Uses DocumentScoringAgent to evaluate how useful each document is
+        for supporting the counter-claim. Documents are scored 1-5, and only
+        those above the configured threshold are kept.
 
         Args:
-            counter_stmt: Counter-statement to score against
-            search_results: Search results to score
+            counter_stmt: CounterStatement to evaluate against
+            search_results: SearchResults with document IDs and provenance
 
         Returns:
-            List of ScoredDocument objects with relevance scores
-
-        Note:
-            Full implementation in Step 08 (08_DOCUMENT_SCORING.md)
+            List of ScoredDocument objects (only those above threshold),
+            sorted by score descending
         """
-        raise NotImplementedError("Implemented in Step 08")
+        doc_count = len(search_results.deduplicated_docs)
+        logger.info(
+            f"Scoring {doc_count} documents for counter-statement support"
+        )
+
+        if doc_count == 0:
+            logger.warning("No documents to score")
+            return []
+
+        # Fetch full document data
+        documents = self._fetch_documents(search_results.deduplicated_docs)
+
+        if not documents:
+            logger.warning("Failed to fetch any documents")
+            return []
+
+        # Build scoring question focused on counter-evidence
+        scoring_question = self._build_scoring_question(counter_stmt)
+
+        # Get configuration for batch processing
+        scoring_config = self.agent_config.get("scoring", {})
+        batch_size = scoring_config.get("batch_size", DEFAULT_SCORING_BATCH_SIZE)
+        early_stop_count = scoring_config.get("early_stop_count", DEFAULT_EARLY_STOP_COUNT)
+
+        # Score documents in batches
+        scored_docs: List[ScoredDocument] = []
+        doc_items = list(documents.items())
+        total_batches = (len(doc_items) - 1) // batch_size + 1
+
+        for batch_idx in range(0, len(doc_items), batch_size):
+            batch = doc_items[batch_idx:batch_idx + batch_size]
+            current_batch_num = batch_idx // batch_size + 1
+
+            logger.debug(f"Scoring batch {current_batch_num}/{total_batches}")
+
+            for doc_id, document in batch:
+                try:
+                    # Get provenance for this document
+                    found_by = search_results.provenance.get(doc_id, [])
+
+                    # Score using DocumentScoringAgent
+                    scoring_result = self.scoring_agent.evaluate_document(
+                        user_question=scoring_question,
+                        document=document
+                    )
+
+                    score = scoring_result['score']
+                    reasoning = scoring_result['reasoning']
+
+                    # Skip if below threshold
+                    if score < self.score_threshold:
+                        logger.debug(
+                            f"Doc {doc_id}: score={score} (below threshold {self.score_threshold})"
+                        )
+                        continue
+
+                    # Create ScoredDocument
+                    scored_doc = ScoredDocument(
+                        doc_id=doc_id,
+                        document=document,
+                        score=score,
+                        explanation=self._get_score_explanation(
+                            score=score,
+                            document=document,
+                            reasoning=reasoning
+                        ),
+                        supports_counter=True,  # score >= threshold
+                        found_by=found_by
+                    )
+
+                    scored_docs.append(scored_doc)
+
+                    logger.debug(
+                        f"Doc {doc_id}: score={score}, found_by={found_by}"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to score document {doc_id}: {e}")
+                    # Continue with other documents
+                    continue
+
+            # Early stopping if we have enough high-scoring documents
+            if early_stop_count > 0 and len(scored_docs) >= early_stop_count:
+                logger.info(
+                    f"Early stopping: found {len(scored_docs)} documents "
+                    f"above threshold (target: {early_stop_count})"
+                )
+                break
+
+        logger.info(
+            f"Scoring complete: {len(scored_docs)}/{len(documents)} documents "
+            f"above threshold ({self.score_threshold})"
+        )
+
+        # Sort by score (descending)
+        scored_docs.sort(key=lambda x: x.score, reverse=True)
+
+        return scored_docs
+
+    def _fetch_documents(self, doc_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """
+        Fetch full document data from database.
+
+        Uses the DatabaseManager to retrieve document metadata including
+        title, abstract, authors, publication year, journal, identifiers,
+        and source information.
+
+        Args:
+            doc_ids: List of document IDs to fetch
+
+        Returns:
+            Dict mapping doc_id → document data dictionary
+        """
+        if not doc_ids:
+            return {}
+
+        try:
+            db_manager = get_db_manager()
+            with db_manager.get_connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    # Use ANY for efficient batch query
+                    cur.execute("""
+                        SELECT
+                            id, title, abstract, authors, publication_date,
+                            publication AS journal, pmid, doi, source_id
+                        FROM document
+                        WHERE id = ANY(%s)
+                    """, (doc_ids,))
+
+                    results = cur.fetchall()
+
+            # Convert to dict keyed by ID
+            documents: Dict[int, Dict[str, Any]] = {}
+            for row in results:
+                doc_dict = dict(row)
+                doc_id = doc_dict['id']
+                documents[doc_id] = doc_dict
+
+            logger.debug(f"Fetched {len(documents)}/{len(doc_ids)} documents from database")
+
+            return documents
+
+        except Exception as e:
+            logger.error(f"Failed to fetch documents: {e}")
+            # Return empty dict rather than raising to allow graceful degradation
+            return {}
+
+    def _build_scoring_question(self, counter_stmt: CounterStatement) -> str:
+        """
+        Build question for scoring documents in counter-evidence context.
+
+        The question frames the scoring in terms of finding evidence that
+        SUPPORTS the counter-statement (i.e., contradicts the original claim).
+
+        Args:
+            counter_stmt: CounterStatement object
+
+        Returns:
+            Question string for DocumentScoringAgent
+        """
+        return (
+            f"Does this document provide evidence that supports or relates to "
+            f"the following claim: {counter_stmt.negated_text}? "
+            f"We are looking for evidence that contradicts: "
+            f"{counter_stmt.original_statement.text}"
+        )
+
+    def _get_score_explanation(
+        self,
+        score: int,
+        document: Dict[str, Any],
+        reasoning: str
+    ) -> str:
+        """
+        Generate explanation for document score.
+
+        Combines the model's reasoning with the document title for context.
+
+        Args:
+            score: The relevance score (1-5)
+            document: Document data dictionary
+            reasoning: Reasoning from DocumentScoringAgent
+
+        Returns:
+            Explanation string
+        """
+        # Use the model's reasoning as the primary explanation
+        explanation = reasoning
+
+        # Add title context if not already mentioned
+        title = document.get("title", "")
+        if title and len(title) > 0:
+            # Truncate long titles for readability
+            display_title = title[:DEFAULT_EXPLANATION_TITLE_MAX_LEN]
+            if len(title) > DEFAULT_EXPLANATION_TITLE_MAX_LEN:
+                display_title += "..."
+
+            explanation = f"{reasoning} (Title: \"{display_title}\")"
+
+        return explanation
 
     def _extract_citations(
         self, counter_stmt: CounterStatement, scored_docs: List[ScoredDocument]
