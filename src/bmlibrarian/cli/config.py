@@ -179,7 +179,12 @@ Examples:
         nargs='?',
         help='Research question (required for --auto mode)'
     )
-    
+
+    # Add authentication arguments
+    from .auth_helper import add_auth_arguments, add_config_sync_arguments
+    add_auth_arguments(parser)
+    add_config_sync_arguments(parser)
+
     return parser.parse_args()
 
 
