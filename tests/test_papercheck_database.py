@@ -10,6 +10,7 @@ Tests are marked with pytest.mark.database for selective execution.
 
 import os
 import pytest
+import psycopg
 from unittest.mock import MagicMock, patch
 from typing import Dict, Any, List
 
@@ -25,6 +26,7 @@ from bmlibrarian.paperchecker.database import (
     MIN_LIMIT_VALUE,
     MAX_LIMIT_VALUE,
     MIN_OFFSET_VALUE,
+    PASSWORD_MASK,
 )
 from bmlibrarian.paperchecker.data_models import (
     Statement,
@@ -69,6 +71,88 @@ class TestDatabaseConstants:
         assert MIN_LIMIT_VALUE == 1
         assert MAX_LIMIT_VALUE == 10000
         assert MIN_OFFSET_VALUE == 0
+
+    def test_password_mask_constant(self) -> None:
+        """Test password mask constant is defined for security logging."""
+        assert PASSWORD_MASK == "********"
+        # Ensure it doesn't look like a real password
+        assert len(PASSWORD_MASK) >= 8
+
+
+class TestPaperCheckDBPasswordMasking:
+    """Tests for password masking in connection strings."""
+
+    def test_get_safe_conninfo_masks_password(self) -> None:
+        """Test that _get_safe_conninfo masks the password."""
+        with patch("bmlibrarian.paperchecker.database.psycopg.connect") as mock_connect:
+            mock_conn = MagicMock()
+            mock_connect.return_value = mock_conn
+
+            db = PaperCheckDB(
+                db_name="testdb",
+                db_user="testuser",
+                db_password="secret123",
+                db_host="localhost",
+                db_port="5432"
+            )
+
+            safe_conninfo = db._get_safe_conninfo()
+
+            # Password should not appear in safe conninfo
+            assert "secret123" not in safe_conninfo
+            # Mask should appear instead
+            assert PASSWORD_MASK in safe_conninfo
+            # Other connection info should be present
+            assert "testdb" in safe_conninfo
+            assert "testuser" in safe_conninfo
+            assert "localhost" in safe_conninfo
+            assert "5432" in safe_conninfo
+
+    def test_get_safe_conninfo_without_password(self) -> None:
+        """Test _get_safe_conninfo when no password is set."""
+        with patch("bmlibrarian.paperchecker.database.psycopg.connect") as mock_connect:
+            mock_conn = MagicMock()
+            mock_connect.return_value = mock_conn
+
+            db = PaperCheckDB(
+                db_name="testdb",
+                db_host="localhost",
+                db_port="5432"
+            )
+
+            safe_conninfo = db._get_safe_conninfo()
+
+            # Should not contain password mask when no password set
+            assert PASSWORD_MASK not in safe_conninfo
+            assert "password" not in safe_conninfo
+            # Other connection info should be present
+            assert "testdb" in safe_conninfo
+            assert "localhost" in safe_conninfo
+
+    def test_connection_error_logs_safe_conninfo(self) -> None:
+        """Test that connection errors are logged with masked password."""
+        with patch("bmlibrarian.paperchecker.database.psycopg.connect") as mock_connect:
+            # Make connect raise an error
+            mock_connect.side_effect = psycopg.Error("Connection refused")
+
+            with patch("bmlibrarian.paperchecker.database.logger") as mock_logger:
+                with pytest.raises(psycopg.Error):
+                    PaperCheckDB(
+                        db_name="testdb",
+                        db_user="testuser",
+                        db_password="secret123",
+                        db_host="localhost",
+                        db_port="5432"
+                    )
+
+                # Verify error was logged
+                mock_logger.error.assert_called()
+                # Get the logged message
+                logged_message = mock_logger.error.call_args[0][0]
+                # Password should NOT be in the logged message
+                assert "secret123" not in logged_message
+                # But the mask should be
+                assert PASSWORD_MASK in logged_message
 
 
 class TestPaperCheckDBInit:
