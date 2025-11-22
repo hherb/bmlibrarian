@@ -100,13 +100,13 @@ class MedRxivImporter:
         Results, Conclusions) concatenated without separators. This function detects
         these headers and adds proper Markdown formatting with paragraph breaks.
 
-        Common section headers in biomedical abstracts:
-        - BACKGROUND/INTRODUCTION/CONTEXT/RATIONALE
-        - OBJECTIVE(S)/AIM(S)/PURPOSE
-        - METHODS/METHODOLOGY/DESIGN/SETTING/PARTICIPANTS
-        - RESULTS/FINDINGS/OUTCOMES
-        - CONCLUSIONS/CONCLUSION/DISCUSSION/IMPLICATIONS
-        - SIGNIFICANCE/IMPORTANCE
+        IMPORTANT: Section headers are ONLY recognized when they:
+        1. Appear at the very start of the abstract (position 0), OR
+        2. Appear after a sentence-ending period followed by space
+
+        Colon-style headers (like "METHODS:") are NOT automatically trusted because
+        some abstracts have malformed text with words like "OUTCOMES:" appearing
+        mid-sentence as part of the content, not as section headers.
 
         Args:
             abstract: Raw abstract text from medRxiv API
@@ -119,92 +119,93 @@ class MedRxivImporter:
         if not abstract:
             return ''
 
-        # Common section header patterns (case-insensitive)
-        # These headers typically appear at the start of sentences
-        section_patterns = [
-            r'(?i)\b(Background)\b',
-            r'(?i)\b(Introduction)\b',
-            r'(?i)\b(Context)\b',
-            r'(?i)\b(Rationale)\b',
-            r'(?i)\b(Objective[s]?)\b',
-            r'(?i)\b(Aim[s]?)\b',
-            r'(?i)\b(Purpose)\b',
-            r'(?i)\b(Method[s]?)\b',
-            r'(?i)\b(Methodology)\b',
-            r'(?i)\b(Design)\b',
-            r'(?i)\b(Setting)\b',
-            r'(?i)\b(Participants)\b',
-            r'(?i)\b(Result[s]?)\b',
-            r'(?i)\b(Finding[s]?)\b',
-            r'(?i)\b(Outcome[s]?)\b',
-            r'(?i)\b(Conclusion[s]?)\b',
-            r'(?i)\b(Discussion)\b',
-            r'(?i)\b(Implications)\b',
-            r'(?i)\b(Significance)\b',
-            r'(?i)\b(Importance)\b',
-            r'(?i)\b(Interpretation)\b',
-            r'(?i)\b(Trial Registration)\b',
-            r'(?i)\b(Funding)\b',
-        ]
-
-        # Build a combined pattern that matches any header at word boundary
-        # followed by no punctuation (to distinguish "Background" from "background of")
-        combined_pattern = '|'.join(f'({p})' for p in section_patterns)
-
-        # Find all section headers and their positions
-        # Look for headers that appear to start a new section (followed by text, not by "of", "and", etc.)
-        header_regex = re.compile(
-            r'(?<![a-zA-Z])(' +  # Not preceded by letter
+        # Section header keywords (will be matched case-insensitively)
+        # Only the main IMRaD sections - avoid ambiguous words like "Outcomes", "Findings"
+        header_keywords = (
             r'Background|Introduction|Context|Rationale|'
             r'Objectives?|Aims?|Purpose|'
-            r'Methods?|Methodology|Design|Setting|Participants|'
-            r'Results?|Findings?|Outcomes?|'
-            r'Conclusions?|Discussion|Implications|Significance|Importance|Interpretation|'
+            r'Methods?|Methodology|Materials and Methods|'
+            r'Results?|'
+            r'Conclusions?|Discussion|'
             r'Trial Registration|Funding'
-            r')(?=[A-Z]|:|\s*[A-Z])',  # Followed by uppercase, colon, or space+uppercase
+        )
+
+        # Pattern 1: Header at absolute start of abstract
+        # Must be followed by colon, or space+uppercase letter
+        # e.g., "Background: Acute..." or "Background Acute..."
+        start_pattern = re.compile(
+            r'^(' + header_keywords + r')(?:\s*:|(?=\s+[A-Z]))',
             re.IGNORECASE
         )
 
-        # Find all matches
-        matches = list(header_regex.finditer(abstract))
+        # Pattern 2: Header after sentence end (period + space)
+        # Must be followed by colon, or space+uppercase letter
+        # e.g., "...in patients. Methods: We conducted..." or "...patients. Methods We..."
+        sentence_pattern = re.compile(
+            r'(?<=\.\s)(' + header_keywords + r')(?:\s*:|(?=\s+[A-Z]))',
+            re.IGNORECASE
+        )
 
-        if not matches:
+        # Collect all matches with their positions
+        all_matches = []
+
+        # Check for start-of-abstract header
+        match = start_pattern.match(abstract)
+        if match:
+            # Find the actual end position (after the header word and optional colon)
+            header_end = match.end()
+            # Skip colon and whitespace if present
+            while header_end < len(abstract) and abstract[header_end] in ': \t':
+                header_end += 1
+            all_matches.append((match.start(), header_end, match.group(1), 'start'))
+
+        # Check for sentence-boundary headers
+        for match in sentence_pattern.finditer(abstract):
+            header_end = match.end()
+            # Skip colon and whitespace if present
+            while header_end < len(abstract) and abstract[header_end] in ': \t':
+                header_end += 1
+            all_matches.append((match.start(), header_end, match.group(1), 'sentence'))
+
+        # Sort by position
+        all_matches.sort(key=lambda x: x[0])
+
+        if not all_matches:
             # No structured sections found, return as-is
             return abstract
 
         # Build formatted abstract
         parts = []
-        last_end = 0
 
-        for i, match in enumerate(matches):
-            # Add any text before this header (if it's not at the start)
-            if match.start() > last_end and last_end > 0:
-                prefix_text = abstract[last_end:match.start()].strip()
+        for i, (start, end, header_text, match_type) in enumerate(all_matches):
+            # For the first header, capture any text before it
+            if i == 0 and start > 0:
+                prefix_text = abstract[:start].strip()
+                # Remove trailing period if present
+                if prefix_text.endswith('.'):
+                    prefix_text = prefix_text[:-1].strip()
                 if prefix_text:
-                    parts[-1] = parts[-1] + ' ' + prefix_text if parts else prefix_text
+                    parts.append(prefix_text)
 
-            # Get the header text
-            header = match.group(1).upper()
+            # Get the header text (uppercase for consistency)
+            header = header_text.upper()
 
-            # Get the section content (until next header or end)
-            if i + 1 < len(matches):
-                section_text = abstract[match.end():matches[i + 1].start()].strip()
+            # Get section content (from end of header to start of next header or end of abstract)
+            if i + 1 < len(all_matches):
+                next_start = all_matches[i + 1][0]
+                section_text = abstract[end:next_start].strip()
             else:
-                section_text = abstract[match.end():].strip()
+                section_text = abstract[end:].strip()
+
+            # Remove trailing period if this section ends at a sentence boundary
+            if section_text.endswith('.') and i + 1 < len(all_matches):
+                section_text = section_text[:-1].strip()
 
             # Format as bold header with content
             if section_text:
                 parts.append(f"**{header}:** {section_text}")
             else:
                 parts.append(f"**{header}:**")
-
-            last_end = match.end() if i + 1 >= len(matches) else matches[i + 1].start()
-
-        # Handle any text before the first header
-        if matches and matches[0].start() > 0:
-            prefix = abstract[:matches[0].start()].strip()
-            if prefix:
-                parts.insert(0, prefix)
 
         # Join sections with double newlines for paragraph breaks
         return '\n\n'.join(parts)
