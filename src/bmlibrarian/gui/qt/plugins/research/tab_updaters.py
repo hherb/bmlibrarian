@@ -356,7 +356,8 @@ def update_citations_tab(
     layout: QVBoxLayout,
     citations: List[Any],
     ui: UIConstants,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    card_factory: Optional[CardFactoryProtocol] = None
 ) -> int:
     """
     Update the Citations tab with extracted citations using CitationCard widget.
@@ -366,6 +367,7 @@ def update_citations_tab(
         citations: List of citation dictionaries or citation objects
         ui: UI constants for styling
         logger: Optional logger for error reporting
+        card_factory: Optional card factory for creating PDF buttons
 
     Returns:
         Number of cards successfully created
@@ -393,7 +395,16 @@ def update_citations_tab(
     cards_created = 0
     for i, citation in enumerate(citations):
         try:
-            card = CitationCard(citation_data=citation, index=i + 1)
+            # Create PDF button widget if factory available
+            pdf_button_widget = None
+            if card_factory:
+                pdf_button_widget = _create_citation_pdf_button(citation, card_factory, logger)
+
+            card = CitationCard(
+                citation_data=citation,
+                index=i + 1,
+                pdf_button_widget=pdf_button_widget
+            )
             layout.addWidget(card)
             cards_created += 1
         except Exception as e:
@@ -404,6 +415,80 @@ def update_citations_tab(
 
     logger.info(f"Citations tab updated with {cards_created}/{len(citations)} citations using CitationCard widget")
     return cards_created
+
+
+def _create_citation_pdf_button(
+    citation: Any,
+    card_factory: CardFactoryProtocol,
+    logger: logging.Logger
+) -> Optional[QWidget]:
+    """
+    Create PDF button widget for a citation.
+
+    Args:
+        citation: Citation data (dict or object)
+        card_factory: Card factory for creating PDF buttons
+        logger: Logger for error reporting
+
+    Returns:
+        PDF button widget or None
+    """
+    try:
+        from bmlibrarian.gui.document_card_factory_base import (
+            DocumentCardData, PDFButtonConfig, PDFButtonState
+        )
+        from pathlib import Path
+
+        # Extract citation data
+        if hasattr(citation, '__dict__'):
+            doc_id = getattr(citation, 'document_id', None)
+            pdf_url = getattr(citation, 'pdf_url', None)
+            pdf_path = getattr(citation, 'pdf_path', None)
+            title = getattr(citation, 'document_title', 'Unknown')
+            authors = getattr(citation, 'authors', [])
+            year = getattr(citation, 'publication_date', None)
+        else:
+            doc_id = citation.get('document_id')
+            pdf_url = citation.get('pdf_url')
+            pdf_path = citation.get('pdf_path')
+            title = citation.get('document_title', 'Unknown')
+            authors = citation.get('authors', [])
+            year = citation.get('publication_date')
+
+        if not doc_id:
+            return None
+
+        # Create card data for PDF button
+        card_data = DocumentCardData(
+            doc_id=doc_id,
+            title=title,
+            authors=authors if isinstance(authors, list) else [],
+            year=int(str(year)[:4]) if year else None,
+            pdf_url=pdf_url,
+            pdf_path=Path(pdf_path) if pdf_path else None,
+            show_pdf_button=True
+        )
+
+        # Use factory to create PDF button
+        if hasattr(card_factory, '_create_pdf_button_for_card'):
+            return card_factory._create_pdf_button_for_card(card_data)
+        elif hasattr(card_factory, 'create_pdf_button'):
+            # Determine state
+            pdf_state = card_factory.determine_pdf_state(doc_id, card_data.pdf_path, pdf_url)
+            if pdf_state == PDFButtonState.HIDDEN:
+                return None
+            config = PDFButtonConfig(
+                state=pdf_state,
+                pdf_path=card_data.pdf_path,
+                pdf_url=pdf_url,
+                doc_id=doc_id
+            )
+            return card_factory.create_pdf_button(config)
+
+    except Exception as e:
+        logger.warning(f"Could not create PDF button for citation: {e}")
+
+    return None
 
 
 def update_counterfactual_tab(

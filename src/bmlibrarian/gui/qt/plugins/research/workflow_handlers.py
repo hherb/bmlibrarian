@@ -458,7 +458,8 @@ class WorkflowHandlersMixin:
                 self.citations_refs.widgets['layout'],
                 citations,
                 self.ui,
-                self.logger
+                self.logger,
+                card_factory=self.document_card_factory
             )
 
         # Update summary label

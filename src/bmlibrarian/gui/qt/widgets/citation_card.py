@@ -2,27 +2,68 @@
 Citation card widget for BMLibrarian Qt GUI.
 
 Specialized collapsible card for displaying citations with passage highlighting in abstracts.
+Styled consistently with CollapsibleDocumentCard layout.
+
+Layout when expanded:
+1. Title + score badge (header row) - pale blue background
+2. Author / Journal / Year (single metadata line) - pale blue background
+3. Summary (if present) - pale green background, max 10 lines then scrollable
+4. Abstract with highlighted passage - max 10 lines then scrollable
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QMenu
 )
 from PySide6.QtCore import Qt, Signal
-from typing import Optional, Dict, Any
+from PySide6.QtGui import QAction
+from typing import Optional, Dict, Any, List
 import re
+import logging
 
-from .card_utils import (
-    html_escape
-)
+from .card_utils import html_escape
 from ..resources.styles import get_font_scale
+from ..resources.constants import DocumentCardColors, DefaultLimits
+from ..core.document_receiver_registry import DocumentReceiverRegistry
+from ..core.event_bus import EventBus
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Configuration Constants
+# ============================================================================
+
+# Score thresholds for color coding
+SCORE_THRESHOLD_HIGH = 4.0
+SCORE_THRESHOLD_MEDIUM = 2.5
+
+# Theme colors
+COLOR_HIGH_SCORE = "#27ae60"
+COLOR_MEDIUM_SCORE = "#3498db"
+COLOR_LOW_SCORE = "#95a5a6"
+COLOR_BORDER_ACCENT = "#3498db"
+COLOR_BORDER_ACCENT_HOVER = "#2980b9"
+COLOR_BACKGROUND_COLLAPSED = "#f8f9fa"
+COLOR_BACKGROUND_COLLAPSED_HOVER = "#e9ecef"
+COLOR_BACKGROUND_EXPANDED = "#ffffff"
+COLOR_BACKGROUND_EXPANDED_HOVER = "#f8f9fa"
+COLOR_BORDER_NEUTRAL = "#dee2e6"
+
+# Highlight color for passages
+COLOR_PASSAGE_BG = "#FFD54F"
+COLOR_PASSAGE_APPROX_BG = "#FFB74D"
+
+# Border widths
+BORDER_WIDTH_COLLAPSED = 3
+BORDER_WIDTH_EXPANDED = 2
 
 
 class CitationCard(QFrame):
     """
     Collapsible card widget for displaying citations with passage highlighting.
 
-    Collapsed: Shows title, authors, year, relevance score
-    Expanded: Shows summary + abstract with highlighted passage
+    Collapsed: Shows title + score in one line
+    Expanded: Shows metadata, summary, abstract with highlighted passage
 
     Signals:
         clicked: Emitted when card header is clicked (toggles expansion)
@@ -35,26 +76,12 @@ class CitationCard(QFrame):
     expanded = Signal()
     collapsed = Signal()
 
-    # Colors (DPI-independent)
-    COLOR_PRIMARY_BLUE = "#1976D2"
-    COLOR_TEXT_GREY = "#666666"
-    COLOR_BORDER_GREY = "#dee2e6"
-    COLOR_BORDER_ACCENT = "#3498db"
-    COLOR_BORDER_ACCENT_HOVER = "#2980b9"
-    COLOR_BACKGROUND_COLLAPSED = "#f8f9fa"
-    COLOR_BACKGROUND_COLLAPSED_HOVER = "#e9ecef"
-    COLOR_BACKGROUND_WHITE = "#ffffff"
-    COLOR_SUMMARY_BG = "#e8f5e9"
-    COLOR_SUMMARY_BORDER = "#c8e6c9"
-    COLOR_ABSTRACT_BG = "#f5f5f5"
-    COLOR_ABSTRACT_BORDER = "#ddd"
-    COLOR_PASSAGE_BG = "#FFD54F"
-
     def __init__(
         self,
         citation_data: Dict[str, Any],
         index: int = 1,
-        parent: Optional[QWidget] = None
+        parent: Optional[QWidget] = None,
+        pdf_button_widget: Optional[QWidget] = None
     ):
         """
         Initialize citation card.
@@ -63,17 +90,19 @@ class CitationCard(QFrame):
             citation_data: Dictionary or citation object containing citation information
             index: Citation number (for display)
             parent: Optional parent widget
+            pdf_button_widget: Optional PDF button widget to add to details section
         """
         super().__init__(parent)
 
         # Get DPI-aware scale
         self.scale = get_font_scale()
+        s = self.scale
 
-        # Convert citation object to dict if needed (for compatibility with BMLibrarian citation objects)
+        # Convert citation object to dict if needed
         if hasattr(citation_data, '__dict__'):
-            # It's an object, convert to dict
             self.citation_data = {
                 'document_title': getattr(citation_data, 'document_title', ''),
+                'document_id': getattr(citation_data, 'document_id', None),
                 'authors': getattr(citation_data, 'authors', []),
                 'publication_date': getattr(citation_data, 'publication_date', ''),
                 'publication': getattr(citation_data, 'publication', ''),
@@ -81,103 +110,101 @@ class CitationCard(QFrame):
                 'summary': getattr(citation_data, 'summary', ''),
                 'abstract': getattr(citation_data, 'abstract', None),
                 'passage': getattr(citation_data, 'passage', ''),
+                'pdf_url': getattr(citation_data, 'pdf_url', None),
+                'pdf_path': getattr(citation_data, 'pdf_path', None),
             }
         else:
-            # It's already a dict
             self.citation_data = citation_data
 
         self.index = index
         self._is_expanded = False
+        self._pdf_button_widget = pdf_button_widget
 
         # Configure frame
-        self.setFrameShape(QFrame.Shape.Box)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setObjectName("citationCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        # Setup context menu support
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
         # Create layout
-        s = self.scale
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, s['spacing_tiny'])
-        main_layout.setSpacing(0)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
 
-        # Create header (always visible)
-        self.header = self._create_header()
-        main_layout.addWidget(self.header)
+        # Create header section (title + metadata) with pale blue background
+        self._create_header_section()
 
-        # Create details section (collapsible)
-        self.details = self._create_details()
-        self.details.setVisible(False)
-        main_layout.addWidget(self.details)
+        # Create details section (hidden by default)
+        self._create_details()
+        self.details_widget.setVisible(False)
 
-        # Set up click handler on the entire card
-        self.mousePressEvent = lambda event: self._toggle_expansion()
+        # Style the card
+        self._apply_collapsed_style()
 
-    def _create_header(self) -> QWidget:
-        """Create the header section (always visible) - title with frame and metadata without frame."""
+    def _create_header_section(self):
+        """Create the header section with title, score badge, and metadata on pale blue background."""
         s = self.scale
 
-        # Container for both title frame and metadata
-        header_container = QWidget()
-        header_container_layout = QVBoxLayout(header_container)
-        header_container_layout.setContentsMargins(0, 0, 0, 0)
-        header_container_layout.setSpacing(s['spacing_tiny'])
+        # Header container with pale blue background
+        self.header_section = QWidget()
+        self.header_section.setObjectName("headerSection")
+        header_section_layout = QVBoxLayout(self.header_section)
+        header_section_layout.setContentsMargins(
+            s['padding_medium'], s['padding_small'],
+            s['padding_medium'], s['padding_small']
+        )
+        header_section_layout.setSpacing(s['spacing_tiny'])
 
-        # Title frame with blue left border
-        title_frame = QFrame()
-        title_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.COLOR_BACKGROUND_COLLAPSED};
-                border: 1px solid {self.COLOR_BORDER_GREY};
-                border-left: 4px solid {self.COLOR_BORDER_ACCENT};
-                border-radius: {s['radius_small']}px;
-                padding: {s['padding_medium']}px;
-            }}
-            QFrame:hover {{
-                background-color: {self.COLOR_BACKGROUND_COLLAPSED_HOVER};
-                border-left: 4px solid {self.COLOR_BORDER_ACCENT_HOVER};
+        # Row 1: Title + Score badge
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(s['spacing_small'])
+
+        # Title with index
+        title = self.citation_data.get('document_title', self.citation_data.get('title', 'Untitled Document'))
+        self.title_label = QLabel(f"<b>{self.index}. {html_escape(title)}</b>")
+        self.title_label.setObjectName("title")
+        self.title_label.setWordWrap(False)
+        self.title_label.setTextFormat(Qt.TextFormat.RichText)
+        self.title_label.setMinimumWidth(s['control_width_large'])
+        title_row.addWidget(self.title_label, stretch=1)
+
+        # Score badge
+        self.score_tag = self._create_score_tag()
+        if self.score_tag:
+            title_row.addWidget(self.score_tag)
+
+        header_section_layout.addLayout(title_row)
+
+        # Row 2: Metadata line (authors / journal / year)
+        self.metadata_label = self._create_metadata_line()
+        if self.metadata_label:
+            header_section_layout.addWidget(self.metadata_label)
+
+        # Apply pale blue background
+        self.header_section.setStyleSheet(f"""
+            QWidget#headerSection {{
+                background-color: {DocumentCardColors.HEADER_BG};
+                border-radius: {s['radius_tiny']}px {s['radius_tiny']}px 0 0;
             }}
         """)
 
-        title_layout = QHBoxLayout(title_frame)
-        title_layout.setSpacing(s['spacing_medium'])
-        title_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
+        self.main_layout.addWidget(self.header_section)
 
-        # Title label
-        title = self.citation_data.get('document_title', self.citation_data.get('title', 'Untitled Document'))
-        # DO NOT truncate titles - display full title with word wrap
+    def _create_metadata_line(self) -> Optional[QLabel]:
+        """
+        Create single-line metadata display (authors | journal (year)).
 
-        title_label = QLabel(f"<b>{self.index}. {html_escape(title)}</b>")
-        title_label.setWordWrap(True)
-        title_label.setStyleSheet(f"color: {self.COLOR_PRIMARY_BLUE}; font-size: {s['font_large']}pt; background-color: transparent; border: none;")
-        title_layout.addWidget(title_label, 1)
+        Returns:
+            QLabel with formatted metadata or None if no metadata available
+        """
+        s = self.scale
+        parts: List[str] = []
 
-        # Relevance score badge
-        relevance_score = self.citation_data.get('relevance_score', 0)
-        if relevance_score:
-            score_badge = QLabel(f"{relevance_score:.2f}")
-            score_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            score_badge.setFixedSize(50, s['control_height_small'])
-            score_badge.setStyleSheet(f"""
-                QLabel {{
-                    background-color: #4CAF50;
-                    color: white;
-                    font-size: {s['font_small']}pt;
-                    font-weight: bold;
-                    border-radius: {s['radius_medium']}px;
-                    padding: {s['padding_tiny']}px {s['padding_small']}px;
-                }}
-            """)
-            title_layout.addWidget(score_badge)
-
-        header_container_layout.addWidget(title_frame)
-
-        # Metadata section (NO frame, NO blue border) - authors, journal, year on ONE LINE
-        metadata_widget = QWidget()
-        metadata_widget.setStyleSheet("background-color: transparent; border: none;")
-        metadata_layout = QVBoxLayout(metadata_widget)
-        metadata_layout.setContentsMargins(s['padding_small'], 0, s['padding_small'], s['padding_tiny'])  # No top padding
-        metadata_layout.setSpacing(0)
-
-        # Authors
+        # Authors (abbreviated)
         authors = self.citation_data.get('authors', [])
         if isinstance(authors, list):
             if len(authors) > 2:
@@ -185,332 +212,386 @@ class CitationCard(QFrame):
             elif authors:
                 authors_str = ', '.join(authors)
             else:
-                authors_str = 'Unknown authors'
+                authors_str = None
         else:
-            authors_str = str(authors) if authors else 'Unknown authors'
+            authors_str = str(authors) if authors else None
 
-        # Extract year from publication_date
+        if authors_str:
+            parts.append(f"<i>{html_escape(authors_str)}</i>")
+
+        # Publication (journal) and year
+        publication = self.citation_data.get('publication', '')
         publication_date = self.citation_data.get('publication_date', '')
+
+        year_str = ''
         if publication_date and publication_date != 'Unknown':
             year_str = str(publication_date)[:4] if len(str(publication_date)) >= 4 else ''
-        else:
-            year_str = ''
 
-        # Publication (journal)
-        publication = self.citation_data.get('publication', '')
-
-        # Format metadata: "Authors. Journal, Year" - all on ONE line
-        metadata_parts = [authors_str]
         if publication and publication != 'Unknown journal':
             if year_str:
-                metadata_parts.append(f"{publication}, {year_str}")
+                parts.append(f"{html_escape(publication)} ({year_str})")
             else:
-                metadata_parts.append(publication)
+                parts.append(html_escape(publication))
         elif year_str:
-            metadata_parts.append(year_str)
+            parts.append(f"({year_str})")
 
-        metadata_text = '. '.join(metadata_parts)
-        metadata_label = QLabel(metadata_text)
-        metadata_label.setWordWrap(True)
-        metadata_label.setStyleSheet(f"color: {self.COLOR_TEXT_GREY}; font-size: {s['font_small']}pt; background-color: transparent; border: none;")
-        metadata_layout.addWidget(metadata_label)
+        if not parts:
+            return None
 
-        header_container_layout.addWidget(metadata_widget)
-
-        return header_container
-
-    def _create_abstract_scroll_area(self, min_height: int) -> QScrollArea:
-        """Create a scroll area for abstract display with minimum height."""
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setMinimumHeight(min_height)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
-        return scroll_area
-
-    def _create_details(self) -> QFrame:
-        """Create the details section (collapsible)."""
-        s = self.scale
-        details = QFrame()
-        details.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.COLOR_BACKGROUND_WHITE};
-                border: 1px solid {self.COLOR_BORDER_GREY};
-                border-top: none;
-                border-radius: 0 0 {s['radius_small']}px {s['radius_small']}px;
-                padding: {s['padding_medium']}px;
+        metadata_text = " | ".join(parts)
+        label = QLabel(metadata_text)
+        label.setObjectName("metadataLine")
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setStyleSheet(f"""
+            QLabel {{
+                color: {DocumentCardColors.METADATA_TEXT};
+                font-size: {s['font_tiny']}pt;
             }}
         """)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        self.details_layout = QVBoxLayout(details)
-        self.details_layout.setSpacing(s['spacing_medium'])
-        self.details_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
+        return label
 
-        # Summary section
+    def _create_score_tag(self) -> Optional[QLabel]:
+        """
+        Create score tag badge.
+
+        Returns:
+            QLabel with formatted score, or None if no score available
+        """
+        s = self.scale
+
+        score = self.citation_data.get('relevance_score')
+        if score is None or score == 0:
+            return None
+
+        # Color code based on score magnitude
+        if isinstance(score, (int, float)):
+            score_val = float(score)
+            if score_val >= SCORE_THRESHOLD_HIGH:
+                color = COLOR_HIGH_SCORE
+            elif score_val >= SCORE_THRESHOLD_MEDIUM:
+                color = COLOR_MEDIUM_SCORE
+            else:
+                color = COLOR_LOW_SCORE
+            tag = QLabel(f"<b>{score_val:.2f}</b>")
+        else:
+            color = COLOR_LOW_SCORE
+            tag = QLabel(f"<b>{score}</b>")
+
+        tag.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color};
+                color: white;
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
+                border-radius: {s['radius_medium']}px;
+                font-size: {s['font_normal']}pt;
+            }}
+        """)
+        tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tag.setFixedHeight(s['control_height_small'])
+        tag.setMinimumWidth(s['control_width_tiny'])
+
+        return tag
+
+    def _create_details(self):
+        """Create the details section (shown when expanded)."""
+        s = self.scale
+
+        self.details_widget = QWidget()
+        self.details_layout = QVBoxLayout(self.details_widget)
+        self.details_layout.setContentsMargins(
+            s['padding_medium'], s['spacing_tiny'],
+            s['padding_medium'], s['padding_small']
+        )
+        self.details_layout.setSpacing(s['spacing_tiny'])
+
+        # Summary section (if available) - styled like AI reasoning
         summary = self.citation_data.get('summary', '')
         if summary:
-            summary_container = self._create_summary_section(summary)
-            self.details_layout.addWidget(summary_container)
+            self._create_summary_section(summary)
 
         # Abstract with highlighted passage
         abstract = self.citation_data.get('abstract')
         passage = self.citation_data.get('passage', '')
 
-        if abstract and passage:
-            abstract_container = self._create_abstract_with_highlight(abstract, passage)
-            self.details_layout.addWidget(abstract_container)
+        if abstract:
+            self._create_abstract_section(abstract, passage)
         elif passage:
-            # Fallback: just show the passage
-            passage_container = self._create_passage_only(passage)
-            self.details_layout.addWidget(passage_container)
+            self._create_passage_only_section(passage)
 
-        return details
+        # Add PDF button widget if provided
+        if self._pdf_button_widget:
+            self.details_layout.addWidget(self._pdf_button_widget)
 
-    def _create_summary_section(self, summary: str) -> QFrame:
-        """Create the summary section."""
+        self.main_layout.addWidget(self.details_widget)
+
+    def _create_summary_section(self, summary: str):
+        """
+        Create summary section with pale green background (like AI reasoning).
+        Text box grows with content up to max height, then scrolls.
+
+        Args:
+            summary: Summary text
+        """
         s = self.scale
-        summary_container = QFrame()
-        summary_container.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.COLOR_SUMMARY_BG};
-                border: 1px solid {self.COLOR_SUMMARY_BORDER};
+        bg_color = DocumentCardColors.AI_REASONING_POSITIVE_BG
+
+        # Create label with prefix on same line - "[AI Summary: text here]"
+        display_text = f"AI Summary: {summary}"
+        summary_label = QLabel(display_text)
+        summary_label.setWordWrap(True)
+        summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        summary_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg_color};
+                border: 1px solid {bg_color};
                 border-radius: {s['radius_tiny']}px;
-                padding: {s['padding_medium']}px;
+                padding: {s['padding_small']}px;
+                font-size: {s['font_small']}pt;
+                color: {DocumentCardColors.AI_REASONING_TEXT};
             }}
         """)
-        summary_layout = QVBoxLayout(summary_container)
-        summary_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
-        summary_layout.setSpacing(s['spacing_small'])
 
-        summary_title = QLabel("<b>Summary:</b>")
-        summary_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
-        summary_layout.addWidget(summary_title)
-
-        summary_text = QLabel(html_escape(summary))
-        summary_text.setWordWrap(True)
-        summary_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        summary_text.setStyleSheet(f"color: #333; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
-        summary_layout.addWidget(summary_text)
-
-        return summary_container
-
-    def _create_abstract_with_highlight(self, abstract: str, passage: str) -> QFrame:
-        """Create abstract section with highlighted passage."""
-        s = self.scale
-        abstract_container = QFrame()
-        abstract_container.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.COLOR_ABSTRACT_BG};
-                border: 1px solid {self.COLOR_ABSTRACT_BORDER};
-                border-radius: {s['radius_tiny']}px;
-                padding: {s['padding_medium']}px;
-            }}
-        """)
-        abstract_layout = QVBoxLayout(abstract_container)
-        abstract_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
-        abstract_layout.setSpacing(s['spacing_small'])
-
-        abstract_title = QLabel("<b>Abstract with Highlighted Citation:</b>")
-        abstract_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
-        abstract_layout.addWidget(abstract_title)
-
-        # Create highlighted widget
-        highlighted_widget = self._create_highlighted_abstract_widget(abstract, passage)
-        abstract_layout.addWidget(highlighted_widget)
-
-        return abstract_container
-
-    def _create_highlighted_abstract_widget(self, abstract: str, passage: str) -> QWidget:
-        """Create widget showing abstract with passage highlighted with minimum 6 lines visible."""
-        s = self.scale
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(s['spacing_small'])
-
-        # Calculate minimum height for 6 lines of text
-        # Use base line height from font metrics (already includes proper line spacing)
+        # Calculate max height based on line count
         line_height = s['base_line_height']
-        min_abstract_height = line_height * 6
+        max_height = line_height * DefaultLimits.AI_REASONING_MAX_LINES + s['padding_small'] * 2
 
-        if not abstract or not passage:
-            # Create scroll area for simple abstract
-            scroll_area = self._create_abstract_scroll_area(min_abstract_height)
-            label = QLabel(abstract or "No abstract available")
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
+        # Wrap in scroll area for overflow
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setMaximumHeight(max_height)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {bg_color};
+                border: 1px solid {bg_color};
+                border-radius: {s['radius_tiny']}px;
+            }}
+        """)
+        scroll_area.setWidget(summary_label)
 
-            # Wrap in widget for scroll area
-            widget = QWidget()
-            widget_layout = QVBoxLayout(widget)
-            widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
-            widget_layout.addWidget(label)
-            scroll_area.setWidget(widget)
+        self.details_layout.addWidget(scroll_area)
 
-            layout.addWidget(scroll_area)
-            return container
+    def _create_abstract_section(self, abstract: str, passage: str):
+        """
+        Create abstract section with scrollable overflow and passage highlighting.
+        Text box grows with content up to max height, then scrolls.
 
-        # Clean up passage for matching (remove extra whitespace)
+        Args:
+            abstract: Abstract text
+            passage: Passage to highlight
+        """
+        s = self.scale
+
+        # Create highlighted content
+        highlighted_html = self._create_highlighted_html(abstract, passage)
+
+        # Create QLabel for HTML content with highlighting
+        abstract_label = QLabel(highlighted_html)
+        abstract_label.setWordWrap(True)
+        abstract_label.setTextFormat(Qt.TextFormat.RichText)
+        abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        abstract_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {DocumentCardColors.ABSTRACT_BG};
+                padding: {s['padding_small']}px;
+                font-size: {s['font_small']}pt;
+                color: {DocumentCardColors.ABSTRACT_TEXT};
+            }}
+        """)
+
+        # Calculate max height based on line count
+        line_height = s['base_line_height']
+        max_height = line_height * DefaultLimits.ABSTRACT_MAX_LINES + s['padding_small'] * 2
+
+        # Wrap in scroll area for overflow
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setMaximumHeight(max_height)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {DocumentCardColors.ABSTRACT_BG};
+                border: 1px solid #eee;
+                border-radius: {s['radius_tiny']}px;
+            }}
+        """)
+        scroll_area.setWidget(abstract_label)
+
+        self.details_layout.addWidget(scroll_area)
+
+    def _create_highlighted_html(self, abstract: str, passage: str) -> str:
+        """
+        Create HTML with highlighted passage in abstract.
+
+        Args:
+            abstract: Full abstract text
+            passage: Passage to highlight
+
+        Returns:
+            HTML string with highlighting
+        """
+        s = self.scale
+
+        if not passage:
+            return f"Abstract: {html_escape(abstract)}"
+
+        # Clean up passage for matching
         clean_passage = ' '.join(passage.split())
 
-        # Try to find exact match (case-insensitive)
+        # Try exact match (case-insensitive)
         pattern = re.compile(re.escape(clean_passage), re.IGNORECASE)
         match = pattern.search(abstract)
 
         if match:
-            # Exact match - create highlighted text
             start, end = match.span()
-
-            # Build HTML with highlighted section
             before = html_escape(abstract[:start])
             highlighted = html_escape(abstract[start:end])
             after = html_escape(abstract[end:])
 
-            html = f"""
-            <style>
-                .abstract-text {{ font-size: {s['font_normal']}pt; color: #333; line-height: 1.4; }}
-                .highlight {{ background-color: {self.COLOR_PASSAGE_BG}; font-weight: 600; padding: {s['padding_tiny']}px {s['padding_small']}px; }}
-            </style>
-            <div class="abstract-text">
-                {before}<span class="highlight">📌 {highlighted} 📌</span>{after}
-            </div>
-            """
+            return f"""Abstract: {before}<span style="background-color: {COLOR_PASSAGE_BG}; font-weight: 600; padding: 2px 4px;">📌 {highlighted} 📌</span>{after}"""
 
-            label = QLabel(html)
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Try fuzzy matching with first 10 words
+        passage_start = ' '.join(passage.split()[:10])
+        fuzzy_pattern = re.compile(re.escape(passage_start), re.IGNORECASE)
+        fuzzy_match = fuzzy_pattern.search(abstract)
 
-            # Wrap in scroll area with minimum height
-            scroll_area = self._create_abstract_scroll_area(min_abstract_height)
-            widget = QWidget()
-            widget_layout = QVBoxLayout(widget)
-            widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
-            widget_layout.addWidget(label)
-            scroll_area.setWidget(widget)
-            layout.addWidget(scroll_area)
+        if fuzzy_match:
+            start = fuzzy_match.span()[0]
+            end = min(start + len(clean_passage), len(abstract))
 
-        else:
-            # Try fuzzy matching with first 10 words
-            passage_start = ' '.join(passage.split()[:10])
-            fuzzy_pattern = re.compile(re.escape(passage_start), re.IGNORECASE)
-            fuzzy_match = fuzzy_pattern.search(abstract)
+            before = html_escape(abstract[:start])
+            highlighted = html_escape(abstract[start:end])
+            after = html_escape(abstract[end:])
 
-            if fuzzy_match:
-                # Partial match
-                start = fuzzy_match.span()[0]
-                end = min(start + len(clean_passage), len(abstract))
+            return f"""Abstract: ⚠️ <i>Approximate match</i><br>{before}<span style="background-color: {COLOR_PASSAGE_APPROX_BG}; font-weight: 600; padding: 2px 4px;">⚠️ {highlighted} ⚠️</span>{after}"""
 
-                warning_label = QLabel("⚠️ Approximate match only")
-                warning_label.setStyleSheet(f"font-size: {s['font_small']}pt; color: #F57C00; font-style: italic;")
-                layout.addWidget(warning_label)
+        # No match - show passage separately then abstract
+        return f"""Abstract: <span style="background-color: {COLOR_PASSAGE_BG}; font-weight: 600; padding: 2px 4px; display: block; margin-bottom: 8px;">📌 Cited passage: {html_escape(passage)}</span><br>{html_escape(abstract)}"""
 
-                before = html_escape(abstract[:start])
-                highlighted = html_escape(abstract[start:end])
-                after = html_escape(abstract[end:])
+    def _create_passage_only_section(self, passage: str):
+        """
+        Create section showing only the passage (fallback when no abstract).
+        Text box grows with content up to max height, then scrolls.
 
-                html = f"""
-                <style>
-                    .abstract-text {{ font-size: {s['font_normal']}pt; color: #333; line-height: 1.4; }}
-                    .highlight {{ background-color: #FFB74D; font-weight: 600; padding: {s['padding_tiny']}px {s['padding_small']}px; }}
-                </style>
-                <div class="abstract-text">
-                    {before}<span class="highlight">⚠️ {highlighted} ⚠️</span>{after}
-                </div>
-                """
-
-                label = QLabel(html)
-                label.setWordWrap(True)
-                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-                # Wrap in scroll area with minimum height
-                scroll_area = self._create_abstract_scroll_area(min_abstract_height)
-                widget = QWidget()
-                widget_layout = QVBoxLayout(widget)
-                widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
-                widget_layout.addWidget(label)
-                scroll_area.setWidget(widget)
-                layout.addWidget(scroll_area)
-
-            else:
-                # No match - show separately
-                passage_frame = QFrame()
-                passage_frame.setStyleSheet(f"""
-                    QFrame {{
-                        background-color: {self.COLOR_PASSAGE_BG};
-                        border-radius: {s['radius_tiny']}px;
-                        padding: {s['padding_medium']}px;
-                    }}
-                """)
-                passage_layout = QVBoxLayout(passage_frame)
-                passage_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
-
-                passage_label = QLabel(f"📌 Cited Passage:\n{html_escape(passage)}")
-                passage_label.setWordWrap(True)
-                passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                passage_label.setStyleSheet(f"font-size: {s['font_normal']}pt; font-weight: 600; background-color: transparent; border: none;")
-                passage_layout.addWidget(passage_label)
-
-                layout.addWidget(passage_frame)
-
-                abstract_title = QLabel("Full Abstract:")
-                abstract_title.setStyleSheet(f"font-size: {s['font_small']}pt; font-weight: bold; margin-top: {s['spacing_small']}px;")
-                layout.addWidget(abstract_title)
-
-                abstract_label = QLabel(html_escape(abstract))
-                abstract_label.setWordWrap(True)
-                abstract_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                abstract_label.setStyleSheet(f"font-size: {s['font_normal']}pt; color: #333;")
-
-                # Wrap in scroll area with minimum height
-                scroll_area = self._create_abstract_scroll_area(min_abstract_height)
-                widget = QWidget()
-                widget_layout = QVBoxLayout(widget)
-                widget_layout.setContentsMargins(s['padding_small'], s['padding_small'], s['padding_small'], s['padding_small'])
-                widget_layout.addWidget(abstract_label)
-                scroll_area.setWidget(widget)
-                layout.addWidget(scroll_area)
-
-        return container
-
-    def _create_passage_only(self, passage: str) -> QFrame:
-        """Create section showing only the passage (fallback when no abstract)."""
+        Args:
+            passage: Passage text
+        """
         s = self.scale
-        passage_container = QFrame()
-        passage_container.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.COLOR_ABSTRACT_BG};
-                border: 1px solid {self.COLOR_ABSTRACT_BORDER};
+
+        # Create label with prefix on same line
+        display_text = f"📌 Cited passage: {passage}"
+        passage_label = QLabel(display_text)
+        passage_label.setWordWrap(True)
+        passage_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        passage_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {COLOR_PASSAGE_BG};
+                border: 1px solid {COLOR_PASSAGE_BG};
                 border-radius: {s['radius_tiny']}px;
-                padding: {s['padding_medium']}px;
+                padding: {s['padding_small']}px;
+                font-size: {s['font_small']}pt;
+                color: #333;
+                font-weight: 600;
             }}
         """)
-        passage_layout = QVBoxLayout(passage_container)
-        passage_layout.setContentsMargins(s['padding_medium'], s['padding_medium'], s['padding_medium'], s['padding_medium'])
-        passage_layout.setSpacing(s['spacing_small'])
 
-        passage_title = QLabel("<b>Cited Passage:</b>")
-        passage_title.setStyleSheet(f"font-size: {s['font_small']}pt; background-color: transparent; border: none;")
-        passage_layout.addWidget(passage_title)
+        # Calculate max height based on line count
+        line_height = s['base_line_height']
+        max_height = line_height * DefaultLimits.ABSTRACT_MAX_LINES + s['padding_small'] * 2
 
-        passage_text = QLabel(html_escape(passage))
-        passage_text.setWordWrap(True)
-        passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        passage_text.setStyleSheet(f"color: #333; font-size: {s['font_normal']}pt; background-color: transparent; border: none;")
-        passage_layout.addWidget(passage_text)
+        # Wrap in scroll area for overflow
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setMaximumHeight(max_height)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {COLOR_PASSAGE_BG};
+                border: 1px solid {COLOR_PASSAGE_BG};
+                border-radius: {s['radius_tiny']}px;
+            }}
+        """)
+        scroll_area.setWidget(passage_label)
 
-        return passage_container
+        self.details_layout.addWidget(scroll_area)
+
+    def _apply_collapsed_style(self):
+        """Apply styling for collapsed state."""
+        s = self.scale
+
+        self.setStyleSheet(f"""
+            QFrame#citationCard {{
+                background-color: {COLOR_BACKGROUND_COLLAPSED};
+                border: 1px solid {COLOR_BORDER_NEUTRAL};
+                border-left: {BORDER_WIDTH_COLLAPSED}px solid {COLOR_BORDER_ACCENT};
+                border-radius: {s['radius_tiny']}px;
+            }}
+            QFrame#citationCard:hover {{
+                background-color: {COLOR_BACKGROUND_COLLAPSED_HOVER};
+                border-left: {BORDER_WIDTH_COLLAPSED}px solid {COLOR_BORDER_ACCENT_HOVER};
+            }}
+        """)
+
+    def _apply_expanded_style(self):
+        """Apply styling for expanded state."""
+        s = self.scale
+
+        self.setStyleSheet(f"""
+            QFrame#citationCard {{
+                background-color: {COLOR_BACKGROUND_EXPANDED};
+                border: {BORDER_WIDTH_EXPANDED}px solid {COLOR_BORDER_ACCENT};
+                border-radius: {s['radius_tiny']}px;
+            }}
+            QFrame#citationCard:hover {{
+                background-color: {COLOR_BACKGROUND_EXPANDED_HOVER};
+            }}
+        """)
+
+    def mousePressEvent(self, event):
+        """
+        Handle mouse press event to toggle expansion.
+        Only toggle when clicking on the header section, not on details.
+
+        Args:
+            event: Mouse event
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Only toggle if click is in header section (not in details)
+            click_pos = event.position().toPoint()
+            header_rect = self.header_section.geometry()
+            if header_rect.contains(click_pos):
+                self._toggle_expansion()
+        super().mousePressEvent(event)
 
     def _toggle_expansion(self):
         """Toggle card expansion state."""
         self._is_expanded = not self._is_expanded
-        self.details.setVisible(self._is_expanded)
+        self.details_widget.setVisible(self._is_expanded)
 
+        # Update title wrapping
+        self.title_label.setWordWrap(self._is_expanded)
+
+        # Update styling
         if self._is_expanded:
+            self._apply_expanded_style()
             self.expanded.emit()
         else:
+            self._apply_collapsed_style()
             self.collapsed.emit()
+
+        self.clicked.emit(self.citation_data)
 
     @property
     def is_expanded(self) -> bool:
@@ -527,7 +608,6 @@ class CitationCard(QFrame):
         if self._is_expanded:
             self._toggle_expansion()
 
-    # Keep backward compatibility with old API
     def get_document_id(self) -> Optional[int]:
         """Get the document ID."""
         return self.citation_data.get("document_id")
@@ -539,3 +619,71 @@ class CitationCard(QFrame):
     def get_passage(self) -> str:
         """Get the citation passage/quote."""
         return self.citation_data.get("passage", self.citation_data.get("quote", ""))
+
+    def _show_context_menu(self, position):
+        """
+        Show context menu with "Send to" submenu for registered document receivers.
+
+        Args:
+            position: Position where context menu was requested
+        """
+        # Get available document receivers
+        registry = DocumentReceiverRegistry()
+        receivers = registry.get_available_receivers(self.citation_data)
+
+        if not receivers:
+            logger.debug("No document receivers available for context menu")
+            return
+
+        # Create context menu
+        context_menu = QMenu(self)
+
+        # Create "Send to" submenu
+        send_to_menu = context_menu.addMenu("Send to")
+
+        # Add action for each receiver
+        for receiver in receivers:
+            receiver_id = receiver.get_receiver_id()
+            receiver_name = receiver.get_receiver_name()
+            receiver_desc = receiver.get_receiver_description()
+
+            action = QAction(receiver_name, send_to_menu)
+
+            # Set tooltip if description available
+            if receiver_desc:
+                action.setToolTip(receiver_desc)
+
+            # Connect to handler with receiver_id
+            action.triggered.connect(
+                lambda checked=False, rid=receiver_id: self._send_to_receiver(rid)
+            )
+
+            send_to_menu.addAction(action)
+
+        # Show context menu at cursor position
+        context_menu.exec(self.mapToGlobal(position))
+
+    def _send_to_receiver(self, receiver_id: str):
+        """
+        Send this document to a specific receiver.
+
+        Args:
+            receiver_id: ID of the receiver to send document to
+        """
+        registry = DocumentReceiverRegistry()
+        event_bus = EventBus()
+
+        # Send document via registry
+        success = registry.send_document(receiver_id, self.citation_data)
+
+        if success:
+            # Request navigation to the receiver's tab
+            event_bus.request_navigation(receiver_id)
+            logger.info(
+                f"Sent document {self.get_document_id()} to receiver '{receiver_id}'"
+            )
+        else:
+            logger.error(
+                f"Failed to send document {self.get_document_id()} "
+                f"to receiver '{receiver_id}'"
+            )

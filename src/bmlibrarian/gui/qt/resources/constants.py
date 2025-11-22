@@ -50,6 +50,26 @@ class ScoreColors:
     POOR: Final[str] = "#C62828"  # Red (< 2.5)
 
 
+# Document Card Colors
+class DocumentCardColors:
+    """Colors for document card sections."""
+    # Title/metadata header background (very pale blue)
+    HEADER_BG: Final[str] = "#F0F7FF"
+    HEADER_BG_HOVER: Final[str] = "#E5F0FC"
+
+    # AI reasoning backgrounds
+    AI_REASONING_POSITIVE_BG: Final[str] = "#F0FFF4"  # Very pale green (supportive)
+    AI_REASONING_WARNING_BG: Final[str] = "#FFF8E6"  # Very pale orange/amber (contradicts/warns)
+
+    # Abstract background
+    ABSTRACT_BG: Final[str] = "#FAFAFA"
+
+    # Text colors
+    METADATA_TEXT: Final[str] = "#555555"
+    AI_REASONING_TEXT: Final[str] = "#333333"
+    ABSTRACT_TEXT: Final[str] = "#444444"
+
+
 # ============================================================================
 # Size Constants
 # ============================================================================
@@ -86,6 +106,9 @@ class DefaultLimits:
     """Default limits for various operations."""
     MAX_AUTHORS_DISPLAY: Final[int] = 3  # Maximum authors before "et al."
     ABSTRACT_MAX_LENGTH: Final[int] = 500  # Maximum abstract length before truncation
+    MAX_VISIBLE_LINES: Final[int] = 10  # Max lines before scrollable overflow
+    AI_REASONING_MAX_LINES: Final[int] = 10  # Max visible lines for AI reasoning
+    ABSTRACT_MAX_LINES: Final[int] = 10  # Max visible lines for abstract
 
 
 # ============================================================================

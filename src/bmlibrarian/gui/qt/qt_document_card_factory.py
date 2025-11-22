@@ -39,6 +39,7 @@ class PDFButtonWidget(QPushButton):
 
     This widget uses centralized stylesheet styling via object names and
     includes comprehensive error handling for all PDF operations.
+    Compact design with minimal height matching text.
 
     Signals:
         pdf_viewed: Emitted when PDF is viewed
@@ -72,18 +73,26 @@ class PDFButtonWidget(QPushButton):
         """Update button text and object name for stylesheet styling."""
         # Use object names to apply centralized stylesheet styles
         if self.config.state == PDFButtonState.VIEW:
-            self.setText("📄 View Full Text")
+            self.setText("📄 View")
             self.setObjectName("pdf_view_button")
         elif self.config.state == PDFButtonState.FETCH:
-            self.setText("⬇️ Fetch Full Text")
+            self.setText("⬇️ Fetch")
             self.setObjectName("pdf_fetch_button")
         elif self.config.state == PDFButtonState.UPLOAD:
-            self.setText("📤 Upload Full Text")
+            self.setText("📤 Upload")
             self.setObjectName("pdf_upload_button")
 
-        # Apply consistent sizing from constants
-        self.setMinimumHeight(ButtonSizes.MIN_HEIGHT)
+        # Compact sizing - only slightly taller than text
+        self.setFixedHeight(ButtonSizes.MIN_HEIGHT)
         self.setCursor(Qt.PointingHandCursor)
+
+        # Apply compact styling directly
+        self.setStyleSheet(f"""
+            QPushButton {{
+                padding: {ButtonSizes.PADDING_VERTICAL}px {ButtonSizes.PADDING_HORIZONTAL}px;
+                border-radius: {ButtonSizes.BORDER_RADIUS}px;
+            }}
+        """)
 
         # Force stylesheet refresh
         self.style().unpolish(self)
@@ -185,6 +194,7 @@ class PDFButtonWidget(QPushButton):
     def _handle_upload(self):
         """Handle upload PDF action with validation."""
         try:
+            result = None
             if self.config.on_upload:
                 result = self.config.on_upload()
                 if result:
@@ -197,13 +207,14 @@ class PDFButtonWidget(QPushButton):
                         self._transition_to_view(result)
                         self.pdf_uploaded.emit(result)
                         logger.info(f"Successfully uploaded PDF: {result}")
+                        return  # Successfully handled by callback
                     else:
                         raise TypeError(
                             f"Upload handler returned invalid type: {type(result)}"
                         )
-            else:
-                # Default behavior: show file dialog
-                self._default_upload_handler()
+
+            # If no callback, or callback returned None, use default file dialog
+            self._default_upload_handler()
 
         except (FileNotFoundError, TypeError, RuntimeError, OSError) as e:
             error_msg = f"Failed to upload PDF: {str(e)}"
@@ -331,7 +342,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             'pmid': card_data.pmid,
             'doi': card_data.doi,
             'source': card_data.source,
-            'relevance_score': card_data.relevance_score or card_data.human_score
+            'relevance_score': card_data.relevance_score or card_data.human_score,
+            'ai_reasoning': card_data.ai_reasoning,
         }
 
     def _create_base_card(self, doc: Dict[str, Any]) -> QFrame:
@@ -532,12 +544,15 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             msg_box.exec()
         # For expected errors (403, 404), just log - user can see button didn't change state
 
-    def _create_button_container(self, button: QPushButton) -> QWidget:
+    def _create_button_container(self, button: PDFButtonWidget) -> QWidget:
         """
-        Create container widget for PDF button.
+        Create container widget for PDF button(s).
+
+        If the primary button is View or Fetch, adds a secondary Upload button
+        to allow PDF replacement.
 
         Args:
-            button: The PDF button widget
+            button: The primary PDF button widget
 
         Returns:
             Container widget with proper layout
@@ -550,7 +565,39 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             LayoutSpacing.CONTAINER_MARGIN,
             LayoutSpacing.CONTAINER_MARGIN
         )
+        layout.setSpacing(8)  # Spacing between buttons
+
+        # Add primary button
         layout.addWidget(button)
+
+        # Add secondary upload button if primary is View or Fetch
+        if button.config.state in (PDFButtonState.VIEW, PDFButtonState.FETCH):
+            secondary_config = PDFButtonConfig(
+                state=PDFButtonState.UPLOAD,
+                pdf_path=button.config.pdf_path,
+                pdf_url=button.config.pdf_url,
+                on_upload=button.config.on_upload,
+                show_notifications=button.config.show_notifications,
+                doc_id=button.config.doc_id
+            )
+            secondary_button = PDFButtonWidget(secondary_config)
+            secondary_button.setText("📤 Replace")  # Different text for clarity
+
+            # Connect secondary button's uploaded signal to update primary button
+            def on_secondary_upload(path: Path, primary: PDFButtonWidget = button) -> None:
+                """Handle secondary upload by transitioning primary to VIEW."""
+                primary._transition_to_view(path)
+
+            secondary_button.pdf_uploaded.connect(on_secondary_upload)
+
+            # Connect error signal - use doc_id or fallback to 0
+            doc_id_for_error = button.config.doc_id if button.config.doc_id is not None else 0
+            secondary_button.error_occurred.connect(
+                lambda msg, did=doc_id_for_error: self._handle_pdf_button_error(msg, did)
+            )
+
+            layout.addWidget(secondary_button)
+
         layout.addStretch()
 
         return container

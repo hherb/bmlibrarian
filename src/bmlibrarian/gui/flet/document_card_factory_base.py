@@ -84,6 +84,7 @@ class DocumentCardData:
     relevance_score: Optional[float] = None
     human_score: Optional[float] = None
     confidence: Optional[str] = None
+    ai_reasoning: Optional[str] = None  # AI reasoning/explanation for score or relevance
 
     # Citation data
     citations: Optional[List[Dict[str, Any]]] = None  # List of extracted citations
