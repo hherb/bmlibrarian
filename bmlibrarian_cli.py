@@ -257,18 +257,45 @@ class MedicalResearchCLI:
 def main():
     """Main entry point for the CLI application."""
     workflow_logger = None
-    
+
     try:
         # Setup logging with timestamped files
         workflow_logger = setup_logging()
         print(f"📝 Logging to: {workflow_logger.log_file_path}")
-        
+
         # Parse command line arguments
         args = parse_command_line_args()
-        
+
         # Log command line arguments
         workflow_logger.logger.info(f"CLI started with args: {vars(args)}")
-        
+
+        # Handle authentication and config sync operations
+        from bmlibrarian.cli.auth_helper import setup_config_with_auth, print_auth_status
+        auth_success, auth_error = setup_config_with_auth(args)
+        if not auth_success and auth_error:
+            # Only fail if there was an explicit auth attempt that failed
+            # (not just missing credentials - that's fine for anonymous use)
+            if getattr(args, 'user', None) or getattr(args, 'session_token', None):
+                workflow_logger.log_error("authentication_error", auth_error)
+                print(f"❌ Authentication error: {auth_error}")
+                sys.exit(1)
+
+        # Handle logout request (setup_config_with_auth already cleared the token)
+        if getattr(args, 'logout', False):
+            print("Session cleared. Goodbye!")
+            sys.exit(0)
+
+        # Handle config-only operations (sync/export/import without running workflow)
+        if any([
+            getattr(args, 'sync_to_db', False),
+            getattr(args, 'sync_from_db', False),
+            getattr(args, 'export_config', None),
+            getattr(args, 'import_config', None)
+        ]) and not args.question and not args.auto:
+            # Config operation completed, exit without running workflow
+            print_auth_status()
+            sys.exit(0)
+
         # Validate auto mode requirements
         if args.auto and not args.question:
             error_msg = "Auto mode requires a research question as an argument."
@@ -279,7 +306,7 @@ def main():
             print("❌ Error: --auto mode requires a research question as an argument.")
             print("Usage: python bmlibrarian_cli_refactored.py --auto 'What are the benefits of exercise?'")
             sys.exit(1)
-        
+
         # Create configuration from arguments and load model configuration
         config = create_config_with_models(args)
         
