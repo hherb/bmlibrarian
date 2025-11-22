@@ -1787,6 +1787,260 @@ class TestPaperCheckerCounterReportGeneration:
         for citation in sample_citations:
             assert citation.full_citation in markdown
 
+    # ==================== VALIDATION METHOD TESTS ====================
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_citation_format_valid(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test citation format validation with valid sequential citations."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Valid report with sequential citations - should not raise
+        report = "Studies show [1] that results are significant [2]. More data [3]."
+        agent._validate_citation_format(report)  # Should not raise
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_citation_format_missing_logs_warning(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        caplog
+    ):
+        """Test citation format validation logs warning when no citations present."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            agent._validate_citation_format("A report without any citation references.")
+
+        assert "does not contain inline citations" in caplog.text
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_coherence_valid(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test coherence validation with valid sentences."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Valid report with complete sentences - should not raise
+        report = "This is a complete sentence. Here is another one with more text."
+        agent._validate_coherence(report)  # Should not raise
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_coherence_no_punctuation_raises(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test coherence validation raises on missing punctuation."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        with pytest.raises(ValueError, match="lack complete sentences"):
+            agent._validate_coherence("This has no sentence ending punctuation")
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_coherence_short_fragments_raises(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test coherence validation raises on too-short sentences."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        with pytest.raises(ValueError, match="lacks substantive sentences"):
+            agent._validate_coherence("A. B. C.")  # All fragments below min length
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_markdown_valid(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test markdown validation with valid formatting."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Valid markdown - should not raise
+        report = "This has **bold** and *italic* and `code` formatting."
+        agent._validate_markdown(report)  # Should not raise
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_validate_markdown_unclosed_code_block_raises(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test markdown validation raises on unclosed code blocks."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        with pytest.raises(ValueError, match="Malformed markdown"):
+            agent._validate_markdown("Here is code:\n```python\nprint('test')\n")
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

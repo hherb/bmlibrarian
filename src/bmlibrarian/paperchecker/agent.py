@@ -81,12 +81,15 @@ REPORT_PREFIXES_TO_STRIP: tuple = (
 # Report validation constants
 CITATION_REFERENCE_PATTERN: str = r'\[\d+\]'
 MIN_SENTENCE_LENGTH: int = 10
+MIN_WORDS_FOR_DIVERSITY_CHECK: int = 20
+MIN_LEXICAL_DIVERSITY_RATIO: float = 0.3
+MAX_MARKDOWN_ISSUES_TO_REPORT: int = 3
+# Patterns for detecting unclosed markdown at end of lines
+# These are checked after stripping closed markers from each line
 UNCLOSED_MARKDOWN_PATTERNS: tuple = (
     # Pattern, description for error message
-    (r'\*\*[^*]+$', 'unclosed bold formatting (**text)'),
-    (r'(?<!\*)\*[^*\s][^*]*$', 'unclosed italic formatting (*text)'),
-    (r'`[^`]+$', 'unclosed inline code (`code)'),
-    (r'^\s*```[^`]*$', 'unclosed code block (```)'),
+    # Note: We only check for code blocks here, other markers are checked by counting
+    (r'^\s*```\w*\s*$', 'code block opener without closer'),
 )
 
 
@@ -1384,13 +1387,14 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
 
         # Check for excessive repetition (potential LLM loop)
         words = report.lower().split()
-        if len(words) > 20:  # Only check longer reports
+        if len(words) > MIN_WORDS_FOR_DIVERSITY_CHECK:
             unique_words = set(words)
             uniqueness_ratio = len(unique_words) / len(words)
-            if uniqueness_ratio < 0.3:  # Less than 30% unique words
+            if uniqueness_ratio < MIN_LEXICAL_DIVERSITY_RATIO:
                 logger.warning(
                     f"Generated report has low lexical diversity "
-                    f"({uniqueness_ratio:.1%} unique words). "
+                    f"({uniqueness_ratio:.1%} unique words, threshold: "
+                    f"{MIN_LEXICAL_DIVERSITY_RATIO:.0%}). "
                     "This may indicate repetitive or low-quality content."
                 )
 
@@ -1428,9 +1432,12 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
             )
 
         if issues:
-            issues_str = "; ".join(issues[:3])  # Limit to first 3 issues
-            if len(issues) > 3:
-                issues_str += f" (and {len(issues) - 3} more)"
+            # Log all issues for debugging before truncating for error message
+            logger.debug(f"All markdown issues found: {issues}")
+            # Limit error message to first N issues for readability
+            issues_str = "; ".join(issues[:MAX_MARKDOWN_ISSUES_TO_REPORT])
+            if len(issues) > MAX_MARKDOWN_ISSUES_TO_REPORT:
+                issues_str += f" (and {len(issues) - MAX_MARKDOWN_ISSUES_TO_REPORT} more)"
             raise ValueError(f"Malformed markdown detected: {issues_str}")
 
     def _generate_empty_report(
