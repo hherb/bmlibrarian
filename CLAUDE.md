@@ -188,6 +188,7 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 8. **PICOAgent**: Extracts Population, Intervention, Comparison, and Outcome components from research papers for systematic reviews
 9. **StudyAssessmentAgent**: Evaluates research quality, study design, methodological rigor, bias risk, and trustworthiness of biomedical evidence
 10. **PRISMA2020Agent**: Assesses systematic reviews and meta-analyses against PRISMA 2020 reporting guidelines (27-item checklist with suitability pre-screening)
+11. **PaperCheckerAgent**: Validates medical abstract claims against contradictory literature using multi-strategy search (semantic + HyDE + keyword) with evidence-based verdicts (supports/contradicts/undecided)
 
 ### Document Card Factory System
 
@@ -406,12 +407,34 @@ bmlibrarian/
 │           ├── statement_display.py   # Statement UI
 │           ├── citation_display.py    # Citation cards
 │           └── dialogs.py     # Login/export dialogs
+│   └── paperchecker/          # PaperChecker module (abstract fact-checking)
+│       ├── __init__.py        # PaperChecker module exports
+│       ├── data_models.py     # Type-safe dataclasses (Statement, Verdict, etc.)
+│       ├── agent.py           # PaperCheckerAgent (main orchestrator)
+│       ├── database.py        # PaperCheckDB (PostgreSQL papercheck schema)
+│       ├── components/        # Sub-components
+│       │   ├── statement_extractor.py   # Extract claims from abstracts
+│       │   ├── counter_statement_generator.py  # Generate semantic negations
+│       │   ├── hyde_generator.py        # HyDE abstract and keyword generation
+│       │   ├── search_coordinator.py    # Multi-strategy search orchestration
+│       │   └── verdict_analyzer.py      # Evidence analysis and verdict generation
+│       └── cli/               # CLI application
+│           ├── app.py         # Main CLI entry point
+│           ├── commands.py    # Command handlers
+│           └── formatters.py  # Output formatting
 ├── tests/                     # Comprehensive test suite
 │   ├── test_query_agent.py    # Query processing tests
 │   ├── test_scoring_agent.py  # Document scoring tests
 │   ├── test_citation_agent.py # Citation extraction tests
 │   ├── test_reporting_agent.py# Report generation tests
-│   └── test_counterfactual_agent.py # Counterfactual analysis tests
+│   ├── test_counterfactual_agent.py # Counterfactual analysis tests
+│   └── paperchecker/          # PaperChecker test suite
+│       ├── test_statement_extractor.py   # Statement extraction tests
+│       ├── test_counter_generator.py     # Counter-statement tests
+│       ├── test_hyde_generator.py        # HyDE generation tests
+│       ├── test_search_coordinator.py    # Search tests
+│       ├── test_verdict_analyzer.py      # Verdict tests
+│       └── test_end_to_end.py            # Full workflow tests
 ├── examples/                  # Demonstration scripts
 │   ├── agent_demo.py          # Multi-agent workflow examples
 │   ├── citation_demo.py       # Citation extraction demonstrations
@@ -431,7 +454,10 @@ bmlibrarian/
 │   │   ├── pdf_import_guide.md  # PDF import and matching guide
 │   │   ├── study_assessment_guide.md  # Study quality assessment guide
 │   │   ├── prisma2020_guide.md  # PRISMA 2020 compliance assessment guide
-│   │   └── multi_model_query_guide.md  # Multi-model query generation guide
+│   │   ├── multi_model_query_guide.md  # Multi-model query generation guide
+│   │   ├── paper_checker_guide.md  # PaperChecker overview and quick start
+│   │   ├── paper_checker_cli_guide.md  # PaperChecker CLI reference
+│   │   └── paper_checker_lab_guide.md  # PaperChecker laboratory guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
 │       ├── citation_system.md
@@ -441,7 +467,8 @@ bmlibrarian/
 │       ├── study_assessment_system.md  # Study quality assessment system
 │       ├── prisma2020_system.md  # PRISMA 2020 compliance assessment system
 │       ├── document_interrogation_ui_spec.md  # Document interrogation UI specification
-│       └── multi_model_architecture.md  # Multi-model architecture docs
+│       ├── multi_model_architecture.md  # Multi-model architecture docs
+│       └── paper_checker_architecture.md  # PaperChecker system design and architecture
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
 ├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface

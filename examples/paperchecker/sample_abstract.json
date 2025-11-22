@@ -1,0 +1,10 @@
+[
+  {
+    "abstract": "Background: Metformin remains the first-line pharmacological treatment for type 2 diabetes mellitus. This study investigated the long-term cardiovascular outcomes of metformin monotherapy compared to sulfonylurea monotherapy in newly diagnosed type 2 diabetes patients. Methods: We conducted a retrospective cohort analysis of 45,000 patients from a large integrated health system between 2010-2020. Patients initiating metformin or sulfonylurea as first-line therapy were matched by propensity score. The primary outcome was a composite of cardiovascular death, myocardial infarction, and stroke. Results: After median follow-up of 5.3 years, metformin users had significantly lower risk of the composite cardiovascular outcome (HR 0.78, 95% CI 0.71-0.86, p<0.001). This benefit was consistent across subgroups defined by age, sex, and baseline cardiovascular risk. Metformin users also had lower all-cause mortality (HR 0.82, 95% CI 0.76-0.89). Conclusions: Metformin monotherapy is associated with superior long-term cardiovascular outcomes compared to sulfonylureas in type 2 diabetes, supporting its role as first-line therapy.",
+    "metadata": {
+      "title": "Long-term Cardiovascular Outcomes of Metformin vs Sulfonylurea Monotherapy in Type 2 Diabetes",
+      "year": 2023,
+      "study_type": "Observational cohort"
+    }
+  }
+]
