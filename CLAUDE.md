@@ -108,6 +108,7 @@ Since this project uses `uv` for package management:
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
   - `uv run python paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
+  - `uv run python paper_checker_lab.py` - Interactive PaperChecker laboratory (Flet) for medical abstract fact-checking with step-by-step visualization
 - **PDF Processing Tools**:
   - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
@@ -461,6 +462,7 @@ bmlibrarian/
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
 ├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
 ├── paper_weight_lab.py        # PaperWeightAssessmentAgent laboratory GUI (PySide6/Qt) for evaluating evidential weight
+├── paper_checker_lab.py       # PaperChecker laboratory GUI (Flet) for medical abstract fact-checking
 ├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
 ├── test_pdf_processor.py      # Command-line test script for PDF processor library
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
