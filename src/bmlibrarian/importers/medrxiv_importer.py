@@ -94,121 +94,80 @@ class MedRxivImporter:
 
     def _format_abstract_markdown(self, abstract: str) -> str:
         """
-        Format medRxiv abstract with Markdown section headers.
+        Format medRxiv abstract with Markdown styling for readability.
 
-        MedRxiv abstracts often contain embedded section headers (Background, Methods,
-        Results, Conclusions) concatenated without separators. This function detects
-        these headers and adds proper Markdown formatting with paragraph breaks.
+        CRITICAL: This function performs ONLY aesthetic changes:
+        1. Adds paragraph breaks (double newlines) before section headers
+        2. Makes recognized section headers bold using Markdown **syntax**
 
-        IMPORTANT: Section headers are ONLY recognized when they:
-        1. Appear at the very start of the abstract (position 0), OR
-        2. Appear after a sentence-ending period followed by space
+        It NEVER:
+        - Truncates or removes any content
+        - Changes wording or alters the original text
+        - Removes punctuation or modifies sentences
+        - Deletes any characters from the original
 
-        Colon-style headers (like "METHODS:") are NOT automatically trusted because
-        some abstracts have malformed text with words like "OUTCOMES:" appearing
-        mid-sentence as part of the content, not as section headers.
+        Section headers are ONLY recognized when they:
+        1. Appear at the absolute start of the abstract, OR
+        2. Appear immediately after ". " (period + space = sentence boundary)
+
+        This prevents false positives from mid-sentence text like "with OUTCOMES:"
 
         Args:
             abstract: Raw abstract text from medRxiv API
 
         Returns:
-            Markdown-formatted abstract with section headers and paragraph breaks
+            Abstract with Markdown formatting (bold headers, paragraph breaks)
+            Original content is fully preserved.
         """
         import re
 
         if not abstract:
             return ''
 
-        # Section header keywords (will be matched case-insensitively)
-        # Only the main IMRaD sections - avoid ambiguous words like "Outcomes", "Findings"
+        # Section header keywords (case-insensitive)
+        # Only the main IMRaD sections
         header_keywords = (
             r'Background|Introduction|Context|Rationale|'
             r'Objectives?|Aims?|Purpose|'
             r'Methods?|Methodology|Materials and Methods|'
-            r'Results?|'
+            r'Results?|Findings?|'
             r'Conclusions?|Discussion|'
             r'Trial Registration|Funding'
         )
 
-        # Pattern 1: Header at absolute start of abstract
-        # Must be followed by colon, or space+uppercase letter
-        # e.g., "Background: Acute..." or "Background Acute..."
+        # Pattern 1: Header at the very start of abstract
         start_pattern = re.compile(
-            r'^(' + header_keywords + r')(?:\s*:|(?=\s+[A-Z]))',
+            r'^(' + header_keywords + r')(\s*:)',
             re.IGNORECASE
         )
 
-        # Pattern 2: Header after sentence end (period + space)
-        # Must be followed by colon, or space+uppercase letter
-        # e.g., "...in patients. Methods: We conducted..." or "...patients. Methods We..."
+        # Pattern 2: Header after sentence boundary (". ")
         sentence_pattern = re.compile(
-            r'(?<=\.\s)(' + header_keywords + r')(?:\s*:|(?=\s+[A-Z]))',
+            r'(\. )(' + header_keywords + r')(\s*:)',
             re.IGNORECASE
         )
 
-        # Collect all matches with their positions
-        all_matches = []
+        def replace_start_header(match: re.Match) -> str:
+            """Replace header at start with bold version."""
+            header_word = match.group(1)
+            colon_part = match.group(2)
+            return f'**{header_word.upper()}**{colon_part}'
 
-        # Check for start-of-abstract header
-        match = start_pattern.match(abstract)
-        if match:
-            # Find the actual end position (after the header word and optional colon)
-            header_end = match.end()
-            # Skip colon and whitespace if present
-            while header_end < len(abstract) and abstract[header_end] in ': \t':
-                header_end += 1
-            all_matches.append((match.start(), header_end, match.group(1), 'start'))
+        def replace_sentence_header(match: re.Match) -> str:
+            """Replace header after sentence with bold version + paragraph break."""
+            period_space = match.group(1)  # ". "
+            header_word = match.group(2)
+            colon_part = match.group(3)
+            # Add paragraph break before the header
+            return f'{period_space}\n\n**{header_word.upper()}**{colon_part}'
 
-        # Check for sentence-boundary headers
-        for match in sentence_pattern.finditer(abstract):
-            header_end = match.end()
-            # Skip colon and whitespace if present
-            while header_end < len(abstract) and abstract[header_end] in ': \t':
-                header_end += 1
-            all_matches.append((match.start(), header_end, match.group(1), 'sentence'))
+        # First: format headers at start
+        formatted = start_pattern.sub(replace_start_header, abstract)
 
-        # Sort by position
-        all_matches.sort(key=lambda x: x[0])
+        # Second: format headers after sentence boundaries
+        formatted = sentence_pattern.sub(replace_sentence_header, formatted)
 
-        if not all_matches:
-            # No structured sections found, return as-is
-            return abstract
-
-        # Build formatted abstract
-        parts = []
-
-        for i, (start, end, header_text, match_type) in enumerate(all_matches):
-            # For the first header, capture any text before it
-            if i == 0 and start > 0:
-                prefix_text = abstract[:start].strip()
-                # Remove trailing period if present
-                if prefix_text.endswith('.'):
-                    prefix_text = prefix_text[:-1].strip()
-                if prefix_text:
-                    parts.append(prefix_text)
-
-            # Get the header text (uppercase for consistency)
-            header = header_text.upper()
-
-            # Get section content (from end of header to start of next header or end of abstract)
-            if i + 1 < len(all_matches):
-                next_start = all_matches[i + 1][0]
-                section_text = abstract[end:next_start].strip()
-            else:
-                section_text = abstract[end:].strip()
-
-            # Remove trailing period if this section ends at a sentence boundary
-            if section_text.endswith('.') and i + 1 < len(all_matches):
-                section_text = section_text[:-1].strip()
-
-            # Format as bold header with content
-            if section_text:
-                parts.append(f"**{header}:** {section_text}")
-            else:
-                parts.append(f"**{header}:**")
-
-        # Join sections with double newlines for paragraph breaks
-        return '\n\n'.join(parts)
+        return formatted
 
     def _split_date_range_into_weeks(self, start_date: str, end_date: str) -> List[Tuple[str, str]]:
         """
