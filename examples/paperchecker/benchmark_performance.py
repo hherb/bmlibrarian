@@ -16,10 +16,20 @@ Expected performance targets:
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
-# Add project root to path for imports
-sys.path.insert(0, "/home/user/bmlibrarian/src")
+# Add project root to path for imports (calculate relative to this script)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent.parent
+_SRC_DIR = _PROJECT_ROOT / "src"
+sys.path.insert(0, str(_SRC_DIR))
+
+# Performance target constants (in seconds)
+# Based on PaperChecker Step 16 planning document
+PERFORMANCE_TARGET_SHORT_ABSTRACT_SECONDS = 90
+PERFORMANCE_TARGET_MEDIUM_ABSTRACT_SECONDS = 180
+PERFORMANCE_TARGET_LONG_ABSTRACT_SECONDS = 300
 
 # Test abstracts of varying complexity
 SHORT_ABSTRACT = """
@@ -186,11 +196,11 @@ def print_summary(results: list[BenchmarkResult]) -> None:
     Args:
         results: List of benchmark results
     """
-    # Performance targets in seconds
+    # Performance targets in seconds (using named constants)
     targets = {
-        "Short": 90,
-        "Medium": 180,
-        "Long": 300
+        "Short": PERFORMANCE_TARGET_SHORT_ABSTRACT_SECONDS,
+        "Medium": PERFORMANCE_TARGET_MEDIUM_ABSTRACT_SECONDS,
+        "Long": PERFORMANCE_TARGET_LONG_ABSTRACT_SECONDS,
     }
 
     print("\n" + "="*70)

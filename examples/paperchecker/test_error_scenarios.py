@@ -17,10 +17,14 @@ Test scenarios:
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
-# Add project root to path for imports
-sys.path.insert(0, "/home/user/bmlibrarian/src")
+# Add project root to path for imports (calculate relative to this script)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent.parent
+_SRC_DIR = _PROJECT_ROOT / "src"
+sys.path.insert(0, str(_SRC_DIR))
 
 
 @dataclass
