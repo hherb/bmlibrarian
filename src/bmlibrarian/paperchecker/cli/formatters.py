@@ -5,7 +5,7 @@ Provides functions for displaying results, statistics, and summaries
 in human-readable formats for the command line.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from bmlibrarian.paperchecker.data_models import PaperCheckResult, Verdict
 
@@ -16,6 +16,8 @@ SUBSEPARATOR_CHAR: str = "-"
 INDENT: str = "  "
 MAX_PREVIEW_LENGTH: int = 80
 MAX_ABSTRACT_PREVIEW: int = 200
+DEFAULT_BAR_WIDTH: int = 20
+PERCENTAGE_MAX: float = 100.0
 
 
 def print_statistics(results: List[PaperCheckResult]) -> None:
@@ -112,7 +114,7 @@ def _safe_percentage(count: int, total: int) -> float:
     return 100.0 * count / total
 
 
-def _create_bar(percentage: float, width: int = 20) -> str:
+def _create_bar(percentage: float, width: int = DEFAULT_BAR_WIDTH) -> str:
     """
     Create a simple text progress bar.
 
@@ -123,7 +125,7 @@ def _create_bar(percentage: float, width: int = 20) -> str:
     Returns:
         Text bar like "[========          ]"
     """
-    filled = int(width * percentage / 100)
+    filled = int(width * percentage / PERCENTAGE_MAX)
     empty = width - filled
     return f"[{'=' * filled}{' ' * empty}]"
 
@@ -296,8 +298,8 @@ def print_completion_banner(
     total: int,
     successful: int,
     errors: int,
-    output_file: str = None,
-    markdown_dir: str = None
+    output_file: Optional[str] = None,
+    markdown_dir: Optional[str] = None
 ) -> None:
     """
     Print completion banner with summary.

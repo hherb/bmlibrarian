@@ -27,6 +27,12 @@ MAX_PMID: int = 99999999999  # 11 digits max for PMID
 PROGRESS_BAR_FORMAT: str = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
 PROGRESS_BAR_UNIT: str = "abstract"
 
+# Error message and preview limits
+MAX_VALIDATION_ERRORS_DISPLAYED: int = 5
+MAX_ERROR_PREVIEW_LENGTH: int = 100
+MAX_MISSING_PMIDS_DISPLAYED: int = 10
+YEAR_STRING_LENGTH: int = 4
+
 
 def validate_abstract(abstract: str, index: int) -> Tuple[bool, Optional[str]]:
     """
@@ -139,9 +145,10 @@ def load_abstracts_from_json(filepath: str) -> List[Dict[str, Any]]:
         })
 
     if validation_errors:
-        error_summary = "; ".join(validation_errors[:5])  # Limit error messages
-        if len(validation_errors) > 5:
-            error_summary += f" (and {len(validation_errors) - 5} more errors)"
+        error_summary = "; ".join(validation_errors[:MAX_VALIDATION_ERRORS_DISPLAYED])
+        if len(validation_errors) > MAX_VALIDATION_ERRORS_DISPLAYED:
+            remaining = len(validation_errors) - MAX_VALIDATION_ERRORS_DISPLAYED
+            error_summary += f" (and {remaining} more errors)"
         raise ValueError(f"Validation errors in JSON file: {error_summary}")
 
     logger.info(f"Loaded {len(validated_abstracts)} valid abstracts from {filepath}")
@@ -197,7 +204,7 @@ def load_abstracts_from_pmids(pmids: List[int]) -> List[Dict[str, Any]]:
                     # Extract year from publication_date
                     year = None
                     if row.get("publication_date"):
-                        year_str = str(row["publication_date"])[:4]
+                        year_str = str(row["publication_date"])[:YEAR_STRING_LENGTH]
                         if year_str.isdigit():
                             year = int(year_str)
 
@@ -217,9 +224,11 @@ def load_abstracts_from_pmids(pmids: List[int]) -> List[Dict[str, Any]]:
         found_pmids = {a["metadata"]["pmid"] for a in abstracts}
         missing_pmids = set(pmids) - found_pmids
         if missing_pmids:
+            displayed_pmids = sorted(missing_pmids)[:MAX_MISSING_PMIDS_DISPLAYED]
+            ellipsis = "..." if len(missing_pmids) > MAX_MISSING_PMIDS_DISPLAYED else ""
             logger.warning(
                 f"Could not find abstracts for {len(missing_pmids)} PMIDs: "
-                f"{sorted(missing_pmids)[:10]}{'...' if len(missing_pmids) > 10 else ''}"
+                f"{displayed_pmids}{ellipsis}"
             )
 
         logger.info(f"Fetched {len(abstracts)} abstracts from database")
@@ -301,11 +310,16 @@ def check_abstracts(
                 progress_callback(i, total, None)
 
         except Exception as e:
+            abstract_text = item["abstract"]
+            if len(abstract_text) > MAX_ERROR_PREVIEW_LENGTH:
+                preview = abstract_text[:MAX_ERROR_PREVIEW_LENGTH] + "..."
+            else:
+                preview = abstract_text
             error_info = {
                 "index": i,
                 "pmid": pmid,
                 "error": str(e),
-                "abstract_preview": item["abstract"][:100] + "..." if len(item["abstract"]) > 100 else item["abstract"]
+                "abstract_preview": preview
             }
             errors.append(error_info)
             logger.error(f"Failed to check abstract {i} (PMID: {pmid}): {e}")
