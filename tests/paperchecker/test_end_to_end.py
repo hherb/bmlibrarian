@@ -38,75 +38,6 @@ from bmlibrarian.paperchecker.components import (
 )
 
 
-# ==================== WORKFLOW FIXTURE ====================
-
-@pytest.fixture
-def mock_workflow_components(
-    sample_statement,
-    sample_counter_statement,
-    sample_search_results,
-    sample_scored_documents,
-    sample_counter_report,
-    sample_verdict,
-    statement_extraction_response,
-    counter_statement_response,
-    hyde_generation_response,
-    verdict_analysis_response,
-):
-    """Create all mocked workflow components for end-to-end testing."""
-
-    # Mock Ollama client
-    with patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client') as mock_extractor_client, \
-         patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock_counter_client, \
-         patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client') as mock_hyde_client, \
-         patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client') as mock_verdict_client, \
-         patch('bmlibrarian.paperchecker.components.search_coordinator.get_db_manager') as mock_db, \
-         patch('bmlibrarian.paperchecker.components.search_coordinator.get_ollama_host') as mock_host, \
-         patch('bmlibrarian.paperchecker.components.search_coordinator.ollama.embeddings') as mock_embeddings:
-
-        # Configure mocks
-        mock_host.return_value = "http://localhost:11434"
-        mock_db.return_value = MagicMock()
-        mock_embeddings.return_value = {"embedding": [0.1] * 1024}
-
-        # Statement extractor mock
-        extractor_client = MagicMock()
-        extractor_client.chat.return_value = {
-            "message": {"content": statement_extraction_response}
-        }
-        mock_extractor_client.return_value = extractor_client
-
-        # Counter generator mock
-        counter_client = MagicMock()
-        counter_client.chat.return_value = {
-            "message": {"content": counter_statement_response}
-        }
-        mock_counter_client.return_value = counter_client
-
-        # HyDE generator mock
-        hyde_client = MagicMock()
-        hyde_client.chat.return_value = {
-            "message": {"content": hyde_generation_response}
-        }
-        mock_hyde_client.return_value = hyde_client
-
-        # Verdict analyzer mock
-        verdict_client = MagicMock()
-        verdict_client.chat.return_value = {
-            "message": {"content": verdict_analysis_response}
-        }
-        mock_verdict_client.return_value = verdict_client
-
-        yield {
-            "extractor_client": extractor_client,
-            "counter_client": counter_client,
-            "hyde_client": hyde_client,
-            "verdict_client": verdict_client,
-            "db_manager": mock_db.return_value,
-            "embeddings": mock_embeddings,
-        }
-
-
 # ==================== FULL WORKFLOW TESTS ====================
 
 class TestFullWorkflow:
@@ -437,11 +368,11 @@ class TestMultiStatementProcessing:
 
     def test_overall_assessment_aggregates_verdicts(
         self,
-        sample_counter_report,
-        mock_workflow_components
+        sample_counter_report
     ):
         """Test that overall assessment aggregates multiple verdicts."""
-        analyzer = VerdictAnalyzer(model="test-model")
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client'):
+            analyzer = VerdictAnalyzer(model="test-model")
 
         statements = [
             Statement(
