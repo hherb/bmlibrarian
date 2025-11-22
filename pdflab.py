@@ -1,8 +1,8 @@
 """
 PDF Conversion Lab Application
 
-A PySide6 application for testing PDF to Markdown conversion using pymupdf4llm
-with pymupdf-layout for enhanced layout detection and header/footer removal.
+A PySide6 application for testing PDF to Markdown conversion using multiple
+converters: pymupdf4llm (with/without layout), pymupdf, and marker.
 
 Displays PDF on the left and converted Markdown on the right.
 Includes quality rating system with database persistence.
@@ -13,11 +13,12 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
+from enum import Enum
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QTextEdit, QSplitter, QLabel, QMessageBox,
-    QCheckBox, QButtonGroup, QRadioButton, QLineEdit, QFrame
+    QCheckBox, QButtonGroup, QRadioButton, QLineEdit, QFrame, QComboBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtPdf import QPdfDocument
@@ -28,6 +29,7 @@ from PySide6.QtGui import QFont
 # to activate layout detection features including header/footer removal
 import pymupdf.layout  # noqa: F401 - activates layout features
 import pymupdf4llm
+import pymupdf
 
 from bmlibrarian.database import DatabaseManager
 
@@ -49,11 +51,26 @@ RATING_GOOD = "good"
 RATING_ACCEPTABLE = "acceptable"
 RATING_FAIL = "fail"
 
-# Default conversion strategy
-DEFAULT_STRATEGY = "pymupdf4llm"
-
 # Max comment length
 MAX_COMMENT_LENGTH = 500
+
+
+class ConverterType(Enum):
+    """Available PDF to Markdown converter types."""
+    PYMUPDF4LLM_LAYOUT = "pymupdf4llm+layout"
+    PYMUPDF4LLM = "pymupdf4llm"
+    PYMUPDF = "pymupdf"
+    MARKER = "marker"
+
+
+# Human-readable names for converters
+CONVERTER_DISPLAY_NAMES = {
+    ConverterType.PYMUPDF4LLM_LAYOUT: "pymupdf4llm + layout (recommended)",
+    ConverterType.PYMUPDF4LLM: "pymupdf4llm (no layout)",
+    ConverterType.PYMUPDF: "pymupdf (basic)",
+    ConverterType.MARKER: "marker (AI-powered)",
+}
+
 
 # Styles
 BUTTON_STYLE = """
@@ -86,10 +103,103 @@ SAVE_BUTTON_STYLE = """
     }
 """
 
+COMBOBOX_STYLE = """
+    QComboBox {
+        padding: 5px 10px;
+        font-size: 13px;
+        min-width: 200px;
+    }
+"""
+
 TITLE_STYLE = "font-size: 16px; font-weight: bold; padding: 5px;"
 INFO_LABEL_STYLE = "font-weight: bold; padding: 5px;"
 CHECKBOX_STYLE = "padding: 5px; font-size: 13px;"
 RATING_GROUP_STYLE = "font-size: 13px; padding: 5px;"
+
+
+def convert_with_pymupdf4llm_layout(file_path: str, include_headers: bool, include_footers: bool) -> str:
+    """
+    Convert PDF to Markdown using pymupdf4llm with layout detection.
+
+    Args:
+        file_path: Path to PDF file.
+        include_headers: Whether to include headers.
+        include_footers: Whether to include footers.
+
+    Returns:
+        Markdown text.
+    """
+    return pymupdf4llm.to_markdown(
+        file_path,
+        header=include_headers,
+        footer=include_footers,
+    )
+
+
+def convert_with_pymupdf4llm(file_path: str) -> str:
+    """
+    Convert PDF to Markdown using pymupdf4llm without layout features.
+
+    Args:
+        file_path: Path to PDF file.
+
+    Returns:
+        Markdown text.
+    """
+    # Use pymupdf4llm but without the layout-specific options
+    return pymupdf4llm.to_markdown(file_path)
+
+
+def convert_with_pymupdf(file_path: str) -> str:
+    """
+    Convert PDF to Markdown using basic pymupdf text extraction.
+
+    Args:
+        file_path: Path to PDF file.
+
+    Returns:
+        Markdown text (basic text extraction).
+    """
+    doc = pymupdf.open(file_path)
+    text_parts = []
+
+    for page_num, page in enumerate(doc):
+        text = page.get_text("text")
+        if text.strip():
+            text_parts.append(f"## Page {page_num + 1}\n\n{text}")
+
+    doc.close()
+    return "\n\n---\n\n".join(text_parts)
+
+
+def convert_with_marker(file_path: str) -> str:
+    """
+    Convert PDF to Markdown using marker (AI-powered).
+
+    Args:
+        file_path: Path to PDF file.
+
+    Returns:
+        Markdown text.
+
+    Raises:
+        ImportError: If marker is not installed.
+    """
+    try:
+        from marker.converters.pdf import PdfConverter
+        from marker.models import create_model_dict
+        from marker.output import text_from_rendered
+    except ImportError as e:
+        raise ImportError(
+            "marker-pdf is not installed. Install with: uv add marker-pdf"
+        ) from e
+
+    converter = PdfConverter(
+        artifact_dict=create_model_dict(),
+    )
+    rendered = converter(file_path)
+    text, _, _ = text_from_rendered(rendered)
+    return text
 
 
 class PDFConversionLabWindow(QMainWindow):
@@ -98,7 +208,7 @@ class PDFConversionLabWindow(QMainWindow):
     def __init__(self) -> None:
         """Initialize the PDF conversion lab window."""
         super().__init__()
-        self.setWindowTitle("PDF Conversion Lab - pymupdf4llm")
+        self.setWindowTitle("PDF Conversion Lab")
         self.setGeometry(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         # Initialize components
@@ -108,6 +218,7 @@ class PDFConversionLabWindow(QMainWindow):
 
         # UI Components - initialized in _setup_ui, typed as concrete classes
         self.info_label: QLabel
+        self.converter_combo: QComboBox
         self.remove_headers_checkbox: QCheckBox
         self.remove_footers_checkbox: QCheckBox
         self.pdf_view: QPdfView
@@ -173,7 +284,7 @@ class PDFConversionLabWindow(QMainWindow):
 
     def _create_top_bar(self) -> QHBoxLayout:
         """
-        Create top bar with file picker button and options.
+        Create top bar with file picker button, converter selection, and options.
 
         Returns:
             QHBoxLayout containing the top bar widgets.
@@ -193,13 +304,30 @@ class PDFConversionLabWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Remove headers checkbox
+        # Converter selection dropdown
+        converter_label = QLabel("Converter:")
+        converter_label.setStyleSheet("padding: 5px;")
+        layout.addWidget(converter_label)
+
+        self.converter_combo = QComboBox()
+        self.converter_combo.setStyleSheet(COMBOBOX_STYLE)
+        for converter_type in ConverterType:
+            self.converter_combo.addItem(
+                CONVERTER_DISPLAY_NAMES[converter_type],
+                converter_type
+            )
+        self.converter_combo.currentIndexChanged.connect(self._on_converter_changed)
+        layout.addWidget(self.converter_combo)
+
+        layout.addSpacing(10)
+
+        # Remove headers checkbox (only for pymupdf4llm+layout)
         self.remove_headers_checkbox = QCheckBox("Remove Headers")
         self.remove_headers_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.remove_headers_checkbox.stateChanged.connect(self._on_option_changed)
         layout.addWidget(self.remove_headers_checkbox)
 
-        # Remove footers checkbox
+        # Remove footers checkbox (only for pymupdf4llm+layout)
         self.remove_footers_checkbox = QCheckBox("Remove Footers")
         self.remove_footers_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.remove_footers_checkbox.stateChanged.connect(self._on_option_changed)
@@ -319,6 +447,32 @@ class PDFConversionLabWindow(QMainWindow):
 
         return frame
 
+    def _get_current_converter(self) -> ConverterType:
+        """
+        Get the currently selected converter type.
+
+        Returns:
+            The selected ConverterType.
+        """
+        return self.converter_combo.currentData()
+
+    def _on_converter_changed(self) -> None:
+        """Handle converter selection change."""
+        converter = self._get_current_converter()
+
+        # Enable/disable header/footer checkboxes based on converter
+        layout_supported = converter == ConverterType.PYMUPDF4LLM_LAYOUT
+        self.remove_headers_checkbox.setEnabled(layout_supported)
+        self.remove_footers_checkbox.setEnabled(layout_supported)
+
+        if not layout_supported:
+            self.remove_headers_checkbox.setChecked(False)
+            self.remove_footers_checkbox.setChecked(False)
+
+        # Reconvert if a PDF is loaded
+        if self.current_pdf_path:
+            self._convert_to_markdown(self.current_pdf_path)
+
     def _on_rating_changed(self) -> None:
         """Handle rating selection change - enable save button if PDF is loaded."""
         self.save_button.setEnabled(self.current_pdf_path is not None)
@@ -330,10 +484,16 @@ class PDFConversionLabWindow(QMainWindow):
         Returns:
             Dictionary containing the current strategy options.
         """
-        return {
-            "remove_headers": self.remove_headers_checkbox.isChecked(),
-            "remove_footers": self.remove_footers_checkbox.isChecked()
+        converter = self._get_current_converter()
+        options = {
+            "converter": converter.value,
         }
+
+        if converter == ConverterType.PYMUPDF4LLM_LAYOUT:
+            options["remove_headers"] = self.remove_headers_checkbox.isChecked()
+            options["remove_footers"] = self.remove_footers_checkbox.isChecked()
+
+        return options
 
     def _get_selected_rating(self) -> Optional[str]:
         """
@@ -372,6 +532,7 @@ class PDFConversionLabWindow(QMainWindow):
         # Get comment and strategy options
         comment = self.comment_input.text().strip() or None
         strategy_options = self._get_current_strategy_options()
+        converter = self._get_current_converter()
 
         try:
             # Record the conversion using the database function
@@ -386,7 +547,7 @@ class PDFConversionLabWindow(QMainWindow):
                         (
                             self.current_pdf_path,
                             rating,
-                            DEFAULT_STRATEGY,
+                            converter.value,
                             json.dumps(strategy_options),
                             comment
                         )
@@ -396,13 +557,16 @@ class PDFConversionLabWindow(QMainWindow):
                 conn.commit()
 
             logger.info(
-                f"Saved rating '{rating}' for {self.current_pdf_path} (id: {record_id})"
+                f"Saved rating '{rating}' for {self.current_pdf_path} "
+                f"with {converter.value} (id: {record_id})"
             )
 
             QMessageBox.information(
                 self,
                 "Rating Saved",
-                f"Rating '{rating}' saved successfully for:\n{Path(self.current_pdf_path).name}"
+                f"Rating '{rating}' saved successfully for:\n"
+                f"{Path(self.current_pdf_path).name}\n"
+                f"Converter: {converter.value}"
             )
 
             # Clear the form for next rating
@@ -479,34 +643,43 @@ class PDFConversionLabWindow(QMainWindow):
 
     def _convert_to_markdown(self, file_path: str) -> None:
         """
-        Convert PDF to Markdown using pymupdf4llm with pymupdf-layout.
-
-        Uses the layout-enhanced conversion with optional header/footer removal.
-        The header/footer parameters are only available when pymupdf.layout
-        is imported before pymupdf4llm.
+        Convert PDF to Markdown using the selected converter.
 
         Args:
             file_path: Path to PDF file.
         """
-        try:
-            # Get checkbox states (inverted: checkbox = remove, so header=not checked)
-            include_headers = not self.remove_headers_checkbox.isChecked()
-            include_footers = not self.remove_footers_checkbox.isChecked()
+        converter = self._get_current_converter()
 
-            # Convert to markdown with layout-enhanced features
-            # header/footer params: True = include, False = exclude
-            md_text = pymupdf4llm.to_markdown(
-                file_path,
-                header=include_headers,
-                footer=include_footers,
-            )
+        try:
+            if converter == ConverterType.PYMUPDF4LLM_LAYOUT:
+                include_headers = not self.remove_headers_checkbox.isChecked()
+                include_footers = not self.remove_footers_checkbox.isChecked()
+                md_text = convert_with_pymupdf4llm_layout(
+                    file_path, include_headers, include_footers
+                )
+            elif converter == ConverterType.PYMUPDF4LLM:
+                md_text = convert_with_pymupdf4llm(file_path)
+            elif converter == ConverterType.PYMUPDF:
+                md_text = convert_with_pymupdf(file_path)
+            elif converter == ConverterType.MARKER:
+                md_text = convert_with_marker(file_path)
+            else:
+                raise ValueError(f"Unknown converter: {converter}")
 
             # Display rendered markdown
             self.markdown_text.setMarkdown(md_text)
 
+        except ImportError as e:
+            error_msg = str(e)
+            self.markdown_text.setPlainText(f"Converter not available:\n{error_msg}")
+            QMessageBox.warning(
+                self,
+                "Converter Not Available",
+                f"The selected converter is not installed:\n\n{error_msg}"
+            )
         except Exception as e:
             self.markdown_text.setPlainText(f"Error converting PDF:\n{str(e)}")
-            raise
+            logger.error(f"Conversion error with {converter.value}: {e}")
 
 
 def main() -> None:

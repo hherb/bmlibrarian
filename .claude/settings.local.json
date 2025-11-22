@@ -17,7 +17,8 @@
       "Bash(cat:*)",
       "Bash(python3:*)",
       "Read(//private/tmp/**)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(uv add:*)"
     ],
     "deny": [],
     "ask": []
