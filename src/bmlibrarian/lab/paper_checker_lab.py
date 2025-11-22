@@ -717,7 +717,7 @@ class PaperCheckerLab:
             progress: Progress fraction (0.0 to 1.0)
         """
         # Update progress bar (schedule on main thread)
-        def update_ui() -> None:
+        async def update_ui() -> None:
             self.controls['progress_bar'].value = progress
             self.controls['progress_text'].value = f"{step_name} ({progress*100:.0f}%)"
 
