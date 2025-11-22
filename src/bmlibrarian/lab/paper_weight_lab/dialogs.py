@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
-from bmlibrarian.agents.paper_weight_db import search_documents
+from bmlibrarian.agents.paper_weight_db import search_documents, semantic_search_documents
 
 from .constants import (
     WEIGHT_SLIDER_MIN,
@@ -203,6 +203,19 @@ class DocumentSearchDialog(QDialog):
         layout = QVBoxLayout()
         layout.setSpacing(self.scale['spacing_medium'])
 
+        # Search type selector
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Search type:"))
+
+        from PySide6.QtWidgets import QComboBox
+        self.search_type_combo = QComboBox()
+        self.search_type_combo.addItem("Title/PMID/DOI (keyword)", "keyword")
+        self.search_type_combo.addItem("Semantic (natural language)", "semantic")
+        self.search_type_combo.currentIndexChanged.connect(self._on_search_type_changed)
+        type_layout.addWidget(self.search_type_combo)
+        type_layout.addStretch()
+        layout.addLayout(type_layout)
+
         # Search input
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -240,21 +253,45 @@ class DocumentSearchDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _on_search_type_changed(self, index: int) -> None:
+        """Update placeholder text based on search type."""
+        search_type = self.search_type_combo.currentData()
+        if search_type == "semantic":
+            self.search_input.setPlaceholderText(
+                "Enter natural language query (e.g., 'effect of telmisartan on vascular stiffness')..."
+            )
+        else:
+            self.search_input.setPlaceholderText(
+                "Enter PMID, DOI, or title keywords..."
+            )
+
     def _do_search(self) -> None:
-        """Perform document search."""
+        """Perform document search using selected search type."""
         query = self.search_input.text().strip()
         if not query:
             return
 
         self.results_list.clear()
-        self.search_results = search_documents(query)
+
+        search_type = self.search_type_combo.currentData()
+        if search_type == "semantic":
+            self.search_results = semantic_search_documents(query)
+        else:
+            self.search_results = search_documents(query)
 
         for doc in self.search_results:
+            # Add similarity score for semantic search results
+            similarity = doc.get('similarity')
+            if similarity is not None:
+                year_text = f"{doc['year'] or ''} ({similarity:.2f})"
+            else:
+                year_text = str(doc['year'] or '')
+
             item = QTreeWidgetItem([
                 str(doc['id']),
                 doc['title'] or 'No title',
                 str(doc['pmid'] or ''),
-                str(doc['year'] or '')
+                year_text
             ])
             # Set full title as tooltip for truncated display
             item.setToolTip(1, doc['title'] or 'No title')

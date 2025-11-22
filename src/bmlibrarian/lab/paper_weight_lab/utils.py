@@ -5,7 +5,7 @@ Reusable pure functions for text formatting, display preparation, and data trans
 These functions have no side effects and are easily testable.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
 from .constants import SCORE_DECIMALS, AUTHOR_DISPLAY_MAX_LENGTH
@@ -103,18 +103,22 @@ def truncate_with_ellipsis(
     return text[:truncate_at] + ellipsis, True
 
 
-def truncate_authors(authors: Optional[str]) -> str:
+def truncate_authors(authors: Optional[Union[str, List[str]]]) -> str:
     """
     Truncate authors string for display.
 
     Args:
-        authors: Author string (may be long)
+        authors: Author string or list of authors (may be long)
 
     Returns:
         Truncated authors string with ellipsis if needed
     """
     if not authors:
         return ''
+
+    # Handle list of authors (from PostgreSQL array)
+    if isinstance(authors, list):
+        authors = ', '.join(str(a) for a in authors if a)
 
     truncated, _ = truncate_with_ellipsis(authors, AUTHOR_DISPLAY_MAX_LENGTH)
     return truncated

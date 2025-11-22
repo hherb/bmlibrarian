@@ -16,9 +16,11 @@ from pathlib import Path
 # Load environment variables from .env file
 # Check ~/.bmlibrarian/.env first (primary user configuration location),
 # then fall back to .env in current directory (for development convenience)
+# IMPORTANT: Use override=True to ensure user config takes precedence
+# over project-local .env or shell environment variables
 _user_env_path = Path.home() / ".bmlibrarian" / ".env"
 if _user_env_path.exists():
-    load_dotenv(_user_env_path)
+    load_dotenv(_user_env_path, override=True)
 else:
     load_dotenv()  # Fallback to current directory .env
 

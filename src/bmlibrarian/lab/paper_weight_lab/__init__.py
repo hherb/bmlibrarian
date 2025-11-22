@@ -37,16 +37,19 @@ def _import_qt_modules():
     global PaperWeightLab, main, AssessmentWorker
     global DimensionWeightDialog, DocumentSearchDialog, FullTextDialog
     global AuditTrailTreeWidget, AuditTrailSection
+    global RadarChartWidget
 
     from .main_window import PaperWeightLab, main
     from .worker import AssessmentWorker
     from .dialogs import DimensionWeightDialog, DocumentSearchDialog, FullTextDialog
     from .widgets import AuditTrailTreeWidget, AuditTrailSection
+    from .radar_chart import RadarChartWidget
 
     return (
         PaperWeightLab, main, AssessmentWorker,
         DimensionWeightDialog, DocumentSearchDialog, FullTextDialog,
-        AuditTrailTreeWidget, AuditTrailSection
+        AuditTrailTreeWidget, AuditTrailSection,
+        RadarChartWidget
     )
 
 
@@ -63,6 +66,7 @@ except ImportError:
     FullTextDialog = None
     AuditTrailTreeWidget = None
     AuditTrailSection = None
+    RadarChartWidget = None
 
 
 __all__ = [
@@ -78,6 +82,7 @@ __all__ = [
     # Widgets (requires Qt)
     'AuditTrailTreeWidget',
     'AuditTrailSection',
+    'RadarChartWidget',
     # Constants (no Qt needed) - from constants.py
     'WINDOW_MIN_WIDTH',
     'WINDOW_MIN_HEIGHT',

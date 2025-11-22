@@ -7,13 +7,12 @@ Functions for database persistence and caching of paper weight assessments:
 - Document retrieval: fetch documents from database
 - Replication status: query replication information
 
-Uses psycopg for PostgreSQL connectivity.
+Uses DatabaseManager for PostgreSQL connectivity (golden rule #5).
 """
 
 import json
 import logging
-import os
-from typing import Optional, Callable, Dict, List
+from typing import Optional, Dict, List
 
 from .paper_weight_models import (
     AssessmentDetail,
@@ -25,6 +24,7 @@ from .paper_weight_models import (
     DIMENSION_RISK_OF_BIAS,
     DIMENSION_REPLICATION_STATUS,
 )
+from ..database import get_db_manager
 
 
 logger = logging.getLogger(__name__)
@@ -38,28 +38,9 @@ REPLICATION_SCORE_MULTIPLE_HIGHER = 10.0     # 2+ replications of higher quality
 REPLICATION_SCORE_LOWER_QUALITY = 3.0        # Lower quality replications
 
 
-def get_default_db_connection():
-    """
-    Create database connection using environment variables.
-
-    Returns:
-        psycopg connection object
-    """
-    import psycopg
-
-    return psycopg.connect(
-        dbname=os.getenv('POSTGRES_DB', 'knowledgebase'),
-        user=os.getenv('POSTGRES_USER'),
-        password=os.getenv('POSTGRES_PASSWORD'),
-        host=os.getenv('POSTGRES_HOST', 'localhost'),
-        port=os.getenv('POSTGRES_PORT', '5432')
-    )
-
-
 def get_cached_assessment(
     document_id: int,
-    version: str,
-    conn_factory: Optional[Callable] = None
+    version: str
 ) -> Optional[PaperWeightResult]:
     """
     Retrieve cached assessment from database.
@@ -69,16 +50,13 @@ def get_cached_assessment(
     Args:
         document_id: Database ID of document
         version: Assessor version to match
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         PaperWeightResult if cached, None otherwise
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Fetch assessment
                 cur.execute("""
@@ -225,10 +203,7 @@ def _reconstruct_result_from_db(
     )
 
 
-def store_assessment(
-    result: PaperWeightResult,
-    conn_factory: Optional[Callable] = None
-) -> None:
+def store_assessment(result: PaperWeightResult) -> None:
     """
     Store assessment in database with full audit trail.
 
@@ -237,13 +212,10 @@ def store_assessment(
 
     Args:
         result: PaperWeightResult to store
-        conn_factory: Optional factory function to create database connection
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Insert/update assessment
                 cur.execute("""
@@ -329,16 +301,12 @@ def store_assessment(
         raise
 
 
-def get_document(
-    document_id: int,
-    conn_factory: Optional[Callable] = None
-) -> dict:
+def get_document(document_id: int) -> dict:
     """
     Fetch document from database by ID.
 
     Args:
         document_id: Database ID of document
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         Document dict with title, abstract, and full_text fields
@@ -346,11 +314,9 @@ def get_document(
     Raises:
         ValueError: If document not found
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
@@ -380,10 +346,7 @@ def get_document(
         raise
 
 
-def check_replication_status(
-    document_id: int,
-    conn_factory: Optional[Callable] = None
-) -> DimensionScore:
+def check_replication_status(document_id: int) -> DimensionScore:
     """
     Check replication status from database.
 
@@ -392,16 +355,13 @@ def check_replication_status(
 
     Args:
         document_id: Database ID of document
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         DimensionScore for replication status
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 # Check for replications
                 cur.execute("""
@@ -502,44 +462,95 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
 # Search and query limits
 SEARCH_RESULT_LIMIT = 50
 RECENT_ASSESSMENTS_LIMIT = 20
+DEFAULT_SEMANTIC_THRESHOLD = 0.6
+PUBMED_SOURCE_ID = 1
+
+
+def semantic_search_documents(
+    query: str,
+    limit: int = SEARCH_RESULT_LIMIT,
+    threshold: float = DEFAULT_SEMANTIC_THRESHOLD
+) -> List[Dict]:
+    """
+    Search documents using semantic similarity (vector search).
+
+    Uses the semantic_docsearch PostgreSQL function for fast embedding-based search.
+
+    Args:
+        query: Natural language query for semantic matching
+        limit: Maximum number of results to return
+        threshold: Similarity threshold (0.0 to 1.0, higher = more similar)
+
+    Returns:
+        List of document dictionaries with id, title, pmid, doi, year, similarity
+    """
+    try:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        d.id,
+                        d.title,
+                        CASE WHEN d.source_id = %s THEN d.external_id ELSE NULL END as pmid,
+                        d.doi,
+                        EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
+                        s.score as similarity
+                    FROM semantic_docsearch(%s, %s, %s) s
+                    JOIN public.document d ON s.document_id = d.id
+                    ORDER BY s.score DESC
+                """, (PUBMED_SOURCE_ID, query, threshold, limit))
+
+                rows = cur.fetchall()
+                return [
+                    {
+                        'id': row[0],
+                        'title': row[1],
+                        'pmid': row[2],
+                        'doi': row[3],
+                        'year': row[4],
+                        'similarity': float(row[5]) if row[5] else None
+                    }
+                    for row in rows
+                ]
+
+    except Exception as e:
+        logger.error(f"Error in semantic search: {e}")
+        return []
 
 
 def search_documents(
     query: str,
-    limit: int = SEARCH_RESULT_LIMIT,
-    conn_factory: Optional[Callable] = None
+    limit: int = SEARCH_RESULT_LIMIT
 ) -> List[Dict]:
     """
-    Search documents by PMID, DOI, or title.
+    Search documents by PMID (external_id), DOI, or title.
 
     Args:
         query: Search query (PMID, DOI, or title keywords)
         limit: Maximum number of results to return
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         List of document dictionaries with id, title, pmid, doi, year
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Try PMID first (numeric)
+                # Try PMID first (numeric) - stored in external_id column
                 if query.isdigit():
                     cur.execute("""
-                        SELECT id, title, pmid, doi,
-                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        SELECT id, title, external_id as pmid, doi,
+                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
                         FROM public.document
-                        WHERE pmid = %s
+                        WHERE external_id = %s
                         LIMIT %s
-                    """, (int(query), limit))
+                    """, (query, limit))
                 # Try DOI pattern
                 elif query.startswith('10.') or '/' in query:
                     cur.execute("""
-                        SELECT id, title, pmid, doi,
-                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        SELECT id, title, external_id as pmid, doi,
+                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
                         FROM public.document
                         WHERE doi ILIKE %s
                         LIMIT %s
@@ -547,11 +558,11 @@ def search_documents(
                 # Title search
                 else:
                     cur.execute("""
-                        SELECT id, title, pmid, doi,
-                               EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        SELECT id, title, external_id as pmid, doi,
+                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
                         FROM public.document
                         WHERE title ILIKE %s
-                        ORDER BY date_published DESC NULLS LAST
+                        ORDER BY publication_date DESC NULLS LAST
                         LIMIT %s
                     """, (f'%{query}%', limit))
 
@@ -572,31 +583,25 @@ def search_documents(
         return []
 
 
-def get_recent_assessments(
-    limit: int = RECENT_ASSESSMENTS_LIMIT,
-    conn_factory: Optional[Callable] = None
-) -> List[Dict]:
+def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
     """
     Get recently assessed documents.
 
     Args:
         limit: Maximum number of results to return
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         List of dictionaries with assessment info and document metadata
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
                         a.document_id,
                         d.title,
-                        d.pmid,
+                        d.external_id as pmid,
                         d.doi,
                         a.final_weight,
                         a.assessed_at,
@@ -626,30 +631,24 @@ def get_recent_assessments(
         return []
 
 
-def get_document_metadata(
-    document_id: int,
-    conn_factory: Optional[Callable] = None
-) -> Optional[Dict]:
+def get_document_metadata(document_id: int) -> Optional[Dict]:
     """
     Get document metadata by ID.
 
     Args:
         document_id: Database ID of document
-        conn_factory: Optional factory function to create database connection
 
     Returns:
         Document metadata dictionary or None if not found
     """
-    if conn_factory is None:
-        conn_factory = get_default_db_connection
-
     try:
-        with conn_factory() as conn:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
-                        id, title, abstract, pmid, doi, authors,
-                        EXTRACT(YEAR FROM date_published)::INTEGER as year
+                        id, title, abstract, external_id as pmid, doi, authors,
+                        EXTRACT(YEAR FROM publication_date)::INTEGER as year
                     FROM public.document
                     WHERE id = %s
                 """, (document_id,))
@@ -673,14 +672,16 @@ def get_document_metadata(
 
 
 __all__ = [
-    'get_default_db_connection',
     'get_cached_assessment',
     'store_assessment',
     'get_document',
     'check_replication_status',
     'search_documents',
+    'semantic_search_documents',
     'get_recent_assessments',
     'get_document_metadata',
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',
+    'DEFAULT_SEMANTIC_THRESHOLD',
+    'PUBMED_SOURCE_ID',
 ]

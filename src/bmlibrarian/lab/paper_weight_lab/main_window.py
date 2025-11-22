@@ -49,6 +49,7 @@ from .utils import (
     format_document_metadata,
     format_recent_assessment_display,
 )
+from .radar_chart import RadarChartWidget
 from .worker import AssessmentWorker
 from .dialogs import DimensionWeightDialog, DocumentSearchDialog
 from .widgets import AuditTrailSection
@@ -339,20 +340,11 @@ class PaperWeightLab(QMainWindow):
         summary_layout.addStretch()
         layout.addLayout(summary_layout)
 
-        # Right: Visual placeholder
-        visual_frame = QFrame()
-        visual_frame.setMinimumWidth(self.scale['control_width_large'])
-        visual_frame.setStyleSheet(self.styles.card_stylesheet(
-            border_color='#DDD'
-        ))
-        visual_layout = QVBoxLayout(visual_frame)
-        visual_label = QLabel("(Visualization placeholder)")
-        visual_label.setAlignment(Qt.AlignCenter)
-        visual_label.setStyleSheet(self.styles.label_stylesheet(
-            color='#999'
-        ))
-        visual_layout.addWidget(visual_label)
-        layout.addWidget(visual_frame)
+        # Right: Radar chart visualization
+        self.radar_chart = RadarChartWidget()
+        self.radar_chart.setMinimumWidth(self.scale['control_width_large'])
+        self.radar_chart.setMinimumHeight(self.scale['control_width_large'])
+        layout.addWidget(self.radar_chart)
 
         group.setLayout(layout)
         return group
@@ -598,6 +590,12 @@ class PaperWeightLab(QMainWindow):
                 f"{display_name}: {format_score_with_max(dim_score.score)}"
             )
 
+        # Update radar chart with dimension scores
+        self.radar_chart.set_scores({
+            dim: getattr(result, dim).score
+            for dim in ALL_DIMENSIONS
+        })
+
         # Populate audit trail (with full tooltips and click-to-view)
         self.audit_section.populate_from_result(result)
 
@@ -712,9 +710,10 @@ class PaperWeightLab(QMainWindow):
         # Reset progress
         self._reset_progress_labels()
 
-        # Hide results
+        # Hide results and clear radar chart
         self.results_section.hide()
         self.audit_section.clear()
+        self.radar_chart.clear_scores()
 
         # Reset buttons
         self.assess_button.setEnabled(False)
