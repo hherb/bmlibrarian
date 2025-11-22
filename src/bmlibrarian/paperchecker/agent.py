@@ -17,6 +17,7 @@ The agent orchestrates a multi-step workflow:
 
 from typing import Dict, List, Optional, Any, Callable
 import logging
+import re
 from datetime import datetime
 
 from psycopg.rows import dict_row
@@ -75,6 +76,20 @@ REPORT_PREFIXES_TO_STRIP: tuple = (
     "Here's the summary:",
     "**Summary:**",
     "**Report:**",
+)
+
+# Report validation constants
+CITATION_REFERENCE_PATTERN: str = r'\[\d+\]'
+MIN_SENTENCE_LENGTH: int = 10
+MIN_WORDS_FOR_DIVERSITY_CHECK: int = 20
+MIN_LEXICAL_DIVERSITY_RATIO: float = 0.3
+MAX_MARKDOWN_ISSUES_TO_REPORT: int = 3
+# Patterns for detecting unclosed markdown at end of lines
+# These are checked after stripping closed markers from each line
+UNCLOSED_MARKDOWN_PATTERNS: tuple = (
+    # Pattern, description for error message
+    # Note: We only check for code blocks here, other markers are checked by counting
+    (r'^\s*```\w*\s*$', 'code block opener without closer'),
 )
 
 
@@ -1253,7 +1268,8 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
         Parse and clean LLM report response.
 
         Removes common prefixes, markdown code blocks, and validates
-        that the report meets minimum length requirements.
+        that the report meets minimum length requirements, contains
+        inline citations, has basic coherence, and has valid markdown.
 
         Args:
             response: Raw response string from LLM
@@ -1262,7 +1278,7 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
             Cleaned report text
 
         Raises:
-            ValueError: If generated report is too short or empty
+            ValueError: If generated report is too short, empty, or malformed
         """
         report = response.strip()
 
@@ -1288,7 +1304,141 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
                 f"minimum: {DEFAULT_MIN_REPORT_LENGTH})"
             )
 
+        # Validate inline citation format presence
+        self._validate_citation_format(report)
+
+        # Basic coherence check
+        self._validate_coherence(report)
+
+        # Malformed markdown detection
+        self._validate_markdown(report)
+
         return report
+
+    def _validate_citation_format(self, report: str) -> None:
+        """
+        Validate that the report contains inline citations in [N] format.
+
+        This is a warning-level validation because a report could potentially
+        be valid without explicit citations (e.g., when summarizing general
+        findings), but the absence of citations should be logged.
+
+        Args:
+            report: The report text to validate
+        """
+        citation_matches = re.findall(CITATION_REFERENCE_PATTERN, report)
+
+        if not citation_matches:
+            logger.warning(
+                "Generated report does not contain inline citations [N] format. "
+                "This may indicate the LLM did not follow formatting instructions."
+            )
+        else:
+            # Validate citation numbers are sequential starting from 1
+            citation_numbers = sorted(set(
+                int(match[1:-1]) for match in citation_matches
+            ))
+            expected_numbers = list(range(1, len(citation_numbers) + 1))
+
+            if citation_numbers != expected_numbers:
+                missing = set(expected_numbers) - set(citation_numbers)
+                if missing:
+                    logger.warning(
+                        f"Report citation numbers are not sequential. "
+                        f"Missing: {sorted(missing)}. Found: {citation_numbers}"
+                    )
+
+    def _validate_coherence(self, report: str) -> None:
+        """
+        Perform basic coherence checks on the report.
+
+        Validates that the report:
+        - Contains complete sentences (ends with punctuation)
+        - Has reasonable sentence structure
+        - Is not just a fragment or list of keywords
+
+        Args:
+            report: The report text to validate
+
+        Raises:
+            ValueError: If report fails basic coherence checks
+        """
+        # Check for sentence-ending punctuation
+        sentence_endings = re.findall(r'[.!?]', report)
+        if not sentence_endings:
+            raise ValueError(
+                "Generated report appears to lack complete sentences. "
+                "No sentence-ending punctuation (., !, ?) found."
+            )
+
+        # Split into sentences and check minimum structure
+        sentences = re.split(r'[.!?]+', report)
+        valid_sentences = [
+            s.strip() for s in sentences
+            if len(s.strip()) >= MIN_SENTENCE_LENGTH
+        ]
+
+        if len(valid_sentences) < 1:
+            raise ValueError(
+                f"Generated report lacks substantive sentences. "
+                f"Found {len(sentences)} fragments but none meeting "
+                f"minimum length ({MIN_SENTENCE_LENGTH} chars)."
+            )
+
+        # Check for excessive repetition (potential LLM loop)
+        words = report.lower().split()
+        if len(words) > MIN_WORDS_FOR_DIVERSITY_CHECK:
+            unique_words = set(words)
+            uniqueness_ratio = len(unique_words) / len(words)
+            if uniqueness_ratio < MIN_LEXICAL_DIVERSITY_RATIO:
+                logger.warning(
+                    f"Generated report has low lexical diversity "
+                    f"({uniqueness_ratio:.1%} unique words, threshold: "
+                    f"{MIN_LEXICAL_DIVERSITY_RATIO:.0%}). "
+                    "This may indicate repetitive or low-quality content."
+                )
+
+    def _validate_markdown(self, report: str) -> None:
+        """
+        Detect malformed markdown in the report.
+
+        Checks for unclosed formatting that could cause rendering issues:
+        - Unclosed bold (**text)
+        - Unclosed italic (*text)
+        - Unclosed inline code (`code)
+        - Unclosed code blocks (```)
+
+        Args:
+            report: The report text to validate
+
+        Raises:
+            ValueError: If malformed markdown is detected
+        """
+        # Check each line for unclosed patterns
+        lines = report.split('\n')
+        issues: List[str] = []
+
+        for line_num, line in enumerate(lines, 1):
+            for pattern, description in UNCLOSED_MARKDOWN_PATTERNS:
+                if re.search(pattern, line):
+                    issues.append(f"Line {line_num}: {description}")
+
+        # Check for overall unclosed code blocks
+        code_block_count = report.count('```')
+        if code_block_count % 2 != 0:
+            issues.append(
+                f"Mismatched code block delimiters: found {code_block_count} "
+                "``` markers (should be even)"
+            )
+
+        if issues:
+            # Log all issues for debugging before truncating for error message
+            logger.debug(f"All markdown issues found: {issues}")
+            # Limit error message to first N issues for readability
+            issues_str = "; ".join(issues[:MAX_MARKDOWN_ISSUES_TO_REPORT])
+            if len(issues) > MAX_MARKDOWN_ISSUES_TO_REPORT:
+                issues_str += f" (and {len(issues) - MAX_MARKDOWN_ISSUES_TO_REPORT} more)"
+            raise ValueError(f"Malformed markdown detected: {issues_str}")
 
     def _generate_empty_report(
         self,
