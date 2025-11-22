@@ -24,11 +24,11 @@ import logging
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Callable
-from datetime import datetime
+from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
-import asyncio
 import threading
+
+from psycopg.rows import dict_row
 
 # Add parent directory to path for imports when running directly
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -39,7 +39,6 @@ from bmlibrarian.paperchecker.data_models import (
     ScoredDocument, CounterReport, Verdict
 )
 from bmlibrarian.config import get_config, get_model
-from bmlibrarian.database import fetch_documents_by_ids
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +94,9 @@ PROGRESS_UPDATE_INTERVAL_MS = 100
 BORDER_RADIUS_SMALL = 5
 BORDER_RADIUS_MEDIUM = 10
 BORDER_WIDTH = 1
+
+# Input validation
+MIN_ABSTRACT_LENGTH = 50  # Minimum characters for a valid abstract
 
 # Workflow step names for progress display
 WORKFLOW_STEPS = [
@@ -575,13 +577,22 @@ class PaperCheckerLab:
             self._show_error("Please provide abstract text or PMID")
             return
 
+        # Validate abstract length
+        stripped_abstract = abstract_text.strip()
+        if len(stripped_abstract) < MIN_ABSTRACT_LENGTH:
+            self._show_error(
+                f"Abstract too short ({len(stripped_abstract)} characters). "
+                f"Minimum length: {MIN_ABSTRACT_LENGTH} characters."
+            )
+            return
+
         # Validate agent
         if self.agent is None:
             self._show_error("Agent not initialized. Please restart the application.")
             return
 
         # Start check in background thread
-        self._run_check(abstract_text.strip(), metadata)
+        self._run_check(stripped_abstract, metadata)
 
     def _on_clear_clicked(self, e: Optional[ft.ControlEvent]) -> None:
         """
@@ -1294,12 +1305,17 @@ class PaperCheckerLab:
         """
         try:
             pmid_int = int(pmid)
-            # Search database for PMID
+            # Validate PMID is positive
+            if pmid_int <= 0:
+                logger.error(f"Invalid PMID: must be positive integer, got {pmid_int}")
+                return None
+
+            # Search database for PMID using database manager
             from bmlibrarian.database import get_db_manager
             db_manager = get_db_manager()
 
             with db_manager.get_connection() as conn:
-                with conn.cursor(row_factory=__import__('psycopg').rows.dict_row) as cur:
+                with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute("""
                         SELECT id, title, abstract, authors, pmid, doi, publication_date
                         FROM document
