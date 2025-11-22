@@ -1521,20 +1521,42 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
         """
         Step 7: Analyze verdict based on counter-evidence.
 
-        Determines whether counter-evidence supports, contradicts,
-        or is undecided about the original statement.
+        Uses VerdictAnalyzer to determine whether counter-evidence supports,
+        contradicts, or is undecided about the original statement. The analyzer
+        evaluates the counter-report's evidence and generates a verdict with
+        confidence level and rationale.
 
         Args:
             statement: Original statement being checked
-            counter_report: Counter-evidence report
+            counter_report: Counter-evidence report with summary and citations
 
         Returns:
-            Verdict with classification and rationale
+            Verdict object with:
+                - verdict: Classification ("supports", "contradicts", "undecided")
+                - confidence: Evidence strength ("high", "medium", "low")
+                - rationale: 2-3 sentence explanation
+                - counter_report: Reference to analyzed report
+                - analysis_metadata: Model and timing information
 
-        Note:
-            Full implementation in Step 11 (11_VERDICT_ANALYSIS.md)
+        Raises:
+            RuntimeError: If verdict analysis fails after retries
         """
-        raise NotImplementedError("Implemented in Step 11")
+        try:
+            verdict = self.verdict_analyzer.analyze(statement, counter_report)
+
+            logger.info(
+                f"Verdict: {verdict.verdict} ({verdict.confidence} confidence)\n"
+                f"Rationale: {verdict.rationale}"
+            )
+
+            return verdict
+
+        except RuntimeError as e:
+            logger.error(f"Verdict analysis failed: {e}")
+            raise
+        except ValueError as e:
+            logger.error(f"Verdict validation failed: {e}")
+            raise RuntimeError(f"Verdict analysis validation failed: {e}") from e
 
     def _generate_overall_assessment(
         self, statements: List[Statement], verdicts: List[Verdict]
@@ -1542,20 +1564,34 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
         """
         Step 8: Generate overall assessment across all statements.
 
-        Aggregates individual verdicts into an overall assessment
-        of the abstract's factual accuracy.
+        Uses VerdictAnalyzer to aggregate individual verdicts into a comprehensive
+        assessment of the abstract's factual accuracy. The assessment considers:
+        - Number of statements in each verdict category
+        - Confidence levels of individual verdicts
+        - Distribution of supports/contradicts/undecided
 
         Args:
-            statements: All extracted statements
-            verdicts: Verdicts for each statement
+            statements: All extracted Statement objects from the abstract
+            verdicts: List of Verdict objects (one per statement)
 
         Returns:
-            Overall assessment text
+            Overall assessment string summarizing findings across all statements
 
-        Note:
-            Full implementation in Step 11 (11_VERDICT_ANALYSIS.md)
+        Raises:
+            ValueError: If statements and verdicts have different lengths
         """
-        raise NotImplementedError("Implemented in Step 11")
+        try:
+            overall_assessment = self.verdict_analyzer.generate_overall_assessment(
+                statements, verdicts
+            )
+
+            logger.info(f"Overall assessment generated: {overall_assessment[:100]}...")
+
+            return overall_assessment
+
+        except ValueError as e:
+            logger.error(f"Overall assessment generation failed: {e}")
+            raise
 
     # ==================== UTILITIES ====================
 
