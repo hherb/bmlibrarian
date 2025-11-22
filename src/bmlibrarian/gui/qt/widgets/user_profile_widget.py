@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 
 from ..resources.styles import get_font_scale
+from ..resources.styles.stylesheet_generator import StylesheetGenerator
 from ....config import get_config
 
 
@@ -88,26 +89,27 @@ class UserProfileWidget(QWidget):
         user_layout = QFormLayout(user_group)
         user_layout.setSpacing(s['spacing_small'])
 
+        gen = StylesheetGenerator(s)
         if self._user_id:
             # Authenticated user
             username_label = QLabel(self._username or "Unknown")
-            username_label.setStyleSheet("font-weight: bold;")
+            username_label.setStyleSheet(gen.label_stylesheet(bold=True))
             user_layout.addRow("Username:", username_label)
 
             user_id_label = QLabel(str(self._user_id))
             user_layout.addRow("User ID:", user_id_label)
 
             status_label = QLabel("Authenticated")
-            status_label.setStyleSheet("color: #27ae60;")  # Green
+            status_label.setStyleSheet(gen.label_stylesheet(color="#27ae60"))  # Green
             user_layout.addRow("Status:", status_label)
         else:
             # Anonymous user
             anon_label = QLabel("Not logged in")
-            anon_label.setStyleSheet("color: #7f8c8d;")  # Gray
+            anon_label.setStyleSheet(gen.label_stylesheet(color="#7f8c8d"))  # Gray
             user_layout.addRow("Username:", anon_label)
 
             status_label = QLabel("Anonymous")
-            status_label.setStyleSheet("color: #f39c12;")  # Orange
+            status_label.setStyleSheet(gen.label_stylesheet(color="#f39c12"))  # Orange
             user_layout.addRow("Status:", status_label)
 
         parent_layout.addWidget(user_group)
@@ -120,6 +122,7 @@ class UserProfileWidget(QWidget):
         """
         s = self.scale
         bmlib_config = get_config()
+        gen = StylesheetGenerator(s)
 
         settings_group = QGroupBox("Settings Storage")
         settings_layout = QVBoxLayout(settings_group)
@@ -130,14 +133,12 @@ class UserProfileWidget(QWidget):
         if bmlib_config.has_user_context():
             storage_text = "Database-backed settings"
             storage_color = "#27ae60"  # Green
-            storage_icon = "database"
         else:
             storage_text = "Local JSON file settings"
             storage_color = "#f39c12"  # Orange
-            storage_icon = "file"
 
         status_label = QLabel(f"{storage_text}")
-        status_label.setStyleSheet(f"color: {storage_color}; font-weight: bold;")
+        status_label.setStyleSheet(gen.label_stylesheet(color=storage_color, bold=True))
         status_layout.addWidget(status_label)
         status_layout.addStretch()
 
@@ -165,7 +166,9 @@ class UserProfileWidget(QWidget):
                 "Configuration tab."
             )
             info_label.setWordWrap(True)
-            info_label.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+            info_label.setStyleSheet(gen.label_stylesheet(
+                color="#7f8c8d", font_size_key='font_small'
+            ))
             settings_layout.addWidget(info_label)
         else:
             # Info for anonymous users
@@ -174,7 +177,9 @@ class UserProfileWidget(QWidget):
                 "that sync across devices."
             )
             info_label.setWordWrap(True)
-            info_label.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+            info_label.setStyleSheet(gen.label_stylesheet(
+                color="#7f8c8d", font_size_key='font_small'
+            ))
             settings_layout.addWidget(info_label)
 
         parent_layout.addWidget(settings_group)

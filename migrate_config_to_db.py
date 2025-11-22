@@ -33,11 +33,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Valid settings categories that can be migrated
-VALID_CATEGORIES = frozenset([
-    'models', 'ollama', 'agents', 'database', 'search',
-    'query_generation', 'gui', 'openathens', 'pdf', 'general'
-])
+# Import valid categories from the centralized config module
+from bmlibrarian.config import VALID_SETTINGS_CATEGORIES
+
+# Alias for backwards compatibility
+VALID_CATEGORIES = VALID_SETTINGS_CATEGORIES
 
 
 def get_db_connection():

@@ -28,6 +28,7 @@ from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
 from .....config import get_config, DEFAULT_CONFIG
 from ...resources.styles import get_font_scale
+from ...resources.styles.stylesheet_generator import StylesheetGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,8 @@ class ConfigurationTabWidget(QWidget):
             self._db_sync_enabled = False
 
         self.sync_status_label = QLabel(status_text)
-        self.sync_status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
+        gen = StylesheetGenerator(s)
+        self.sync_status_label.setStyleSheet(gen.label_stylesheet(color=status_color, bold=True))
         status_layout.addWidget(self.sync_status_label)
 
         status_layout.addStretch()
@@ -212,20 +214,11 @@ class ConfigurationTabWidget(QWidget):
         # Test Connection button
         test_btn = QPushButton("Test Connection")
         test_btn.clicked.connect(self._test_connection)
-        test_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: #3498db;
-                color: white;
-                padding: {s['padding_small']}px {s['padding_medium']}px;
-                border: none;
-                border-radius: {s['radius_small']}px;
-            }}
-            QPushButton:hover {{
-                background-color: #2980b9;
-            }}
-        """
-        )
+        gen = StylesheetGenerator(s)
+        test_btn.setStyleSheet(gen.button_stylesheet(
+            bg_color="#3498db",
+            hover_color="#2980b9"
+        ))
         button_layout.addWidget(test_btn)
 
         button_layout.addStretch()

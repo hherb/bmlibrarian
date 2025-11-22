@@ -289,11 +289,8 @@ class BMLibrarianApplication:
             with open(json_path, 'r') as f:
                 json_config = json.load(f)
 
-            # Valid categories to migrate
-            valid_categories = frozenset([
-                'models', 'ollama', 'agents', 'database', 'search',
-                'query_generation', 'gui', 'openathens', 'pdf', 'general'
-            ])
+            # Import valid categories from centralized config
+            from ....config import VALID_SETTINGS_CATEGORIES
 
             # Get config and sync
             from ....config import get_config
@@ -302,7 +299,7 @@ class BMLibrarianApplication:
             # Update config with JSON values
             migrated_count = 0
             for category, settings in json_config.items():
-                if category in valid_categories and isinstance(settings, dict):
+                if category in VALID_SETTINGS_CATEGORIES and isinstance(settings, dict):
                     for key, value in settings.items():
                         config.set(f"{category}.{key}", value)
                     migrated_count += 1
