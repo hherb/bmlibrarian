@@ -83,6 +83,12 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_stats.py` - Generate comprehensive statistical analysis report (console output)
   - `uv run python fact_checker_stats.py --export-csv stats_output/` - Export statistics to CSV files
   - `uv run python fact_checker_stats.py --export-csv stats_output/ --plot` - Create visualization plots
+  - `uv run python paper_checker_cli.py abstracts.json` - PaperChecker: fact-check medical abstracts against literature
+  - `uv run python paper_checker_cli.py abstracts.json -o results.json` - Export PaperChecker results to JSON
+  - `uv run python paper_checker_cli.py abstracts.json --export-markdown reports/` - Export markdown reports per abstract
+  - `uv run python paper_checker_cli.py --pmid 12345678 23456789` - Check abstracts by PMID from database
+  - `uv run python paper_checker_cli.py abstracts.json --quick` - Quick test mode (max 5 abstracts)
+  - `uv run python paper_checker_cli.py abstracts.json --continue-on-error` - Continue processing on failures
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
@@ -441,6 +447,7 @@ bmlibrarian/
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
+├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
 ├── export_review_package.py   # Export SQLite review packages for distribution
 ├── export_human_evaluations.py # Export human annotations to JSON
 ├── import_human_evaluations.py # Re-import human evaluations to PostgreSQL
