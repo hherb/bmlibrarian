@@ -24,13 +24,20 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QCloseEvent
 
 import pymupdf
 import ollama
 
 # Configure logging
 logger = logging.getLogger('llmpdflab')
+
+# Ollama configuration
+OLLAMA_HOST = "http://localhost:11434"
+
+# LLM generation parameters
+LLM_TEMPERATURE = 0.1  # Low temperature for consistent formatting
+LLM_TOP_P = 0.9
 
 # Window dimensions
 WINDOW_WIDTH = 1400
@@ -205,7 +212,7 @@ class LLMWorker(QThread):
         text: str,
         prompt: str,
         model: str,
-        host: str = "http://localhost:11434"
+        host: str = OLLAMA_HOST
     ) -> None:
         """
         Initialize the LLM worker.
@@ -226,17 +233,20 @@ class LLMWorker(QThread):
         """Execute LLM processing in background thread."""
         try:
             self.progress.emit("Connecting to Ollama...")
+            logger.debug(f"Connecting to Ollama at {self.host}")
 
             client = ollama.Client(host=self.host)
 
             # Calculate context length
             context_length = calculate_context_length(self.text, self.prompt)
             self.progress.emit(f"Using context length: {context_length:,} tokens")
+            logger.info(f"Calculated context length: {context_length:,} tokens")
 
             # Build the full prompt
             full_prompt = self.prompt + self.text
 
             self.progress.emit(f"Processing with {self.model}...")
+            logger.info(f"Starting generation with model: {self.model}")
 
             # Make the request with dynamic context length
             response = client.generate(
@@ -244,18 +254,21 @@ class LLMWorker(QThread):
                 prompt=full_prompt,
                 options={
                     'num_ctx': context_length,
-                    'temperature': 0.1,  # Low temperature for consistent formatting
-                    'top_p': 0.9
+                    'temperature': LLM_TEMPERATURE,
+                    'top_p': LLM_TOP_P
                 }
             )
 
             result = response.get('response', '')
             if result:
+                logger.info(f"Generation complete, received {len(result)} characters")
                 self.finished.emit(result.strip())
             else:
+                logger.warning("Empty response from LLM")
                 self.error.emit("Empty response from LLM")
 
         except Exception as e:
+            logger.error(f"LLM generation failed: {e}")
             self.error.emit(str(e))
 
 
@@ -522,7 +535,7 @@ class LLMPDFLabWindow(QMainWindow):
     def _refresh_models(self) -> None:
         """Refresh the list of available Ollama models."""
         try:
-            client = ollama.Client(host="http://localhost:11434")
+            client = ollama.Client(host=OLLAMA_HOST)
             models = client.list()
             available_models = [model.model for model in models.models]
 
@@ -558,6 +571,15 @@ class LLMPDFLabWindow(QMainWindow):
         if file_path:
             self._load_pdf(file_path)
 
+    def _is_processing(self) -> bool:
+        """
+        Check if an LLM conversion is currently in progress.
+
+        Returns:
+            True if a worker thread is running, False otherwise.
+        """
+        return self.llm_worker is not None and self.llm_worker.isRunning()
+
     def _load_pdf(self, file_path: str) -> None:
         """
         Load and process PDF file.
@@ -565,9 +587,32 @@ class LLMPDFLabWindow(QMainWindow):
         Args:
             file_path: Path to PDF file.
         """
+        # Validate file path
+        pdf_path = Path(file_path)
+        if not pdf_path.exists():
+            logger.error(f"PDF file not found: {file_path}")
+            QMessageBox.critical(
+                self,
+                "File Not Found",
+                f"The selected file does not exist:\n{file_path}"
+            )
+            return
+
+        if not pdf_path.is_file():
+            logger.error(f"Path is not a file: {file_path}")
+            QMessageBox.critical(
+                self,
+                "Invalid File",
+                f"The selected path is not a file:\n{file_path}"
+            )
+            return
+
+        if pdf_path.suffix.lower() != '.pdf':
+            logger.warning(f"File may not be a PDF: {file_path}")
+
         try:
             # Update info label
-            file_name = Path(file_path).name
+            file_name = pdf_path.name
             self.info_label.setText(f"Loading: {file_name}")
             self.status_label.setText("Extracting text with PyMuPDF...")
             QApplication.processEvents()
@@ -608,9 +653,18 @@ class LLMPDFLabWindow(QMainWindow):
             self.info_label.setText("Error loading PDF")
             self.status_label.setText("Error")
 
+    def _stop_current_worker(self) -> None:
+        """Stop the currently running LLM worker thread if any."""
+        if self.llm_worker and self.llm_worker.isRunning():
+            logger.info("Stopping current LLM worker")
+            self.llm_worker.terminate()
+            self.llm_worker.wait()
+            self.llm_worker = None
+
     def _start_llm_conversion(self) -> None:
         """Start the LLM conversion process."""
         if not self.raw_extracted_text:
+            logger.warning("No text to convert")
             return
 
         model = self.model_combo.currentText()
@@ -619,10 +673,17 @@ class LLMPDFLabWindow(QMainWindow):
             return
 
         prompt = self.prompt_editor.toPlainText()
+        if not prompt.strip():
+            QMessageBox.warning(self, "Empty Prompt", "Please enter a formatting prompt.")
+            return
+
+        # Stop any existing worker before starting a new one
+        self._stop_current_worker()
 
         # Show progress
         self.progress_bar.show()
         self.status_label.setText("LLM converting...")
+        logger.info(f"Starting LLM conversion with model: {model}")
 
         # Create and start worker thread
         self.llm_worker = LLMWorker(
@@ -688,13 +749,17 @@ class LLMPDFLabWindow(QMainWindow):
 
         self._start_llm_conversion()
 
-    def closeEvent(self, event) -> None:
-        """Handle window close event."""
-        # Stop any running worker
-        if self.llm_worker and self.llm_worker.isRunning():
-            self.llm_worker.terminate()
-            self.llm_worker.wait()
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Handle window close event.
 
+        Ensures any running LLM worker thread is properly terminated
+        before the application closes.
+
+        Args:
+            event: The close event from Qt.
+        """
+        self._stop_current_worker()
         event.accept()
 
 
