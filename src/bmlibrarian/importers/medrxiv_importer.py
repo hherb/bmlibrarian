@@ -106,11 +106,14 @@ class MedRxivImporter:
         - Removes punctuation or modifies sentences
         - Deletes any characters from the original
 
-        Section headers are ONLY recognized when they:
+        Section headers are recognized when they:
         1. Appear at the absolute start of the abstract, OR
-        2. Appear immediately after ". " (period + space = sentence boundary)
+        2. Appear after a newline, OR
+        3. Appear immediately after ". " (period + space = sentence boundary)
 
-        This prevents false positives from mid-sentence text like "with OUTCOMES:"
+        Headers can be followed by:
+        - A colon (e.g., "Background:")
+        - Directly by uppercase letter (e.g., "BackgroundAustralia")
 
         Args:
             abstract: Raw abstract text from medRxiv API
@@ -135,37 +138,81 @@ class MedRxivImporter:
             r'Trial Registration|Funding'
         )
 
-        # Pattern 1: Header at the very start of abstract
-        start_pattern = re.compile(
+        # Pattern 1a: Header at start followed by colon
+        start_colon_pattern = re.compile(
             r'^(' + header_keywords + r')(\s*:)',
             re.IGNORECASE
         )
 
-        # Pattern 2: Header after sentence boundary (". ")
-        sentence_pattern = re.compile(
+        # Pattern 1b: Header at start followed directly by uppercase (no space/colon)
+        # e.g., "BackgroundAustralia" -> "**BACKGROUND**Australia"
+        start_nospace_pattern = re.compile(
+            r'^(' + header_keywords + r')(?=[A-Z])',
+            re.IGNORECASE
+        )
+
+        # Pattern 2a: Header after sentence boundary followed by colon
+        sentence_colon_pattern = re.compile(
             r'(\. )(' + header_keywords + r')(\s*:)',
             re.IGNORECASE
         )
 
-        def replace_start_header(match: re.Match) -> str:
-            """Replace header at start with bold version."""
+        # Pattern 2b: Header after sentence boundary followed directly by uppercase
+        # e.g., ". MethodsNational" -> ". \n\n**METHODS**National"
+        sentence_nospace_pattern = re.compile(
+            r'(\.\s*)(' + header_keywords + r')(?=[A-Z])',
+            re.IGNORECASE
+        )
+
+        # Pattern 3: Header after newline followed by uppercase (no colon)
+        newline_nospace_pattern = re.compile(
+            r'(\n)(' + header_keywords + r')(?=[A-Z])',
+            re.IGNORECASE
+        )
+
+        def replace_start_colon(match: re.Match) -> str:
+            """Replace header at start (with colon) with bold version."""
             header_word = match.group(1)
             colon_part = match.group(2)
             return f'**{header_word.upper()}**{colon_part}'
 
-        def replace_sentence_header(match: re.Match) -> str:
-            """Replace header after sentence with bold version + paragraph break."""
-            period_space = match.group(1)  # ". "
+        def replace_start_nospace(match: re.Match) -> str:
+            """Replace header at start (no colon) with bold version + space."""
+            header_word = match.group(1)
+            return f'**{header_word.upper()}** '
+
+        def replace_sentence_colon(match: re.Match) -> str:
+            """Replace header after sentence (with colon) with bold + paragraph break."""
+            period_space = match.group(1)
             header_word = match.group(2)
             colon_part = match.group(3)
-            # Add paragraph break before the header
             return f'{period_space}\n\n**{header_word.upper()}**{colon_part}'
 
-        # First: format headers at start
-        formatted = start_pattern.sub(replace_start_header, abstract)
+        def replace_sentence_nospace(match: re.Match) -> str:
+            """Replace header after sentence (no colon) with bold + paragraph break."""
+            period_part = match.group(1)  # Could be ". " or ".\n" etc.
+            header_word = match.group(2)
+            return f'{period_part}\n\n**{header_word.upper()}** '
 
-        # Second: format headers after sentence boundaries
-        formatted = sentence_pattern.sub(replace_sentence_header, formatted)
+        def replace_newline_nospace(match: re.Match) -> str:
+            """Replace header after newline (no colon) with bold."""
+            newline = match.group(1)
+            header_word = match.group(2)
+            return f'{newline}**{header_word.upper()}** '
+
+        # Apply patterns in order of specificity
+        formatted = abstract
+
+        # Start patterns
+        formatted = start_colon_pattern.sub(replace_start_colon, formatted)
+        formatted = start_nospace_pattern.sub(replace_start_nospace, formatted)
+
+        # Sentence boundary patterns
+        formatted = sentence_colon_pattern.sub(replace_sentence_colon, formatted)
+        formatted = sentence_nospace_pattern.sub(replace_sentence_nospace, formatted)
+
+        # Newline patterns
+        formatted = newline_nospace_pattern.sub(replace_newline_nospace, formatted)
 
         return formatted
 

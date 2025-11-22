@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 
@@ -61,7 +62,7 @@ class FetchWorker(QThread):
         self,
         source: str,
         days: int = 7,
-        query: str = "",
+        file_path: str = "",
         max_results: int = 100,
         parent: Optional[QWidget] = None,
     ):
@@ -71,14 +72,14 @@ class FetchWorker(QThread):
         Args:
             source: 'medrxiv' or 'pubmed'
             days: Number of days to fetch (medRxiv)
-            query: Search query (PubMed)
+            file_path: Path to local PubMed XML file (.xml.gz)
             max_results: Maximum results to fetch
             parent: Parent widget
         """
         super().__init__(parent)
         self.source = source
         self.days = days
-        self.query = query
+        self.query = file_path  # Keep as self.query for compatibility with _fetch_pubmed
         self.max_results = max_results
         self._cancelled = False
         self._articles: List[Dict[str, Any]] = []
@@ -171,142 +172,96 @@ class FetchWorker(QThread):
                 self.progress.emit(f"Processed {i + 1}/{total} articles...")
 
     def _fetch_pubmed(self) -> None:
-        """Fetch articles from PubMed API."""
-        import requests
+        """Parse articles from local PubMed XML file."""
+        import gzip
         import xml.etree.ElementTree as ET
 
-        self.progress.emit(f"Searching PubMed for: {self.query}...")
+        # Use the file path from query field (which is now a file path)
+        file_path = Path(self.query)
 
-        # Search for PMIDs
-        search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        search_params = {
-            "db": "pubmed",
-            "term": self.query,
-            "retmax": self.max_results,
-            "retmode": "json",
-        }
+        if not file_path.exists():
+            self.progress.emit(f"File not found: {file_path}")
+            return
+
+        self.progress.emit(f"Parsing PubMed XML file: {file_path.name}...")
+
+        # Create a temporary bulk importer to use its parsing methods
+        from bmlibrarian.importers.pubmed_bulk_importer import PubMedBulkImporter
+
+        # Use __new__ to avoid database connection
+        temp_importer = PubMedBulkImporter.__new__(PubMedBulkImporter)
 
         try:
-            response = requests.get(search_url, params=search_params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            pmids = data.get("esearchresult", {}).get("idlist", [])
+            # Open file (gzip or plain XML)
+            if file_path.suffix == '.gz':
+                file_handle = gzip.open(file_path, 'rb')
+            else:
+                file_handle = open(file_path, 'rb')
+
+            with file_handle:
+                # Use iterparse for memory efficiency
+                context = ET.iterparse(file_handle, events=('end',))
+                count = 0
+
+                for event, elem in context:
+                    if self._cancelled:
+                        break
+
+                    if elem.tag == 'PubmedArticle':
+                        count += 1
+                        if count > self.max_results:
+                            break
+
+                        # Use the bulk importer's parsing method
+                        parsed = temp_importer._parse_article(elem)
+
+                        if parsed:
+                            # Get raw abstract for comparison
+                            abstract_elem = elem.find('.//Abstract')
+                            abstract_raw = ""
+                            if abstract_elem is not None:
+                                abstract_parts = []
+                                for text_elem in abstract_elem.findall(".//AbstractText"):
+                                    label = text_elem.get("Label", "")
+                                    text = "".join(text_elem.itertext())
+                                    if label:
+                                        abstract_parts.append(f"{label}: {text}")
+                                    else:
+                                        abstract_parts.append(text)
+                                abstract_raw = " ".join(abstract_parts)
+
+                            article = {
+                                "source": "pubmed",
+                                "pmid": parsed.get("pmid", ""),
+                                "doi": parsed.get("doi", ""),
+                                "title": parsed.get("title", ""),
+                                "authors": ", ".join(parsed.get("authors", [])),
+                                "date": parsed.get("publication_date", ""),
+                                "journal": parsed.get("publication", ""),
+                                "abstract_raw": abstract_raw,
+                                "abstract_formatted": parsed.get("abstract", ""),
+                            }
+
+                            self._articles.append(article)
+                            self.article_fetched.emit(article)
+
+                        # Clear element to save memory
+                        elem.clear()
+
+                        if count % 100 == 0:
+                            self.progress.emit(f"Processed {count} articles...")
+
+        except gzip.BadGzipFile as e:
+            self.progress.emit(f"Invalid gzip file: {e}")
+            return
+        except ET.ParseError as e:
+            self.progress.emit(f"XML parse error: {e}")
+            return
         except Exception as e:
-            self.progress.emit(f"Search error: {e}")
+            self.progress.emit(f"Error parsing file: {e}")
             return
 
-        if not pmids:
-            self.progress.emit("No articles found")
-            return
-
-        self.progress.emit(f"Found {len(pmids)} articles, fetching details...")
-
-        # Fetch article details
-        fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-        fetch_params = {
-            "db": "pubmed",
-            "id": ",".join(pmids),
-            "rettype": "xml",
-            "retmode": "xml",
-        }
-
-        try:
-            response = requests.get(fetch_url, params=fetch_params, timeout=60)
-            response.raise_for_status()
-            root = ET.fromstring(response.content)
-        except Exception as e:
-            self.progress.emit(f"Fetch error: {e}")
-            return
-
-        # Parse articles
-        from bmlibrarian.importers.pubmed_importer import PubMedImporter
-
-        temp_importer = PubMedImporter.__new__(PubMedImporter)
-
-        for i, article_elem in enumerate(root.findall(".//PubmedArticle")):
-            if self._cancelled:
-                break
-
-            try:
-                # Extract basic info
-                medline = article_elem.find(".//MedlineCitation")
-                if medline is None:
-                    continue
-
-                pmid_elem = medline.find(".//PMID")
-                pmid = pmid_elem.text if pmid_elem is not None else ""
-
-                article_node = medline.find(".//Article")
-                if article_node is None:
-                    continue
-
-                title_elem = article_node.find(".//ArticleTitle")
-                title = title_elem.text if title_elem is not None else ""
-
-                # Get abstract
-                abstract_elem = article_node.find(".//Abstract")
-                abstract_raw = ""
-                if abstract_elem is not None:
-                    abstract_parts = []
-                    for text_elem in abstract_elem.findall(".//AbstractText"):
-                        label = text_elem.get("Label", "")
-                        text = "".join(text_elem.itertext())
-                        if label:
-                            abstract_parts.append(f"{label}: {text}")
-                        else:
-                            abstract_parts.append(text)
-                    abstract_raw = " ".join(abstract_parts)
-
-                # Get authors
-                authors = []
-                for author in article_node.findall(".//Author"):
-                    lastname = author.find(".//LastName")
-                    forename = author.find(".//ForeName")
-                    if lastname is not None and forename is not None:
-                        authors.append(f"{lastname.text} {forename.text}")
-                    elif lastname is not None:
-                        authors.append(lastname.text)
-
-                # Get date
-                pub_date = article_node.find(".//PubDate")
-                date_str = ""
-                if pub_date is not None:
-                    year = pub_date.find(".//Year")
-                    month = pub_date.find(".//Month")
-                    day = pub_date.find(".//Day")
-                    parts = []
-                    if year is not None:
-                        parts.append(year.text)
-                    if month is not None:
-                        parts.append(month.text)
-                    if day is not None:
-                        parts.append(day.text)
-                    date_str = "-".join(parts)
-
-                # Get journal
-                journal_elem = article_node.find(".//Journal/Title")
-                journal = journal_elem.text if journal_elem is not None else ""
-
-                article = {
-                    "source": "pubmed",
-                    "pmid": pmid,
-                    "title": title,
-                    "authors": ", ".join(authors),
-                    "date": date_str,
-                    "journal": journal,
-                    "abstract_raw": abstract_raw,
-                    "abstract_formatted": abstract_raw,  # PubMed already structured
-                }
-
-                self._articles.append(article)
-                self.article_fetched.emit(article)
-
-            except Exception as e:
-                logger.warning(f"Error parsing article: {e}")
-                continue
-
-            if (i + 1) % 10 == 0:
-                self.progress.emit(f"Processed {i + 1}/{len(pmids)} articles...")
+        self.progress.emit(f"Parsed {len(self._articles)} articles from {file_path.name}")
 
 
 # =============================================================================
@@ -369,12 +324,18 @@ class ImporterTestLab(QMainWindow):
         self.days_spin.setValue(7)
         params_layout.addWidget(self.days_spin)
 
-        # Query (for PubMed)
-        params_layout.addWidget(QLabel("Query:"))
-        self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText("PubMed search query...")
-        self.query_edit.setEnabled(False)
-        params_layout.addWidget(self.query_edit)
+        # File path (for PubMed local XML)
+        params_layout.addWidget(QLabel("XML File:"))
+        self.file_edit = QLineEdit()
+        self.file_edit.setPlaceholderText("Path to PubMed XML file (.xml.gz)...")
+        self.file_edit.setEnabled(False)
+        params_layout.addWidget(self.file_edit)
+
+        # Browse button for file selection
+        self.browse_btn = QPushButton("Browse...")
+        self.browse_btn.clicked.connect(self._browse_file)
+        self.browse_btn.setEnabled(False)
+        params_layout.addWidget(self.browse_btn)
 
         # Max results
         params_layout.addWidget(QLabel("Max:"))
@@ -394,19 +355,24 @@ class ImporterTestLab(QMainWindow):
         self.cancel_btn.setEnabled(False)
         params_layout.addWidget(self.cancel_btn)
 
+        # Fixed height for params group
+        params_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(params_group)
 
-        # Progress
+        # Progress - fixed height
         self.progress_label = QLabel("Ready")
+        self.progress_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.progress_label)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)  # Indeterminate
         self.progress_bar.setVisible(False)
+        self.progress_bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.progress_bar)
 
-        # Main content area: article list + preview
+        # Main content area: article list + preview - EXPANDS
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Article list
         list_group = QGroupBox("Fetched Articles")
@@ -420,16 +386,22 @@ class ImporterTestLab(QMainWindow):
         preview_group = QGroupBox("Abstract Preview")
         preview_layout = QVBoxLayout(preview_group)
 
-        # Title
-        self.title_label = QLabel()
-        self.title_label.setWordWrap(True)
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        # Title - use QTextBrowser for text selection
+        self.title_label = QTextBrowser()
+        self.title_label.setOpenExternalLinks(True)
+        self.title_label.setStyleSheet(
+            "font-weight: bold; font-size: 14px; background: transparent; border: none;"
+        )
+        self.title_label.setMaximumHeight(60)
+        self.title_label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         preview_layout.addWidget(self.title_label)
 
-        # Metadata
-        self.meta_label = QLabel()
-        self.meta_label.setWordWrap(True)
-        self.meta_label.setStyleSheet("color: #666;")
+        # Metadata - use QTextBrowser for text selection (allows copy DOI, PMID, etc.)
+        self.meta_label = QTextBrowser()
+        self.meta_label.setOpenExternalLinks(True)
+        self.meta_label.setStyleSheet("color: #666; background: transparent; border: none;")
+        self.meta_label.setMaximumHeight(40)
+        self.meta_label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         preview_layout.addWidget(self.meta_label)
 
         # Raw vs Formatted comparison
@@ -496,25 +468,41 @@ class ImporterTestLab(QMainWindow):
     def _on_source_changed(self, source: str) -> None:
         """Handle source selection change."""
         is_pubmed = source.lower() == "pubmed"
-        self.query_edit.setEnabled(is_pubmed)
+        self.file_edit.setEnabled(is_pubmed)
+        self.browse_btn.setEnabled(is_pubmed)
         self.days_spin.setEnabled(not is_pubmed)
+
+    def _browse_file(self) -> None:
+        """Open file browser for PubMed XML file selection."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select PubMed XML File",
+            str(Path.home()),
+            "PubMed XML files (*.xml.gz *.xml);;All files (*.*)",
+        )
+        if path:
+            self.file_edit.setText(path)
 
     def _start_fetch(self) -> None:
         """Start fetching articles."""
         source = self.source_combo.currentText().lower()
         days = self.days_spin.value()
-        query = self.query_edit.text()
+        file_path = self.file_edit.text()  # Now used for PubMed XML file path
         max_results = self.max_spin.value()
 
-        if source == "pubmed" and not query:
-            QMessageBox.warning(self, "Warning", "Please enter a PubMed search query")
+        if source == "pubmed" and not file_path:
+            QMessageBox.warning(self, "Warning", "Please select a PubMed XML file")
+            return
+
+        if source == "pubmed" and not Path(file_path).exists():
+            QMessageBox.warning(self, "Warning", f"File not found: {file_path}")
             return
 
         # Clear previous results
         self._articles = []
         self.article_list.clear()
-        self.title_label.clear()
-        self.meta_label.clear()
+        self.title_label.setPlainText("")
+        self.meta_label.setPlainText("")
         self.raw_text.clear()
         self.formatted_browser.clear()
 
@@ -524,7 +512,7 @@ class ImporterTestLab(QMainWindow):
         self.progress_bar.setVisible(True)
 
         # Start worker
-        self._worker = FetchWorker(source, days, query, max_results, self)
+        self._worker = FetchWorker(source, days, file_path, max_results, self)
         self._worker.progress.connect(self._on_progress)
         self._worker.article_fetched.connect(self._on_article_fetched)
         self._worker.finished.connect(self._on_fetch_finished)
@@ -582,7 +570,7 @@ class ImporterTestLab(QMainWindow):
         article = self._articles[idx]
 
         # Update title
-        self.title_label.setText(article.get("title", ""))
+        self.title_label.setPlainText(article.get("title", ""))
 
         # Update metadata
         meta_parts = []
@@ -594,7 +582,7 @@ class ImporterTestLab(QMainWindow):
             meta_parts.append(f"DOI: {article['doi']}")
         if article.get("pmid"):
             meta_parts.append(f"PMID: {article['pmid']}")
-        self.meta_label.setText(" | ".join(meta_parts))
+        self.meta_label.setPlainText(" | ".join(meta_parts))
 
         # Update raw abstract
         self.raw_text.setPlainText(article.get("abstract_raw", ""))

@@ -30,6 +30,7 @@ dependencies = [
     "backoff>=2.2.1",
     "pymupdf4llm>=0.2.2",
     "tqdm>=4.66.0",
+    "pymupdf-layout>=1.26.6",
 ]
 
 [project.optional-dependencies]
