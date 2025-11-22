@@ -148,6 +148,9 @@ class BMLibrarianApplication:
             # Set user context on the global config for database-backed settings
             self._setup_user_context()
 
+            # Check for existing JSON config and offer migration
+            self._check_config_migration()
+
             # Create and show main window
             self.main_window = BMLibrarianMainWindow(
                 user_id=self._login_result.user_id if self._login_result else None,
@@ -215,6 +218,116 @@ class BMLibrarianApplication:
         except Exception as e:
             self.logger.error(f"Failed to set user context: {e}")
             # Continue without database-backed settings - fall back to JSON/defaults
+
+    def _check_config_migration(self) -> None:
+        """Check for existing JSON config and offer to migrate to database.
+
+        This is called after login to help users migrate their local
+        JSON configuration to database-backed settings.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        # Check if user has database settings already
+        try:
+            from ....config import get_config
+            from ....auth import UserSettingsManager
+
+            config = get_config()
+            if not config.has_user_context():
+                return
+
+            # Check if user already has any settings in database
+            settings_manager = UserSettingsManager(
+                self._db_connection,
+                self._login_result.user_id
+            )
+
+            # Check a common category to see if user has settings
+            existing_settings = settings_manager.get('agents')
+            if existing_settings:
+                # User already has database settings, no migration needed
+                self.logger.debug("User already has database settings")
+                return
+
+        except Exception as e:
+            self.logger.debug(f"Could not check existing settings: {e}")
+            return
+
+        # Check for local JSON config file
+        json_config_path = Path.home() / ".bmlibrarian" / "config.json"
+        if not json_config_path.exists():
+            self.logger.debug("No local JSON config found")
+            return
+
+        # Offer to migrate
+        reply = QMessageBox.question(
+            None,
+            "Import Settings",
+            "A local configuration file was found.\n\n"
+            f"Path: {json_config_path}\n\n"
+            "Would you like to import these settings to your user profile?\n\n"
+            "This will sync your local settings to the database so they're "
+            "available across devices.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self._perform_config_migration(json_config_path)
+
+    def _perform_config_migration(self, json_path: Path) -> None:
+        """Perform the actual config migration from JSON to database.
+
+        Args:
+            json_path: Path to JSON configuration file.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        import json
+
+        try:
+            # Load JSON config
+            with open(json_path, 'r') as f:
+                json_config = json.load(f)
+
+            # Valid categories to migrate
+            valid_categories = frozenset([
+                'models', 'ollama', 'agents', 'database', 'search',
+                'query_generation', 'gui', 'openathens', 'pdf', 'general'
+            ])
+
+            # Get config and sync
+            from ....config import get_config
+            config = get_config()
+
+            # Update config with JSON values
+            migrated_count = 0
+            for category, settings in json_config.items():
+                if category in valid_categories and isinstance(settings, dict):
+                    for key, value in settings.items():
+                        config.set(f"{category}.{key}", value)
+                    migrated_count += 1
+
+            # Sync to database
+            config.sync_to_database()
+
+            self.logger.info(f"Migrated {migrated_count} categories from JSON to database")
+
+            QMessageBox.information(
+                None,
+                "Migration Complete",
+                f"Successfully imported {migrated_count} setting categories "
+                f"to your user profile.\n\n"
+                f"Your local config file has been preserved at:\n{json_path}"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Config migration failed: {e}")
+            QMessageBox.warning(
+                None,
+                "Migration Failed",
+                f"Failed to import settings:\n\n{str(e)}\n\n"
+                "You can try again later from the Configuration tab."
+            )
 
     def _cleanup(self) -> None:
         """Cleanup resources on shutdown."""
