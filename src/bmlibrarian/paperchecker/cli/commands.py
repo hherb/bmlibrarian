@@ -33,6 +33,11 @@ MAX_ERROR_PREVIEW_LENGTH: int = 100
 MAX_MISSING_PMIDS_DISPLAYED: int = 10
 YEAR_STRING_LENGTH: int = 4
 
+# Memory usage thresholds for large batch warnings
+LARGE_BATCH_THRESHOLD: int = 100
+VERY_LARGE_BATCH_THRESHOLD: int = 500
+ESTIMATED_MB_PER_RESULT: float = 0.5  # Approximate memory per result in MB
+
 
 def validate_abstract(abstract: str, index: int) -> Tuple[bool, Optional[str]]:
     """
@@ -110,7 +115,8 @@ def load_abstracts_from_json(filepath: str) -> List[Dict[str, Any]]:
     # Validate structure
     if not isinstance(data, list):
         raise ValueError(
-            f"JSON must be a list of abstract objects, got {type(data).__name__}"
+            f"JSON must be a list of abstract objects, got {type(data).__name__}. "
+            f"Expected format: [{{'abstract': 'text...', 'metadata': {{'pmid': ..., 'title': ...}}}}, ...]"
         )
 
     if len(data) == 0:
@@ -123,7 +129,8 @@ def load_abstracts_from_json(filepath: str) -> List[Dict[str, Any]]:
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             validation_errors.append(
-                f"Item at index {i} is not a dict (got {type(item).__name__})"
+                f"Item at index {i} is not a dict (got {type(item).__name__}). "
+                f"Expected format: {{'abstract': 'text...', 'metadata': {{'pmid': ..., 'title': ...}}}}"
             )
             continue
 
@@ -254,6 +261,9 @@ def check_abstracts(
     Processes each abstract through the PaperCheckerAgent, tracking progress
     and optionally continuing on errors.
 
+    Note: For very large batches (>500 abstracts), consider using streaming
+    export to disk to reduce memory usage, as all results are held in memory.
+
     Args:
         abstracts: List of abstract dictionaries to process
         agent: Initialized PaperCheckerAgent instance
@@ -269,6 +279,20 @@ def check_abstracts(
     errors: List[Dict[str, Any]] = []
     total = len(abstracts)
 
+    # Memory usage warnings for large batches
+    if total >= VERY_LARGE_BATCH_THRESHOLD:
+        estimated_memory_mb = total * ESTIMATED_MB_PER_RESULT
+        logger.warning(
+            f"Processing {total} abstracts - estimated memory usage: "
+            f"~{estimated_memory_mb:.0f} MB. Consider using --export-markdown "
+            f"for streaming output or processing in smaller batches."
+        )
+    elif total >= LARGE_BATCH_THRESHOLD:
+        logger.info(
+            f"Processing {total} abstracts. For very large batches (>{VERY_LARGE_BATCH_THRESHOLD}), "
+            f"consider processing in smaller batches to manage memory usage."
+        )
+
     logger.info(f"Starting batch check of {total} abstracts")
 
     # Progress bar
@@ -283,11 +307,14 @@ def check_abstracts(
         pmid = item.get("metadata", {}).get("pmid")
 
         try:
-            # Update progress bar description
+            # Update progress bar description with rate information
+            elapsed = pbar.format_dict.get('elapsed', 0)
+            rate_str = f"{i/elapsed:.1f}/s" if elapsed > 0 else "0.0/s"
             pbar.set_postfix({
                 "current": i,
                 "ok": len(results),
-                "errors": len(errors)
+                "errors": len(errors),
+                "rate": rate_str
             })
 
             # Check abstract
@@ -405,7 +432,7 @@ def export_results_json(
 def export_markdown_reports(
     results: List[PaperCheckResult],
     output_dir: str
-) -> List[str]:
+) -> Tuple[List[str], List[Dict[str, Any]]]:
     """
     Export markdown reports to directory.
 
@@ -416,10 +443,12 @@ def export_markdown_reports(
         output_dir: Directory path for output files
 
     Returns:
-        List of created file paths
+        Tuple of (successful_files, failed_files):
+        - successful_files: List of successfully created file paths
+        - failed_files: List of dicts with 'index', 'filename', 'pmid', and 'error'
 
     Raises:
-        OSError: If directory cannot be created or files cannot be written
+        OSError: If directory cannot be created
         ValueError: If results list is empty
     """
     if not results:
@@ -431,6 +460,7 @@ def export_markdown_reports(
     output_path.mkdir(parents=True, exist_ok=True)
 
     created_files: List[str] = []
+    failed_files: List[Dict[str, Any]] = []
 
     for i, result in enumerate(results, 1):
         # Generate filename from PMID or index
@@ -452,8 +482,18 @@ def export_markdown_reports(
             logger.debug(f"Exported report {i}/{len(results)}: {filename}")
 
         except Exception as e:
+            error_info = {
+                "index": i,
+                "filename": filename,
+                "pmid": pmid,
+                "error": str(e)
+            }
+            failed_files.append(error_info)
             logger.error(f"Failed to export markdown for abstract {i}: {e}")
             # Continue with other files
 
-    logger.info(f"Exported {len(created_files)} reports to {output_dir}")
-    return created_files
+    logger.info(
+        f"Exported {len(created_files)}/{len(results)} reports to {output_dir}"
+        + (f" ({len(failed_files)} failed)" if failed_files else "")
+    )
+    return created_files, failed_files

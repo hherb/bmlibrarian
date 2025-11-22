@@ -18,12 +18,16 @@ from unittest.mock import MagicMock, patch
 from bmlibrarian.paperchecker.cli.commands import (
     validate_abstract,
     load_abstracts_from_json,
+    export_markdown_reports,
     MIN_ABSTRACT_LENGTH,
     MAX_ABSTRACT_LENGTH,
     MIN_PMID,
     MAX_PMID,
     MAX_VALIDATION_ERRORS_DISPLAYED,
     MAX_ERROR_PREVIEW_LENGTH,
+    LARGE_BATCH_THRESHOLD,
+    VERY_LARGE_BATCH_THRESHOLD,
+    ESTIMATED_MB_PER_RESULT,
 )
 from bmlibrarian.paperchecker.cli.formatters import (
     _safe_percentage,
@@ -303,3 +307,88 @@ class TestConstants:
     def test_preview_length_reasonable(self) -> None:
         """Test preview length is reasonable."""
         assert 40 <= MAX_PREVIEW_LENGTH <= 200
+
+    def test_memory_thresholds_ordered(self) -> None:
+        """Test memory batch thresholds are properly ordered."""
+        assert LARGE_BATCH_THRESHOLD > 0
+        assert VERY_LARGE_BATCH_THRESHOLD > LARGE_BATCH_THRESHOLD
+
+    def test_estimated_memory_positive(self) -> None:
+        """Test estimated memory per result is positive."""
+        assert ESTIMATED_MB_PER_RESULT > 0
+
+
+# ==================== Export Markdown Tests ====================
+
+class TestExportMarkdownReports:
+    """Tests for export_markdown_reports function."""
+
+    def test_export_empty_results_raises(self, tmp_path: Path) -> None:
+        """Test exporting empty results raises ValueError."""
+        with pytest.raises(ValueError, match="No results"):
+            export_markdown_reports([], str(tmp_path / "reports"))
+
+    def test_export_returns_tuple(self, tmp_path: Path) -> None:
+        """Test export returns (successful_files, failed_files) tuple."""
+        # Create a mock result
+        mock_result = MagicMock()
+        mock_result.source_metadata = {"pmid": 12345}
+        mock_result.to_markdown_report.return_value = "# Test Report\n\nContent"
+
+        output_dir = tmp_path / "reports"
+        created, failed = export_markdown_reports([mock_result], str(output_dir))
+
+        assert isinstance(created, list)
+        assert isinstance(failed, list)
+        assert len(created) == 1
+        assert len(failed) == 0
+        assert "report_pmid_12345.md" in created[0]
+
+    def test_export_with_failures(self, tmp_path: Path) -> None:
+        """Test export captures failures in failed_files list."""
+        # Create mock results - one succeeds, one fails
+        success_result = MagicMock()
+        success_result.source_metadata = {"pmid": 11111}
+        success_result.to_markdown_report.return_value = "# Success"
+
+        fail_result = MagicMock()
+        fail_result.source_metadata = {"pmid": 22222}
+        fail_result.to_markdown_report.side_effect = Exception("Conversion error")
+
+        output_dir = tmp_path / "reports"
+        created, failed = export_markdown_reports(
+            [success_result, fail_result], str(output_dir)
+        )
+
+        assert len(created) == 1
+        assert len(failed) == 1
+        assert failed[0]["pmid"] == 22222
+        assert "Conversion error" in failed[0]["error"]
+        assert failed[0]["index"] == 2
+        assert "filename" in failed[0]
+
+    def test_export_without_pmid_uses_index(self, tmp_path: Path) -> None:
+        """Test export uses index for filename when PMID not available."""
+        mock_result = MagicMock()
+        mock_result.source_metadata = {}  # No PMID
+        mock_result.to_markdown_report.return_value = "# Test Report"
+
+        output_dir = tmp_path / "reports"
+        created, failed = export_markdown_reports([mock_result], str(output_dir))
+
+        assert len(created) == 1
+        assert "report_abstract_1.md" in created[0]
+
+    def test_export_creates_directory(self, tmp_path: Path) -> None:
+        """Test export creates output directory if not exists."""
+        mock_result = MagicMock()
+        mock_result.source_metadata = {"pmid": 12345}
+        mock_result.to_markdown_report.return_value = "# Test"
+
+        output_dir = tmp_path / "nested" / "reports"
+        assert not output_dir.exists()
+
+        created, failed = export_markdown_reports([mock_result], str(output_dir))
+
+        assert output_dir.exists()
+        assert len(created) == 1
