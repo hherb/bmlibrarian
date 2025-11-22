@@ -5,6 +5,7 @@ and provides application-wide services and initialization.
 """
 
 import sys
+import argparse
 import logging
 from pathlib import Path
 from typing import Optional, List
@@ -42,6 +43,9 @@ class BMLibrarianApplication:
         if argv is None:
             argv = sys.argv
 
+        # Parse command line arguments before QApplication consumes them
+        self._args = self._parse_args(argv[1:])  # Skip program name
+
         # Initialize logging
         self._setup_logging()
 
@@ -71,6 +75,28 @@ class BMLibrarianApplication:
         self._db_connection = None
 
         self.logger.info("Application initialized")
+
+    def _parse_args(self, argv: List[str]) -> argparse.Namespace:
+        """Parse command line arguments.
+
+        Args:
+            argv: Command line arguments (without program name).
+
+        Returns:
+            Parsed arguments namespace.
+        """
+        parser = argparse.ArgumentParser(
+            description="BMLibrarian Qt GUI - Biomedical Literature Research Platform",
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+        parser.add_argument(
+            "--user",
+            type=str,
+            help="Username for auto-login without password (testing mode)"
+        )
+        # Parse known args to allow Qt to handle its own arguments
+        args, _ = parser.parse_known_args(argv)
+        return args
 
     def _setup_logging(self):
         """Setup logging configuration."""
@@ -140,10 +166,16 @@ class BMLibrarianApplication:
             int: Exit code (0 for success)
         """
         try:
-            # Show login dialog first
-            if not self._show_login_dialog():
-                self.logger.info("Login cancelled, exiting")
-                return 0
+            # Check for auto-login via --user argument
+            if self._args.user:
+                if not self._auto_login(self._args.user):
+                    self.logger.error(f"Auto-login failed for user: {self._args.user}")
+                    return 1
+            else:
+                # Show login dialog
+                if not self._show_login_dialog():
+                    self.logger.info("Login cancelled, exiting")
+                    return 0
 
             # Set user context on the global config for database-backed settings
             self._setup_user_context()
@@ -191,6 +223,128 @@ class BMLibrarianApplication:
                 return True
 
         return False
+
+    def _auto_login(self, username: str) -> bool:
+        """Perform auto-login for a user without requiring password.
+
+        This is intended for testing/development purposes where the --user
+        argument is provided on the command line.
+
+        Args:
+            username: The username to auto-login as.
+
+        Returns:
+            True if auto-login was successful, False otherwise.
+        """
+        import os
+        import socket
+        import psycopg
+
+        self.logger.info(f"Attempting auto-login for user: {username}")
+
+        # Load database config from environment/.env file
+        db_host = os.environ.get("POSTGRES_HOST", "localhost")
+        db_port = int(os.environ.get("POSTGRES_PORT", "5432"))
+        db_name = os.environ.get("POSTGRES_DB", "knowledgebase")
+        db_user = os.environ.get("POSTGRES_USER", "")
+        db_password = os.environ.get("POSTGRES_PASSWORD", "")
+
+        # Try loading from .env file if not in environment
+        if not db_user:
+            self._load_env_file()
+            db_host = os.environ.get("POSTGRES_HOST", "localhost")
+            db_port = int(os.environ.get("POSTGRES_PORT", "5432"))
+            db_name = os.environ.get("POSTGRES_DB", "knowledgebase")
+            db_user = os.environ.get("POSTGRES_USER", "")
+            db_password = os.environ.get("POSTGRES_PASSWORD", "")
+
+        if not db_user:
+            self.logger.error("No database user configured. Please set POSTGRES_USER.")
+            return False
+
+        try:
+            # Connect to database
+            conn_string = (
+                f"host={db_host} "
+                f"port={db_port} "
+                f"dbname={db_name} "
+                f"user={db_user} "
+                f"password={db_password}"
+            )
+            conn = psycopg.connect(conn_string, connect_timeout=10)
+
+            # Import UserService
+            from ....auth import UserService
+
+            user_service = UserService(conn)
+
+            # Get user by username (bypass password check for auto-login)
+            user = user_service.get_user_by_username(username)
+            if not user:
+                self.logger.error(f"User '{username}' not found in database")
+                conn.close()
+                return False
+
+            # Create session without password authentication
+            # Access private method for auto-login (testing mode only)
+            session_token = user_service._create_session(
+                user_id=user.id,
+                client_type="qt_gui_autologin",
+                hostname=socket.gethostname()
+            )
+
+            # Import DatabaseConfig from dialogs
+            from ..dialogs import DatabaseConfig
+
+            self._login_result = LoginResult(
+                user_id=user.id,
+                username=user.username,
+                email=user.email,
+                session_token=session_token,
+                db_config=DatabaseConfig(
+                    host=db_host,
+                    port=db_port,
+                    database=db_name,
+                    user=db_user,
+                    password=db_password
+                )
+            )
+            self._db_connection = conn
+
+            self.logger.info(f"Auto-login successful for user: {username} (id={user.id})")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Auto-login failed: {e}")
+            return False
+
+    def _load_env_file(self) -> None:
+        """Load environment variables from .env file."""
+        import os
+
+        env_paths = [
+            Path.home() / ".bmlibrarian" / ".env",
+            Path.cwd() / ".env",
+        ]
+
+        for env_path in env_paths:
+            if env_path.exists():
+                try:
+                    with open(env_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                key = key.strip()
+                                value = value.strip().strip('"').strip("'")
+                                if key and value:
+                                    os.environ[key] = value
+                    self.logger.debug(f"Loaded environment from {env_path}")
+                    break
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse {env_path}: {e}")
 
     def _setup_user_context(self) -> None:
         """Set up user context on the global config for database-backed settings.

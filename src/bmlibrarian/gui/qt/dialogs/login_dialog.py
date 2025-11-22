@@ -77,6 +77,18 @@ class DatabaseConfig:
             "POSTGRES_PASSWORD": self.password,
         }
 
+    def __eq__(self, other: object) -> bool:
+        """Check equality with another DatabaseConfig."""
+        if not isinstance(other, DatabaseConfig):
+            return NotImplemented
+        return (
+            self.host == other.host
+            and self.port == other.port
+            and self.database == other.database
+            and self.user == other.user
+            and self.password == other.password
+        )
+
 
 @dataclass
 class LoginResult:
@@ -124,9 +136,15 @@ class LoginDialog(QDialog):
         self._login_result: Optional[LoginResult] = None
         self._connection = None
 
+        # Track original DB config to detect changes
+        self._original_db_config: Optional[DatabaseConfig] = None
+
         # Setup UI
         self._setup_ui()
         self._load_saved_db_config()
+
+        # Store original config after loading
+        self._original_db_config = self._get_db_config()
 
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
@@ -486,16 +504,32 @@ class LoginDialog(QDialog):
             self.db_status_label.setText(error_msg)
             self._logger.error(f"Database connection test failed: {e}")
 
-    def _on_save_db_config(self) -> None:
-        """Save the database configuration to .env file."""
+    def _has_db_config_changed(self) -> bool:
+        """Check if the database configuration has changed from original.
+
+        Returns:
+            True if the config has changed, False otherwise.
+        """
+        if self._original_db_config is None:
+            return True
+        return self._get_db_config() != self._original_db_config
+
+    def _on_save_db_config(self, show_dialog: bool = True) -> None:
+        """Save the database configuration to .env file.
+
+        Args:
+            show_dialog: Whether to show confirmation dialog. Set to False
+                when called programmatically (e.g., during login).
+        """
         db_config = self._get_db_config()
 
         if not db_config.user:
-            QMessageBox.warning(
-                self,
-                "Missing Information",
-                "Please enter a database username."
-            )
+            if show_dialog:
+                QMessageBox.warning(
+                    self,
+                    "Missing Information",
+                    "Please enter a database username."
+                )
             return
 
         # Create .bmlibrarian directory if needed
@@ -536,17 +570,22 @@ class LoginDialog(QDialog):
             self.db_status_label.setText(f"Configuration saved to:\n{env_path}")
             self._logger.info(f"Saved database config to {env_path}")
 
-            QMessageBox.information(
-                self,
-                "Settings Saved",
-                f"Database settings saved to:\n{env_path}"
-            )
+            # Update original config to reflect saved state
+            self._original_db_config = db_config
+
+            if show_dialog:
+                QMessageBox.information(
+                    self,
+                    "Settings Saved",
+                    f"Database settings saved to:\n{env_path}"
+                )
 
         except Exception as e:
             error_msg = f"Failed to save settings: {e}"
             self.db_status_label.setText(error_msg)
             self._logger.error(f"Failed to save database config: {e}")
-            QMessageBox.critical(self, "Error", error_msg)
+            if show_dialog:
+                QMessageBox.critical(self, "Error", error_msg)
 
     def _get_db_connection(self):
         """Get a database connection using current settings.
@@ -628,9 +667,9 @@ class LoginDialog(QDialog):
             self._connection = conn
             self._logger.info(f"User logged in: {username}")
 
-            # Save DB config if checkbox is checked
-            if self.save_db_config.isChecked():
-                self._on_save_db_config()
+            # Save DB config only if checkbox is checked AND config has changed
+            if self.save_db_config.isChecked() and self._has_db_config_changed():
+                self._on_save_db_config(show_dialog=False)
 
             self.login_successful.emit(user.id)
             self.accept()
@@ -753,9 +792,9 @@ class LoginDialog(QDialog):
             self._connection = conn
             self._logger.info(f"User registered and logged in: {username}")
 
-            # Save DB config if checkbox is checked
-            if self.save_db_config.isChecked():
-                self._on_save_db_config()
+            # Save DB config only if checkbox is checked AND config has changed
+            if self.save_db_config.isChecked() and self._has_db_config_changed():
+                self._on_save_db_config(show_dialog=False)
 
             QMessageBox.information(
                 self,
