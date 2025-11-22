@@ -261,7 +261,7 @@ Key settings:
 ## Related Documentation
 
 - [PaperChecker CLI Guide](paper_checker_cli_guide.md) - Batch processing interface
-- [PaperChecker Architecture](../developers/paperchecker_architecture.md) - Technical details
+- [PaperChecker Architecture](../developers/paper_checker_architecture.md) - Technical details
 - [Document Embedding Guide](document_embedding_guide.md) - Database preparation
 - [Configuration Guide](configuration_guide.md) - System configuration
 
