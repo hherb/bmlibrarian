@@ -16,6 +16,7 @@ Tables managed:
     - papercheck.verdicts: Final verdicts on statements
 """
 
+from types import TracebackType
 from typing import Any, Dict, List, Optional
 import logging
 import os
@@ -32,6 +33,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_NAME: str = "knowledgebase"
 DEFAULT_DB_HOST: str = "localhost"
 DEFAULT_DB_PORT: str = "5432"
+
+# Query configuration constants
+DEFAULT_LIST_LIMIT: int = 100
+DEFAULT_LIST_OFFSET: int = 0
+RECENT_ACTIVITY_HOURS: int = 24
+
+# Validation constants
+MIN_ID_VALUE: int = 1
+MIN_LIMIT_VALUE: int = 1
+MAX_LIMIT_VALUE: int = 10000
+MIN_OFFSET_VALUE: int = 0
 
 
 class PaperCheckDB:
@@ -500,7 +512,16 @@ class PaperCheckDB:
 
         Returns:
             Dictionary with complete result data, or None if not found
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 # Get main abstract
@@ -542,7 +563,16 @@ class PaperCheckDB:
 
         Returns:
             List of result dictionaries
+
+        Raises:
+            ValueError: If pmid is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(pmid, int) or pmid < MIN_ID_VALUE:
+            raise ValueError(
+                f"pmid must be an integer >= {MIN_ID_VALUE}, got {pmid}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(f"""
@@ -559,15 +589,15 @@ class PaperCheckDB:
 
     def list_recent_checks(
         self,
-        limit: int = 100,
-        offset: int = 0
+        limit: int = DEFAULT_LIST_LIMIT,
+        offset: int = DEFAULT_LIST_OFFSET
     ) -> List[Dict[str, Any]]:
         """
         List recent abstract checks with summary information.
 
         Args:
-            limit: Maximum number of results to return (default: 100)
-            offset: Number of results to skip for pagination (default: 0)
+            limit: Maximum number of results to return (default: DEFAULT_LIST_LIMIT)
+            offset: Number of results to skip for pagination (default: DEFAULT_LIST_OFFSET)
 
         Returns:
             List of dictionaries with summary information including:
@@ -579,7 +609,24 @@ class PaperCheckDB:
             - num_statements: Number of statements extracted
             - overall_assessment: Overall assessment text
             - model_used: Model used for analysis
+
+        Raises:
+            ValueError: If limit or offset are out of valid range
         """
+        # Validate input parameters
+        if not isinstance(limit, int) or limit < MIN_LIMIT_VALUE:
+            raise ValueError(
+                f"limit must be an integer >= {MIN_LIMIT_VALUE}, got {limit}"
+            )
+        if limit > MAX_LIMIT_VALUE:
+            raise ValueError(
+                f"limit must be <= {MAX_LIMIT_VALUE}, got {limit}"
+            )
+        if not isinstance(offset, int) or offset < MIN_OFFSET_VALUE:
+            raise ValueError(
+                f"offset must be an integer >= {MIN_OFFSET_VALUE}, got {offset}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(f"""
@@ -614,7 +661,16 @@ class PaperCheckDB:
 
         Returns:
             List of verdict summaries with statement text, verdict, and confidence
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(f"""
@@ -688,12 +744,12 @@ class PaperCheckDB:
                     for row in cur.fetchall()
                 }
 
-                # Recent activity (last 24 hours)
+                # Recent activity (last RECENT_ACTIVITY_HOURS hours)
                 cur.execute(f"""
                     SELECT COUNT(*) as count
                     FROM {self.schema}.abstracts_checked
-                    WHERE checked_at >= NOW() - INTERVAL '24 hours'
-                """)
+                    WHERE checked_at >= NOW() - INTERVAL '%s hours'
+                """, (RECENT_ACTIVITY_HOURS,))
                 recent_activity = cur.fetchone()["count"]
 
                 return {
@@ -726,7 +782,16 @@ class PaperCheckDB:
 
         Returns:
             True if deletion was successful, False otherwise
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(f"""
@@ -765,7 +830,7 @@ class PaperCheckDB:
         self,
         exc_type: Optional[type],
         exc_val: Optional[BaseException],
-        exc_tb: Optional[Any]
+        exc_tb: Optional[TracebackType]
     ) -> None:
         """
         Context manager exit.

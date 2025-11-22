@@ -18,6 +18,13 @@ from bmlibrarian.paperchecker.database import (
     DEFAULT_DB_NAME,
     DEFAULT_DB_HOST,
     DEFAULT_DB_PORT,
+    DEFAULT_LIST_LIMIT,
+    DEFAULT_LIST_OFFSET,
+    RECENT_ACTIVITY_HOURS,
+    MIN_ID_VALUE,
+    MIN_LIMIT_VALUE,
+    MAX_LIMIT_VALUE,
+    MIN_OFFSET_VALUE,
 )
 from bmlibrarian.paperchecker.data_models import (
     Statement,
@@ -49,6 +56,19 @@ class TestDatabaseConstants:
     def test_default_db_port(self) -> None:
         """Test default database port is correct."""
         assert DEFAULT_DB_PORT == "5432"
+
+    def test_query_constants(self) -> None:
+        """Test query configuration constants are defined."""
+        assert DEFAULT_LIST_LIMIT == 100
+        assert DEFAULT_LIST_OFFSET == 0
+        assert RECENT_ACTIVITY_HOURS == 24
+
+    def test_validation_constants(self) -> None:
+        """Test validation constants are defined correctly."""
+        assert MIN_ID_VALUE == 1
+        assert MIN_LIMIT_VALUE == 1
+        assert MAX_LIMIT_VALUE == 10000
+        assert MIN_OFFSET_VALUE == 0
 
 
 class TestPaperCheckDBInit:
@@ -210,6 +230,70 @@ class TestPaperCheckDBGetConnection:
         db = PaperCheckDB(connection=mock_conn)
 
         assert db.get_connection() is mock_conn
+
+
+class TestInputValidation:
+    """Tests for input validation on public methods."""
+
+    def test_get_result_by_id_validates_abstract_id(self) -> None:
+        """Test that get_result_by_id validates abstract_id."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="abstract_id must be an integer >= 1"):
+            db.get_result_by_id(0)
+
+        with pytest.raises(ValueError, match="abstract_id must be an integer >= 1"):
+            db.get_result_by_id(-1)
+
+    def test_get_results_by_pmid_validates_pmid(self) -> None:
+        """Test that get_results_by_pmid validates pmid."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="pmid must be an integer >= 1"):
+            db.get_results_by_pmid(0)
+
+        with pytest.raises(ValueError, match="pmid must be an integer >= 1"):
+            db.get_results_by_pmid(-1)
+
+    def test_list_recent_checks_validates_limit(self) -> None:
+        """Test that list_recent_checks validates limit."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="limit must be an integer >= 1"):
+            db.list_recent_checks(limit=0)
+
+        with pytest.raises(ValueError, match="limit must be <= 10000"):
+            db.list_recent_checks(limit=10001)
+
+    def test_list_recent_checks_validates_offset(self) -> None:
+        """Test that list_recent_checks validates offset."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="offset must be an integer >= 0"):
+            db.list_recent_checks(offset=-1)
+
+    def test_get_verdicts_summary_validates_abstract_id(self) -> None:
+        """Test that get_verdicts_summary validates abstract_id."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="abstract_id must be an integer >= 1"):
+            db.get_verdicts_summary(0)
+
+    def test_delete_result_validates_abstract_id(self) -> None:
+        """Test that delete_result validates abstract_id."""
+        mock_conn = MagicMock()
+        db = PaperCheckDB(connection=mock_conn)
+
+        with pytest.raises(ValueError, match="abstract_id must be an integer >= 1"):
+            db.delete_result(0)
+
+        with pytest.raises(ValueError, match="abstract_id must be an integer >= 1"):
+            db.delete_result(-1)
 
 
 class TestSampleDataHelpers:
