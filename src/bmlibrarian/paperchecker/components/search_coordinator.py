@@ -47,6 +47,9 @@ DEFAULT_MAX_DEDUPLICATED: int = 100
 DEFAULT_EMBEDDING_MODEL: str = "snowflake-arctic-embed2:latest"
 DEFAULT_SIMILARITY_THRESHOLD: float = 0.0  # Minimum similarity for semantic search
 KEYWORD_SEARCH_OPERATOR: str = "|"  # OR operator for keyword search
+# Database query timeout in milliseconds (5 minutes default)
+# This prevents queries from hanging indefinitely on large embedding tables
+DEFAULT_QUERY_TIMEOUT_MS: int = 300000  # 5 minutes
 
 
 class SearchCoordinator:
@@ -127,11 +130,13 @@ class SearchCoordinator:
         self.hyde_limit: int = config.get("hyde_limit", DEFAULT_HYDE_LIMIT)
         self.keyword_limit: int = config.get("keyword_limit", DEFAULT_KEYWORD_LIMIT)
         self.max_deduplicated: int = config.get("max_deduplicated", DEFAULT_MAX_DEDUPLICATED)
+        self.query_timeout_ms: int = config.get("query_timeout_ms", DEFAULT_QUERY_TIMEOUT_MS)
 
         logger.info(
             f"Initialized SearchCoordinator with limits: "
             f"semantic={self.semantic_limit}, hyde={self.hyde_limit}, "
-            f"keyword={self.keyword_limit}, max_deduplicated={self.max_deduplicated}"
+            f"keyword={self.keyword_limit}, max_deduplicated={self.max_deduplicated}, "
+            f"query_timeout={self.query_timeout_ms}ms"
         )
 
     def search(self, counter_stmt: CounterStatement) -> SearchResults:
@@ -294,6 +299,17 @@ class SearchCoordinator:
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Set statement timeout to prevent indefinite hangs
+                    # This is critical for large embedding tables
+                    cur.execute(
+                        "SET LOCAL statement_timeout = %s",
+                        (self.query_timeout_ms,)
+                    )
+                    logger.debug(
+                        f"Set statement_timeout to {self.query_timeout_ms}ms "
+                        f"for semantic search"
+                    )
+
                     # Use pgvector cosine distance operator
                     # <=> returns cosine distance (0=identical, 2=opposite)
                     # We look for chunks with embeddings, then get distinct documents
@@ -315,6 +331,15 @@ class SearchCoordinator:
                     return doc_ids
 
         except Exception as e:
+            error_str = str(e).lower()
+            if "statement timeout" in error_str or "canceling statement" in error_str:
+                logger.warning(
+                    f"Semantic search query timed out after {self.query_timeout_ms}ms. "
+                    "Consider optimizing the emb_1024 table with proper indexes "
+                    "(e.g., CREATE INDEX ON emb_1024 USING ivfflat (embedding vector_cosine_ops))."
+                )
+                # Return empty results on timeout - don't fail the entire search
+                return []
             logger.error(f"Semantic search database query failed: {e}")
             raise RuntimeError(f"Semantic search failed: {e}") from e
 
@@ -361,6 +386,12 @@ class SearchCoordinator:
                 # Query database
                 with self.db_manager.get_connection() as conn:
                     with conn.cursor() as cur:
+                        # Set statement timeout to prevent indefinite hangs
+                        cur.execute(
+                            "SET LOCAL statement_timeout = %s",
+                            (self.query_timeout_ms,)
+                        )
+
                         cur.execute("""
                             SELECT DISTINCT c.document_id,
                                    MIN(e.embedding <=> %s::vector) AS distance
@@ -382,11 +413,22 @@ class SearchCoordinator:
                         )
 
             except Exception as e:
+                error_str = str(e).lower()
+                if "statement timeout" in error_str or "canceling statement" in error_str:
+                    logger.warning(
+                        f"HyDE search {i} timed out after {self.query_timeout_ms}ms, "
+                        "continuing with next abstract"
+                    )
+                    continue
                 logger.error(f"HyDE search {i} failed: {e}")
                 continue
 
         if successful_searches == 0:
-            raise RuntimeError("All HyDE searches failed")
+            logger.warning(
+                "All HyDE searches failed or timed out. "
+                "Returning empty results for HyDE strategy."
+            )
+            # Don't raise - continue with other strategies
 
         # Deduplicate while preserving order (first occurrence wins)
         seen: Set[int] = set()
@@ -444,6 +486,12 @@ class SearchCoordinator:
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Set statement timeout to prevent indefinite hangs
+                    cur.execute(
+                        "SET LOCAL statement_timeout = %s",
+                        (self.query_timeout_ms,)
+                    )
+
                     # Use full-text search with ts_rank_cd for ranking
                     cur.execute("""
                         SELECT id,
@@ -466,6 +514,13 @@ class SearchCoordinator:
                     return doc_ids
 
         except Exception as e:
+            error_str = str(e).lower()
+            if "statement timeout" in error_str or "canceling statement" in error_str:
+                logger.warning(
+                    f"Keyword search query timed out after {self.query_timeout_ms}ms"
+                )
+                # Return empty results on timeout - don't fail the entire search
+                return []
             logger.error(f"Keyword search failed: {e}")
             raise RuntimeError(f"Keyword search failed: {e}") from e
 
