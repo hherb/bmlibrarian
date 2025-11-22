@@ -390,6 +390,6 @@ uv run python paper_checker_cli.py abstracts.json -v --detailed
 
 ## See Also
 
-- [PaperChecker Architecture](../developers/paperchecker_architecture.md)
+- [PaperChecker Architecture](../developers/paper_checker_architecture.md)
 - [PaperChecker Database Guide](papercheck_database_guide.md)
 - [BMLibrarian Configuration Guide](configuration_guide.md)
