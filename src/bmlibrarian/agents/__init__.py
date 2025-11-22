@@ -32,9 +32,12 @@ Queue System:
 Text Processing:
 - TextChunker: Sliding window text chunking with configurable overlap
 - TextChunk: Text chunk dataclass with position metadata
+
+Performance Metrics:
+- PerformanceMetrics: Dataclass for tracking agent execution statistics (tokens, timing, requests)
 """
 
-from .base import BaseAgent
+from .base import BaseAgent, PerformanceMetrics
 from .query_agent import QueryAgent
 from .scoring_agent import DocumentScoringAgent, ScoringResult
 from .citation_agent import CitationFinderAgent, Citation
@@ -64,6 +67,7 @@ from .factory import AgentFactory
 
 __all__ = [
     "BaseAgent",
+    "PerformanceMetrics",
     "QueryAgent",
     "DocumentScoringAgent",
     "ScoringResult",
