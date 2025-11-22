@@ -84,12 +84,26 @@ class Session:
 # Password Hashing
 # ============================================================================
 
-# Salt length in bytes
-SALT_LENGTH = 32
-# Number of hash iterations (PBKDF2)
+# ============================================================================
+# Password Hashing Configuration
+# ============================================================================
+
+# Salt length in bytes (256 bits - cryptographically secure)
+SALT_LENGTH_BYTES = 32
+
+# Number of hash iterations (PBKDF2) - OWASP recommends 600,000 for SHA-256
+# Using 100,000 as balance between security and performance for local use
 HASH_ITERATIONS = 100000
-# Hash algorithm
+
+# Hash algorithm for PBKDF2
 HASH_ALGORITHM = "sha256"
+
+# ============================================================================
+# Password Policy Configuration
+# ============================================================================
+
+# Minimum password length (simple policy for non-critical local app)
+MIN_PASSWORD_LENGTH = 4
 
 
 def _hash_password(password: str, salt: Optional[bytes] = None) -> str:
@@ -103,7 +117,7 @@ def _hash_password(password: str, salt: Optional[bytes] = None) -> str:
         A string in format "salt$hash" where both are hex-encoded.
     """
     if salt is None:
-        salt = secrets.token_bytes(SALT_LENGTH)
+        salt = secrets.token_bytes(SALT_LENGTH_BYTES)
 
     # Use PBKDF2 for secure password hashing
     dk = hashlib.pbkdf2_hmac(
@@ -220,8 +234,10 @@ class UserService:
             raise RegistrationError("Email cannot be empty")
         if not password:
             raise RegistrationError("Password cannot be empty")
-        if len(password) < 4:
-            raise RegistrationError("Password must be at least 4 characters")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            raise RegistrationError(
+                f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+            )
 
         username = username.strip()
         email = email.strip().lower()

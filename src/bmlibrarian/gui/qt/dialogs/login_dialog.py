@@ -2,13 +2,22 @@
 
 This module provides a login/registration dialog with database connection
 configuration support.
+
+Note on Golden Rule #5 (Database Manager):
+    This module intentionally uses psycopg.connect() directly instead of
+    DatabaseManager because:
+    1. The login dialog runs BEFORE the database connection is configured
+    2. Users need to specify connection parameters before any DatabaseManager
+       can be instantiated
+    3. The connection is only used for authentication, then passed to the
+       main application which uses DatabaseManager for all other operations
 """
 
 import os
 import socket
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
@@ -23,6 +32,28 @@ from ..resources.styles.dpi_scale import get_scale_value
 
 
 # ============================================================================
+# Constants
+# ============================================================================
+
+# Default database connection values
+DEFAULT_DB_HOST = "localhost"
+DEFAULT_DB_PORT = 5432
+DEFAULT_DB_NAME = "knowledgebase"
+
+# Connection timeout in seconds
+DB_CONNECTION_TIMEOUT_SECONDS = 10
+
+# Import password policy from auth module (avoid circular import)
+# This is done lazily to prevent circular dependencies
+def _get_min_password_length() -> int:
+    """Get minimum password length from auth module."""
+    try:
+        from ....auth.user_service import MIN_PASSWORD_LENGTH
+        return MIN_PASSWORD_LENGTH
+    except ImportError:
+        return 4  # Fallback default
+
+# ============================================================================
 # Data Classes
 # ============================================================================
 
@@ -30,9 +61,9 @@ from ..resources.styles.dpi_scale import get_scale_value
 @dataclass
 class DatabaseConfig:
     """Database connection configuration."""
-    host: str = "localhost"
-    port: int = 5432
-    database: str = "knowledgebase"
+    host: str = DEFAULT_DB_HOST
+    port: int = DEFAULT_DB_PORT
+    database: str = DEFAULT_DB_NAME
     user: str = ""
     password: str = ""
 
@@ -211,7 +242,8 @@ class LoginDialog(QDialog):
 
         self.reg_password = QLineEdit()
         self.reg_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.reg_password.setPlaceholderText("Choose a password (min 4 chars)")
+        min_pwd_len = _get_min_password_length()
+        self.reg_password.setPlaceholderText(f"Choose a password (min {min_pwd_len} chars)")
         self.reg_password.setMinimumWidth(field_width)
         reg_layout.addRow("Password:", self.reg_password)
 
@@ -418,7 +450,7 @@ class LoginDialog(QDialog):
                 f"password={db_config.password}"
             )
 
-            with psycopg.connect(conn_string, connect_timeout=10) as conn:
+            with psycopg.connect(conn_string, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS) as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT version()")
                     version = cur.fetchone()[0]
@@ -541,7 +573,7 @@ class LoginDialog(QDialog):
             f"password={db_config.password}"
         )
 
-        return psycopg.connect(conn_string, connect_timeout=10)
+        return psycopg.connect(conn_string, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS)
 
     def _on_login(self) -> None:
         """Handle login button click."""
@@ -661,11 +693,12 @@ class LoginDialog(QDialog):
             self.reg_password.setFocus()
             return
 
-        if len(password) < 4:
+        min_length = _get_min_password_length()
+        if len(password) < min_length:
             QMessageBox.warning(
                 self,
                 "Password Too Short",
-                "Password must be at least 4 characters long."
+                f"Password must be at least {min_length} characters long."
             )
             self.reg_password.setFocus()
             return
