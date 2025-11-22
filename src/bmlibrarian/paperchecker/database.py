@@ -16,6 +16,7 @@ Tables managed:
     - papercheck.verdicts: Final verdicts on statements
 """
 
+from types import TracebackType
 from typing import Any, Dict, List, Optional
 import logging
 import os
@@ -32,6 +33,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_NAME: str = "knowledgebase"
 DEFAULT_DB_HOST: str = "localhost"
 DEFAULT_DB_PORT: str = "5432"
+
+# Query configuration constants
+DEFAULT_LIST_LIMIT: int = 100
+DEFAULT_LIST_OFFSET: int = 0
+RECENT_ACTIVITY_HOURS: int = 24
+
+# Validation constants
+MIN_ID_VALUE: int = 1
+MIN_LIMIT_VALUE: int = 1
+MAX_LIMIT_VALUE: int = 10000
+MIN_OFFSET_VALUE: int = 0
 
 
 class PaperCheckDB:
@@ -500,7 +512,16 @@ class PaperCheckDB:
 
         Returns:
             Dictionary with complete result data, or None if not found
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 # Get main abstract
@@ -542,7 +563,16 @@ class PaperCheckDB:
 
         Returns:
             List of result dictionaries
+
+        Raises:
+            ValueError: If pmid is not a valid positive integer
         """
+        # Validate input
+        if not isinstance(pmid, int) or pmid < MIN_ID_VALUE:
+            raise ValueError(
+                f"pmid must be an integer >= {MIN_ID_VALUE}, got {pmid}"
+            )
+
         try:
             with self.conn.cursor() as cur:
                 cur.execute(f"""
@@ -557,8 +587,259 @@ class PaperCheckDB:
             logger.error(f"Failed to retrieve results by PMID: {e}")
             return []
 
+    def list_recent_checks(
+        self,
+        limit: int = DEFAULT_LIST_LIMIT,
+        offset: int = DEFAULT_LIST_OFFSET
+    ) -> List[Dict[str, Any]]:
+        """
+        List recent abstract checks with summary information.
+
+        Args:
+            limit: Maximum number of results to return (default: DEFAULT_LIST_LIMIT)
+            offset: Number of results to skip for pagination (default: DEFAULT_LIST_OFFSET)
+
+        Returns:
+            List of dictionaries with summary information including:
+            - id: Abstract check ID
+            - source_pmid: PubMed ID if available
+            - source_doi: DOI if available
+            - source_title: Paper title if available
+            - checked_at: Timestamp of check
+            - num_statements: Number of statements extracted
+            - overall_assessment: Overall assessment text
+            - model_used: Model used for analysis
+
+        Raises:
+            ValueError: If limit or offset are out of valid range
+        """
+        # Validate input parameters
+        if not isinstance(limit, int) or limit < MIN_LIMIT_VALUE:
+            raise ValueError(
+                f"limit must be an integer >= {MIN_LIMIT_VALUE}, got {limit}"
+            )
+        if limit > MAX_LIMIT_VALUE:
+            raise ValueError(
+                f"limit must be <= {MAX_LIMIT_VALUE}, got {limit}"
+            )
+        if not isinstance(offset, int) or offset < MIN_OFFSET_VALUE:
+            raise ValueError(
+                f"offset must be an integer >= {MIN_OFFSET_VALUE}, got {offset}"
+            )
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT
+                        a.id,
+                        a.source_pmid,
+                        a.source_doi,
+                        a.source_title,
+                        a.checked_at,
+                        a.overall_assessment,
+                        a.model_used,
+                        a.processing_time_seconds,
+                        COUNT(s.id) as num_statements
+                    FROM {self.schema}.abstracts_checked a
+                    LEFT JOIN {self.schema}.statements s ON s.abstract_id = a.id
+                    GROUP BY a.id
+                    ORDER BY a.checked_at DESC
+                    LIMIT %s OFFSET %s
+                """, (limit, offset))
+                return [dict(row) for row in cur.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Failed to list recent checks: {e}")
+            return []
+
+    def get_verdicts_summary(self, abstract_id: int) -> List[Dict[str, Any]]:
+        """
+        Get summary of verdicts for an abstract check.
+
+        Args:
+            abstract_id: ID of the abstract to get verdicts for
+
+        Returns:
+            List of verdict summaries with statement text, verdict, and confidence
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
+        """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT
+                        s.statement_text,
+                        s.statement_type,
+                        s.statement_order,
+                        v.verdict,
+                        v.rationale,
+                        v.confidence,
+                        cr.num_citations,
+                        cr.report_text
+                    FROM {self.schema}.statements s
+                    LEFT JOIN {self.schema}.verdicts v ON v.statement_id = s.id
+                    LEFT JOIN {self.schema}.counter_statements cs ON cs.statement_id = s.id
+                    LEFT JOIN {self.schema}.counter_reports cr ON cr.counter_statement_id = cs.id
+                    WHERE s.abstract_id = %s
+                    ORDER BY s.statement_order
+                """, (abstract_id,))
+                return [dict(row) for row in cur.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Failed to get verdicts summary: {e}")
+            return []
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get overall statistics for the papercheck database.
+
+        Returns:
+            Dictionary containing:
+            - total_abstracts: Total number of abstracts checked
+            - total_statements: Total number of statements extracted
+            - verdicts_breakdown: Count by verdict type
+            - confidence_breakdown: Count by confidence level
+            - recent_activity: Abstracts checked in last 24 hours
+        """
+        try:
+            with self.conn.cursor() as cur:
+                # Total abstracts
+                cur.execute(f"""
+                    SELECT COUNT(*) as count FROM {self.schema}.abstracts_checked
+                """)
+                total_abstracts = cur.fetchone()["count"]
+
+                # Total statements
+                cur.execute(f"""
+                    SELECT COUNT(*) as count FROM {self.schema}.statements
+                """)
+                total_statements = cur.fetchone()["count"]
+
+                # Verdicts breakdown
+                cur.execute(f"""
+                    SELECT verdict, COUNT(*) as count
+                    FROM {self.schema}.verdicts
+                    GROUP BY verdict
+                """)
+                verdicts_breakdown = {
+                    row["verdict"]: row["count"]
+                    for row in cur.fetchall()
+                }
+
+                # Confidence breakdown
+                cur.execute(f"""
+                    SELECT confidence, COUNT(*) as count
+                    FROM {self.schema}.verdicts
+                    GROUP BY confidence
+                """)
+                confidence_breakdown = {
+                    row["confidence"]: row["count"]
+                    for row in cur.fetchall()
+                }
+
+                # Recent activity (last RECENT_ACTIVITY_HOURS hours)
+                cur.execute(f"""
+                    SELECT COUNT(*) as count
+                    FROM {self.schema}.abstracts_checked
+                    WHERE checked_at >= NOW() - INTERVAL '%s hours'
+                """, (RECENT_ACTIVITY_HOURS,))
+                recent_activity = cur.fetchone()["count"]
+
+                return {
+                    "total_abstracts": total_abstracts,
+                    "total_statements": total_statements,
+                    "verdicts_breakdown": verdicts_breakdown,
+                    "confidence_breakdown": confidence_breakdown,
+                    "recent_activity": recent_activity
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to get statistics: {e}")
+            return {
+                "total_abstracts": 0,
+                "total_statements": 0,
+                "verdicts_breakdown": {},
+                "confidence_breakdown": {},
+                "recent_activity": 0
+            }
+
+    def delete_result(self, abstract_id: int) -> bool:
+        """
+        Delete a complete result and all related data.
+
+        Uses CASCADE delete to remove all related statements, counter-statements,
+        search results, scored documents, citations, counter-reports, and verdicts.
+
+        Args:
+            abstract_id: ID of the abstract to delete
+
+        Returns:
+            True if deletion was successful, False otherwise
+
+        Raises:
+            ValueError: If abstract_id is not a valid positive integer
+        """
+        # Validate input
+        if not isinstance(abstract_id, int) or abstract_id < MIN_ID_VALUE:
+            raise ValueError(
+                f"abstract_id must be an integer >= {MIN_ID_VALUE}, got {abstract_id}"
+            )
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(f"""
+                    DELETE FROM {self.schema}.abstracts_checked
+                    WHERE id = %s
+                """, (abstract_id,))
+                self.conn.commit()
+                deleted = cur.rowcount > 0
+                if deleted:
+                    logger.info(f"Deleted abstract_id={abstract_id} and all related data")
+                else:
+                    logger.warning(f"No abstract found with id={abstract_id}")
+                return deleted
+
+        except Exception as e:
+            logger.error(f"Failed to delete result: {e}")
+            self.conn.rollback()
+            return False
+
     def close(self) -> None:
         """Close the database connection if owned by this instance."""
         if self._owns_connection and self.conn:
             self.conn.close()
             logger.info("Database connection closed")
+
+    def __enter__(self) -> "PaperCheckDB":
+        """
+        Context manager entry.
+
+        Returns:
+            Self for use in 'with' statement
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType]
+    ) -> None:
+        """
+        Context manager exit.
+
+        Closes the database connection when exiting the context.
+
+        Args:
+            exc_type: Exception type if an exception was raised
+            exc_val: Exception value if an exception was raised
+            exc_tb: Exception traceback if an exception was raised
+        """
+        self.close()
