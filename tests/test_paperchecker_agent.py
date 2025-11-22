@@ -107,10 +107,12 @@ class TestPaperCheckerAgentInit:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_init_with_default_config(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -149,10 +151,12 @@ class TestPaperCheckerAgentInit:
     @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_init_with_custom_db(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_host,
@@ -185,10 +189,12 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_filter_agent_params(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -227,10 +233,12 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_max_statements_property(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -259,10 +267,12 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_search_config_property(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -303,10 +313,12 @@ class TestPaperCheckerAgentConnection:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_connection_all_pass(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -352,10 +364,12 @@ class TestPaperCheckerAgentConnection:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_connection_db_failure(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -399,10 +413,12 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_check_abstract_empty_raises_error(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -435,10 +451,12 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_check_abstract_none_raises_error(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -468,10 +486,12 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_get_agent_type(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -506,10 +526,12 @@ class TestPaperCheckerAgentProgress:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_progress_callback_invoked(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -545,10 +567,12 @@ class TestPaperCheckerAgentProgress:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_progress_callback_none_no_error(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -584,10 +608,12 @@ class TestPaperCheckerComponentInit:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_components_initialized(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -633,10 +659,12 @@ class TestPaperCheckerBatchProcessing:
     @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('ollama.Client')
     def test_batch_empty_list(
         self,
         mock_ollama,
+        mock_search_coord,
         mock_citation,
         mock_scoring,
         mock_db,
@@ -659,6 +687,1105 @@ class TestPaperCheckerBatchProcessing:
         results = agent.check_abstracts_batch([])
 
         assert results == []
+
+
+# ==================== DOCUMENT SCORING TESTS ====================
+
+class TestPaperCheckerDocumentScoring:
+    """Test document scoring integration."""
+
+    @pytest.fixture
+    def sample_statement(self) -> Statement:
+        """Create a sample statement for testing."""
+        return Statement(
+            text="Metformin is superior to GLP-1 agonists for type 2 diabetes",
+            context="In this study, we compared the efficacy...",
+            statement_type="finding",
+            confidence=0.9,
+            statement_order=1
+        )
+
+    @pytest.fixture
+    def sample_counter_statement(self, sample_statement: Statement) -> CounterStatement:
+        """Create a sample counter-statement for testing."""
+        return CounterStatement(
+            original_statement=sample_statement,
+            negated_text="GLP-1 agonists are superior or equivalent to metformin",
+            hyde_abstracts=["A hypothetical study showing GLP-1 superiority..."],
+            keywords=["GLP-1", "metformin", "diabetes"],
+            generation_metadata={"model": "test-model"}
+        )
+
+    @pytest.fixture
+    def sample_search_results(self) -> SearchResults:
+        """Create sample search results for testing."""
+        return SearchResults(
+            semantic_docs=[1, 2, 3],
+            hyde_docs=[2, 3, 4],
+            keyword_docs=[3, 4, 5],
+            deduplicated_docs=[1, 2, 3, 4, 5],
+            provenance={
+                1: ["semantic"],
+                2: ["semantic", "hyde"],
+                3: ["semantic", "hyde", "keyword"],
+                4: ["hyde", "keyword"],
+                5: ["keyword"]
+            },
+            search_metadata={"test": True}
+        )
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_build_scoring_question(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement
+    ):
+        """Test scoring question construction."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Build question
+        question = agent._build_scoring_question(sample_counter_statement)
+
+        # Verify question contains key elements
+        assert "GLP-1 agonists are superior or equivalent to metformin" in question
+        assert "Metformin is superior to GLP-1 agonists" in question
+        assert "evidence" in question.lower()
+        assert "contradicts" in question.lower()
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_get_score_explanation_with_title(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test score explanation includes title."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        document = {
+            "id": 1,
+            "title": "GLP-1 Receptor Agonists in Type 2 Diabetes",
+            "abstract": "This study evaluates..."
+        }
+
+        explanation = agent._get_score_explanation(
+            score=4,
+            document=document,
+            reasoning="Document provides relevant evidence"
+        )
+
+        # Should include reasoning and title
+        assert "Document provides relevant evidence" in explanation
+        assert "GLP-1 Receptor Agonists" in explanation
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_get_score_explanation_long_title_truncated(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test long titles are truncated in explanation."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Create document with very long title
+        long_title = "A" * 200
+        document = {
+            "id": 1,
+            "title": long_title,
+            "abstract": "..."
+        }
+
+        explanation = agent._get_score_explanation(
+            score=3,
+            document=document,
+            reasoning="Some reasoning"
+        )
+
+        # Title should be truncated
+        assert "..." in explanation
+        assert len(explanation) < len(long_title) + 100  # Reasonable length
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_fetch_documents_empty_list(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test fetching with empty document list returns empty dict."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        result = agent._fetch_documents([])
+
+        assert result == {}
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_score_documents_empty_search_results(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement
+    ):
+        """Test scoring with empty search results returns empty list."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {"score_threshold": 3.0}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Create empty search results
+        empty_results = SearchResults(
+            semantic_docs=[],
+            hyde_docs=[],
+            keyword_docs=[],
+            deduplicated_docs=[],
+            provenance={},
+            search_metadata={}
+        )
+
+        result = agent._score_documents(sample_counter_statement, empty_results)
+
+        assert result == []
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_score_documents_filters_below_threshold(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_search_results
+    ):
+        """Test that documents below threshold are filtered out."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {
+            "score_threshold": 3.0,
+            "scoring": {"batch_size": 10, "early_stop_count": 0}
+        }
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        # Mock database manager to return documents
+        mock_db_mgr = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "title": "Doc 1", "abstract": "Abstract 1"},
+            {"id": 2, "title": "Doc 2", "abstract": "Abstract 2"},
+            {"id": 3, "title": "Doc 3", "abstract": "Abstract 3"},
+        ]
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_mgr.get_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_db_mgr.get_connection.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_manager.return_value = mock_db_mgr
+
+        # Mock scoring agent to return different scores
+        mock_scoring_instance = MagicMock()
+        mock_scoring_instance.evaluate_document.side_effect = [
+            {"score": 2, "reasoning": "Low relevance"},  # Below threshold
+            {"score": 4, "reasoning": "High relevance"},  # Above threshold
+            {"score": 5, "reasoning": "Very high relevance"},  # Above threshold
+        ]
+        mock_scoring.return_value = mock_scoring_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        agent.scoring_agent = mock_scoring_instance
+
+        # Limit search results to 3 docs for test
+        limited_results = SearchResults(
+            semantic_docs=[1, 2, 3],
+            hyde_docs=[],
+            keyword_docs=[],
+            deduplicated_docs=[1, 2, 3],
+            provenance={1: ["semantic"], 2: ["semantic"], 3: ["semantic"]},
+            search_metadata={}
+        )
+
+        result = agent._score_documents(sample_counter_statement, limited_results)
+
+        # Should only have docs above threshold (2 docs)
+        assert len(result) == 2
+        assert all(doc.score >= 3 for doc in result)
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_score_documents_sorted_descending(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement
+    ):
+        """Test that scored documents are sorted by score descending."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {
+            "score_threshold": 3.0,
+            "scoring": {"batch_size": 10, "early_stop_count": 0}
+        }
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        # Mock database manager
+        mock_db_mgr = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "title": "Doc 1", "abstract": "Abstract 1"},
+            {"id": 2, "title": "Doc 2", "abstract": "Abstract 2"},
+            {"id": 3, "title": "Doc 3", "abstract": "Abstract 3"},
+        ]
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_mgr.get_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_db_mgr.get_connection.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_manager.return_value = mock_db_mgr
+
+        # Mock scoring agent - return scores in non-sorted order
+        mock_scoring_instance = MagicMock()
+        mock_scoring_instance.evaluate_document.side_effect = [
+            {"score": 3, "reasoning": "Medium"},
+            {"score": 5, "reasoning": "High"},
+            {"score": 4, "reasoning": "Good"},
+        ]
+        mock_scoring.return_value = mock_scoring_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        agent.scoring_agent = mock_scoring_instance
+
+        search_results = SearchResults(
+            semantic_docs=[1, 2, 3],
+            hyde_docs=[],
+            keyword_docs=[],
+            deduplicated_docs=[1, 2, 3],
+            provenance={1: ["semantic"], 2: ["semantic"], 3: ["semantic"]},
+            search_metadata={}
+        )
+
+        result = agent._score_documents(sample_counter_statement, search_results)
+
+        # Verify sorted descending
+        scores = [doc.score for doc in result]
+        assert scores == sorted(scores, reverse=True)
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('bmlibrarian.paperchecker.agent.get_db_manager')
+    @patch('ollama.Client')
+    def test_score_documents_preserves_provenance(
+        self,
+        mock_ollama,
+        mock_db_manager,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement
+    ):
+        """Test that provenance is preserved in scored documents."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {
+            "score_threshold": 3.0,
+            "scoring": {"batch_size": 10, "early_stop_count": 0}
+        }
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        # Mock database manager
+        mock_db_mgr = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "title": "Doc 1", "abstract": "Abstract 1"},
+            {"id": 2, "title": "Doc 2", "abstract": "Abstract 2"},
+        ]
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_mgr.get_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_db_mgr.get_connection.return_value.__exit__ = MagicMock(return_value=None)
+        mock_db_manager.return_value = mock_db_mgr
+
+        # Mock scoring agent
+        mock_scoring_instance = MagicMock()
+        mock_scoring_instance.evaluate_document.side_effect = [
+            {"score": 4, "reasoning": "Relevant"},
+            {"score": 5, "reasoning": "Very relevant"},
+        ]
+        mock_scoring.return_value = mock_scoring_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        agent.scoring_agent = mock_scoring_instance
+
+        search_results = SearchResults(
+            semantic_docs=[1],
+            hyde_docs=[1, 2],
+            keyword_docs=[2],
+            deduplicated_docs=[1, 2],
+            provenance={
+                1: ["semantic", "hyde"],
+                2: ["hyde", "keyword"]
+            },
+            search_metadata={}
+        )
+
+        result = agent._score_documents(sample_counter_statement, search_results)
+
+        # Verify provenance is preserved
+        assert len(result) == 2
+        for scored_doc in result:
+            expected_provenance = search_results.provenance[scored_doc.doc_id]
+            assert set(scored_doc.found_by) == set(expected_provenance)
+
+
+# ==================== COUNTER-REPORT GENERATION TESTS ====================
+
+class TestPaperCheckerCounterReportGeneration:
+    """Test counter-report generation functionality."""
+
+    @pytest.fixture
+    def sample_statement(self) -> Statement:
+        """Create a sample statement for testing."""
+        return Statement(
+            text="Metformin is superior to GLP-1 agonists",
+            context="Comparison study context",
+            statement_type="finding",
+            confidence=0.9,
+            statement_order=1
+        )
+
+    @pytest.fixture
+    def sample_counter_statement(self, sample_statement: Statement) -> CounterStatement:
+        """Create a sample counter-statement for testing."""
+        return CounterStatement(
+            original_statement=sample_statement,
+            negated_text="GLP-1 agonists are superior or equivalent to metformin",
+            hyde_abstracts=["Hypothetical abstract showing GLP-1 efficacy..."],
+            keywords=["GLP-1", "metformin", "diabetes"],
+            generation_metadata={"model": "test-model"}
+        )
+
+    @pytest.fixture
+    def sample_citations(self) -> list:
+        """Create sample citations for testing."""
+        return [
+            ExtractedCitation(
+                doc_id=1,
+                passage="GLP-1 agonists demonstrated superior HbA1c reduction of 1.8% compared to metformin's 1.2% (p<0.001).",
+                relevance_score=5,
+                full_citation="Smith J, et al. GLP-1 vs Metformin Study. Diabetes Care. 2023. doi:10.1234/example",
+                metadata={"pmid": 12345678, "year": 2023},
+                citation_order=1
+            ),
+            ExtractedCitation(
+                doc_id=2,
+                passage="Meta-analysis of 20 trials showed GLP-1 associated with better cardiovascular outcomes (HR 0.85, 95% CI 0.75-0.95).",
+                relevance_score=4,
+                full_citation="Jones A, et al. GLP-1 Meta-Analysis. JAMA. 2022. doi:10.1234/another",
+                metadata={"pmid": 23456789, "year": 2022},
+                citation_order=2
+            )
+        ]
+
+    @pytest.fixture
+    def sample_search_results(self) -> SearchResults:
+        """Create sample search results for testing."""
+        return SearchResults(
+            semantic_docs=[1, 2, 3],
+            hyde_docs=[2, 3, 4],
+            keyword_docs=[3, 4, 5],
+            deduplicated_docs=[1, 2, 3, 4, 5],
+            provenance={
+                1: ["semantic"],
+                2: ["semantic", "hyde"],
+                3: ["semantic", "hyde", "keyword"],
+                4: ["hyde", "keyword"],
+                5: ["keyword"]
+            },
+            search_metadata={}
+        )
+
+    @pytest.fixture
+    def sample_scored_docs(self) -> list:
+        """Create sample scored documents for testing."""
+        return [
+            ScoredDocument(
+                doc_id=1,
+                document={"id": 1, "title": "Doc 1"},
+                score=5,
+                explanation="High relevance",
+                supports_counter=True,
+                found_by=["semantic"]
+            ),
+            ScoredDocument(
+                doc_id=2,
+                document={"id": 2, "title": "Doc 2"},
+                score=4,
+                explanation="Good relevance",
+                supports_counter=True,
+                found_by=["semantic", "hyde"]
+            )
+        ]
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_build_report_prompt(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_citations
+    ):
+        """Test report prompt construction."""
+        # Setup mocks
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        prompt = agent._build_report_prompt(sample_counter_statement, sample_citations)
+
+        # Should contain counter-statement
+        assert "GLP-1 agonists are superior or equivalent to metformin" in prompt
+
+        # Should contain original statement for context
+        assert "Metformin is superior to GLP-1 agonists" in prompt
+
+        # Should contain all citations
+        for citation in sample_citations:
+            assert citation.passage in prompt
+
+        # Should contain instructions
+        assert "inline" in prompt.lower()
+        assert "citation" in prompt.lower()
+        assert "professional" in prompt.lower()
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_parse_report_response_clean(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test parsing of clean LLM responses."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        clean_response = "This is a clean report with [1] citation and [2] another."
+        result = agent._parse_report_response(clean_response)
+        assert result == clean_response
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_parse_report_response_with_prefix(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test parsing of responses with Summary: prefix."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        prefixed_response = "Summary: This is a report with prefix that should be removed."
+        result = agent._parse_report_response(prefixed_response)
+        assert result == "This is a report with prefix that should be removed."
+        assert not result.startswith("Summary:")
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_parse_report_response_with_code_blocks(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test parsing of responses wrapped in code blocks."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Test with ```markdown wrapper
+        code_blocked = "```markdown\nThis is in code block that should be unwrapped. This is additional text to meet minimum length.\n```"
+        result = agent._parse_report_response(code_blocked)
+        assert result == "This is in code block that should be unwrapped. This is additional text to meet minimum length."
+        assert "```" not in result
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_parse_report_response_too_short_raises(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn
+    ):
+        """Test that too-short responses raise ValueError."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        with pytest.raises(ValueError, match="too short"):
+            agent._parse_report_response("Short")
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_generate_empty_report(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_search_results,
+        sample_scored_docs
+    ):
+        """Test generation of empty report when no citations available."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {"score_threshold": 3.0}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        report = agent._generate_empty_report(
+            sample_counter_statement, sample_search_results, sample_scored_docs
+        )
+
+        assert report.num_citations == 0
+        assert len(report.citations) == 0
+        assert len(report.summary) > 0
+        assert "no substantial evidence" in report.summary.lower()
+        assert report.generation_metadata.get("empty_report") is True
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_calculate_search_stats(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_search_results,
+        sample_scored_docs,
+        sample_citations
+    ):
+        """Test search statistics calculation."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        stats = agent._calculate_search_stats(
+            sample_search_results, sample_scored_docs, sample_citations
+        )
+
+        # Verify correct counts
+        assert stats["documents_found"] == 5
+        assert stats["documents_scored"] == 2
+        assert stats["documents_cited"] == 2
+        assert stats["citations_extracted"] == 2
+
+        # Verify strategy breakdown
+        assert stats["search_strategies"]["semantic"] == 3
+        assert stats["search_strategies"]["hyde"] == 3
+        assert stats["search_strategies"]["keyword"] == 3
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_generate_counter_report_with_citations(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_citations,
+        sample_search_results,
+        sample_scored_docs
+    ):
+        """Test counter-report generation with citations."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {"temperature": 0.3}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        # Mock the ollama client's generate method
+        mock_ollama_instance = MagicMock()
+        mock_ollama_instance.generate.return_value = {
+            "response": "Evidence from multiple studies supports the efficacy of GLP-1 agonists. "
+                       "In a 2023 study, Smith et al. demonstrated superior HbA1c reduction [1]. "
+                       "Furthermore, a meta-analysis by Jones et al. in 2022 showed improved "
+                       "cardiovascular outcomes [2]. These findings suggest GLP-1 agonists "
+                       "may be preferable for certain patient populations.",
+            "prompt_eval_count": 100,
+            "eval_count": 50,
+            "eval_duration": 1000000000,
+            "prompt_eval_duration": 500000000
+        }
+        mock_ollama.return_value = mock_ollama_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        agent.client = mock_ollama_instance
+
+        report = agent._generate_counter_report(
+            sample_counter_statement,
+            sample_citations,
+            sample_search_results,
+            sample_scored_docs
+        )
+
+        # Verify report structure
+        assert isinstance(report, CounterReport)
+        assert len(report.summary) > 50
+        assert report.num_citations == len(sample_citations)
+        assert len(report.citations) == len(sample_citations)
+        assert isinstance(report.search_stats, dict)
+
+        # Verify search stats populated
+        assert report.search_stats["documents_found"] == 5
+        assert report.search_stats["documents_scored"] == 2
+        assert report.search_stats["citations_extracted"] == 2
+
+        # Verify metadata
+        assert "model" in report.generation_metadata
+        assert "timestamp" in report.generation_metadata
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_generate_counter_report_empty_citations(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_search_results,
+        sample_scored_docs
+    ):
+        """Test counter-report generation with no citations returns empty report."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {"score_threshold": 3.0}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+
+        # Call with empty citations
+        report = agent._generate_counter_report(
+            sample_counter_statement,
+            [],  # No citations
+            sample_search_results,
+            sample_scored_docs
+        )
+
+        # Should generate empty report
+        assert report.num_citations == 0
+        assert len(report.citations) == 0
+        assert "no substantial evidence" in report.summary.lower()
+        assert report.generation_metadata.get("empty_report") is True
+
+    @patch('bmlibrarian.paperchecker.agent.get_config')
+    @patch('bmlibrarian.paperchecker.agent.get_model')
+    @patch('bmlibrarian.paperchecker.agent.get_agent_config')
+    @patch('bmlibrarian.paperchecker.agent.get_ollama_host')
+    @patch('bmlibrarian.paperchecker.agent.PaperCheckDB')
+    @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
+    @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
+    @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
+    @patch('ollama.Client')
+    def test_counter_report_to_markdown(
+        self,
+        mock_ollama,
+        mock_search_coord,
+        mock_citation,
+        mock_scoring,
+        mock_db,
+        mock_host,
+        mock_agent_config,
+        mock_model,
+        mock_config_fn,
+        sample_counter_statement,
+        sample_citations,
+        sample_search_results,
+        sample_scored_docs
+    ):
+        """Test that counter-report can be converted to markdown."""
+        mock_config_fn.return_value = MagicMock(_config={})
+        mock_model.return_value = "gpt-oss:20b"
+        mock_host.return_value = "http://localhost:11434"
+        mock_agent_config.return_value = {"temperature": 0.3}
+        mock_db_instance = MagicMock()
+        mock_db_instance.get_connection.return_value = MagicMock()
+        mock_db.return_value = mock_db_instance
+
+        # Mock ollama client
+        mock_ollama_instance = MagicMock()
+        mock_ollama_instance.generate.return_value = {
+            "response": "Multiple studies support GLP-1 efficacy [1][2]. Evidence shows superior outcomes.",
+            "prompt_eval_count": 100,
+            "eval_count": 50,
+            "eval_duration": 1000000000,
+            "prompt_eval_duration": 500000000
+        }
+        mock_ollama.return_value = mock_ollama_instance
+
+        agent = PaperCheckerAgent(show_model_info=False)
+        agent.client = mock_ollama_instance
+
+        report = agent._generate_counter_report(
+            sample_counter_statement,
+            sample_citations,
+            sample_search_results,
+            sample_scored_docs
+        )
+
+        markdown = report.to_markdown()
+
+        # Should contain summary
+        assert report.summary in markdown
+
+        # Should contain references section
+        assert "References" in markdown or "references" in markdown.lower()
+
+        # Should contain all citations
+        for citation in sample_citations:
+            assert citation.full_citation in markdown
 
 
 if __name__ == "__main__":

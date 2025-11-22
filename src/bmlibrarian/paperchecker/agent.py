@@ -19,7 +19,10 @@ from typing import Dict, List, Optional, Any, Callable
 import logging
 from datetime import datetime
 
+from psycopg.rows import dict_row
+
 from bmlibrarian.agents.base import BaseAgent
+from bmlibrarian.database import get_db_manager
 from bmlibrarian.agents.orchestrator import AgentOrchestrator
 from bmlibrarian.agents.scoring_agent import DocumentScoringAgent
 from bmlibrarian.agents.citation_agent import CitationFinderAgent
@@ -55,6 +58,24 @@ DEFAULT_HYDE_LIMIT: int = 50
 DEFAULT_KEYWORD_LIMIT: int = 50
 DEFAULT_MAX_DEDUPLICATED: int = 100
 DEFAULT_MAX_CITATIONS_PER_STATEMENT: int = 10
+DEFAULT_SCORING_BATCH_SIZE: int = 20
+DEFAULT_EARLY_STOP_COUNT: int = 20
+DEFAULT_EXPLANATION_TITLE_MAX_LEN: int = 100
+DEFAULT_MIN_CITATION_RELEVANCE: float = 0.7
+
+# Counter-report generation constants
+DEFAULT_REPORT_TEMPERATURE: float = 0.3
+DEFAULT_REPORT_MAX_TOKENS: int = 4000
+DEFAULT_MIN_REPORT_LENGTH: int = 50
+REPORT_PREFIXES_TO_STRIP: tuple = (
+    "Summary:",
+    "Report:",
+    "Counter-Evidence Summary:",
+    "Here is the summary:",
+    "Here's the summary:",
+    "**Summary:**",
+    "**Report:**",
+)
 
 
 class PaperCheckerAgent(BaseAgent):
@@ -616,41 +637,443 @@ class PaperCheckerAgent(BaseAgent):
         self, counter_stmt: CounterStatement, search_results: SearchResults
     ) -> List[ScoredDocument]:
         """
-        Step 4: Score documents for relevance to counter-statement.
+        Step 4: Score documents for counter-statement support.
 
-        Uses DocumentScoringAgent to evaluate each document.
+        Uses DocumentScoringAgent to evaluate how useful each document is
+        for supporting the counter-claim. Documents are scored 1-5, and only
+        those above the configured threshold are kept.
 
         Args:
-            counter_stmt: Counter-statement to score against
-            search_results: Search results to score
+            counter_stmt: CounterStatement to evaluate against
+            search_results: SearchResults with document IDs and provenance
 
         Returns:
-            List of ScoredDocument objects with relevance scores
-
-        Note:
-            Full implementation in Step 08 (08_DOCUMENT_SCORING.md)
+            List of ScoredDocument objects (only those above threshold),
+            sorted by score descending
         """
-        raise NotImplementedError("Implemented in Step 08")
+        doc_count = len(search_results.deduplicated_docs)
+        logger.info(
+            f"Scoring {doc_count} documents for counter-statement support"
+        )
+
+        if doc_count == 0:
+            logger.warning("No documents to score")
+            return []
+
+        # Fetch full document data
+        documents = self._fetch_documents(search_results.deduplicated_docs)
+
+        if not documents:
+            logger.warning("Failed to fetch any documents")
+            return []
+
+        # Build scoring question focused on counter-evidence
+        scoring_question = self._build_scoring_question(counter_stmt)
+
+        # Get configuration for batch processing
+        scoring_config = self.agent_config.get("scoring", {})
+        batch_size = scoring_config.get("batch_size", DEFAULT_SCORING_BATCH_SIZE)
+        early_stop_count = scoring_config.get("early_stop_count", DEFAULT_EARLY_STOP_COUNT)
+
+        # Score documents in batches
+        scored_docs: List[ScoredDocument] = []
+        doc_items = list(documents.items())
+        total_batches = (len(doc_items) - 1) // batch_size + 1
+
+        for batch_idx in range(0, len(doc_items), batch_size):
+            batch = doc_items[batch_idx:batch_idx + batch_size]
+            current_batch_num = batch_idx // batch_size + 1
+
+            logger.debug(f"Scoring batch {current_batch_num}/{total_batches}")
+
+            for doc_id, document in batch:
+                try:
+                    # Get provenance for this document
+                    found_by = search_results.provenance.get(doc_id, [])
+
+                    # Score using DocumentScoringAgent
+                    scoring_result = self.scoring_agent.evaluate_document(
+                        user_question=scoring_question,
+                        document=document
+                    )
+
+                    score = scoring_result['score']
+                    reasoning = scoring_result['reasoning']
+
+                    # Skip if below threshold
+                    if score < self.score_threshold:
+                        logger.debug(
+                            f"Doc {doc_id}: score={score} (below threshold {self.score_threshold})"
+                        )
+                        continue
+
+                    # Create ScoredDocument
+                    scored_doc = ScoredDocument(
+                        doc_id=doc_id,
+                        document=document,
+                        score=score,
+                        explanation=self._get_score_explanation(
+                            score=score,
+                            document=document,
+                            reasoning=reasoning
+                        ),
+                        supports_counter=True,  # score >= threshold
+                        found_by=found_by
+                    )
+
+                    scored_docs.append(scored_doc)
+
+                    logger.debug(
+                        f"Doc {doc_id}: score={score}, found_by={found_by}"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to score document {doc_id}: {e}")
+                    # Continue with other documents
+                    continue
+
+            # Early stopping if we have enough high-scoring documents
+            if early_stop_count > 0 and len(scored_docs) >= early_stop_count:
+                logger.info(
+                    f"Early stopping: found {len(scored_docs)} documents "
+                    f"above threshold (target: {early_stop_count})"
+                )
+                break
+
+        logger.info(
+            f"Scoring complete: {len(scored_docs)}/{len(documents)} documents "
+            f"above threshold ({self.score_threshold})"
+        )
+
+        # Sort by score (descending)
+        scored_docs.sort(key=lambda x: x.score, reverse=True)
+
+        return scored_docs
+
+    def _fetch_documents(self, doc_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """
+        Fetch full document data from database.
+
+        Uses the DatabaseManager to retrieve document metadata including
+        title, abstract, authors, publication year, journal, identifiers,
+        and source information.
+
+        Args:
+            doc_ids: List of document IDs to fetch
+
+        Returns:
+            Dict mapping doc_id → document data dictionary
+        """
+        if not doc_ids:
+            return {}
+
+        try:
+            db_manager = get_db_manager()
+            with db_manager.get_connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    # Use ANY for efficient batch query
+                    cur.execute("""
+                        SELECT
+                            id, title, abstract, authors, publication_date,
+                            publication AS journal, pmid, doi, source_id
+                        FROM document
+                        WHERE id = ANY(%s)
+                    """, (doc_ids,))
+
+                    results = cur.fetchall()
+
+            # Convert to dict keyed by ID
+            documents: Dict[int, Dict[str, Any]] = {}
+            for row in results:
+                doc_dict = dict(row)
+                doc_id = doc_dict['id']
+                documents[doc_id] = doc_dict
+
+            logger.debug(f"Fetched {len(documents)}/{len(doc_ids)} documents from database")
+
+            return documents
+
+        except Exception as e:
+            logger.error(f"Failed to fetch documents: {e}")
+            # Return empty dict rather than raising to allow graceful degradation
+            return {}
+
+    def _build_scoring_question(self, counter_stmt: CounterStatement) -> str:
+        """
+        Build question for scoring documents in counter-evidence context.
+
+        The question frames the scoring in terms of finding evidence that
+        SUPPORTS the counter-statement (i.e., contradicts the original claim).
+
+        Args:
+            counter_stmt: CounterStatement object
+
+        Returns:
+            Question string for DocumentScoringAgent
+        """
+        return (
+            f"Does this document provide evidence that supports or relates to "
+            f"the following claim: {counter_stmt.negated_text}? "
+            f"We are looking for evidence that contradicts: "
+            f"{counter_stmt.original_statement.text}"
+        )
+
+    def _get_score_explanation(
+        self,
+        score: int,
+        document: Dict[str, Any],
+        reasoning: str
+    ) -> str:
+        """
+        Generate explanation for document score.
+
+        Combines the model's reasoning with the document title for context.
+
+        Args:
+            score: The relevance score (1-5)
+            document: Document data dictionary
+            reasoning: Reasoning from DocumentScoringAgent
+
+        Returns:
+            Explanation string
+        """
+        # Use the model's reasoning as the primary explanation
+        explanation = reasoning
+
+        # Add title context if not already mentioned
+        title = document.get("title", "")
+        if title and len(title) > 0:
+            # Truncate long titles for readability
+            display_title = title[:DEFAULT_EXPLANATION_TITLE_MAX_LEN]
+            if len(title) > DEFAULT_EXPLANATION_TITLE_MAX_LEN:
+                display_title += "..."
+
+            explanation = f"{reasoning} (Title: \"{display_title}\")"
+
+        return explanation
 
     def _extract_citations(
         self, counter_stmt: CounterStatement, scored_docs: List[ScoredDocument]
     ) -> List[ExtractedCitation]:
         """
-        Step 5: Extract supporting citations from scored documents.
+        Step 5: Extract citations from high-scoring documents.
 
-        Uses CitationFinderAgent to extract relevant passages.
+        Uses CitationFinderAgent to extract specific passages that support
+        the counter-statement. Only documents above the min_citation_score
+        are processed.
 
         Args:
-            counter_stmt: Counter-statement to find citations for
-            scored_docs: Documents above score threshold
+            counter_stmt: CounterStatement being supported
+            scored_docs: List of ScoredDocument objects (sorted by score descending)
 
         Returns:
-            List of ExtractedCitation objects
+            List of ExtractedCitation objects (ordered by relevance)
 
-        Note:
-            Full implementation in Step 09 (09_CITATION_EXTRACTION.md)
+        Raises:
+            RuntimeError: If citation extraction fails unrecoverably
         """
-        raise NotImplementedError("Implemented in Step 09")
+        logger.info(
+            f"Extracting citations from {len(scored_docs)} scored documents "
+            f"(min score: {self.min_citation_score})"
+        )
+
+        # Filter to documents above min_citation_score
+        eligible_docs = [
+            doc for doc in scored_docs
+            if doc.score >= self.min_citation_score
+        ]
+
+        logger.info(f"{len(eligible_docs)} documents eligible for citation extraction")
+
+        if not eligible_docs:
+            logger.warning("No documents above min_citation_score for citation extraction")
+            return []
+
+        # Prepare for citation extraction
+        extraction_question = self._build_extraction_question(counter_stmt)
+
+        # Convert to format expected by CitationFinderAgent
+        # CitationFinderAgent expects: List[Tuple[Dict, Dict]] where Dict is (document, scoring_result)
+        scored_tuples = [
+            (doc.document, {"score": doc.score, "reasoning": doc.explanation})
+            for doc in eligible_docs
+        ]
+
+        # Cache citation config to avoid repeated property access
+        citation_config = self.citation_config
+
+        # Get max_citations limit from config
+        max_citations = citation_config.get(
+            "max_citations_per_statement", DEFAULT_MAX_CITATIONS_PER_STATEMENT
+        )
+
+        # Extract citations using CitationFinderAgent
+        try:
+            # Get min_relevance from config or use default
+            min_relevance = citation_config.get(
+                "min_relevance", DEFAULT_MIN_CITATION_RELEVANCE
+            )
+
+            # Use existing agent's batch extraction capability
+            citation_results = self.citation_agent.process_scored_documents_for_citations(
+                user_question=extraction_question,
+                scored_documents=scored_tuples,
+                score_threshold=self.min_citation_score,
+                min_relevance=min_relevance
+            )
+
+            # Convert to ExtractedCitation objects
+            citations: List[ExtractedCitation] = []
+
+            # Pre-build doc_id → ScoredDocument mapping for O(1) lookup
+            # This avoids O(n²) complexity when processing many citations
+            scored_docs_map = {doc.doc_id: doc for doc in eligible_docs}
+
+            for i, citation_obj in enumerate(citation_results, 1):
+                # Find corresponding ScoredDocument for metadata
+                doc_id = int(citation_obj.document_id)
+                scored_doc = scored_docs_map.get(doc_id)
+
+                if not scored_doc:
+                    # This can happen if CitationFinderAgent returns a document_id
+                    # that wasn't in our eligible_docs list (e.g., due to ID mismatch
+                    # or if the agent hallucinated a document ID). The citation is
+                    # skipped to maintain data integrity.
+                    logger.warning(
+                        f"Citation {i} references doc_id={doc_id} which is not in the "
+                        f"eligible documents list ({len(eligible_docs)} docs). "
+                        "This may indicate an ID mismatch or hallucinated reference. "
+                        "Skipping this citation."
+                    )
+                    continue
+
+                # Create ExtractedCitation
+                citation = ExtractedCitation(
+                    doc_id=doc_id,
+                    passage=citation_obj.passage,
+                    relevance_score=scored_doc.score,
+                    full_citation=self._format_citation(scored_doc.document),
+                    metadata=self._extract_metadata(scored_doc.document),
+                    citation_order=len(citations) + 1
+                )
+
+                citations.append(citation)
+
+                # Respect max_citations limit
+                if len(citations) >= max_citations:
+                    logger.info(f"Reached max_citations limit ({max_citations})")
+                    break
+
+            logger.info(f"Extracted {len(citations)} citations from {len(eligible_docs)} eligible documents")
+
+            return citations
+
+        except Exception as e:
+            logger.error(f"Citation extraction failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to extract citations: {e}") from e
+
+    def _build_extraction_question(self, counter_stmt: CounterStatement) -> str:
+        """
+        Build question for citation extraction in counter-evidence context.
+
+        Frames the extraction to focus on passages that support the counter-claim.
+
+        Args:
+            counter_stmt: CounterStatement object
+
+        Returns:
+            Question string for CitationFinderAgent
+        """
+        return (
+            f"Extract specific passages that provide evidence for this claim: "
+            f"{counter_stmt.negated_text}. "
+            f"We are looking for evidence that contradicts the statement: "
+            f"{counter_stmt.original_statement.text}"
+        )
+
+    def _format_citation(self, document: Dict[str, Any]) -> str:
+        """
+        Format document as AMA-style citation.
+
+        AMA (American Medical Association) format:
+        Authors. Title. Journal. Year;Volume(Issue):Pages. DOI
+
+        Args:
+            document: Document data dict
+
+        Returns:
+            Formatted citation string
+        """
+        parts: List[str] = []
+
+        # Authors (limit to first 3, then et al)
+        authors = document.get("authors")
+        if authors:
+            if isinstance(authors, list):
+                if len(authors) <= 3:
+                    authors_str = ", ".join(authors)
+                else:
+                    authors_str = ", ".join(authors[:3]) + ", et al"
+            else:
+                authors_str = str(authors)
+            parts.append(authors_str)
+
+        # Title
+        title = document.get("title")
+        if title:
+            parts.append(title)
+
+        # Journal
+        journal = document.get("journal") or document.get("publication")
+        if journal:
+            parts.append(journal)
+
+        # Year (from publication_date)
+        pub_date = document.get("publication_date")
+        if pub_date:
+            # Extract year from publication_date (could be "2023", "2023-01-15", etc.)
+            year_str = str(pub_date)[:4] if pub_date else None
+            if year_str and year_str.isdigit():
+                parts.append(year_str)
+
+        # DOI (if available)
+        doi = document.get("doi")
+        if doi:
+            parts.append(f"doi:{doi}")
+
+        # Join parts with periods
+        if parts:
+            return ". ".join(parts) + "."
+        else:
+            return "Citation information unavailable."
+
+    def _extract_metadata(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract metadata from document for citation tracking.
+
+        Args:
+            document: Document data dict
+
+        Returns:
+            Metadata dict with pmid, doi, authors, year, journal, etc.
+        """
+        # Extract year from publication_date
+        pub_date = document.get("publication_date")
+        year = None
+        if pub_date:
+            year_str = str(pub_date)[:4]
+            if year_str.isdigit():
+                year = int(year_str)
+
+        return {
+            "pmid": document.get("pmid"),
+            "doi": document.get("doi"),
+            "authors": document.get("authors", []),
+            "year": year,
+            "journal": document.get("journal") or document.get("publication"),
+            "title": document.get("title"),
+            "source": document.get("source_id")
+        }
 
     def _generate_counter_report(
         self,
@@ -662,21 +1085,285 @@ class PaperCheckerAgent(BaseAgent):
         """
         Step 6: Generate counter-evidence report from citations.
 
-        Synthesizes citations into a coherent counter-evidence report.
+        Synthesizes extracted citations into a coherent prose report that
+        summarizes evidence supporting the counter-statement. Uses LLM to
+        generate professional medical-style writing with inline citations.
 
         Args:
-            counter_stmt: Counter-statement being reported on
-            citations: Extracted citations to include
-            search_results: Original search results (for statistics)
-            scored_docs: Scored documents (for statistics)
+            counter_stmt: CounterStatement being reported on
+            citations: List of ExtractedCitation objects to synthesize
+            search_results: SearchResults for statistics (documents found per strategy)
+            scored_docs: List of ScoredDocument for statistics (scoring results)
 
         Returns:
-            CounterReport with synthesized evidence
+            CounterReport with prose summary, citations, and search statistics
 
-        Note:
-            Full implementation in Step 10 (10_COUNTER_REPORT_GENERATION.md)
+        Raises:
+            RuntimeError: If report generation fails after retries
         """
-        raise NotImplementedError("Implemented in Step 10")
+        logger.info(
+            f"Generating counter-report from {len(citations)} citations"
+        )
+
+        if not citations:
+            logger.warning("No citations available for report generation")
+            return self._generate_empty_report(counter_stmt, search_results, scored_docs)
+
+        # Build prompt for report generation
+        prompt = self._build_report_prompt(counter_stmt, citations)
+
+        try:
+            # Generate report using LLM (via BaseAgent's ollama integration)
+            response = self._call_llm_for_report(prompt)
+
+            # Parse and clean response
+            report_text = self._parse_report_response(response)
+
+            # Calculate search statistics
+            search_stats = self._calculate_search_stats(
+                search_results, scored_docs, citations
+            )
+
+            # Create CounterReport
+            counter_report = CounterReport(
+                summary=report_text,
+                num_citations=len(citations),
+                citations=citations,
+                search_stats=search_stats,
+                generation_metadata={
+                    "model": self.model,
+                    "temperature": self.agent_config.get("temperature", DEFAULT_REPORT_TEMPERATURE),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+
+            logger.info(
+                f"Counter-report generated: {len(report_text)} characters, "
+                f"{len(citations)} citations"
+            )
+
+            return counter_report
+
+        except Exception as e:
+            logger.error(f"Counter-report generation failed: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to generate counter-report: {e}") from e
+
+    def _build_report_prompt(
+        self,
+        counter_stmt: CounterStatement,
+        citations: List[ExtractedCitation]
+    ) -> str:
+        """
+        Build prompt for counter-report generation.
+
+        Constructs a detailed prompt that instructs the LLM to synthesize
+        citations into a cohesive medical-style narrative with proper
+        inline references.
+
+        Args:
+            counter_stmt: CounterStatement containing the claim to report on
+            citations: List of ExtractedCitation objects with passages
+
+        Returns:
+            Formatted prompt string for LLM generation
+        """
+        # Format citations for prompt
+        formatted_citations = []
+        for i, citation in enumerate(citations, 1):
+            formatted_citations.append(
+                f"[{i}] {citation.passage}\n"
+                f"    Source: {citation.full_citation}"
+            )
+
+        citations_text = "\n\n".join(formatted_citations)
+
+        return f"""You are an expert medical researcher writing a systematic review section.
+
+**Task:**
+Write a concise summary (200-300 words) of the evidence that supports or relates to the following claim:
+
+**Claim:** {counter_stmt.negated_text}
+
+**Context:**
+This claim is the counter-position to: "{counter_stmt.original_statement.text}"
+You are summarizing evidence that may contradict or provide an alternative perspective on the original statement.
+
+**Evidence Citations:**
+{citations_text}
+
+**Instructions:**
+1. Synthesize the evidence into a coherent narrative
+2. Reference citations using [1], [2], etc. inline
+3. Use professional medical writing style
+4. Include specific findings, statistics, and years when mentioned in citations
+5. Do NOT use vague temporal references ("recent study") - use specific years
+6. Do NOT overstate the evidence beyond what citations support
+7. Do NOT add information not present in the citations
+8. Organize by themes or study types if relevant
+9. Note any limitations or contradictions within the evidence
+
+**Writing Style:**
+- Professional and objective tone
+- Evidence-based assertions only
+- Clear and concise
+- Focus on findings, not methodology (unless crucial)
+- Use present tense for established findings, past tense for specific studies
+
+**Output Format:**
+Write ONLY the summary text in markdown format. Do not include headers, do not add "Summary:" prefix. Just the prose with inline citations.
+
+**Summary:**"""
+
+    def _call_llm_for_report(self, prompt: str) -> str:
+        """
+        Call Ollama API for report generation using BaseAgent's method.
+
+        Uses the inherited _generate_from_prompt method which properly
+        interfaces with the Ollama library (following project guidelines).
+
+        Args:
+            prompt: The formatted prompt for report generation
+
+        Returns:
+            Raw response string from the LLM
+
+        Raises:
+            ConnectionError: If unable to connect to Ollama
+            ValueError: If response is empty or invalid
+        """
+        try:
+            # Use BaseAgent's _generate_from_prompt which uses ollama library
+            response = self._generate_from_prompt(
+                prompt,
+                num_predict=self.agent_config.get(
+                    "report_max_tokens", DEFAULT_REPORT_MAX_TOKENS
+                ),
+                temperature=self.agent_config.get(
+                    "temperature", DEFAULT_REPORT_TEMPERATURE
+                )
+            )
+            return response
+
+        except (ConnectionError, ValueError) as e:
+            logger.error(f"LLM call failed: {e}")
+            raise RuntimeError(f"Report generation LLM call failed: {e}") from e
+
+    def _parse_report_response(self, response: str) -> str:
+        """
+        Parse and clean LLM report response.
+
+        Removes common prefixes, markdown code blocks, and validates
+        that the report meets minimum length requirements.
+
+        Args:
+            response: Raw response string from LLM
+
+        Returns:
+            Cleaned report text
+
+        Raises:
+            ValueError: If generated report is too short or empty
+        """
+        report = response.strip()
+
+        # Remove common prefixes that LLMs sometimes add
+        for prefix in REPORT_PREFIXES_TO_STRIP:
+            if report.startswith(prefix):
+                report = report[len(prefix):].strip()
+
+        # Remove markdown code blocks if present
+        if report.startswith("```markdown"):
+            report = report[len("```markdown"):].strip()
+            if report.endswith("```"):
+                report = report[:-3].strip()
+        elif report.startswith("```"):
+            report = report[3:].strip()
+            if report.endswith("```"):
+                report = report[:-3].strip()
+
+        # Validate minimum length
+        if len(report) < DEFAULT_MIN_REPORT_LENGTH:
+            raise ValueError(
+                f"Generated report too short ({len(report)} chars, "
+                f"minimum: {DEFAULT_MIN_REPORT_LENGTH})"
+            )
+
+        return report
+
+    def _generate_empty_report(
+        self,
+        counter_stmt: CounterStatement,
+        search_results: SearchResults,
+        scored_docs: List[ScoredDocument]
+    ) -> CounterReport:
+        """
+        Generate minimal report when no citations are available.
+
+        Creates a structured report explaining that no substantial evidence
+        was found while still providing search statistics.
+
+        Args:
+            counter_stmt: CounterStatement that was searched for
+            search_results: SearchResults with document counts
+            scored_docs: ScoredDocument list (may be empty)
+
+        Returns:
+            CounterReport with empty citations but populated statistics
+        """
+        search_stats = self._calculate_search_stats(
+            search_results, scored_docs, []
+        )
+
+        summary = (
+            f"No substantial evidence was found in the literature database to support "
+            f"the counter-claim: \"{counter_stmt.negated_text}\". "
+            f"The search identified {search_stats['documents_found']} potentially relevant "
+            f"documents, but none scored above the relevance threshold of {self.score_threshold}."
+        )
+
+        return CounterReport(
+            summary=summary,
+            num_citations=0,
+            citations=[],
+            search_stats=search_stats,
+            generation_metadata={
+                "model": self.model,
+                "timestamp": datetime.now().isoformat(),
+                "empty_report": True
+            }
+        )
+
+    def _calculate_search_stats(
+        self,
+        search_results: SearchResults,
+        scored_docs: List[ScoredDocument],
+        citations: List[ExtractedCitation]
+    ) -> Dict[str, Any]:
+        """
+        Calculate search statistics for report metadata.
+
+        Computes document counts across different pipeline stages
+        and search strategies for transparency and reproducibility.
+
+        Args:
+            search_results: SearchResults with strategy-specific counts
+            scored_docs: List of scored documents
+            citations: List of extracted citations
+
+        Returns:
+            Dictionary with document counts and search strategy breakdown
+        """
+        return {
+            "documents_found": len(search_results.deduplicated_docs),
+            "documents_scored": len(scored_docs),
+            "documents_cited": len(set(c.doc_id for c in citations)),
+            "citations_extracted": len(citations),
+            "search_strategies": {
+                "semantic": len(search_results.semantic_docs),
+                "hyde": len(search_results.hyde_docs),
+                "keyword": len(search_results.keyword_docs)
+            }
+        }
 
     def _analyze_verdict(
         self, statement: Statement, counter_report: CounterReport
@@ -775,5 +1462,6 @@ class PaperCheckerAgent(BaseAgent):
         """
         return self.agent_config.get("citation", {
             "min_score": DEFAULT_MIN_CITATION_SCORE,
-            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT
+            "max_citations_per_statement": DEFAULT_MAX_CITATIONS_PER_STATEMENT,
+            "min_relevance": DEFAULT_MIN_CITATION_RELEVANCE
         })

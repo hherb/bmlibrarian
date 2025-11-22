@@ -11,9 +11,16 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file
-load_dotenv()
+# Check ~/.bmlibrarian/.env first (primary user configuration location),
+# then fall back to .env in current directory (for development convenience)
+_user_env_path = Path.home() / ".bmlibrarian" / ".env"
+if _user_env_path.exists():
+    load_dotenv(_user_env_path)
+else:
+    load_dotenv()  # Fallback to current directory .env
 
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
