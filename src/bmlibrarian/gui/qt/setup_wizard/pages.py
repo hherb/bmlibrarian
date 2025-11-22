@@ -7,7 +7,7 @@ Contains all QWizardPage implementations for the setup process.
 import logging
 import os
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QWizardPage,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QTextEdit,
+    QTextBrowser,
     QGroupBox,
     QCheckBox,
     QRadioButton,
@@ -28,6 +29,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QScrollArea,
     QWidget,
+    QSplitter,
+    QListWidget,
+    QListWidgetItem,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QIntValidator
@@ -747,6 +751,10 @@ class DatabaseSetupWorker(QThread):
             self.progress.emit("Applying database schema...")
             self._apply_schema()
 
+            # Step 7: Seed required data (sources table)
+            self.progress.emit("Seeding required data...")
+            self._seed_required_data()
+
             self.finished.emit(
                 True,
                 f"Database setup completed successfully!\n\n"
@@ -913,6 +921,60 @@ OLLAMA_HOST=http://localhost:11434
 
             conn.commit()
         logger.info(f"Transferred ownership of {len(tables)} tables and {len(sequences)} sequences to '{self.app_user}'")
+
+    def _seed_required_data(self) -> None:
+        """
+        Seed required data into the database.
+
+        Inserts essential records that importers and other components depend on,
+        such as source entries for PubMed and medRxiv.
+        """
+        import psycopg
+
+        conn_params = {
+            'host': self.host,
+            'port': int(self.port),
+            'dbname': self.dbname,
+            'user': self.app_user,
+            'password': self.app_password,
+            'connect_timeout': DB_CONNECTION_TIMEOUT_SECONDS,
+        }
+
+        # Required sources for importers
+        sources = [
+            {
+                'name': 'pubmed',
+                'url': 'https://pubmed.ncbi.nlm.nih.gov/',
+                'is_reputable': True,
+                'is_free': True,
+            },
+            {
+                'name': 'medrxiv',
+                'url': 'https://www.medrxiv.org/',
+                'is_reputable': True,
+                'is_free': True,
+            },
+            {
+                'name': 'biorxiv',
+                'url': 'https://www.biorxiv.org/',
+                'is_reputable': True,
+                'is_free': True,
+            },
+        ]
+
+        with psycopg.connect(**conn_params) as conn:
+            with conn.cursor() as cur:
+                for source in sources:
+                    # Use INSERT ... ON CONFLICT to be idempotent
+                    cur.execute("""
+                        INSERT INTO public.sources (name, url, is_reputable, is_free)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (name) DO NOTHING
+                    """, (source['name'], source['url'], source['is_reputable'], source['is_free']))
+
+            conn.commit()
+
+        logger.info(f"Seeded {len(sources)} source entries")
 
 
 class DatabaseSetupPage(QWizardPage):
@@ -1247,6 +1309,15 @@ class ImportWorker(QThread):
     def cancel(self) -> None:
         """Cancel the import operation."""
         self._cancelled = True
+        logger.info("Import cancellation requested")
+
+    def is_cancelled(self) -> bool:
+        """Check if import has been cancelled."""
+        return self._cancelled
+
+    def _progress_callback(self, message: str) -> None:
+        """Callback for importer progress messages. Emits signal to GUI."""
+        self.progress.emit(message)
 
     def run(self) -> None:
         """Execute the import operation."""
@@ -1282,6 +1353,8 @@ class ImportWorker(QThread):
             medrxiv_stats = importer.update_database(
                 download_pdfs=self.settings.get("download_pdfs", False),
                 days_to_fetch=self.settings.get("medrxiv_days", MEDRXIV_DEFAULT_DAYS),
+                progress_callback=self._progress_callback,
+                cancel_check=self.is_cancelled,
             )
             stats["medrxiv"] = medrxiv_stats
             self.progress.emit(
@@ -1305,6 +1378,8 @@ class ImportWorker(QThread):
             pubmed_stats = importer.import_by_search(
                 query=PUBMED_TEST_QUERY,
                 max_results=self.settings.get("pubmed_max_results", PUBMED_DEFAULT_MAX_RESULTS),
+                progress_callback=self._progress_callback,
+                cancel_check=self.is_cancelled,
             )
             stats["pubmed"] = pubmed_stats
             self.progress.emit(
@@ -1329,6 +1404,8 @@ class ImportWorker(QThread):
             medrxiv_stats = importer.update_database(
                 download_pdfs=self.settings.get("download_pdfs", False),
                 days_to_fetch=MEDRXIV_FULL_IMPORT_DAYS,
+                progress_callback=self._progress_callback,
+                cancel_check=self.is_cancelled,
             )
             stats["medrxiv"] = medrxiv_stats
         except Exception as e:
@@ -1348,19 +1425,22 @@ class ImportWorker(QThread):
             importer = PubMedBulkImporter()
 
             # Download baseline
-            self.progress.emit("Downloading PubMed baseline files...")
+            self._progress_callback("Downloading PubMed baseline files...")
             importer.download_baseline()
 
             if self._cancelled:
+                self._progress_callback("Import cancelled by user")
                 return
 
             # Import baseline
-            self.progress.emit("Importing PubMed baseline files...")
+            self._progress_callback("Importing PubMed baseline files...")
             pubmed_stats = importer.import_files(file_type="baseline")
             stats["pubmed"] = pubmed_stats
+            self._progress_callback(f"PubMed baseline import complete: {pubmed_stats}")
         except Exception as e:
             logger.error(f"PubMed full import failed: {e}", exc_info=True)
             stats["pubmed_error"] = str(e)
+            self._progress_callback(f"PubMed full import failed: {e}")
 
         self.progress_percent.emit(PROGRESS_COMPLETE)
 
@@ -1496,6 +1576,274 @@ class ImportProgressPage(QWizardPage):
     def isComplete(self) -> bool:
         """Check if page is complete."""
         return self._import_complete
+
+    def cleanup(self) -> None:
+        """
+        Clean up resources when wizard is closed.
+
+        Cancels any running import and waits for the thread to finish.
+        """
+        if self._worker and self._worker.isRunning():
+            logger.info("Cleaning up import worker...")
+            self._worker.cancel()
+            # Wait for thread to finish with a timeout
+            if not self._worker.wait(5000):  # 5 second timeout
+                logger.warning("Import worker did not finish in time, terminating...")
+                self._worker.terminate()
+                self._worker.wait()
+            logger.info("Import worker cleaned up")
+
+
+# =============================================================================
+# Document Browser Page
+# =============================================================================
+
+
+class DocumentBrowserPage(QWizardPage):
+    """
+    Page for browsing imported documents to verify import success.
+
+    Displays a list of recently imported documents with title, authors,
+    date, and journal. Selecting a document shows its abstract in a
+    Markdown-rendered preview panel.
+    """
+
+    # Number of documents to display
+    DOCUMENTS_PER_PAGE = 20
+
+    def __init__(self, parent: Optional["SetupWizard"] = None):
+        """Initialize document browser page."""
+        super().__init__(parent)
+        self._wizard = parent
+        self._documents: List[Dict[str, Any]] = []
+        self._current_page = 0
+        self._total_documents = 0
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the document browser UI."""
+        scale = get_font_scale()
+
+        self.setTitle("Verify Imported Documents")
+        self.setSubTitle("Browse recently imported documents to verify the import was successful.")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(scale["spacing_medium"])
+
+        # Create splitter for list and preview
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left panel: Document list
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Document count label
+        self.count_label = QLabel("Loading documents...")
+        left_layout.addWidget(self.count_label)
+
+        # Document list
+        self.doc_list = QListWidget()
+        self.doc_list.setAlternatingRowColors(True)
+        self.doc_list.currentItemChanged.connect(self._on_document_selected)
+        left_layout.addWidget(self.doc_list)
+
+        # Pagination controls
+        pagination_layout = QHBoxLayout()
+        self.prev_btn = QPushButton("← Previous")
+        self.prev_btn.clicked.connect(self._prev_page)
+        self.prev_btn.setEnabled(False)
+        pagination_layout.addWidget(self.prev_btn)
+
+        self.page_label = QLabel("Page 1")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pagination_layout.addWidget(self.page_label)
+
+        self.next_btn = QPushButton("Next →")
+        self.next_btn.clicked.connect(self._next_page)
+        pagination_layout.addWidget(self.next_btn)
+
+        left_layout.addLayout(pagination_layout)
+
+        splitter.addWidget(left_panel)
+
+        # Right panel: Abstract preview
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Document metadata
+        self.metadata_label = QLabel("Select a document to view details")
+        self.metadata_label.setWordWrap(True)
+        self.metadata_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: #f5f5f5;
+                padding: {scale["padding_medium"]}px;
+                border-radius: {scale["radius_small"]}px;
+            }}
+        """)
+        right_layout.addWidget(self.metadata_label)
+
+        # Abstract preview (using QTextBrowser for Markdown rendering)
+        abstract_label = QLabel("Abstract:")
+        right_layout.addWidget(abstract_label)
+
+        self.abstract_browser = QTextBrowser()
+        self.abstract_browser.setOpenExternalLinks(True)
+        self.abstract_browser.setPlaceholderText("Select a document to view its abstract")
+        right_layout.addWidget(self.abstract_browser)
+
+        splitter.addWidget(right_panel)
+
+        # Set initial splitter sizes (40% list, 60% preview)
+        splitter.setSizes([400, 600])
+
+        layout.addWidget(splitter)
+
+    def initializePage(self) -> None:
+        """Initialize the page when it becomes visible."""
+        self._current_page = 0
+        self._load_documents()
+
+    def _load_documents(self) -> None:
+        """Load documents from the database."""
+        try:
+            from bmlibrarian.database import get_db_manager
+
+            db_manager = get_db_manager()
+            offset = self._current_page * self.DOCUMENTS_PER_PAGE
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get total count
+                    cur.execute("SELECT COUNT(*) FROM document")
+                    self._total_documents = cur.fetchone()[0]
+
+                    # Get documents for current page
+                    cur.execute("""
+                        SELECT id, title, authors, publication_date, publication, abstract
+                        FROM document
+                        ORDER BY id DESC
+                        LIMIT %s OFFSET %s
+                    """, (self.DOCUMENTS_PER_PAGE, offset))
+
+                    self._documents = []
+                    for row in cur.fetchall():
+                        self._documents.append({
+                            'id': row[0],
+                            'title': row[1] or 'Untitled',
+                            'authors': row[2] or [],
+                            'date': row[3],
+                            'journal': row[4] or 'Unknown',
+                            'abstract': row[5] or 'No abstract available',
+                        })
+
+            self._update_document_list()
+            self._update_pagination()
+
+        except Exception as e:
+            logger.error(f"Error loading documents: {e}")
+            self.count_label.setText(f"Error loading documents: {e}")
+            self._documents = []
+
+    def _update_document_list(self) -> None:
+        """Update the document list widget."""
+        self.doc_list.clear()
+
+        if not self._documents:
+            self.count_label.setText("No documents found")
+            return
+
+        start = self._current_page * self.DOCUMENTS_PER_PAGE + 1
+        end = min(start + len(self._documents) - 1, self._total_documents)
+        self.count_label.setText(f"Showing {start}-{end} of {self._total_documents} documents")
+
+        for doc in self._documents:
+            # Format authors (first 3, then "et al.")
+            authors = doc['authors']
+            if isinstance(authors, list):
+                if len(authors) > 3:
+                    author_str = ', '.join(authors[:3]) + ' et al.'
+                else:
+                    author_str = ', '.join(authors) if authors else 'Unknown'
+            else:
+                author_str = str(authors) if authors else 'Unknown'
+
+            # Format date
+            date_str = str(doc['date'])[:10] if doc['date'] else 'No date'
+
+            # Create list item text
+            title = doc['title'][:80] + '...' if len(doc['title']) > 80 else doc['title']
+            item_text = f"{title}\n{author_str} • {date_str} • {doc['journal']}"
+
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, doc)
+            self.doc_list.addItem(item)
+
+    def _update_pagination(self) -> None:
+        """Update pagination controls."""
+        total_pages = max(1, (self._total_documents + self.DOCUMENTS_PER_PAGE - 1) // self.DOCUMENTS_PER_PAGE)
+        self.page_label.setText(f"Page {self._current_page + 1} of {total_pages}")
+        self.prev_btn.setEnabled(self._current_page > 0)
+        self.next_btn.setEnabled((self._current_page + 1) * self.DOCUMENTS_PER_PAGE < self._total_documents)
+
+    def _prev_page(self) -> None:
+        """Go to previous page."""
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._load_documents()
+
+    def _next_page(self) -> None:
+        """Go to next page."""
+        if (self._current_page + 1) * self.DOCUMENTS_PER_PAGE < self._total_documents:
+            self._current_page += 1
+            self._load_documents()
+
+    def _on_document_selected(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:
+        """Handle document selection."""
+        if current is None:
+            return
+
+        doc = current.data(Qt.ItemDataRole.UserRole)
+        if not doc:
+            return
+
+        # Update metadata display
+        authors = doc['authors']
+        if isinstance(authors, list):
+            author_str = ', '.join(authors) if authors else 'Unknown'
+        else:
+            author_str = str(authors) if authors else 'Unknown'
+
+        date_str = str(doc['date'])[:10] if doc['date'] else 'No date'
+
+        metadata_html = f"""
+        <h3>{doc['title']}</h3>
+        <p><b>Authors:</b> {author_str}</p>
+        <p><b>Journal:</b> {doc['journal']}</p>
+        <p><b>Date:</b> {date_str}</p>
+        <p><b>ID:</b> {doc['id']}</p>
+        """
+        self.metadata_label.setText(metadata_html)
+
+        # Update abstract display with Markdown rendering
+        abstract = doc['abstract']
+
+        # Convert Markdown-style formatting to HTML
+        # Bold: **text** -> <b>text</b>
+        import re
+        abstract_html = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', abstract)
+        # Italic: *text* -> <i>text</i>
+        abstract_html = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', abstract_html)
+        # Superscript: ^text^ -> <sup>text</sup>
+        abstract_html = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', abstract_html)
+        # Subscript: ~text~ -> <sub>text</sub>
+        abstract_html = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', abstract_html)
+        # Paragraph breaks
+        abstract_html = abstract_html.replace('\n\n', '</p><p>')
+        abstract_html = f"<p>{abstract_html}</p>"
+
+        self.abstract_browser.setHtml(abstract_html)
 
 
 # =============================================================================

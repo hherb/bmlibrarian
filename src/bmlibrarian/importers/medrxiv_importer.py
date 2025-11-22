@@ -18,7 +18,7 @@ import time
 import logging
 import requests
 from datetime import datetime, timedelta, date
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
 
 # Import bmlibrarian components
@@ -91,6 +91,123 @@ class MedRxivImporter:
                 cur.execute("SELECT id FROM sources WHERE LOWER(name) LIKE %s", (f'%{source_name.lower()}%',))
                 result = cur.fetchone()
                 return result[0] if result else None
+
+    def _format_abstract_markdown(self, abstract: str) -> str:
+        """
+        Format medRxiv abstract with Markdown section headers.
+
+        MedRxiv abstracts often contain embedded section headers (Background, Methods,
+        Results, Conclusions) concatenated without separators. This function detects
+        these headers and adds proper Markdown formatting with paragraph breaks.
+
+        Common section headers in biomedical abstracts:
+        - BACKGROUND/INTRODUCTION/CONTEXT/RATIONALE
+        - OBJECTIVE(S)/AIM(S)/PURPOSE
+        - METHODS/METHODOLOGY/DESIGN/SETTING/PARTICIPANTS
+        - RESULTS/FINDINGS/OUTCOMES
+        - CONCLUSIONS/CONCLUSION/DISCUSSION/IMPLICATIONS
+        - SIGNIFICANCE/IMPORTANCE
+
+        Args:
+            abstract: Raw abstract text from medRxiv API
+
+        Returns:
+            Markdown-formatted abstract with section headers and paragraph breaks
+        """
+        import re
+
+        if not abstract:
+            return ''
+
+        # Common section header patterns (case-insensitive)
+        # These headers typically appear at the start of sentences
+        section_patterns = [
+            r'(?i)\b(Background)\b',
+            r'(?i)\b(Introduction)\b',
+            r'(?i)\b(Context)\b',
+            r'(?i)\b(Rationale)\b',
+            r'(?i)\b(Objective[s]?)\b',
+            r'(?i)\b(Aim[s]?)\b',
+            r'(?i)\b(Purpose)\b',
+            r'(?i)\b(Method[s]?)\b',
+            r'(?i)\b(Methodology)\b',
+            r'(?i)\b(Design)\b',
+            r'(?i)\b(Setting)\b',
+            r'(?i)\b(Participants)\b',
+            r'(?i)\b(Result[s]?)\b',
+            r'(?i)\b(Finding[s]?)\b',
+            r'(?i)\b(Outcome[s]?)\b',
+            r'(?i)\b(Conclusion[s]?)\b',
+            r'(?i)\b(Discussion)\b',
+            r'(?i)\b(Implications)\b',
+            r'(?i)\b(Significance)\b',
+            r'(?i)\b(Importance)\b',
+            r'(?i)\b(Interpretation)\b',
+            r'(?i)\b(Trial Registration)\b',
+            r'(?i)\b(Funding)\b',
+        ]
+
+        # Build a combined pattern that matches any header at word boundary
+        # followed by no punctuation (to distinguish "Background" from "background of")
+        combined_pattern = '|'.join(f'({p})' for p in section_patterns)
+
+        # Find all section headers and their positions
+        # Look for headers that appear to start a new section (followed by text, not by "of", "and", etc.)
+        header_regex = re.compile(
+            r'(?<![a-zA-Z])(' +  # Not preceded by letter
+            r'Background|Introduction|Context|Rationale|'
+            r'Objectives?|Aims?|Purpose|'
+            r'Methods?|Methodology|Design|Setting|Participants|'
+            r'Results?|Findings?|Outcomes?|'
+            r'Conclusions?|Discussion|Implications|Significance|Importance|Interpretation|'
+            r'Trial Registration|Funding'
+            r')(?=[A-Z]|:|\s*[A-Z])',  # Followed by uppercase, colon, or space+uppercase
+            re.IGNORECASE
+        )
+
+        # Find all matches
+        matches = list(header_regex.finditer(abstract))
+
+        if not matches:
+            # No structured sections found, return as-is
+            return abstract
+
+        # Build formatted abstract
+        parts = []
+        last_end = 0
+
+        for i, match in enumerate(matches):
+            # Add any text before this header (if it's not at the start)
+            if match.start() > last_end and last_end > 0:
+                prefix_text = abstract[last_end:match.start()].strip()
+                if prefix_text:
+                    parts[-1] = parts[-1] + ' ' + prefix_text if parts else prefix_text
+
+            # Get the header text
+            header = match.group(1).upper()
+
+            # Get the section content (until next header or end)
+            if i + 1 < len(matches):
+                section_text = abstract[match.end():matches[i + 1].start()].strip()
+            else:
+                section_text = abstract[match.end():].strip()
+
+            # Format as bold header with content
+            if section_text:
+                parts.append(f"**{header}:** {section_text}")
+            else:
+                parts.append(f"**{header}:**")
+
+            last_end = match.end() if i + 1 >= len(matches) else matches[i + 1].start()
+
+        # Handle any text before the first header
+        if matches and matches[0].start() > 0:
+            prefix = abstract[:matches[0].start()].strip()
+            if prefix:
+                parts.insert(0, prefix)
+
+        # Join sections with double newlines for paragraph breaks
+        return '\n\n'.join(parts)
 
     def _split_date_range_into_weeks(self, start_date: str, end_date: str) -> List[Tuple[str, str]]:
         """
@@ -399,7 +516,8 @@ class MedRxivImporter:
 
                         # Prepare data for insertion
                         title = paper.get('title', '')
-                        abstract = paper.get('abstract', '')
+                        # Format abstract with Markdown section headers
+                        abstract = self._format_abstract_markdown(paper.get('abstract', ''))
                         date_posted = paper.get('date', '').split()[0] if ' ' in paper.get('date', '') else paper.get('date', '')
                         category = paper.get('category', '')
                         version = paper.get('version', '1')
@@ -488,7 +606,9 @@ class MedRxivImporter:
 
     def update_database(self, download_pdfs: bool = False, max_retries: int = 5,
                        start_date_override: Optional[str] = None,
-                       days_to_fetch: int = 1095, end_date: Optional[str] = None) -> Dict[str, int]:
+                       days_to_fetch: int = 1095, end_date: Optional[str] = None,
+                       progress_callback: Optional[Callable[[str], None]] = None,
+                       cancel_check: Optional[Callable[[], bool]] = None) -> Dict[str, int]:
         """
         Main function to update the medRxiv database.
 
@@ -498,30 +618,42 @@ class MedRxivImporter:
             start_date_override: Force a specific start date (format: YYYY-MM-DD)
             days_to_fetch: Number of days back to fetch if no items in database
             end_date: Optional end date (format: YYYY-MM-DD), defaults to today
+            progress_callback: Optional callback function to report progress messages
+            cancel_check: Optional callback function that returns True if operation should cancel
 
         Returns:
             Dictionary with statistics: {'total_processed': int, 'dates_processed': int}
         """
+        # Helper to report progress to both logger and callback
+        def report_progress(message: str) -> None:
+            logger.info(message)
+            if progress_callback:
+                progress_callback(message)
+
+        # Helper to check if operation should be cancelled
+        def should_cancel() -> bool:
+            return cancel_check() if cancel_check else False
+
         # Determine start date
         if start_date_override:
             start_date = start_date_override
         else:
             resume_date = self.get_resume_date(days_back=1)
             if resume_date:
-                logger.info(f"Resuming from last imported date: {resume_date}")
+                report_progress(f"Resuming from last imported date: {resume_date}")
                 start_date = resume_date
             else:
                 start_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime('%Y-%m-%d')
-                logger.info(f"No data in database. Starting from {days_to_fetch} days ago ({start_date})")
+                report_progress(f"No data in database. Starting from {days_to_fetch} days ago ({start_date})")
 
         # Use provided end_date or default to today
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')
-        logger.info(f"End date for fetch: {end_date}")
+        report_progress(f"End date for fetch: {end_date}")
 
         # Split date range into weekly chunks
         date_ranges = self._split_date_range_into_weeks(start_date, end_date)
-        logger.info(f"Splitting request into {len(date_ranges)} weekly chunks")
+        report_progress(f"Splitting request into {len(date_ranges)} weekly chunks")
 
         # Track stats
         total_processed = 0
@@ -534,14 +666,19 @@ class MedRxivImporter:
             chunks_progress = date_ranges
 
         for week_start, week_end in chunks_progress:
+            # Check for cancellation
+            if should_cancel():
+                report_progress("Import cancelled by user")
+                break
+
             if tqdm:
                 chunks_progress.set_description(f"Downloading {week_start} to {week_end}")
 
-            logger.info(f"Fetching medRxiv papers from {week_start} to {week_end}...")
+            report_progress(f"Fetching medRxiv papers from {week_start} to {week_end}...")
             week_papers = self.fetch_metadata(week_start, week_end, max_retries=max_retries)
 
             if week_papers:
-                logger.info(f"Found {len(week_papers)} papers for {week_start} to {week_end}")
+                report_progress(f"Found {len(week_papers)} papers for {week_start} to {week_end}")
 
                 # Group papers by date
                 papers_by_date = {}
@@ -553,8 +690,13 @@ class MedRxivImporter:
 
                 # Process papers by date
                 for date_str in sorted(papers_by_date.keys()):
+                    # Check for cancellation between dates
+                    if should_cancel():
+                        report_progress("Import cancelled by user")
+                        break
+
                     current_papers = papers_by_date[date_str]
-                    logger.info(f"Processing date {date_str} ({len(current_papers)} papers)")
+                    report_progress(f"Processing date {date_str} ({len(current_papers)} papers)")
 
                     # Process in batches for better memory management
                     batch_size = 100
@@ -564,14 +706,18 @@ class MedRxivImporter:
                         total_processed += processed
 
                     dates_processed.add(date_str)
+
+                # Break outer loop if cancelled
+                if should_cancel():
+                    break
             else:
-                logger.info(f"No papers found for {week_start} to {week_end}")
+                report_progress(f"No papers found for {week_start} to {week_end}")
 
             # Sleep between weekly batches
             if week_end != end_date:
                 time.sleep(2)
 
-        logger.info(f"medRxiv database update complete! Processed {total_processed} papers across {len(dates_processed)} dates.")
+        report_progress(f"medRxiv database update complete! Processed {total_processed} papers across {len(dates_processed)} dates.")
 
         return {
             'total_processed': total_processed,

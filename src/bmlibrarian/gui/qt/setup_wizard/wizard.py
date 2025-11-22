@@ -45,7 +45,8 @@ class SetupWizard(QWizard):
     PAGE_DB_SETUP = 3
     PAGE_IMPORT_OPTIONS = 4
     PAGE_IMPORT_PROGRESS = 5
-    PAGE_COMPLETE = 6
+    PAGE_DOCUMENT_BROWSER = 6
+    PAGE_COMPLETE = 7
 
     def __init__(self, parent: Optional[object] = None):
         """
@@ -120,6 +121,7 @@ class SetupWizard(QWizard):
             DatabaseSetupPage,
             ImportOptionsPage,
             ImportProgressPage,
+            DocumentBrowserPage,
             CompletePage,
         )
 
@@ -130,6 +132,7 @@ class SetupWizard(QWizard):
         self.setPage(self.PAGE_DB_SETUP, DatabaseSetupPage(self))
         self.setPage(self.PAGE_IMPORT_OPTIONS, ImportOptionsPage(self))
         self.setPage(self.PAGE_IMPORT_PROGRESS, ImportProgressPage(self))
+        self.setPage(self.PAGE_DOCUMENT_BROWSER, DocumentBrowserPage(self))
         self.setPage(self.PAGE_COMPLETE, CompletePage(self))
 
     def _apply_styles(self) -> None:
@@ -302,12 +305,39 @@ class SetupWizard(QWizard):
         """
         Handle wizard completion.
 
+        Ensures proper cleanup of any running import workers before closing.
+
         Args:
             result: Dialog result code
         """
+        # Clean up any running import workers
+        self._cleanup_workers()
+
         if result == QWizard.DialogCode.Accepted:
             logger.info("Setup wizard completed successfully")
         else:
             logger.info("Setup wizard cancelled")
 
         super().done(result)
+
+    def _cleanup_workers(self) -> None:
+        """Clean up any running worker threads."""
+        # Import here to avoid circular imports
+        from .pages import ImportProgressPage
+
+        # Get the import progress page and call its cleanup
+        import_page = self.page(self.PAGE_IMPORT_PROGRESS)
+        if isinstance(import_page, ImportProgressPage):
+            import_page.cleanup()
+
+    def closeEvent(self, event) -> None:
+        """
+        Handle window close event.
+
+        Ensures proper cleanup of any running import workers.
+
+        Args:
+            event: Close event
+        """
+        self._cleanup_workers()
+        super().closeEvent(event)

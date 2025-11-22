@@ -23,7 +23,7 @@ import logging
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 
 from bmlibrarian.database import get_db_manager
@@ -217,6 +217,113 @@ class PubMedImporter:
 
         return text
 
+    def _get_element_text_with_formatting(self, elem: Optional[ET.Element]) -> str:
+        """
+        Extract text from XML element and convert inline formatting to Markdown.
+
+        Handles inline elements from PubMed XML:
+        - <b> or <bold> → **text**
+        - <i> or <italic> → *text*
+        - <sup> → ^text^ (superscript)
+        - <sub> → ~text~ (subscript)
+        - <u> or <underline> → __text__
+
+        This preserves scientific notation, chemical formulas, and emphasis.
+
+        Args:
+            elem: XML element to extract text from
+
+        Returns:
+            Text with inline formatting converted to Markdown
+        """
+        if elem is None:
+            return ''
+
+        # Leaf node (no children)
+        if not list(elem):
+            return (elem.text or '').strip()
+
+        # Handle mixed content (text + nested formatting elements)
+        parts = []
+
+        # Add element's direct text (before first child)
+        if elem.text:
+            parts.append(elem.text)
+
+        # Process each child element
+        for child in elem:
+            tag = child.tag.lower()
+            child_text = self._get_element_text_with_formatting(child)
+
+            # Convert HTML/XML tags to Markdown
+            if tag in ('b', 'bold'):
+                parts.append(f'**{child_text}**')
+            elif tag in ('i', 'italic'):
+                parts.append(f'*{child_text}*')
+            elif tag == 'sup':
+                parts.append(f'^{child_text}^')
+            elif tag == 'sub':
+                parts.append(f'~{child_text}~')
+            elif tag in ('u', 'underline'):
+                parts.append(f'__{child_text}__')
+            else:
+                # Unknown tag - just keep the text
+                parts.append(child_text)
+
+            # Add tail text (text after closing tag)
+            if child.tail:
+                parts.append(child.tail)
+
+        return ''.join(parts).strip()
+
+    def _format_abstract_markdown(self, article_elem: ET.Element) -> str:
+        """
+        Extract and format abstract with proper Markdown formatting.
+
+        Preserves:
+        - Section labels from both Label and NlmCategory attributes
+        - Paragraph breaks between sections
+        - Inline formatting (bold, italic, subscript, superscript)
+        - Handles both structured and unstructured abstracts
+
+        Args:
+            article_elem: Article XML element containing the abstract
+
+        Returns:
+            Markdown-formatted abstract with section headers and paragraph breaks
+        """
+        abstract_texts = article_elem.findall('.//AbstractText')
+        if not abstract_texts:
+            return ''
+
+        markdown_parts = []
+
+        for abstract_text in abstract_texts:
+            # Get label attributes (prefer Label, fallback to NlmCategory)
+            label = abstract_text.get('Label', '').strip()
+            if not label:
+                nlm_category = abstract_text.get('NlmCategory', '').strip()
+                if nlm_category and nlm_category not in ('UNASSIGNED', 'UNLABELLED'):
+                    label = nlm_category
+
+            # Get text content with inline formatting preserved
+            text = self._get_element_text_with_formatting(abstract_text)
+
+            if not text:
+                continue
+
+            # Format with label as bold header if present
+            if label:
+                # Capitalize label for consistency
+                label_formatted = label.upper()
+                markdown_parts.append(f"**{label_formatted}:** {text}")
+            else:
+                # Unstructured abstract
+                markdown_parts.append(text)
+
+        # Join sections with double newline for paragraph breaks
+        return '\n\n'.join(markdown_parts)
+
     def _extract_date(self, date_elem) -> Optional[str]:
         """Extract date from a PubMed date element."""
         if date_elem is None:
@@ -271,14 +378,9 @@ class PubMedImporter:
             title_elem = article_elem.find('.//ArticleTitle')
             title = self._get_element_text(title_elem) if title_elem is not None else ""
 
-            # Extract abstract
-            abstract_texts = article_elem.findall('.//AbstractText')
-            abstract_parts = []
-            for t in abstract_texts:
-                text = self._get_element_text(t)
-                if text:
-                    abstract_parts.append(text)
-            abstract = " ".join(abstract_parts)
+            # Extract abstract with Markdown formatting
+            # Preserves section labels and inline formatting (bold, italic, sub/superscript)
+            abstract = self._format_abstract_markdown(article_elem)
 
             # Extract authors
             author_elems = article_elem.findall('.//Author')
@@ -408,7 +510,9 @@ class PubMedImporter:
         return success_count
 
     def import_by_search(self, query: str, max_results: int = 100,
-                        min_date: Optional[str] = None, max_date: Optional[str] = None) -> Dict[str, int]:
+                        min_date: Optional[str] = None, max_date: Optional[str] = None,
+                        progress_callback: Optional[Callable[[str], None]] = None,
+                        cancel_check: Optional[Callable[[], bool]] = None) -> Dict[str, int]:
         """
         Import articles by PubMed search query.
 
@@ -417,20 +521,42 @@ class PubMedImporter:
             max_results: Maximum number of articles to import
             min_date: Minimum date (YYYY/MM/DD format)
             max_date: Maximum date (YYYY/MM/DD format)
+            progress_callback: Optional callback function to report progress messages
+            cancel_check: Optional callback function that returns True if operation should cancel
 
         Returns:
             Dictionary with statistics
         """
-        logger.info(f"Importing articles for query: {query}")
+        # Helper to report progress to both logger and callback
+        def report_progress(message: str) -> None:
+            logger.info(message)
+            if progress_callback:
+                progress_callback(message)
+
+        # Helper to check if operation should be cancelled
+        def should_cancel() -> bool:
+            return cancel_check() if cancel_check else False
+
+        report_progress(f"Importing articles for query: {query}")
 
         # Search for PMIDs
         pmids = self.search_pubmed(query, max_results, min_date, max_date)
         if not pmids:
-            logger.warning("No articles found")
+            report_progress("No articles found")
             return {'total_found': 0, 'imported': 0}
+
+        if should_cancel():
+            report_progress("Import cancelled by user")
+            return {'total_found': len(pmids), 'imported': 0, 'cancelled': True}
+
+        report_progress(f"Found {len(pmids)} articles, fetching details...")
 
         # Fetch articles
         article_elements = self.fetch_articles(pmids)
+
+        if should_cancel():
+            report_progress("Import cancelled by user")
+            return {'total_found': len(pmids), 'imported': 0, 'cancelled': True}
 
         # Parse articles
         if tqdm:
@@ -440,16 +566,22 @@ class PubMedImporter:
 
         articles = []
         for elem in progress:
+            if should_cancel():
+                report_progress("Import cancelled by user")
+                break
             article = self._parse_article(elem)
             if article:
                 articles.append(article)
 
-        logger.info(f"Parsed {len(articles)} articles")
+        if should_cancel():
+            return {'total_found': len(pmids), 'parsed': len(articles), 'imported': 0, 'cancelled': True}
+
+        report_progress(f"Parsed {len(articles)} articles")
 
         # Store in database
         imported = self._store_articles(articles)
 
-        logger.info(f"Import complete: {imported} articles imported")
+        report_progress(f"Import complete: {imported} articles imported")
 
         return {
             'total_found': len(pmids),
