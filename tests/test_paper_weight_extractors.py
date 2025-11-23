@@ -416,6 +416,8 @@ class TestConstants:
         assert STUDY_TYPE_PRIORITY[0] == 'systematic_review'
         assert STUDY_TYPE_PRIORITY[1] == 'meta_analysis'
         assert STUDY_TYPE_PRIORITY[2] == 'rct'
+        assert STUDY_TYPE_PRIORITY[3] == 'interventional_single_arm'
+        assert STUDY_TYPE_PRIORITY[4] == 'cohort_prospective'
 
     def test_default_keywords_coverage(self):
         """Test that all priority types have keywords."""
@@ -427,4 +429,119 @@ class TestConstants:
         """Test hierarchy score values."""
         assert DEFAULT_STUDY_TYPE_HIERARCHY['systematic_review'] == 10.0
         assert DEFAULT_STUDY_TYPE_HIERARCHY['rct'] == 8.0
+        assert DEFAULT_STUDY_TYPE_HIERARCHY['interventional_single_arm'] == 7.0
+        assert DEFAULT_STUDY_TYPE_HIERARCHY['cohort_prospective'] == 6.0
         assert DEFAULT_STUDY_TYPE_HIERARCHY['case_report'] == 1.0
+
+
+class TestInterventionalSingleArmDetection:
+    """Tests for interventional_single_arm study type detection.
+
+    This study type was added to capture open-label, single-arm interventional
+    studies that fall between RCTs and prospective cohort studies in the
+    evidence hierarchy.
+    """
+
+    def test_open_label_detection(self):
+        """Test detection of open-label studies."""
+        document = {'abstract': 'This was an open-label study of telmisartan.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_open_labeled_detection(self):
+        """Test detection of open-labeled studies (hyphenated variant)."""
+        document = {'abstract': 'Patients were administered telmisartan using an open-labeled and prospective protocol.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_open_label_no_hyphen_detection(self):
+        """Test detection of 'open label' without hyphen."""
+        document = {'abstract': 'This open label study examined drug efficacy.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_single_arm_trial_detection(self):
+        """Test detection of single-arm trial."""
+        document = {'abstract': 'We conducted a single-arm trial to assess treatment effects.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_single_arm_study_detection(self):
+        """Test detection of single-arm study."""
+        document = {'abstract': 'This was a single arm study without control group.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_prospective_protocol_detection(self):
+        """Test detection of prospective protocol studies."""
+        document = {'abstract': 'Patients were treated using a prospective protocol.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_non_randomized_trial_detection(self):
+        """Test detection of non-randomized trial."""
+        document = {'abstract': 'This was a non-randomized trial of the new intervention.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_before_and_after_study_detection(self):
+        """Test detection of before-and-after study."""
+        document = {'abstract': 'We conducted a before-and-after study of the intervention.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_pretest_posttest_detection(self):
+        """Test detection of pretest-posttest study design."""
+        document = {'abstract': 'A pretest-posttest design was used to evaluate outcomes.'}
+        result = extract_study_type(document)
+
+        assert result.score == 7.0
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+
+    def test_rct_takes_priority_over_open_label(self):
+        """Test that RCT detection takes priority over open-label."""
+        # Some studies are described as 'open-label randomized trials'
+        document = {'abstract': 'This was an open-label randomized controlled trial.'}
+        result = extract_study_type(document)
+
+        # RCT should win because 'randomized controlled trial' is checked first
+        # and RCT is higher in priority
+        assert result.details[0].extracted_value == 'rct'
+        assert result.score == 8.0
+
+    def test_real_world_telmisartan_abstract(self):
+        """Test with the actual telmisartan abstract that prompted this fix.
+
+        The abstract states: 'using an open-labeled and prospective protocol'
+        which should be detected as interventional_single_arm.
+        """
+        abstract = """Several studies have shown that angiotensin II receptor blockers (ARBs)
+        improve endothelial function and arterial stiffness. Telmisartan is a highly selective
+        ARB that activates peroxisome proliferator-activated receptor gamma (PPARgamma).
+        The purpose of this study was to evaluate the effects of telmisartan, such as
+        endothelial function, arterial stiffness, and insulin sensitivity, in patients with
+        essential hypertension. Thirty-nine patients with essential hypertension were
+        administered telmisartan (80 mg once daily) using an open-labeled and prospective protocol."""
+
+        document = {'abstract': abstract}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'interventional_single_arm'
+        assert result.score == 7.0
+        assert 'open-labeled' in result.details[0].evidence_text
