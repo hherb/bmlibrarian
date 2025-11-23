@@ -17,15 +17,24 @@ import os
 import sys
 import json
 import logging
-import requests
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
+
+import ollama
 
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.utils.pdf_manager import PDFManager
 
 logger = logging.getLogger(__name__)
+
+# Regex pattern for validating DOI format (basic validation)
+# DOIs start with 10. followed by a registrant code and a suffix
+DOI_PATTERN = re.compile(r'^10\.\d{4,}/[^\s]+$')
+
+# Regex pattern for validating PMID format (7-8 digit numeric ID)
+PMID_PATTERN = re.compile(r'^\d{7,8}$')
 
 try:
     import pymupdf  # PyMuPDF
@@ -39,11 +48,14 @@ except ImportError:
     logger.warning("tqdm not installed. Progress bars will not be displayed.")
     tqdm = None
 
-import re
 from dataclasses import dataclass
 
 # Minimum text length for valid extraction
 MIN_EXTRACTED_TEXT_LENGTH = 50
+
+# Maximum text length to send to LLM for metadata extraction
+# First 3000 chars typically contain all metadata (title, authors, DOI, PMID)
+MAX_LLM_TEXT_LENGTH = 3000
 
 # Column index for has_full_text in check_document_status query result
 # Query returns: id, title, abstract, authors, doi, pmid, external_id,
@@ -101,7 +113,7 @@ class PDFMatcher:
     def __init__(
         self,
         pdf_base_dir: Optional[str] = None,
-        ollama_url: str = "http://localhost:11434",
+        ollama_host: Optional[str] = None,
         model: Optional[str] = None
     ):
         """
@@ -110,12 +122,15 @@ class PDFMatcher:
         Args:
             pdf_base_dir: Base directory for PDF storage. If None, uses PDF_BASE_DIR
                          environment variable or defaults to ~/knowledgebase/pdf
-            ollama_url: URL for Ollama service
+            ollama_host: Host URL for Ollama service. If None, uses OLLAMA_HOST
+                        environment variable or defaults to localhost:11434
             model: LLM model to use for metadata extraction
         """
         self.db_manager = get_db_manager()
-        self.ollama_url = ollama_url
         self.model = model or self.DEFAULT_MODEL
+
+        # Initialize Ollama client with optional custom host
+        self.ollama_client = ollama.Client(host=ollama_host) if ollama_host else ollama.Client()
 
         # Initialize PDF manager with database connection
         with self.db_manager.get_connection() as conn:
@@ -149,7 +164,7 @@ class PDFMatcher:
             text = page.get_text()
             doc.close()
 
-            if not text or len(text.strip()) < 50:
+            if not text or len(text.strip()) < MIN_EXTRACTED_TEXT_LENGTH:
                 logger.warning(f"Extracted text too short from {pdf_path}")
                 return None
 
@@ -225,14 +240,18 @@ class PDFMatcher:
         Returns:
             Document dict if found, None otherwise
         """
-        if not doi and not pmid:
+        # Validate inputs
+        validated_doi = self._validate_doi(doi) if doi else None
+        validated_pmid = self._validate_pmid(pmid) if pmid else None
+
+        if not validated_doi and not validated_pmid:
             return None
 
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Try DOI first (more reliable)
-                    if doi:
+                    if validated_doi:
                         cur.execute(
                             """
                             SELECT id, title, abstract, authors, doi, pmid,
@@ -241,15 +260,15 @@ class PDFMatcher:
                             WHERE LOWER(doi) = LOWER(%s)
                             LIMIT 1
                             """,
-                            (doi,)
+                            (validated_doi,)
                         )
                         row = cur.fetchone()
                         if row:
-                            logger.debug(f"Found document by DOI: {doi}")
-                            return self._row_to_dict(row)
+                            logger.debug(f"Found document by DOI: {validated_doi}")
+                            return self._row_to_quick_lookup_dict(row)
 
                     # Try PMID
-                    if pmid:
+                    if validated_pmid:
                         cur.execute(
                             """
                             SELECT id, title, abstract, authors, doi, pmid,
@@ -258,12 +277,12 @@ class PDFMatcher:
                             WHERE pmid = %s
                             LIMIT 1
                             """,
-                            (pmid,)
+                            (validated_pmid,)
                         )
                         row = cur.fetchone()
                         if row:
-                            logger.debug(f"Found document by PMID: {pmid}")
-                            return self._row_to_dict(row)
+                            logger.debug(f"Found document by PMID: {validated_pmid}")
+                            return self._row_to_quick_lookup_dict(row)
 
             return None
 
@@ -291,14 +310,19 @@ class PDFMatcher:
         Returns:
             DocumentStatus with exists, has_full_text, has_chunks, and document dict
         """
-        if not doi and not pmid:
+        # Validate inputs - note: we use lenient validation here since
+        # identifiers from regex extraction may have slight variations
+        validated_doi = self._validate_doi(doi) if doi else None
+        validated_pmid = self._validate_pmid(pmid) if pmid else None
+
+        if not validated_doi and not validated_pmid:
             return DocumentStatus()
 
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Look up document with full_text status
-                    if doi:
+                    if validated_doi:
                         cur.execute(
                             """
                             SELECT id, title, abstract, authors, doi, pmid, external_id,
@@ -309,11 +333,11 @@ class PDFMatcher:
                             WHERE LOWER(doi) = LOWER(%s)
                             LIMIT 1
                             """,
-                            (doi,)
+                            (validated_doi,)
                         )
                         row = cur.fetchone()
                         if row:
-                            logger.info(f"Found document by DOI: {doi}")
+                            logger.info(f"Found document by DOI: {validated_doi}")
                             doc = self._row_to_full_dict(row)
                             has_full_text = row[_HAS_FULL_TEXT_COLUMN_INDEX]
 
@@ -335,7 +359,7 @@ class PDFMatcher:
                             )
 
                     # Try PMID (check both pmid and external_id)
-                    if pmid:
+                    if validated_pmid:
                         cur.execute(
                             """
                             SELECT id, title, abstract, authors, doi, pmid, external_id,
@@ -346,11 +370,11 @@ class PDFMatcher:
                             WHERE pmid = %s OR external_id = %s
                             LIMIT 1
                             """,
-                            (pmid, pmid)
+                            (validated_pmid, validated_pmid)
                         )
                         row = cur.fetchone()
                         if row:
-                            logger.info(f"Found document by PMID: {pmid}")
+                            logger.info(f"Found document by PMID: {validated_pmid}")
                             doc = self._row_to_full_dict(row)
                             has_full_text = row[_HAS_FULL_TEXT_COLUMN_INDEX]
 
@@ -381,13 +405,19 @@ class PDFMatcher:
         """
         Convert database row to full document dictionary.
 
-        Maps row from check_document_status query to document dict.
+        Used by check_document_status() which queries:
+        SELECT id, title, abstract, authors, doi, pmid, external_id,
+               publication_date, publication as journal, source_id,
+               pdf_filename, pdf_url, (full_text IS NOT NULL...) as has_full_text
 
         Args:
-            row: Database row tuple
+            row: Database row tuple with 12+ columns in order:
+                 id, title, abstract, authors, doi, pmid, external_id,
+                 publication_date, journal, source_id, pdf_filename, pdf_url
+                 (Note: has_full_text at index 12 is handled separately)
 
         Returns:
-            Document dictionary with all relevant fields
+            Document dictionary with all relevant fields for status checking
         """
         return {
             'id': row[0],
@@ -414,8 +444,8 @@ class PDFMatcher:
         Returns:
             Dictionary with extracted metadata (doi, pmid, title, authors)
         """
-        # Truncate text to first 3000 characters for efficiency
-        truncated_text = text[:3000] if len(text) > 3000 else text
+        # Truncate text to first N characters for efficiency (metadata is on first page)
+        truncated_text = text[:MAX_LLM_TEXT_LENGTH] if len(text) > MAX_LLM_TEXT_LENGTH else text
 
         prompt = f"""Analyze this text from the first page of a biomedical research paper and extract the following metadata in JSON format:
 
@@ -445,34 +475,27 @@ Text to analyze:
 """
 
         try:
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,  # Low temperature for factual extraction
-                        "top_p": 0.9
-                    }
-                },
-                timeout=60
+            response = self.ollama_client.generate(
+                model=self.model,
+                prompt=prompt,
+                options={
+                    "temperature": 0.1,  # Low temperature for factual extraction
+                    "top_p": 0.9
+                }
             )
 
-            if response.status_code != 200:
-                logger.error(f"Ollama API error: {response.status_code}")
-                return self._empty_metadata()
-
-            result = response.json()
-            response_text = result.get('response', '').strip()
+            response_text = response.get('response', '').strip()
 
             # Try to parse JSON from response
             metadata = self._parse_llm_response(response_text)
             logger.debug(f"Extracted metadata: {metadata}")
             return metadata
 
-        except requests.exceptions.ConnectionError:
-            logger.error(f"Cannot connect to Ollama at {self.ollama_url}")
+        except ollama.ResponseError as e:
+            logger.error(f"Ollama API error: {e}")
+            return self._empty_metadata()
+        except ConnectionError:
+            logger.error("Cannot connect to Ollama service")
             return self._empty_metadata()
         except Exception as e:
             logger.error(f"Error calling LLM: {e}")
@@ -527,6 +550,52 @@ Text to analyze:
             'authors': []
         }
 
+    def _validate_doi(self, doi: Optional[str]) -> Optional[str]:
+        """
+        Validate and sanitize a DOI string.
+
+        Args:
+            doi: DOI string to validate
+
+        Returns:
+            Sanitized DOI if valid, None otherwise
+        """
+        if not doi:
+            return None
+
+        # Strip whitespace and normalize
+        doi = doi.strip()
+
+        # Basic format validation: DOIs start with 10. followed by registrant code
+        if not DOI_PATTERN.match(doi):
+            logger.warning(f"Invalid DOI format: {doi}")
+            return None
+
+        return doi
+
+    def _validate_pmid(self, pmid: Optional[str]) -> Optional[str]:
+        """
+        Validate and sanitize a PMID string.
+
+        Args:
+            pmid: PMID string to validate
+
+        Returns:
+            Sanitized PMID if valid, None otherwise
+        """
+        if not pmid:
+            return None
+
+        # Convert to string and strip whitespace
+        pmid = str(pmid).strip()
+
+        # PMID should be 7-8 digit numeric ID
+        if not PMID_PATTERN.match(pmid):
+            logger.warning(f"Invalid PMID format: {pmid}")
+            return None
+
+        return pmid
+
     def find_matching_document(self, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Find matching document in database using extracted metadata.
@@ -544,21 +613,21 @@ Text to analyze:
         """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Strategy 1: Exact DOI match
-                if metadata.get('doi'):
-                    doi = metadata['doi'].strip()
+                # Strategy 1: Exact DOI match (case-insensitive)
+                doi = self._validate_doi(metadata.get('doi'))
+                if doi:
                     cur.execute(
-                        "SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id FROM document WHERE doi = %s",
+                        "SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id FROM document WHERE LOWER(doi) = LOWER(%s)",
                         (doi,)
                     )
                     result = cur.fetchone()
                     if result:
                         logger.info(f"Found match by DOI: {doi}")
-                        return self._row_to_dict(result)
+                        return self._row_to_basic_document_dict(result)
 
                 # Strategy 2: Exact PMID match
-                if metadata.get('pmid'):
-                    pmid = str(metadata['pmid']).strip()
+                pmid = self._validate_pmid(metadata.get('pmid'))
+                if pmid:
                     cur.execute(
                         "SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id FROM document WHERE external_id = %s",
                         (pmid,)
@@ -566,7 +635,7 @@ Text to analyze:
                     result = cur.fetchone()
                     if result:
                         logger.info(f"Found match by PMID: {pmid}")
-                        return self._row_to_dict(result)
+                        return self._row_to_basic_document_dict(result)
 
                 # Strategy 3: Title similarity match
                 if metadata.get('title'):
@@ -583,7 +652,7 @@ Text to analyze:
                     result = cur.fetchone()
                     if result:
                         # Row now has 8 columns (7 original + similarity score)
-                        doc = self._row_to_dict(result[:7])  # Take first 7 columns
+                        doc = self._row_to_basic_document_dict(result[:7])  # Take first 7 columns
                         similarity = result[7]
                         logger.info(f"Found match by title similarity ({similarity:.2f}): {doc['title'][:50]}...")
                         return doc
@@ -591,8 +660,20 @@ Text to analyze:
         logger.info("No matching document found in database")
         return None
 
-    def _row_to_dict(self, row: tuple) -> Dict[str, Any]:
-        """Convert database row to document dictionary."""
+    def _row_to_basic_document_dict(self, row: tuple) -> Dict[str, Any]:
+        """
+        Convert database row to basic document dictionary.
+
+        Used by find_matching_document() which queries:
+        SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id
+
+        Args:
+            row: Database row tuple with 7 columns in order:
+                 id, doi, title, publication_date, pdf_filename, pdf_url, external_id
+
+        Returns:
+            Document dictionary with basic fields for PDF import operations
+        """
         return {
             'id': row[0],
             'doi': row[1],
@@ -601,6 +682,32 @@ Text to analyze:
             'pdf_filename': row[4],
             'pdf_url': row[5],
             'external_id': row[6]
+        }
+
+    def _row_to_quick_lookup_dict(self, row: tuple) -> Dict[str, Any]:
+        """
+        Convert database row to document dictionary for quick lookup.
+
+        Used by quick_database_lookup() which queries:
+        SELECT id, title, abstract, authors, doi, pmid, publication_date, journal, source
+
+        Args:
+            row: Database row tuple with 9 columns in order:
+                 id, title, abstract, authors, doi, pmid, publication_date, journal, source
+
+        Returns:
+            Document dictionary with full metadata from quick lookup
+        """
+        return {
+            'id': row[0],
+            'title': row[1],
+            'abstract': row[2],
+            'authors': row[3] or [],
+            'doi': row[4],
+            'pmid': row[5],
+            'publication_date': row[6],
+            'journal': row[7],
+            'source': row[8]
         }
 
     def import_pdf_for_document(
@@ -799,7 +906,7 @@ Text to analyze:
                 pmid=identifiers.pmid
             )
 
-            if doc_status.exists:
+            if doc_status.exists and doc_status.document is not None:
                 document = doc_status.document
                 result['match_method'] = 'regex_doi' if identifiers.doi else 'regex_pmid'
                 result['has_full_text'] = doc_status.has_full_text
@@ -840,7 +947,7 @@ Text to analyze:
                     doi=metadata.get('doi'),
                     pmid=metadata.get('pmid')
                 )
-                if doc_status.exists:
+                if doc_status.exists and doc_status.document is not None:
                     document = doc_status.document
                     result['match_method'] = 'llm_doi' if metadata.get('doi') else 'llm_pmid'
                     result['has_full_text'] = doc_status.has_full_text
