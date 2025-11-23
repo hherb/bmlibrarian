@@ -34,18 +34,16 @@ from ..constants import (
     COLOR_PRIMARY,
     COLOR_SUCCESS,
     COLOR_GREY_600,
+    COLOR_METADATA_BG,
+    SPLITTER_RATIO_PDF,
+    SPLITTER_RATIO_CONTROLS,
+    WORKER_TERMINATE_TIMEOUT_MS,
 )
 from ..widgets import StatusSpinnerWidget
 from ..worker import PDFAnalysisWorker
 
 
 logger = logging.getLogger(__name__)
-
-
-# Layout constants
-SPLITTER_RATIO_PDF = 50  # PDF viewer gets 50% width
-SPLITTER_RATIO_CONTROLS = 50  # Controls panel gets 50% width
-WORKER_TERMINATE_TIMEOUT_MS = 3000  # Max time to wait for worker termination
 
 
 class PDFUploadTab(QWidget):
@@ -136,14 +134,14 @@ class PDFUploadTab(QWidget):
             "before fact-checking."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet(f"color: {COLOR_GREY_600};")
+        instructions.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
         file_layout.addWidget(instructions)
 
         # File path row
         path_layout = QHBoxLayout()
 
         self._path_label = QLabel("No file selected")
-        self._path_label.setStyleSheet(f"color: {COLOR_GREY_600};")
+        self._path_label.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
         path_layout.addWidget(self._path_label, stretch=1)
 
         browse_btn = QPushButton("Browse...")
@@ -182,14 +180,18 @@ class PDFUploadTab(QWidget):
         content_layout = QVBoxLayout()
 
         # Metadata display
+        # Note: Using inline stylesheet as StylesheetGenerator doesn't support
+        # panel labels with backgrounds. All values are from constants/DPI scale.
         self._metadata_label = QLabel("")
         self._metadata_label.setWordWrap(True)
         self._metadata_label.setVisible(False)
-        self._metadata_label.setStyleSheet(f"""
-            background-color: #f0f8ff;
-            padding: {self.scale['padding_medium']}px;
-            border-radius: {self.scale['border_radius']}px;
-        """)
+        self._metadata_label.setStyleSheet(
+            f"QLabel {{ "
+            f"background-color: {COLOR_METADATA_BG}; "
+            f"padding: {self.scale['padding_medium']}px; "
+            f"border-radius: {self.scale['border_radius']}px; "
+            f"}}"
+        )
         content_layout.addWidget(self._metadata_label)
 
         # Abstract text (editable)
