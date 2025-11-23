@@ -292,10 +292,12 @@ class SearchCoordinator:
                     # Use semantic_docsearch function which handles embedding
                     # generation and uses HNSW index for fast search
                     # threshold=0.0 to get all results up to limit, sorted by score
+                    # Use GROUP BY to get unique documents with their best score
                     cur.execute("""
-                        SELECT DISTINCT document_id
+                        SELECT document_id, MAX(score) AS best_score
                         FROM semantic_docsearch(%s, %s, %s)
-                        ORDER BY score DESC
+                        GROUP BY document_id
+                        ORDER BY best_score DESC
                     """, (text, DEFAULT_SIMILARITY_THRESHOLD, limit))
 
                     results = cur.fetchall()
@@ -360,10 +362,12 @@ class SearchCoordinator:
                             (self.query_timeout_ms,)
                         )
 
+                        # Use GROUP BY to get unique documents with their best score
                         cur.execute("""
-                            SELECT DISTINCT document_id
+                            SELECT document_id, MAX(score) AS best_score
                             FROM semantic_docsearch(%s, %s, %s)
-                            ORDER BY score DESC
+                            GROUP BY document_id
+                            ORDER BY best_score DESC
                         """, (hyde_abstract, DEFAULT_SIMILARITY_THRESHOLD, limit))
 
                         results = cur.fetchall()
