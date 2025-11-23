@@ -2,6 +2,7 @@
 Paper Weight Laboratory - PDF Upload Tab
 
 Tab widget for uploading PDFs and matching/creating documents.
+Uses the new PDFIngestor for full PDF processing (storage, text extraction, embedding).
 """
 
 import logging
@@ -11,8 +12,7 @@ from typing import Optional, Dict, Any, List
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFileDialog, QMessageBox,
-    QTreeWidget, QTreeWidgetItem, QFormLayout, QTextEdit,
-    QFrame,
+    QTreeWidget, QTreeWidgetItem, QFormLayout, QCheckBox,
 )
 from PySide6.QtCore import Signal, QThread
 
@@ -146,6 +146,66 @@ class PDFAnalysisWorker(QThread):
             return []
 
 
+class PDFIngestWorker(QThread):
+    """
+    Worker thread for PDF ingestion.
+
+    Performs PDF storage, text extraction, and embedding in background.
+    """
+
+    ingest_complete = Signal(object)  # IngestResult
+    ingest_error = Signal(str)
+    status_update = Signal(str)
+
+    def __init__(
+        self,
+        document_id: int,
+        pdf_path: Path,
+        parent: Optional[object] = None
+    ):
+        """
+        Initialize worker.
+
+        Args:
+            document_id: Database document ID
+            pdf_path: Path to PDF file
+            parent: Parent object
+        """
+        super().__init__(parent)
+        self.document_id = document_id
+        self.pdf_path = pdf_path
+
+    def run(self) -> None:
+        """Run PDF ingestion in background."""
+        try:
+            from bmlibrarian.importers.pdf_ingestor import PDFIngestor
+
+            self.status_update.emit("Initializing PDF ingestor...")
+
+            ingestor = PDFIngestor()
+
+            def progress_callback(stage: str, current: int, total: int) -> None:
+                """Handle progress updates."""
+                if total > 0:
+                    self.status_update.emit(f"{stage}: {current}/{total}")
+                else:
+                    self.status_update.emit(stage)
+
+            self.status_update.emit("Ingesting PDF...")
+
+            result = ingestor.ingest_pdf_immediate(
+                document_id=self.document_id,
+                pdf_path=self.pdf_path,
+                progress_callback=progress_callback,
+            )
+
+            self.ingest_complete.emit(result)
+
+        except Exception as e:
+            logger.exception(f"PDF ingestion error: {e}")
+            self.ingest_error.emit(str(e))
+
+
 class PDFUploadTab(QWidget):
     """
     Tab widget for PDF upload and document matching.
@@ -175,7 +235,8 @@ class PDFUploadTab(QWidget):
         self.current_pdf_path: Optional[Path] = None
         self.current_metadata: Optional[Dict] = None
         self.current_match: Optional[Dict] = None
-        self.worker: Optional[PDFAnalysisWorker] = None
+        self.analysis_worker: Optional[PDFAnalysisWorker] = None
+        self.ingest_worker: Optional[PDFIngestWorker] = None
 
         self._setup_ui()
 
@@ -267,6 +328,19 @@ class PDFUploadTab(QWidget):
         match_group.setLayout(match_layout)
         layout.addWidget(match_group, stretch=1)
 
+        # Ingestion options
+        options_layout = QHBoxLayout()
+
+        self.ingest_checkbox = QCheckBox("Ingest PDF (extract text & create embeddings)")
+        self.ingest_checkbox.setChecked(True)
+        self.ingest_checkbox.setToolTip(
+            "Store PDF, convert to text, and create semantic embeddings.\n"
+            "This enables full-text analysis for the Paper Weight assessment."
+        )
+        options_layout.addWidget(self.ingest_checkbox)
+        options_layout.addStretch()
+        layout.addLayout(options_layout)
+
         # Action buttons
         button_layout = QHBoxLayout()
 
@@ -322,11 +396,11 @@ class PDFUploadTab(QWidget):
         self.status_spinner.set_status("Analyzing PDF...")
 
         # Create and start worker
-        self.worker = PDFAnalysisWorker(self.current_pdf_path, self)
-        self.worker.status_update.connect(self._on_status_update)
-        self.worker.analysis_complete.connect(self._on_analysis_complete)
-        self.worker.analysis_error.connect(self._on_analysis_error)
-        self.worker.start()
+        self.analysis_worker = PDFAnalysisWorker(self.current_pdf_path, self)
+        self.analysis_worker.status_update.connect(self._on_status_update)
+        self.analysis_worker.analysis_complete.connect(self._on_analysis_complete)
+        self.analysis_worker.analysis_error.connect(self._on_analysis_error)
+        self.analysis_worker.start()
 
     def _clear_results(self) -> None:
         """Clear all result fields."""
@@ -436,11 +510,16 @@ class PDFUploadTab(QWidget):
         self._use_selected_match()
 
     def _use_selected_match(self) -> None:
-        """Use selected document match."""
+        """Use selected document match and optionally ingest PDF."""
         current = self.alternatives_tree.currentItem()
         if current:
             document_id = int(current.text(0))
-            self.document_selected.emit(document_id)
+
+            # If ingest checkbox is checked, ingest the PDF
+            if self.ingest_checkbox.isChecked() and self.current_pdf_path:
+                self._ingest_pdf(document_id)
+            else:
+                self.document_selected.emit(document_id)
 
     def _create_new_document(self) -> None:
         """Create new document from extracted metadata."""
@@ -519,13 +598,16 @@ class PDFUploadTab(QWidget):
 
             logger.info(f"Created new document with ID: {document_id}")
 
-            QMessageBox.information(
-                self,
-                "Document Created",
-                f"New document created with ID: {document_id}"
-            )
-
-            self.document_selected.emit(document_id)
+            # If ingest checkbox is checked, ingest the PDF
+            if self.ingest_checkbox.isChecked() and self.current_pdf_path:
+                self._ingest_pdf(document_id)
+            else:
+                QMessageBox.information(
+                    self,
+                    "Document Created",
+                    f"New document created with ID: {document_id}"
+                )
+                self.document_selected.emit(document_id)
 
         except Exception as e:
             logger.exception(f"Error creating document: {e}")
@@ -534,6 +616,99 @@ class PDFUploadTab(QWidget):
                 "Creation Error",
                 f"Failed to create document:\n{e}"
             )
+
+    def _ingest_pdf(self, document_id: int) -> None:
+        """
+        Ingest PDF for a document.
+
+        Args:
+            document_id: Database document ID
+        """
+        if not self.current_pdf_path:
+            self.document_selected.emit(document_id)
+            return
+
+        # Disable buttons during ingestion
+        self.use_match_btn.setEnabled(False)
+        self.create_new_btn.setEnabled(False)
+
+        # Start spinner
+        self.status_spinner.start_spinner()
+        self.status_spinner.set_status("Ingesting PDF...")
+
+        # Store document_id for completion handler
+        self._pending_document_id = document_id
+
+        # Create and start ingest worker
+        self.ingest_worker = PDFIngestWorker(
+            document_id,
+            self.current_pdf_path,
+            self
+        )
+        self.ingest_worker.status_update.connect(self._on_status_update)
+        self.ingest_worker.ingest_complete.connect(self._on_ingest_complete)
+        self.ingest_worker.ingest_error.connect(self._on_ingest_error)
+        self.ingest_worker.start()
+
+    def _on_ingest_complete(self, result: Any) -> None:
+        """Handle completed PDF ingestion."""
+        document_id = self._pending_document_id
+
+        if result.success:
+            self.status_spinner.set_complete(
+                f"Ingestion complete: {result.chunks_created} chunks, "
+                f"{result.char_count:,} chars"
+            )
+
+            QMessageBox.information(
+                self,
+                "PDF Ingested",
+                f"PDF successfully ingested:\n"
+                f"- Text extracted: {result.char_count:,} characters\n"
+                f"- Pages: {result.page_count}\n"
+                f"- Chunks created: {result.chunks_created}"
+            )
+        else:
+            self.status_spinner.set_error("Ingestion failed")
+
+            # Show warning but still proceed
+            QMessageBox.warning(
+                self,
+                "Ingestion Warning",
+                f"PDF ingestion completed with errors:\n{result.error_message}\n\n"
+                "The document was still associated, but full-text analysis "
+                "may not be available."
+            )
+
+        # Re-enable buttons
+        self.use_match_btn.setEnabled(True)
+        self.create_new_btn.setEnabled(True)
+
+        # Emit document selected signal
+        self.document_selected.emit(document_id)
+
+    def _on_ingest_error(self, error: str) -> None:
+        """Handle ingestion error."""
+        document_id = self._pending_document_id
+
+        self.status_spinner.set_error("Ingestion failed")
+
+        # Re-enable buttons
+        self.use_match_btn.setEnabled(True)
+        self.create_new_btn.setEnabled(True)
+
+        # Show error but still proceed
+        reply = QMessageBox.question(
+            self,
+            "Ingestion Error",
+            f"Failed to ingest PDF:\n{error}\n\n"
+            "Do you want to continue without PDF ingestion?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply == QMessageBox.Yes:
+            self.document_selected.emit(document_id)
 
 
 __all__ = ['PDFUploadTab']
