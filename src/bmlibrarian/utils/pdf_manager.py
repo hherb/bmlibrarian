@@ -2,13 +2,18 @@
 
 Handles PDF storage organization by publication year and provides utilities
 for fetching, storing, and retrieving full-text PDFs.
+
+Supports multiple download strategies:
+1. Direct HTTP download (fast, simple)
+2. Discovery-first workflow (finds best sources via DOI, PMID, Unpaywall)
+3. Browser-based fallback (handles Cloudflare and anti-bot protections)
 """
 
 import os
 import logging
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 from datetime import datetime
 import requests
 
@@ -327,6 +332,116 @@ class PDFManager:
 
         # Try to download
         return self.download_pdf(document)
+
+    def download_pdf_with_discovery(
+        self,
+        document: Dict[str, Any],
+        use_browser_fallback: bool = True,
+        unpaywall_email: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> Optional[Path]:
+        """Download PDF using discovery-first workflow.
+
+        This method uses the full-text discovery system to find the best
+        available PDF source (PMC, Unpaywall, DOI, direct URL) and then
+        downloads from the discovered sources with browser fallback support.
+
+        Workflow:
+        1. Uses FullTextFinder to discover available sources
+        2. Tries direct HTTP download from each source in priority order
+        3. Falls back to browser-based download if HTTP fails
+
+        Args:
+            document: Document dictionary with:
+                - doi: DOI string (recommended)
+                - pmid: PubMed ID (optional)
+                - pmcid: PubMed Central ID (optional)
+                - pdf_url: Direct PDF URL (optional)
+                - id: Document ID (for filename generation)
+                - publication_date: For year-based storage
+            use_browser_fallback: Use browser if HTTP download fails (default True)
+            unpaywall_email: Email for Unpaywall API (optional)
+            progress_callback: Optional callback(stage, status) for progress
+
+        Returns:
+            Path to downloaded file, or None if all methods failed
+
+        Example:
+            pdf_manager = PDFManager(base_dir='~/pdfs')
+            document = {'doi': '10.1234/example', 'id': 123}
+            path = pdf_manager.download_pdf_with_discovery(
+                document,
+                unpaywall_email='user@example.com'
+            )
+        """
+        try:
+            from bmlibrarian.discovery import download_pdf_for_document
+        except ImportError:
+            logger.warning("Discovery module not available, falling back to direct download")
+            return self.download_pdf(document, use_browser_fallback=use_browser_fallback)
+
+        # Get OpenAthens proxy URL if configured
+        openathens_proxy_url = None
+        if self.openathens_auth and hasattr(self.openathens_auth, 'config'):
+            openathens_proxy_url = getattr(self.openathens_auth.config, 'institution_url', None)
+
+        # Use discovery system
+        result = download_pdf_for_document(
+            document=document,
+            output_dir=self.base_dir,
+            unpaywall_email=unpaywall_email,
+            openathens_proxy_url=openathens_proxy_url,
+            use_browser_fallback=use_browser_fallback,
+            progress_callback=progress_callback
+        )
+
+        if result.success and result.file_path:
+            pdf_path = Path(result.file_path)
+
+            # Update document with pdf_filename for database storage
+            document['pdf_filename'] = pdf_path.name
+
+            logger.info(
+                f"Downloaded PDF via discovery: {pdf_path} "
+                f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
+                f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
+            )
+            return pdf_path
+
+        # Log failure reason
+        logger.warning(f"Discovery download failed for document {document.get('id')}: {result.error_message}")
+        return None
+
+    def get_or_download_with_discovery(
+        self,
+        document: Dict[str, Any],
+        unpaywall_email: Optional[str] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> Optional[Path]:
+        """Get PDF path if exists, otherwise download using discovery workflow.
+
+        This is the recommended method for retrieving PDFs when you have
+        document metadata (DOI, PMID, etc.) as it will find the best available
+        source and handle protected PDFs automatically.
+
+        Args:
+            document: Document dictionary
+            unpaywall_email: Email for Unpaywall API
+            progress_callback: Optional progress callback
+
+        Returns:
+            Path to PDF file, or None if not available
+        """
+        # Check if already exists
+        if self.pdf_exists(document):
+            return self.get_pdf_path(document)
+
+        # Try discovery-based download
+        return self.download_pdf_with_discovery(
+            document,
+            unpaywall_email=unpaywall_email,
+            progress_callback=progress_callback
+        )
 
     def _extract_year(self, document: Dict[str, Any]) -> Optional[int]:
         """Extract publication year from document.

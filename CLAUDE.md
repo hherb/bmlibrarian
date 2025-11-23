@@ -199,65 +199,57 @@ pdf_path = pdf_manager.download_pdf(document)
 - **Security Documentation**: `doc/developers/openathens_security.md` - Security architecture and best practices
 - **Unit Tests**: `tests/test_openathens_auth.py` - Comprehensive test suite
 
-## Full-Text PDF Discovery
+## PDF Discovery and Download
 
-BMLibrarian includes a full-text discovery system that finds and downloads PDF versions of academic papers through legal channels. The system prioritizes open access sources and optionally supports institutional access via OpenAthens authentication.
+BMLibrarian includes an intelligent PDF retrieval system that discovers and downloads full-text PDFs using multiple strategies:
 
-### Source Resolution Order
-1. **PubMed Central (PMC)** - Verified open access repository (highest priority)
-2. **Unpaywall** - Open access aggregator covering millions of papers
-3. **DOI Resolution** - CrossRef and doi.org content negotiation
-4. **Direct URL** - Existing PDF URLs from database
-5. **OpenAthens** - Institutional proxy (lowest priority, for paywalled content)
+### Workflow
+1. **Discovery**: Finds available PDF sources via PMC, Unpaywall, DOI, and direct URLs
+2. **Direct HTTP Download**: Attempts fast HTTP downloads from discovered sources (prioritizes open access)
+3. **Browser Fallback**: Uses Playwright browser automation for Cloudflare-protected or anti-bot protected sites
 
 ### Key Features
-- **Multi-source Discovery**: Queries multiple sources to maximize PDF availability
-- **Open Access Priority**: Automatically prefers OA sources over paywalled content
-- **Early Exit**: Stops searching after finding first OA source (configurable)
-- **OpenAthens Integration**: Seamless authenticated downloads for institutional access
-- **PDF Validation**: Verifies downloaded files are valid PDFs
-- **Retry Logic**: Exponential backoff for failed downloads
+- **Multi-Source Discovery**: Searches PMC, Unpaywall, CrossRef, and DOI.org
+- **Priority-Based Selection**: Automatically selects best source (open access preferred)
+- **Browser Fallback**: Handles Cloudflare verification, embedded PDF viewers, and anti-bot protections
+- **Year-Based Organization**: PDFs stored in `YYYY/filename.pdf` structure
+- **Database Integration**: Automatically updates document records with PDF paths
 
 ### Usage
 ```python
-from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
-
-# Create finder with your email (required for Unpaywall)
-finder = FullTextFinder(unpaywall_email="your@email.com")
-
-# Discover PDF sources by DOI
-identifiers = DocumentIdentifiers(doi="10.1038/nature12373")
-result = finder.discover(identifiers)
-
-if result.best_source:
-    print(f"Best source: {result.best_source.url}")
-    print(f"Access type: {result.best_source.access_type.value}")
-
-# Discover and download in one step
+from bmlibrarian.discovery import download_pdf_for_document
 from pathlib import Path
-download_result = finder.discover_and_download(
-    identifiers,
-    output_path=Path("paper.pdf")
+
+# Download PDF with discovery workflow
+result = download_pdf_for_document(
+    document={'doi': '10.1038/nature12373', 'id': 123},
+    output_dir=Path('~/pdfs').expanduser(),
+    unpaywall_email='user@example.com',  # Recommended
+    use_browser_fallback=True  # Falls back to browser if HTTP fails
 )
+
+if result.success:
+    print(f"Downloaded: {result.file_path}")
+    print(f"Source: {result.source.source_type.value}")
 ```
 
 ### Configuration
-Add to `~/.bmlibrarian/config.json`:
 ```json
 {
-  "unpaywall_email": "your@email.com",
+  "unpaywall_email": "user@example.com",
   "discovery": {
     "timeout": 30,
     "prefer_open_access": true,
-    "skip_resolvers": []
+    "use_browser_fallback": true,
+    "browser_headless": true,
+    "browser_timeout": 60000
   }
 }
 ```
 
 ### Documentation
-- **User Guide**: `doc/users/full_text_discovery_guide.md` - Complete usage guide with examples
-- **Architecture**: `doc/developers/full_text_discovery_system.md` - Technical documentation
-- **Unit Tests**: `tests/discovery/` - Comprehensive test suite
+- **User Guide**: `doc/users/pdf_download_guide.md` - Complete usage guide
+- **Browser Downloader**: `doc/users/BROWSER_DOWNLOADER.md` - Browser-based download details
 
 ## Architecture
 

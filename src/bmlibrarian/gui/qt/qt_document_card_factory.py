@@ -277,12 +277,15 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
     - PDF path caching for performance
     - Thread-safe operations
     - Modular method design for maintainability
+    - Discovery-based PDF download with browser fallback support
     """
 
     def __init__(
         self,
         pdf_manager=None,
-        base_pdf_dir: Optional[Path] = None
+        base_pdf_dir: Optional[Path] = None,
+        use_discovery: bool = True,
+        unpaywall_email: Optional[str] = None
     ):
         """
         Initialize Qt document card factory.
@@ -290,12 +293,18 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Args:
             pdf_manager: PDFManager instance for handling PDF operations
             base_pdf_dir: Base directory for PDF files
+            use_discovery: If True, use discovery-first workflow for PDF downloads.
+                This leverages PMC, Unpaywall, and DOI resolution to find the best
+                available PDF source, with browser-based fallback for protected sites.
+            unpaywall_email: Email for Unpaywall API requests (optional)
 
         Raises:
             ValueError: If base_pdf_dir is invalid or not writable
         """
         super().__init__(base_pdf_dir)
         self.pdf_manager = pdf_manager
+        self.use_discovery = use_discovery
+        self.unpaywall_email = unpaywall_email
         self._pdf_path_cache: Dict[int, Optional[Path]] = {}  # Performance optimization
 
     def create_card(self, card_data: DocumentCardData) -> QFrame:
@@ -654,6 +663,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         """
         Create handler for fetching PDF.
 
+        Uses discovery-first workflow if enabled, which:
+        1. Discovers available sources (PMC, Unpaywall, DOI, direct URL)
+        2. Tries direct HTTP download from each source
+        3. Falls back to browser-based download for protected sites
+
         Args:
             card_data: Document card data
 
@@ -674,22 +688,42 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                         self._pdf_path_cache[card_data.doc_id] = result
                         return result
 
-                # Default fetch behavior using pdf_manager
-                if self.pdf_manager and card_data.pdf_url:
-                    # Create document dictionary for pdf_manager
-                    document = {
-                        'id': card_data.doc_id,
-                        'pdf_url': card_data.pdf_url,
-                        'title': card_data.title,
-                        'authors': card_data.authors,
-                        'publication_date': str(card_data.year) if card_data.year else None,
-                    }
+                # Create document dictionary for download methods
+                document = {
+                    'id': card_data.doc_id,
+                    'doi': card_data.doi,
+                    'pmid': card_data.pmid,
+                    'pdf_url': card_data.pdf_url,
+                    'title': card_data.title,
+                    'authors': card_data.authors,
+                    'publication_date': str(card_data.year) if card_data.year else None,
+                }
 
+                # Use discovery-first workflow if enabled and PDFManager supports it
+                if self.use_discovery and self.pdf_manager:
+                    if hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
+                        logger.info(f"Using discovery workflow for document {card_data.doc_id}")
+                        pdf_path = self.pdf_manager.download_pdf_with_discovery(
+                            document,
+                            use_browser_fallback=True,
+                            unpaywall_email=self.unpaywall_email
+                        )
+
+                        if pdf_path and pdf_path.exists():
+                            # Update database with pdf_filename
+                            self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
+                            # Update cache
+                            self._pdf_path_cache[card_data.doc_id] = pdf_path
+                            logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
+                            return pdf_path
+                        # Discovery failed, will fall through to direct download below
+
+                # Fall back to direct download if discovery not available/failed
+                if self.pdf_manager and card_data.pdf_url:
                     pdf_path = self.pdf_manager.download_pdf(document)
 
                     if not pdf_path or not pdf_path.exists():
                         # Provide a helpful error message
-                        # Check if URL is accessible (common failure: 403 Forbidden)
                         error_msg = f"Failed to download PDF for document {card_data.doc_id}"
                         if card_data.pdf_url:
                             if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
@@ -698,23 +732,19 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                                 error_msg += f" from {card_data.pdf_url}"
                         raise FileNotFoundError(error_msg)
 
-                    # Update database with pdf_filename (pass document dict for PDFManager methods)
+                    # Update database with pdf_filename
                     self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
 
                     # Update cache
                     self._pdf_path_cache[card_data.doc_id] = pdf_path
 
-                    logger.info(
-                        f"Downloaded PDF for document {card_data.doc_id}: {pdf_path}"
-                    )
+                    logger.info(f"Downloaded PDF for document {card_data.doc_id}: {pdf_path}")
                     return pdf_path
 
                 raise ValueError("No PDF manager or URL configured for fetch")
 
             except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
-                logger.error(
-                    f"Failed to fetch PDF for document {card_data.doc_id}: {e}"
-                )
+                logger.error(f"Failed to fetch PDF for document {card_data.doc_id}: {e}")
                 raise
 
         return handler

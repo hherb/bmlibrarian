@@ -2,6 +2,10 @@
 
 Coordinates multiple resolvers to find and download PDF full-text
 for documents, prioritizing open access sources.
+
+Supports a two-phase download approach:
+1. Direct HTTP downloads (fast, works for OA and properly configured sites)
+2. Browser-based fallback (handles Cloudflare, anti-bot protections, embedded viewers)
 """
 
 import logging
@@ -177,14 +181,24 @@ class FullTextFinder:
         identifiers: DocumentIdentifiers,
         output_path: Path,
         max_attempts: int = 3,
+        use_browser_fallback: bool = True,
+        browser_headless: bool = True,
+        browser_timeout: int = 60000,
         progress_callback: Optional[Callable[[str, str], None]] = None
     ) -> DownloadResult:
         """Discover PDF sources and download the best one.
+
+        Uses a two-phase approach:
+        1. First tries direct HTTP downloads from discovered sources
+        2. If all HTTP attempts fail, falls back to browser-based download
 
         Args:
             identifiers: Document identifiers
             output_path: Path to save PDF file
             max_attempts: Maximum download attempts per source
+            use_browser_fallback: If True, use browser automation when HTTP fails
+            browser_headless: Run browser in headless mode (default True)
+            browser_timeout: Browser operation timeout in ms (default 60000)
             progress_callback: Optional callback(stage, status)
 
         Returns:
@@ -209,10 +223,11 @@ class FullTextFinder:
                 duration_ms=(time.time() - start_time) * 1000
             )
 
-        # Try downloading from each source in priority order
+        # Try downloading from each source in priority order via HTTP
         if progress_callback:
             progress_callback("download", "starting")
 
+        last_error = None
         for source in discovery.sources:
             result = self._download_from_source(
                 source=source,
@@ -226,17 +241,117 @@ class FullTextFinder:
                     progress_callback("download", "success")
                 return result
 
-            logger.debug(f"Download failed from {source.source_type.value}: {result.error_message}")
+            last_error = result.error_message
+            logger.debug(f"HTTP download failed from {source.source_type.value}: {result.error_message}")
 
-        # All sources failed
+        # All HTTP attempts failed - try browser fallback
+        if use_browser_fallback and discovery.sources:
+            if progress_callback:
+                progress_callback("browser_download", "starting")
+
+            result = self._download_with_browser(
+                sources=discovery.sources,
+                output_path=output_path,
+                headless=browser_headless,
+                timeout=browser_timeout
+            )
+
+            if result.success:
+                result.duration_ms = (time.time() - start_time) * 1000
+                if progress_callback:
+                    progress_callback("browser_download", "success")
+                return result
+
+            last_error = result.error_message
+            logger.debug(f"Browser download failed: {result.error_message}")
+
+        # All sources and methods failed
         if progress_callback:
             progress_callback("download", "failed")
 
         return DownloadResult(
             success=False,
-            error_message=f"All {len(discovery.sources)} sources failed",
+            error_message=f"All {len(discovery.sources)} sources failed. Last error: {last_error}",
             duration_ms=(time.time() - start_time) * 1000,
             attempts=len(discovery.sources)
+        )
+
+    def _download_with_browser(
+        self,
+        sources: List[PDFSource],
+        output_path: Path,
+        headless: bool = True,
+        timeout: int = 60000
+    ) -> DownloadResult:
+        """Download PDF using browser automation.
+
+        Tries each source URL with browser-based download.
+        Handles Cloudflare, anti-bot protections, and embedded PDF viewers.
+
+        Args:
+            sources: List of PDF sources to try
+            output_path: Path to save the PDF
+            headless: Run browser in headless mode
+            timeout: Browser operation timeout in ms
+
+        Returns:
+            DownloadResult with download status
+        """
+        start_time = time.time()
+
+        try:
+            from bmlibrarian.utils.browser_downloader import download_pdf_with_browser
+        except ImportError:
+            logger.warning(
+                "Browser downloader not available. Install with: "
+                "uv add playwright && uv run python -m playwright install chromium"
+            )
+            return DownloadResult(
+                success=False,
+                error_message="Browser downloader not available (playwright not installed)",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        # Try each source URL with browser download
+        last_error = None
+        for source in sources:
+            logger.info(f"Trying browser download from {source.source_type.value}: {source.url}")
+
+            try:
+                result = download_pdf_with_browser(
+                    url=source.url,
+                    save_path=output_path,
+                    headless=headless,
+                    timeout=timeout
+                )
+
+                if result.get('status') == 'success':
+                    file_size = result.get('size', 0)
+                    if output_path.exists():
+                        file_size = output_path.stat().st_size
+
+                    logger.info(f"Browser download successful: {output_path} ({file_size} bytes)")
+
+                    return DownloadResult(
+                        success=True,
+                        source=source,
+                        file_path=str(output_path),
+                        file_size=file_size,
+                        duration_ms=(time.time() - start_time) * 1000
+                    )
+
+                last_error = result.get('error', 'Unknown browser download error')
+                logger.debug(f"Browser download failed for {source.url}: {last_error}")
+
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Browser download exception for {source.url}: {e}")
+
+        return DownloadResult(
+            success=False,
+            error_message=f"Browser download failed: {last_error}",
+            duration_ms=(time.time() - start_time) * 1000,
+            attempts=len(sources)
         )
 
     def _download_from_source(
@@ -400,6 +515,9 @@ class FullTextFinder:
                 - discovery.timeout: Request timeout
                 - discovery.prefer_open_access: Prefer OA sources
                 - discovery.skip_resolvers: List of resolvers to skip
+                - discovery.use_browser_fallback: Use browser for protected PDFs
+                - discovery.browser_headless: Run browser in headless mode
+                - discovery.browser_timeout: Browser timeout in ms
 
         Returns:
             Configured FullTextFinder instance
@@ -411,13 +529,161 @@ class FullTextFinder:
         if openathens_config.get('enabled', False):
             openathens_url = openathens_config.get('institution_url')
 
-        return cls(
+        instance = cls(
             unpaywall_email=config.get('unpaywall_email'),
             openathens_proxy_url=openathens_url,
             timeout=discovery_config.get('timeout', DEFAULT_TIMEOUT),
             prefer_open_access=discovery_config.get('prefer_open_access', True),
             skip_resolvers=discovery_config.get('skip_resolvers')
         )
+
+        # Store browser fallback settings for use in discover_and_download
+        instance._browser_fallback_config = {
+            'enabled': discovery_config.get('use_browser_fallback', True),
+            'headless': discovery_config.get('browser_headless', True),
+            'timeout': discovery_config.get('browser_timeout', 60000)
+        }
+
+        return instance
+
+    def download_for_document(
+        self,
+        document: Dict[str, Any],
+        output_dir: Optional[Path] = None,
+        use_browser_fallback: Optional[bool] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> DownloadResult:
+        """Download PDF for a document using discovery + direct download + browser fallback.
+
+        This is a convenience method for the common use case of downloading a PDF
+        for a document that has identifiers (DOI, PMID, etc.) stored in a dictionary.
+
+        Args:
+            document: Document dictionary with keys:
+                - doi: DOI string (optional)
+                - pmid: PubMed ID (optional)
+                - pmcid: PubMed Central ID (optional)
+                - title: Document title (optional)
+                - pdf_url: Direct PDF URL (optional)
+                - id: Document ID for filename generation (optional)
+                - publication_date: For year-based storage (optional)
+            output_dir: Directory to save PDF. If None, uses current directory.
+            use_browser_fallback: Override browser fallback setting (None uses config)
+            progress_callback: Optional callback(stage, status)
+
+        Returns:
+            DownloadResult with download status and file path
+        """
+        # Extract identifiers from document
+        identifiers = DocumentIdentifiers(
+            doc_id=document.get('id'),
+            doi=document.get('doi'),
+            pmid=str(document.get('pmid')) if document.get('pmid') else None,
+            pmcid=document.get('pmcid'),
+            title=document.get('title'),
+            pdf_url=document.get('pdf_url')
+        )
+
+        if not identifiers.has_identifiers():
+            return DownloadResult(
+                success=False,
+                error_message="Document has no usable identifiers (DOI, PMID, PMCID, or pdf_url)"
+            )
+
+        # Generate output path
+        output_path = self._generate_output_path(document, output_dir)
+
+        # Determine browser fallback settings
+        browser_config = getattr(self, '_browser_fallback_config', {
+            'enabled': True,
+            'headless': True,
+            'timeout': 60000
+        })
+
+        if use_browser_fallback is None:
+            use_browser_fallback = browser_config.get('enabled', True)
+
+        return self.discover_and_download(
+            identifiers=identifiers,
+            output_path=output_path,
+            use_browser_fallback=use_browser_fallback,
+            browser_headless=browser_config.get('headless', True),
+            browser_timeout=browser_config.get('timeout', 60000),
+            progress_callback=progress_callback
+        )
+
+    def _generate_output_path(
+        self,
+        document: Dict[str, Any],
+        output_dir: Optional[Path] = None
+    ) -> Path:
+        """Generate output path for a document PDF.
+
+        Uses DOI-based naming if available, falls back to document ID.
+        Organizes by year if publication_date is available.
+
+        Args:
+            document: Document dictionary
+            output_dir: Base output directory (default: current directory)
+
+        Returns:
+            Path for the PDF file
+        """
+        if output_dir is None:
+            output_dir = Path.cwd()
+        output_dir = Path(output_dir)
+
+        # Extract year for subdirectory
+        year = self._extract_year(document)
+        if year:
+            output_dir = output_dir / str(year)
+        else:
+            output_dir = output_dir / 'unknown'
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename
+        doi = document.get('doi')
+        if doi:
+            # DOI-based filename (replace slashes)
+            safe_doi = doi.replace('/', '_').replace('\\', '_')
+            filename = f"{safe_doi}.pdf"
+        else:
+            # Document ID-based filename
+            doc_id = document.get('id', 'unknown')
+            filename = f"doc_{doc_id}.pdf"
+
+        return output_dir / filename
+
+    def _extract_year(self, document: Dict[str, Any]) -> Optional[int]:
+        """Extract publication year from document.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            Year as integer, or None if not found
+        """
+        from datetime import datetime
+
+        pub_date = document.get('publication_date')
+        if pub_date:
+            if isinstance(pub_date, datetime):
+                return pub_date.year
+            elif isinstance(pub_date, str):
+                try:
+                    if '-' in pub_date:
+                        return int(pub_date.split('-')[0])
+                    elif len(pub_date) >= 4:
+                        return int(pub_date[:4])
+                except (ValueError, IndexError):
+                    pass
+
+        year = document.get('year')
+        if year and isinstance(year, int):
+            return year
+
+        return None
 
 
 def discover_full_text(
@@ -451,3 +717,92 @@ def discover_full_text(
 
     finder = FullTextFinder(unpaywall_email=unpaywall_email)
     return finder.discover(identifiers)
+
+
+def download_pdf_for_document(
+    document: Dict[str, Any],
+    output_dir: Optional[Path] = None,
+    unpaywall_email: Optional[str] = None,
+    openathens_proxy_url: Optional[str] = None,
+    use_browser_fallback: bool = True,
+    browser_headless: bool = True,
+    browser_timeout: int = 60000,
+    progress_callback: Optional[Callable[[str, str], None]] = None
+) -> DownloadResult:
+    """Convenience function to download PDF for a document.
+
+    This is the main entry point for downloading PDFs from document dictionaries.
+    It uses the full discovery + HTTP download + browser fallback workflow.
+
+    Workflow:
+    1. Discovers available PDF sources (PMC, Unpaywall, DOI, direct URL)
+    2. Tries direct HTTP download from each source in priority order
+    3. If all HTTP attempts fail, uses browser-based download as fallback
+
+    Args:
+        document: Document dictionary with keys:
+            - doi: DOI string (optional but recommended)
+            - pmid: PubMed ID (optional)
+            - pmcid: PubMed Central ID (optional)
+            - title: Document title (optional)
+            - pdf_url: Direct PDF URL (optional)
+            - id: Document ID for filename generation (optional)
+            - publication_date: For year-based storage (optional)
+        output_dir: Directory to save PDF. If None, uses current directory.
+        unpaywall_email: Email for Unpaywall API requests
+        openathens_proxy_url: OpenAthens proxy URL for institutional access
+        use_browser_fallback: If True, use browser when HTTP fails (default True)
+        browser_headless: Run browser in headless mode (default True)
+        browser_timeout: Browser operation timeout in ms (default 60000)
+        progress_callback: Optional callback(stage, status) for progress updates
+            Stages: 'discovery', 'download', 'browser_download'
+            Statuses: 'starting', 'found', 'not_found', 'success', 'failed'
+
+    Returns:
+        DownloadResult with:
+            - success: True if download succeeded
+            - source: PDFSource that worked (if successful)
+            - file_path: Path to downloaded file (if successful)
+            - file_size: Size in bytes (if successful)
+            - error_message: Error description (if failed)
+            - duration_ms: Total time taken
+
+    Example:
+        from bmlibrarian.discovery import download_pdf_for_document
+        from pathlib import Path
+
+        document = {
+            'doi': '10.1038/nature12373',
+            'id': 12345,
+            'publication_date': '2024-01-15'
+        }
+
+        result = download_pdf_for_document(
+            document=document,
+            output_dir=Path('~/pdfs').expanduser(),
+            unpaywall_email='user@example.com'
+        )
+
+        if result.success:
+            print(f"Downloaded to: {result.file_path}")
+        else:
+            print(f"Failed: {result.error_message}")
+    """
+    finder = FullTextFinder(
+        unpaywall_email=unpaywall_email,
+        openathens_proxy_url=openathens_proxy_url
+    )
+
+    # Set browser fallback config
+    finder._browser_fallback_config = {
+        'enabled': use_browser_fallback,
+        'headless': browser_headless,
+        'timeout': browser_timeout
+    }
+
+    return finder.download_for_document(
+        document=document,
+        output_dir=output_dir,
+        use_browser_fallback=use_browser_fallback,
+        progress_callback=progress_callback
+    )
