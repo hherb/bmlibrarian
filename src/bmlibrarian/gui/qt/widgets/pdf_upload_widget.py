@@ -185,14 +185,12 @@ class PDFUploadWidget(QWidget):
         self.quick_match_frame = QFrame()
         self.quick_match_frame.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.quick_match_frame.setStyleSheet(
-            self.style_gen.custom(
-                f"QFrame {{ "
-                f"background-color: {ThemeColors.SUCCESS_BG}; "
-                f"border: 1px solid {ThemeColors.SUCCESS_BORDER}; "
-                f"border-radius: {{radius_small}}px; "
-                f"padding: {{padding_small}}px; "
-                f"}}"
-            )
+            f"QFrame {{ "
+            f"background-color: {ThemeColors.SUCCESS_BG}; "
+            f"border: 1px solid {ThemeColors.SUCCESS_BORDER}; "
+            f"border-radius: {s['radius_small']}px; "
+            f"padding: {s['padding_small']}px; "
+            f"}}"
         )
         quick_match_layout = QVBoxLayout(self.quick_match_frame)
 

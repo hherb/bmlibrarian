@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
 
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
-from ...resources.styles import StylesheetGenerator, scale_px
+from ...resources.styles import StylesheetGenerator, scale_px, get_font_scale
 from .constants import ITEM_LABELS, SEPARATOR_COLOR
 from .score_utils import (
     get_score_color,
@@ -370,17 +370,18 @@ def create_item_row(
     score_badge = QLabel(get_score_text(score))
     score_badge.setAlignment(Qt.AlignCenter)
     score_badge.setFixedWidth(scale_px(120))
+    s = get_font_scale()
     score_badge.setStyleSheet(
-        stylesheet_gen.custom(f"""
+        f"""
             QLabel {{
                 background-color: {get_score_color(score)};
                 color: white;
                 font-weight: bold;
-                font-size: {{font_small}}pt;
-                padding: {{padding_tiny}}px;
-                border-radius: {{radius_small}}px;
+                font-size: {s['font_small']}pt;
+                padding: {s['padding_tiny']}px;
+                border-radius: {s['radius_small']}px;
             }}
-        """)
+        """
     )
 
     header_row.addWidget(item_label)
