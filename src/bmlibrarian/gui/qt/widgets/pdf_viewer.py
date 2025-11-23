@@ -1,30 +1,41 @@
 """
 PDF Viewer widget for BMLibrarian Qt GUI.
 
-Provides a simple PDF viewing interface with page navigation.
+Provides a PDF viewing interface using the native PySide6 QPdfView widget.
 """
+
+import logging
+from pathlib import Path
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QMessageBox, QSpinBox
+    QMessageBox, QSpinBox
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QImage
-from typing import Optional
-from pathlib import Path
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
 
-from ..resources.styles import get_font_scale
+from ..resources.styles import get_font_scale, StylesheetGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class PDFViewerWidget(QWidget):
     """
-    PDF viewer widget with page navigation.
+    PDF viewer widget using native PySide6 QPdfView.
 
-    Simple PDF viewer using PDF rendering libraries.
-    Falls back to displaying file path if rendering libraries are not available.
+    Provides a modern PDF viewing experience with built-in scrolling,
+    zooming, and multi-page display using Qt's native PDF support.
     """
 
     page_changed = Signal(int)  # Emits current page number
+
+    # Zoom level constants
+    ZOOM_MIN = 0.5
+    ZOOM_MAX = 3.0
+    ZOOM_STEP = 0.2
+    ZOOM_DEFAULT = 1.0
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -41,27 +52,27 @@ class PDFViewerWidget(QWidget):
         self.pdf_path: Optional[Path] = None
         self.current_page: int = 0
         self.total_pages: int = 0
-        self.pdf_document = None
+        self.zoom_level: float = self.ZOOM_DEFAULT
 
-        # Try to import PDF rendering library
-        self.has_pdf_support = False
+        # PDF document model
+        self._pdf_document = QPdfDocument(self)
+        self._pdf_document.statusChanged.connect(self._on_document_status_changed)
+
+        # Text extraction backend (for get_all_text)
+        self._text_extraction_doc = None
+        self._has_text_extraction = False
         try:
             import fitz  # PyMuPDF
-            self.has_pdf_support = True
-            self._render_backend = 'pymupdf'
+            self._has_text_extraction = True
         except ImportError:
-            try:
-                import pypdf
-                self.has_pdf_support = True
-                self._render_backend = 'pypdf'
-            except ImportError:
-                self._render_backend = None
+            pass
 
         self._setup_ui()
 
-    def _setup_ui(self):
-        """Setup the user interface."""
+    def _setup_ui(self) -> None:
+        """Set up the user interface components."""
         s = self.scale
+        style_gen = StylesheetGenerator()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -104,27 +115,22 @@ class PDFViewerWidget(QWidget):
 
         layout.addLayout(nav_layout)
 
-        # PDF display area
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setAlignment(Qt.AlignCenter)
-
-        self.pdf_label = QLabel("No PDF loaded")
-        self.pdf_label.setAlignment(Qt.AlignCenter)
-        self.pdf_label.setStyleSheet(f"background-color: #f0f0f0; padding: {s['padding_xlarge']}px;")
-
-        self.scroll_area.setWidget(self.pdf_label)
-        layout.addWidget(self.scroll_area)
+        # Native PDF view
+        self._pdf_view = QPdfView()
+        self._pdf_view.setDocument(self._pdf_document)
+        self._pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._pdf_view.setZoomFactor(self.zoom_level)
+        layout.addWidget(self._pdf_view)
 
         # Status bar
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet(f"color: gray; font-size: {s['font_tiny']}pt;")
+        self.status_label.setStyleSheet(
+            style_gen.label_stylesheet(font_size_key='font_tiny', color='gray')
+        )
         layout.addWidget(self.status_label)
 
-        # Zoom level
-        self.zoom_level = 1.0
-
-    def load_pdf(self, pdf_path: str | Path):
+    def load_pdf(self, pdf_path: str | Path) -> None:
         """
         Load a PDF file for viewing.
 
@@ -134,34 +140,38 @@ class PDFViewerWidget(QWidget):
         self.pdf_path = Path(pdf_path)
 
         if not self.pdf_path.exists():
+            logger.error("PDF file not found: %s", pdf_path)
             QMessageBox.critical(self, "Error", f"PDF file not found: {pdf_path}")
             self.status_label.setText("Error: File not found")
             return
 
-        if not self.has_pdf_support:
-            # Fallback: Just show file info
-            self.pdf_label.setText(
-                f"PDF Support not available\n\n"
-                f"File: {self.pdf_path.name}\n"
-                f"Path: {self.pdf_path}\n\n"
-                f"Install PyMuPDF (pip install pymupdf) for PDF rendering support."
-            )
-            self.status_label.setText("PDF rendering not available")
-            return
+        # Load PDF using native Qt PDF support
+        self._pdf_document.load(str(self.pdf_path))
 
-        try:
-            # Load PDF with appropriate backend
-            if self._render_backend == 'pymupdf':
+        # Load for text extraction (if available)
+        if self._has_text_extraction:
+            try:
                 import fitz
-                self.pdf_document = fitz.open(str(self.pdf_path))
-                self.total_pages = len(self.pdf_document)
-            elif self._render_backend == 'pypdf':
-                import pypdf
-                self.pdf_document = pypdf.PdfReader(str(self.pdf_path))
-                self.total_pages = len(self.pdf_document.pages)
+                self._text_extraction_doc = fitz.open(str(self.pdf_path))
+            except Exception as e:
+                logger.warning(
+                    "Failed to open PDF for text extraction: %s - %s",
+                    pdf_path, e
+                )
+                self._text_extraction_doc = None
+
+    def _on_document_status_changed(self, status: QPdfDocument.Status) -> None:
+        """
+        Handle document status changes.
+
+        Args:
+            status: New document status
+        """
+        if status == QPdfDocument.Status.Ready:
+            self.total_pages = self._pdf_document.pageCount()
+            self.current_page = 0
 
             # Update UI
-            self.current_page = 0
             self.page_spin.setMaximum(self.total_pages)
             self.page_spin.setValue(1)
             self.page_label.setText(f"of {self.total_pages}")
@@ -169,77 +179,54 @@ class PDFViewerWidget(QWidget):
             # Enable navigation
             self._update_navigation_buttons()
 
-            # Render first page
-            self._render_current_page()
+            self.status_label.setText(
+                f"Loaded: {self.pdf_path.name if self.pdf_path else 'PDF'} "
+                f"({self.total_pages} pages)"
+            )
 
-            self.status_label.setText(f"Loaded: {self.pdf_path.name} ({self.total_pages} pages)")
+            # Navigate to first page
+            self._navigate_to_page(0)
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load PDF:\n\n{str(e)}")
-            self.status_label.setText(f"Error loading PDF: {str(e)}")
+        elif status == QPdfDocument.Status.Error:
+            error_msg = "Failed to load PDF"
+            logger.error("Failed to load PDF: %s", self.pdf_path)
+            QMessageBox.critical(self, "Error", error_msg)
+            self.status_label.setText(f"Error: {error_msg}")
 
-    def _render_current_page(self):
-        """Render the current page."""
-        if not self.pdf_document:
-            return
+        elif status == QPdfDocument.Status.Loading:
+            self.status_label.setText("Loading PDF...")
 
-        try:
-            if self._render_backend == 'pymupdf':
-                # PyMuPDF rendering
-                import fitz
-                page = self.pdf_document[self.current_page]
+    def _navigate_to_page(self, page: int) -> None:
+        """
+        Navigate to a specific page.
 
-                # Create transformation matrix with zoom (identity matrix scaled)
-                mat = fitz.Matrix(self.zoom_level, self.zoom_level)
+        Args:
+            page: Page number (0-indexed)
+        """
+        if 0 <= page < self.total_pages:
+            self.current_page = page
+            navigator = self._pdf_view.pageNavigator()
+            if navigator:
+                navigator.jump(page, point=navigator.currentLocation().position)
+            self.page_changed.emit(page + 1)
 
-                pix = page.get_pixmap(matrix=mat)
-
-                # Convert to QImage
-                img = QImage(
-                    pix.samples,
-                    pix.width,
-                    pix.height,
-                    pix.stride,
-                    QImage.Format_RGB888
-                )
-
-                # Display
-                pixmap = QPixmap.fromImage(img)
-                self.pdf_label.setPixmap(pixmap)
-
-            elif self._render_backend == 'pypdf':
-                # PyPDF fallback (text only)
-                page = self.pdf_document.pages[self.current_page]
-                text = page.extract_text()
-
-                self.pdf_label.setText(
-                    f"Page {self.current_page + 1} of {self.total_pages}\n\n"
-                    f"Text Content:\n\n{text[:2000]}..."
-                )
-
-            self.page_changed.emit(self.current_page + 1)
-
-        except Exception as e:
-            self.pdf_label.setText(f"Error rendering page: {str(e)}")
-            self.status_label.setText(f"Render error: {str(e)}")
-
-    def _on_previous_page(self):
-        """Navigate to previous page."""
+    def _on_previous_page(self) -> None:
+        """Navigate to the previous page in the document."""
         if self.current_page > 0:
             self.current_page -= 1
             self.page_spin.setValue(self.current_page + 1)
-            self._render_current_page()
+            self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_next_page(self):
-        """Navigate to next page."""
+    def _on_next_page(self) -> None:
+        """Navigate to the next page in the document."""
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.page_spin.setValue(self.current_page + 1)
-            self._render_current_page()
+            self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_page_changed(self, page_num: int):
+    def _on_page_changed(self, page_num: int) -> None:
         """
         Handle page spin box change.
 
@@ -249,23 +236,23 @@ class PDFViewerWidget(QWidget):
         new_page = page_num - 1
         if 0 <= new_page < self.total_pages and new_page != self.current_page:
             self.current_page = new_page
-            self._render_current_page()
+            self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_zoom_in(self):
-        """Increase zoom level."""
-        self.zoom_level = min(self.zoom_level + 0.2, 3.0)
-        self._render_current_page()
+    def _on_zoom_in(self) -> None:
+        """Increase the zoom level of the PDF view."""
+        self.zoom_level = min(self.zoom_level + self.ZOOM_STEP, self.ZOOM_MAX)
+        self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
 
-    def _on_zoom_out(self):
-        """Decrease zoom level."""
-        self.zoom_level = max(self.zoom_level - 0.2, 0.5)
-        self._render_current_page()
+    def _on_zoom_out(self) -> None:
+        """Decrease the zoom level of the PDF view."""
+        self.zoom_level = max(self.zoom_level - self.ZOOM_STEP, self.ZOOM_MIN)
+        self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
 
-    def _update_navigation_buttons(self):
-        """Update navigation button states."""
+    def _update_navigation_buttons(self) -> None:
+        """Update navigation button enabled states based on current page."""
         self.prev_btn.setEnabled(self.current_page > 0)
         self.next_btn.setEnabled(self.current_page < self.total_pages - 1)
 
@@ -273,47 +260,46 @@ class PDFViewerWidget(QWidget):
         """
         Extract all text from the PDF document.
 
+        Uses PyMuPDF for text extraction as QPdfDocument doesn't provide
+        text extraction capability.
+
         Returns:
-            String containing all text from all pages, or empty string if no PDF loaded
+            String containing all text from all pages, or empty string if
+            text extraction is not available or no PDF is loaded.
         """
-        if not self.pdf_document:
+        if not self._text_extraction_doc:
             return ""
 
         try:
             text_parts = []
-
-            if self._render_backend == 'pymupdf':
-                # PyMuPDF text extraction
-                for page_num in range(self.total_pages):
-                    page = self.pdf_document[page_num]
-                    text = page.get_text()
-                    text_parts.append(text)
-
-            elif self._render_backend == 'pypdf':
-                # PyPDF text extraction
-                for page_num in range(self.total_pages):
-                    page = self.pdf_document.pages[page_num]
-                    text = page.extract_text()
-                    text_parts.append(text)
-
+            for page_num in range(len(self._text_extraction_doc)):
+                page = self._text_extraction_doc[page_num]
+                text = page.get_text()
+                text_parts.append(text)
             return '\n\n'.join(text_parts)
 
         except Exception as e:
-            print(f"Error extracting text from PDF: {e}")
+            logger.error("Error extracting text from PDF: %s", e)
             return ""
 
-    def clear(self):
-        """Clear the PDF viewer."""
+    def clear(self) -> None:
+        """Clear the PDF viewer and reset to initial state."""
         self.pdf_path = None
         self.current_page = 0
         self.total_pages = 0
-        self.pdf_document = None
-        self.zoom_level = 1.0
+        self.zoom_level = self.ZOOM_DEFAULT
 
-        self.pdf_label.setText("No PDF loaded")
+        # Close documents
+        self._pdf_document.close()
+        if self._text_extraction_doc:
+            self._text_extraction_doc.close()
+            self._text_extraction_doc = None
+
+        # Reset UI
         self.page_spin.setMaximum(1)
         self.page_spin.setValue(1)
         self.page_label.setText("of 0")
         self.status_label.setText("")
 
+        self._pdf_view.setZoomFactor(self.ZOOM_DEFAULT)
         self._update_navigation_buttons()
