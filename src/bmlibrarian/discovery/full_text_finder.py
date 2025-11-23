@@ -26,9 +26,12 @@ from .resolvers import (
 
 logger = logging.getLogger(__name__)
 
-# Default configuration
+# Default configuration constants
 DEFAULT_TIMEOUT = 30
 DEFAULT_UNPAYWALL_EMAIL = "bmlibrarian@example.com"
+DEFAULT_BROWSER_TIMEOUT_MS = 60000
+DEFAULT_BROWSER_HEADLESS = True
+DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 3
 
 
 class FullTextFinder:
@@ -180,10 +183,10 @@ class FullTextFinder:
         self,
         identifiers: DocumentIdentifiers,
         output_path: Path,
-        max_attempts: int = 3,
+        max_attempts: int = DEFAULT_MAX_DOWNLOAD_ATTEMPTS,
         use_browser_fallback: bool = True,
-        browser_headless: bool = True,
-        browser_timeout: int = 60000,
+        browser_headless: bool = DEFAULT_BROWSER_HEADLESS,
+        browser_timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
         progress_callback: Optional[Callable[[str, str], None]] = None
     ) -> DownloadResult:
         """Discover PDF sources and download the best one.
@@ -280,8 +283,8 @@ class FullTextFinder:
         self,
         sources: List[PDFSource],
         output_path: Path,
-        headless: bool = True,
-        timeout: int = 60000
+        headless: bool = DEFAULT_BROWSER_HEADLESS,
+        timeout: int = DEFAULT_BROWSER_TIMEOUT_MS
     ) -> DownloadResult:
         """Download PDF using browser automation.
 
@@ -540,8 +543,8 @@ class FullTextFinder:
         # Store browser fallback settings for use in discover_and_download
         instance._browser_fallback_config = {
             'enabled': discovery_config.get('use_browser_fallback', True),
-            'headless': discovery_config.get('browser_headless', True),
-            'timeout': discovery_config.get('browser_timeout', 60000)
+            'headless': discovery_config.get('browser_headless', DEFAULT_BROWSER_HEADLESS),
+            'timeout': discovery_config.get('browser_timeout', DEFAULT_BROWSER_TIMEOUT_MS)
         }
 
         return instance
@@ -596,8 +599,8 @@ class FullTextFinder:
         # Determine browser fallback settings
         browser_config = getattr(self, '_browser_fallback_config', {
             'enabled': True,
-            'headless': True,
-            'timeout': 60000
+            'headless': DEFAULT_BROWSER_HEADLESS,
+            'timeout': DEFAULT_BROWSER_TIMEOUT_MS
         })
 
         if use_browser_fallback is None:
@@ -607,8 +610,8 @@ class FullTextFinder:
             identifiers=identifiers,
             output_path=output_path,
             use_browser_fallback=use_browser_fallback,
-            browser_headless=browser_config.get('headless', True),
-            browser_timeout=browser_config.get('timeout', 60000),
+            browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
+            browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
             progress_callback=progress_callback
         )
 
@@ -725,8 +728,8 @@ def download_pdf_for_document(
     unpaywall_email: Optional[str] = None,
     openathens_proxy_url: Optional[str] = None,
     use_browser_fallback: bool = True,
-    browser_headless: bool = True,
-    browser_timeout: int = 60000,
+    browser_headless: bool = DEFAULT_BROWSER_HEADLESS,
+    browser_timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
     progress_callback: Optional[Callable[[str, str], None]] = None
 ) -> DownloadResult:
     """Convenience function to download PDF for a document.
