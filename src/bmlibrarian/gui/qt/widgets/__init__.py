@@ -11,6 +11,13 @@ from .citation_card import CitationCard
 from .markdown_viewer import MarkdownViewer
 from .collapsible_section import CollapsibleSection
 from .pdf_viewer import PDFViewerWidget
+from .pdf_upload_widget import PDFUploadWidget
+from .pdf_upload_workers import (
+    QuickExtractWorker,
+    LLMExtractWorker,
+    QuickMatchResult,
+    LLMExtractResult,
+)
 from .progress_widget import (
     ProgressWidget,
     StepProgressWidget,
@@ -27,6 +34,11 @@ __all__ = [
     'MarkdownViewer',
     'CollapsibleSection',
     'PDFViewerWidget',
+    'PDFUploadWidget',
+    'QuickExtractWorker',
+    'LLMExtractWorker',
+    'QuickMatchResult',
+    'LLMExtractResult',
     'ProgressWidget',
     'StepProgressWidget',
     'SpinnerWidget',
