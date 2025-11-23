@@ -34,6 +34,12 @@ from .progress_widget import (
     CompactProgressWidget
 )
 from .user_profile_widget import UserProfileWidget
+from .draggable_list import (
+    DraggableListWidget,
+    DraggableItemWrapper,
+    DragHandle,
+    DropIndicator,
+)
 from . import card_utils
 
 __all__ = [
@@ -62,5 +68,9 @@ __all__ = [
     'SpinnerWidget',
     'CompactProgressWidget',
     'UserProfileWidget',
+    'DraggableListWidget',
+    'DraggableItemWrapper',
+    'DragHandle',
+    'DropIndicator',
     'card_utils',
 ]
