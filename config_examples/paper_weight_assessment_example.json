@@ -24,6 +24,7 @@
         "systematic_review": 10.0,
         "meta_analysis": 10.0,
         "rct": 8.0,
+        "interventional_single_arm": 7.0,
         "cohort_prospective": 6.0,
         "cohort_retrospective": 5.0,
         "case_control": 4.0,
@@ -52,10 +53,31 @@
           "random allocation",
           "randomly assigned"
         ],
+        "interventional_single_arm": [
+          "open-label",
+          "open-labeled",
+          "open label",
+          "open labeled",
+          "single-arm trial",
+          "single-arm study",
+          "single arm trial",
+          "single arm study",
+          "prospective protocol",
+          "prospective intervention",
+          "uncontrolled trial",
+          "non-randomized trial",
+          "non-randomised trial",
+          "before-and-after study",
+          "pre-post study",
+          "pretest-posttest"
+        ],
         "cohort_prospective": [
           "prospective cohort",
           "prospective study",
-          "longitudinal cohort"
+          "longitudinal cohort",
+          "followed prospectively",
+          "prospective follow-up",
+          "prospective observation"
         ],
         "cohort_retrospective": [
           "retrospective cohort",
