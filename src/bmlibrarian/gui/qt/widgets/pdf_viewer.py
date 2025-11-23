@@ -65,7 +65,10 @@ class PDFViewerWidget(QWidget):
             import fitz  # PyMuPDF
             self._has_text_extraction = True
         except ImportError:
-            pass
+            logger.info(
+                "PyMuPDF not available - text extraction disabled. "
+                "Install with: pip install pymupdf"
+            )
 
         self._setup_ui()
 
@@ -139,6 +142,13 @@ class PDFViewerWidget(QWidget):
         """
         self.pdf_path = Path(pdf_path)
 
+        # Validate file type
+        if not str(self.pdf_path).lower().endswith('.pdf'):
+            logger.error("Not a PDF file: %s", pdf_path)
+            QMessageBox.critical(self, "Error", f"Not a PDF file: {pdf_path}")
+            self.status_label.setText("Error: Not a PDF file")
+            return
+
         if not self.pdf_path.exists():
             logger.error("PDF file not found: %s", pdf_path)
             QMessageBox.critical(self, "Error", f"PDF file not found: {pdf_path}")
@@ -208,6 +218,10 @@ class PDFViewerWidget(QWidget):
             navigator = self._pdf_view.pageNavigator()
             if navigator:
                 navigator.jump(page, point=navigator.currentLocation().position)
+            else:
+                logger.warning(
+                    "Page navigator unavailable - page navigation may not work correctly"
+                )
             self.page_changed.emit(page + 1)
 
     def _on_previous_page(self) -> None:
@@ -233,6 +247,10 @@ class PDFViewerWidget(QWidget):
         Args:
             page_num: New page number (1-indexed)
         """
+        # Guard against race condition: method may be called before document is loaded
+        if self.total_pages == 0:
+            return
+
         new_page = page_num - 1
         if 0 <= new_page < self.total_pages and new_page != self.current_page:
             self.current_page = new_page
