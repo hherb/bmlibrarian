@@ -35,11 +35,13 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QFrame,
+    QDialog,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
 
 from ..resources.styles import get_font_scale, StylesheetGenerator
+from ..resources.styles.theme_colors import ThemeColors
 from .pdf_viewer import PDFViewerWidget
 from .pdf_upload_workers import (
     QuickExtractWorker,
@@ -50,8 +52,10 @@ from .pdf_upload_workers import (
 from .validators import (
     validate_pdf_file,
     classify_extraction_error,
+    ValidationStatus,
     WORKER_TERMINATE_TIMEOUT_MS,
 )
+from .document_create_dialog import DocumentCreateDialog
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +69,9 @@ DEFAULT_WINDOW_WIDTH = 1200
 DEFAULT_WINDOW_HEIGHT = 800
 
 # =============================================================================
-# Color Constants (Material Design inspired)
+# Worker Cleanup Constants
 # =============================================================================
-# Quick match frame colors (success/green theme)
-COLOR_SUCCESS_BG = "#e8f5e9"  # Light green background
-COLOR_SUCCESS_BORDER = "#4caf50"  # Green border
-COLOR_SUCCESS_TEXT = "#2e7d32"  # Dark green text
-
-# Status text colors
-COLOR_TEXT_MUTED = "#666666"  # Gray for secondary/status text
+WORKER_FORCE_TERMINATE_TIMEOUT_MS = 1000  # Timeout before forcing terminate
 
 
 class PDFUploadWidget(QWidget):
@@ -182,7 +180,7 @@ class PDFUploadWidget(QWidget):
         self.status_label.setStyleSheet(
             self.style_gen.label_stylesheet(
                 font_size_key='font_small',
-                color=COLOR_TEXT_MUTED
+                color=ThemeColors.TEXT_MUTED
             )
         )
         status_layout.addWidget(self.status_label)
@@ -193,8 +191,8 @@ class PDFUploadWidget(QWidget):
         self.quick_match_frame.setStyleSheet(
             self.style_gen.custom(
                 f"QFrame {{ "
-                f"background-color: {COLOR_SUCCESS_BG}; "
-                f"border: 1px solid {COLOR_SUCCESS_BORDER}; "
+                f"background-color: {ThemeColors.SUCCESS_BG}; "
+                f"border: 1px solid {ThemeColors.SUCCESS_BORDER}; "
                 f"border-radius: {{radius_small}}px; "
                 f"padding: {{padding_small}}px; "
                 f"}}"
@@ -206,7 +204,7 @@ class PDFUploadWidget(QWidget):
         self.quick_match_label.setStyleSheet(
             self.style_gen.label_stylesheet(
                 font_size_key='font_medium',
-                color=COLOR_SUCCESS_TEXT,
+                color=ThemeColors.SUCCESS_TEXT,
                 bold=True
             )
         )
@@ -346,19 +344,18 @@ class PDFUploadWidget(QWidget):
         """
         self._pdf_path = Path(pdf_path)
 
-        # Validate PDF file
-        is_valid, message = validate_pdf_file(self._pdf_path)
+        # Validate PDF file (returns 3-tuple with status)
+        is_valid, message, status = validate_pdf_file(self._pdf_path)
 
-        if not is_valid and message and "does not exist" in message:
-            QMessageBox.critical(self, "Error", f"File not found: {pdf_path}")
-            return
-
-        if not is_valid and message:
-            QMessageBox.critical(self, "Invalid File", message)
+        if status == ValidationStatus.ERROR:
+            if message and "does not exist" in message:
+                QMessageBox.critical(self, "Error", f"File not found: {pdf_path}")
+            else:
+                QMessageBox.critical(self, "Invalid File", message or "Unknown error")
             return
 
         # Show warning for large files but allow proceeding
-        if message:  # Warning about file size
+        if status == ValidationStatus.WARNING:
             reply = QMessageBox.warning(
                 self,
                 "Large File Warning",
@@ -588,16 +585,41 @@ class PDFUploadWidget(QWidget):
                 self.document_selected.emit(doc_id)
 
     def _on_create_new(self):
-        """Create a new document."""
-        # TODO: Implement document creation dialog
-        # For now, emit a signal that can be handled by the parent
-        QMessageBox.information(
-            self,
-            "Create New Document",
-            "Document creation is not yet implemented.\n\n"
-            "This would create a new document in the database with the "
-            "extracted metadata."
+        """
+        Create a new document with pre-filled metadata.
+
+        Opens a dialog pre-populated with extracted metadata (DOI, PMID, title,
+        authors, etc.) allowing the user to review and edit before saving.
+        """
+        # Gather all extracted metadata
+        metadata = {}
+
+        # From LLM extraction
+        if self._current_metadata:
+            metadata.update(self._current_metadata)
+
+        # From UI fields (may override/supplement LLM extraction)
+        if self.title_edit.text().strip():
+            metadata['title'] = self.title_edit.text().strip()
+        if self.authors_edit.text().strip():
+            metadata['authors'] = self.authors_edit.text().strip()
+        if self.doi_edit.text().strip():
+            metadata['doi'] = self.doi_edit.text().strip()
+        if self.pmid_edit.text().strip():
+            metadata['pmid'] = self.pmid_edit.text().strip()
+
+        # Create and show the dialog
+        dialog = DocumentCreateDialog(
+            parent=self,
+            metadata=metadata,
+            pdf_path=self._pdf_path,
         )
+
+        if dialog.exec() == QDialog.Accepted:
+            doc_id = dialog.get_document_id()
+            if doc_id:
+                self._update_status(f"Document created successfully (ID: {doc_id})")
+                self.document_created.emit(doc_id)
 
     def _on_cancel(self):
         """Cancel the operation."""
@@ -631,7 +653,11 @@ class PDFUploadWidget(QWidget):
         """
         Safely terminate any running worker threads.
 
-        Waits up to WORKER_TERMINATE_TIMEOUT_MS for each worker to finish.
+        Uses a two-stage termination approach:
+        1. Request thread termination via requestInterruption()
+        2. Wait for graceful shutdown
+        3. If still running, force terminate via terminate()
+
         Clears worker references after termination for garbage collection.
         """
         workers = [
@@ -641,12 +667,29 @@ class PDFUploadWidget(QWidget):
 
         for name, worker in workers:
             if worker is not None and worker.isRunning():
-                logger.info(f"Terminating {name} thread...")
+                logger.info(f"Requesting {name} thread interruption...")
+
+                # Stage 1: Request graceful interruption
+                worker.requestInterruption()
+
+                # Wait for graceful termination
+                if worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+                    logger.debug(f"{name} terminated gracefully")
+                    continue
+
+                # Stage 2: Force termination if still running
+                logger.warning(
+                    f"{name} did not respond to interruption within "
+                    f"{WORKER_TERMINATE_TIMEOUT_MS}ms, forcing termination"
+                )
                 worker.terminate()
-                if not worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
-                    logger.warning(
-                        f"{name} did not terminate within "
-                        f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
+
+                # Give it a short time to actually terminate
+                if not worker.wait(WORKER_FORCE_TERMINATE_TIMEOUT_MS):
+                    logger.error(
+                        f"{name} could not be terminated. "
+                        "This may indicate a thread that is stuck in a blocking "
+                        "system call. The application may need to be restarted."
                     )
 
         # Clear references for garbage collection

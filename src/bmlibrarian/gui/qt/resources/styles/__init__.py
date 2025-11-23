@@ -38,6 +38,15 @@ from .theme_generator import (
     generate_dark_theme,
 )
 
+from .theme_colors import (
+    ThemeColors,
+    MaterialColors,
+    COLOR_SUCCESS_BG,
+    COLOR_SUCCESS_BORDER,
+    COLOR_SUCCESS_TEXT,
+    COLOR_TEXT_MUTED,
+)
+
 __all__ = [
     # DPI scaling
     'FontScale',
@@ -55,4 +64,12 @@ __all__ = [
     # Theme generation
     'generate_default_theme',
     'generate_dark_theme',
+
+    # Theme colors
+    'ThemeColors',
+    'MaterialColors',
+    'COLOR_SUCCESS_BG',
+    'COLOR_SUCCESS_BORDER',
+    'COLOR_SUCCESS_TEXT',
+    'COLOR_TEXT_MUTED',
 ]
