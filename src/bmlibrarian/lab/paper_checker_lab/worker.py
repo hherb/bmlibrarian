@@ -5,7 +5,7 @@ Background worker threads for paper checking to keep GUI responsive.
 """
 
 import logging
-from typing import TYPE_CHECKING, Optional, Dict
+from typing import TYPE_CHECKING, Optional, Dict, Any
 
 from PySide6.QtCore import QThread, Signal
 
