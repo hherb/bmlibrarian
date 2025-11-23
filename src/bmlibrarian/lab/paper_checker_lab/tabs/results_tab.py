@@ -22,7 +22,7 @@ from ..constants import (
     RESULTS_TAB_INDEX_SUMMARY, RESULTS_TAB_INDEX_STATEMENTS,
     RESULTS_TAB_INDEX_EVIDENCE, RESULTS_TAB_INDEX_VERDICTS,
     RESULTS_TAB_INDEX_EXPORT, EXPORT_JSON_INDENT,
-    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_GREY_600,
+    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_GREY_300, COLOR_GREY_600, COLOR_WHITE,
 )
 from ..widgets import (
     VerdictBadge, StatChipWidget, CitationCardWidget, StatisticsSection,
@@ -339,8 +339,8 @@ class ResultsTab(QWidget):
         card.setFrameShape(QFrame.StyledPanel)
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: white;
-                border: 1px solid #ddd;
+                background-color: {COLOR_WHITE};
+                border: 1px solid {COLOR_GREY_300};
                 border-radius: {self.scale['border_radius']}px;
                 padding: {self.scale['padding_medium']}px;
             }}
@@ -357,9 +357,9 @@ class ResultsTab(QWidget):
         type_label = QLabel(type_text)
         type_label.setStyleSheet(f"""
             background-color: {type_color};
-            color: white;
-            padding: 2px 8px;
-            border-radius: 4px;
+            color: {COLOR_WHITE};
+            padding: {self.scale['padding_small'] // 2}px {self.scale['padding_medium']}px;
+            border-radius: {self.scale['border_radius'] // 2}px;
         """)
         header.addWidget(type_label)
 
@@ -486,7 +486,7 @@ class ResultsTab(QWidget):
 
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: white;
+                background-color: {COLOR_WHITE};
                 border: 2px solid {verdict_color};
                 border-radius: {self.scale['border_radius']}px;
                 padding: {self.scale['padding_medium']}px;

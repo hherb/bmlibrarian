@@ -19,7 +19,7 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesh
 
 from .constants import (
     WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT,
-    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_GREY_600,
+    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_ERROR, COLOR_GREY_100, COLOR_GREY_600,
 )
 
 
@@ -314,7 +314,7 @@ class PMIDLookupDialog(QDialog):
         self._result_group.setWordWrap(True)
         self._result_group.setVisible(False)
         self._result_group.setStyleSheet(f"""
-            background-color: #f5f5f5;
+            background-color: {COLOR_GREY_100};
             padding: {self.scale['padding_medium']}px;
             border-radius: {self.scale['border_radius']}px;
         """)
@@ -353,7 +353,7 @@ class PMIDLookupDialog(QDialog):
 
         if not is_valid:
             self._status_label.setText(f"❌ {error}")
-            self._status_label.setStyleSheet(f"color: red;")
+            self._status_label.setStyleSheet(f"color: {COLOR_ERROR};")
             return
 
         self._status_label.setText("🔍 Looking up...")
@@ -371,7 +371,7 @@ class PMIDLookupDialog(QDialog):
         """Handle successful document fetch."""
         self._result = document
         self._status_label.setText("✓ Document found")
-        self._status_label.setStyleSheet(f"color: green;")
+        self._status_label.setStyleSheet(f"color: {COLOR_SUCCESS};")
 
         # Show preview
         title = document.get('title', 'No title')
@@ -385,7 +385,7 @@ class PMIDLookupDialog(QDialog):
     def _on_fetch_error(self, error: str) -> None:
         """Handle fetch error."""
         self._status_label.setText(f"❌ {error}")
-        self._status_label.setStyleSheet(f"color: red;")
+        self._status_label.setStyleSheet(f"color: {COLOR_ERROR};")
         self._result_group.setVisible(False)
         self._use_btn.setEnabled(False)
 
