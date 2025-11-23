@@ -8,9 +8,12 @@ This module provides centralized validation that can be used by multiple widgets
 including PDFUploadWidget, Paper Weight Lab, Paper Checker Lab, etc.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Validation Constants
@@ -274,6 +277,14 @@ def sanitize_llm_input(
     4. Limits total text length to prevent memory issues
     5. Removes potential prompt injection sequences
 
+    Note on truncation (Golden Rule #14):
+        This function intentionally truncates text exceeding max_length.
+        This is acceptable because:
+        - LLM context windows have finite limits
+        - Metadata (DOI, PMID, title, authors) is typically in the first pages
+        - Full document text is preserved in the database; only LLM input is limited
+        - Truncation is logged for transparency
+
     Args:
         text: Raw text extracted from PDF
         max_length: Maximum total character count (default: 100K)
@@ -319,7 +330,14 @@ def sanitize_llm_input(
     sanitized = '\n'.join(processed_lines)
 
     # Step 4: Limit total length
-    if len(sanitized) > max_length:
+    original_length = len(sanitized)
+    if original_length > max_length:
+        # Log truncation for transparency (Golden Rule #8, #14)
+        logger.info(
+            f"Truncating LLM input from {original_length} to ~{max_length} characters. "
+            "Full text preserved in database; only LLM input is limited."
+        )
+
         # Find a good break point (end of sentence or paragraph)
         truncate_at = max_length - len(LLM_TRUNCATION_SUFFIX)
 

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from ..resources.styles import get_font_scale, StylesheetGenerator
+from ..resources.styles.theme_colors import ThemeColors
 from .validators import (
     validate_doi,
     validate_pmid,
@@ -122,7 +123,7 @@ class DocumentCreateDialog(QDialog):
         instructions.setStyleSheet(
             self.style_gen.label_stylesheet(
                 font_size_key='font_small',
-                color='#666666'
+                color=ThemeColors.TEXT_MUTED
             )
         )
         layout.addWidget(instructions)
@@ -213,7 +214,7 @@ class DocumentCreateDialog(QDialog):
         self.validation_label.setStyleSheet(
             self.style_gen.label_stylesheet(
                 font_size_key='font_small',
-                color='#d32f2f'  # Error red
+                color=ThemeColors.ERROR_TEXT
             )
         )
         self.validation_label.setWordWrap(True)
