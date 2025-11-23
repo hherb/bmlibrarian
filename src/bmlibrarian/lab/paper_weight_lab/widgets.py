@@ -9,9 +9,9 @@ from typing import Optional, Dict, TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QGroupBox, QVBoxLayout,
-    QMenu, QApplication,
+    QMenu, QApplication, QWidget, QHBoxLayout, QLabel,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
@@ -29,9 +29,114 @@ from .constants import (
     TREE_COL_WIDTH_VALUE,
     TREE_COL_WIDTH_SCORE,
     SCORE_DECIMALS,
+    SPINNER_ANIMATION_INTERVAL_MS,
+    SPINNER_FRAMES,
+    PROGRESS_COMPLETE,
+    PROGRESS_ERROR,
 )
 from .utils import format_dimension_name, format_score
 from .dialogs import FullTextDialog
+
+
+class StatusSpinnerWidget(QWidget):
+    """
+    A status line widget with an animated spinner.
+
+    Displays a single line of status text with an optional animated
+    spinner to indicate work in progress.
+    """
+
+    def __init__(self, parent: Optional[object] = None):
+        """
+        Initialize status spinner widget.
+
+        Args:
+            parent: Parent widget
+        """
+        super().__init__(parent)
+
+        self.scale = get_font_scale()
+        self._frame_index = 0
+        self._is_spinning = False
+
+        self._setup_ui()
+        self._setup_timer()
+
+    def _setup_ui(self) -> None:
+        """Setup widget UI."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(self.scale['spacing_small'])
+
+        # Spinner label (fixed width for consistent alignment)
+        self._spinner_label = QLabel("")
+        self._spinner_label.setFixedWidth(self.scale['char_width'] * 2)
+        layout.addWidget(self._spinner_label)
+
+        # Status text label
+        self._status_label = QLabel("Ready")
+        layout.addWidget(self._status_label, stretch=1)
+
+    def _setup_timer(self) -> None:
+        """Setup animation timer."""
+        self._timer = QTimer(self)
+        self._timer.setInterval(SPINNER_ANIMATION_INTERVAL_MS)
+        self._timer.timeout.connect(self._animate_spinner)
+
+    def _animate_spinner(self) -> None:
+        """Advance spinner animation frame."""
+        if self._is_spinning:
+            self._spinner_label.setText(SPINNER_FRAMES[self._frame_index])
+            self._frame_index = (self._frame_index + 1) % len(SPINNER_FRAMES)
+
+    def set_status(self, text: str) -> None:
+        """
+        Set the status text.
+
+        Args:
+            text: Status message to display
+        """
+        self._status_label.setText(text)
+
+    def start_spinner(self) -> None:
+        """Start the spinner animation."""
+        self._is_spinning = True
+        self._frame_index = 0
+        self._timer.start()
+
+    def stop_spinner(self) -> None:
+        """Stop the spinner animation."""
+        self._is_spinning = False
+        self._timer.stop()
+        self._spinner_label.setText("")
+
+    def set_complete(self, text: str) -> None:
+        """
+        Set status to complete state.
+
+        Args:
+            text: Completion message to display
+        """
+        self.stop_spinner()
+        self._spinner_label.setText(PROGRESS_COMPLETE)
+        self._status_label.setText(text)
+
+    def set_error(self, text: str) -> None:
+        """
+        Set status to error state.
+
+        Args:
+            text: Error message to display
+        """
+        self.stop_spinner()
+        self._spinner_label.setText(PROGRESS_ERROR)
+        self._status_label.setText(text)
+
+    def reset(self) -> None:
+        """Reset to initial state."""
+        self.stop_spinner()
+        self._spinner_label.setText("")
+        self._status_label.setText("Ready")
 
 
 class AuditTrailTreeWidget(QTreeWidget):
@@ -314,6 +419,7 @@ class AuditTrailSection(QGroupBox):
 
 
 __all__ = [
+    'StatusSpinnerWidget',
     'AuditTrailTreeWidget',
     'AuditTrailSection',
 ]
