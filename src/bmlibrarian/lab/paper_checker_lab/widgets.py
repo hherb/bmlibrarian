@@ -21,8 +21,9 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesh
 from .constants import (
     SPINNER_ANIMATION_INTERVAL_MS, SPINNER_FRAMES,
     PROGRESS_PENDING, PROGRESS_RUNNING, PROGRESS_COMPLETE, PROGRESS_ERROR,
-    WORKFLOW_STEPS, COLOR_PRIMARY, COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
-    COLOR_GREY_100, COLOR_GREY_300, COLOR_GREY_600, COLOR_WHITE,
+    WORKFLOW_STEPS, COLOR_PRIMARY, COLOR_PRIMARY_LIGHT, COLOR_SUCCESS,
+    COLOR_WARNING, COLOR_ERROR,
+    COLOR_GREY_100, COLOR_GREY_200, COLOR_GREY_300, COLOR_GREY_600, COLOR_WHITE,
 )
 from .utils import (
     format_verdict_display, format_confidence_display, format_statement_type_display,
@@ -137,11 +138,19 @@ class StatusSpinnerWidget(QWidget):
 
 class WorkflowStepCard(QFrame):
     """
-    A card widget displaying a single workflow step.
+    A collapsible card widget displaying a single workflow step with expandable content.
 
     Shows step icon, name, and status. Visual state changes based on
     whether the step is pending, running, complete, or errored.
+
+    The card is collapsible - click the header to expand/collapse content area.
+    Content can be added dynamically as intermediate results are produced.
+
+    Signals:
+        clicked: Emitted when the header is clicked (toggle expand/collapse)
     """
+
+    clicked = Signal()  # Emitted when header is clicked
 
     def __init__(
         self,
@@ -164,65 +173,142 @@ class WorkflowStepCard(QFrame):
         self.scale = get_font_scale()
         self.styles = get_stylesheet_generator()
         self._status = "pending"
+        self._expanded = False
+        self._has_content = False
 
         self._setup_ui()
         self._update_style()
 
     def _setup_ui(self) -> None:
-        """Setup card UI."""
+        """Setup card UI with header and collapsible content area."""
         self.setFrameShape(QFrame.StyledPanel)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Header row (clickable)
+        self._header_widget = QFrame()
+        self._header_widget.setCursor(Qt.PointingHandCursor)
+        header_layout = QHBoxLayout(self._header_widget)
+        header_layout.setContentsMargins(
             self.scale['padding_medium'],
             self.scale['padding_small'],
             self.scale['padding_medium'],
             self.scale['padding_small']
         )
-        layout.setSpacing(self.scale['spacing_medium'])
+        header_layout.setSpacing(self.scale['spacing_medium'])
 
         # Step number
         self._number_label = QLabel(f"{self.step_index + 1}.")
         self._number_label.setFixedWidth(self.scale['char_width'] * 3)
-        layout.addWidget(self._number_label)
+        header_layout.addWidget(self._number_label)
 
         # Status icon
         self._icon_label = QLabel(PROGRESS_PENDING)
         self._icon_label.setFixedWidth(self.scale['char_width'] * 2)
-        layout.addWidget(self._icon_label)
+        header_layout.addWidget(self._icon_label)
 
         # Step name
         self._name_label = QLabel(self.step_name)
-        layout.addWidget(self._name_label, stretch=1)
+        header_layout.addWidget(self._name_label, stretch=1)
+
+        # Expand/collapse indicator (shows when content exists)
+        self._expand_indicator = QLabel("")
+        self._expand_indicator.setFixedWidth(self.scale['char_width'] * 2)
+        header_layout.addWidget(self._expand_indicator)
+
+        main_layout.addWidget(self._header_widget)
+
+        # Content area (collapsible)
+        self._content_widget = QFrame()
+        self._content_widget.setVisible(False)
+        content_layout = QVBoxLayout(self._content_widget)
+        content_layout.setContentsMargins(
+            self.scale['padding_large'],
+            self.scale['padding_small'],
+            self.scale['padding_medium'],
+            self.scale['padding_medium']
+        )
+        content_layout.setSpacing(self.scale['spacing_small'])
+
+        # Content text area (for displaying intermediate results)
+        self._content_text = QTextEdit()
+        self._content_text.setReadOnly(True)
+        self._content_text.setMinimumHeight(self.scale['base_line_height'] * 3)
+        self._content_text.setMaximumHeight(self.scale['base_line_height'] * 12)
+        self._content_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        content_layout.addWidget(self._content_text)
+
+        # Stats row (for counts, etc.)
+        self._stats_layout = QHBoxLayout()
+        self._stats_layout.setSpacing(self.scale['spacing_small'])
+        self._stats_layout.addStretch()
+        content_layout.addLayout(self._stats_layout)
+
+        main_layout.addWidget(self._content_widget)
 
     def _update_style(self) -> None:
         """Update visual style based on status."""
         if self._status == "running":
             bg_color = COLOR_PRIMARY
             text_color = COLOR_WHITE
+            content_bg = COLOR_PRIMARY_LIGHT if hasattr(self, '_content_widget') else COLOR_PRIMARY
             self._icon_label.setText(PROGRESS_RUNNING)
         elif self._status == "complete":
             bg_color = COLOR_SUCCESS
             text_color = COLOR_WHITE
+            content_bg = "#66BB6A"  # Lighter green for content
             self._icon_label.setText(PROGRESS_COMPLETE)
         elif self._status == "error":
             bg_color = COLOR_ERROR
             text_color = COLOR_WHITE
+            content_bg = "#EF5350"  # Lighter red for content
             self._icon_label.setText(PROGRESS_ERROR)
         else:  # pending
             bg_color = COLOR_GREY_100
             text_color = COLOR_GREY_600
+            content_bg = COLOR_GREY_200
             self._icon_label.setText(PROGRESS_PENDING)
+
+        # Update expand indicator
+        if self._has_content:
+            self._expand_indicator.setText("▼" if self._expanded else "▶")
+        else:
+            self._expand_indicator.setText("")
 
         self.setStyleSheet(f"""
             WorkflowStepCard {{
                 background-color: {bg_color};
                 border-radius: {self.scale['radius_small']}px;
             }}
-            QLabel {{
+            WorkflowStepCard QFrame {{
+                background-color: transparent;
+            }}
+            WorkflowStepCard QLabel {{
                 color: {text_color};
+                background-color: transparent;
+            }}
+            WorkflowStepCard QTextEdit {{
+                background-color: {content_bg};
+                color: {text_color};
+                border: none;
+                border-radius: {self.scale['radius_small']}px;
             }}
         """)
+
+    def mousePressEvent(self, event) -> None:
+        """Handle mouse press to toggle expansion."""
+        # Only toggle if clicking on header and has content
+        if self._has_content:
+            # Check if click is in header area
+            header_rect = self._header_widget.geometry()
+            if header_rect.contains(event.pos()):
+                self._expanded = not self._expanded
+                self._content_widget.setVisible(self._expanded)
+                self._update_style()
+                self.clicked.emit()
+        super().mousePressEvent(event)
 
     def set_status(self, status: str) -> None:
         """
@@ -238,6 +324,12 @@ class WorkflowStepCard(QFrame):
         self._status = status
         self._update_style()
 
+        # Auto-expand when running if has content
+        if status == "running" and self._has_content and not self._expanded:
+            self._expanded = True
+            self._content_widget.setVisible(True)
+            self._update_style()
+
     def get_status(self) -> str:
         """
         Get current step status.
@@ -246,6 +338,87 @@ class WorkflowStepCard(QFrame):
             Current status string
         """
         return self._status
+
+    def set_content(self, text: str) -> None:
+        """
+        Set the content text for the expandable area.
+
+        Args:
+            text: Content text to display (supports markdown-like formatting)
+        """
+        self._content_text.setPlainText(text)
+        self._has_content = bool(text.strip())
+        self._update_style()
+
+        # Auto-expand when content is added during running state
+        if self._status == "running" and self._has_content and not self._expanded:
+            self._expanded = True
+            self._content_widget.setVisible(True)
+            self._update_style()
+
+    def append_content(self, text: str) -> None:
+        """
+        Append text to the content area.
+
+        Args:
+            text: Text to append
+        """
+        current = self._content_text.toPlainText()
+        if current:
+            new_text = current + "\n" + text
+        else:
+            new_text = text
+        self.set_content(new_text)
+
+    def clear_content(self) -> None:
+        """Clear the content area."""
+        self._content_text.clear()
+        self._has_content = False
+        self._expanded = False
+        self._content_widget.setVisible(False)
+        self._update_style()
+
+        # Clear any stat chips
+        while self._stats_layout.count() > 1:  # Keep the stretch
+            item = self._stats_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def add_stat_chip(self, label: str, value: str, color: str = COLOR_PRIMARY) -> None:
+        """
+        Add a statistics chip to the content area.
+
+        Args:
+            label: Stat label (e.g., "Documents")
+            value: Stat value (e.g., "42")
+            color: Chip background color
+        """
+        chip = StatChipWidget(label, value, color, self)
+        # Insert before the stretch
+        self._stats_layout.insertWidget(self._stats_layout.count() - 1, chip)
+        self._has_content = True
+        self._update_style()
+
+    def is_expanded(self) -> bool:
+        """
+        Check if the card is currently expanded.
+
+        Returns:
+            True if expanded, False otherwise
+        """
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        """
+        Programmatically set the expanded state.
+
+        Args:
+            expanded: Whether the card should be expanded
+        """
+        if self._has_content:
+            self._expanded = expanded
+            self._content_widget.setVisible(expanded)
+            self._update_style()
 
 
 class VerdictBadge(QFrame):

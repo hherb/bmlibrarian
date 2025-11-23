@@ -28,12 +28,15 @@ class PaperCheckWorker(QThread):
 
     Signals:
         progress_update: Emitted when progress is made (step_name, progress_fraction)
+        intermediate_data: Emitted when intermediate results are available
+                          (step_name, data_dict) for displaying in collapsible cards
         check_complete: Emitted with PaperCheckResult when done
         check_error: Emitted with error message on failure
     """
 
     # Signals for thread-safe GUI updates
     progress_update = Signal(str, float)  # (step_name, progress_fraction 0.0-1.0)
+    intermediate_data = Signal(str, dict)  # (step_name, data_dict)
     check_complete = Signal(object)  # PaperCheckResult
     check_error = Signal(str)  # error_message
 
@@ -84,6 +87,23 @@ class PaperCheckWorker(QThread):
         # Emit progress signal (thread-safe via Qt's signal mechanism)
         self.progress_update.emit(display_name, progress)
 
+    def _data_callback(self, step_name: str, data: Dict[str, Any]) -> None:
+        """
+        Internal callback bridging agent intermediate data to Qt signals.
+
+        Args:
+            step_name: Current step name from agent
+            data: Dictionary containing step-specific intermediate results
+        """
+        if self._cancelled:
+            return
+
+        # Map agent step to our workflow steps for consistent naming
+        step_index, display_name = map_agent_progress_to_step(step_name, 0.0)
+
+        # Emit intermediate data signal (thread-safe via Qt's signal mechanism)
+        self.intermediate_data.emit(display_name, data)
+
     def run(self) -> None:
         """Run paper check in background thread."""
         try:
@@ -97,11 +117,12 @@ class PaperCheckWorker(QThread):
             # Emit initial progress
             self.progress_update.emit("Initializing", 0.0)
 
-            # Perform the check with progress callback
+            # Perform the check with progress and data callbacks
             result = self.agent.check_abstract(
                 abstract=self.abstract,
                 source_metadata=self.source_metadata,
-                progress_callback=self._progress_callback
+                progress_callback=self._progress_callback,
+                data_callback=self._data_callback
             )
 
             # Check for cancellation after completion

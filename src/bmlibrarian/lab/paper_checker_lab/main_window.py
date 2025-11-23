@@ -165,6 +165,7 @@ class PaperCheckerLab(QMainWindow):
         # Create and start worker
         self._worker = PaperCheckWorker(self._agent, abstract, metadata)
         self._worker.progress_update.connect(self._on_progress_update)
+        self._worker.intermediate_data.connect(self._on_intermediate_data)
         self._worker.check_complete.connect(self._on_check_complete)
         self._worker.check_error.connect(self._on_check_error)
         self._worker.start()
@@ -180,6 +181,19 @@ class PaperCheckerLab(QMainWindow):
             progress: Progress fraction (0.0-1.0)
         """
         self._workflow_tab.update_step(step_name, progress)
+
+    def _on_intermediate_data(self, step_name: str, data: Dict[str, Any]) -> None:
+        """
+        Handle intermediate data update from worker.
+
+        Displays intermediate results in the collapsible workflow step cards
+        for visual debugging and audit trailing.
+
+        Args:
+            step_name: Current step name
+            data: Dictionary containing step-specific intermediate results
+        """
+        self._workflow_tab.update_intermediate_data(step_name, data)
 
     def _on_check_complete(self, result: Any) -> None:
         """

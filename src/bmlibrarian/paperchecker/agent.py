@@ -270,7 +270,8 @@ class PaperCheckerAgent(BaseAgent):
         self,
         abstract: str,
         source_metadata: Optional[Dict[str, Any]] = None,
-        progress_callback: Optional[Callable[[str, float], None]] = None
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+        data_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
     ) -> PaperCheckResult:
         """
         Check a single abstract for factual accuracy.
@@ -284,6 +285,10 @@ class PaperCheckerAgent(BaseAgent):
             source_metadata: Optional metadata (pmid, doi, title, etc.)
             progress_callback: Optional callback(step_name, progress_fraction)
                              Called with progress updates during processing
+            data_callback: Optional callback(step_name, data_dict)
+                          Called with intermediate results for audit trail/debugging.
+                          data_dict contains step-specific data like extracted statements,
+                          counter-statements, search results, etc.
 
         Returns:
             PaperCheckResult with complete analysis including:
@@ -314,9 +319,33 @@ class PaperCheckerAgent(BaseAgent):
             statements = self._extract_statements(abstract)
             logger.info(f"Extracted {len(statements)} statements")
 
+            # Emit extracted statements data
+            self._report_data(data_callback, "Extracting statements", {
+                "statements": [
+                    {"text": s.text, "type": s.statement_type, "index": i}
+                    for i, s in enumerate(statements)
+                ],
+                "count": len(statements)
+            })
+
             # Step 2: Generate counter-statements
             self._report_progress(progress_callback, "Generating counter-statements", 0.2)
             counter_statements = self._generate_counter_statements(statements)
+
+            # Emit counter-statements data
+            self._report_data(data_callback, "Generating counter-statements", {
+                "counter_statements": [
+                    {
+                        "original": cs.original_statement.text,
+                        "negated": cs.negated_text,
+                        "keywords": cs.keywords[:5] if cs.keywords else [],
+                        "hyde_count": len(cs.hyde_abstracts),
+                        "index": i
+                    }
+                    for i, cs in enumerate(counter_statements)
+                ],
+                "count": len(counter_statements)
+            })
 
             # Process each statement
             search_results_list: List[SearchResults] = []
@@ -338,6 +367,17 @@ class PaperCheckerAgent(BaseAgent):
                 search_results = self._search_counter_evidence(counter_stmt)
                 search_results_list.append(search_results)
 
+                # Emit search results data
+                self._report_data(data_callback, "Searching for counter-evidence", {
+                    "statement_index": i,
+                    "semantic_count": len(search_results.semantic_docs),
+                    "hyde_count": len(search_results.hyde_docs),
+                    "keyword_count": len(search_results.keyword_docs),
+                    "deduplicated_count": len(search_results.deduplicated_docs),
+                    "counter_statement": counter_stmt.negated_text[:100] + "..."
+                    if len(counter_stmt.negated_text) > 100 else counter_stmt.negated_text
+                })
+
                 # Step 4: Score documents
                 self._report_progress(
                     progress_callback,
@@ -347,6 +387,18 @@ class PaperCheckerAgent(BaseAgent):
                 scored_docs = self._score_documents(counter_stmt, search_results)
                 scored_docs_list.append(scored_docs)
 
+                # Emit scoring results data
+                self._report_data(data_callback, "Scoring documents", {
+                    "statement_index": i,
+                    "documents_scored": len(search_results.deduplicated_docs),
+                    "documents_above_threshold": len(scored_docs),
+                    "threshold": self.score_threshold,
+                    "top_scores": [
+                        {"doc_id": d.doc_id, "score": d.score, "title": d.document.get("title", "")[:50]}
+                        for d in scored_docs[:5]
+                    ] if scored_docs else []
+                })
+
                 # Step 5: Extract citations
                 self._report_progress(
                     progress_callback,
@@ -354,6 +406,20 @@ class PaperCheckerAgent(BaseAgent):
                     base_progress + 0.3
                 )
                 citations = self._extract_citations(counter_stmt, scored_docs)
+
+                # Emit citations data
+                self._report_data(data_callback, "Extracting citations", {
+                    "statement_index": i,
+                    "citations_extracted": len(citations),
+                    "citations": [
+                        {
+                            "doc_id": c.doc_id,
+                            "passage": c.passage[:150] + "..." if len(c.passage) > 150 else c.passage,
+                            "score": c.relevance_score
+                        }
+                        for c in citations[:5]
+                    ] if citations else []
+                })
 
                 # Step 6: Generate counter-report
                 self._report_progress(
@@ -366,6 +432,15 @@ class PaperCheckerAgent(BaseAgent):
                 )
                 counter_reports_list.append(counter_report)
 
+                # Emit counter-report data
+                self._report_data(data_callback, "Generating counter-report", {
+                    "statement_index": i,
+                    "summary_length": len(counter_report.summary),
+                    "num_citations": counter_report.num_citations,
+                    "summary_preview": counter_report.summary[:200] + "..."
+                    if len(counter_report.summary) > 200 else counter_report.summary
+                })
+
                 # Step 7: Analyze verdict
                 self._report_progress(
                     progress_callback,
@@ -375,11 +450,30 @@ class PaperCheckerAgent(BaseAgent):
                 verdict = self._analyze_verdict(stmt, counter_report)
                 verdicts_list.append(verdict)
 
+                # Emit verdict data
+                self._report_data(data_callback, "Analyzing verdict", {
+                    "statement_index": i,
+                    "original_statement": stmt.text[:100] + "..." if len(stmt.text) > 100 else stmt.text,
+                    "verdict": verdict.verdict,
+                    "confidence": verdict.confidence,
+                    "rationale": verdict.rationale
+                })
+
             # Step 8: Overall assessment
             self._report_progress(progress_callback, "Generating overall assessment", 0.95)
             overall_assessment = self._generate_overall_assessment(
                 statements, verdicts_list
             )
+
+            # Emit overall assessment data
+            self._report_data(data_callback, "Generating overall assessment", {
+                "assessment": overall_assessment,
+                "verdict_summary": {
+                    "supports": sum(1 for v in verdicts_list if v.verdict == "supports"),
+                    "contradicts": sum(1 for v in verdicts_list if v.verdict == "contradicts"),
+                    "undecided": sum(1 for v in verdicts_list if v.verdict == "undecided")
+                }
+            })
 
             # Create result object
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -1612,6 +1706,27 @@ Write ONLY the summary text in markdown format. Do not include headers, do not a
         if callback:
             callback(step_name, progress)
         logger.debug(f"Progress: {step_name} ({progress*100:.0f}%)")
+
+    def _report_data(
+        self,
+        callback: Optional[Callable[[str, Dict[str, Any]], None]],
+        step_name: str,
+        data: Dict[str, Any]
+    ) -> None:
+        """
+        Report intermediate data to callback if provided.
+
+        Used for audit trail and debugging - emits step-specific data
+        that can be displayed in the GUI for visual debugging.
+
+        Args:
+            callback: Optional data callback function
+            step_name: Name of current processing step
+            data: Dictionary containing step-specific intermediate results
+        """
+        if callback:
+            callback(step_name, data)
+        logger.debug(f"Data: {step_name} - {list(data.keys())}")
 
     @property
     def max_statements(self) -> int:

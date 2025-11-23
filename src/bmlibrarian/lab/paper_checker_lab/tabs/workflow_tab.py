@@ -5,7 +5,7 @@ Tab widget for displaying workflow progress visualization.
 """
 
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -20,6 +20,7 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesh
 from ..constants import (
     WORKFLOW_STEPS, WORKFLOW_STEP_COUNT,
     COLOR_PRIMARY, COLOR_SUCCESS, COLOR_ERROR, COLOR_GREY_600,
+    SEARCH_STRATEGY_COLORS,
 )
 from ..widgets import WorkflowStepCard, StatusSpinnerWidget
 from ..utils import get_workflow_step_index, calculate_workflow_progress
@@ -148,6 +149,7 @@ class WorkflowTab(QWidget):
 
         for card in self._step_cards:
             card.set_status("pending")
+            card.clear_content()
 
         self._progress_bar.setValue(0)
         self._status_spinner.reset()
@@ -259,6 +261,187 @@ class WorkflowTab(QWidget):
         """
         # The abort button is managed separately based on processing state
         pass
+
+    def update_intermediate_data(self, step_name: str, data: Dict[str, Any]) -> None:
+        """
+        Update a workflow step with intermediate data for visual debugging.
+
+        Formats the data appropriately based on step type and displays
+        it in the collapsible content area of the corresponding step card.
+
+        Args:
+            step_name: Name of the step (used to find the card)
+            data: Dictionary containing step-specific intermediate results
+        """
+        step_index = get_workflow_step_index(step_name)
+
+        if step_index < 0 or step_index >= len(self._step_cards):
+            logger.debug(f"Unknown step for intermediate data: {step_name}")
+            return
+
+        card = self._step_cards[step_index]
+
+        # Format data based on step type
+        content = self._format_intermediate_data(step_name, data)
+        card.set_content(content)
+
+        # Add stat chips for numeric data
+        self._add_stat_chips(card, step_name, data)
+
+    def _format_intermediate_data(self, step_name: str, data: Dict[str, Any]) -> str:
+        """
+        Format intermediate data as human-readable text.
+
+        Args:
+            step_name: Name of the step
+            data: Raw data dictionary
+
+        Returns:
+            Formatted text string for display
+        """
+        lines = []
+
+        if "Extracting statements" in step_name:
+            # Format extracted statements
+            statements = data.get("statements", [])
+            for stmt in statements:
+                stmt_type = stmt.get("type", "unknown")
+                text = stmt.get("text", "")
+                lines.append(f"• [{stmt_type}] {text}")
+
+        elif "counter-statements" in step_name.lower():
+            # Format counter-statements
+            counter_stmts = data.get("counter_statements", [])
+            for cs in counter_stmts:
+                original = cs.get("original", "")[:80]
+                negated = cs.get("negated", "")[:80]
+                keywords = cs.get("keywords", [])
+                hyde_count = cs.get("hyde_count", 0)
+                lines.append(f"Original: {original}...")
+                lines.append(f"→ Counter: {negated}...")
+                if keywords:
+                    lines.append(f"  Keywords: {', '.join(keywords)}")
+                lines.append(f"  HyDE abstracts: {hyde_count}")
+                lines.append("")
+
+        elif "counter-evidence" in step_name.lower():
+            # Format search results
+            stmt_idx = data.get("statement_index", 0)
+            counter_stmt = data.get("counter_statement", "")
+            lines.append(f"Statement #{stmt_idx + 1}: {counter_stmt}")
+            lines.append("")
+            lines.append(f"Semantic: {data.get('semantic_count', 0)} docs")
+            lines.append(f"HyDE: {data.get('hyde_count', 0)} docs")
+            lines.append(f"Keyword: {data.get('keyword_count', 0)} docs")
+            lines.append(f"Total (deduplicated): {data.get('deduplicated_count', 0)} docs")
+
+        elif "Scoring documents" in step_name:
+            # Format scoring results
+            stmt_idx = data.get("statement_index", 0)
+            scored = data.get("documents_scored", 0)
+            above = data.get("documents_above_threshold", 0)
+            threshold = data.get("threshold", 3.0)
+            lines.append(f"Statement #{stmt_idx + 1}")
+            lines.append(f"Scored: {scored} → Above threshold ({threshold}): {above}")
+            lines.append("")
+            top_scores = data.get("top_scores", [])
+            if top_scores:
+                lines.append("Top scoring documents:")
+                for doc in top_scores[:3]:
+                    title = doc.get("title", "Untitled")[:40]
+                    score = doc.get("score", 0)
+                    lines.append(f"  • [{score}] {title}...")
+
+        elif "Extracting citations" in step_name:
+            # Format citation extraction
+            stmt_idx = data.get("statement_index", 0)
+            count = data.get("citations_extracted", 0)
+            lines.append(f"Statement #{stmt_idx + 1}: {count} citations extracted")
+            citations = data.get("citations", [])
+            for cit in citations[:3]:
+                passage = cit.get("passage", "")[:100]
+                score = cit.get("score", 0)
+                lines.append(f"  • [Score: {score}] \"{passage}...\"")
+
+        elif "counter-report" in step_name.lower():
+            # Format counter-report
+            stmt_idx = data.get("statement_index", 0)
+            num_citations = data.get("num_citations", 0)
+            summary_len = data.get("summary_length", 0)
+            preview = data.get("summary_preview", "")
+            lines.append(f"Statement #{stmt_idx + 1}")
+            lines.append(f"Citations used: {num_citations}, Length: {summary_len} chars")
+            lines.append("")
+            lines.append(f"Preview: {preview}")
+
+        elif "verdict" in step_name.lower() and "overall" not in step_name.lower():
+            # Format verdict analysis
+            stmt_idx = data.get("statement_index", 0)
+            original = data.get("original_statement", "")
+            verdict = data.get("verdict", "undecided")
+            confidence = data.get("confidence", "medium")
+            rationale = data.get("rationale", "")
+            lines.append(f"Statement #{stmt_idx + 1}: {original}")
+            lines.append("")
+            lines.append(f"VERDICT: {verdict.upper()} ({confidence} confidence)")
+            lines.append(f"Rationale: {rationale}")
+
+        elif "overall assessment" in step_name.lower():
+            # Format overall assessment
+            summary = data.get("verdict_summary", {})
+            supports = summary.get("supports", 0)
+            contradicts = summary.get("contradicts", 0)
+            undecided = summary.get("undecided", 0)
+            assessment = data.get("assessment", "")
+            lines.append(f"Supports: {supports} | Contradicts: {contradicts} | Undecided: {undecided}")
+            lines.append("")
+            lines.append(assessment[:300] + "..." if len(assessment) > 300 else assessment)
+
+        else:
+            # Generic formatting for unknown step types
+            for key, value in data.items():
+                if isinstance(value, (str, int, float)):
+                    lines.append(f"{key}: {value}")
+                elif isinstance(value, list) and len(value) <= 5:
+                    lines.append(f"{key}: {value}")
+
+        return "\n".join(lines) if lines else "Processing..."
+
+    def _add_stat_chips(
+        self, card: WorkflowStepCard, step_name: str, data: Dict[str, Any]
+    ) -> None:
+        """
+        Add statistic chips to a card based on step data.
+
+        Args:
+            card: The workflow step card to add chips to
+            step_name: Name of the step
+            data: Data dictionary with numeric values
+        """
+        if "counter-evidence" in step_name.lower():
+            # Add search strategy chips
+            semantic = data.get("semantic_count", 0)
+            hyde = data.get("hyde_count", 0)
+            keyword = data.get("keyword_count", 0)
+            total = data.get("deduplicated_count", 0)
+
+            if semantic > 0:
+                card.add_stat_chip("Semantic", str(semantic), SEARCH_STRATEGY_COLORS.get("semantic", COLOR_PRIMARY))
+            if hyde > 0:
+                card.add_stat_chip("HyDE", str(hyde), SEARCH_STRATEGY_COLORS.get("hyde", COLOR_PRIMARY))
+            if keyword > 0:
+                card.add_stat_chip("Keyword", str(keyword), SEARCH_STRATEGY_COLORS.get("keyword", COLOR_PRIMARY))
+            if total > 0:
+                card.add_stat_chip("Total", str(total), COLOR_PRIMARY)
+
+        elif "Scoring documents" in step_name:
+            above = data.get("documents_above_threshold", 0)
+            if above > 0:
+                card.add_stat_chip("Above threshold", str(above), COLOR_SUCCESS)
+
+        elif "Extracting citations" in step_name:
+            count = data.get("citations_extracted", 0)
+            card.add_stat_chip("Citations", str(count), COLOR_PRIMARY)
 
 
 __all__ = ['WorkflowTab']
