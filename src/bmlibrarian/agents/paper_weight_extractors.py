@@ -168,6 +168,33 @@ def extract_text_context(text: str, keyword: str, context_chars: int = 50) -> st
     return context
 
 
+def prepare_extractor_search_text(document: Dict[str, Any]) -> str:
+    """
+    Prepare search text from document for rule-based extraction.
+
+    Prioritizes full_text when available, falling back to abstract + methods.
+    This ensures rule-based extractors can analyze the full paper content
+    when PDFs have been ingested.
+
+    Args:
+        document: Document dict with 'full_text', 'abstract', 'methods_text' fields
+
+    Returns:
+        Combined text for keyword/pattern searching
+    """
+    full_text = document.get('full_text', '') or ''
+    abstract = document.get('abstract', '') or ''
+    methods = document.get('methods_text', '') or ''
+
+    # If full_text is available and substantial, use it
+    # (full_text should be at least longer than abstract to be meaningful)
+    if full_text and len(full_text) > len(abstract):
+        return full_text
+
+    # Fall back to abstract + methods for documents without full text
+    return f"{abstract} {methods}"
+
+
 def find_sample_size(text: str, min_n: int = 5, max_n: int = 1000000) -> Optional[int]:
     """
     Find sample size in text using regex patterns.
@@ -314,7 +341,8 @@ def extract_study_type(
     """
     Extract study type using keyword matching with exclusion support.
 
-    Matches keywords against abstract and methods section.
+    When full_text is available (e.g., from PDF ingestion), searches the
+    complete paper text. Otherwise falls back to abstract + methods.
     Uses priority hierarchy: systematic review > quasi-experimental > RCT > cohort > etc.
 
     The quasi_experimental type is checked BEFORE rct to ensure "non-randomized trial"
@@ -324,7 +352,7 @@ def extract_study_type(
     (e.g., "non-randomized trial" should not match as RCT).
 
     Args:
-        document: Document dict with 'abstract' and optional 'methods_text' fields
+        document: Document dict with 'full_text', 'abstract', 'methods_text' fields
         keywords_config: Dict mapping study types to keyword lists (optional)
         hierarchy_config: Dict mapping study types to scores (optional)
         priority_order: List of study types in priority order (optional)
@@ -343,10 +371,8 @@ def extract_study_type(
     if exclusions_config is None:
         exclusions_config = STUDY_TYPE_EXCLUSIONS
 
-    # Get text to search
-    abstract = document.get('abstract', '') or ''
-    methods = document.get('methods_text', '') or ''
-    search_text = f"{abstract} {methods}".lower()
+    # Get text to search (uses full_text when available, falls back to abstract + methods)
+    search_text = prepare_extractor_search_text(document).lower()
 
     # Try each study type in priority order
     for study_type in priority_order:
@@ -410,8 +436,11 @@ def extract_sample_size_dimension(
     Uses regex patterns to find sample size mentions, applies logarithmic
     scoring, and adds bonuses for power calculation and CI reporting.
 
+    When full_text is available (e.g., from PDF ingestion), searches the
+    complete paper text. Otherwise falls back to abstract + methods.
+
     Args:
-        document: Document dict with 'abstract' and optional 'methods_text' fields
+        document: Document dict with 'full_text', 'abstract', 'methods_text' fields
         scoring_config: Dict with 'log_multiplier', 'power_calculation_bonus',
                        'ci_reported_bonus' keys (optional)
 
@@ -430,10 +459,8 @@ def extract_sample_size_dimension(
     power_bonus = scoring_config.get('power_calculation_bonus', 2.0)
     ci_bonus = scoring_config.get('ci_reported_bonus', 0.5)
 
-    # Get text to search
-    abstract = document.get('abstract', '') or ''
-    methods = document.get('methods_text', '') or ''
-    search_text = f"{abstract} {methods}"
+    # Get text to search (uses full_text when available, falls back to abstract + methods)
+    search_text = prepare_extractor_search_text(document)
 
     # Extract sample size
     sample_size = find_sample_size(search_text)
