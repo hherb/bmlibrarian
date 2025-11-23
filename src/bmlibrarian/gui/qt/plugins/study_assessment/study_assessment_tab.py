@@ -767,17 +767,18 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
         risk_badge = QLabel(risk_level.upper())
         risk_badge.setAlignment(Qt.AlignCenter)
         risk_badge.setFixedWidth(scale_px(100))
+        s = get_font_scale()
         risk_badge.setStyleSheet(
-            self.stylesheet_gen.custom(f"""
+            f"""
                 QLabel {{
                     background-color: {BIAS_RISK_COLORS.get(risk_level.lower(), BIAS_RISK_COLORS['unclear'])};
                     color: white;
                     font-weight: bold;
-                    font-size: {{font_small}}pt;
-                    padding: {{padding_tiny}}px;
-                    border-radius: {{radius_small}}px;
+                    font-size: {s['font_small']}pt;
+                    padding: {s['padding_tiny']}px;
+                    border-radius: {s['radius_small']}px;
                 }}
-            """)
+            """
         )
 
         row.addWidget(type_label)
