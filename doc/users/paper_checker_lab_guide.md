@@ -1,14 +1,14 @@
 # PaperChecker Laboratory User Guide
 
-The PaperChecker Laboratory provides an interactive GUI for testing and exploring the PaperChecker fact-checking system on individual medical abstracts. It offers step-by-step workflow visualization, intermediate result inspection, and export capabilities.
+The PaperChecker Laboratory provides an interactive desktop GUI for testing and exploring the PaperChecker fact-checking system on individual medical abstracts. Built with PySide6/Qt, it offers PDF upload support, step-by-step workflow visualization, intermediate result inspection, and export capabilities.
 
 ## Overview
 
 PaperChecker is a sophisticated fact-checking system that validates research claims in medical abstracts by:
 
 1. Extracting core statements from the abstract
-2. Generating counter-statements (negations)
-3. Searching for contradictory evidence using multiple strategies
+2. Generating counter-statements (semantic negations)
+3. Searching for contradictory evidence using multiple strategies (semantic, HyDE, keyword)
 4. Scoring and extracting citations from relevant documents
 5. Generating counter-evidence reports
 6. Analyzing verdicts (supports/contradicts/undecided)
@@ -20,179 +20,200 @@ The laboratory interface allows you to watch this process unfold in real-time an
 ### Launch the Laboratory
 
 ```bash
-# Desktop mode (native window)
+# Desktop mode (default, using PySide6/Qt)
 uv run python paper_checker_lab.py
-
-# Web browser mode
-uv run python paper_checker_lab.py --view web
-
-# Web mode with custom port
-uv run python paper_checker_lab.py --view web --port 8080
 
 # Enable debug logging
 uv run python paper_checker_lab.py --debug
+
+# Legacy Flet-based interface (deprecated)
+uv run python paper_checker_lab.py --flet
+uv run python paper_checker_lab.py --flet --view web --port 8080
 ```
 
 ### Basic Usage
 
-1. **Enter abstract text** directly in the text area, or
-2. **Enter a PMID** to fetch an abstract from your database
+1. **Text Input Tab**: Enter abstract text directly or fetch by PMID
+2. **PDF Upload Tab**: Upload a PDF and extract the abstract automatically
 3. Click **Check Abstract** to start the fact-checking process
-4. Watch the workflow progress in real-time
-5. Explore results in the tabbed display
+4. Watch the workflow progress in the **Workflow** tab
+5. Explore results in the **Results** tab with 5 sub-tabs
 6. Export results as JSON or Markdown
 
 ## Interface Layout
 
-### Header Section
+The application uses a modern tabbed interface with four main tabs:
 
-- **Title**: "PaperChecker Laboratory"
-- **Subtitle**: Brief description of the application
+### Tab 1: Text Input
 
-### Input Section
+For entering abstract text directly or fetching from the database:
 
 - **Model Selector**: Choose the LLM model for analysis
 - **Refresh Models**: Update the list of available Ollama models
-- **Abstract Text**: Multi-line text area for pasting abstracts
-- **PMID Field**: Enter a PubMed ID to fetch from database
+- **Abstract Text Area**: Multi-line text input for pasting abstracts
+- **Character Count**: Shows current character count with validation
+- **PMID Lookup**: Enter a PubMed ID and click "Fetch Abstract" to load from database
+- **Browse...**: Open a dialog to search the database for documents
 - **Check Abstract**: Start the fact-checking process
-- **Clear**: Reset all inputs and results
+- **Clear**: Reset all inputs
 
-### Progress Section
+### Tab 2: PDF Upload
 
-- **Progress Bar**: Visual progress indicator
-- **Status Text**: Current operation description
+For extracting abstracts from PDF files:
 
-### Main Content Area
+- **File Selection**: Browse for PDF files
+- **Analyze PDF**: Extract abstract and metadata using AI
+- **Analysis Status**: Shows progress of PDF processing
+- **Extracted Content**:
+  - Metadata display (title, authors, journal, year, PMID, DOI)
+  - Editable abstract text (review/modify before checking)
+- **Use in Input Tab**: Copy extracted abstract to Text Input tab
+- **Check Abstract**: Start fact-checking directly from PDF
 
-#### Workflow Panel (Left)
+### Tab 3: Workflow
 
-Displays step-by-step progress through the fact-checking workflow:
+Real-time visualization of the 11-step workflow:
 
-- Extracting statements
-- Generating counter-statements
-- Searching for counter-evidence
-- Scoring documents
-- Extracting citations
-- Generating counter-report
-- Analyzing verdict
-- Generating overall assessment
-- Complete
+1. Initializing
+2. Extracting statements
+3. Generating counter-statements
+4. Searching for counter-evidence
+5. Scoring documents
+6. Extracting citations
+7. Generating counter-report
+8. Analyzing verdict
+9. Generating overall assessment
+10. Saving results
+11. Complete
 
 Each step shows:
-- Status icon (pending/in-progress/complete)
+- Step number
+- Status icon (⊡ pending, ⟳ running, ✓ complete, ✗ error)
 - Step name
-- Progress percentage
+- Overall progress bar
+- Abort button (to cancel processing)
 
-#### Results Panel (Right)
+### Tab 4: Results
 
-Tabbed display with five tabs:
+Contains 5 sub-tabs for comprehensive result inspection:
 
-**Summary Tab**
-- Overall assessment text
-- Statistics (statements, verdicts, citations)
-- Source metadata (PMID, DOI, title)
-- Processing information (model, time)
+#### Summary Sub-Tab
+- **Overall Assessment**: AI-generated synthesis of findings
+- **Processing Statistics**: Number of statements, verdict breakdown
+- **Processing Info**: Model used, processing time, timestamp
+- **Source Document**: Title, PMID, DOI of the checked abstract
 
-**Statements Tab**
-- Extracted statements from the abstract
-- Statement type (hypothesis/finding/conclusion)
-- Extraction confidence
-- Generated counter-statement
-- Search keywords
+#### Statements Sub-Tab
+- **Statement Cards**: Each extracted statement displayed with:
+  - Statement type badge (Hypothesis/Finding/Conclusion)
+  - Confidence score
+  - Full statement text
+  - Counter-statement (semantic negation)
+  - Search keywords
 
-**Evidence Tab**
-- Counter-evidence reports for each statement
-- Search statistics (semantic/HyDE/keyword results)
-- Report summary with inline citations
-- Individual citation cards with passages
+#### Evidence Sub-Tab
+- **Search Statistics**: Documents found by each strategy
+  - Semantic search count
+  - HyDE search count
+  - Keyword search count
+  - Total (deduplicated)
+- **Citation Cards**: Expandable cards showing:
+  - Document title and metadata
+  - Relevance score badge
+  - Strategies that found it
+  - Click to expand passage text
 
-**Verdicts Tab**
-- Verdict for each statement (supports/contradicts/undecided)
-- Confidence level (high/medium/low)
-- Rationale explaining the verdict
-- Citation count
+#### Verdicts Sub-Tab
+- **Verdict Cards**: For each statement:
+  - Verdict badge (Supports/Contradicts/Undecided)
+  - Confidence level (High/Medium/Low)
+  - Original statement text
+  - Detailed rationale explaining the verdict
 
-**Export Tab**
-- Export as JSON button
-- Export as Markdown button
-- Copy to Clipboard button
-- Output display area
+#### Export Sub-Tab
+- **Export JSON**: Preview and save complete results as JSON
+- **Export Markdown**: Preview and save as Markdown report
+- **Copy Summary**: Copy brief summary to clipboard
 
-## Working with Results
+## Workflow Details
 
-### Understanding Verdicts
+### Statement Extraction
 
-Each statement receives one of three verdicts:
+The system extracts 1-2 key testable statements from the abstract:
+- Identifies hypotheses, findings, and conclusions
+- Assigns confidence scores to each extraction
+- Preserves original context
 
-- **SUPPORTS**: Counter-evidence found that supports the opposite of the claim
-- **CONTRADICTS**: Evidence found that contradicts the original statement
-- **UNDECIDED**: Insufficient or mixed evidence to make a determination
+### Counter-Statement Generation
 
-Confidence levels:
+For each statement, generates:
+- Semantically precise negation
+- 2 hypothetical abstracts that would support the counter-claim
+- Up to 10 search keywords
 
-- **High**: Strong, consistent evidence with multiple citations
-- **Medium**: Moderate evidence or some conflicting results
-- **Low**: Limited evidence or primarily indirect support
+### Multi-Strategy Search
 
-### Interpreting Search Statistics
+Three parallel search strategies:
+- **Semantic Search**: Embedding-based conceptual similarity
+- **HyDE Search**: Searches for documents similar to hypothetical supporting abstracts
+- **Keyword Search**: Full-text search with extracted keywords
 
-The evidence tab shows document counts from three search strategies:
+Results are deduplicated with provenance tracking.
 
-- **Semantic**: Embedding-based conceptual similarity search
-- **HyDE**: Hypothetical Document Embeddings for structural similarity
-- **Keyword**: Traditional full-text keyword matching
+### Document Scoring
 
-Higher counts across multiple strategies typically indicate a well-researched topic with substantial literature.
+Each found document is scored 1-5 for relevance:
+- 5: Directly addresses the counter-claim
+- 4: Strongly relevant evidence
+- 3: Moderately relevant
+- 2: Tangentially related
+- 1: Not relevant
 
-### Citation Quality
+### Citation Extraction
 
-Citations include:
+From high-scoring documents, extracts:
+- Specific passages supporting the counter-claim
+- Full AMA-formatted citations
+- Relevance scores
 
-- Full bibliographic reference (AMA format)
-- Extracted passage supporting the counter-claim
-- Document relevance score (1-5)
-- Source information (PMID, DOI)
+### Verdict Analysis
 
-## Exporting Results
+For each statement, determines:
+- **Supports**: Evidence supports the original claim
+- **Contradicts**: Evidence contradicts the original claim
+- **Undecided**: Insufficient or mixed evidence
 
-### JSON Export
+## Keyboard Shortcuts
 
-Produces structured data including:
-- Original abstract
-- Source metadata
-- All extracted statements
-- Counter-statements with keywords
-- Search statistics
-- Counter-evidence reports
-- Verdicts with rationale
-- Overall assessment
-- Processing metadata
+- **Enter** in PMID field: Fetch abstract
+- **Ctrl+V**: Paste into text areas
+- **Escape**: Cancel dialogs
 
-### Markdown Export
+## Troubleshooting
 
-Produces human-readable report with:
-- Formatted abstract
-- Statement-by-statement analysis
-- Verdicts with explanations
-- References section
-- Search statistics
+### "Could not load models from Ollama"
+- Ensure Ollama is running: `ollama serve`
+- Check that models are available: `ollama list`
 
-### Clipboard
+### "Failed to initialize PaperCheckerAgent"
+- Verify database connection
+- Check Ollama is accessible
 
-Copies a brief summary including the overall assessment for quick sharing.
+### PDF Analysis Fails
+- Ensure the PDF contains extractable text (not scanned images)
+- Try a different PDF or enter the abstract manually
+
+### Slow Processing
+- Normal for complex abstracts (2-10 minutes)
+- Use the Abort button to cancel if needed
 
 ## Configuration
 
-The laboratory uses the same configuration as other BMLibrarian components:
+The laboratory uses settings from `~/.bmlibrarian/config.json`:
 
-**Configuration file**: `~/.bmlibrarian/config.json`
-
-Key settings:
 ```json
 {
   "paper_checker": {
-    "model": "gpt-oss:20b",
     "temperature": 0.3,
     "max_statements": 2,
     "score_threshold": 3.0,
@@ -205,68 +226,28 @@ Key settings:
 }
 ```
 
-## Troubleshooting
+## Architecture
 
-### Agent Not Initialized
+The PaperChecker Laboratory is built as a modular PySide6/Qt package:
 
-**Symptom**: Error message about agent initialization failure
+```
+paper_checker_lab/
+├── __init__.py          # Lazy imports, module exports
+├── constants.py         # UI constants (no magic numbers)
+├── utils.py             # Pure utility functions
+├── worker.py            # Background QThread workers
+├── widgets.py           # Custom Qt widgets
+├── dialogs.py           # Dialog classes
+├── main_window.py       # Main application window
+└── tabs/
+    ├── input_tab.py     # Text input and PMID lookup
+    ├── pdf_upload_tab.py # PDF upload and extraction
+    ├── workflow_tab.py  # Workflow progress visualization
+    └── results_tab.py   # Results display (5 sub-tabs)
+```
 
-**Solutions**:
-1. Verify Ollama is running: `curl http://localhost:11434/api/tags`
-2. Check model availability in Ollama
-3. Verify database connection in `.env` file
-4. Check logs for detailed error messages
+## See Also
 
-### PMID Not Found
-
-**Symptom**: Error when entering a PMID
-
-**Solutions**:
-1. Verify the PMID is correct
-2. Ensure the document is in your database
-3. Try importing the document first using PubMed import CLI
-
-### Slow Processing
-
-**Symptom**: Long wait times during fact-checking
-
-**Solutions**:
-1. Use a faster model for initial testing
-2. Reduce `max_statements` in configuration
-3. Lower search limits in configuration
-4. Ensure sufficient system resources
-
-### No Counter-Evidence Found
-
-**Symptom**: Empty reports or "undecided" verdicts for all statements
-
-**Possible causes**:
-1. Statement is well-supported by existing literature
-2. Topic has limited coverage in your database
-3. Search threshold may be too high
-
-**Solutions**:
-1. Expand your document database
-2. Lower `score_threshold` in configuration
-3. Verify database has relevant domain coverage
-
-## Best Practices
-
-1. **Start with known abstracts**: Test with abstracts from your database to verify the system is working
-2. **Compare PMID vs. pasted text**: Using PMIDs preserves metadata and enables better citation tracking
-3. **Review all tabs**: Each tab provides different insights into the analysis
-4. **Check search statistics**: Low document counts may indicate gaps in your database
-5. **Export for reference**: Save results for comparison or documentation
-
-## Related Documentation
-
-- [PaperChecker CLI Guide](paper_checker_cli_guide.md) - Batch processing interface
-- [PaperChecker Architecture](../developers/paper_checker_architecture.md) - Technical details
-- [Document Embedding Guide](document_embedding_guide.md) - Database preparation
-- [Configuration Guide](configuration_guide.md) - System configuration
-
-## Support
-
-For issues or questions:
-- Report bugs: https://github.com/hherb/bmlibrarian/issues
-- Check logs with `--debug` flag for detailed information
+- [PaperChecker Architecture](../developers/paper_checker_architecture.md)
+- [PaperChecker CLI Guide](paper_checker_cli_guide.md)
+- [PDF Import Guide](pdf_import_guide.md)
