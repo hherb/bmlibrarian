@@ -157,6 +157,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
     # Constants
     MAX_TEXT_LENGTH = 8000  # Maximum characters to send to LLM
+    MIN_MEANINGFUL_CHUNK_LENGTH = 100  # Minimum characters worth adding when truncating
 
     def __init__(
         self,
@@ -549,14 +550,13 @@ class PaperWeightAssessmentAgent(BaseAgent):
             if progress_callback:
                 progress_callback("searching", 1, 1)
 
-            # Step 3: Prepare enhanced document with chunk content
+            # Step 3: Log chunk availability (chunks provide semantic search capability)
+            # Note: assess_paper() uses full_text from database directly.
+            # Chunks are stored for future semantic search enhancement.
             if relevant_chunks:
-                logger.info(f"Found {len(relevant_chunks)} relevant chunks for document {document_id}")
-                # Combine chunks into full_text for analysis
-                combined_text = self._combine_chunks_for_analysis(relevant_chunks)
-                document['full_text'] = combined_text
+                logger.info(f"Document {document_id} has {len(relevant_chunks)} semantic chunks available")
 
-            # Step 4: Perform standard assessment (now with full text)
+            # Step 4: Perform standard assessment using full text from database
             if progress_callback:
                 progress_callback("assessing", 0, 1)
 
@@ -660,7 +660,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             if current_length + len(text) > max_length:
                 # Add truncated version if there's room
                 remaining = max_length - current_length
-                if remaining > 100:  # Only add if meaningful length remaining
+                if remaining > self.MIN_MEANINGFUL_CHUNK_LENGTH:
                     combined_parts.append(text[:remaining])
                 break
 
