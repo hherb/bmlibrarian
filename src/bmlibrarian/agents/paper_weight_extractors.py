@@ -21,10 +21,14 @@ from .paper_weight_models import (
 
 
 # Priority order for study type detection (highest evidence level first)
+# Note: quasi_experimental is checked BEFORE rct to prevent "non-randomized trial"
+# from incorrectly matching RCT keywords like "randomized trial"
 STUDY_TYPE_PRIORITY = [
     'systematic_review',
     'meta_analysis',
+    'quasi_experimental',  # Check before RCT to catch "non-randomized" studies
     'rct',
+    'pilot_feasibility',  # Pilot and feasibility studies
     'cohort_prospective',
     'cohort_retrospective',
     'case_control',
@@ -37,9 +41,19 @@ STUDY_TYPE_PRIORITY = [
 DEFAULT_STUDY_TYPE_KEYWORDS = {
     'systematic_review': ['systematic review', 'systematic literature review'],
     'meta_analysis': ['meta-analysis', 'meta analysis', 'pooled analysis'],
+    'quasi_experimental': [
+        'non-randomized trial', 'non-randomised trial', 'nonrandomized trial',
+        'nonrandomised trial', 'quasi-experimental', 'quasi experimental',
+        'single-arm trial', 'single arm trial', 'open-label trial'
+    ],
     'rct': [
         'randomized controlled trial', 'randomised controlled trial', 'RCT',
-        'randomized trial', 'randomised trial', 'random allocation', 'randomly assigned'
+        'randomized trial', 'randomised trial', 'random allocation', 'randomly assigned',
+        'double-blind randomized', 'double-blind randomised'
+    ],
+    'pilot_feasibility': [
+        'pilot study', 'pilot trial', 'feasibility study', 'feasibility trial',
+        'proof-of-concept study', 'proof of concept study'
     ],
     'cohort_prospective': ['prospective cohort', 'prospective study', 'longitudinal cohort'],
     'cohort_retrospective': ['retrospective cohort', 'retrospective study'],
@@ -49,11 +63,28 @@ DEFAULT_STUDY_TYPE_KEYWORDS = {
     'case_report': ['case report', 'case study']
 }
 
+# Keywords that should EXCLUDE a match for specific study types
+# Format: {study_type: [exclusion_patterns]}
+# If any exclusion pattern is found near the keyword match, the match is rejected
+STUDY_TYPE_EXCLUSIONS = {
+    'rct': [
+        'non-randomized', 'non-randomised', 'nonrandomized', 'nonrandomised',
+        'not randomized', 'not randomised', 'without randomization',
+        'without randomisation', 'quasi-experimental', 'quasi experimental'
+    ]
+}
+
+# Default context window (in characters) for exclusion pattern checking
+# This determines how far before a keyword to search for exclusion patterns
+EXCLUSION_CONTEXT_WINDOW = 50
+
 # Default study type hierarchy scores
 DEFAULT_STUDY_TYPE_HIERARCHY = {
     'systematic_review': 10.0,
     'meta_analysis': 10.0,
     'rct': 8.0,
+    'quasi_experimental': 7.0,  # Non-randomized interventional studies
+    'pilot_feasibility': 6.5,  # Pilot/feasibility studies (typically smaller, exploratory)
     'cohort_prospective': 6.0,
     'cohort_retrospective': 5.0,
     'case_control': 4.0,
@@ -223,23 +254,69 @@ def has_ci_reporting(text: str) -> bool:
     return False
 
 
+def has_exclusion_pattern(
+    text: str,
+    keyword: str,
+    exclusion_patterns: List[str],
+    context_window: int = EXCLUSION_CONTEXT_WINDOW
+) -> bool:
+    """
+    Check if any exclusion pattern appears near the keyword match.
+
+    This prevents false positives like "non-randomized trial" matching as RCT
+    when searching for "randomized trial".
+
+    Args:
+        text: Full text being searched (lowercase)
+        keyword: The matched keyword (lowercase)
+        exclusion_patterns: List of patterns that should invalidate the match
+        context_window: Number of characters before keyword to check
+
+    Returns:
+        True if an exclusion pattern is found, False otherwise
+    """
+    # Find the keyword position
+    keyword_pos = text.find(keyword)
+    if keyword_pos == -1:
+        return False
+
+    # Extract context before the keyword
+    start_pos = max(0, keyword_pos - context_window)
+    context_before = text[start_pos:keyword_pos + len(keyword)]
+
+    # Check if any exclusion pattern appears in the context
+    for exclusion in exclusion_patterns:
+        if exclusion.lower() in context_before:
+            return True
+
+    return False
+
+
 def extract_study_type(
     document: Dict[str, Any],
     keywords_config: Optional[Dict[str, List[str]]] = None,
     hierarchy_config: Optional[Dict[str, float]] = None,
-    priority_order: Optional[List[str]] = None
+    priority_order: Optional[List[str]] = None,
+    exclusions_config: Optional[Dict[str, List[str]]] = None
 ) -> DimensionScore:
     """
-    Extract study type using keyword matching.
+    Extract study type using keyword matching with exclusion support.
 
     Matches keywords against abstract and methods section.
-    Uses priority hierarchy: systematic review > RCT > cohort > etc.
+    Uses priority hierarchy: systematic review > quasi-experimental > RCT > cohort > etc.
+
+    The quasi_experimental type is checked BEFORE rct to ensure "non-randomized trial"
+    is correctly classified before "randomized trial" can match.
+
+    Additionally, exclusion patterns are checked to prevent false positives
+    (e.g., "non-randomized trial" should not match as RCT).
 
     Args:
         document: Document dict with 'abstract' and optional 'methods_text' fields
         keywords_config: Dict mapping study types to keyword lists (optional)
         hierarchy_config: Dict mapping study types to scores (optional)
         priority_order: List of study types in priority order (optional)
+        exclusions_config: Dict mapping study types to exclusion patterns (optional)
 
     Returns:
         DimensionScore for study design with audit trail
@@ -251,6 +328,8 @@ def extract_study_type(
         hierarchy_config = DEFAULT_STUDY_TYPE_HIERARCHY
     if priority_order is None:
         priority_order = STUDY_TYPE_PRIORITY
+    if exclusions_config is None:
+        exclusions_config = STUDY_TYPE_EXCLUSIONS
 
     # Get text to search
     abstract = document.get('abstract', '') or ''
@@ -260,9 +339,19 @@ def extract_study_type(
     # Try each study type in priority order
     for study_type in priority_order:
         keywords = keywords_config.get(study_type, [])
+        exclusions = exclusions_config.get(study_type, [])
+
         for keyword in keywords:
-            if keyword.lower() in search_text:
-                # Found match - get score from hierarchy
+            keyword_lower = keyword.lower()
+            if keyword_lower in search_text:
+                # Check for exclusion patterns before accepting the match
+                if exclusions and has_exclusion_pattern(
+                    search_text, keyword_lower, exclusions
+                ):
+                    # Exclusion pattern found - skip this keyword
+                    continue
+
+                # Found valid match - get score from hierarchy
                 score = hierarchy_config.get(study_type, 5.0)
 
                 # Create dimension score with audit trail
@@ -272,7 +361,7 @@ def extract_study_type(
                 )
 
                 # Find evidence context
-                evidence_text = extract_text_context(search_text, keyword.lower())
+                evidence_text = extract_text_context(search_text, keyword_lower)
 
                 dimension_score.add_detail(
                     component='study_type',
@@ -432,6 +521,8 @@ __all__ = [
     'STUDY_TYPE_PRIORITY',
     'DEFAULT_STUDY_TYPE_KEYWORDS',
     'DEFAULT_STUDY_TYPE_HIERARCHY',
+    'STUDY_TYPE_EXCLUSIONS',
+    'EXCLUSION_CONTEXT_WINDOW',
     'SAMPLE_SIZE_PATTERNS',
     'POWER_CALCULATION_KEYWORDS',
     'CI_PATTERNS',
@@ -441,6 +532,7 @@ __all__ = [
     'has_power_calculation',
     'find_power_calc_context',
     'has_ci_reporting',
+    'has_exclusion_pattern',
     'extract_study_type',
     'extract_sample_size_dimension',
     'get_extracted_sample_size',
