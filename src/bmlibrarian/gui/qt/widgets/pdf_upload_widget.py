@@ -56,11 +56,24 @@ from .validators import (
 logger = logging.getLogger(__name__)
 
 
-# UI Constants
+# =============================================================================
+# UI Layout Constants
+# =============================================================================
 SPLITTER_RATIO_PDF = 60  # PDF viewer gets 60% width
 SPLITTER_RATIO_METADATA = 40  # Metadata panel gets 40% width
 DEFAULT_WINDOW_WIDTH = 1200
 DEFAULT_WINDOW_HEIGHT = 800
+
+# =============================================================================
+# Color Constants (Material Design inspired)
+# =============================================================================
+# Quick match frame colors (success/green theme)
+COLOR_SUCCESS_BG = "#e8f5e9"  # Light green background
+COLOR_SUCCESS_BORDER = "#4caf50"  # Green border
+COLOR_SUCCESS_TEXT = "#2e7d32"  # Dark green text
+
+# Status text colors
+COLOR_TEXT_MUTED = "#666666"  # Gray for secondary/status text
 
 
 class PDFUploadWidget(QWidget):
@@ -166,21 +179,36 @@ class PDFUploadWidget(QWidget):
 
         self.status_label = QLabel("Select a PDF file to begin")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(f"color: gray; font-size: {s['font_small']}pt;")
+        self.status_label.setStyleSheet(
+            self.style_gen.label_stylesheet(
+                font_size_key='font_small',
+                color=COLOR_TEXT_MUTED
+            )
+        )
         status_layout.addWidget(self.status_label)
 
         # Quick match result frame
         self.quick_match_frame = QFrame()
         self.quick_match_frame.setFrameStyle(QFrame.Box | QFrame.Plain)
         self.quick_match_frame.setStyleSheet(
-            f"background-color: #e8f5e9; border: 1px solid #4caf50; "
-            f"border-radius: {s['radius_small']}px; padding: {s['padding_small']}px;"
+            self.style_gen.custom(
+                f"QFrame {{ "
+                f"background-color: {COLOR_SUCCESS_BG}; "
+                f"border: 1px solid {COLOR_SUCCESS_BORDER}; "
+                f"border-radius: {{radius_small}}px; "
+                f"padding: {{padding_small}}px; "
+                f"}}"
+            )
         )
         quick_match_layout = QVBoxLayout(self.quick_match_frame)
 
         self.quick_match_label = QLabel("Quick match found!")
         self.quick_match_label.setStyleSheet(
-            f"color: #2e7d32; font-weight: bold; font-size: {s['font_medium']}pt;"
+            self.style_gen.label_stylesheet(
+                font_size_key='font_medium',
+                color=COLOR_SUCCESS_TEXT,
+                bold=True
+            )
         )
         quick_match_layout.addWidget(self.quick_match_label)
 
