@@ -9,7 +9,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QLabel, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QMimeData, QPoint, QRect
-from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QCursor
+from PySide6.QtGui import (
+    QDrag, QPixmap, QPainter, QColor, QCursor,
+    QMouseEvent, QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent
+)
 from typing import List, Optional, Callable
 import logging
 
@@ -18,6 +21,14 @@ from ..resources.styles import get_font_scale, scale_px, StylesheetGenerator
 
 # MIME type for internal drag-drop operations
 DRAG_MIME_TYPE = "application/x-bmlibrarian-drag-item"
+
+# Constants for drag-drop behavior (in pixels, scaled via scale_px)
+MIN_DRAG_DISTANCE_PX = 10  # Minimum distance before drag starts
+DRAG_PIXMAP_ALPHA = 180  # Alpha value for dragged item ghost (0-255)
+ITEM_SPACING_PX = 8  # Spacing between items in the list
+HANDLE_SPACING_PX = 4  # Spacing between handle and content
+DROP_INDICATOR_OFFSET_PX = 4  # Offset for drop indicator positioning
+DROP_INDICATOR_MARGIN_PX = 8  # Horizontal margin for drop indicator
 
 
 class DragHandle(QLabel):
@@ -77,7 +88,7 @@ class DraggableItemWrapper(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(scale_px(4))
+        layout.setSpacing(scale_px(HANDLE_SPACING_PX))
 
         if show_handle:
             self.drag_handle = DragHandle(self)
@@ -90,7 +101,7 @@ class DraggableItemWrapper(QFrame):
         # Allow the entire widget to initiate drag
         self.setAcceptDrops(False)
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press to initiate drag.
 
         Args:
@@ -100,7 +111,7 @@ class DraggableItemWrapper(QFrame):
             self._drag_start_pos = event.position().toPoint()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Handle mouse move to start drag operation.
 
         Args:
@@ -112,13 +123,13 @@ class DraggableItemWrapper(QFrame):
 
         # Check if we've moved enough to start a drag
         distance = (event.position().toPoint() - self._drag_start_pos).manhattanLength()
-        if distance < 10:  # Minimum drag distance
+        if distance < MIN_DRAG_DISTANCE_PX:
             super().mouseMoveEvent(event)
             return
 
         self._start_drag()
 
-    def mouseReleaseEvent(self, event) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Handle mouse release.
 
         Args:
@@ -143,7 +154,7 @@ class DraggableItemWrapper(QFrame):
         # Make it semi-transparent
         painter = QPainter(pixmap)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 180))
+        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, DRAG_PIXMAP_ALPHA))
         painter.end()
 
         drag.setPixmap(pixmap)
@@ -217,7 +228,7 @@ class DraggableListWidget(QWidget):
         """Build the list widget UI."""
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(scale_px(8))
+        self._layout.setSpacing(scale_px(ITEM_SPACING_PX))
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Drop indicator (hidden by default)
@@ -354,7 +365,8 @@ class DraggableListWidget(QWidget):
             wrapper: The wrapper that started dragging
         """
         self._dragged_item = wrapper
-        wrapper.setStyleSheet("opacity: 0.5;")
+        gen = StylesheetGenerator()
+        wrapper.setStyleSheet(gen.draggable_item_stylesheet())
 
     def _on_drag_finished(self) -> None:
         """Handle drag end."""
@@ -363,7 +375,7 @@ class DraggableListWidget(QWidget):
         self._dragged_item = None
         self._drop_indicator.hide()
 
-    def dragEnterEvent(self, event) -> None:
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Handle drag enter event.
 
         Args:
@@ -374,7 +386,7 @@ class DraggableListWidget(QWidget):
         else:
             event.ignore()
 
-    def dragMoveEvent(self, event) -> None:
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         """Handle drag move event to show drop indicator.
 
         Args:
@@ -390,7 +402,7 @@ class DraggableListWidget(QWidget):
         drop_index = self._get_drop_index(event.position().toPoint())
         self._show_drop_indicator(drop_index)
 
-    def dragLeaveEvent(self, event) -> None:
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         """Handle drag leave event.
 
         Args:
@@ -398,7 +410,7 @@ class DraggableListWidget(QWidget):
         """
         self._drop_indicator.hide()
 
-    def dropEvent(self, event) -> None:
+    def dropEvent(self, event: QDropEvent) -> None:
         """Handle drop event to reorder items.
 
         Args:
@@ -471,18 +483,18 @@ class DraggableListWidget(QWidget):
             # Show at the bottom
             if self._items:
                 last_rect = self._items[-1].geometry()
-                y = last_rect.bottom() + scale_px(4)
+                y = last_rect.bottom() + scale_px(DROP_INDICATOR_OFFSET_PX)
             else:
                 y = 0
         else:
             # Show above the item at index
-            y = self._items[index].geometry().top() - scale_px(2)
+            y = self._items[index].geometry().top() - scale_px(DROP_INDICATOR_OFFSET_PX // 2)
 
         self._drop_indicator.setGeometry(
-            scale_px(8),
+            scale_px(DROP_INDICATOR_MARGIN_PX),
             y,
-            self.width() - scale_px(16),
-            scale_px(4)
+            self.width() - scale_px(DROP_INDICATOR_MARGIN_PX * 2),
+            scale_px(DropIndicator.INDICATOR_HEIGHT_PX)
         )
         self._drop_indicator.show()
         self._drop_indicator.raise_()
