@@ -39,6 +39,13 @@ from .validation import (
     ensure_float
 )
 
+from .json_repair import (
+    repair_json,
+    safe_json_loads,
+    extract_and_repair_json,
+    JSONRepairError
+)
+
 __all__ = [
     # Path utilities
     'expand_path',
@@ -71,5 +78,10 @@ __all__ = [
     'ensure_dict',
     'ensure_string',
     'ensure_int',
-    'ensure_float'
+    'ensure_float',
+    # JSON repair
+    'repair_json',
+    'safe_json_loads',
+    'extract_and_repair_json',
+    'JSONRepairError'
 ]

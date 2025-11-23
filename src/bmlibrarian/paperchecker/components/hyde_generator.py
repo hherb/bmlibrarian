@@ -19,6 +19,7 @@ from typing import Dict, List
 import ollama
 
 from ..data_models import Statement
+from ...utils.json_repair import repair_json, JSONRepairError
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,7 @@ Return ONLY the JSON, nothing else."""
         Parse HyDE response into abstracts and keywords.
 
         Extracts JSON from the response and validates the structure.
+        Automatically attempts to repair malformed JSON from LLM responses.
 
         Args:
             response: Raw LLM response string
@@ -304,8 +306,25 @@ Return ONLY the JSON, nothing else."""
             # Clean response and extract JSON
             json_str = self._extract_json(response)
 
-            # Parse JSON
-            data = json.loads(json_str)
+            # Try to parse JSON, with automatic repair on failure
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError as initial_error:
+                # Attempt to repair malformed JSON
+                logger.warning(
+                    f"Initial JSON parse failed: {initial_error}. "
+                    f"Attempting to repair JSON..."
+                )
+                try:
+                    repaired_json = repair_json(json_str)
+                    data = json.loads(repaired_json)
+                    logger.info("Successfully repaired and parsed JSON")
+                except (JSONRepairError, json.JSONDecodeError) as repair_error:
+                    logger.error(f"JSON repair failed: {repair_error}")
+                    logger.debug(f"Raw response: {response}")
+                    raise ValueError(
+                        f"Invalid JSON in response (repair failed): {initial_error}"
+                    ) from initial_error
 
             # Validate structure
             if "hyde_abstracts" not in data:
