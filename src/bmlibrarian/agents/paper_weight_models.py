@@ -166,6 +166,13 @@ class PaperWeightResult:
     study_type: Optional[str] = None
     sample_size_n: Optional[int] = None
 
+    # Validation conflicts (LLM vs rule-based extraction conflicts)
+    validation_conflicts: List[str] = field(default_factory=list)
+
+    def has_conflicts(self) -> bool:
+        """Check if there are any validation conflicts requiring user attention."""
+        return len(self.validation_conflicts) > 0
+
     def to_dict(self) -> dict:
         """
         Convert to flat dictionary for database storage.
