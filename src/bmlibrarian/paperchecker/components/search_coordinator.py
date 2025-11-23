@@ -280,10 +280,9 @@ class SearchCoordinator:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Set statement timeout to prevent indefinite hangs
-                    cur.execute(
-                        "SET LOCAL statement_timeout = %s",
-                        (self.query_timeout_ms,)
-                    )
+                    # Note: SET LOCAL doesn't support parameterized values ($1),
+                    # so we format directly. query_timeout_ms is a validated int.
+                    cur.execute(f"SET LOCAL statement_timeout = '{self.query_timeout_ms}ms'")
                     logger.debug(
                         f"Set statement_timeout to {self.query_timeout_ms}ms "
                         f"for semantic search"
@@ -357,10 +356,9 @@ class SearchCoordinator:
                 with self.db_manager.get_connection() as conn:
                     with conn.cursor() as cur:
                         # Set statement timeout to prevent indefinite hangs
-                        cur.execute(
-                            "SET LOCAL statement_timeout = %s",
-                            (self.query_timeout_ms,)
-                        )
+                        # Note: SET LOCAL doesn't support parameterized values ($1),
+                        # so we format directly. query_timeout_ms is a validated int.
+                        cur.execute(f"SET LOCAL statement_timeout = '{self.query_timeout_ms}ms'")
 
                         # Use GROUP BY to get unique documents with their best score
                         cur.execute("""
@@ -459,10 +457,9 @@ class SearchCoordinator:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Set statement timeout to prevent indefinite hangs
-                    cur.execute(
-                        "SET LOCAL statement_timeout = %s",
-                        (self.query_timeout_ms,)
-                    )
+                    # Note: SET LOCAL doesn't support parameterized values ($1),
+                    # so we format directly. query_timeout_ms is a validated int.
+                    cur.execute(f"SET LOCAL statement_timeout = '{self.query_timeout_ms}ms'")
 
                     # Use full-text search with ts_rank_cd for ranking
                     cur.execute("""

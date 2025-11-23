@@ -16,7 +16,7 @@ The project includes a modern modular CLI (`bmlibrarian_cli.py`) that provides f
 - **Main dependencies**:
   - psycopg >=3.2.9 for PostgreSQL connectivity (via DatabaseManager)
   - ollama - Python library for Ollama LLM communication (never use raw HTTP requests)
-  - flet >=0.24.1 for GUI configuration interface
+  - PySide6 for GUI applications
 - **Package manager**: Uses `uv` for dependency management (uv.lock present)
 
 ## Configuration
@@ -141,7 +141,7 @@ Since this project uses `uv` for package management:
   - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
   - `uv run python paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
-  - `uv run python paper_checker_lab.py` - Interactive PaperChecker laboratory (Flet) for medical abstract fact-checking with step-by-step visualization
+  - `uv run python paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
 - **PDF Processing Tools**:
   - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
@@ -225,26 +225,24 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 
 ### Document Card Factory System
 
-BMLibrarian uses a factory pattern for creating document cards with consistent functionality across different UI frameworks (Flet and Qt).
+BMLibrarian uses a factory pattern for creating document cards with consistent functionality in Qt/PySide6.
 
 **Key Features**:
-- **Framework-Agnostic Interface**: Single API for creating cards in Flet or Qt
 - **Three-State PDF Buttons**: VIEW (local PDF), FETCH (download from URL), UPLOAD (manual upload)
-- **Consistent Styling**: Unified appearance across frameworks
+- **Consistent Styling**: Unified appearance using centralized stylesheet system
 - **Context-Aware Rendering**: Different card styles for literature, scoring, citations, etc.
 - **Extensible Design**: Easy to add new card variations or contexts
 
 **Factory Classes**:
 - `DocumentCardFactoryBase`: Abstract base class with common utilities
-- `FletDocumentCardFactory`: Flet-specific implementation with `ft.ExpansionTile` cards
 - `QtDocumentCardFactory`: Qt-specific implementation with `QFrame` cards and integrated PDF buttons
 
 **Usage Example**:
 ```python
-from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
-from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
+from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
+from bmlibrarian.gui.qt.document_card_factory_base import DocumentCardData, CardContext
 
-factory = FletDocumentCardFactory(page=page)
+factory = QtDocumentCardFactory(parent=parent_widget)
 card_data = DocumentCardData(
     doc_id=12345,
     title="Example Study",
@@ -387,25 +385,8 @@ bmlibrarian/
 │       ├── formatting.py      # Report formatting and export
 │       ├── workflow.py        # Workflow orchestration
 │       └── workflow_steps.py  # Enum-based workflow step definitions
-│   └── gui/                   # Graphical user interfaces (Flet and Qt)
-│       ├── __init__.py        # GUI module exports (re-exports from flet/ for backwards compatibility)
-│       ├── flet/              # Flet-based GUI components
-│       │   ├── __init__.py    # Flet module exports
-│       │   ├── config_app.py  # Configuration GUI application
-│       │   ├── research_app.py # Main research GUI application
-│       │   ├── components.py  # Reusable UI components (StepCard, etc.)
-│       │   ├── dialogs.py     # Dialog management and interactions
-│       │   ├── workflow.py    # Real agent orchestration and execution
-│       │   ├── document_card_factory_base.py  # Base classes for document cards
-│       │   ├── flet_document_card_factory.py  # Flet document card factory
-│       │   ├── unified_document_card.py       # Unified document card interface
-│       │   └── tabs/          # Configuration GUI tab components
-│       │       ├── __init__.py
-│       │       ├── general_tab.py # General settings tab
-│       │       ├── agent_tab.py   # Agent-specific configuration tabs
-│       │       ├── query_generation_tab.py  # Multi-model query generation tab
-│       │       ├── search_tab.py  # Search settings tab
-│       │       └── document_interrogation_tab.py  # Document interrogation interface
+│   └── gui/                   # Graphical user interfaces (PySide6/Qt)
+│       ├── __init__.py        # GUI module exports
 │       └── qt/                # Qt/PySide6-based GUI components
 │           ├── __init__.py    # Qt module entry point
 │           ├── core/          # Core application infrastructure
@@ -522,7 +503,7 @@ bmlibrarian/
 ├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
 ├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
 ├── paper_weight_lab.py        # PaperWeightAssessmentAgent laboratory GUI (PySide6/Qt) for evaluating evidential weight
-├── paper_checker_lab.py       # PaperChecker laboratory GUI (Flet) for medical abstract fact-checking
+├── paper_checker_lab.py       # PaperChecker laboratory GUI (PySide6/Qt) for medical abstract fact-checking
 ├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
 ├── test_pdf_processor.py      # Command-line test script for PDF processor library
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
@@ -589,10 +570,10 @@ bmlibrarian/
 
 ### Research GUI Application
 
-BMLibrarian includes a comprehensive desktop research application built with Flet:
+BMLibrarian includes a comprehensive desktop research application built with PySide6/Qt:
 
 ```bash
-# Start the research GUI application (default desktop mode)
+# Start the research GUI application
 uv run python bmlibrarian_research_gui.py
 
 # Research GUI Features:
@@ -601,8 +582,6 @@ uv run python bmlibrarian_research_gui.py
 # - Visual workflow progress with collapsible step cards
 # - Real-time agent execution with proper model configuration
 # - Formatted markdown report preview with scrolling
-# - Direct file save functionality (avoids macOS FilePicker bugs)
-# - Space-efficient layout with optimized screen usage
 # - Full integration with BMLibrarian's multi-agent system
 
 # Command line options:
@@ -613,24 +592,21 @@ uv run python bmlibrarian_research_gui.py --score-threshold 3.0      # Custom re
 ```
 
 The Research GUI provides:
-- **Desktop Application**: Native cross-platform desktop interface
+- **Desktop Application**: Native cross-platform desktop interface using PySide6
 - **Visual Workflow**: Collapsible cards showing real-time progress through 11 workflow steps
-- **Agent Integration**: Uses configured models from `~/.bmlibrarian/config.json` 
+- **Agent Integration**: Uses configured models from `~/.bmlibrarian/config.json`
 - **Document Processing**: Scores ALL found documents by default (no artificial limits)
 - **Citation Extraction**: Processes ALL documents above relevance threshold
 - **Report Generation**: Full markdown rendering with GitHub-style formatting
-- **Save Functionality**: Direct file path input dialog (macOS-compatible)
-- **Preview System**: Full-screen overlay with scrollable markdown display
-- **Space Optimization**: Controls positioned efficiently, collapsible workflow section
 - **Configuration Support**: Respects agent models, parameters, and thresholds from config
 - **Performance Modes**: Normal (all documents) vs Quick (limited for speed)
 
 ### Configuration GUI Application
 
-BMLibrarian includes a modern graphical configuration interface built with Flet:
+BMLibrarian includes a modern graphical configuration interface built with PySide6/Qt:
 
 ```bash
-# Start the desktop configuration GUI (default)
+# Start the desktop configuration GUI
 uv run python bmlibrarian_config_gui.py
 
 # GUI Features:
@@ -642,16 +618,14 @@ uv run python bmlibrarian_config_gui.py
 # - Configuration save/load functionality
 # - Connection testing to verify Ollama availability
 # - Reset to defaults option
-# - Cross-platform compatibility (desktop or web modes)
+# - Cross-platform compatibility
 
 # Command line options:
-uv run python bmlibrarian_config_gui.py --view web          # Launch in web browser
-uv run python bmlibrarian_config_gui.py --view web --port 8080  # Web with custom port
 uv run python bmlibrarian_config_gui.py --debug            # Enable debug mode
 ```
 
 The GUI provides:
-- **Native Desktop App**: Cross-platform desktop application (default mode)
+- **Native Desktop App**: Cross-platform desktop application using PySide6
 - **Document Interrogation**: Interactive split-pane interface for document Q&A
   - Left pane: Document viewer (PDF, Markdown, text files) with 60% width
   - Right pane: Chat interface with dialogue bubbles (40% width)
@@ -665,7 +639,6 @@ The GUI provides:
 - **General Settings**: Ollama server configuration, database settings, and CLI defaults
 - **File Operations**: Save/load configuration files with JSON format
 - **Connection Testing**: Verify Ollama server connectivity and list available models
-- **Dual Mode**: Can run as desktop app or web interface
 
 ### Fact-Checker Review GUI Application
 
@@ -763,7 +736,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 **Key Features**:
 - **Database Abstraction**: Unified interface supporting both PostgreSQL and SQLite backends
 - **Self-Contained Packages**: All data needed for review in single `.db` file
-- **No Dependencies**: Reviewers don't need PostgreSQL, just Python + Flet
+- **No Dependencies**: Reviewers don't need PostgreSQL, just Python + PySide6
 - **Validation**: Statement text matching prevents mismatches during import
 - **Multi-Reviewer Support**: Track annotations by username for inter-rater analysis
 - **Security**: Audit trail via export_history, encrypted distribution recommended

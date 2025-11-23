@@ -108,6 +108,10 @@ class PDFViewerWidget(QWidget):
 
         nav_layout.addStretch()
 
+        self.fit_width_btn = QPushButton("Fit Width")
+        self.fit_width_btn.clicked.connect(self._on_fit_width)
+        nav_layout.addWidget(self.fit_width_btn)
+
         self.zoom_in_btn = QPushButton("Zoom In")
         self.zoom_in_btn.clicked.connect(self._on_zoom_in)
         nav_layout.addWidget(self.zoom_in_btn)
@@ -118,12 +122,11 @@ class PDFViewerWidget(QWidget):
 
         layout.addLayout(nav_layout)
 
-        # Native PDF view
+        # Native PDF view - default to FitToWidth for better readability
         self._pdf_view = QPdfView()
         self._pdf_view.setDocument(self._pdf_document)
         self._pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
-        self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
-        self._pdf_view.setZoomFactor(self.zoom_level)
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
         layout.addWidget(self._pdf_view)
 
         # Status bar
@@ -260,14 +263,29 @@ class PDFViewerWidget(QWidget):
             self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
+    def _on_fit_width(self) -> None:
+        """Reset zoom to fit-to-width mode for optimal readability."""
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.status_label.setText("Zoom: Fit to Width")
+
     def _on_zoom_in(self) -> None:
         """Increase the zoom level of the PDF view."""
+        # Switch to custom mode for manual zoom control
+        if self._pdf_view.zoomMode() != QPdfView.ZoomMode.Custom:
+            # Get current zoom factor before switching modes
+            self.zoom_level = self._pdf_view.zoomFactor()
+            self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
         self.zoom_level = min(self.zoom_level + self.ZOOM_STEP, self.ZOOM_MAX)
         self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
 
     def _on_zoom_out(self) -> None:
         """Decrease the zoom level of the PDF view."""
+        # Switch to custom mode for manual zoom control
+        if self._pdf_view.zoomMode() != QPdfView.ZoomMode.Custom:
+            # Get current zoom factor before switching modes
+            self.zoom_level = self._pdf_view.zoomFactor()
+            self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
         self.zoom_level = max(self.zoom_level - self.ZOOM_STEP, self.ZOOM_MIN)
         self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
@@ -322,5 +340,6 @@ class PDFViewerWidget(QWidget):
         self.page_label.setText("of 0")
         self.status_label.setText("")
 
-        self._pdf_view.setZoomFactor(self.ZOOM_DEFAULT)
+        # Reset to default fit-to-width mode
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
         self._update_navigation_buttons()
