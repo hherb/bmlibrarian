@@ -3,43 +3,24 @@
 This module provides functionality to analyze PDF files and match them to existing
 documents in the BMLibrarian database using LLM-based metadata extraction.
 
-The module provides a tiered extraction approach:
-1. Fast regex extraction for DOI/PMID (~100ms)
-2. Quick database lookup by exact identifier match
-3. LLM-based metadata extraction (fallback, 5-30s)
-
 Example usage:
     from bmlibrarian.importers import PDFMatcher
 
     matcher = PDFMatcher()
-
-    # Quick extraction + lookup (fast path)
-    text = matcher.extract_first_page_text(pdf_path)
-    identifiers = matcher.extract_identifiers_regex(text)
-    document = matcher.quick_database_lookup(identifiers.get('doi'), identifiers.get('pmid'))
-
-    if document:
-        print(f"Quick match found: {document['title']}")
-    else:
-        # Fall back to LLM extraction
-        metadata = matcher.extract_metadata_with_llm(text)
-        document = matcher.find_matching_document(metadata)
-
-    # Or use full workflow
     result = matcher.match_and_import_pdf('/path/to/paper.pdf')
 
     # Or import entire directory
     results = matcher.match_and_import_directory('/path/to/pdfs/')
 """
 
+import os
+import sys
 import json
 import logging
-import re
-from dataclasses import dataclass
+import requests
 from pathlib import Path
-from typing import Optional
-
-import ollama
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime
 
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.utils.pdf_manager import PDFManager
@@ -58,32 +39,8 @@ except ImportError:
     logger.warning("tqdm not installed. Progress bars will not be displayed.")
     tqdm = None
 
-
-# Regex patterns for identifier extraction
-# DOI pattern: 10.xxxx/... (standard DOI format)
-DOI_PATTERN = re.compile(
-    r'(?:doi[:\s]*)?'  # Optional "doi:" or "doi " prefix
-    r'(10\.\d{4,}/[^\s\"\'\<\>\]\)]+)',  # DOI: 10.xxxx/anything until whitespace or delimiter
-    re.IGNORECASE
-)
-
-# PMID patterns: various formats found in papers
-PMID_PATTERNS = [
-    re.compile(r'PMID[:\s]*(\d{7,8})', re.IGNORECASE),  # PMID: 12345678
-    re.compile(r'PubMed\s*ID[:\s]*(\d{7,8})', re.IGNORECASE),  # PubMed ID: 12345678
-    re.compile(r'(?:^|\s)PMID(\d{7,8})(?:\s|$)', re.IGNORECASE),  # PMID12345678
-]
-
-# Title similarity threshold for database matching
-TITLE_SIMILARITY_THRESHOLD_STRICT = 0.6
-TITLE_SIMILARITY_THRESHOLD_RELAXED = 0.3
-MAX_ALTERNATIVE_MATCHES = 5
-
-# LLM extraction parameters
-LLM_TEXT_TRUNCATION_LENGTH = 3000
-LLM_TEMPERATURE = 0.1
-LLM_TOP_P = 0.9
-LLM_TIMEOUT_SECONDS = 60
+import re
+from dataclasses import dataclass
 
 # Minimum text length for valid extraction
 MIN_EXTRACTED_TEXT_LENGTH = 50
@@ -92,20 +49,18 @@ MIN_EXTRACTED_TEXT_LENGTH = 50
 @dataclass
 class ExtractedIdentifiers:
     """
-    Container for identifiers extracted from PDF text.
+    Container for identifiers extracted from PDF text via regex.
 
     Attributes:
         doi: Digital Object Identifier if found
         pmid: PubMed ID if found
-        extraction_method: Method used ('regex' or 'llm')
     """
 
-    doi: Optional[str]
-    pmid: Optional[str]
-    extraction_method: str = "regex"
+    doi: Optional[str] = None
+    pmid: Optional[str] = None
 
     def has_identifiers(self) -> bool:
-        """Check if any identifiers were extracted."""
+        """Check if any identifiers were found."""
         return bool(self.doi or self.pmid)
 
 
@@ -113,21 +68,17 @@ class PDFMatcher:
     """
     PDF matcher and importer for BMLibrarian.
 
-    Analyzes PDF files to extract metadata using a tiered approach:
-    1. Fast regex extraction for DOI/PMID (~100ms)
-    2. Quick database lookup by exact identifier match
-    3. LLM-based metadata extraction (fallback, 5-30s)
-
-    Matches documents to the database and imports them with proper naming
-    and organization.
+    Analyzes PDF files to extract metadata using LLM, matches them to existing
+    documents in the database, and imports them with proper naming and organization.
     """
 
-    DEFAULT_MODEL = "gpt-oss:20b"
-    FALLBACK_MODEL = "medgemma4B_it_q8:latest"
+    DEFAULT_MODEL = "medgemma4B_it_q8:latest"
+    FALLBACK_MODEL = "gpt-oss:20b"
 
     def __init__(
         self,
         pdf_base_dir: Optional[str] = None,
+        ollama_url: str = "http://localhost:11434",
         model: Optional[str] = None
     ):
         """
@@ -136,9 +87,11 @@ class PDFMatcher:
         Args:
             pdf_base_dir: Base directory for PDF storage. If None, uses PDF_BASE_DIR
                          environment variable or defaults to ~/knowledgebase/pdf
+            ollama_url: URL for Ollama service
             model: LLM model to use for metadata extraction
         """
         self.db_manager = get_db_manager()
+        self.ollama_url = ollama_url
         self.model = model or self.DEFAULT_MODEL
 
         # Initialize PDF manager with database connection
@@ -173,7 +126,7 @@ class PDFMatcher:
             text = page.get_text()
             doc.close()
 
-            if not text or len(text.strip()) < MIN_EXTRACTED_TEXT_LENGTH:
+            if not text or len(text.strip()) < 50:
                 logger.warning(f"Extracted text too short from {pdf_path}")
                 return None
 
@@ -192,105 +145,112 @@ class PDFMatcher:
         to LLM-based extraction. Looks for common identifier patterns in the text.
 
         Args:
-            text: Text extracted from PDF (typically first page)
+            text: Text extracted from PDF
 
         Returns:
-            ExtractedIdentifiers with doi and/or pmid if found
+            ExtractedIdentifiers with any found DOI/PMID
         """
-        doi: Optional[str] = None
-        pmid: Optional[str] = None
+        doi = None
+        pmid = None
 
-        # Try to extract DOI
-        doi_match = DOI_PATTERN.search(text)
-        if doi_match:
-            extracted_doi = doi_match.group(1)
-            # Clean up trailing punctuation that might have been captured
-            extracted_doi = extracted_doi.rstrip('.,;:')
-            doi = extracted_doi
-            logger.debug(f"Extracted DOI via regex: {doi}")
+        # DOI patterns - various formats found in papers
+        doi_patterns = [
+            r'doi[:\s]+\s*(10\.\d{4,}/[^\s\]>]+)',  # doi: 10.xxxx/...
+            r'https?://doi\.org/(10\.\d{4,}/[^\s\]>]+)',  # https://doi.org/10.xxxx/...
+            r'https?://dx\.doi\.org/(10\.\d{4,}/[^\s\]>]+)',  # https://dx.doi.org/10.xxxx/...
+            r'\b(10\.\d{4,}/[^\s\]>\)]+)',  # bare DOI 10.xxxx/...
+        ]
 
-        # Try to extract PMID using multiple patterns
-        for pattern in PMID_PATTERNS:
-            pmid_match = pattern.search(text)
-            if pmid_match:
-                pmid = pmid_match.group(1)
-                logger.debug(f"Extracted PMID via regex: {pmid}")
+        for pattern in doi_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                doi = match.group(1).rstrip('.,;')
+                logger.debug(f"Found DOI via regex: {doi}")
                 break
 
-        identifiers = ExtractedIdentifiers(doi=doi, pmid=pmid, extraction_method="regex")
+        # PMID patterns
+        pmid_patterns = [
+            r'PMID[:\s]+\s*(\d{7,8})',  # PMID: 12345678
+            r'PubMed\s*ID[:\s]+\s*(\d{7,8})',  # PubMed ID: 12345678
+            r'pubmed/(\d{7,8})',  # pubmed/12345678
+        ]
 
-        if identifiers.has_identifiers():
-            logger.info(
-                f"Regex extraction found: DOI={doi or 'None'}, PMID={pmid or 'None'}"
-            )
-        else:
-            logger.debug("No identifiers found via regex extraction")
+        for pattern in pmid_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                pmid = match.group(1)
+                logger.debug(f"Found PMID via regex: {pmid}")
+                break
 
-        return identifiers
+        return ExtractedIdentifiers(doi=doi, pmid=pmid)
 
     def quick_database_lookup(
         self,
         doi: Optional[str] = None,
         pmid: Optional[str] = None
-    ) -> Optional[dict[str, any]]:
+    ) -> Optional[Dict[str, Any]]:
         """
-        Fast database lookup by exact DOI or PMID match.
+        Quick database lookup by exact DOI or PMID match.
 
-        This is a quick lookup method (~100ms) that should be used after
-        regex extraction before falling back to LLM-based matching.
+        This is the fast path for finding documents when we have extracted
+        identifiers via regex. Much faster than LLM-based matching.
 
         Args:
-            doi: DOI to search for (optional)
-            pmid: PMID to search for (optional)
+            doi: DOI to search for
+            pmid: PMID to search for
 
         Returns:
-            Document dictionary if found, None otherwise
+            Document dict if found, None otherwise
         """
         if not doi and not pmid:
-            logger.debug("No identifiers provided for quick lookup")
             return None
 
-        with self.db_manager.get_connection() as conn:
-            with conn.cursor() as cur:
-                # Try DOI first (most specific)
-                if doi:
-                    cur.execute(
-                        """SELECT id, doi, title, publication_date, pdf_filename,
-                                  pdf_url, external_id
-                           FROM document
-                           WHERE doi = %s""",
-                        (doi.strip(),)
-                    )
-                    result = cur.fetchone()
-                    if result:
-                        logger.info(f"Quick lookup: Found document by DOI: {doi}")
-                        return self._row_to_dict(result)
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Try DOI first (more reliable)
+                    if doi:
+                        cur.execute(
+                            """
+                            SELECT id, title, abstract, authors, doi, pmid,
+                                   publication_date, journal, source
+                            FROM documents
+                            WHERE LOWER(doi) = LOWER(%s)
+                            LIMIT 1
+                            """,
+                            (doi,)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            logger.debug(f"Found document by DOI: {doi}")
+                            return self._row_to_dict(row)
 
-                # Try PMID (stored in external_id field)
-                if pmid:
-                    cur.execute(
-                        """SELECT id, doi, title, publication_date, pdf_filename,
-                                  pdf_url, external_id
-                           FROM document
-                           WHERE external_id = %s""",
-                        (str(pmid).strip(),)
-                    )
-                    result = cur.fetchone()
-                    if result:
-                        logger.info(f"Quick lookup: Found document by PMID: {pmid}")
-                        return self._row_to_dict(result)
+                    # Try PMID
+                    if pmid:
+                        cur.execute(
+                            """
+                            SELECT id, title, abstract, authors, doi, pmid,
+                                   publication_date, journal, source
+                            FROM documents
+                            WHERE pmid = %s
+                            LIMIT 1
+                            """,
+                            (pmid,)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            logger.debug(f"Found document by PMID: {pmid}")
+                            return self._row_to_dict(row)
 
-        logger.debug(f"Quick lookup: No document found for DOI={doi}, PMID={pmid}")
-        return None
+            return None
 
-    def extract_metadata_with_llm(self, text: str) -> dict[str, any]:
+        except Exception as e:
+            logger.error(f"Error in quick database lookup: {e}")
+            return None
+
+    def extract_metadata_with_llm(self, text: str) -> Dict[str, Any]:
         """
         Use LLM to extract metadata from PDF text.
-
-        This is the slow path (5-30 seconds) that should only be used as a fallback
-        when regex extraction fails to find identifiers or when title/authors are needed.
-
-        Uses the ollama Python library for communication (golden rule #4).
 
         Args:
             text: Text from first page of PDF
@@ -298,12 +258,8 @@ class PDFMatcher:
         Returns:
             Dictionary with extracted metadata (doi, pmid, title, authors)
         """
-        # Truncate text for efficiency
-        truncated_text = (
-            text[:LLM_TEXT_TRUNCATION_LENGTH]
-            if len(text) > LLM_TEXT_TRUNCATION_LENGTH
-            else text
-        )
+        # Truncate text to first 3000 characters for efficiency
+        truncated_text = text[:3000] if len(text) > 3000 else text
 
         prompt = f"""Analyze this text from the first page of a biomedical research paper and extract the following metadata in JSON format:
 
@@ -333,34 +289,40 @@ Text to analyze:
 """
 
         try:
-            # Use ollama library instead of HTTP requests (golden rule #4)
-            response = ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                options={
-                    "temperature": LLM_TEMPERATURE,
-                    "top_p": LLM_TOP_P
-                }
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,  # Low temperature for factual extraction
+                        "top_p": 0.9
+                    }
+                },
+                timeout=60
             )
 
-            response_text = response.get('response', '').strip()
+            if response.status_code != 200:
+                logger.error(f"Ollama API error: {response.status_code}")
+                return self._empty_metadata()
+
+            result = response.json()
+            response_text = result.get('response', '').strip()
 
             # Try to parse JSON from response
             metadata = self._parse_llm_response(response_text)
-            logger.debug(f"LLM extracted metadata: {metadata}")
+            logger.debug(f"Extracted metadata: {metadata}")
             return metadata
 
-        except ollama.ResponseError as e:
-            logger.error(f"Ollama API error: {e}")
-            return self._empty_metadata()
-        except ConnectionError:
-            logger.error("Cannot connect to Ollama service")
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Cannot connect to Ollama at {self.ollama_url}")
             return self._empty_metadata()
         except Exception as e:
             logger.error(f"Error calling LLM: {e}")
             return self._empty_metadata()
 
-    def _parse_llm_response(self, response_text: str) -> dict[str, any]:
+    def _parse_llm_response(self, response_text: str) -> Dict[str, Any]:
         """
         Parse LLM response to extract JSON metadata.
 
@@ -400,7 +362,7 @@ Text to analyze:
             logger.debug(f"Response text: {response_text}")
             return self._empty_metadata()
 
-    def _empty_metadata(self) -> dict[str, any]:
+    def _empty_metadata(self) -> Dict[str, Any]:
         """Return empty metadata structure."""
         return {
             'doi': None,
@@ -409,7 +371,7 @@ Text to analyze:
             'authors': []
         }
 
-    def find_matching_document(self, metadata: dict[str, any]) -> Optional[dict[str, any]]:
+    def find_matching_document(self, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Find matching document in database using extracted metadata.
 
@@ -458,25 +420,22 @@ Text to analyze:
                         SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
                                similarity(title, %s) AS sim
                         FROM document
-                        WHERE similarity(title, %s) > %s
+                        WHERE similarity(title, %s) > 0.6
                         ORDER BY sim DESC
                         LIMIT 1
-                    """, (title, title, TITLE_SIMILARITY_THRESHOLD_STRICT))
+                    """, (title, title))
                     result = cur.fetchone()
                     if result:
                         # Row now has 8 columns (7 original + similarity score)
                         doc = self._row_to_dict(result[:7])  # Take first 7 columns
-                        similarity_score = result[7]
-                        logger.info(
-                            f"Found match by title similarity ({similarity_score:.2f}): "
-                            f"{doc['title'][:50]}..."
-                        )
+                        similarity = result[7]
+                        logger.info(f"Found match by title similarity ({similarity:.2f}): {doc['title'][:50]}...")
                         return doc
 
         logger.info("No matching document found in database")
         return None
 
-    def _row_to_dict(self, row: tuple) -> dict[str, any]:
+    def _row_to_dict(self, row: tuple) -> Dict[str, Any]:
         """Convert database row to document dictionary."""
         return {
             'id': row[0],
@@ -488,80 +447,12 @@ Text to analyze:
             'external_id': row[6]
         }
 
-    def find_alternative_matches(
-        self,
-        title: str,
-        exclude_id: Optional[int] = None
-    ) -> list[dict[str, any]]:
-        """
-        Find alternative document matches by title similarity with relaxed threshold.
-
-        This method is useful for showing the user multiple possible matches
-        when exact identifier matching fails or when they want to see alternatives.
-
-        Args:
-            title: Title to search for
-            exclude_id: Document ID to exclude from results (e.g., already selected)
-
-        Returns:
-            List of document dictionaries with similarity scores
-        """
-        if not title or not title.strip():
-            return []
-
-        title = title.strip()
-
-        with self.db_manager.get_connection() as conn:
-            with conn.cursor() as cur:
-                if exclude_id:
-                    cur.execute("""
-                        SELECT id, doi, title, external_id,
-                               EXTRACT(YEAR FROM publication_date) as year,
-                               similarity(title, %s) AS sim
-                        FROM document
-                        WHERE similarity(title, %s) > %s
-                          AND id != %s
-                        ORDER BY sim DESC
-                        LIMIT %s
-                    """, (title, title, TITLE_SIMILARITY_THRESHOLD_RELAXED,
-                          exclude_id, MAX_ALTERNATIVE_MATCHES))
-                else:
-                    cur.execute("""
-                        SELECT id, doi, title, external_id,
-                               EXTRACT(YEAR FROM publication_date) as year,
-                               similarity(title, %s) AS sim
-                        FROM document
-                        WHERE similarity(title, %s) > %s
-                        ORDER BY sim DESC
-                        LIMIT %s
-                    """, (title, title, TITLE_SIMILARITY_THRESHOLD_RELAXED,
-                          MAX_ALTERNATIVE_MATCHES))
-
-                results = cur.fetchall()
-
-                alternatives = []
-                for row in results:
-                    alternatives.append({
-                        'id': row[0],
-                        'doi': row[1],
-                        'title': row[2],
-                        'external_id': row[3],
-                        'year': int(row[4]) if row[4] else None,
-                        'similarity': float(row[5])
-                    })
-
-                logger.debug(
-                    f"Found {len(alternatives)} alternative matches for title: "
-                    f"{title[:50]}..."
-                )
-                return alternatives
-
     def import_pdf_for_document(
         self,
         pdf_path: Path,
-        document: dict[str, any],
+        document: Dict[str, Any],
         dry_run: bool = False
-    ) -> dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Import PDF file for a matched document.
 
@@ -694,7 +585,7 @@ Text to analyze:
         self,
         pdf_path: Path,
         dry_run: bool = False
-    ) -> dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Analyze PDF, match to database, and import if match found.
 
@@ -760,7 +651,7 @@ Text to analyze:
         directory: Path,
         dry_run: bool = False,
         recursive: bool = False
-    ) -> dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Process all PDF files in a directory.
 

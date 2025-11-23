@@ -189,7 +189,7 @@ class PDFUploadTab(QWidget):
             f"QLabel {{ "
             f"background-color: {COLOR_METADATA_BG}; "
             f"padding: {self.scale['padding_medium']}px; "
-            f"border-radius: {self.scale['border_radius']}px; "
+            f"border-radius: {self.scale['radius_small']}px; "
             f"}}"
         )
         content_layout.addWidget(self._metadata_label)
@@ -202,7 +202,7 @@ class PDFUploadTab(QWidget):
         self._abstract_edit.setPlaceholderText(
             "The extracted abstract will appear here after PDF analysis..."
         )
-        self._abstract_edit.setMinimumHeight(self.scale['line_height'] * 6)
+        self._abstract_edit.setMinimumHeight(self.scale['base_line_height'] * 6)
         self._abstract_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content_layout.addWidget(self._abstract_edit, stretch=1)
 

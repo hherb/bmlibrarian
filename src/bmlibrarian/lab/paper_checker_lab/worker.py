@@ -180,8 +180,9 @@ class PDFAnalysisWorker(QThread):
 
             self.progress_update.emit("Extracting text from PDF...")
 
-            # Extract text
-            text = matcher.extract_text_from_pdf(self.pdf_path)
+            # Extract text - try multiple pages if first page has insufficient text
+            # (handles PDFs with cover pages or sparse first pages)
+            text = self._extract_text_with_fallback(self.pdf_path)
             if not text or len(text.strip()) < 100:
                 raise ValueError("Could not extract sufficient text from PDF")
 
@@ -191,7 +192,7 @@ class PDFAnalysisWorker(QThread):
             self.progress_update.emit("Analyzing document with LLM...")
 
             # Use LLM to extract metadata
-            metadata = matcher.extract_metadata_from_text(text)
+            metadata = matcher.extract_metadata_with_llm(text)
 
             if self._cancelled:
                 return
@@ -217,6 +218,76 @@ class PDFAnalysisWorker(QThread):
             logger.error(f"PDF analysis error: {e}", exc_info=True)
             if not self._cancelled:
                 self.analysis_error.emit(str(e))
+
+    def _extract_text_with_fallback(self, pdf_path: str) -> Optional[str]:
+        """
+        Extract text from PDF, trying multiple pages if first page is insufficient.
+
+        Some PDFs have cover pages or sparse first pages. This method tries
+        pages 1-3 to find sufficient text content.
+
+        Args:
+            pdf_path: Path to PDF file
+
+        Returns:
+            Extracted text or None if all pages fail
+        """
+        try:
+            import pymupdf
+        except ImportError:
+            logger.error("PyMuPDF not available for multi-page extraction")
+            return None
+
+        min_text_length = 100
+        max_pages_to_try = 3
+
+        try:
+            doc = pymupdf.open(str(pdf_path))
+            if len(doc) == 0:
+                logger.warning(f"PDF has no pages: {pdf_path}")
+                doc.close()
+                return None
+
+            pages_to_try = min(max_pages_to_try, len(doc))
+
+            for page_num in range(pages_to_try):
+                page = doc[page_num]
+                text = page.get_text()
+
+                if text and len(text.strip()) >= min_text_length:
+                    logger.debug(
+                        f"Extracted {len(text)} chars from page {page_num + 1} "
+                        f"of {pdf_path}"
+                    )
+                    doc.close()
+                    return text
+
+                logger.debug(
+                    f"Page {page_num + 1} has insufficient text "
+                    f"({len(text.strip()) if text else 0} chars), trying next..."
+                )
+
+            # If individual pages don't have enough, try combining first few pages
+            combined_text = ""
+            for page_num in range(pages_to_try):
+                page = doc[page_num]
+                combined_text += page.get_text() + "\n"
+
+            doc.close()
+
+            if combined_text and len(combined_text.strip()) >= min_text_length:
+                logger.debug(
+                    f"Using combined text from first {pages_to_try} pages "
+                    f"({len(combined_text)} chars)"
+                )
+                return combined_text
+
+            logger.warning(f"Could not extract sufficient text from {pdf_path}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error extracting text from {pdf_path}: {e}")
+            return None
 
 
 class DocumentFetchWorker(QThread):

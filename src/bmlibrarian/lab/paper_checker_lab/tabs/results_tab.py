@@ -101,7 +101,7 @@ class ResultsTab(QWidget):
         self._assessment_text = QTextEdit()
         self._assessment_text.setReadOnly(True)
         self._assessment_text.setPlaceholderText("No results yet...")
-        self._assessment_text.setMinimumHeight(self.scale['line_height'] * 6)
+        self._assessment_text.setMinimumHeight(self.scale['base_line_height'] * 6)
         assessment_layout.addWidget(self._assessment_text)
 
         assessment_group.setLayout(assessment_layout)
@@ -341,7 +341,7 @@ class ResultsTab(QWidget):
             QFrame {{
                 background-color: {COLOR_WHITE};
                 border: 1px solid {COLOR_GREY_300};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
                 padding: {self.scale['padding_medium']}px;
             }}
         """)
@@ -359,7 +359,7 @@ class ResultsTab(QWidget):
             background-color: {type_color};
             color: {COLOR_WHITE};
             padding: {self.scale['padding_small'] // 2}px {self.scale['padding_medium']}px;
-            border-radius: {self.scale['border_radius'] // 2}px;
+            border-radius: {self.scale['radius_small'] // 2}px;
         """)
         header.addWidget(type_label)
 
@@ -488,7 +488,7 @@ class ResultsTab(QWidget):
             QFrame {{
                 background-color: {COLOR_WHITE};
                 border: 2px solid {verdict_color};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
                 padding: {self.scale['padding_medium']}px;
             }}
         """)

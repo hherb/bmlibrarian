@@ -217,7 +217,7 @@ class WorkflowStepCard(QFrame):
         self.setStyleSheet(f"""
             WorkflowStepCard {{
                 background-color: {bg_color};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
             }}
             QLabel {{
                 color: {text_color};
@@ -316,7 +316,7 @@ class VerdictBadge(QFrame):
         self.setStyleSheet(f"""
             VerdictBadge {{
                 background-color: {verdict_color};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
             }}
             QLabel {{
                 color: {COLOR_WHITE};
@@ -386,7 +386,7 @@ class StatChipWidget(QFrame):
         self.setStyleSheet(f"""
             StatChipWidget {{
                 background-color: {self._color};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
             }}
             QLabel {{
                 color: {COLOR_WHITE};
@@ -498,7 +498,7 @@ class CitationCardWidget(QFrame):
         self._passage_widget = QTextEdit()
         self._passage_widget.setReadOnly(True)
         self._passage_widget.setVisible(False)
-        self._passage_widget.setMaximumHeight(self.scale['line_height'] * 6)
+        self._passage_widget.setMaximumHeight(self.scale['base_line_height'] * 6)
         main_layout.addWidget(self._passage_widget)
 
         # Expand hint
@@ -515,7 +515,7 @@ class CitationCardWidget(QFrame):
             CitationCardWidget {{
                 background-color: {bg_color};
                 border: 1px solid {COLOR_GREY_300};
-                border-radius: {self.scale['border_radius']}px;
+                border-radius: {self.scale['radius_small']}px;
             }}
         """)
 

@@ -112,7 +112,7 @@ class InputTab(QWidget):
             "The abstract should contain specific claims, findings, or conclusions "
             "that can be fact-checked against the literature."
         )
-        self._abstract_input.setMinimumHeight(self.scale['line_height'] * 8)
+        self._abstract_input.setMinimumHeight(self.scale['base_line_height'] * 8)
         self._abstract_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._abstract_input.textChanged.connect(self._on_text_changed)
         abstract_layout.addWidget(self._abstract_input, stretch=1)
@@ -160,7 +160,7 @@ class InputTab(QWidget):
         self._metadata_label.setStyleSheet(f"""
             background-color: #f0f8ff;
             padding: {self.scale['padding_medium']}px;
-            border-radius: {self.scale['border_radius']}px;
+            border-radius: {self.scale['radius_small']}px;
             color: #333;
         """)
         layout.addWidget(self._metadata_label)

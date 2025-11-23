@@ -56,7 +56,7 @@ class FullTextDialog(QDialog):
         self._text = text
 
         self.setMinimumWidth(self.scale['control_width_xlarge'])
-        self.setMinimumHeight(self.scale['line_height'] * 15)
+        self.setMinimumHeight(self.scale['base_line_height'] * 15)
 
         self._setup_ui()
 
@@ -316,7 +316,7 @@ class PMIDLookupDialog(QDialog):
         self._result_group.setStyleSheet(f"""
             background-color: {COLOR_GREY_100};
             padding: {self.scale['padding_medium']}px;
-            border-radius: {self.scale['border_radius']}px;
+            border-radius: {self.scale['radius_small']}px;
         """)
         layout.addWidget(self._result_group)
 
