@@ -16,6 +16,7 @@ from bmlibrarian.agents.paper_weight_extractors import (
     STUDY_TYPE_PRIORITY,
     DEFAULT_STUDY_TYPE_KEYWORDS,
     DEFAULT_STUDY_TYPE_HIERARCHY,
+    STUDY_TYPE_EXCLUSIONS,
     SAMPLE_SIZE_PATTERNS,
     POWER_CALCULATION_KEYWORDS,
     CI_PATTERNS,
@@ -25,6 +26,7 @@ from bmlibrarian.agents.paper_weight_extractors import (
     has_power_calculation,
     find_power_calc_context,
     has_ci_reporting,
+    has_exclusion_pattern,
     extract_study_type,
     extract_sample_size_dimension,
     get_extracted_sample_size,
@@ -415,8 +417,11 @@ class TestConstants:
         """Test study type priority order."""
         assert STUDY_TYPE_PRIORITY[0] == 'systematic_review'
         assert STUDY_TYPE_PRIORITY[1] == 'meta_analysis'
-        assert STUDY_TYPE_PRIORITY[2] == 'rct'
-        assert STUDY_TYPE_PRIORITY[3] == 'interventional_single_arm'
+        # quasi_experimental should come BEFORE rct to catch non-randomized trials first
+        assert STUDY_TYPE_PRIORITY[2] == 'quasi_experimental'
+        assert STUDY_TYPE_PRIORITY[3] == 'rct'
+        assert STUDY_TYPE_PRIORITY[4] == 'pilot_feasibility'
+        assert STUDY_TYPE_PRIORITY[2] == 'interventional_single_arm'
         assert STUDY_TYPE_PRIORITY[4] == 'cohort_prospective'
 
     def test_default_keywords_coverage(self):
@@ -429,6 +434,218 @@ class TestConstants:
         """Test hierarchy score values."""
         assert DEFAULT_STUDY_TYPE_HIERARCHY['systematic_review'] == 10.0
         assert DEFAULT_STUDY_TYPE_HIERARCHY['rct'] == 8.0
+        assert DEFAULT_STUDY_TYPE_HIERARCHY['quasi_experimental'] == 7.0
+        assert DEFAULT_STUDY_TYPE_HIERARCHY['pilot_feasibility'] == 6.5
+        assert DEFAULT_STUDY_TYPE_HIERARCHY['case_report'] == 1.0
+
+    def test_exclusions_defined(self):
+        """Test that exclusion patterns are defined for RCT."""
+        assert 'rct' in STUDY_TYPE_EXCLUSIONS
+        assert 'non-randomized' in STUDY_TYPE_EXCLUSIONS['rct']
+
+
+class TestHasExclusionPattern:
+    """Tests for has_exclusion_pattern function."""
+
+    def test_exclusion_found_before_keyword(self):
+        """Test detection of exclusion pattern before keyword."""
+        text = "this was a non-randomized trial of aspirin"
+        result = has_exclusion_pattern(
+            text, "randomized trial", ['non-randomized']
+        )
+        assert result is True
+
+    def test_no_exclusion_when_absent(self):
+        """Test no exclusion when pattern is not present."""
+        text = "this was a double-blind randomized trial of aspirin"
+        result = has_exclusion_pattern(
+            text, "randomized trial", ['non-randomized']
+        )
+        assert result is False
+
+    def test_exclusion_with_hyphen_variants(self):
+        """Test exclusion with different hyphen formats."""
+        text = "this nonrandomized trial tested new medication"
+        result = has_exclusion_pattern(
+            text, "randomized trial", ['nonrandomized']
+        )
+        assert result is True
+
+    def test_exclusion_case_insensitive(self):
+        """Test that exclusion matching is case insensitive."""
+        text = "This was a NON-RANDOMIZED trial of the treatment"
+        result = has_exclusion_pattern(
+            text.lower(), "randomized trial", ['non-randomized']
+        )
+        assert result is True
+
+    def test_keyword_not_found(self):
+        """Test returns False when keyword not found."""
+        text = "this is a cohort study"
+        result = has_exclusion_pattern(
+            text, "randomized trial", ['non-randomized']
+        )
+        assert result is False
+
+
+class TestKeywordCollisionFix:
+    """Tests for keyword collision prevention (PR#158 fix).
+
+    These tests verify that "non-randomized trial" does NOT incorrectly
+    match as an RCT, which was a potential issue when "randomized trial"
+    is a substring of "non-randomized trial".
+    """
+
+    def test_non_randomized_trial_detected_as_quasi_experimental(self):
+        """Test that 'non-randomized trial' is detected as quasi_experimental."""
+        document = {'abstract': 'This was a non-randomized trial of aspirin therapy.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'quasi_experimental'
+        assert result.score == 7.0
+
+    def test_nonrandomized_variant_detected(self):
+        """Test 'nonrandomized' (without hyphen) is detected correctly."""
+        document = {'abstract': 'A nonrandomized trial was conducted.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+    def test_rct_still_detected_correctly(self):
+        """Test that legitimate RCTs are still detected correctly."""
+        document = {'abstract': 'This was a randomized controlled trial of aspirin.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'rct'
+        assert result.score == 8.0
+
+    def test_double_blind_randomized_detected_as_rct(self):
+        """Test that 'double-blind randomized' is detected as RCT."""
+        document = {'abstract': 'We conducted a double-blind randomized study.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'rct'
+
+    def test_quasi_experimental_detected(self):
+        """Test 'quasi-experimental' keyword detection."""
+        document = {'abstract': 'This quasi-experimental study examined outcomes.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+    def test_single_arm_trial_detected(self):
+        """Test 'single-arm trial' is detected as quasi_experimental."""
+        document = {'abstract': 'A single-arm trial was performed to evaluate efficacy.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+    def test_open_label_trial_detected(self):
+        """Test 'open-label trial' is detected as quasi_experimental."""
+        document = {'abstract': 'An open-label trial was conducted.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+    def test_rct_priority_over_open_label_randomized(self):
+        """Test that open-label RCT is detected correctly.
+
+        "Open-label randomized controlled trial" is still an RCT - open-label
+        refers to blinding (participants know which treatment), not to
+        randomization. The "randomized controlled trial" keyword matches RCT.
+        """
+        document = {
+            'abstract': 'This open-label randomized controlled trial tested the drug.'
+        }
+        result = extract_study_type(document)
+
+        # Should detect as RCT because "randomized controlled trial" is a more
+        # complete and specific match than "open-label trial"
+        assert result.details[0].extracted_value == 'rct'
+
+    def test_standalone_open_label_trial_detected_as_quasi(self):
+        """Test that standalone 'open-label trial' (without 'randomized') is quasi_experimental."""
+        document = {
+            'abstract': 'This was an open-label trial to assess tolerability.'
+        }
+        result = extract_study_type(document)
+
+        # Standalone "open-label trial" without randomization keywords is quasi_experimental
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+
+class TestPilotFeasibilityStudies:
+    """Tests for pilot and feasibility study detection (PR#158 enhancement)."""
+
+    def test_pilot_study_detected(self):
+        """Test 'pilot study' detection."""
+        document = {'abstract': 'This pilot study examined the intervention.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'pilot_feasibility'
+        assert result.score == 6.5
+
+    def test_pilot_trial_detected(self):
+        """Test 'pilot trial' detection."""
+        document = {'abstract': 'A pilot trial was conducted with 20 patients.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'pilot_feasibility'
+
+    def test_feasibility_study_detected(self):
+        """Test 'feasibility study' detection."""
+        document = {'abstract': 'This feasibility study assessed patient recruitment.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'pilot_feasibility'
+
+    def test_proof_of_concept_study_detected(self):
+        """Test 'proof-of-concept study' detection."""
+        document = {'abstract': 'A proof-of-concept study demonstrated efficacy.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'pilot_feasibility'
+
+    def test_proof_of_concept_without_hyphen_detected(self):
+        """Test 'proof of concept study' (without hyphens) detection."""
+        document = {'abstract': 'This was a proof of concept study for the device.'}
+        result = extract_study_type(document)
+
+        assert result.details[0].extracted_value == 'pilot_feasibility'
+
+
+class TestExclusionPatternIntegration:
+    """Integration tests for exclusion pattern functionality."""
+
+    def test_exclusion_prevents_false_positive_rct(self):
+        """Test that exclusion patterns prevent false positive RCT matches.
+
+        When the abstract contains 'non-randomized' followed by 'randomized trial',
+        the exclusion pattern should prevent the RCT match.
+        """
+        document = {
+            'abstract': 'This non-randomized trial compared outcomes. '
+                       'The randomized trial approach was not suitable.'
+        }
+        result = extract_study_type(document)
+
+        # Should detect quasi_experimental first due to priority order
+        assert result.details[0].extracted_value == 'quasi_experimental'
+
+    def test_without_randomization_detected(self):
+        """Test 'without randomization' exclusion."""
+        # This tests that even if 'randomized' appears later, the exclusion works
+        document = {
+            'abstract': 'This study was conducted without randomization. '
+                       'A randomized design would have been preferable.'
+        }
+        result = extract_study_type(document)
+
+        # Since no quasi_experimental keyword is present, and RCT is excluded,
+        # it should fall through to unknown or another match
+        # Actually, 'without randomization' is in exclusions but there's no
+        # quasi_experimental keyword, so it would be unknown
+        assert result.details[0].extracted_value == 'unknown'
         assert DEFAULT_STUDY_TYPE_HIERARCHY['interventional_single_arm'] == 7.0
         assert DEFAULT_STUDY_TYPE_HIERARCHY['cohort_prospective'] == 6.0
         assert DEFAULT_STUDY_TYPE_HIERARCHY['case_report'] == 1.0

@@ -409,6 +409,8 @@ DEFAULT_CONFIG = {
                 "systematic_review": 10.0,
                 "meta_analysis": 10.0,
                 "rct": 8.0,
+                "quasi_experimental": 7.0,
+                "pilot_feasibility": 6.5,
                 "cohort_prospective": 6.0,
                 "cohort_retrospective": 5.0,
                 "case_control": 4.0,
@@ -419,7 +421,20 @@ DEFAULT_CONFIG = {
             "study_type_keywords": {
                 "systematic_review": ["systematic review", "systematic literature review"],
                 "meta_analysis": ["meta-analysis", "meta analysis", "pooled analysis"],
-                "rct": ["randomized controlled trial", "randomised controlled trial", "RCT", "randomized trial", "randomised trial", "random allocation", "randomly assigned"],
+                "quasi_experimental": [
+                    "non-randomized trial", "non-randomised trial", "nonrandomized trial",
+                    "nonrandomised trial", "quasi-experimental", "quasi experimental",
+                    "single-arm trial", "single arm trial", "open-label trial"
+                ],
+                "rct": [
+                    "randomized controlled trial", "randomised controlled trial", "RCT",
+                    "randomized trial", "randomised trial", "random allocation", "randomly assigned",
+                    "double-blind randomized", "double-blind randomised"
+                ],
+                "pilot_feasibility": [
+                    "pilot study", "pilot trial", "feasibility study", "feasibility trial",
+                    "proof-of-concept study", "proof of concept study"
+                ],
                 "cohort_prospective": ["prospective cohort", "prospective study", "longitudinal cohort"],
                 "cohort_retrospective": ["retrospective cohort", "retrospective study"],
                 "case_control": ["case-control", "case control study"],
