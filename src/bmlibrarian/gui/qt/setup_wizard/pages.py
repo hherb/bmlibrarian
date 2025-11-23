@@ -960,6 +960,12 @@ OLLAMA_HOST=http://localhost:11434
                 'is_reputable': True,
                 'is_free': True,
             },
+            {
+                'name': 'other',
+                'url': None,
+                'is_reputable': False,
+                'is_free': True,
+            },
         ]
 
         with psycopg.connect(**conn_params) as conn:

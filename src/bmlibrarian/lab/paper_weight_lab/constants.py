@@ -64,6 +64,30 @@ WEIGHT_SLIDER_PRECISION = 100  # Divide by this to get actual weight (0.00-1.00)
 AUTHOR_DISPLAY_MAX_LENGTH = 100  # Max chars before truncation in metadata display
 
 
+# =============================================================================
+# Status Spinner Configuration
+# =============================================================================
+
+SPINNER_ANIMATION_INTERVAL_MS = 100  # Milliseconds between spinner animation frames
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]  # Braille spinner
+
+
+# =============================================================================
+# Tab Indices
+# =============================================================================
+
+TAB_INDEX_SEARCH = 0
+TAB_INDEX_PDF_UPLOAD = 1
+TAB_INDEX_RESULTS = 2
+
+
+# =============================================================================
+# Source Types
+# =============================================================================
+
+SOURCE_ID_OTHER = 3  # Source ID for user-uploaded documents
+
+
 __all__ = [
     # Window
     'WINDOW_MIN_WIDTH',
@@ -92,4 +116,13 @@ __all__ = [
     'WEIGHT_SLIDER_PRECISION',
     # Display
     'AUTHOR_DISPLAY_MAX_LENGTH',
+    # Spinner
+    'SPINNER_ANIMATION_INTERVAL_MS',
+    'SPINNER_FRAMES',
+    # Tabs
+    'TAB_INDEX_SEARCH',
+    'TAB_INDEX_PDF_UPLOAD',
+    'TAB_INDEX_RESULTS',
+    # Source
+    'SOURCE_ID_OTHER',
 ]
