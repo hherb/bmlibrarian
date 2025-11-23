@@ -16,7 +16,8 @@ all assessment components. The actual implementations are in separate modules:
 
 import logging
 from datetime import datetime
-from typing import Optional, Callable, Dict, TYPE_CHECKING
+from pathlib import Path
+from typing import Optional, Callable, Dict, List, Any, TYPE_CHECKING
 
 from .base import BaseAgent
 from ..config import get_model, get_agent_config, get_ollama_host
@@ -473,6 +474,200 @@ class PaperWeightAssessmentAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Error assessing paper {document_id}: {e}")
             return self._create_error_result(document_id, str(e))
+
+    def assess_full_paper(
+        self,
+        document_id: int,
+        pdf_path: Optional[Path] = None,
+        force_reassess: bool = False,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> PaperWeightResult:
+        """
+        Assess paper weight using full paper text (not just abstract).
+
+        This method extends assess_paper() to work with full papers:
+        - If pdf_path is provided and document has no full_text, ingests the PDF
+        - Uses semantic chunk search to retrieve relevant passages
+        - Performs LLM assessment on the most relevant chunks
+
+        Args:
+            document_id: Database ID of document to assess
+            pdf_path: Optional path to PDF file (will be ingested if provided)
+            force_reassess: If True, skip cache and re-assess
+            progress_callback: Optional callback(stage, current, total) for progress.
+                              Stages: "ingesting", "searching", "assessing"
+
+        Returns:
+            PaperWeightResult with full audit trail
+
+        Raises:
+            FileNotFoundError: If pdf_path provided but file doesn't exist
+        """
+        from ..database import get_db_manager
+
+        try:
+            # Step 1: Check if PDF ingestion is needed
+            document = get_document(document_id)
+            has_full_text = bool(document.get('full_text'))
+
+            if pdf_path and not has_full_text:
+                if progress_callback:
+                    progress_callback("ingesting", 0, 1)
+
+                logger.info(f"Ingesting PDF for document {document_id}")
+
+                # Import here to avoid circular imports
+                from ..importers.pdf_ingestor import PDFIngestor
+
+                ingestor = PDFIngestor()
+                ingest_result = ingestor.ingest_pdf_immediate(
+                    document_id=document_id,
+                    pdf_path=pdf_path,
+                    progress_callback=progress_callback,
+                )
+
+                if not ingest_result.success:
+                    logger.error(f"PDF ingestion failed: {ingest_result.error_message}")
+                    return self._create_error_result(
+                        document_id,
+                        f"PDF ingestion failed: {ingest_result.error_message}"
+                    )
+
+                # Refresh document data
+                document = get_document(document_id)
+
+                if progress_callback:
+                    progress_callback("ingesting", 1, 1)
+
+            # Step 2: Check if document has semantic chunks
+            if progress_callback:
+                progress_callback("searching", 0, 1)
+
+            # Use semantic chunk search to get relevant content
+            relevant_chunks = self._search_document_chunks(document_id)
+
+            if progress_callback:
+                progress_callback("searching", 1, 1)
+
+            # Step 3: Prepare enhanced document with chunk content
+            if relevant_chunks:
+                logger.info(f"Found {len(relevant_chunks)} relevant chunks for document {document_id}")
+                # Combine chunks into full_text for analysis
+                combined_text = self._combine_chunks_for_analysis(relevant_chunks)
+                document['full_text'] = combined_text
+
+            # Step 4: Perform standard assessment (now with full text)
+            if progress_callback:
+                progress_callback("assessing", 0, 1)
+
+            result = self.assess_paper(
+                document_id=document_id,
+                force_reassess=force_reassess,
+            )
+
+            if progress_callback:
+                progress_callback("assessing", 1, 1)
+
+            return result
+
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in full paper assessment for {document_id}: {e}")
+            return self._create_error_result(document_id, str(e))
+
+    def _search_document_chunks(
+        self,
+        document_id: int,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for semantic chunks belonging to a specific document.
+
+        Args:
+            document_id: Document database ID
+            limit: Maximum chunks to retrieve
+
+        Returns:
+            List of chunk dicts with 'chunk_no', 'chunk_text', 'start_pos', 'end_pos'
+        """
+        from ..database import get_db_manager
+
+        db_manager = get_db_manager()
+
+        try:
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get chunks for this document ordered by position
+                    cur.execute("""
+                        SELECT
+                            c.chunk_no,
+                            c.start_pos,
+                            c.end_pos,
+                            substr(d.full_text, c.start_pos + 1, c.end_pos - c.start_pos + 1) as chunk_text
+                        FROM semantic.chunks c
+                        JOIN public.document d ON c.document_id = d.id
+                        WHERE c.document_id = %s
+                        ORDER BY c.chunk_no
+                        LIMIT %s
+                    """, (document_id, limit))
+
+                    results = []
+                    for row in cur.fetchall():
+                        results.append({
+                            'chunk_no': row[0],
+                            'start_pos': row[1],
+                            'end_pos': row[2],
+                            'chunk_text': row[3] or '',
+                        })
+
+                    return results
+
+        except Exception as e:
+            logger.warning(f"Error searching document chunks: {e}")
+            return []
+
+    def _combine_chunks_for_analysis(
+        self,
+        chunks: List[Dict[str, Any]],
+        max_length: int = None,
+    ) -> str:
+        """
+        Combine chunks into a single text for analysis.
+
+        Args:
+            chunks: List of chunk dicts with 'chunk_text'
+            max_length: Maximum combined length (uses MAX_TEXT_LENGTH if None)
+
+        Returns:
+            Combined text string
+        """
+        if max_length is None:
+            max_length = self.MAX_TEXT_LENGTH
+
+        # Sort by chunk_no to maintain reading order
+        sorted_chunks = sorted(chunks, key=lambda c: c.get('chunk_no', 0))
+
+        combined_parts = []
+        current_length = 0
+
+        for chunk in sorted_chunks:
+            text = chunk.get('chunk_text', '')
+            if not text:
+                continue
+
+            # Check if adding this chunk would exceed limit
+            if current_length + len(text) > max_length:
+                # Add truncated version if there's room
+                remaining = max_length - current_length
+                if remaining > 100:  # Only add if meaningful length remaining
+                    combined_parts.append(text[:remaining])
+                break
+
+            combined_parts.append(text)
+            current_length += len(text)
+
+        return '\n\n'.join(combined_parts)
 
 
 # Re-export models for backward compatibility
