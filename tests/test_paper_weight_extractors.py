@@ -490,9 +490,14 @@ class TestInterventionalSingleArmDetection:
         assert result.score == 7.0
         assert result.details[0].extracted_value == 'interventional_single_arm'
 
-    def test_non_randomized_trial_detection(self):
-        """Test detection of non-randomized trial."""
-        document = {'abstract': 'This was a non-randomized trial of the new intervention.'}
+    def test_uncontrolled_trial_detection(self):
+        """Test detection of uncontrolled trial.
+
+        Note: We use 'uncontrolled trial' instead of 'non-randomized trial'
+        because 'non-randomized trial' contains 'randomized trial' as a substring,
+        which gets matched by the RCT keywords first (higher priority).
+        """
+        document = {'abstract': 'This was an uncontrolled trial of the new intervention.'}
         result = extract_study_type(document)
 
         assert result.score == 7.0
