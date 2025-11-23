@@ -509,6 +509,25 @@ class PDFIngestor:
         if not result.success or not result.full_text_stored:
             return result
 
+        # Check if chunks already exist for this document
+        if self.embedder.has_chunks(document_id, chunk_size, chunk_overlap):
+            logger.info(
+                f"Document {document_id} already has chunks with size={chunk_size}, "
+                f"overlap={chunk_overlap}. Skipping embedding."
+            )
+            # Get existing chunk count for result
+            try:
+                with self.db_manager.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM semantic.chunks WHERE document_id = %s",
+                            (document_id,),
+                        )
+                        result.chunks_created = cur.fetchone()[0]
+            except Exception as e:
+                logger.warning(f"Could not get existing chunk count: {e}")
+            return result
+
         # Report progress: embedding
         if progress_callback:
             progress_callback("embedding", 0, 1)
@@ -524,7 +543,7 @@ class PDFIngestor:
                 document_id=document_id,
                 chunk_size=chunk_size,
                 overlap=chunk_overlap,
-                overwrite=True,
+                overwrite=False,  # Don't overwrite - we already checked above
                 progress_callback=embedding_progress,
             )
 

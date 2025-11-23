@@ -19,8 +19,8 @@ from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 
 
 # Chart configuration constants
-CHART_PADDING_RATIO = 0.15  # Padding as ratio of widget size
-LABEL_PADDING = 15  # Pixels between chart edge and labels
+CHART_PADDING_RATIO = 0.05  # Padding as ratio of widget size (reduced from 0.15)
+LABEL_PADDING = 10  # Pixels between chart edge and labels (reduced from 15)
 MAX_SCORE = 10.0  # Maximum possible score
 GRID_LEVELS = 5  # Number of concentric grid circles
 CHART_ROTATION_OFFSET = -90  # Rotate so first axis points up (degrees)
@@ -128,7 +128,7 @@ class RadarChartWidget(QWidget):
 
         # Calculate radius with padding for labels
         padding = min(width, height) * CHART_PADDING_RATIO
-        label_space = self.scale['font_normal'] * 3  # Space for labels
+        label_space = self.scale['font_normal'] * 2  # Space for labels (reduced from 3)
         radius = (min(width, height) / 2) - padding - label_space
 
         if radius <= 0:

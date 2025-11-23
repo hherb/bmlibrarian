@@ -38,6 +38,7 @@ class ValidationResult:
         confidence: LLM confidence in its assessment (0.0-1.0)
         reasoning: Explanation of the validation result
         conflict_details: Details about the conflict if has_conflict is True
+        supporting_quote: Exact verbatim quote from text supporting the LLM assessment
     """
 
     is_valid: bool = True
@@ -48,6 +49,7 @@ class ValidationResult:
     confidence: float = 0.0
     reasoning: str = ""
     conflict_details: str = ""
+    supporting_quote: str = ""
 
 
 def search_chunks_by_query(
@@ -245,6 +247,7 @@ Respond in JSON format:
     "assessed_type": "<study type from list above>",
     "confidence": 0.0-1.0,
     "reasoning": "<brief explanation>",
+    "supporting_quote": "<exact verbatim quote from the text that identifies the study type>",
     "has_conflict": true/false,
     "conflict_details": "<explain conflict if any>"
 }}"""
@@ -282,6 +285,7 @@ TASK:
 1. Read the passages to find mentions of sample size, participants, subjects, or patients
 2. Identify the total sample size for the main analysis
 3. Determine if the rule-based extraction "{n_str}" is correct or if there's a better value
+4. Extract the EXACT quote from the document that states the sample size
 
 GUIDELINES:
 - Look for: "n=", "N=", "participants", "subjects", "patients", "enrolled", "recruited"
@@ -295,6 +299,7 @@ Respond in JSON format:
     "assessed_n": <integer or null if cannot determine>,
     "confidence": 0.0-1.0,
     "reasoning": "<brief explanation>",
+    "supporting_quote": "<exact verbatim quote from the text that states the sample size>",
     "has_conflict": true/false,
     "conflict_details": "<explain conflict if any>"
 }}"""
@@ -383,6 +388,7 @@ def validate_study_type_extraction(
             result.llm_assessed_value = parsed.get('assessed_type', rule_based_type)
             result.confidence = parsed.get('confidence', 0.5)
             result.reasoning = parsed.get('reasoning', '')
+            result.supporting_quote = parsed.get('supporting_quote', '')
             result.has_conflict = parsed.get('has_conflict', False)
             result.conflict_details = parsed.get('conflict_details', '')
 
@@ -495,6 +501,7 @@ def validate_sample_size_extraction(
             result.llm_assessed_value = str(assessed_n) if assessed_n else "not_found"
             result.confidence = parsed.get('confidence', 0.5)
             result.reasoning = parsed.get('reasoning', '')
+            result.supporting_quote = parsed.get('supporting_quote', '')
             result.has_conflict = parsed.get('has_conflict', False)
             result.conflict_details = parsed.get('conflict_details', '')
 
@@ -542,11 +549,17 @@ def add_validation_to_dimension_score(
     if validation_result.has_conflict:
         validation_status = "CONFLICT"
 
+    # Use the LLM-extracted supporting quote as evidence if available,
+    # otherwise fall back to the first relevant passage
+    evidence_text = validation_result.supporting_quote
+    if not evidence_text and validation_result.relevant_passages:
+        evidence_text = validation_result.relevant_passages[0]
+
     dimension_score.add_detail(
         component='llm_validation',
         value=validation_status,
         contribution=0.0,  # Validation doesn't change score directly
-        evidence=validation_result.relevant_passages[0] if validation_result.relevant_passages else "",
+        evidence=evidence_text,
         reasoning=validation_result.reasoning,
     )
 
@@ -556,7 +569,7 @@ def add_validation_to_dimension_score(
             component='validation_conflict',
             value=validation_result.llm_assessed_value,
             contribution=0.0,
-            evidence="",
+            evidence=validation_result.supporting_quote,  # Include quote with conflict too
             reasoning=validation_result.conflict_details,
         )
 
