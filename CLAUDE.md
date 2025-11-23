@@ -199,6 +199,66 @@ pdf_path = pdf_manager.download_pdf(document)
 - **Security Documentation**: `doc/developers/openathens_security.md` - Security architecture and best practices
 - **Unit Tests**: `tests/test_openathens_auth.py` - Comprehensive test suite
 
+## Full-Text PDF Discovery
+
+BMLibrarian includes a full-text discovery system that finds and downloads PDF versions of academic papers through legal channels. The system prioritizes open access sources and optionally supports institutional access via OpenAthens authentication.
+
+### Source Resolution Order
+1. **PubMed Central (PMC)** - Verified open access repository (highest priority)
+2. **Unpaywall** - Open access aggregator covering millions of papers
+3. **DOI Resolution** - CrossRef and doi.org content negotiation
+4. **Direct URL** - Existing PDF URLs from database
+5. **OpenAthens** - Institutional proxy (lowest priority, for paywalled content)
+
+### Key Features
+- **Multi-source Discovery**: Queries multiple sources to maximize PDF availability
+- **Open Access Priority**: Automatically prefers OA sources over paywalled content
+- **Early Exit**: Stops searching after finding first OA source (configurable)
+- **OpenAthens Integration**: Seamless authenticated downloads for institutional access
+- **PDF Validation**: Verifies downloaded files are valid PDFs
+- **Retry Logic**: Exponential backoff for failed downloads
+
+### Usage
+```python
+from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
+
+# Create finder with your email (required for Unpaywall)
+finder = FullTextFinder(unpaywall_email="your@email.com")
+
+# Discover PDF sources by DOI
+identifiers = DocumentIdentifiers(doi="10.1038/nature12373")
+result = finder.discover(identifiers)
+
+if result.best_source:
+    print(f"Best source: {result.best_source.url}")
+    print(f"Access type: {result.best_source.access_type.value}")
+
+# Discover and download in one step
+from pathlib import Path
+download_result = finder.discover_and_download(
+    identifiers,
+    output_path=Path("paper.pdf")
+)
+```
+
+### Configuration
+Add to `~/.bmlibrarian/config.json`:
+```json
+{
+  "unpaywall_email": "your@email.com",
+  "discovery": {
+    "timeout": 30,
+    "prefer_open_access": true,
+    "skip_resolvers": []
+  }
+}
+```
+
+### Documentation
+- **User Guide**: `doc/users/full_text_discovery_guide.md` - Complete usage guide with examples
+- **Architecture**: `doc/developers/full_text_discovery_system.md` - Technical documentation
+- **Unit Tests**: `tests/discovery/` - Comprehensive test suite
+
 ## Architecture
 
 BMLibrarian uses a sophisticated multi-agent architecture with enum-based workflow orchestration:
@@ -377,6 +437,11 @@ bmlibrarian/
 │   │   ├── extractor.py       # PDF text extraction with layout analysis (PyMuPDF)
 │   │   ├── segmenter.py       # Section segmentation using NLP and heuristics
 │   │   └── README.md          # PDF processor documentation
+│   ├── discovery/             # Full-text PDF discovery system
+│   │   ├── __init__.py        # Discovery module exports
+│   │   ├── data_types.py      # Type-safe dataclasses (PDFSource, DiscoveryResult, etc.)
+│   │   ├── resolvers.py       # Source resolvers (PMC, Unpaywall, DOI, OpenAthens)
+│   │   └── full_text_finder.py # Discovery orchestrator
 │   └── cli/                   # Modular CLI architecture
 │       ├── __init__.py        # CLI module exports
 │       ├── config.py          # Configuration management
@@ -471,7 +536,8 @@ bmlibrarian/
 │   │   ├── multi_model_query_guide.md  # Multi-model query generation guide
 │   │   ├── paper_checker_guide.md  # PaperChecker overview and quick start
 │   │   ├── paper_checker_cli_guide.md  # PaperChecker CLI reference
-│   │   └── paper_checker_lab_guide.md  # PaperChecker laboratory guide
+│   │   ├── paper_checker_lab_guide.md  # PaperChecker laboratory guide
+│   │   └── full_text_discovery_guide.md  # Full-text PDF discovery guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
 │       ├── citation_system.md
@@ -482,7 +548,8 @@ bmlibrarian/
 │       ├── prisma2020_system.md  # PRISMA 2020 compliance assessment system
 │       ├── document_interrogation_ui_spec.md  # Document interrogation UI specification
 │       ├── multi_model_architecture.md  # Multi-model architecture docs
-│       └── paper_checker_architecture.md  # PaperChecker system design and architecture
+│       ├── paper_checker_architecture.md  # PaperChecker system design and architecture
+│       └── full_text_discovery_system.md  # Full-text PDF discovery architecture
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
 ├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
 ├── bmlibrarian_config_gui.py  # Graphical configuration interface
