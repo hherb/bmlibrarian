@@ -88,6 +88,14 @@ TAB_INDEX_RESULTS = 2
 SOURCE_ID_OTHER = 3  # Source ID for user-uploaded documents
 
 
+# =============================================================================
+# Document Matching
+# =============================================================================
+
+TITLE_SIMILARITY_THRESHOLD = 0.3  # Minimum similarity score for title matching
+ALTERNATIVE_MATCHES_LIMIT = 5  # Maximum number of alternative matches to show
+
+
 __all__ = [
     # Window
     'WINDOW_MIN_WIDTH',
@@ -125,4 +133,7 @@ __all__ = [
     'TAB_INDEX_RESULTS',
     # Source
     'SOURCE_ID_OTHER',
+    # Document Matching
+    'TITLE_SIMILARITY_THRESHOLD',
+    'ALTERNATIVE_MATCHES_LIMIT',
 ]

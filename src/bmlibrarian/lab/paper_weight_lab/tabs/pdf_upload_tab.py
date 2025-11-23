@@ -20,7 +20,11 @@ from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
 from bmlibrarian.database import get_db_manager
 
-from ..constants import SOURCE_ID_OTHER
+from ..constants import (
+    SOURCE_ID_OTHER,
+    TITLE_SIMILARITY_THRESHOLD,
+    ALTERNATIVE_MATCHES_LIMIT,
+)
 from ..widgets import StatusSpinnerWidget
 
 logger = logging.getLogger(__name__)
@@ -103,7 +107,7 @@ class PDFAnalysisWorker(QThread):
     def _find_alternative_matches(
         self,
         title: str,
-        limit: int = 5
+        limit: int = ALTERNATIVE_MATCHES_LIMIT
     ) -> List[Dict[str, Any]]:
         """
         Find alternative document matches by title similarity.
@@ -124,10 +128,10 @@ class PDFAnalysisWorker(QThread):
                                EXTRACT(YEAR FROM publication_date) as year,
                                similarity(title, %s) AS sim
                         FROM document
-                        WHERE similarity(title, %s) > 0.3
+                        WHERE similarity(title, %s) > %s
                         ORDER BY sim DESC
                         LIMIT %s
-                    """, (title, title, limit))
+                    """, (title, title, TITLE_SIMILARITY_THRESHOLD, limit))
 
                     results = []
                     for row in cur.fetchall():
@@ -237,6 +241,7 @@ class PDFUploadTab(QWidget):
         self.current_match: Optional[Dict] = None
         self.analysis_worker: Optional[PDFAnalysisWorker] = None
         self.ingest_worker: Optional[PDFIngestWorker] = None
+        self._pending_document_id: Optional[int] = None
 
         self._setup_ui()
 
