@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QFormLayout, QCheckBox,
 )
 from PySide6.QtCore import Signal, QThread
+from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
@@ -26,6 +27,14 @@ from ..constants import (
     ALTERNATIVE_MATCHES_LIMIT,
 )
 from ..widgets import StatusSpinnerWidget
+from ..constants import WORKER_TERMINATE_TIMEOUT_MS
+from ..validators import (
+    validate_pmid,
+    validate_doi,
+    validate_year,
+    validate_pdf_file_size,
+    validate_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +393,22 @@ class PDFUploadTab(QWidget):
         )
 
         if file_path:
-            self.current_pdf_path = Path(file_path)
+            pdf_path = Path(file_path)
+
+            # Validate file size
+            is_valid_size, size_warning = validate_pdf_file_size(pdf_path)
+            if not is_valid_size and size_warning:
+                reply = QMessageBox.warning(
+                    self,
+                    "Large File Warning",
+                    f"{size_warning}\n\nDo you want to continue anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+            self.current_pdf_path = pdf_path
             self.file_path_label.setText(self.current_pdf_path.name)
             self._analyze_pdf()
 
@@ -492,13 +516,73 @@ class PDFUploadTab(QWidget):
         self._on_selection_changed()
 
     def _on_analysis_error(self, error: str) -> None:
-        """Handle analysis error."""
-        self.status_spinner.set_error("Analysis failed")
-        self.match_status_label.setText(f"Error: {error}")
+        """
+        Handle analysis error with granular error messages.
+
+        Provides specific guidance based on the type of error encountered.
+        """
+        error_lower = error.lower()
+
+        # Determine error type and provide specific guidance
+        if "text extraction" in error_lower or "extract text" in error_lower:
+            status_msg = "Could not extract text - PDF may be scanned"
+            guidance = (
+                "The PDF may be a scanned document without embedded text.\n\n"
+                "Suggestions:\n"
+                "- Use OCR software to convert the scanned PDF to text\n"
+                "- Try a different version of the document if available"
+            )
+        elif "metadata" in error_lower or "llm" in error_lower or "model" in error_lower:
+            status_msg = "AI metadata extraction failed"
+            guidance = (
+                "The AI model could not extract metadata from the PDF.\n\n"
+                "Possible causes:\n"
+                "- Ollama service may not be running\n"
+                "- The configured model may not be available\n"
+                "- The PDF text may be in an unexpected format\n\n"
+                "Try:\n"
+                "- Check that Ollama is running\n"
+                "- Enter metadata manually in the fields above"
+            )
+        elif "connection" in error_lower or "timeout" in error_lower:
+            status_msg = "Connection error"
+            guidance = (
+                "Could not connect to required services.\n\n"
+                "Please check:\n"
+                "- Database connection\n"
+                "- Ollama service is running\n"
+                "- Network connectivity"
+            )
+        elif "permission" in error_lower or "access" in error_lower:
+            status_msg = "File access error"
+            guidance = (
+                "Could not access the PDF file.\n\n"
+                "Please check:\n"
+                "- File permissions\n"
+                "- File is not locked by another application"
+            )
+        elif "corrupt" in error_lower or "invalid" in error_lower:
+            status_msg = "Invalid PDF file"
+            guidance = (
+                "The file does not appear to be a valid PDF.\n\n"
+                "Please check:\n"
+                "- File is not corrupted\n"
+                "- File has a .pdf extension but is actually a PDF"
+            )
+        else:
+            status_msg = "Analysis failed"
+            guidance = f"An unexpected error occurred:\n\n{error}"
+
+        self.status_spinner.set_error(status_msg)
+        self.match_status_label.setText(f"Error: {status_msg}")
+
+        # Enable manual entry as fallback
+        self.create_new_btn.setEnabled(True)
+
         QMessageBox.critical(
             self,
             "Analysis Error",
-            f"Failed to analyze PDF:\n{error}"
+            f"{guidance}\n\nYou can still enter metadata manually and create a new document."
         )
 
     def _on_selection_changed(self) -> None:
@@ -528,14 +612,32 @@ class PDFUploadTab(QWidget):
 
     def _create_new_document(self) -> None:
         """Create new document from extracted metadata."""
-        # Validate required fields
+        # Validate title (required field)
         title = self.title_edit.text().strip()
-        if not title:
-            QMessageBox.warning(
-                self,
-                "Missing Title",
-                "Please enter a title for the document."
-            )
+        is_valid_title, title_error = validate_title(title)
+        if not is_valid_title:
+            QMessageBox.warning(self, "Invalid Title", title_error)
+            return
+
+        # Validate PMID (optional field)
+        pmid_text = self.pmid_edit.text().strip()
+        is_valid_pmid, pmid_error = validate_pmid(pmid_text)
+        if not is_valid_pmid:
+            QMessageBox.warning(self, "Invalid PMID", pmid_error)
+            return
+
+        # Validate DOI (optional field)
+        doi_text = self.doi_edit.text().strip()
+        is_valid_doi, doi_error = validate_doi(doi_text)
+        if not is_valid_doi:
+            QMessageBox.warning(self, "Invalid DOI", doi_error)
+            return
+
+        # Validate year (optional field)
+        year_text = self.year_edit.text().strip()
+        is_valid_year, year_error = validate_year(year_text)
+        if not is_valid_year:
+            QMessageBox.warning(self, "Invalid Year", year_error)
             return
 
         # Confirm creation
@@ -714,6 +816,42 @@ class PDFUploadTab(QWidget):
 
         if reply == QMessageBox.Yes:
             self.document_selected.emit(document_id)
+
+    def _terminate_workers(self) -> None:
+        """
+        Safely terminate any running worker threads.
+
+        Waits up to WORKER_TERMINATE_TIMEOUT_MS for each worker to finish.
+        """
+        workers = [
+            ('analysis_worker', self.analysis_worker),
+            ('ingest_worker', self.ingest_worker),
+        ]
+
+        for name, worker in workers:
+            if worker is not None and worker.isRunning():
+                logger.info(f"Terminating {name} thread...")
+                worker.terminate()
+                if not worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+                    logger.warning(
+                        f"{name} did not terminate within "
+                        f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
+                    )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Handle widget close event.
+
+        Ensures worker threads are properly terminated before closing.
+
+        Args:
+            event: The close event
+        """
+        self._terminate_workers()
+        # Clear worker references for garbage collection
+        self.analysis_worker = None
+        self.ingest_worker = None
+        super().closeEvent(event)
 
 
 __all__ = ['PDFUploadTab']

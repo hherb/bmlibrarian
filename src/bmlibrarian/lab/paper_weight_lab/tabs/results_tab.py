@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
@@ -24,7 +25,7 @@ from bmlibrarian.agents.paper_weight_models import (
 )
 from bmlibrarian.agents.paper_weight_db import get_document_metadata
 
-from ..constants import SCORE_DECIMALS
+from ..constants import SCORE_DECIMALS, WORKER_TERMINATE_TIMEOUT_MS
 from ..utils import (
     format_dimension_name,
     format_score_with_max,
@@ -561,6 +562,35 @@ class ResultsTab(QWidget):
         self._update_button_states()
         self.export_report_button.setEnabled(False)
         self.export_json_button.setEnabled(False)
+
+    def _terminate_workers(self) -> None:
+        """
+        Safely terminate any running worker threads.
+
+        Waits up to WORKER_TERMINATE_TIMEOUT_MS for workers to finish.
+        """
+        if self.assessment_worker is not None and self.assessment_worker.isRunning():
+            logger.info("Terminating assessment_worker thread...")
+            self.assessment_worker.terminate()
+            if not self.assessment_worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+                logger.warning(
+                    f"assessment_worker did not terminate within "
+                    f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
+                )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Handle widget close event.
+
+        Ensures worker threads are properly terminated before closing.
+
+        Args:
+            event: The close event
+        """
+        self._terminate_workers()
+        # Clear worker reference for garbage collection
+        self.assessment_worker = None
+        super().closeEvent(event)
 
 
 __all__ = ['ResultsTab']
