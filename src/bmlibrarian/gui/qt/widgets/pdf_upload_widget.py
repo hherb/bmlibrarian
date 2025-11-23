@@ -265,8 +265,8 @@ class PDFUploadWidget(QWidget):
         matches_layout = QVBoxLayout(matches_group)
 
         self.matches_tree = QTreeWidget()
-        self.matches_tree.setHeaderLabels(["Title", "DOI/PMID", "Year", "Similarity"])
-        self.matches_tree.setColumnCount(4)
+        self.matches_tree.setHeaderLabels(["Title", "Authors", "Journal", "Year", "Similarity"])
+        self.matches_tree.setColumnCount(5)
         self.matches_tree.setRootIsDecorated(False)
         self.matches_tree.setAlternatingRowColors(True)
         self.matches_tree.itemSelectionChanged.connect(self._on_match_selection_changed)
@@ -278,11 +278,12 @@ class PDFUploadWidget(QWidget):
         options_group = QGroupBox("Options")
         options_layout = QVBoxLayout(options_group)
 
-        self.ingest_checkbox = QCheckBox("Ingest PDF (store and create embeddings)")
-        self.ingest_checkbox.setChecked(False)
+        self.ingest_checkbox = QCheckBox("Ingest PDF (extract full text and create embeddings)")
+        self.ingest_checkbox.setChecked(True)
         self.ingest_checkbox.setToolTip(
-            "If checked, the PDF will be stored in the library and text embeddings "
-            "will be created for semantic search."
+            "If checked, the PDF will be stored in the library, full text will be\n"
+            "extracted for analysis, and text embeddings will be created for\n"
+            "semantic search. This enables analysis on the complete paper content."
         )
         options_layout.addWidget(self.ingest_checkbox)
 
@@ -497,56 +498,110 @@ class PDFUploadWidget(QWidget):
         self.create_new_btn.setEnabled(True)
 
     def _show_quick_match(self, document: dict):
-        """Show the quick match result."""
+        """Show the quick match result with full metadata."""
         title = document.get('title', 'Unknown title')
         doc_id = document.get('id', '?')
 
-        self.quick_match_title.setText(
-            f"<b>{title[:100]}{'...' if len(title) > 100 else ''}</b><br>"
-            f"<small>Document ID: {doc_id}</small>"
-        )
+        # Get authors - handle both list and string formats
+        authors = document.get('authors', [])
+        if isinstance(authors, list):
+            authors_str = ', '.join(authors[:3])  # First 3 authors
+            if len(authors) > 3:
+                authors_str += f' et al. ({len(authors)} authors)'
+        else:
+            authors_str = str(authors) if authors else ''
+
+        # Get publication/journal
+        publication = document.get('publication') or document.get('journal') or ''
+
+        # Get year from publication_date
+        year = ''
+        pub_date = document.get('publication_date')
+        if pub_date:
+            try:
+                year = str(pub_date.year)
+            except AttributeError:
+                # May be a string date
+                if isinstance(pub_date, str) and len(pub_date) >= 4:
+                    year = pub_date[:4]
+
+        # Build display text with all available metadata
+        display_parts = [f"<b>{title[:100]}{'...' if len(title) > 100 else ''}</b>"]
+
+        if authors_str:
+            display_parts.append(f"<br><i>{authors_str}</i>")
+
+        meta_parts = []
+        if publication:
+            meta_parts.append(publication)
+        if year:
+            meta_parts.append(year)
+        if meta_parts:
+            display_parts.append(f"<br>{' • '.join(meta_parts)}")
+
+        display_parts.append(f"<br><small>Document ID: {doc_id}</small>")
+
+        self.quick_match_title.setText(''.join(display_parts))
         self.quick_match_frame.show()
 
     def _add_match_to_tree(self, document: dict, is_best: bool = False):
         """Add a document match to the tree widget."""
         item = QTreeWidgetItem()
 
-        # Title
+        # Column 0: Title
         title = document.get('title', 'Unknown')
-        if len(title) > 80:
-            title = title[:77] + "..."
+        if len(title) > 60:
+            title = title[:57] + "..."
         item.setText(0, title)
 
-        # DOI/PMID
-        identifier = document.get('doi') or document.get('external_id') or ""
-        item.setText(1, identifier)
+        # Column 1: Authors (first 2 + et al.)
+        authors = document.get('authors', [])
+        if isinstance(authors, list):
+            if len(authors) > 2:
+                authors_str = ', '.join(authors[:2]) + ' et al.'
+            else:
+                authors_str = ', '.join(authors)
+        else:
+            authors_str = str(authors) if authors else ""
+        if len(authors_str) > 40:
+            authors_str = authors_str[:37] + "..."
+        item.setText(1, authors_str)
 
-        # Year
+        # Column 2: Journal/Publication
+        publication = document.get('publication') or document.get('journal') or ""
+        if len(publication) > 30:
+            publication = publication[:27] + "..."
+        item.setText(2, publication)
+
+        # Column 3: Year
         year = document.get('year')
         if not year and document.get('publication_date'):
             try:
                 year = document['publication_date'].year
             except AttributeError:
-                pass
-        item.setText(2, str(year) if year else "")
+                # May be a string date
+                pub_date = document.get('publication_date')
+                if isinstance(pub_date, str) and len(pub_date) >= 4:
+                    year = pub_date[:4]
+        item.setText(3, str(year) if year else "")
 
-        # Similarity score
+        # Column 4: Similarity score
         similarity = document.get('similarity')
         if similarity is not None:
-            item.setText(3, f"{similarity:.2f}")
+            item.setText(4, f"{similarity:.2f}")
 
         # Store document data
         item.setData(0, Qt.UserRole, document)
 
         # Highlight best match
         if is_best:
-            for col in range(4):
+            for col in range(5):
                 item.setBackground(col, Qt.green)
 
         self.matches_tree.addTopLevelItem(item)
 
         # Resize columns
-        for col in range(4):
+        for col in range(5):
             self.matches_tree.resizeColumnToContents(col)
 
     def _on_match_selection_changed(self):
