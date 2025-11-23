@@ -1,73 +1,115 @@
 """
 PaperChecker Laboratory - PDF Upload Tab
 
-Tab widget for uploading PDFs and extracting abstracts for fact-checking.
-Features a split view with PDF viewer on the left and extraction controls on the right.
+Tab widget for uploading PDFs and matching/creating documents.
+Wraps the reusable PDFUploadWidget with paper checker lab specific behavior.
+
+This follows the same pattern as paper_weight_lab's PDF upload tab.
 """
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Any
 
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QTextEdit,
     QGroupBox,
+    QCheckBox,
+    QHBoxLayout,
     QMessageBox,
-    QFileDialog,
-    QSizePolicy,
-    QProgressBar,
-    QSplitter,
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, QThread
 from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
-from bmlibrarian.gui.qt.widgets import PDFViewerWidget, validate_pdf_file, ValidationStatus
+from bmlibrarian.gui.qt.widgets import PDFUploadWidget
 
-from ..constants import (
-    COLOR_PRIMARY,
-    COLOR_SUCCESS,
-    COLOR_GREY_600,
-    COLOR_METADATA_BG,
-    SPLITTER_RATIO_PDF,
-    SPLITTER_RATIO_CONTROLS,
-    WORKER_TERMINATE_TIMEOUT_MS,
-)
+from ..constants import WORKER_TERMINATE_TIMEOUT_MS
 from ..widgets import StatusSpinnerWidget
-from ..worker import PDFAnalysisWorker
 
 
 logger = logging.getLogger(__name__)
 
 
+class PDFIngestWorker(QThread):
+    """
+    Worker thread for PDF ingestion.
+
+    Performs PDF storage, text extraction, and embedding in background.
+    This enables semantic search over the full document for fact-checking.
+    """
+
+    ingest_complete = Signal(object)  # IngestResult
+    ingest_error = Signal(str)
+    status_update = Signal(str)
+
+    def __init__(
+        self,
+        document_id: int,
+        pdf_path: Path,
+        parent: Optional[object] = None
+    ):
+        """
+        Initialize worker.
+
+        Args:
+            document_id: Database document ID
+            pdf_path: Path to PDF file
+            parent: Parent object
+        """
+        super().__init__(parent)
+        self.document_id = document_id
+        self.pdf_path = pdf_path
+
+    def run(self) -> None:
+        """Run PDF ingestion in background."""
+        try:
+            from bmlibrarian.importers.pdf_ingestor import PDFIngestor
+
+            self.status_update.emit("Initializing PDF ingestor...")
+
+            ingestor = PDFIngestor()
+
+            def progress_callback(stage: str, current: int, total: int) -> None:
+                """Handle progress updates."""
+                if total > 0:
+                    self.status_update.emit(f"{stage}: {current}/{total}")
+                else:
+                    self.status_update.emit(stage)
+
+            self.status_update.emit("Ingesting PDF...")
+
+            result = ingestor.ingest_pdf_immediate(
+                document_id=self.document_id,
+                pdf_path=self.pdf_path,
+                progress_callback=progress_callback,
+            )
+
+            self.ingest_complete.emit(result)
+
+        except Exception as e:
+            logger.exception(f"PDF ingestion error: {e}")
+            self.ingest_error.emit(str(e))
+
+
 class PDFUploadTab(QWidget):
     """
-    Tab widget for PDF upload and abstract extraction.
+    Tab widget for PDF upload and document matching.
 
-    Features a split-view layout with:
-    - Left panel: PDF viewer for visual inspection
-    - Right panel: Extraction controls, metadata display, and abstract editing
-
-    Allows users to upload a PDF, extract the abstract using LLM,
-    review/edit the extracted text, and proceed to fact-checking.
+    Wraps the reusable PDFUploadWidget and adds paper checker lab specific
+    functionality including PDF ingestion (text extraction and embedding)
+    to enable semantic search over the full document.
 
     Signals:
-        abstract_extracted: Emitted when abstract is extracted from PDF.
-            Args: abstract (str), metadata (dict)
-        check_requested: Emitted when user requests direct check.
-            Args: abstract (str), metadata (dict)
+        document_selected: Emitted when a document is selected/created.
+            Args: document_id (int)
     """
 
-    abstract_extracted = Signal(str, dict)  # (abstract, metadata)
-    check_requested = Signal(str, dict)  # (abstract, metadata)
+    document_selected = Signal(int)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None):
         """
         Initialize PDF upload tab.
 
@@ -78,16 +120,17 @@ class PDFUploadTab(QWidget):
 
         self.scale = get_font_scale()
         self.styles = get_stylesheet_generator()
-        self._current_pdf_path: Optional[Path] = None
-        self._extracted_metadata: Dict[str, Any] = {}
-        self._analysis_worker: Optional[PDFAnalysisWorker] = None
+
+        self._ingest_worker: Optional[PDFIngestWorker] = None
+        self._pending_document_id: Optional[int] = None
 
         self._setup_ui()
+        self._connect_signals()
 
     def _setup_ui(self) -> None:
-        """Setup tab user interface with split view."""
+        """Setup tab user interface."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(self.scale['spacing_small'])
+        layout.setSpacing(self.scale['spacing_medium'])
         layout.setContentsMargins(
             self.scale['padding_medium'],
             self.scale['padding_medium'],
@@ -95,373 +138,190 @@ class PDFUploadTab(QWidget):
             self.scale['padding_medium']
         )
 
-        # Main splitter for PDF viewer and controls
-        self._splitter = QSplitter(Qt.Horizontal)
+        # PDF Upload Widget (main component)
+        self._upload_widget = PDFUploadWidget()
+        layout.addWidget(self._upload_widget, stretch=1)
 
-        # Left panel: PDF Viewer
-        self._pdf_viewer = PDFViewerWidget()
-        self._splitter.addWidget(self._pdf_viewer)
-
-        # Right panel: Controls
-        right_panel = self._create_controls_panel()
-        self._splitter.addWidget(right_panel)
-
-        # Set splitter proportions (50/50)
-        self._splitter.setSizes([SPLITTER_RATIO_PDF, SPLITTER_RATIO_CONTROLS])
-
-        layout.addWidget(self._splitter, stretch=1)
-
-    def _create_controls_panel(self) -> QWidget:
-        """
-        Create the right-side controls panel.
-
-        Returns:
-            QWidget: The controls panel widget
-        """
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setSpacing(self.scale['spacing_medium'])
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # File selection section
-        file_group = QGroupBox("PDF File")
-        file_layout = QVBoxLayout()
-
-        # Instructions
-        instructions = QLabel(
-            "Upload a PDF of a medical research paper. The abstract will be "
-            "automatically extracted using AI, and you can review/edit it "
-            "before fact-checking."
-        )
-        instructions.setWordWrap(True)
-        instructions.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
-        file_layout.addWidget(instructions)
-
-        # File path row
-        path_layout = QHBoxLayout()
-
-        self._path_label = QLabel("No file selected")
-        self._path_label.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
-        path_layout.addWidget(self._path_label, stretch=1)
-
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse_file)
-        path_layout.addWidget(browse_btn)
-
-        file_layout.addLayout(path_layout)
-
-        # Analyze button
-        self._analyze_btn = QPushButton("Analyze PDF")
-        self._analyze_btn.setToolTip("Extract abstract and metadata from PDF using AI")
-        self._analyze_btn.clicked.connect(self._analyze_pdf)
-        self._analyze_btn.setEnabled(False)
-        self._analyze_btn.setStyleSheet(self.styles.button_stylesheet(bg_color=COLOR_PRIMARY))
-        file_layout.addWidget(self._analyze_btn)
-
-        file_group.setLayout(file_layout)
-        layout.addWidget(file_group)
-
-        # Status section
-        status_group = QGroupBox("Analysis Status")
+        # Ingestion status section
+        status_group = QGroupBox("Ingestion Status")
         status_layout = QVBoxLayout()
 
-        self._status_spinner = StatusSpinnerWidget(self)
-        status_layout.addWidget(self._status_spinner)
-
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setVisible(False)
-        status_layout.addWidget(self._progress_bar)
+        self._ingest_spinner = StatusSpinnerWidget()
+        status_layout.addWidget(self._ingest_spinner)
 
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
 
-        # Extracted content section
-        content_group = QGroupBox("Extracted Content")
-        content_layout = QVBoxLayout()
+        # Additional options section
+        options_group = QGroupBox("Options")
+        options_layout = QHBoxLayout()
 
-        # Metadata display
-        # Note: Using inline stylesheet as StylesheetGenerator doesn't support
-        # panel labels with backgrounds. All values are from constants/DPI scale.
-        self._metadata_label = QLabel("")
-        self._metadata_label.setWordWrap(True)
-        self._metadata_label.setVisible(False)
-        self._metadata_label.setStyleSheet(
-            f"QLabel {{ "
-            f"background-color: {COLOR_METADATA_BG}; "
-            f"padding: {self.scale['padding_medium']}px; "
-            f"border-radius: {self.scale['radius_small']}px; "
-            f"}}"
+        self._ingest_on_select = QCheckBox("Ingest PDF on selection")
+        self._ingest_on_select.setChecked(True)
+        self._ingest_on_select.setToolTip(
+            "When checked, automatically ingest PDF (extract text and create embeddings)\n"
+            "when selecting or creating a document. This enables full-text semantic search\n"
+            "for comprehensive fact-checking against the complete paper content."
         )
-        content_layout.addWidget(self._metadata_label)
+        options_layout.addWidget(self._ingest_on_select)
+        options_layout.addStretch()
 
-        # Abstract text (editable)
-        abstract_label = QLabel("Extracted Abstract (you can edit before checking):")
-        content_layout.addWidget(abstract_label)
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
 
-        self._abstract_edit = QTextEdit()
-        self._abstract_edit.setPlaceholderText(
-            "The extracted abstract will appear here after PDF analysis..."
-        )
-        self._abstract_edit.setMinimumHeight(self.scale['base_line_height'] * 6)
-        self._abstract_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_layout.addWidget(self._abstract_edit, stretch=1)
+    def _connect_signals(self) -> None:
+        """Connect widget signals."""
+        # Connect PDFUploadWidget signals
+        self._upload_widget.document_selected.connect(self._on_document_selected)
+        self._upload_widget.document_created.connect(self._on_document_created)
 
-        content_group.setLayout(content_layout)
-        layout.addWidget(content_group, stretch=1)
-
-        # Action buttons
-        button_layout = QHBoxLayout()
-
-        self._use_in_input_btn = QPushButton("Use in Input Tab")
-        self._use_in_input_btn.setToolTip("Copy extracted abstract to the Input tab for further editing")
-        self._use_in_input_btn.clicked.connect(self._use_in_input_tab)
-        self._use_in_input_btn.setEnabled(False)
-        button_layout.addWidget(self._use_in_input_btn)
-
-        self._check_btn = QPushButton("Check Abstract")
-        self._check_btn.setToolTip("Start fact-checking the extracted abstract")
-        self._check_btn.clicked.connect(self._on_check_clicked)
-        self._check_btn.setEnabled(False)
-        self._check_btn.setStyleSheet(self.styles.button_stylesheet(bg_color=COLOR_SUCCESS))
-        self._check_btn.setMinimumHeight(self.scale['control_height_large'])
-        button_layout.addWidget(self._check_btn)
-
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.clicked.connect(self._clear_all)
-        button_layout.addWidget(self._clear_btn)
-
-        button_layout.addStretch()
-
-        layout.addLayout(button_layout)
-
-        return panel
-
-    def _browse_file(self) -> None:
-        """Open file browser for PDF selection."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select PDF File",
-            "",
-            "PDF Files (*.pdf);;All Files (*)"
-        )
-
-        if file_path:
-            self._load_pdf(file_path)
-
-    def _load_pdf(self, file_path: str) -> None:
+    def _on_document_selected(self, document_id: int) -> None:
         """
-        Load a PDF file for analysis.
-
-        Validates the file and loads it into the viewer.
+        Handle document selection from PDFUploadWidget.
 
         Args:
-            file_path: Path to the PDF file
+            document_id: Selected document ID
         """
-        pdf_path = Path(file_path)
+        logger.info(f"Document selected: {document_id}")
 
-        # Validate PDF file
-        is_valid, message, status = validate_pdf_file(pdf_path)
+        if self._should_ingest():
+            self._start_ingestion(document_id)
+        else:
+            self.document_selected.emit(document_id)
 
-        if status == ValidationStatus.ERROR:
-            QMessageBox.critical(self, "Invalid File", message or "Unknown error")
+    def _on_document_created(self, document_id: int) -> None:
+        """
+        Handle document creation from PDFUploadWidget.
+
+        Args:
+            document_id: Created document ID
+        """
+        logger.info(f"Document created: {document_id}")
+
+        if self._should_ingest():
+            self._start_ingestion(document_id)
+        else:
+            self.document_selected.emit(document_id)
+
+    def _should_ingest(self) -> bool:
+        """
+        Check if PDF should be ingested.
+
+        Returns:
+            True if ingestion should occur
+        """
+        # Check if checkbox is checked
+        if not self._ingest_on_select.isChecked():
+            return False
+
+        # Check if widget has ingestion requested
+        if not self._upload_widget.should_ingest():
+            return False
+
+        # Check if we have a PDF
+        pdf_path = self._upload_widget.get_pdf_path()
+        return pdf_path is not None
+
+    def _start_ingestion(self, document_id: int) -> None:
+        """
+        Start PDF ingestion for a document.
+
+        Args:
+            document_id: Document ID to ingest PDF for
+        """
+        pdf_path = self._upload_widget.get_pdf_path()
+        if not pdf_path:
+            # No PDF to ingest, just emit the signal
+            self.document_selected.emit(document_id)
             return
 
-        # Show warning for large files but allow proceeding
-        if status == ValidationStatus.WARNING:
-            reply = QMessageBox.warning(
-                self,
-                "Large File Warning",
-                f"{message}\n\nDo you want to continue?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-            if reply != QMessageBox.Yes:
-                return
+        # Store pending document ID
+        self._pending_document_id = document_id
 
-        # Store path and update UI
-        self._current_pdf_path = pdf_path
-        self._path_label.setText(pdf_path.name)
-        self._path_label.setToolTip(str(pdf_path))
+        # Start ingestion spinner
+        self._ingest_spinner.start_spinner()
+        self._ingest_spinner.set_status("Preparing ingestion...")
 
-        # Load PDF into viewer
-        self._pdf_viewer.load_pdf(pdf_path)
+        # Create and start worker
+        self._ingest_worker = PDFIngestWorker(document_id, pdf_path, self)
+        self._ingest_worker.status_update.connect(self._on_ingest_status)
+        self._ingest_worker.ingest_complete.connect(self._on_ingest_complete)
+        self._ingest_worker.ingest_error.connect(self._on_ingest_error)
+        self._ingest_worker.start()
 
-        # Enable analyze button
-        self._analyze_btn.setEnabled(True)
-        self._status_spinner.reset()
-
-        logger.info(f"PDF loaded: {file_path}")
-
-    def _analyze_pdf(self) -> None:
-        """Start PDF analysis."""
-        if not self._current_pdf_path:
-            return
-
-        # Disable controls during analysis
-        self._analyze_btn.setEnabled(False)
-        self._check_btn.setEnabled(False)
-        self._use_in_input_btn.setEnabled(False)
-
-        # Start spinner and show progress
-        self._status_spinner.start_spinner()
-        self._status_spinner.set_status("Starting PDF analysis...")
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setRange(0, 0)  # Indeterminate
-
-        # Start worker
-        self._analysis_worker = PDFAnalysisWorker(str(self._current_pdf_path))
-        self._analysis_worker.progress_update.connect(self._on_progress_update)
-        self._analysis_worker.analysis_complete.connect(self._on_analysis_complete)
-        self._analysis_worker.analysis_error.connect(self._on_analysis_error)
-        self._analysis_worker.start()
-
-    def _on_progress_update(self, status: str) -> None:
+    def _on_ingest_status(self, status: str) -> None:
         """
-        Handle progress update from worker.
+        Handle ingestion status update.
 
         Args:
             status: Status message
         """
-        self._status_spinner.set_status(status)
+        self._ingest_spinner.set_status(status)
 
-    def _on_analysis_complete(self, result: dict) -> None:
+    def _on_ingest_complete(self, result: Any) -> None:
         """
-        Handle successful PDF analysis.
+        Handle completed PDF ingestion.
 
         Args:
-            result: Analysis result dictionary
+            result: IngestResult from PDFIngestor
         """
-        self._progress_bar.setVisible(False)
-        self._status_spinner.set_complete("Analysis complete")
+        document_id = self._pending_document_id
 
-        # Store extracted metadata
-        self._extracted_metadata = {
-            'title': result.get('title', ''),
-            'authors': result.get('authors', []),
-            'year': result.get('year'),
-            'pmid': result.get('pmid'),
-            'doi': result.get('doi'),
-            'journal': result.get('journal', ''),
-            'pdf_path': str(self._current_pdf_path) if self._current_pdf_path else '',
-        }
-
-        # Display metadata
-        self._show_metadata(result)
-
-        # Populate abstract
-        abstract = result.get('abstract', '')
-        if abstract:
-            self._abstract_edit.setPlainText(abstract)
-            self._check_btn.setEnabled(True)
-            self._use_in_input_btn.setEnabled(True)
-            logger.info(f"Extracted abstract ({len(abstract)} chars) from PDF")
-        else:
-            self._abstract_edit.setPlainText("")
-            QMessageBox.warning(
-                self,
-                "No Abstract Found",
-                "The PDF was analyzed but no abstract could be identified.\n\n"
-                "You can manually enter the abstract text."
+        if result.success:
+            self._ingest_spinner.set_complete(
+                f"Ingestion complete: {result.chunks_created} chunks, "
+                f"{result.char_count:,} chars"
             )
 
-        self._analyze_btn.setEnabled(True)
+            QMessageBox.information(
+                self,
+                "PDF Ingested",
+                f"PDF successfully ingested:\n"
+                f"- Text extracted: {result.char_count:,} characters\n"
+                f"- Pages: {result.page_count}\n"
+                f"- Chunks created: {result.chunks_created}\n\n"
+                "The document is now ready for semantic search fact-checking."
+            )
+        else:
+            self._ingest_spinner.set_error("Ingestion completed with warnings")
 
-    def _on_analysis_error(self, error: str) -> None:
+            # Show warning but still proceed
+            QMessageBox.warning(
+                self,
+                "Ingestion Warning",
+                f"PDF ingestion completed with issues:\n{result.error_message}\n\n"
+                "The document was still associated, but full-text semantic search "
+                "may not be available."
+            )
+
+        # Emit document selected signal
+        if document_id is not None:
+            self.document_selected.emit(document_id)
+
+    def _on_ingest_error(self, error: str) -> None:
         """
-        Handle analysis error.
+        Handle ingestion error.
 
         Args:
             error: Error message
         """
-        self._progress_bar.setVisible(False)
-        self._status_spinner.set_error(f"Error: {error}")
-        self._analyze_btn.setEnabled(True)
+        document_id = self._pending_document_id
 
-        QMessageBox.critical(
+        self._ingest_spinner.set_error("Ingestion failed")
+
+        # Show error but offer to continue
+        reply = QMessageBox.question(
             self,
-            "Analysis Error",
-            f"Failed to analyze PDF:\n{error}"
+            "Ingestion Error",
+            f"Failed to ingest PDF:\n{error}\n\n"
+            "Do you want to continue without PDF ingestion?\n"
+            "(Note: Semantic search over full text will not be available)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
         )
-        logger.error(f"PDF analysis error: {error}")
 
-    def _show_metadata(self, result: dict) -> None:
-        """
-        Display extracted metadata.
-
-        Args:
-            result: Analysis result dictionary
-        """
-        parts = []
-
-        if result.get('title'):
-            parts.append(f"<b>Title:</b> {result['title']}")
-
-        if result.get('authors'):
-            authors = result['authors']
-            if isinstance(authors, list):
-                authors = ', '.join(authors[:5])
-                if len(result['authors']) > 5:
-                    authors += ' et al.'
-            parts.append(f"<b>Authors:</b> {authors}")
-
-        if result.get('journal'):
-            parts.append(f"<b>Journal:</b> {result['journal']}")
-
-        if result.get('year'):
-            parts.append(f"<b>Year:</b> {result['year']}")
-
-        if result.get('pmid'):
-            parts.append(f"<b>PMID:</b> {result['pmid']}")
-
-        if result.get('doi'):
-            parts.append(f"<b>DOI:</b> {result['doi']}")
-
-        if result.get('extracted_text_length'):
-            parts.append(f"<b>PDF Text:</b> {result['extracted_text_length']:,} characters")
-
-        if parts:
-            self._metadata_label.setText('<br>'.join(parts))
-            self._metadata_label.setVisible(True)
-        else:
-            self._metadata_label.setVisible(False)
-
-    def _use_in_input_tab(self) -> None:
-        """Emit signal to use extracted abstract in input tab."""
-        abstract = self._abstract_edit.toPlainText().strip()
-        if abstract:
-            self.abstract_extracted.emit(abstract, self._extracted_metadata.copy())
-
-    def _on_check_clicked(self) -> None:
-        """Handle check button click."""
-        abstract = self._abstract_edit.toPlainText().strip()
-
-        if not abstract:
-            QMessageBox.warning(
-                self,
-                "No Abstract",
-                "Please provide an abstract to check."
-            )
-            return
-
-        # Emit check requested signal
-        self.check_requested.emit(abstract, self._extracted_metadata.copy())
-
-    def _clear_all(self) -> None:
-        """Clear all inputs and results."""
-        self._current_pdf_path = None
-        self._extracted_metadata.clear()
-        self._path_label.setText("No file selected")
-        self._path_label.setToolTip("")
-        self._abstract_edit.clear()
-        self._metadata_label.setVisible(False)
-        self._status_spinner.reset()
-        self._progress_bar.setVisible(False)
-        self._analyze_btn.setEnabled(False)
-        self._check_btn.setEnabled(False)
-        self._use_in_input_btn.setEnabled(False)
-
-        # Clear PDF viewer
-        self._pdf_viewer.clear()
+        if reply == QMessageBox.Yes and document_id is not None:
+            self.document_selected.emit(document_id)
 
     def set_enabled(self, enabled: bool) -> None:
         """
@@ -470,10 +330,8 @@ class PDFUploadTab(QWidget):
         Args:
             enabled: Whether controls should be enabled
         """
-        self._analyze_btn.setEnabled(enabled and self._current_pdf_path is not None)
-        self._check_btn.setEnabled(enabled and bool(self._abstract_edit.toPlainText().strip()))
-        self._use_in_input_btn.setEnabled(enabled and bool(self._abstract_edit.toPlainText().strip()))
-        self._clear_btn.setEnabled(enabled)
+        self._upload_widget.setEnabled(enabled)
+        self._ingest_on_select.setEnabled(enabled)
 
     def _terminate_workers(self) -> None:
         """
@@ -481,12 +339,12 @@ class PDFUploadTab(QWidget):
 
         Waits up to WORKER_TERMINATE_TIMEOUT_MS for workers to finish.
         """
-        if self._analysis_worker is not None and self._analysis_worker.isRunning():
-            logger.info("Terminating analysis worker thread...")
-            self._analysis_worker.cancel()
-            if not self._analysis_worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+        if self._ingest_worker is not None and self._ingest_worker.isRunning():
+            logger.info("Terminating ingest worker thread...")
+            self._ingest_worker.terminate()
+            if not self._ingest_worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
                 logger.warning(
-                    f"Analysis worker did not terminate within "
+                    f"Ingest worker did not terminate within "
                     f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
                 )
 
@@ -501,7 +359,7 @@ class PDFUploadTab(QWidget):
         """
         self._terminate_workers()
         # Clear worker reference for garbage collection
-        self._analysis_worker = None
+        self._ingest_worker = None
         super().closeEvent(event)
 
 

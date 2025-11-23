@@ -24,7 +24,7 @@ from .constants import (
     WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT,
     TAB_INDEX_INPUT, TAB_INDEX_PDF_UPLOAD, TAB_INDEX_WORKFLOW, TAB_INDEX_RESULTS,
 )
-from .worker import PaperCheckWorker
+from .worker import PaperCheckWorker, DocumentFetchWorker
 from .tabs import InputTab, PDFUploadTab, WorkflowTab, ResultsTab
 
 
@@ -47,6 +47,7 @@ class PaperCheckerLab(QMainWindow):
         self.styles = get_stylesheet_generator()
         self._agent: Optional[PaperCheckerAgent] = None
         self._worker: Optional[PaperCheckWorker] = None
+        self._fetch_worker: Optional[DocumentFetchWorker] = None
         self._check_start_time: Optional[float] = None
 
         self._setup_window()
@@ -92,8 +93,7 @@ class PaperCheckerLab(QMainWindow):
         self._input_tab.clear_requested.connect(self._on_clear)
 
         # PDF upload tab signals
-        self._pdf_upload_tab.check_requested.connect(self._start_check)
-        self._pdf_upload_tab.abstract_extracted.connect(self._on_abstract_extracted)
+        self._pdf_upload_tab.document_selected.connect(self._on_pdf_document_selected)
 
         # Workflow tab signals
         self._workflow_tab.abort_requested.connect(self._abort_check)
@@ -115,7 +115,7 @@ class PaperCheckerLab(QMainWindow):
 
     def _start_check(self, abstract: str, metadata: Dict[str, Any]) -> None:
         """
-        Start a paper check.
+        Start a paper check from the Input tab.
 
         Args:
             abstract: Abstract text to check
@@ -129,25 +129,35 @@ class PaperCheckerLab(QMainWindow):
             )
             return
 
-        if not self._agent:
-            self._initialize_agent()
-            if not self._agent:
-                return
-
-        # Reinitialize agent with selected model if different
-        selected_model = self._input_tab.get_selected_model()
-        # Agent will use its configured model
-
-        # Switch to workflow tab
+        # Switch to workflow tab and reset
         self._tab_widget.setCurrentIndex(TAB_INDEX_WORKFLOW)
-
-        # Reset and start workflow visualization
         self._workflow_tab.reset()
         self._workflow_tab.start()
 
         # Disable input tabs during processing
         self._input_tab.set_enabled(False)
         self._pdf_upload_tab.set_enabled(False)
+
+        # Start the actual check
+        self._do_start_check(abstract, metadata)
+
+    def _do_start_check(self, abstract: str, metadata: Dict[str, Any]) -> None:
+        """
+        Internal method to start paper check.
+
+        Called by both _start_check (Input tab) and _on_document_fetched (PDF tab).
+
+        Args:
+            abstract: Abstract text to check
+            metadata: Source metadata dictionary
+        """
+        if not self._agent:
+            self._initialize_agent()
+            if not self._agent:
+                # Re-enable tabs on failure
+                self._input_tab.set_enabled(True)
+                self._pdf_upload_tab.set_enabled(True)
+                return
 
         # Record start time
         self._check_start_time = time.time()
@@ -236,17 +246,93 @@ class PaperCheckerLab(QMainWindow):
 
             logger.info("Paper check aborted by user")
 
-    def _on_abstract_extracted(self, abstract: str, metadata: Dict[str, Any]) -> None:
+    def _on_pdf_document_selected(self, document_id: int) -> None:
         """
-        Handle abstract extracted from PDF.
+        Handle document selection from PDF upload tab.
+
+        Fetches the document from the database and starts fact-checking
+        using the document's abstract.
 
         Args:
-            abstract: Extracted abstract text
-            metadata: Extracted metadata
+            document_id: Database document ID
         """
-        # Populate input tab and switch to it
-        self._input_tab.set_abstract(abstract, metadata)
-        self._tab_widget.setCurrentIndex(TAB_INDEX_INPUT)
+        logger.info(f"PDF document selected: {document_id}")
+
+        # Show progress in workflow tab while fetching
+        self._tab_widget.setCurrentIndex(TAB_INDEX_WORKFLOW)
+        self._workflow_tab.reset()
+        self._workflow_tab.start()
+
+        # Disable tabs during fetch
+        self._input_tab.set_enabled(False)
+        self._pdf_upload_tab.set_enabled(False)
+
+        # Create and start fetch worker
+        self._fetch_worker = DocumentFetchWorker(document_id=document_id)
+        self._fetch_worker.fetch_complete.connect(self._on_document_fetched)
+        self._fetch_worker.fetch_error.connect(self._on_document_fetch_error)
+        self._fetch_worker.start()
+
+    def _on_document_fetched(self, document: Dict[str, Any]) -> None:
+        """
+        Handle successful document fetch.
+
+        Args:
+            document: Document data from database
+        """
+        abstract = document.get('abstract', '')
+        if not abstract:
+            QMessageBox.warning(
+                self,
+                "No Abstract",
+                "The selected document has no abstract in the database.\n\n"
+                "Please use the Input tab to enter abstract text manually,\n"
+                "or select a different document."
+            )
+            self._workflow_tab.reset()
+            self._input_tab.set_enabled(True)
+            self._pdf_upload_tab.set_enabled(True)
+            self._tab_widget.setCurrentIndex(TAB_INDEX_INPUT)
+            return
+
+        # Build metadata from document
+        metadata = {
+            'document_id': document.get('id'),
+            'title': document.get('title', ''),
+            'authors': document.get('authors', []),
+            'pmid': document.get('pmid'),
+            'doi': document.get('doi'),
+            'publication': document.get('publication', ''),
+        }
+
+        # Extract year from publication_date if available
+        pub_date = document.get('publication_date')
+        if pub_date:
+            try:
+                metadata['year'] = pub_date.year
+            except AttributeError:
+                if isinstance(pub_date, str) and len(pub_date) >= 4:
+                    metadata['year'] = pub_date[:4]
+
+        # Start the check with the fetched abstract
+        self._do_start_check(abstract, metadata)
+
+    def _on_document_fetch_error(self, error: str) -> None:
+        """
+        Handle document fetch error.
+
+        Args:
+            error: Error message
+        """
+        self._workflow_tab.set_error(f"Failed to fetch document: {error}")
+        self._input_tab.set_enabled(True)
+        self._pdf_upload_tab.set_enabled(True)
+
+        QMessageBox.critical(
+            self,
+            "Fetch Error",
+            f"Failed to fetch document from database:\n{error}"
+        )
 
     def _on_clear(self) -> None:
         """Handle clear request."""
