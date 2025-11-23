@@ -96,6 +96,33 @@ TITLE_SIMILARITY_THRESHOLD = 0.3  # Minimum similarity score for title matching
 ALTERNATIVE_MATCHES_LIMIT = 5  # Maximum number of alternative matches to show
 
 
+# =============================================================================
+# Worker Thread Configuration
+# =============================================================================
+
+WORKER_TERMINATE_TIMEOUT_MS = 3000  # Maximum time to wait for worker thread termination
+
+
+# =============================================================================
+# Input Validation
+# =============================================================================
+
+# PMID validation (PubMed IDs are positive integers, typically 1-8 digits)
+PMID_MIN_VALUE = 1
+PMID_MAX_VALUE = 99999999  # 8 digits max
+
+# Publication year validation
+YEAR_MIN_VALUE = 1800  # Oldest reasonable publication year
+YEAR_MAX_VALUE = 2100  # Future upper bound for pre-prints
+
+# DOI pattern (basic validation: 10.xxxx/...)
+DOI_PATTERN = r'^10\.\d{4,}/\S+$'
+
+# PDF file size limit (in megabytes)
+PDF_MAX_FILE_SIZE_MB = 50  # Warn for files larger than 50MB
+PDF_MAX_FILE_SIZE_BYTES = PDF_MAX_FILE_SIZE_MB * 1024 * 1024
+
+
 __all__ = [
     # Window
     'WINDOW_MIN_WIDTH',
@@ -136,4 +163,14 @@ __all__ = [
     # Document Matching
     'TITLE_SIMILARITY_THRESHOLD',
     'ALTERNATIVE_MATCHES_LIMIT',
+    # Worker Thread
+    'WORKER_TERMINATE_TIMEOUT_MS',
+    # Input Validation
+    'PMID_MIN_VALUE',
+    'PMID_MAX_VALUE',
+    'YEAR_MIN_VALUE',
+    'YEAR_MAX_VALUE',
+    'DOI_PATTERN',
+    'PDF_MAX_FILE_SIZE_MB',
+    'PDF_MAX_FILE_SIZE_BYTES',
 ]
