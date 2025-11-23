@@ -5,7 +5,7 @@ Importers for external data sources (medRxiv, PubMed, etc.)
 from .medrxiv_importer import MedRxivImporter
 from .pubmed_importer import PubMedImporter
 from .pubmed_bulk_importer import PubMedBulkImporter
-from .pdf_matcher import PDFMatcher
+from .pdf_matcher import PDFMatcher, DocumentStatus, ExtractedIdentifiers
 from .pdf_converter import (
     PDFConverter,
     PyMuPDFConverter,
@@ -23,6 +23,8 @@ __all__ = [
     'PubMedImporter',
     'PubMedBulkImporter',
     'PDFMatcher',
+    'DocumentStatus',
+    'ExtractedIdentifiers',
     'PDFConverter',
     'PyMuPDFConverter',
     'ConversionResult',

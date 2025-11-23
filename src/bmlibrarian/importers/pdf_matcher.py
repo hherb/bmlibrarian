@@ -45,6 +45,11 @@ from dataclasses import dataclass
 # Minimum text length for valid extraction
 MIN_EXTRACTED_TEXT_LENGTH = 50
 
+# Column index for has_full_text in check_document_status query result
+# Query returns: id, title, abstract, authors, doi, pmid, external_id,
+#                publication_date, journal, source_id, pdf_filename, pdf_url, has_full_text
+_HAS_FULL_TEXT_COLUMN_INDEX = 12
+
 
 @dataclass
 class ExtractedIdentifiers:
@@ -62,6 +67,24 @@ class ExtractedIdentifiers:
     def has_identifiers(self) -> bool:
         """Check if any identifiers were found."""
         return bool(self.doi or self.pmid)
+
+
+@dataclass
+class DocumentStatus:
+    """
+    Status information about a document in the database.
+
+    Attributes:
+        exists: Whether the document exists in the database
+        has_full_text: Whether the document has full_text populated
+        has_chunks: Whether the document has been chunked (with default parameters)
+        document: The document dictionary if found
+    """
+
+    exists: bool = False
+    has_full_text: bool = False
+    has_chunks: bool = False
+    document: Optional[Dict[str, Any]] = None
 
 
 class PDFMatcher:
@@ -247,6 +270,139 @@ class PDFMatcher:
         except Exception as e:
             logger.error(f"Error in quick database lookup: {e}")
             return None
+
+    def check_document_status(
+        self,
+        doi: Optional[str] = None,
+        pmid: Optional[str] = None
+    ) -> DocumentStatus:
+        """
+        Check if a document exists in the database and its processing status.
+
+        This method performs a comprehensive check:
+        1. Checks if document exists by DOI or PMID
+        2. If found, checks if full_text is populated
+        3. If full_text exists, checks if document is already chunked
+
+        Args:
+            doi: DOI to search for
+            pmid: PMID to search for
+
+        Returns:
+            DocumentStatus with exists, has_full_text, has_chunks, and document dict
+        """
+        if not doi and not pmid:
+            return DocumentStatus()
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Look up document with full_text status
+                    if doi:
+                        cur.execute(
+                            """
+                            SELECT id, title, abstract, authors, doi, pmid, external_id,
+                                   publication_date, publication as journal, source_id,
+                                   pdf_filename, pdf_url,
+                                   (full_text IS NOT NULL AND full_text != '') as has_full_text
+                            FROM document
+                            WHERE LOWER(doi) = LOWER(%s)
+                            LIMIT 1
+                            """,
+                            (doi,)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            logger.info(f"Found document by DOI: {doi}")
+                            doc = self._row_to_full_dict(row)
+                            has_full_text = row[_HAS_FULL_TEXT_COLUMN_INDEX]
+
+                            # Check chunking status if has full_text
+                            has_chunks = False
+                            if has_full_text:
+                                cur.execute(
+                                    "SELECT semantic.has_chunks(%s)",
+                                    (doc['id'],)
+                                )
+                                chunk_result = cur.fetchone()
+                                has_chunks = chunk_result[0] if chunk_result else False
+
+                            return DocumentStatus(
+                                exists=True,
+                                has_full_text=has_full_text,
+                                has_chunks=has_chunks,
+                                document=doc
+                            )
+
+                    # Try PMID (check both pmid and external_id)
+                    if pmid:
+                        cur.execute(
+                            """
+                            SELECT id, title, abstract, authors, doi, pmid, external_id,
+                                   publication_date, publication as journal, source_id,
+                                   pdf_filename, pdf_url,
+                                   (full_text IS NOT NULL AND full_text != '') as has_full_text
+                            FROM document
+                            WHERE pmid = %s OR external_id = %s
+                            LIMIT 1
+                            """,
+                            (pmid, pmid)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            logger.info(f"Found document by PMID: {pmid}")
+                            doc = self._row_to_full_dict(row)
+                            has_full_text = row[_HAS_FULL_TEXT_COLUMN_INDEX]
+
+                            # Check chunking status if has full_text
+                            has_chunks = False
+                            if has_full_text:
+                                cur.execute(
+                                    "SELECT semantic.has_chunks(%s)",
+                                    (doc['id'],)
+                                )
+                                chunk_result = cur.fetchone()
+                                has_chunks = chunk_result[0] if chunk_result else False
+
+                            return DocumentStatus(
+                                exists=True,
+                                has_full_text=has_full_text,
+                                has_chunks=has_chunks,
+                                document=doc
+                            )
+
+            return DocumentStatus()
+
+        except Exception as e:
+            logger.error(f"Error checking document status: {e}")
+            return DocumentStatus()
+
+    def _row_to_full_dict(self, row: tuple) -> Dict[str, Any]:
+        """
+        Convert database row to full document dictionary.
+
+        Maps row from check_document_status query to document dict.
+
+        Args:
+            row: Database row tuple
+
+        Returns:
+            Document dictionary with all relevant fields
+        """
+        return {
+            'id': row[0],
+            'title': row[1],
+            'abstract': row[2],
+            'authors': row[3] or [],
+            'doi': row[4],
+            'pmid': row[5],
+            'external_id': row[6],
+            'publication_date': row[7],
+            'journal': row[8],
+            'source_id': row[9],
+            'pdf_filename': row[10],
+            'pdf_url': row[11],
+        }
 
     def extract_metadata_with_llm(self, text: str) -> Dict[str, Any]:
         """
@@ -589,17 +745,30 @@ Text to analyze:
         """
         Analyze PDF, match to database, and import if match found.
 
+        Uses a fast-path approach:
+        1. Try regex extraction of DOI/PMID from first page (fast, ~100ms)
+        2. If identifier found, immediately check database
+        3. If document exists in database, use database metadata (skip LLM)
+        4. Only fall back to slow LLM extraction if no identifiers found
+
         Args:
             pdf_path: Path to PDF file
             dry_run: If True, only report what would be done
 
         Returns:
-            Dictionary with complete analysis and import results
+            Dictionary with complete analysis and import results, including:
+            - has_full_text: Whether document has full_text in database
+            - has_chunks: Whether document is already chunked/embedded
+            - needs_chunking: True if full_text exists but not chunked
         """
         result = {
             'pdf_path': str(pdf_path),
             'pdf_filename': pdf_path.name,
-            'status': 'unknown'
+            'status': 'unknown',
+            'has_full_text': False,
+            'has_chunks': False,
+            'needs_chunking': False,
+            'match_method': None,  # 'regex_doi', 'regex_pmid', 'llm_doi', 'llm_pmid', 'llm_title'
         }
 
         # Check file exists
@@ -616,28 +785,94 @@ Text to analyze:
             result['error'] = 'Could not extract text from PDF'
             return result
 
-        # Extract metadata with LLM
-        metadata = self.extract_metadata_with_llm(text)
-        result['metadata'] = metadata
+        # ===== FAST PATH: Try regex extraction first =====
+        identifiers = self.extract_identifiers_regex(text)
+        document = None
+        doc_status = None
 
-        # Check if we got any useful metadata
-        if not any([metadata.get('doi'), metadata.get('pmid'), metadata.get('title')]):
-            result['status'] = 'no_metadata'
-            result['error'] = 'Could not extract DOI, PMID, or title from PDF'
-            return result
+        if identifiers.has_identifiers():
+            logger.info(f"Found identifiers via regex - DOI: {identifiers.doi}, PMID: {identifiers.pmid}")
 
-        # Find matching document
-        document = self.find_matching_document(metadata)
+            # Check database immediately - this is the key optimization
+            doc_status = self.check_document_status(
+                doi=identifiers.doi,
+                pmid=identifiers.pmid
+            )
+
+            if doc_status.exists:
+                document = doc_status.document
+                result['match_method'] = 'regex_doi' if identifiers.doi else 'regex_pmid'
+                result['has_full_text'] = doc_status.has_full_text
+                result['has_chunks'] = doc_status.has_chunks
+                result['needs_chunking'] = doc_status.has_full_text and not doc_status.has_chunks
+
+                logger.info(
+                    f"Found document in database via fast path (DOI/PMID). "
+                    f"full_text: {doc_status.has_full_text}, chunked: {doc_status.has_chunks}"
+                )
+
+                # Store extracted identifiers as metadata (from regex, not LLM)
+                result['metadata'] = {
+                    'doi': identifiers.doi,
+                    'pmid': identifiers.pmid,
+                    'title': document.get('title'),
+                    'authors': document.get('authors', []),
+                    'source': 'database'  # Metadata came from database, not LLM
+                }
+
+        # ===== SLOW PATH: Fall back to LLM extraction if needed =====
+        if document is None:
+            logger.info("No match via fast path, falling back to LLM extraction...")
+
+            # Extract metadata with LLM
+            metadata = self.extract_metadata_with_llm(text)
+            result['metadata'] = metadata
+
+            # Check if we got any useful metadata
+            if not any([metadata.get('doi'), metadata.get('pmid'), metadata.get('title')]):
+                result['status'] = 'no_metadata'
+                result['error'] = 'Could not extract DOI, PMID, or title from PDF'
+                return result
+
+            # Try database lookup with LLM-extracted identifiers
+            if metadata.get('doi') or metadata.get('pmid'):
+                doc_status = self.check_document_status(
+                    doi=metadata.get('doi'),
+                    pmid=metadata.get('pmid')
+                )
+                if doc_status.exists:
+                    document = doc_status.document
+                    result['match_method'] = 'llm_doi' if metadata.get('doi') else 'llm_pmid'
+                    result['has_full_text'] = doc_status.has_full_text
+                    result['has_chunks'] = doc_status.has_chunks
+                    result['needs_chunking'] = doc_status.has_full_text and not doc_status.has_chunks
+
+            # If still no match, try title similarity (original find_matching_document)
+            if document is None:
+                document = self.find_matching_document(metadata)
+                if document:
+                    result['match_method'] = 'llm_title'
+                    # For title match, need to check status separately
+                    if document.get('id'):
+                        title_status = self.check_document_status(doi=document.get('doi'))
+                        result['has_full_text'] = title_status.has_full_text
+                        result['has_chunks'] = title_status.has_chunks
+                        result['needs_chunking'] = title_status.has_full_text and not title_status.has_chunks
+
+        # No match found at all
         if not document:
             result['status'] = 'no_match'
             result['message'] = 'No matching document found in database'
             return result
 
+        # Build matched document info
         result['matched_document'] = {
             'id': document['id'],
             'doi': document.get('doi'),
-            'pmid': document.get('external_id'),
-            'title': document.get('title', '')[:100]
+            'pmid': document.get('pmid') or document.get('external_id'),
+            'title': document.get('title', '')[:100],
+            'has_full_text': result['has_full_text'],
+            'has_chunks': result['has_chunks'],
         }
 
         # Import PDF
