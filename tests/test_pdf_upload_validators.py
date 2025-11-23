@@ -23,6 +23,7 @@ from bmlibrarian.gui.qt.widgets.validators import (
     validate_pdf_file,
     classify_extraction_error,
     sanitize_llm_input,
+    DebouncedValidator,
     ValidationStatus,
     PMID_MIN_VALUE,
     PMID_MAX_VALUE,
@@ -31,6 +32,9 @@ from bmlibrarian.gui.qt.widgets.validators import (
     PDF_MAX_FILE_SIZE_MB,
     LLM_MAX_TEXT_LENGTH,
     LLM_MAX_LINE_LENGTH,
+    WORKER_TERMINATE_TIMEOUT_MS,
+    WORKER_FORCE_TERMINATE_TIMEOUT_MS,
+    VALIDATION_DEBOUNCE_MS,
 )
 
 
@@ -258,6 +262,64 @@ class TestClassifyExtractionError:
         category, msg = classify_extraction_error(error)
         assert category == "database"
 
+    def test_encrypted_pdf_error(self):
+        """Test encrypted PDF error classification."""
+        error = Exception("PDF is encrypted")
+        category, msg = classify_extraction_error(error)
+        assert category == "encrypted"
+        assert "encrypted" in msg.lower() or "password" in msg.lower()
+
+    def test_password_protected_pdf_error(self):
+        """Test password-protected PDF error classification."""
+        error = Exception("Cannot open password-protected file")
+        category, msg = classify_extraction_error(error)
+        assert category == "encrypted"
+
+    def test_permission_error(self):
+        """Test permission error classification."""
+        error = Exception("Permission denied while reading file")
+        category, msg = classify_extraction_error(error)
+        assert category == "permission"
+        assert "permission" in msg.lower()
+
+    def test_access_denied_error(self):
+        """Test access denied error classification."""
+        error = Exception("Access denied to file")
+        category, msg = classify_extraction_error(error)
+        assert category == "permission"
+
+    def test_cannot_read_error(self):
+        """Test cannot read error classification."""
+        error = Exception("Cannot read file: permission issue")
+        category, msg = classify_extraction_error(error)
+        assert category == "permission"
+
+    def test_invalid_pdf_format_error(self):
+        """Test invalid PDF format error classification."""
+        error = Exception("Invalid PDF header")
+        category, msg = classify_extraction_error(error)
+        # Should match "pdf" in the general extraction category
+        assert category in ("extraction", "format")
+
+    def test_not_a_pdf_error(self):
+        """Test not a PDF error classification."""
+        error = Exception("Not a PDF file")
+        category, msg = classify_extraction_error(error)
+        assert category == "format"
+        assert "valid pdf" in msg.lower()
+
+    def test_malformed_pdf_error(self):
+        """Test malformed PDF error classification."""
+        error = Exception("Malformed PDF structure")
+        category, msg = classify_extraction_error(error)
+        assert category == "format"
+
+    def test_bad_header_error(self):
+        """Test bad header error classification."""
+        error = Exception("Bad header in file")
+        category, msg = classify_extraction_error(error)
+        assert category == "format"
+
     def test_unknown_error(self):
         """Test unknown error classification."""
         error = Exception("Some random error")
@@ -363,6 +425,113 @@ class TestValidationStatus:
         assert ValidationStatus.VALID == "valid"
         assert ValidationStatus.WARNING == "warning"
         assert ValidationStatus.ERROR == "error"
+
+
+class TestWorkerTimeoutConstants:
+    """Tests for worker timeout constants."""
+
+    def test_graceful_timeout_value(self):
+        """Test graceful termination timeout is reasonable."""
+        assert WORKER_TERMINATE_TIMEOUT_MS == 3000
+        assert WORKER_TERMINATE_TIMEOUT_MS > 0
+
+    def test_force_terminate_timeout_value(self):
+        """Test force termination timeout is reasonable (5 seconds)."""
+        assert WORKER_FORCE_TERMINATE_TIMEOUT_MS == 5000
+        assert WORKER_FORCE_TERMINATE_TIMEOUT_MS > WORKER_TERMINATE_TIMEOUT_MS
+
+    def test_validation_debounce_value(self):
+        """Test validation debounce delay is reasonable (300ms)."""
+        assert VALIDATION_DEBOUNCE_MS == 300
+        assert VALIDATION_DEBOUNCE_MS > 0
+        assert VALIDATION_DEBOUNCE_MS < 1000  # Should be less than 1 second
+
+
+class TestDebouncedValidator:
+    """Tests for DebouncedValidator class."""
+
+    def test_initialization(self):
+        """Test DebouncedValidator can be initialized."""
+        call_count = [0]
+
+        def callback():
+            call_count[0] += 1
+
+        validator = DebouncedValidator(callback=callback, delay_ms=100)
+        assert validator._delay_ms == 100
+        assert validator._callback == callback
+
+    def test_default_delay(self):
+        """Test DebouncedValidator uses default delay."""
+        def callback():
+            pass
+
+        validator = DebouncedValidator(callback=callback)
+        assert validator._delay_ms == VALIDATION_DEBOUNCE_MS
+
+    def test_cancel_stops_pending_validation(self):
+        """Test cancel stops any pending validation."""
+        call_count = [0]
+
+        def callback():
+            call_count[0] += 1
+
+        validator = DebouncedValidator(callback=callback, delay_ms=1000)
+        validator.trigger()
+        validator.cancel()
+        # Timer should be stopped
+        assert not validator._timer.isActive()
+
+    def test_force_validate_executes_immediately(self):
+        """Test force_validate executes callback immediately."""
+        call_count = [0]
+
+        def callback():
+            call_count[0] += 1
+
+        validator = DebouncedValidator(callback=callback, delay_ms=10000)
+        validator.force_validate()
+        assert call_count[0] == 1
+
+    def test_force_validate_cancels_pending(self):
+        """Test force_validate cancels pending debounced call."""
+        call_count = [0]
+
+        def callback():
+            call_count[0] += 1
+
+        validator = DebouncedValidator(callback=callback, delay_ms=10000)
+        validator.trigger()  # Start pending validation
+        validator.force_validate()  # Force immediate execution
+        assert not validator._timer.isActive()  # Timer should be stopped
+        assert call_count[0] == 1
+
+    def test_trigger_accepts_arguments(self):
+        """Test trigger can accept and ignore arguments from Qt signals."""
+        call_count = [0]
+
+        def callback():
+            call_count[0] += 1
+
+        validator = DebouncedValidator(callback=callback, delay_ms=1)
+
+        # Trigger with arguments like Qt signals do
+        validator.trigger("some text")
+        validator.trigger(123)
+        validator.trigger(None, "extra", "args")
+
+        # Should not raise any errors
+        validator.cancel()
+
+    def test_callback_error_handling(self):
+        """Test callback errors are handled gracefully."""
+        def failing_callback():
+            raise ValueError("Test error")
+
+        validator = DebouncedValidator(callback=failing_callback, delay_ms=100)
+
+        # Should not raise exception
+        validator.force_validate()
 
 
 if __name__ == "__main__":

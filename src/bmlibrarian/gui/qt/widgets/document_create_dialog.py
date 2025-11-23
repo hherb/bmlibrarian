@@ -37,6 +37,8 @@ from .validators import (
     validate_pmid,
     validate_year,
     validate_title,
+    DebouncedValidator,
+    VALIDATION_DEBOUNCE_MS,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,12 @@ class DocumentCreateDialog(QDialog):
         self.pdf_path = pdf_path
         self.document_id: Optional[int] = None
 
+        # Create debounced validator for improved UX with long text input
+        self._debounced_validator = DebouncedValidator(
+            callback=self._validate_form,
+            delay_ms=VALIDATION_DEBOUNCE_MS
+        )
+
         self._setup_ui()
         self._populate_fields()
 
@@ -137,7 +145,7 @@ class DocumentCreateDialog(QDialog):
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Document title (required)")
         self.title_edit.setMaxLength(MAX_TITLE_LENGTH)
-        self.title_edit.textChanged.connect(self._validate_form)
+        self.title_edit.textChanged.connect(self._debounced_validator.trigger)
         required_layout.addRow("Title *:", self.title_edit)
 
         # External ID (required - will be auto-generated if not provided)
@@ -163,7 +171,7 @@ class DocumentCreateDialog(QDialog):
         # PMID
         self.pmid_edit = QLineEdit()
         self.pmid_edit.setPlaceholderText("e.g., 12345678")
-        self.pmid_edit.textChanged.connect(self._validate_form)
+        self.pmid_edit.textChanged.connect(self._debounced_validator.trigger)
         identifiers_layout.addRow("PMID:", self.pmid_edit)
 
         layout.addWidget(identifiers_group)
@@ -183,7 +191,7 @@ class DocumentCreateDialog(QDialog):
         self.year_edit = QLineEdit()
         self.year_edit.setPlaceholderText("e.g., 2024")
         self.year_edit.setMaximumWidth(s['control_height_large'] * 3)
-        self.year_edit.textChanged.connect(self._validate_form)
+        self.year_edit.textChanged.connect(self._debounced_validator.trigger)
         metadata_layout.addRow("Year:", self.year_edit)
 
         # Publication/Journal
@@ -309,7 +317,7 @@ class DocumentCreateDialog(QDialog):
         doi = self.doi_edit.text().strip()
         if doi and not self.external_id_edit.text().strip():
             self.external_id_edit.setText(doi)
-        self._validate_form()
+        self._debounced_validator.trigger()
 
     def _validate_form(self) -> bool:
         """
@@ -359,6 +367,8 @@ class DocumentCreateDialog(QDialog):
 
     def _on_save(self):
         """Handle save button click."""
+        # Force immediate validation, bypassing debounce
+        self._debounced_validator.force_validate()
         if not self._validate_form():
             return
 

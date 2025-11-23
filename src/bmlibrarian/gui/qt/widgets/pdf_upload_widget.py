@@ -54,6 +54,7 @@ from .validators import (
     classify_extraction_error,
     ValidationStatus,
     WORKER_TERMINATE_TIMEOUT_MS,
+    WORKER_FORCE_TERMINATE_TIMEOUT_MS,
 )
 from .document_create_dialog import DocumentCreateDialog
 
@@ -67,11 +68,6 @@ SPLITTER_RATIO_PDF = 60  # PDF viewer gets 60% width
 SPLITTER_RATIO_METADATA = 40  # Metadata panel gets 40% width
 DEFAULT_WINDOW_WIDTH = 1200
 DEFAULT_WINDOW_HEIGHT = 800
-
-# =============================================================================
-# Worker Cleanup Constants
-# =============================================================================
-WORKER_FORCE_TERMINATE_TIMEOUT_MS = 1000  # Timeout before forcing terminate
 
 
 class PDFUploadWidget(QWidget):

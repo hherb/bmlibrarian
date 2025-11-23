@@ -11,7 +11,7 @@ including PDFUploadWidget, Paper Weight Lab, Paper Checker Lab, etc.
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,90 @@ PDF_MAX_FILE_SIZE_MB = 50  # Warn for files larger than 50MB
 PDF_MAX_FILE_SIZE_BYTES = PDF_MAX_FILE_SIZE_MB * 1024 * 1024
 
 # Worker thread termination timeout
-WORKER_TERMINATE_TIMEOUT_MS = 3000  # Maximum wait time for worker termination
+WORKER_TERMINATE_TIMEOUT_MS = 3000  # Maximum wait time for graceful worker termination
+WORKER_FORCE_TERMINATE_TIMEOUT_MS = 5000  # Timeout after forced terminate() call
 
 # LLM Input Sanitization Constants
 LLM_MAX_TEXT_LENGTH = 100000  # Maximum characters to send to LLM (100K)
 LLM_MAX_LINE_LENGTH = 10000   # Maximum length of a single line
 LLM_TRUNCATION_SUFFIX = "\n\n[Text truncated due to length]"
+
+# Form Validation Constants
+VALIDATION_DEBOUNCE_MS = 300  # Debounce delay for form validation (milliseconds)
+
+
+class DebouncedValidator:
+    """
+    A debounced validator that delays validation execution until input stops.
+
+    This improves UX by avoiding validation on every keystroke, which can be
+    distracting and computationally wasteful especially with long text.
+
+    Usage:
+        # In a QWidget subclass
+        self._debounced_validator = DebouncedValidator(
+            callback=self._validate_form,
+            delay_ms=VALIDATION_DEBOUNCE_MS
+        )
+        self.title_edit.textChanged.connect(self._debounced_validator.trigger)
+
+    The callback will be executed only after the user stops typing for
+    `delay_ms` milliseconds.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[], None],
+        delay_ms: int = VALIDATION_DEBOUNCE_MS
+    ):
+        """
+        Initialize the debounced validator.
+
+        Args:
+            callback: The validation function to call after debounce delay.
+                     Should take no arguments.
+            delay_ms: Debounce delay in milliseconds (default: VALIDATION_DEBOUNCE_MS)
+        """
+        from PySide6.QtCore import QTimer
+
+        self._callback = callback
+        self._delay_ms = delay_ms
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._execute)
+
+    def trigger(self, *args: Any) -> None:
+        """
+        Trigger a debounced validation.
+
+        Called on each text change. Restarts the timer so the callback
+        only fires after typing stops.
+
+        Args:
+            *args: Ignored (allows direct connection to Qt signals)
+        """
+        self._timer.stop()
+        self._timer.start(self._delay_ms)
+
+    def _execute(self) -> None:
+        """Execute the validation callback."""
+        try:
+            self._callback()
+        except Exception as e:
+            logger.warning(f"Debounced validation failed: {e}")
+
+    def cancel(self) -> None:
+        """Cancel any pending validation."""
+        self._timer.stop()
+
+    def force_validate(self) -> None:
+        """
+        Force immediate validation, bypassing debounce.
+
+        Useful for final validation before form submission.
+        """
+        self._timer.stop()
+        self._execute()
 
 
 def validate_pmid(value: str) -> tuple[bool, Optional[str]]:
@@ -211,6 +289,14 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
     """
     Classify an extraction error and provide user-friendly guidance.
 
+    Covers common PDF processing errors including:
+    - Network/connection issues (Ollama service)
+    - Timeout errors (large/complex PDFs)
+    - Memory issues (OOM conditions)
+    - PDF format errors (encrypted, corrupted, scanned)
+    - Permission/access errors
+    - Database errors
+
     Args:
         error: The exception that occurred
 
@@ -219,6 +305,7 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
     """
     error_str = str(error).lower()
 
+    # Connection errors (Ollama/network)
     if 'connect' in error_str or 'connection' in error_str:
         return (
             "connection",
@@ -226,6 +313,7 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
             "Please ensure Ollama is running and try again."
         )
 
+    # Timeout errors
     if 'timeout' in error_str:
         return (
             "timeout",
@@ -233,6 +321,7 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
             "The PDF may be too complex or the service is overloaded."
         )
 
+    # Memory errors
     if 'memory' in error_str or 'oom' in error_str:
         return (
             "memory",
@@ -240,6 +329,34 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
             "Try with a smaller file or restart the application."
         )
 
+    # Encrypted/password-protected PDFs
+    if 'encrypt' in error_str or 'password' in error_str or 'protected' in error_str:
+        return (
+            "encrypted",
+            "This PDF is encrypted or password-protected. "
+            "Please provide an unprotected version of the file."
+        )
+
+    # Permission/access errors
+    if ('permission' in error_str or 'access denied' in error_str or
+            'cannot read' in error_str or 'not readable' in error_str):
+        return (
+            "permission",
+            "Cannot access this PDF file due to permission restrictions. "
+            "Please check file permissions and try again."
+        )
+
+    # File format errors (not a valid PDF)
+    if ('invalid pdf' in error_str or 'not a pdf' in error_str or
+            'magic number' in error_str or 'file format' in error_str or
+            'bad header' in error_str or 'malformed' in error_str):
+        return (
+            "format",
+            "This file does not appear to be a valid PDF document. "
+            "Please verify the file is not corrupted or renamed."
+        )
+
+    # General PDF extraction errors (scanned, image-based, corrupted)
     if 'pdf' in error_str or 'corrupt' in error_str or 'extract' in error_str:
         return (
             "extraction",
@@ -247,6 +364,7 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
             "The file may be scanned, image-based, or corrupted."
         )
 
+    # Database errors
     if 'database' in error_str or 'sql' in error_str or 'postgres' in error_str:
         return (
             "database",
@@ -383,10 +501,14 @@ __all__ = [
     'PDF_MAX_FILE_SIZE_MB',
     'PDF_MAX_FILE_SIZE_BYTES',
     'WORKER_TERMINATE_TIMEOUT_MS',
+    'WORKER_FORCE_TERMINATE_TIMEOUT_MS',
     'LLM_MAX_TEXT_LENGTH',
     'LLM_MAX_LINE_LENGTH',
+    'VALIDATION_DEBOUNCE_MS',
     # Status codes
     'ValidationStatus',
+    # Classes
+    'DebouncedValidator',
     # Validators
     'validate_pmid',
     'validate_doi',
