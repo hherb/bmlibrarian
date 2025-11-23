@@ -10,6 +10,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QTabWidget
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.agents.paper_weight_agent import PaperWeightAssessmentAgent
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
@@ -117,6 +118,28 @@ class PaperWeightLab(QMainWindow):
 
         # Refresh recent assessments in search tab
         self.search_tab.load_recent_assessments()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Handle window close event.
+
+        Ensures all child tab worker threads are properly terminated
+        before closing the application.
+
+        Args:
+            event: The close event
+        """
+        logger.info("Closing Paper Weight Laboratory...")
+
+        # Terminate workers in child tabs
+        # The tabs' closeEvent will be called automatically, but we ensure
+        # cleanup happens even if closeEvent propagation fails
+        if hasattr(self.pdf_upload_tab, '_terminate_workers'):
+            self.pdf_upload_tab._terminate_workers()
+        if hasattr(self.results_tab, '_terminate_workers'):
+            self.results_tab._terminate_workers()
+
+        super().closeEvent(event)
 
 
 def main() -> None:
