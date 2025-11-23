@@ -4,17 +4,21 @@ PDF Viewer widget for BMLibrarian Qt GUI.
 Provides a PDF viewing interface using the native PySide6 QPdfView widget.
 """
 
+import logging
+from pathlib import Path
+from typing import Optional
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QSpinBox
 )
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
-from typing import Optional
-from pathlib import Path
 
-from ..resources.styles import get_font_scale
+from ..resources.styles import get_font_scale, StylesheetGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class PDFViewerWidget(QWidget):
@@ -65,9 +69,10 @@ class PDFViewerWidget(QWidget):
 
         self._setup_ui()
 
-    def _setup_ui(self):
-        """Setup the user interface."""
+    def _setup_ui(self) -> None:
+        """Set up the user interface components."""
         s = self.scale
+        style_gen = StylesheetGenerator()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -120,10 +125,12 @@ class PDFViewerWidget(QWidget):
 
         # Status bar
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet(f"color: gray; font-size: {s['font_tiny']}pt;")
+        self.status_label.setStyleSheet(
+            style_gen.label_stylesheet(font_size_key='font_tiny', color='gray')
+        )
         layout.addWidget(self.status_label)
 
-    def load_pdf(self, pdf_path: str | Path):
+    def load_pdf(self, pdf_path: str | Path) -> None:
         """
         Load a PDF file for viewing.
 
@@ -133,6 +140,7 @@ class PDFViewerWidget(QWidget):
         self.pdf_path = Path(pdf_path)
 
         if not self.pdf_path.exists():
+            logger.error("PDF file not found: %s", pdf_path)
             QMessageBox.critical(self, "Error", f"PDF file not found: {pdf_path}")
             self.status_label.setText("Error: File not found")
             return
@@ -146,10 +154,13 @@ class PDFViewerWidget(QWidget):
                 import fitz
                 self._text_extraction_doc = fitz.open(str(self.pdf_path))
             except Exception as e:
+                logger.warning(
+                    "Failed to open PDF for text extraction: %s - %s",
+                    pdf_path, e
+                )
                 self._text_extraction_doc = None
-                # Non-fatal: text extraction just won't work
 
-    def _on_document_status_changed(self, status: QPdfDocument.Status):
+    def _on_document_status_changed(self, status: QPdfDocument.Status) -> None:
         """
         Handle document status changes.
 
@@ -178,13 +189,14 @@ class PDFViewerWidget(QWidget):
 
         elif status == QPdfDocument.Status.Error:
             error_msg = "Failed to load PDF"
+            logger.error("Failed to load PDF: %s", self.pdf_path)
             QMessageBox.critical(self, "Error", error_msg)
             self.status_label.setText(f"Error: {error_msg}")
 
         elif status == QPdfDocument.Status.Loading:
             self.status_label.setText("Loading PDF...")
 
-    def _navigate_to_page(self, page: int):
+    def _navigate_to_page(self, page: int) -> None:
         """
         Navigate to a specific page.
 
@@ -198,23 +210,23 @@ class PDFViewerWidget(QWidget):
                 navigator.jump(page, point=navigator.currentLocation().position)
             self.page_changed.emit(page + 1)
 
-    def _on_previous_page(self):
-        """Navigate to previous page."""
+    def _on_previous_page(self) -> None:
+        """Navigate to the previous page in the document."""
         if self.current_page > 0:
             self.current_page -= 1
             self.page_spin.setValue(self.current_page + 1)
             self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_next_page(self):
-        """Navigate to next page."""
+    def _on_next_page(self) -> None:
+        """Navigate to the next page in the document."""
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
             self.page_spin.setValue(self.current_page + 1)
             self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_page_changed(self, page_num: int):
+    def _on_page_changed(self, page_num: int) -> None:
         """
         Handle page spin box change.
 
@@ -227,20 +239,20 @@ class PDFViewerWidget(QWidget):
             self._navigate_to_page(self.current_page)
             self._update_navigation_buttons()
 
-    def _on_zoom_in(self):
-        """Increase zoom level."""
+    def _on_zoom_in(self) -> None:
+        """Increase the zoom level of the PDF view."""
         self.zoom_level = min(self.zoom_level + self.ZOOM_STEP, self.ZOOM_MAX)
         self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
 
-    def _on_zoom_out(self):
-        """Decrease zoom level."""
+    def _on_zoom_out(self) -> None:
+        """Decrease the zoom level of the PDF view."""
         self.zoom_level = max(self.zoom_level - self.ZOOM_STEP, self.ZOOM_MIN)
         self._pdf_view.setZoomFactor(self.zoom_level)
         self.status_label.setText(f"Zoom: {int(self.zoom_level * 100)}%")
 
-    def _update_navigation_buttons(self):
-        """Update navigation button states."""
+    def _update_navigation_buttons(self) -> None:
+        """Update navigation button enabled states based on current page."""
         self.prev_btn.setEnabled(self.current_page > 0)
         self.next_btn.setEnabled(self.current_page < self.total_pages - 1)
 
@@ -267,11 +279,11 @@ class PDFViewerWidget(QWidget):
             return '\n\n'.join(text_parts)
 
         except Exception as e:
-            print(f"Error extracting text from PDF: {e}")
+            logger.error("Error extracting text from PDF: %s", e)
             return ""
 
-    def clear(self):
-        """Clear the PDF viewer."""
+    def clear(self) -> None:
+        """Clear the PDF viewer and reset to initial state."""
         self.pdf_path = None
         self.current_page = 0
         self.total_pages = 0
