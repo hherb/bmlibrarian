@@ -192,6 +192,28 @@ SOURCE_ID_OTHER = 3  # Source ID for user-uploaded documents
 
 
 # =============================================================================
+# PDF Upload Tab Layout
+# =============================================================================
+
+SPLITTER_RATIO_PDF = 50  # PDF viewer panel width percentage
+SPLITTER_RATIO_CONTROLS = 50  # Controls panel width percentage
+
+
+# =============================================================================
+# Worker Thread Configuration
+# =============================================================================
+
+WORKER_TERMINATE_TIMEOUT_MS = 3000  # Maximum time to wait for worker thread termination
+
+
+# =============================================================================
+# UI Colors (metadata display)
+# =============================================================================
+
+COLOR_METADATA_BG = "#f0f8ff"  # Light blue background for metadata display
+
+
+# =============================================================================
 # Score Display
 # =============================================================================
 
@@ -292,4 +314,9 @@ __all__ = [
     'SCORE_DECIMALS',
     # Export
     'EXPORT_JSON_INDENT',
+    # PDF Upload Tab
+    'SPLITTER_RATIO_PDF',
+    'SPLITTER_RATIO_CONTROLS',
+    'WORKER_TERMINATE_TIMEOUT_MS',
+    'COLOR_METADATA_BG',
 ]

@@ -2,24 +2,42 @@
 PaperChecker Laboratory - PDF Upload Tab
 
 Tab widget for uploading PDFs and extracting abstracts for fact-checking.
+Features a split view with PDF viewer on the left and extraction controls on the right.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTextEdit, QGroupBox, QMessageBox,
-    QFileDialog, QSizePolicy, QProgressBar,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTextEdit,
+    QGroupBox,
+    QMessageBox,
+    QFileDialog,
+    QSizePolicy,
+    QProgressBar,
+    QSplitter,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
+from bmlibrarian.gui.qt.widgets import PDFViewerWidget, validate_pdf_file, ValidationStatus
 
 from ..constants import (
-    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
+    COLOR_PRIMARY,
+    COLOR_SUCCESS,
     COLOR_GREY_600,
+    COLOR_METADATA_BG,
+    SPLITTER_RATIO_PDF,
+    SPLITTER_RATIO_CONTROLS,
+    WORKER_TERMINATE_TIMEOUT_MS,
 )
 from ..widgets import StatusSpinnerWidget
 from ..worker import PDFAnalysisWorker
@@ -31,6 +49,10 @@ logger = logging.getLogger(__name__)
 class PDFUploadTab(QWidget):
     """
     Tab widget for PDF upload and abstract extraction.
+
+    Features a split-view layout with:
+    - Left panel: PDF viewer for visual inspection
+    - Right panel: Extraction controls, metadata display, and abstract editing
 
     Allows users to upload a PDF, extract the abstract using LLM,
     review/edit the extracted text, and proceed to fact-checking.
@@ -56,22 +78,50 @@ class PDFUploadTab(QWidget):
 
         self.scale = get_font_scale()
         self.styles = get_stylesheet_generator()
-        self._current_pdf_path: Optional[str] = None
+        self._current_pdf_path: Optional[Path] = None
         self._extracted_metadata: Dict[str, Any] = {}
         self._analysis_worker: Optional[PDFAnalysisWorker] = None
 
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Setup tab user interface."""
+        """Setup tab user interface with split view."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(self.scale['spacing_medium'])
+        layout.setSpacing(self.scale['spacing_small'])
         layout.setContentsMargins(
-            self.scale['padding_large'],
-            self.scale['padding_large'],
-            self.scale['padding_large'],
-            self.scale['padding_large']
+            self.scale['padding_medium'],
+            self.scale['padding_medium'],
+            self.scale['padding_medium'],
+            self.scale['padding_medium']
         )
+
+        # Main splitter for PDF viewer and controls
+        self._splitter = QSplitter(Qt.Horizontal)
+
+        # Left panel: PDF Viewer
+        self._pdf_viewer = PDFViewerWidget()
+        self._splitter.addWidget(self._pdf_viewer)
+
+        # Right panel: Controls
+        right_panel = self._create_controls_panel()
+        self._splitter.addWidget(right_panel)
+
+        # Set splitter proportions (50/50)
+        self._splitter.setSizes([SPLITTER_RATIO_PDF, SPLITTER_RATIO_CONTROLS])
+
+        layout.addWidget(self._splitter, stretch=1)
+
+    def _create_controls_panel(self) -> QWidget:
+        """
+        Create the right-side controls panel.
+
+        Returns:
+            QWidget: The controls panel widget
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(self.scale['spacing_medium'])
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # File selection section
         file_group = QGroupBox("PDF File")
@@ -84,16 +134,15 @@ class PDFUploadTab(QWidget):
             "before fact-checking."
         )
         instructions.setWordWrap(True)
-        instructions.setStyleSheet(f"color: {COLOR_GREY_600};")
+        instructions.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
         file_layout.addWidget(instructions)
 
         # File path row
         path_layout = QHBoxLayout()
 
-        self._path_input = QLineEdit()
-        self._path_input.setPlaceholderText("Select a PDF file...")
-        self._path_input.setReadOnly(True)
-        path_layout.addWidget(self._path_input, stretch=1)
+        self._path_label = QLabel("No file selected")
+        self._path_label.setStyleSheet(self.styles.label_stylesheet(color=COLOR_GREY_600))
+        path_layout.addWidget(self._path_label, stretch=1)
 
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self._browse_file)
@@ -131,14 +180,18 @@ class PDFUploadTab(QWidget):
         content_layout = QVBoxLayout()
 
         # Metadata display
+        # Note: Using inline stylesheet as StylesheetGenerator doesn't support
+        # panel labels with backgrounds. All values are from constants/DPI scale.
         self._metadata_label = QLabel("")
         self._metadata_label.setWordWrap(True)
         self._metadata_label.setVisible(False)
-        self._metadata_label.setStyleSheet(f"""
-            background-color: #f0f8ff;
-            padding: {self.scale['padding_medium']}px;
-            border-radius: {self.scale['border_radius']}px;
-        """)
+        self._metadata_label.setStyleSheet(
+            f"QLabel {{ "
+            f"background-color: {COLOR_METADATA_BG}; "
+            f"padding: {self.scale['padding_medium']}px; "
+            f"border-radius: {self.scale['border_radius']}px; "
+            f"}}"
+        )
         content_layout.addWidget(self._metadata_label)
 
         # Abstract text (editable)
@@ -149,7 +202,7 @@ class PDFUploadTab(QWidget):
         self._abstract_edit.setPlaceholderText(
             "The extracted abstract will appear here after PDF analysis..."
         )
-        self._abstract_edit.setMinimumHeight(self.scale['line_height'] * 8)
+        self._abstract_edit.setMinimumHeight(self.scale['line_height'] * 6)
         self._abstract_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content_layout.addWidget(self._abstract_edit, stretch=1)
 
@@ -181,6 +234,8 @@ class PDFUploadTab(QWidget):
 
         layout.addLayout(button_layout)
 
+        return panel
+
     def _browse_file(self) -> None:
         """Open file browser for PDF selection."""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -191,11 +246,51 @@ class PDFUploadTab(QWidget):
         )
 
         if file_path:
-            self._current_pdf_path = file_path
-            self._path_input.setText(file_path)
-            self._analyze_btn.setEnabled(True)
-            self._status_spinner.reset()
-            logger.info(f"PDF selected: {file_path}")
+            self._load_pdf(file_path)
+
+    def _load_pdf(self, file_path: str) -> None:
+        """
+        Load a PDF file for analysis.
+
+        Validates the file and loads it into the viewer.
+
+        Args:
+            file_path: Path to the PDF file
+        """
+        pdf_path = Path(file_path)
+
+        # Validate PDF file
+        is_valid, message, status = validate_pdf_file(pdf_path)
+
+        if status == ValidationStatus.ERROR:
+            QMessageBox.critical(self, "Invalid File", message or "Unknown error")
+            return
+
+        # Show warning for large files but allow proceeding
+        if status == ValidationStatus.WARNING:
+            reply = QMessageBox.warning(
+                self,
+                "Large File Warning",
+                f"{message}\n\nDo you want to continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Store path and update UI
+        self._current_pdf_path = pdf_path
+        self._path_label.setText(pdf_path.name)
+        self._path_label.setToolTip(str(pdf_path))
+
+        # Load PDF into viewer
+        self._pdf_viewer.load_pdf(pdf_path)
+
+        # Enable analyze button
+        self._analyze_btn.setEnabled(True)
+        self._status_spinner.reset()
+
+        logger.info(f"PDF loaded: {file_path}")
 
     def _analyze_pdf(self) -> None:
         """Start PDF analysis."""
@@ -214,18 +309,28 @@ class PDFUploadTab(QWidget):
         self._progress_bar.setRange(0, 0)  # Indeterminate
 
         # Start worker
-        self._analysis_worker = PDFAnalysisWorker(self._current_pdf_path)
+        self._analysis_worker = PDFAnalysisWorker(str(self._current_pdf_path))
         self._analysis_worker.progress_update.connect(self._on_progress_update)
         self._analysis_worker.analysis_complete.connect(self._on_analysis_complete)
         self._analysis_worker.analysis_error.connect(self._on_analysis_error)
         self._analysis_worker.start()
 
     def _on_progress_update(self, status: str) -> None:
-        """Handle progress update from worker."""
+        """
+        Handle progress update from worker.
+
+        Args:
+            status: Status message
+        """
         self._status_spinner.set_status(status)
 
     def _on_analysis_complete(self, result: dict) -> None:
-        """Handle successful PDF analysis."""
+        """
+        Handle successful PDF analysis.
+
+        Args:
+            result: Analysis result dictionary
+        """
         self._progress_bar.setVisible(False)
         self._status_spinner.set_complete("Analysis complete")
 
@@ -237,7 +342,7 @@ class PDFUploadTab(QWidget):
             'pmid': result.get('pmid'),
             'doi': result.get('doi'),
             'journal': result.get('journal', ''),
-            'pdf_path': result.get('pdf_path', ''),
+            'pdf_path': str(self._current_pdf_path) if self._current_pdf_path else '',
         }
 
         # Display metadata
@@ -262,7 +367,12 @@ class PDFUploadTab(QWidget):
         self._analyze_btn.setEnabled(True)
 
     def _on_analysis_error(self, error: str) -> None:
-        """Handle analysis error."""
+        """
+        Handle analysis error.
+
+        Args:
+            error: Error message
+        """
         self._progress_bar.setVisible(False)
         self._status_spinner.set_error(f"Error: {error}")
         self._analyze_btn.setEnabled(True)
@@ -275,7 +385,12 @@ class PDFUploadTab(QWidget):
         logger.error(f"PDF analysis error: {error}")
 
     def _show_metadata(self, result: dict) -> None:
-        """Display extracted metadata."""
+        """
+        Display extracted metadata.
+
+        Args:
+            result: Analysis result dictionary
+        """
         parts = []
 
         if result.get('title'):
@@ -335,7 +450,8 @@ class PDFUploadTab(QWidget):
         """Clear all inputs and results."""
         self._current_pdf_path = None
         self._extracted_metadata.clear()
-        self._path_input.clear()
+        self._path_label.setText("No file selected")
+        self._path_label.setToolTip("")
         self._abstract_edit.clear()
         self._metadata_label.setVisible(False)
         self._status_spinner.reset()
@@ -343,6 +459,9 @@ class PDFUploadTab(QWidget):
         self._analyze_btn.setEnabled(False)
         self._check_btn.setEnabled(False)
         self._use_in_input_btn.setEnabled(False)
+
+        # Clear PDF viewer
+        self._pdf_viewer.clear()
 
     def set_enabled(self, enabled: bool) -> None:
         """
@@ -355,6 +474,35 @@ class PDFUploadTab(QWidget):
         self._check_btn.setEnabled(enabled and bool(self._abstract_edit.toPlainText().strip()))
         self._use_in_input_btn.setEnabled(enabled and bool(self._abstract_edit.toPlainText().strip()))
         self._clear_btn.setEnabled(enabled)
+
+    def _terminate_workers(self) -> None:
+        """
+        Safely terminate any running worker threads.
+
+        Waits up to WORKER_TERMINATE_TIMEOUT_MS for workers to finish.
+        """
+        if self._analysis_worker is not None and self._analysis_worker.isRunning():
+            logger.info("Terminating analysis worker thread...")
+            self._analysis_worker.cancel()
+            if not self._analysis_worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+                logger.warning(
+                    f"Analysis worker did not terminate within "
+                    f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
+                )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """
+        Handle widget close event.
+
+        Ensures worker threads are properly terminated before closing.
+
+        Args:
+            event: The close event
+        """
+        self._terminate_workers()
+        # Clear worker reference for garbage collection
+        self._analysis_worker = None
+        super().closeEvent(event)
 
 
 __all__ = ['PDFUploadTab']
