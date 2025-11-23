@@ -316,6 +316,7 @@ class PDFMatcher:
         validated_pmid = self._validate_pmid(pmid) if pmid else None
 
         if not validated_doi and not validated_pmid:
+            logger.debug(f"check_document_status: no valid identifiers, returning empty status")
             return DocumentStatus()
 
         try:
@@ -637,21 +638,24 @@ Text to analyze:
                         logger.info(f"Found match by PMID: {pmid}")
                         return self._row_to_basic_document_dict(result)
 
-                # Strategy 3: Title similarity match
+                # Strategy 3: Title semantic search (fast - uses HNSW vector index)
+                # Note: similarity() is extremely slow without a trigram index on 40M+ documents
+                # semantic_docsearch uses ollama_embedding and HNSW index for fast search
                 if metadata.get('title'):
                     title = metadata['title'].strip()
-                    # Use PostgreSQL similarity for fuzzy matching
+                    # Use semantic search for fast title matching
+                    # Lower threshold (0.6) since we're matching titles, not full documents
                     cur.execute("""
-                        SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
-                               similarity(title, %s) AS sim
-                        FROM document
-                        WHERE similarity(title, %s) > 0.6
-                        ORDER BY sim DESC
-                        LIMIT 1
-                    """, (title, title))
+                        SELECT DISTINCT ON (document_id)
+                            document_id as id, doi, title, publication_date,
+                            NULL as pdf_filename, NULL as pdf_url, external_id,
+                            score as sim
+                        FROM semantic_docsearch(%s, 0.6, 10)
+                        ORDER BY document_id, score DESC
+                    """, (title,))
                     result = cur.fetchone()
                     if result:
-                        # Row now has 8 columns (7 original + similarity score)
+                        # Row has 8 columns (id, doi, title, publication_date, pdf_filename, pdf_url, external_id, sim)
                         doc = self._row_to_basic_document_dict(result[:7])  # Take first 7 columns
                         similarity = result[7]
                         logger.info(f"Found match by title similarity ({similarity:.2f}): {doc['title'][:50]}...")
@@ -691,32 +695,32 @@ Text to analyze:
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Find documents by title similarity, excluding the primary match
-                    if exclude_id:
-                        cur.execute("""
-                            SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
-                                   similarity(title, %s) AS sim
-                            FROM document
-                            WHERE similarity(title, %s) > %s
-                              AND id != %s
-                            ORDER BY sim DESC
-                            LIMIT %s
-                        """, (title, title, min_similarity, exclude_id, max_results))
-                    else:
-                        cur.execute("""
-                            SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
-                                   similarity(title, %s) AS sim
-                            FROM document
-                            WHERE similarity(title, %s) > %s
-                            ORDER BY sim DESC
-                            LIMIT %s
-                        """, (title, title, min_similarity, max_results))
+                    # Use semantic search for fast alternative matching
+                    # Note: similarity() is extremely slow without trigram index on 40M+ documents
+                    # semantic_docsearch uses HNSW vector index for fast approximate nearest neighbor
+                    # Fetch more results to allow for exclusion filtering
+                    fetch_limit = max_results * 2 if exclude_id else max_results
+
+                    cur.execute("""
+                        SELECT DISTINCT ON (document_id)
+                            document_id as id, doi, title, publication_date,
+                            NULL as pdf_filename, NULL as pdf_url, external_id,
+                            score as sim
+                        FROM semantic_docsearch(%s, %s, %s)
+                        ORDER BY document_id, score DESC
+                    """, (title, min_similarity, fetch_limit))
 
                     results = []
                     for row in cur.fetchall():
+                        # Skip excluded document if specified
+                        if exclude_id and row[0] == exclude_id:
+                            continue
                         doc = self._row_to_basic_document_dict(row[:7])  # First 7 columns
                         doc['similarity'] = row[7]  # Last column is similarity score
                         results.append(doc)
+                        # Stop once we have enough results
+                        if len(results) >= max_results:
+                            break
 
                     if results:
                         logger.info(f"Found {len(results)} alternative matches for title")
@@ -799,6 +803,7 @@ Text to analyze:
             Dictionary with import result details
         """
         doc_id = document['id']
+        logger.debug(f"import_pdf_for_document: doc_id={doc_id}, doi={document.get('doi')}")
 
         # Generate proper filename from DOI or document ID
         if document.get('doi'):
@@ -807,13 +812,19 @@ Text to analyze:
         else:
             new_filename = f"doc_{doc_id}.pdf"
 
+        logger.debug(f"import_pdf_for_document: new_filename={new_filename}")
+
         # Update document dict with new filename
         document['pdf_filename'] = new_filename
 
         # Get target path (year-based organization)
+        logger.debug("import_pdf_for_document: getting db connection for target path")
         with self.db_manager.get_connection() as conn:
+            logger.debug("import_pdf_for_document: got db connection, creating PDFManager")
             pdf_manager = PDFManager(base_dir=self.pdf_manager.base_dir, db_conn=conn)
+            logger.debug("import_pdf_for_document: calling get_pdf_path")
             target_path = pdf_manager.get_pdf_path(document, create_dirs=not dry_run)
+            logger.debug(f"import_pdf_for_document: target_path={target_path}")
 
         if not target_path:
             return {
@@ -1024,12 +1035,16 @@ Text to analyze:
 
             # If still no match, try title similarity (original find_matching_document)
             if document is None:
+                logger.debug("Trying title similarity match via find_matching_document")
                 document = self.find_matching_document(metadata)
                 if document:
+                    logger.debug(f"Title match found: doc_id={document.get('id')}, doi={document.get('doi')}")
                     result['match_method'] = 'llm_title'
                     # For title match, need to check status separately
                     if document.get('id'):
+                        logger.debug(f"Checking document status for title match")
                         title_status = self.check_document_status(doi=document.get('doi'))
+                        logger.debug(f"Document status: has_full_text={title_status.has_full_text}, has_chunks={title_status.has_chunks}")
                         result['has_full_text'] = title_status.has_full_text
                         result['has_chunks'] = title_status.has_chunks
                         result['needs_chunking'] = title_status.has_full_text and not title_status.has_chunks
@@ -1051,7 +1066,9 @@ Text to analyze:
         }
 
         # Import PDF
+        logger.debug(f"Starting import_pdf_for_document for doc_id={document.get('id')}")
         import_result = self.import_pdf_for_document(pdf_path, document, dry_run)
+        logger.debug(f"Finished import_pdf_for_document, status={import_result.get('status')}")
         result.update(import_result)
 
         return result

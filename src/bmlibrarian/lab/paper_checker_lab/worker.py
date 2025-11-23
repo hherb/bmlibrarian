@@ -156,12 +156,13 @@ class DocumentFetchWorker(QThread):
             db = get_db_manager()
 
             # Determine query based on available identifier
+            # Note: PMID is stored in external_id column for PubMed documents (source_id=1)
             if self.document_id is not None:
                 logger.info(f"Fetching document with ID: {self.document_id}")
                 query = """
                     SELECT id, title, abstract, authors, publication_date,
-                           pmid, doi, publication, source_id
-                    FROM documents
+                           external_id, doi, publication, source_id
+                    FROM document
                     WHERE id = %s
                     LIMIT 1
                 """
@@ -171,9 +172,9 @@ class DocumentFetchWorker(QThread):
                 logger.info(f"Fetching document with PMID: {self.pmid}")
                 query = """
                     SELECT id, title, abstract, authors, publication_date,
-                           pmid, doi, publication, source_id
-                    FROM documents
-                    WHERE pmid = %s
+                           external_id, doi, publication, source_id
+                    FROM document
+                    WHERE external_id = %s
                     LIMIT 1
                 """
                 query_param = self.pmid
