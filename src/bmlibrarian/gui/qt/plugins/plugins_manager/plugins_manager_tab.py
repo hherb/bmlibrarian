@@ -9,6 +9,7 @@ from typing import Dict, List
 import logging
 
 from ...resources.styles import get_font_scale, scale_px
+from ...widgets.draggable_list import DraggableListWidget
 
 
 class PluginCard(QFrame):
@@ -188,7 +189,7 @@ class PluginsManagerTab(QWidget):
 
         description = QLabel(
             "Manage BMLibrarian Qt GUI plugins. Enable or disable plugins to customize your workspace. "
-            "Changes take effect after restarting the application."
+            "Drag plugins to reorder them. Changes take effect after restarting the application."
         )
         description.setWordWrap(True)
         description.setStyleSheet(f"margin-bottom: {s['spacing_medium']}px;")
@@ -204,28 +205,26 @@ class PluginsManagerTab(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Container widget for cards
-        self.cards_container = QWidget()
-        self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Draggable list widget for cards
+        self.draggable_list = DraggableListWidget(show_handles=True)
+        self.draggable_list.order_changed.connect(self._on_order_changed)
 
-        scroll_area.setWidget(self.cards_container)
+        scroll_area.setWidget(self.draggable_list)
         layout.addWidget(scroll_area)
 
     def _load_plugin_list(self):
-        """Load and display all available plugins."""
+        """Load and display all available plugins in saved order."""
         if not self.plugin_manager:
             self.logger.error("Plugin manager not available")
             return
 
         # Clear existing cards
-        for card in self.plugin_cards.values():
-            self.cards_layout.removeWidget(card)
-            card.deleteLater()
+        self.draggable_list.clear()
         self.plugin_cards.clear()
 
-        # Get enabled plugins from config
+        # Get enabled plugins and saved tab order from config
         enabled_plugins = self.config_manager.get_enabled_plugins()
+        saved_order = self.config_manager.get_tab_order()
 
         # Discover all available plugins
         discovered_plugins = self.plugin_manager.discover_plugins()
@@ -235,8 +234,9 @@ class PluginsManagerTab(QWidget):
         loaded_plugins = self.plugin_manager.loaded_plugins
         failed_plugins = self.plugin_manager.get_failed_plugins()
 
-        # Create cards for all discovered plugins
-        for plugin_id in sorted(discovered_plugins):
+        # Build plugin data first
+        plugin_data: Dict[str, Dict] = {}
+        for plugin_id in discovered_plugins:
             is_enabled = plugin_id in enabled_plugins
 
             # Get metadata if plugin is loaded
@@ -273,19 +273,36 @@ class PluginsManagerTab(QWidget):
                     'failed': False
                 }
 
+            plugin_data[plugin_id] = {
+                'metadata': metadata,
+                'is_enabled': is_enabled
+            }
+
+        # Sort plugins: first by saved order, then alphabetically for new plugins
+        sorted_plugins = []
+        for plugin_id in saved_order:
+            if plugin_id in plugin_data:
+                sorted_plugins.append(plugin_id)
+
+        # Add any new plugins not in saved order (alphabetically)
+        for plugin_id in sorted(plugin_data.keys()):
+            if plugin_id not in sorted_plugins:
+                sorted_plugins.append(plugin_id)
+
+        # Create cards in the sorted order
+        for plugin_id in sorted_plugins:
+            data = plugin_data[plugin_id]
+
             # Create card
             card = PluginCard(
                 plugin_id=plugin_id,
-                metadata=metadata,
-                is_enabled=is_enabled,
+                metadata=data['metadata'],
+                is_enabled=data['is_enabled'],
                 on_toggle_callback=self._on_plugin_toggled,
-                parent=self.cards_container
+                parent=None
             )
             self.plugin_cards[plugin_id] = card
-            self.cards_layout.addWidget(card)
-
-        # Add stretch at the end
-        self.cards_layout.addStretch()
+            self.draggable_list.add_item(plugin_id, card)
 
         self.logger.info(f"Loaded {len(self.plugin_cards)} plugin cards")
 
@@ -296,6 +313,24 @@ class PluginsManagerTab(QWidget):
         self._load_plugin_list()
         if self.plugin:
             self.plugin.status_changed.emit("Plugin list refreshed")
+
+    @Slot(list)
+    def _on_order_changed(self, new_order: List[str]):
+        """Handle plugin order change from drag-and-drop.
+
+        Args:
+            new_order: List of plugin IDs in new display order
+        """
+        self.logger.info(f"Plugin order changed: {new_order}")
+
+        # Save the new order to configuration
+        self.config_manager.set_tab_order(new_order)
+
+        # Update status
+        if self.plugin:
+            self.plugin.status_changed.emit(
+                "Plugin order updated - restart to apply changes"
+            )
 
     def _on_plugin_toggled(self, plugin_id: str, is_enabled: bool):
         """Handle plugin enable/disable toggle.
