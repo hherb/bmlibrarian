@@ -34,6 +34,11 @@ PDF_MAX_FILE_SIZE_BYTES = PDF_MAX_FILE_SIZE_MB * 1024 * 1024
 # Worker thread termination timeout
 WORKER_TERMINATE_TIMEOUT_MS = 3000  # Maximum wait time for worker termination
 
+# LLM Input Sanitization Constants
+LLM_MAX_TEXT_LENGTH = 100000  # Maximum characters to send to LLM (100K)
+LLM_MAX_LINE_LENGTH = 10000   # Maximum length of a single line
+LLM_TRUNCATION_SUFFIX = "\n\n[Text truncated due to length]"
+
 
 def validate_pmid(value: str) -> tuple[bool, Optional[str]]:
     """
@@ -142,33 +147,51 @@ def validate_title(value: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
-def validate_pdf_file(file_path: Path) -> tuple[bool, Optional[str]]:
+class ValidationStatus:
+    """
+    Validation result status codes.
+
+    Used by validate_pdf_file to distinguish between errors and warnings.
+    """
+    VALID = "valid"           # File is valid, no issues
+    WARNING = "warning"       # File is valid but has warnings (e.g., large size)
+    ERROR = "error"           # File is invalid (doesn't exist, wrong type, etc.)
+
+
+def validate_pdf_file(file_path: Path) -> tuple[bool, Optional[str], str]:
     """
     Validate a PDF file exists and check its size.
 
     Files larger than PDF_MAX_FILE_SIZE_BYTES will generate a warning.
-    This returns False for files that are too large, but processing
-    can still continue if the user chooses.
+    Processing can still continue with warnings if the user chooses.
 
     Args:
         file_path: Path to the PDF file
 
     Returns:
-        Tuple of (is_valid_or_warning_only, message).
-        - (True, None) if valid and within size limits
-        - (False, error_msg) if file doesn't exist or is not a PDF
-        - (True, warning_msg) if file is very large but can proceed
+        Tuple of (is_valid, message, status).
+        - (True, None, ValidationStatus.VALID) if valid and within size limits
+        - (False, error_msg, ValidationStatus.ERROR) if file doesn't exist or is not a PDF
+        - (True, warning_msg, ValidationStatus.WARNING) if file is very large but can proceed
+
+    Example:
+        >>> is_valid, message, status = validate_pdf_file(Path("paper.pdf"))
+        >>> if status == ValidationStatus.ERROR:
+        ...     show_error(message)
+        >>> elif status == ValidationStatus.WARNING:
+        ...     if user_confirms(message):
+        ...         proceed()
     """
     if not file_path.exists():
-        return False, "File does not exist"
+        return False, "File does not exist", ValidationStatus.ERROR
 
     if not file_path.suffix.lower() == '.pdf':
-        return False, "File must have .pdf extension"
+        return False, "File must have .pdf extension", ValidationStatus.ERROR
 
     file_size = file_path.stat().st_size
 
     if file_size == 0:
-        return False, "PDF file is empty (0 bytes)"
+        return False, "PDF file is empty (0 bytes)", ValidationStatus.ERROR
 
     if file_size > PDF_MAX_FILE_SIZE_BYTES:
         size_mb = file_size / (1024 * 1024)
@@ -176,9 +199,9 @@ def validate_pdf_file(file_path: Path) -> tuple[bool, Optional[str]]:
             f"PDF file is {size_mb:.1f}MB, which exceeds the recommended "
             f"limit of {PDF_MAX_FILE_SIZE_MB}MB. Processing may be slow "
             "or consume significant memory."
-        )
+        ), ValidationStatus.WARNING
 
-    return True, None
+    return True, None, ValidationStatus.VALID
 
 
 def classify_extraction_error(error: Exception) -> tuple[str, str]:
@@ -236,6 +259,102 @@ def classify_extraction_error(error: Exception) -> tuple[str, str]:
     )
 
 
+def sanitize_llm_input(
+    text: str,
+    max_length: int = LLM_MAX_TEXT_LENGTH,
+    max_line_length: int = LLM_MAX_LINE_LENGTH,
+) -> str:
+    """
+    Sanitize text before sending to an LLM for metadata extraction.
+
+    Performs the following sanitization steps:
+    1. Removes control characters (except newline, tab)
+    2. Normalizes whitespace (multiple spaces to single)
+    3. Truncates extremely long lines (may indicate binary data)
+    4. Limits total text length to prevent memory issues
+    5. Removes potential prompt injection sequences
+
+    Args:
+        text: Raw text extracted from PDF
+        max_length: Maximum total character count (default: 100K)
+        max_line_length: Maximum length per line (default: 10K)
+
+    Returns:
+        Sanitized text safe for LLM processing
+
+    Example:
+        >>> raw_text = pdf_extractor.extract_text()
+        >>> clean_text = sanitize_llm_input(raw_text)
+        >>> metadata = llm.extract_metadata(clean_text)
+    """
+    if not text:
+        return ""
+
+    # Step 1: Remove control characters (keep newline, tab, carriage return)
+    # This removes NUL bytes, bell, backspace, etc.
+    allowed_controls = {'\n', '\t', '\r'}
+    sanitized = ''.join(
+        char if (char.isprintable() or char in allowed_controls) else ' '
+        for char in text
+    )
+
+    # Step 2: Normalize whitespace
+    # Replace multiple spaces with single space
+    import re
+    sanitized = re.sub(r' {2,}', ' ', sanitized)
+    # Normalize line endings
+    sanitized = sanitized.replace('\r\n', '\n').replace('\r', '\n')
+    # Remove excessive blank lines (more than 2 consecutive)
+    sanitized = re.sub(r'\n{3,}', '\n\n', sanitized)
+
+    # Step 3: Truncate extremely long lines
+    # Very long lines without breaks often indicate encoded/binary data
+    lines = sanitized.split('\n')
+    processed_lines = []
+    for line in lines:
+        if len(line) > max_line_length:
+            # Truncate and mark
+            line = line[:max_line_length] + "..."
+        processed_lines.append(line)
+    sanitized = '\n'.join(processed_lines)
+
+    # Step 4: Limit total length
+    if len(sanitized) > max_length:
+        # Find a good break point (end of sentence or paragraph)
+        truncate_at = max_length - len(LLM_TRUNCATION_SUFFIX)
+
+        # Try to find a paragraph break
+        last_para = sanitized.rfind('\n\n', 0, truncate_at)
+        if last_para > truncate_at * 0.8:  # Only use if reasonably close
+            truncate_at = last_para
+        else:
+            # Try to find end of sentence
+            for end_char in ['. ', '.\n', '? ', '!\n']:
+                last_sentence = sanitized.rfind(end_char, 0, truncate_at)
+                if last_sentence > truncate_at * 0.9:
+                    truncate_at = last_sentence + len(end_char)
+                    break
+
+        sanitized = sanitized[:truncate_at].rstrip() + LLM_TRUNCATION_SUFFIX
+
+    # Step 5: Basic protection against common prompt injection patterns
+    # Note: This is not foolproof but adds a layer of protection
+    injection_patterns = [
+        r'\bignore\s+(all\s+)?(previous|above|prior)\s+instructions?\b',
+        r'\bsystem\s*:\s*',
+        r'\b(human|user|assistant)\s*:\s*',
+        r'<\|im_start\|>',
+        r'<\|im_end\|>',
+        r'<<\s*SYS\s*>>',
+        r'\[\s*INST\s*\]',
+    ]
+
+    for pattern in injection_patterns:
+        sanitized = re.sub(pattern, '[FILTERED]', sanitized, flags=re.IGNORECASE)
+
+    return sanitized.strip()
+
+
 __all__ = [
     # Constants
     'PMID_MIN_VALUE',
@@ -246,6 +365,10 @@ __all__ = [
     'PDF_MAX_FILE_SIZE_MB',
     'PDF_MAX_FILE_SIZE_BYTES',
     'WORKER_TERMINATE_TIMEOUT_MS',
+    'LLM_MAX_TEXT_LENGTH',
+    'LLM_MAX_LINE_LENGTH',
+    # Status codes
+    'ValidationStatus',
     # Validators
     'validate_pmid',
     'validate_doi',
@@ -253,4 +376,6 @@ __all__ = [
     'validate_title',
     'validate_pdf_file',
     'classify_extraction_error',
+    # Sanitization
+    'sanitize_llm_input',
 ]
