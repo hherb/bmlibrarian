@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 
 from ..resources.styles import get_font_scale, StylesheetGenerator
 from .pdf_viewer import PDFViewerWidget
@@ -45,6 +46,11 @@ from .pdf_upload_workers import (
     LLMExtractWorker,
     QuickMatchResult,
     LLMExtractResult,
+)
+from .validators import (
+    validate_pdf_file,
+    classify_extraction_error,
+    WORKER_TERMINATE_TIMEOUT_MS,
 )
 
 logger = logging.getLogger(__name__)
@@ -305,14 +311,35 @@ class PDFUploadWidget(QWidget):
         """
         Load a PDF file for analysis.
 
+        Validates the file before loading and warns about large files.
+
         Args:
             pdf_path: Path to PDF file
         """
         self._pdf_path = Path(pdf_path)
 
-        if not self._pdf_path.exists():
+        # Validate PDF file
+        is_valid, message = validate_pdf_file(self._pdf_path)
+
+        if not is_valid and message and "does not exist" in message:
             QMessageBox.critical(self, "Error", f"File not found: {pdf_path}")
             return
+
+        if not is_valid and message:
+            QMessageBox.critical(self, "Invalid File", message)
+            return
+
+        # Show warning for large files but allow proceeding
+        if message:  # Warning about file size
+            reply = QMessageBox.warning(
+                self,
+                "Large File Warning",
+                f"{message}\n\nDo you want to continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         # Update UI
         self.file_path_edit.setText(str(self._pdf_path))
@@ -430,9 +457,24 @@ class PDFUploadWidget(QWidget):
         self.create_new_btn.setEnabled(True)
 
     def _on_extraction_error(self, error: str):
-        """Handle extraction error."""
-        self._update_status(f"Error: {error}")
-        QMessageBox.warning(self, "Extraction Error", f"An error occurred:\n\n{error}")
+        """
+        Handle extraction error with user-friendly messages.
+
+        Classifies the error type and provides specific guidance to the user.
+        """
+        # Classify the error for better user guidance
+        error_category, user_message = classify_extraction_error(Exception(error))
+
+        self._update_status(f"Error ({error_category}): {error}")
+
+        QMessageBox.warning(
+            self,
+            "Extraction Error",
+            f"{user_message}\n\n"
+            "You can still manually enter metadata using the 'Create New Document' button."
+        )
+
+        # Enable manual entry as fallback
         self.create_new_btn.setEnabled(True)
 
     def _show_quick_match(self, document: dict):
@@ -558,16 +600,30 @@ class PDFUploadWidget(QWidget):
         self._update_status("Processing...")
 
     def _cleanup_workers(self):
-        """Clean up any running workers."""
-        if self._quick_worker and self._quick_worker.isRunning():
-            self._quick_worker.terminate()
-            self._quick_worker.wait()
-            self._quick_worker = None
+        """
+        Safely terminate any running worker threads.
 
-        if self._llm_worker and self._llm_worker.isRunning():
-            self._llm_worker.terminate()
-            self._llm_worker.wait()
-            self._llm_worker = None
+        Waits up to WORKER_TERMINATE_TIMEOUT_MS for each worker to finish.
+        Clears worker references after termination for garbage collection.
+        """
+        workers = [
+            ('quick_worker', self._quick_worker),
+            ('llm_worker', self._llm_worker),
+        ]
+
+        for name, worker in workers:
+            if worker is not None and worker.isRunning():
+                logger.info(f"Terminating {name} thread...")
+                worker.terminate()
+                if not worker.wait(WORKER_TERMINATE_TIMEOUT_MS):
+                    logger.warning(
+                        f"{name} did not terminate within "
+                        f"{WORKER_TERMINATE_TIMEOUT_MS}ms"
+                    )
+
+        # Clear references for garbage collection
+        self._quick_worker = None
+        self._llm_worker = None
 
     def should_ingest(self) -> bool:
         """Check if PDF ingestion is requested."""
@@ -585,7 +641,14 @@ class PDFUploadWidget(QWidget):
         """Get the extracted metadata."""
         return self._current_metadata
 
-    def closeEvent(self, event):
-        """Handle widget close."""
+    def closeEvent(self, event: QCloseEvent):
+        """
+        Handle widget close event.
+
+        Ensures worker threads are properly terminated before closing.
+
+        Args:
+            event: The close event
+        """
         self._cleanup_workers()
         super().closeEvent(event)
