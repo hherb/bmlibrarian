@@ -63,6 +63,15 @@ from .paper_weight_db import (
     check_replication_status,
 )
 
+# Import validators for LLM validation of rule-based extractions
+from .paper_weight_validators import (
+    ValidationResult,
+    validate_study_type_extraction,
+    validate_sample_size_extraction,
+    add_validation_to_dimension_score,
+    get_all_document_chunks,
+)
+
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
 
@@ -76,6 +85,7 @@ DEFAULT_CONFIG = {
     'top_p': 0.9,
     'max_tokens': 3000,
     'version': '1.0.0',
+    'validate_extractions': True,  # Enable LLM validation of rule-based extractions
     'dimension_weights': {
         'study_design': 0.25,
         'sample_size': 0.15,
@@ -377,6 +387,86 @@ class PaperWeightAssessmentAgent(BaseAgent):
             dimension_weights=self.get_dimension_weights()
         )
 
+    def _validate_extractions(
+        self,
+        document_id: int,
+        study_design_score: DimensionScore,
+        sample_size_score: DimensionScore,
+    ) -> List[str]:
+        """
+        Validate rule-based extractions using LLM with semantic search.
+
+        Performs LLM validation of study type and sample size extractions
+        against document chunks to detect potential misclassifications.
+
+        Args:
+            document_id: Database ID of the document
+            study_design_score: Study design DimensionScore from rule-based extraction
+            sample_size_score: Sample size DimensionScore from rule-based extraction
+
+        Returns:
+            List of conflict descriptions (empty if no conflicts)
+        """
+        import ollama
+
+        conflicts = []
+
+        # Check if document has chunks available
+        chunks = get_all_document_chunks(document_id, limit=5)
+        if not chunks:
+            logger.debug(f"No chunks available for document {document_id}, skipping validation")
+            return conflicts
+
+        try:
+            # Get configured model for validation
+            model = self.model  # Use the agent's configured model
+
+            # Validate study type
+            study_validation = validate_study_type_extraction(
+                document_id=document_id,
+                dimension_score=study_design_score,
+                llm_client=ollama,
+                model=model,
+            )
+
+            if study_validation.has_conflict:
+                conflict_msg = (
+                    f"Study type conflict: Rule-based extracted '{study_validation.rule_based_value}', "
+                    f"but LLM assessment suggests '{study_validation.llm_assessed_value}'. "
+                    f"{study_validation.conflict_details}"
+                )
+                conflicts.append(conflict_msg)
+                logger.warning(f"Document {document_id}: {conflict_msg}")
+
+                # Add validation info to dimension score
+                add_validation_to_dimension_score(study_design_score, study_validation)
+
+            # Validate sample size
+            sample_validation = validate_sample_size_extraction(
+                document_id=document_id,
+                dimension_score=sample_size_score,
+                llm_client=ollama,
+                model=model,
+            )
+
+            if sample_validation.has_conflict:
+                conflict_msg = (
+                    f"Sample size conflict: Rule-based extracted '{sample_validation.rule_based_value}', "
+                    f"but LLM assessment suggests '{sample_validation.llm_assessed_value}'. "
+                    f"{sample_validation.conflict_details}"
+                )
+                conflicts.append(conflict_msg)
+                logger.warning(f"Document {document_id}: {conflict_msg}")
+
+                # Add validation info to dimension score
+                add_validation_to_dimension_score(sample_size_score, sample_validation)
+
+        except Exception as e:
+            logger.error(f"Error during extraction validation for document {document_id}: {e}")
+            # Don't add to conflicts on error - validation is optional enhancement
+
+        return conflicts
+
     def assess_paper(
         self,
         document_id: int,
@@ -433,6 +523,16 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 document, keywords_config, hierarchy_config, STUDY_TYPE_PRIORITY
             )
             sample_size_score = extract_sample_size_dimension(document, scoring_config)
+
+            # Validate rule-based extractions with LLM if enabled and chunks available
+            validation_conflicts = []
+            if self.config.get('validate_extractions', True):
+                validation_conflicts = self._validate_extractions(
+                    document_id,
+                    study_design_score,
+                    sample_size_score,
+                )
+
             methodological_quality_score = self._assess_methodological_quality(document, study_assessment)
             risk_of_bias_score = self._assess_risk_of_bias(document, study_assessment)
             replication_status_score = check_replication_status(document_id)
@@ -464,7 +564,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 final_weight=final_weight,
                 dimension_weights=self.get_dimension_weights(),
                 study_type=study_type,
-                sample_size_n=sample_size_n
+                sample_size_n=sample_size_n,
+                validation_conflicts=validation_conflicts,
             )
 
             # Store in database
