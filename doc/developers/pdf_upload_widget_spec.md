@@ -61,12 +61,14 @@ The PDF Upload Widget provides a complete UI for PDF document import with:
 ```
 src/bmlibrarian/
 ├── importers/
-│   └── pdf_matcher.py           # Core matching logic
+│   └── pdf_matcher.py              # Core matching logic
 └── gui/qt/widgets/
-    ├── __init__.py              # Module exports
-    ├── pdf_viewer.py            # Existing PDF viewer widget
-    ├── pdf_upload_widget.py     # Main reusable widget
-    └── pdf_upload_workers.py    # Background worker threads
+    ├── __init__.py                 # Module exports
+    ├── pdf_viewer.py               # Existing PDF viewer widget
+    ├── pdf_upload_widget.py        # Main reusable widget
+    ├── pdf_upload_workers.py       # Background worker threads
+    ├── document_create_dialog.py   # Document creation dialog
+    └── validators.py               # Input validators and sanitization
 ```
 
 ## API Reference
@@ -151,6 +153,69 @@ Background worker for LLM-based metadata extraction.
 | `extraction_complete` | `LLMExtractResult` | Extraction finished with results |
 | `error_occurred` | `str` | Error message |
 | `status_update` | `str` | Status update message |
+
+### DocumentCreateDialog
+
+Dialog for creating new document records with pre-filled metadata.
+
+#### Constructor
+
+```python
+DocumentCreateDialog(
+    parent: QWidget = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    pdf_path: Optional[Path] = None
+)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent` | `QWidget` | Parent widget |
+| `metadata` | `dict` | Pre-filled metadata (title, doi, pmid, authors, year, journal, abstract) |
+| `pdf_path` | `Path` | Associated PDF file path |
+
+#### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_document_id()` | `Optional[int]` | ID of created document (after save) |
+| `get_document_data()` | `dict` | Form data as dictionary |
+
+### Validators Module
+
+The `validators.py` module provides input validation and sanitization functions.
+
+#### Validation Functions
+
+| Function | Parameters | Returns | Description |
+|----------|------------|---------|-------------|
+| `validate_pmid` | `value: str` | `(bool, Optional[str])` | Validate PMID format |
+| `validate_doi` | `value: str` | `(bool, Optional[str])` | Validate DOI format |
+| `validate_year` | `value: str` | `(bool, Optional[str])` | Validate publication year |
+| `validate_title` | `value: str` | `(bool, Optional[str])` | Validate document title |
+| `validate_pdf_file` | `path: Path` | `(bool, Optional[str], str)` | Validate PDF file (returns ValidationStatus) |
+| `sanitize_llm_input` | `text: str` | `str` | Sanitize text before LLM processing |
+
+#### ValidationStatus Class
+
+```python
+class ValidationStatus:
+    VALID = "valid"      # File is valid, no issues
+    WARNING = "warning"  # File has warnings but can proceed
+    ERROR = "error"      # File is invalid
+```
+
+#### Constants
+
+```python
+PMID_MIN_VALUE = 1
+PMID_MAX_VALUE = 99999999
+YEAR_MIN_VALUE = 1800
+YEAR_MAX_VALUE = 2100
+PDF_MAX_FILE_SIZE_MB = 50
+LLM_MAX_TEXT_LENGTH = 100000
+LLM_MAX_LINE_LENGTH = 10000
+```
 
 ### PDFMatcher Enhanced API
 

@@ -20,6 +20,7 @@ from bmlibrarian.importers.pdf_matcher import (
     PDFMatcher,
     ExtractedIdentifiers,
 )
+from .validators import sanitize_llm_input
 
 logger = logging.getLogger(__name__)
 
@@ -212,9 +213,22 @@ class LLMExtractWorker(QThread):
             self.status_update.emit("Initializing LLM extraction...")
             self._matcher = PDFMatcher()
 
-            # Step 1: LLM metadata extraction
+            # Step 1: Sanitize input text before sending to LLM
+            # This prevents potential injection attacks and handles malformed text
+            self.status_update.emit("Sanitizing extracted text...")
+            sanitized_text = sanitize_llm_input(self.extracted_text)
+
+            if not sanitized_text:
+                result = LLMExtractResult(
+                    success=False,
+                    error="No usable text after sanitization"
+                )
+                self.error_occurred.emit(result.error)
+                return
+
+            # Step 2: LLM metadata extraction
             self.status_update.emit("Extracting metadata with LLM (this may take a moment)...")
-            metadata = self._matcher.extract_metadata_with_llm(self.extracted_text)
+            metadata = self._matcher.extract_metadata_with_llm(sanitized_text)
 
             if not metadata:
                 result = LLMExtractResult(

@@ -29,6 +29,7 @@ STUDY_TYPE_PRIORITY = [
     'quasi_experimental',  # Check before RCT to catch "non-randomized" studies
     'rct',
     'pilot_feasibility',  # Pilot and feasibility studies
+    'interventional_single_arm',  # Open-label, single-arm interventional studies
     'cohort_prospective',
     'cohort_retrospective',
     'case_control',
@@ -55,7 +56,17 @@ DEFAULT_STUDY_TYPE_KEYWORDS = {
         'pilot study', 'pilot trial', 'feasibility study', 'feasibility trial',
         'proof-of-concept study', 'proof of concept study'
     ],
-    'cohort_prospective': ['prospective cohort', 'prospective study', 'longitudinal cohort'],
+    'interventional_single_arm': [
+        'open-label', 'open-labeled', 'open label', 'open labeled',
+        'single-arm trial', 'single-arm study', 'single arm trial', 'single arm study',
+        'prospective protocol', 'prospective intervention',
+        'uncontrolled trial', 'non-randomized trial', 'non-randomised trial',
+        'before-and-after study', 'pre-post study', 'pretest-posttest'
+    ],
+    'cohort_prospective': [
+        'prospective cohort', 'prospective study', 'longitudinal cohort',
+        'followed prospectively', 'prospective follow-up', 'prospective observation'
+    ],
     'cohort_retrospective': ['retrospective cohort', 'retrospective study'],
     'case_control': ['case-control', 'case control study'],
     'cross_sectional': ['cross-sectional', 'cross sectional study', 'prevalence study'],
@@ -85,6 +96,7 @@ DEFAULT_STUDY_TYPE_HIERARCHY = {
     'rct': 8.0,
     'quasi_experimental': 7.0,  # Non-randomized interventional studies
     'pilot_feasibility': 6.5,  # Pilot/feasibility studies (typically smaller, exploratory)
+    'interventional_single_arm': 7.0,  # Open-label, single-arm interventional studies
     'cohort_prospective': 6.0,
     'cohort_retrospective': 5.0,
     'case_control': 4.0,

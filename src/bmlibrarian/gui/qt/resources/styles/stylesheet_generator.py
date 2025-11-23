@@ -150,6 +150,78 @@ class StylesheetGenerator:
             }}
         """
 
+    def drag_handle_stylesheet(
+        self,
+        color: str = "#888",
+        hover_color: str = "#444",
+        font_size_key: str = 'font_medium',
+        padding_key: str = 'padding_tiny'
+    ) -> str:
+        """Generate drag handle stylesheet with scaled dimensions.
+
+        Args:
+            color: Normal color for the handle
+            hover_color: Color when hovered
+            font_size_key: Scale key for font size
+            padding_key: Scale key for padding
+
+        Returns:
+            Formatted stylesheet string
+        """
+        s = self._s
+        return f"""
+            QLabel {{
+                color: {color};
+                font-size: {s[font_size_key]}pt;
+                padding: {s[padding_key]}px;
+            }}
+            QLabel:hover {{
+                color: {hover_color};
+            }}
+        """
+
+    def drop_indicator_stylesheet(
+        self,
+        color: str = "#2196F3",
+        radius_key: str = 'radius_small'
+    ) -> str:
+        """Generate drop indicator stylesheet with scaled dimensions.
+
+        Args:
+            color: Background color for the indicator
+            radius_key: Scale key for border radius
+
+        Returns:
+            Formatted stylesheet string
+        """
+        s = self._s
+        return f"""
+            QFrame {{
+                background-color: {color};
+                border-radius: {s[radius_key]}px;
+            }}
+        """
+
+    def draggable_item_stylesheet(
+        self,
+        dragging_opacity: float = 0.5
+    ) -> str:
+        """Generate draggable item stylesheet.
+
+        Args:
+            dragging_opacity: Opacity when item is being dragged (0.0-1.0)
+
+        Returns:
+            Formatted stylesheet string for dragging state
+        """
+        # Note: Qt stylesheet doesn't support opacity directly on QFrame,
+        # but we can use background-color with alpha
+        return f"""
+            QFrame {{
+                background-color: rgba(200, 200, 200, {int(dragging_opacity * 255)});
+            }}
+        """
+
     def custom(self, template: str) -> str:
         """
         Generate custom stylesheet with access to all scale values.

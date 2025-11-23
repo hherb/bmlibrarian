@@ -25,7 +25,7 @@ Implement fast, deterministic rule-based extractors for study type detection and
 2. **Normalize:** Convert to lowercase, remove extra whitespace
 3. **Keyword matching:** Match against configured keywords in priority order
 4. **Priority hierarchy:** Higher-level evidence takes precedence
-   - Systematic review/meta-analysis > RCT > Cohort > Case-control > Cross-sectional > Case series > Case report
+   - Systematic review/meta-analysis > RCT > Interventional single-arm > Cohort > Case-control > Cross-sectional > Case series > Case report
 5. **Assign score:** Use study_type_hierarchy from config
 6. **Audit trail:** Record matched keywords and evidence text
 
@@ -59,6 +59,7 @@ def _extract_study_type(self, document: dict) -> DimensionScore:
         'systematic_review',
         'meta_analysis',
         'rct',
+        'interventional_single_arm',  # Open-label, single-arm interventional studies
         'cohort_prospective',
         'cohort_retrospective',
         'case_control',

@@ -76,6 +76,30 @@ uv run python pdf_upload_widget_demo.py /path/to/paper.pdf
    - Click "Use Selected Match" to confirm selection
    - Or click "Create New Document" to add a new entry
 
+### Creating New Documents
+
+When no matching document is found in the database, you can create a new entry:
+
+1. **Click "Create New Document"** - Opens the document creation dialog
+2. **Review Pre-filled Data** - The dialog pre-fills:
+   - Title (extracted from PDF)
+   - DOI and PMID (if found)
+   - Authors (if extracted)
+   - Year (if identified)
+3. **Edit as Needed** - All fields are editable
+4. **Required Fields**:
+   - Title (required)
+   - External ID (auto-generated if not provided)
+5. **Optional Fields**:
+   - DOI, PMID, Authors, Year, Journal, Abstract
+   - Source (defaults to "Manual Import")
+6. **Click "Save Document"** - Creates the database record
+
+The dialog validates all input before saving:
+- DOI format must be valid (10.xxxx/...)
+- PMID must be a valid number
+- Year must be reasonable (1800-2100)
+
 ### Options
 
 - **Ingest PDF**: Check this box to:
