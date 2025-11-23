@@ -4,358 +4,287 @@ This document provides technical details for developers working with or extendin
 
 ## Architecture Overview
 
-The PaperChecker Laboratory is a Flet-based GUI application that provides interactive testing and exploration of the PaperChecker fact-checking system.
+The PaperChecker Laboratory is a PySide6/Qt-based GUI application that provides interactive testing and exploration of the PaperChecker fact-checking system. It follows a modular package architecture similar to `paper_weight_lab`.
 
 ### Component Structure
 
 ```
-paper_checker_lab.py (root)          # Entry point script
-├── argparse configuration           # CLI argument handling
-├── logging setup                    # Debug mode configuration
-└── Flet app launcher               # Desktop/web mode selection
+paper_checker_lab.py (root)              # Entry point script
+├── argparse configuration               # CLI argument handling
+├── logging setup                        # Debug mode configuration
+└── Qt/Flet app launcher                 # --flet flag for legacy mode
 
-src/bmlibrarian/lab/paper_checker_lab.py  # Main implementation
-├── PaperCheckerLab class            # Main application class
-│   ├── UI Building                  # Layout construction methods
-│   ├── Event Handlers               # User interaction handling
-│   ├── Processing Logic             # Background task management
-│   ├── Results Display              # Tab content generation
-│   └── Export Methods               # JSON/Markdown export
-└── Constants                        # All configuration values
+src/bmlibrarian/lab/paper_checker_lab/   # Main package
+├── __init__.py                          # Lazy imports, module exports
+├── constants.py                         # UI constants (no magic numbers)
+├── utils.py                             # Pure utility functions (no Qt)
+├── worker.py                            # QThread workers
+├── widgets.py                           # Custom Qt widgets
+├── dialogs.py                           # Dialog classes
+├── main_window.py                       # Main QMainWindow (~150 lines)
+└── tabs/
+    ├── __init__.py                      # Tab exports
+    ├── input_tab.py                     # Text input and PMID lookup
+    ├── pdf_upload_tab.py                # PDF upload and extraction
+    ├── workflow_tab.py                  # Workflow progress visualization
+    └── results_tab.py                   # Results display (5 sub-tabs)
 ```
 
 ### Key Design Patterns
 
-1. **No Magic Numbers**: All dimensions, colors, and configuration values are defined as named constants
-2. **Non-Blocking UI**: Background thread processing with progress callbacks
-3. **Type Hints**: All parameters and return values are typed
-4. **Docstrings**: All classes, methods, and functions are documented
-5. **Error Handling**: Comprehensive try-catch with user-friendly messages
+1. **No Magic Numbers**: All dimensions, colors, and configuration values are defined in `constants.py`
+2. **DPI-Aware Scaling**: All dimensions use `get_font_scale()` from the central styling system
+3. **No Inline Stylesheets**: Uses `get_stylesheet_generator()` for consistent styling
+4. **Pure Utility Functions**: `utils.py` contains framework-independent helpers
+5. **Lazy Qt Imports**: Constants and utils can be imported without Qt/display
+6. **Non-Blocking UI**: QThread workers with signal-based progress updates
+7. **Type Hints**: All parameters and return values are typed
+8. **Docstrings**: All classes, methods, and functions are documented
+9. **Error Handling**: Comprehensive try-catch with user-friendly messages
 
-## Class Reference
+## Module Reference
 
-### PaperCheckerLab
+### constants.py
 
-Main application class managing state, UI, and processing.
-
-```python
-class PaperCheckerLab:
-    """Interactive laboratory for testing PaperChecker functionality."""
-
-    def __init__(self) -> None:
-        """Initialize with default state."""
-
-    def main(self, page: ft.Page) -> None:
-        """Entry point for Flet application."""
-```
-
-#### Key Attributes
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `page` | `Optional[ft.Page]` | Flet page instance |
-| `config` | `Config` | BMLibrarian configuration |
-| `agent` | `Optional[PaperCheckerAgent]` | PaperChecker agent instance |
-| `current_result` | `Optional[PaperCheckResult]` | Most recent result |
-| `controls` | `Dict[str, Any]` | UI control references |
-| `workflow_steps` | `List[ft.Card]` | Workflow step cards |
-| `executor` | `ThreadPoolExecutor` | Background task executor |
-| `processing` | `bool` | Processing state flag |
-| `_check_lock` | `threading.Lock` | Concurrency control |
-
-#### UI Building Methods
-
-| Method | Description |
-|--------|-------------|
-| `_build_ui()` | Construct main layout |
-| `_build_header()` | Title and subtitle section |
-| `_build_input_section()` | Input fields and buttons |
-| `_build_progress_section()` | Progress bar and status |
-| `_build_workflow_panel()` | Left panel with step cards |
-| `_build_results_panel()` | Right panel with tabs |
-| `_build_*_tab()` | Individual tab content builders |
-
-#### Event Handlers
-
-| Method | Event |
-|--------|-------|
-| `_on_check_clicked()` | Check button click |
-| `_on_clear_clicked()` | Clear button click |
-| `_on_model_change()` | Model selector change |
-| `_refresh_models()` | Refresh button click |
-
-#### Processing Methods
-
-| Method | Description |
-|--------|-------------|
-| `_run_check()` | Start background check |
-| `_on_progress_update()` | Handle progress callbacks |
-| `_on_check_complete()` | Handle successful completion |
-| `_on_check_error()` | Handle processing errors |
-
-## Constants Reference
-
-### Window Dimensions
+UI constants with no Qt dependencies:
 
 ```python
-WINDOW_WIDTH_DEFAULT = 1400
-WINDOW_HEIGHT_DEFAULT = 950
-WINDOW_WIDTH_MIN = 1200
-WINDOW_HEIGHT_MIN = 750
-```
+# Window dimensions
+WINDOW_MIN_WIDTH = 1200
+WINDOW_MIN_HEIGHT = 750
 
-### Font Sizes
+# Tab indices
+TAB_INDEX_INPUT = 0
+TAB_INDEX_PDF_UPLOAD = 1
+TAB_INDEX_WORKFLOW = 2
+TAB_INDEX_RESULTS = 3
 
-```python
-FONT_SIZE_TINY = 11
-FONT_SIZE_SMALL = 12
-FONT_SIZE_NORMAL = 13
-FONT_SIZE_MEDIUM = 14
-FONT_SIZE_LARGE = 16
-FONT_SIZE_XLARGE = 18
-FONT_SIZE_TITLE = 24
-FONT_SIZE_HEADER = 28
-```
+# Workflow steps (11 total)
+WORKFLOW_STEPS = [
+    "Initializing",
+    "Extracting statements",
+    ...
+]
 
-### Spacing
-
-```python
-SPACING_TINY = 3
-SPACING_SMALL = 5
-SPACING_MEDIUM = 10
-SPACING_LARGE = 15
-SPACING_XLARGE = 20
-```
-
-### Colors
-
-```python
-COLOR_PRIMARY = ft.Colors.BLUE_700
-COLOR_SUCCESS = ft.Colors.GREEN_600
-COLOR_WARNING = ft.Colors.ORANGE_600
-COLOR_ERROR = ft.Colors.RED_600
-
+# Colors (Qt-compatible hex strings)
 VERDICT_COLORS = {
-    "supports": ft.Colors.GREEN_600,
-    "contradicts": ft.Colors.RED_600,
-    "undecided": ft.Colors.ORANGE_600
+    "supports": "#43A047",
+    "contradicts": "#E53935",
+    "undecided": "#FB8C00"
 }
+```
 
-CONFIDENCE_COLORS = {
-    "high": ft.Colors.GREEN_600,
-    "medium": ft.Colors.ORANGE_600,
-    "low": ft.Colors.RED_600
-}
+### utils.py
+
+Pure utility functions, easily testable without Qt:
+
+```python
+def validate_abstract(abstract: str) -> Tuple[bool, str]:
+    """Validate abstract text for processing."""
+
+def format_verdict_display(verdict: str) -> Tuple[str, str]:
+    """Format verdict for display with color."""
+
+def format_search_stats(search_results: Any) -> Dict[str, Any]:
+    """Format search results statistics."""
+
+def get_workflow_step_index(step_name: str) -> int:
+    """Get the index of a workflow step by name."""
+```
+
+### worker.py
+
+Background QThread workers:
+
+```python
+class PaperCheckWorker(QThread):
+    """Background worker for paper checking."""
+    progress_update = Signal(str, float)  # (step_name, progress)
+    check_complete = Signal(object)       # PaperCheckResult
+    check_error = Signal(str)             # error message
+
+class PDFAnalysisWorker(QThread):
+    """Background worker for PDF analysis."""
+    progress_update = Signal(str)         # status message
+    analysis_complete = Signal(dict)      # extracted data
+    analysis_error = Signal(str)          # error message
+
+class DocumentFetchWorker(QThread):
+    """Background worker for PMID lookup."""
+    fetch_complete = Signal(dict)         # document data
+    fetch_error = Signal(str)             # error message
+```
+
+### widgets.py
+
+Custom Qt widgets:
+
+```python
+class StatusSpinnerWidget(QWidget):
+    """Animated spinner with status text."""
+
+class WorkflowStepCard(QFrame):
+    """Card showing workflow step progress."""
+
+class VerdictBadge(QFrame):
+    """Colored verdict badge."""
+
+class CitationCardWidget(QFrame):
+    """Expandable citation display card."""
+
+class StatisticsSection(QGroupBox):
+    """Statistics display with chips."""
+```
+
+### dialogs.py
+
+Dialog classes:
+
+```python
+class FullTextDialog(QDialog):
+    """Display full untruncated text."""
+
+class ExportPreviewDialog(QDialog):
+    """Preview and save export content."""
+
+class PMIDLookupDialog(QDialog):
+    """Search database for documents by PMID."""
+```
+
+### tabs/
+
+Tab implementations following the pattern:
+
+```python
+class InputTab(QWidget):
+    """Abstract text input and PMID lookup."""
+    check_requested = Signal(str, dict)  # (abstract, metadata)
+    clear_requested = Signal()
+
+class PDFUploadTab(QWidget):
+    """PDF upload and abstract extraction."""
+    abstract_extracted = Signal(str, dict)  # (abstract, metadata)
+    check_requested = Signal(str, dict)
+
+class WorkflowTab(QWidget):
+    """Workflow progress visualization."""
+    abort_requested = Signal()
+
+class ResultsTab(QWidget):
+    """Results display with 5 sub-tabs."""
+```
+
+### main_window.py
+
+Lean coordinator (~150 lines):
+
+```python
+class PaperCheckerLab(QMainWindow):
+    """Main application window."""
+
+    def __init__(self):
+        # Initialize agent
+        # Create tabs
+        # Connect signals
+
+    def _start_check(self, abstract: str, metadata: Dict):
+        """Start paper check in background."""
+
+    def _on_check_complete(self, result: PaperCheckResult):
+        """Handle check completion."""
+```
+
+## Signal Flow
+
+```
+User Input (Text or PDF)
+    ↓
+InputTab.check_requested / PDFUploadTab.check_requested
+    ↓
+PaperCheckerLab._start_check()
+    ↓
+Creates PaperCheckWorker
+    ↓
+Worker.progress_update → WorkflowTab.update_step()
+    ↓
+Worker.check_complete → PaperCheckerLab._on_check_complete()
+    ↓
+ResultsTab.load_result()
+    ↓
+Tab switch to Results
 ```
 
 ## Threading Model
 
-### Background Processing
+All long-running operations use QThread:
 
-The laboratory uses a `ThreadPoolExecutor` with a single worker for background processing:
+1. **PaperCheckWorker**: Main check processing (2-10 minutes)
+2. **PDFAnalysisWorker**: PDF text extraction and LLM analysis
+3. **DocumentFetchWorker**: Database PMID lookup
 
-```python
-self.executor = ThreadPoolExecutor(max_workers=1)
-
-def _run_check(self, abstract: str, metadata: Dict[str, Any]) -> None:
-    def run_check_thread() -> None:
-        result = self.agent.check_abstract(
-            abstract=abstract,
-            source_metadata=metadata,
-            progress_callback=self._on_progress_update
-        )
-        # Schedule UI update on main thread
-        self.page.run_task(lambda: self._on_check_complete(result))
-
-    self.executor.submit(run_check_thread)
-```
-
-### Concurrency Control
-
-A lock prevents concurrent processing:
-
-```python
-self._check_lock = threading.Lock()
-
-def _run_check(self, abstract: str, metadata: Dict[str, Any]) -> None:
-    with self._check_lock:
-        if self.processing:
-            return
-        self.processing = True
-    # ... processing logic ...
-    finally:
-        with self._check_lock:
-            self.processing = False
-```
-
-### UI Updates from Background Thread
-
-Use `page.run_task()` for UI updates from background threads:
-
-```python
-def _on_progress_update(self, step_name: str, progress: float) -> None:
-    def update_ui() -> None:
-        self.controls['progress_bar'].value = progress
-        self.page.update()
-
-    self.page.run_task(update_ui)
-```
+Workers emit signals for thread-safe UI updates.
 
 ## Extension Points
 
-### Adding New Tabs
+### Adding New Workflow Steps
 
-1. Add tab index constant:
-```python
-TAB_INDEX_NEW_TAB = 5
-```
+1. Add step name to `WORKFLOW_STEPS` in `constants.py`
+2. Update `WORKFLOW_STEP_COUNT`
+3. Map agent progress to step in `utils.py:map_agent_progress_to_step()`
 
-2. Create placeholder builder:
-```python
-def _build_new_tab_placeholder(self) -> ft.Container:
-    return ft.Container(
-        content=ft.Text("Content placeholder"),
-        padding=PADDING_MEDIUM
-    )
-```
+### Adding New Result Sub-Tabs
 
-3. Create content builder:
-```python
-def _build_new_tab(self, result: PaperCheckResult) -> ft.Container:
-    # Build tab content from result
-    pass
-```
-
-4. Add tab to `_build_results_panel()`:
-```python
-ft.Tab(text="New Tab", content=self._build_new_tab_placeholder())
-```
-
-5. Update `_display_results()`:
-```python
-self.controls['result_tabs'].tabs[TAB_INDEX_NEW_TAB].content = (
-    self._build_new_tab(result)
-)
-```
+1. Add tab index constant in `constants.py`
+2. Create `_create_<name>_tab()` method in `results_tab.py`
+3. Add to tab widget in `_setup_ui()`
+4. Create `_populate_<name>()` method
 
 ### Adding New Export Formats
 
-1. Add export method:
-```python
-def _export_csv(self, result: PaperCheckResult) -> None:
-    try:
-        output = self._generate_csv(result)
-        # Display or save output
-        self._show_success("CSV exported")
-    except Exception as e:
-        self._show_error(f"Export failed: {e}")
-```
-
-2. Add button to export tab in `_build_export_tab()`:
-```python
-ft.ElevatedButton(
-    "Export as CSV",
-    icon=ft.Icons.TABLE_CHART,
-    on_click=lambda _: self._export_csv(result)
-)
-```
-
-### Customizing Workflow Steps
-
-Modify `WORKFLOW_STEPS` to add or rename steps:
-
-```python
-WORKFLOW_STEPS = [
-    "Initializing",
-    "Extracting statements",
-    # ... add custom steps
-    "Complete"
-]
-```
-
-Note: Step names must match those used in `PaperCheckerAgent.check_abstract()` progress callbacks.
+1. Add export method in `results_tab.py`
+2. Create button in `_create_export_tab()`
+3. Use `ExportPreviewDialog` for preview/save
 
 ## Testing
 
-### Manual Testing
-
-1. Launch in debug mode:
-```bash
-uv run python paper_checker_lab.py --debug
-```
-
-2. Test each workflow:
-   - Abstract text input
-   - PMID fetching
-   - Progress visualization
-   - Results display
-   - Export functions
-   - Error handling
-
-3. Verify UI responsiveness during processing
-
-### Integration Testing
+### Unit Tests
 
 ```python
-# tests/test_paper_checker_lab.py
-import pytest
-from bmlibrarian.lab.paper_checker_lab import PaperCheckerLab
+# Test pure utilities (no Qt needed)
+from bmlibrarian.lab.paper_checker_lab.utils import validate_abstract
 
-def test_lab_initialization():
-    """Test laboratory initializes without errors."""
-    lab = PaperCheckerLab()
-    assert lab.agent is None  # Not initialized until main() is called
-    assert lab.current_result is None
-    assert lab.processing is False
-
-def test_fetch_by_pmid_invalid():
-    """Test PMID validation."""
-    lab = PaperCheckerLab()
-    result = lab._fetch_by_pmid("invalid")
-    assert result is None
-
-def test_available_models_fallback():
-    """Test model list fallback."""
-    lab = PaperCheckerLab()
-    models = lab._get_available_models()
-    assert len(models) > 0
-    assert "gpt-oss:20b" in models
+def test_validate_abstract():
+    is_valid, error = validate_abstract("")
+    assert not is_valid
+    assert "required" in error.lower()
 ```
 
-## Dependencies
+### Integration Tests
 
-| Package | Purpose |
-|---------|---------|
-| `flet` | GUI framework |
-| `asyncio` | Async operations |
-| `threading` | Concurrency control |
-| `json` | Export functionality |
-| `concurrent.futures` | Background processing |
+```python
+# Test with Qt (requires display or QApplication)
+from PySide6.QtWidgets import QApplication
+from bmlibrarian.lab.paper_checker_lab import PaperCheckerLab
 
-## Related Files
+def test_main_window():
+    app = QApplication([])
+    window = PaperCheckerLab()
+    assert window.windowTitle() == "PaperChecker Laboratory"
+```
 
-| File | Description |
-|------|-------------|
-| `src/bmlibrarian/paperchecker/agent.py` | PaperCheckerAgent implementation |
-| `src/bmlibrarian/paperchecker/data_models.py` | Data model definitions |
-| `src/bmlibrarian/paperchecker/database.py` | Database operations |
-| `src/bmlibrarian/config.py` | Configuration management |
-| `src/bmlibrarian/database.py` | Main database module |
+## Migration from Flet
 
-## Golden Rules Compliance
+The old Flet-based implementation is preserved at:
+`src/bmlibrarian/lab/paper_checker_lab_flet.py`
 
-This implementation follows all BMLibrarian golden rules:
+Key differences:
+- PySide6 uses signals/slots instead of callbacks
+- QThread instead of ThreadPoolExecutor
+- DPI-aware styling instead of fixed pixel values
+- Modular package structure instead of single file
 
-1. **Input validation**: All user inputs are validated before processing
-2. **No magic numbers**: All values defined as named constants
-3. **No hardcoded paths**: Uses configuration system
-4. **Ollama library**: Uses bmlibrarian agents (which use ollama library)
-5. **Database manager**: Uses fetch_documents_by_ids and get_db_manager
-6. **Type hints**: All parameters and returns are typed
-7. **Docstrings**: All classes and methods documented
-8. **Error handling**: Comprehensive error handling with user feedback
-9. **No inline styles**: Uses Flet color constants (no stylesheet system in Flet)
-10. **No hardcoded pixels**: Uses relative spacing constants
-11. **User error reporting**: Snackbar messages for all errors
-12. **Reusable functions**: Modular design with helper methods
-13. **Documentation**: User and developer guides provided
+## See Also
+
+- [Paper Weight Lab Architecture](paper_weight_lab_system.md) - Similar Qt pattern
+- [PaperChecker Architecture](paper_checker_architecture.md) - Agent system
+- [Qt Styling Guide](qt_styling_guide.md) - DPI scaling and stylesheets
