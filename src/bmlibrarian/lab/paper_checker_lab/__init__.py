@@ -35,14 +35,14 @@ from .utils import *
 def _import_qt_modules():
     """Import Qt-dependent modules lazily."""
     global PaperCheckerLab, main
-    global PaperCheckWorker, PDFAnalysisWorker, DocumentFetchWorker
+    global PaperCheckWorker, DocumentFetchWorker
     global FullTextDialog, ExportPreviewDialog, PMIDLookupDialog
     global StatusSpinnerWidget, WorkflowStepCard, VerdictBadge
     global StatChipWidget, CitationCardWidget, StatisticsSection
     global InputTab, PDFUploadTab, WorkflowTab, ResultsTab
 
     from .main_window import PaperCheckerLab, main
-    from .worker import PaperCheckWorker, PDFAnalysisWorker, DocumentFetchWorker
+    from .worker import PaperCheckWorker, DocumentFetchWorker
     from .dialogs import FullTextDialog, ExportPreviewDialog, PMIDLookupDialog
     from .widgets import (
         StatusSpinnerWidget, WorkflowStepCard, VerdictBadge,
@@ -52,7 +52,7 @@ def _import_qt_modules():
 
     return (
         PaperCheckerLab, main,
-        PaperCheckWorker, PDFAnalysisWorker, DocumentFetchWorker,
+        PaperCheckWorker, DocumentFetchWorker,
         FullTextDialog, ExportPreviewDialog, PMIDLookupDialog,
         StatusSpinnerWidget, WorkflowStepCard, VerdictBadge,
         StatChipWidget, CitationCardWidget, StatisticsSection,
@@ -68,7 +68,6 @@ except ImportError:
     PaperCheckerLab = None
     main = None
     PaperCheckWorker = None
-    PDFAnalysisWorker = None
     DocumentFetchWorker = None
     FullTextDialog = None
     ExportPreviewDialog = None
@@ -91,7 +90,6 @@ __all__ = [
     'main',
     # Workers (requires Qt)
     'PaperCheckWorker',
-    'PDFAnalysisWorker',
     'DocumentFetchWorker',
     # Dialogs (requires Qt)
     'FullTextDialog',
