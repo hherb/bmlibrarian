@@ -97,12 +97,6 @@ def mock_db_manager():
     return mock_manager, mock_cursor
 
 
-@pytest.fixture
-def mock_embedding():
-    """Sample embedding vector."""
-    return [0.1] * 1024  # 1024-dimensional embedding
-
-
 # Unit Tests - Initialization
 
 
@@ -110,8 +104,7 @@ class TestInitialization:
     """Tests for SearchCoordinator initialization."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_init_with_defaults(self, mock_ollama, mock_get_db, search_config):
+    def test_init_with_defaults(self, mock_get_db, search_config):
         """Test initialization with default settings."""
         mock_get_db.return_value = MagicMock()
 
@@ -123,8 +116,7 @@ class TestInitialization:
         assert coordinator.max_deduplicated == 100
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_init_with_custom_limits(self, mock_ollama, mock_get_db, minimal_config):
+    def test_init_with_custom_limits(self, mock_get_db, minimal_config):
         """Test initialization with custom limits."""
         mock_get_db.return_value = MagicMock()
 
@@ -136,8 +128,7 @@ class TestInitialization:
         assert coordinator.max_deduplicated == 20
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_init_with_empty_config(self, mock_ollama, mock_get_db):
+    def test_init_with_empty_config(self, mock_get_db):
         """Test initialization with empty config uses defaults."""
         mock_get_db.return_value = MagicMock()
 
@@ -150,35 +141,36 @@ class TestInitialization:
         assert coordinator.max_deduplicated == 100  # DEFAULT_MAX_DEDUPLICATED
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama", None)
-    def test_init_without_ollama_raises(self, mock_get_db, search_config):
-        """Test that initialization fails without ollama library."""
+    def test_init_with_query_timeout(self, mock_get_db):
+        """Test initialization with custom query timeout."""
         mock_get_db.return_value = MagicMock()
 
-        with pytest.raises(ImportError, match="ollama package required"):
-            SearchCoordinator(config=search_config)
+        config = {"query_timeout_ms": 600000}  # 10 minutes
+        coordinator = SearchCoordinator(config=config)
+
+        assert coordinator.query_timeout_ms == 600000
 
 
 # Unit Tests - Semantic Search
 
 
 class TestSemanticSearch:
-    """Tests for semantic search functionality."""
+    """Tests for semantic search functionality.
+
+    Note: Semantic search now uses PostgreSQL's semantic_docsearch() function
+    which handles embedding generation server-side.
+    """
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_semantic_search_returns_doc_ids(
-        self, mock_ollama, mock_get_db, search_config, mock_embedding
-    ):
+    def test_semantic_search_returns_doc_ids(self, mock_get_db, search_config):
         """Test semantic search returns list of document IDs."""
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.return_value = {"embedding": mock_embedding}
 
         coordinator = SearchCoordinator(config=search_config)
 
-        # Mock database results
+        # Mock database results from semantic_docsearch function
         mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [(123, 0.1), (456, 0.2), (789, 0.3)]
+        mock_cursor.fetchall.return_value = [(123, 0.9), (456, 0.8), (789, 0.7)]
 
         with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
             mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
@@ -196,45 +188,58 @@ class TestSemanticSearch:
         assert results == [123, 456, 789]
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_semantic_search_empty_text_returns_empty(
-        self, mock_ollama, mock_get_db, search_config
-    ):
-        """Test semantic search with empty text returns empty list."""
+    def test_semantic_search_handles_db_embedding_failure(self, mock_get_db, search_config):
+        """Test semantic search handles server-side embedding failure gracefully."""
         mock_get_db.return_value = MagicMock()
 
         coordinator = SearchCoordinator(config=search_config)
 
-        results = coordinator.search_semantic("", limit=10)
+        # Simulate server-side embedding failure via exception
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = [
+            None,  # SET statement_timeout
+            Exception("Failed to generate embedding for search text"),
+        ]
+
+        with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = Mock(return_value=None)
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__ = Mock(
+                return_value=mock_cursor
+            )
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__exit__ = Mock(
+                return_value=None
+            )
+
+            results = coordinator.search_semantic("test query", limit=10)
 
         assert results == []
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_semantic_search_whitespace_returns_empty(
-        self, mock_ollama, mock_get_db, search_config
-    ):
-        """Test semantic search with whitespace-only text returns empty list."""
+    def test_semantic_search_handles_timeout(self, mock_get_db, search_config):
+        """Test semantic search handles query timeout gracefully."""
         mock_get_db.return_value = MagicMock()
 
         coordinator = SearchCoordinator(config=search_config)
 
-        results = coordinator.search_semantic("   \n\t   ", limit=10)
+        # Simulate timeout exception
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = [
+            None,  # SET statement_timeout
+            Exception("canceling statement due to statement timeout"),
+        ]
 
-        assert results == []
+        with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = Mock(return_value=None)
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__ = Mock(
+                return_value=mock_cursor
+            )
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__exit__ = Mock(
+                return_value=None
+            )
 
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_semantic_search_embedding_failure_returns_empty(
-        self, mock_ollama, mock_get_db, search_config
-    ):
-        """Test semantic search handles embedding failure gracefully."""
-        mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.side_effect = Exception("Ollama error")
-
-        coordinator = SearchCoordinator(config=search_config)
-
-        results = coordinator.search_semantic("test query", limit=10)
+            results = coordinator.search_semantic("test query", limit=10)
 
         assert results == []
 
@@ -243,24 +248,24 @@ class TestSemanticSearch:
 
 
 class TestHyDESearch:
-    """Tests for HyDE search functionality."""
+    """Tests for HyDE search functionality.
+
+    Note: HyDE search now uses PostgreSQL's semantic_docsearch() function
+    which handles embedding generation server-side.
+    """
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_hyde_search_returns_deduplicated_ids(
-        self, mock_ollama, mock_get_db, search_config, mock_embedding
-    ):
+    def test_hyde_search_returns_deduplicated_ids(self, mock_get_db, search_config):
         """Test HyDE search returns deduplicated document IDs."""
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.return_value = {"embedding": mock_embedding}
 
         coordinator = SearchCoordinator(config=search_config)
 
         # Mock database results (same doc 123 in both searches)
         mock_cursor = MagicMock()
         mock_cursor.fetchall.side_effect = [
-            [(123, 0.1), (456, 0.2)],  # First HyDE abstract
-            [(123, 0.15), (789, 0.3)],  # Second HyDE abstract
+            [(123, 0.9), (456, 0.8)],  # First HyDE abstract
+            [(123, 0.85), (789, 0.7)],  # Second HyDE abstract
         ]
 
         with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
@@ -285,10 +290,7 @@ class TestHyDESearch:
         assert 789 in results
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_hyde_search_empty_abstracts_returns_empty(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_hyde_search_empty_abstracts_returns_empty(self, mock_get_db, search_config):
         """Test HyDE search with empty abstracts list returns empty list."""
         mock_get_db.return_value = MagicMock()
 
@@ -299,22 +301,21 @@ class TestHyDESearch:
         assert results == []
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_hyde_search_partial_failure_continues(
-        self, mock_ollama, mock_get_db, search_config, mock_embedding
-    ):
+    def test_hyde_search_partial_failure_continues(self, mock_get_db, search_config):
         """Test HyDE search continues if some abstracts fail."""
         mock_get_db.return_value = MagicMock()
-        # First embedding fails, second succeeds
-        mock_ollama.embeddings.side_effect = [
-            Exception("Failed"),
-            {"embedding": mock_embedding},
-        ]
 
         coordinator = SearchCoordinator(config=search_config)
 
+        # First abstract fails with embedding error, second succeeds
         mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [(123, 0.1)]
+        mock_cursor.execute.side_effect = [
+            None,  # SET timeout for first abstract
+            Exception("Failed to generate embedding"),  # First query fails
+            None,  # SET timeout for second abstract
+            None,  # Second query succeeds
+        ]
+        mock_cursor.fetchall.return_value = [(123, 0.9)]
 
         with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
             mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
@@ -336,18 +337,34 @@ class TestHyDESearch:
         assert results[0] == 123
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_hyde_search_all_failures_raises(
-        self, mock_ollama, mock_get_db, search_config
-    ):
-        """Test HyDE search raises if all abstracts fail."""
+    def test_hyde_search_all_failures_returns_empty(self, mock_get_db, search_config):
+        """Test HyDE search returns empty list if all abstracts fail.
+
+        Note: Changed from raising RuntimeError to returning empty list
+        to allow other search strategies to continue.
+        """
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.side_effect = Exception("All failed")
 
         coordinator = SearchCoordinator(config=search_config)
 
-        with pytest.raises(RuntimeError, match="All HyDE searches failed"):
-            coordinator.search_hyde(hyde_abstracts=["abstract1"], limit=10)
+        # All abstracts fail with embedding errors
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = Exception("Failed to generate embedding")
+
+        with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = Mock(return_value=None)
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__ = Mock(
+                return_value=mock_cursor
+            )
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__exit__ = Mock(
+                return_value=None
+            )
+
+            results = coordinator.search_hyde(hyde_abstracts=["abstract1"], limit=10)
+
+        # Should return empty list instead of raising
+        assert results == []
 
 
 # Unit Tests - Keyword Search
@@ -357,10 +374,7 @@ class TestKeywordSearch:
     """Tests for keyword search functionality."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_keyword_search_returns_doc_ids(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_keyword_search_returns_doc_ids(self, mock_get_db, search_config):
         """Test keyword search returns list of document IDs."""
         mock_get_db.return_value = MagicMock()
 
@@ -388,10 +402,7 @@ class TestKeywordSearch:
         assert results == [123, 456, 789]
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_keyword_search_empty_keywords_returns_empty(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_keyword_search_empty_keywords_returns_empty(self, mock_get_db, search_config):
         """Test keyword search with empty keywords returns empty list."""
         mock_get_db.return_value = MagicMock()
 
@@ -409,8 +420,7 @@ class TestTsqueryEscaping:
     """Tests for tsquery term escaping."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_escape_special_characters(self, mock_ollama, mock_get_db, search_config):
+    def test_escape_special_characters(self, mock_get_db, search_config):
         """Test escaping of special tsquery characters."""
         mock_get_db.return_value = MagicMock()
         coordinator = SearchCoordinator(config=search_config)
@@ -428,8 +438,7 @@ class TestTsqueryEscaping:
         assert " & " in result
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_escape_multi_word_terms(self, mock_ollama, mock_get_db, search_config):
+    def test_escape_multi_word_terms(self, mock_get_db, search_config):
         """Test multi-word terms are joined with AND."""
         mock_get_db.return_value = MagicMock()
         coordinator = SearchCoordinator(config=search_config)
@@ -438,8 +447,7 @@ class TestTsqueryEscaping:
         assert "&" in result
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_escape_empty_term(self, mock_ollama, mock_get_db, search_config):
+    def test_escape_empty_term(self, mock_get_db, search_config):
         """Test empty term returns fallback."""
         mock_get_db.return_value = MagicMock()
         coordinator = SearchCoordinator(config=search_config)
@@ -455,13 +463,11 @@ class TestFullSearch:
     """Tests for the full multi-strategy search."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
     def test_search_combines_all_strategies(
-        self, mock_ollama, mock_get_db, search_config, sample_counter_statement, mock_embedding
+        self, mock_get_db, search_config, sample_counter_statement
     ):
         """Test that search combines results from all strategies."""
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.return_value = {"embedding": mock_embedding}
 
         coordinator = SearchCoordinator(config=search_config)
 
@@ -479,9 +485,8 @@ class TestFullSearch:
         assert set(results.deduplicated_docs) == {1, 2, 3, 4, 5}
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
     def test_search_provenance_tracking(
-        self, mock_ollama, mock_get_db, search_config, sample_counter_statement
+        self, mock_get_db, search_config, sample_counter_statement
     ):
         """Test that provenance is tracked correctly."""
         mock_get_db.return_value = MagicMock()
@@ -506,9 +511,8 @@ class TestFullSearch:
         assert "keyword" in results.provenance[3]
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
     def test_search_continues_on_partial_failure(
-        self, mock_ollama, mock_get_db, search_config, sample_counter_statement
+        self, mock_get_db, search_config, sample_counter_statement
     ):
         """Test search continues when some strategies fail."""
         mock_get_db.return_value = MagicMock()
@@ -527,9 +531,8 @@ class TestFullSearch:
         assert set(results.deduplicated_docs) == {1, 2, 3}
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
     def test_search_raises_when_all_fail(
-        self, mock_ollama, mock_get_db, search_config, sample_counter_statement
+        self, mock_get_db, search_config, sample_counter_statement
     ):
         """Test search raises when all strategies fail."""
         mock_get_db.return_value = MagicMock()
@@ -550,10 +553,7 @@ class TestPrioritization:
     """Tests for multi-strategy document prioritization."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_prioritize_multi_strategy_docs(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_prioritize_multi_strategy_docs(self, mock_get_db, search_config):
         """Test documents found by multiple strategies are prioritized."""
         mock_get_db.return_value = MagicMock()
         coordinator = SearchCoordinator(config=search_config)
@@ -574,10 +574,7 @@ class TestPrioritization:
         assert len(result) == 3
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_prioritize_respects_limit(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_prioritize_respects_limit(self, mock_get_db, search_config):
         """Test prioritization respects the limit parameter."""
         mock_get_db.return_value = MagicMock()
         coordinator = SearchCoordinator(config=search_config)
@@ -597,9 +594,8 @@ class TestResultLimiting:
     """Tests for result limiting."""
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
     def test_limits_results_when_exceeds_max(
-        self, mock_ollama, mock_get_db, minimal_config, sample_counter_statement
+        self, mock_get_db, minimal_config, sample_counter_statement
     ):
         """Test that results are limited when exceeding max_deduplicated."""
         mock_get_db.return_value = MagicMock()
@@ -622,21 +618,22 @@ class TestResultLimiting:
 
 
 class TestConnectionTesting:
-    """Tests for connection testing functionality."""
+    """Tests for connection testing functionality.
+
+    Note: test_connection now uses semantic_docsearch() to verify
+    both database and Ollama connectivity in one call.
+    """
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_connection_success(
-        self, mock_ollama, mock_get_db, search_config, mock_embedding
-    ):
+    def test_connection_success(self, mock_get_db, search_config):
         """Test successful connection check."""
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.return_value = {"embedding": mock_embedding}
 
         coordinator = SearchCoordinator(config=search_config)
 
         mock_cursor = MagicMock()
         mock_cursor.fetchone.return_value = (1,)
+        mock_cursor.fetchall.return_value = []  # Empty result from semantic_docsearch
 
         with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
             mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
@@ -653,10 +650,7 @@ class TestConnectionTesting:
         assert result is True
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_connection_failure_db(
-        self, mock_ollama, mock_get_db, search_config
-    ):
+    def test_connection_failure_db(self, mock_get_db, search_config):
         """Test connection failure when database fails."""
         mock_get_db.return_value = MagicMock()
 
@@ -670,18 +664,49 @@ class TestConnectionTesting:
         assert result is False
 
     @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
-    @patch("bmlibrarian.paperchecker.components.search_coordinator.ollama")
-    def test_connection_failure_ollama(
-        self, mock_ollama, mock_get_db, search_config
-    ):
-        """Test connection failure when Ollama fails."""
+    def test_connection_failure_embedding(self, mock_get_db, search_config):
+        """Test connection failure when server-side embedding fails."""
         mock_get_db.return_value = MagicMock()
-        mock_ollama.embeddings.side_effect = Exception("Ollama error")
+
+        coordinator = SearchCoordinator(config=search_config)
+
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (1,)  # Basic SELECT 1 works
+        # But semantic_docsearch fails with embedding error
+        mock_cursor.execute.side_effect = [
+            None,  # SELECT 1
+            None,  # SET statement_timeout
+            Exception("Failed to generate embedding for search text"),
+        ]
+
+        with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
+            mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
+            mock_conn.return_value.__exit__ = Mock(return_value=None)
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__ = Mock(
+                return_value=mock_cursor
+            )
+            mock_conn.return_value.__enter__.return_value.cursor.return_value.__exit__ = Mock(
+                return_value=None
+            )
+
+            result = coordinator.test_connection()
+
+        assert result is False
+
+    @patch("bmlibrarian.paperchecker.components.search_coordinator.get_db_manager")
+    def test_connection_failure_missing_function(self, mock_get_db, search_config):
+        """Test connection failure when semantic_docsearch function is missing."""
+        mock_get_db.return_value = MagicMock()
 
         coordinator = SearchCoordinator(config=search_config)
 
         mock_cursor = MagicMock()
         mock_cursor.fetchone.return_value = (1,)
+        mock_cursor.execute.side_effect = [
+            None,  # SELECT 1
+            None,  # SET statement_timeout
+            Exception("function semantic_docsearch(text, double, integer) does not exist"),
+        ]
 
         with patch.object(coordinator.db_manager, "get_connection") as mock_conn:
             mock_conn.return_value.__enter__ = Mock(return_value=MagicMock())
