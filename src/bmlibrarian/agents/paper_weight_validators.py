@@ -59,6 +59,11 @@ def search_chunks_by_query(
     Search document chunks using semantic similarity.
 
     Uses embedding-based search to find chunks most relevant to the query.
+    Filters by document_id first, then performs vector search on only
+    that document's chunks for efficiency.
+
+    The semantic.chunks table stores embeddings directly with the chunks,
+    so we can query them together without joining to a separate embedding table.
 
     Args:
         document_id: Database ID of the document
@@ -76,30 +81,23 @@ def search_chunks_by_query(
 
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Use PostgreSQL's semantic_chunksearch function if available,
-                # otherwise fall back to direct embedding comparison
-                # This query searches within a specific document's chunks
+                # Generate embedding for the query, then search within document's chunks
+                # semantic.chunks stores embedding directly (not in separate table)
+                # Filter by document_id first for efficiency, then do vector search
                 cur.execute("""
                     WITH query_embedding AS (
                         SELECT ollama_embedding(%s) AS embedding
-                    ),
-                    chunk_scores AS (
-                        SELECT
-                            c.chunk_no,
-                            c.start_pos,
-                            c.end_pos,
-                            substr(d.full_text, c.start_pos + 1, c.end_pos - c.start_pos + 1) as chunk_text,
-                            1 - (e.embedding <=> qe.embedding) AS similarity
-                        FROM semantic.chunks c
-                        JOIN public.document d ON c.document_id = d.id
-                        JOIN semantic.emb_1024 e ON c.id = e.chunk_id
-                        CROSS JOIN query_embedding qe
-                        WHERE c.document_id = %s
                     )
-                    SELECT chunk_no, chunk_text, similarity
-                    FROM chunk_scores
-                    WHERE similarity >= %s
-                    ORDER BY similarity DESC
+                    SELECT
+                        c.chunk_no,
+                        substr(d.full_text, c.start_pos + 1, c.end_pos - c.start_pos + 1) as chunk_text,
+                        (1 - (c.embedding <=> qe.embedding))::FLOAT AS similarity
+                    FROM semantic.chunks c
+                    JOIN public.document d ON c.document_id = d.id
+                    CROSS JOIN query_embedding qe
+                    WHERE c.document_id = %s
+                      AND (1 - (c.embedding <=> qe.embedding)) >= %s
+                    ORDER BY c.embedding <=> qe.embedding
                     LIMIT %s
                 """, (query, document_id, similarity_threshold, max_chunks))
 
