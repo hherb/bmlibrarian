@@ -21,6 +21,7 @@ DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
 DEFAULT_SIMILARITY_THRESHOLD = 0.3
 DEFAULT_MAX_CHUNKS = 5
 DEFAULT_MAX_CONTEXT_LENGTH = 4000
+DEFAULT_SAMPLE_SIZE_CONFLICT_THRESHOLD = 0.2  # 20% difference triggers conflict
 
 
 @dataclass
@@ -66,14 +67,27 @@ def search_chunks_by_query(
     so we can query them together without joining to a separate embedding table.
 
     Args:
-        document_id: Database ID of the document
-        query: Natural language query for semantic matching
-        max_chunks: Maximum chunks to retrieve
+        document_id: Database ID of the document (must be positive)
+        query: Natural language query for semantic matching (non-empty)
+        max_chunks: Maximum chunks to retrieve (must be positive)
         similarity_threshold: Minimum similarity score (0.0-1.0)
 
     Returns:
         List of chunk dicts with 'chunk_no', 'chunk_text', 'similarity'
+
+    Raises:
+        ValueError: If inputs are invalid
     """
+    # Input validation
+    if document_id <= 0:
+        raise ValueError(f"document_id must be positive, got {document_id}")
+    if not query or not query.strip():
+        raise ValueError("query cannot be empty")
+    if max_chunks <= 0:
+        raise ValueError(f"max_chunks must be positive, got {max_chunks}")
+    if not 0.0 <= similarity_threshold <= 1.0:
+        raise ValueError(f"similarity_threshold must be 0.0-1.0, got {similarity_threshold}")
+
     from ..database import get_db_manager
 
     try:
@@ -120,9 +134,12 @@ def search_chunks_by_query(
         return []
 
 
+DEFAULT_CHUNK_LIMIT = 20  # Default limit for get_all_document_chunks
+
+
 def get_all_document_chunks(
     document_id: int,
-    limit: int = 20,
+    limit: int = DEFAULT_CHUNK_LIMIT,
 ) -> List[Dict[str, Any]]:
     """
     Get all chunks for a document ordered by position.
@@ -130,12 +147,21 @@ def get_all_document_chunks(
     Fallback when semantic search is unavailable or for comprehensive analysis.
 
     Args:
-        document_id: Database ID of the document
-        limit: Maximum chunks to retrieve
+        document_id: Database ID of the document (must be positive)
+        limit: Maximum chunks to retrieve (must be positive)
 
     Returns:
         List of chunk dicts with 'chunk_no', 'chunk_text'
+
+    Raises:
+        ValueError: If inputs are invalid
     """
+    # Input validation
+    if document_id <= 0:
+        raise ValueError(f"document_id must be positive, got {document_id}")
+    if limit <= 0:
+        raise ValueError(f"limit must be positive, got {limit}")
+
     from ..database import get_db_manager
 
     try:
@@ -302,8 +328,8 @@ def validate_study_type_extraction(
 
     for detail in dimension_score.details:
         if detail.component == 'study_type':
-            rule_based_type = detail.value
-            rule_based_evidence = detail.evidence or ""
+            rule_based_type = detail.extracted_value or "unknown"
+            rule_based_evidence = detail.evidence_text or ""
             break
 
     result.rule_based_value = rule_based_type
@@ -411,11 +437,11 @@ def validate_sample_size_extraction(
     for detail in dimension_score.details:
         if detail.component == 'extracted_n':
             try:
-                if detail.value != 'not_found':
-                    rule_based_n = int(detail.value)
+                if detail.extracted_value and detail.extracted_value != 'not_found':
+                    rule_based_n = int(detail.extracted_value)
             except (ValueError, TypeError):
                 pass
-            rule_based_evidence = detail.evidence or ""
+            rule_based_evidence = detail.evidence_text or ""
             break
 
     result.rule_based_value = str(rule_based_n) if rule_based_n else "not_found"
@@ -472,10 +498,10 @@ def validate_sample_size_extraction(
             result.has_conflict = parsed.get('has_conflict', False)
             result.conflict_details = parsed.get('conflict_details', '')
 
-            # Check for significant sample size difference (>20% difference)
+            # Check for significant sample size difference
             if rule_based_n and assessed_n:
                 diff_ratio = abs(rule_based_n - assessed_n) / max(rule_based_n, assessed_n)
-                if diff_ratio > 0.2:
+                if diff_ratio > DEFAULT_SAMPLE_SIZE_CONFLICT_THRESHOLD:
                     result.has_conflict = True
                     if not result.conflict_details:
                         result.conflict_details = (
