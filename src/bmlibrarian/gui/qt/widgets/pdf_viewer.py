@@ -217,7 +217,10 @@ class PDFViewerWidget(QWidget):
             self.current_page = page
             navigator = self._pdf_view.pageNavigator()
             if navigator:
-                navigator.jump(page, point=navigator.currentLocation().position)
+                # QPdfPageNavigator.jump() takes page number and location (QPointF).
+                # Navigate to top-left corner of the target page.
+                from PySide6.QtCore import QPointF
+                navigator.jump(page, QPointF(0, 0))
             else:
                 logger.warning(
                     "Page navigator unavailable - page navigation may not work correctly"

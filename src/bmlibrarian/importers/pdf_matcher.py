@@ -254,9 +254,9 @@ class PDFMatcher:
                     if validated_doi:
                         cur.execute(
                             """
-                            SELECT id, title, abstract, authors, doi, pmid,
-                                   publication_date, journal, source
-                            FROM documents
+                            SELECT id, title, abstract, authors, doi, external_id,
+                                   publication_date, publication, source_id
+                            FROM document
                             WHERE LOWER(doi) = LOWER(%s)
                             LIMIT 1
                             """,
@@ -267,14 +267,14 @@ class PDFMatcher:
                             logger.debug(f"Found document by DOI: {validated_doi}")
                             return self._row_to_quick_lookup_dict(row)
 
-                    # Try PMID
+                    # Try PMID (stored in external_id column)
                     if validated_pmid:
                         cur.execute(
                             """
-                            SELECT id, title, abstract, authors, doi, pmid,
-                                   publication_date, journal, source
-                            FROM documents
-                            WHERE pmid = %s
+                            SELECT id, title, abstract, authors, doi, external_id,
+                                   publication_date, publication, source_id
+                            FROM document
+                            WHERE external_id = %s
                             LIMIT 1
                             """,
                             (validated_pmid,)
@@ -660,6 +660,72 @@ Text to analyze:
         logger.info("No matching document found in database")
         return None
 
+    def find_alternative_matches(
+        self,
+        title: str,
+        exclude_id: Optional[int] = None,
+        max_results: int = 5,
+        min_similarity: float = 0.4
+    ) -> List[Dict[str, Any]]:
+        """
+        Find alternative matching documents by title similarity.
+
+        This method is used to provide a list of potential matches when
+        the primary match might not be correct, allowing users to select
+        the correct document from alternatives.
+
+        Args:
+            title: Title to search for
+            exclude_id: Document ID to exclude from results (e.g., primary match)
+            max_results: Maximum number of alternatives to return
+            min_similarity: Minimum similarity score (0.0 to 1.0)
+
+        Returns:
+            List of document dictionaries ordered by similarity
+        """
+        if not title or not title.strip():
+            return []
+
+        title = title.strip()
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Find documents by title similarity, excluding the primary match
+                    if exclude_id:
+                        cur.execute("""
+                            SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
+                                   similarity(title, %s) AS sim
+                            FROM document
+                            WHERE similarity(title, %s) > %s
+                              AND id != %s
+                            ORDER BY sim DESC
+                            LIMIT %s
+                        """, (title, title, min_similarity, exclude_id, max_results))
+                    else:
+                        cur.execute("""
+                            SELECT id, doi, title, publication_date, pdf_filename, pdf_url, external_id,
+                                   similarity(title, %s) AS sim
+                            FROM document
+                            WHERE similarity(title, %s) > %s
+                            ORDER BY sim DESC
+                            LIMIT %s
+                        """, (title, title, min_similarity, max_results))
+
+                    results = []
+                    for row in cur.fetchall():
+                        doc = self._row_to_basic_document_dict(row[:7])  # First 7 columns
+                        doc['similarity'] = row[7]  # Last column is similarity score
+                        results.append(doc)
+
+                    if results:
+                        logger.info(f"Found {len(results)} alternative matches for title")
+                    return results
+
+        except Exception as e:
+            logger.error(f"Error finding alternative matches: {e}")
+            return []
+
     def _row_to_basic_document_dict(self, row: tuple) -> Dict[str, Any]:
         """
         Convert database row to basic document dictionary.
@@ -689,11 +755,13 @@ Text to analyze:
         Convert database row to document dictionary for quick lookup.
 
         Used by quick_database_lookup() which queries:
-        SELECT id, title, abstract, authors, doi, pmid, publication_date, journal, source
+        SELECT id, title, abstract, authors, doi, external_id,
+               publication_date, publication, source_id
 
         Args:
             row: Database row tuple with 9 columns in order:
-                 id, title, abstract, authors, doi, pmid, publication_date, journal, source
+                 id, title, abstract, authors, doi, external_id,
+                 publication_date, publication, source_id
 
         Returns:
             Document dictionary with full metadata from quick lookup
@@ -704,10 +772,10 @@ Text to analyze:
             'abstract': row[2],
             'authors': row[3] or [],
             'doi': row[4],
-            'pmid': row[5],
+            'external_id': row[5],  # PMID stored in external_id
             'publication_date': row[6],
-            'journal': row[7],
-            'source': row[8]
+            'publication': row[7],
+            'source_id': row[8]
         }
 
     def import_pdf_for_document(
