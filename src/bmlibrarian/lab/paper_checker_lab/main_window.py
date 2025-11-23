@@ -277,6 +277,10 @@ class PaperCheckerLab(QMainWindow):
         """
         Handle successful document fetch.
 
+        The abstract is used to extract statements for fact-checking.
+        The document_id enables semantic search over the full ingested text
+        for finding evidence and clarification during the fact-checking process.
+
         Args:
             document: Document data from database
         """
@@ -286,7 +290,8 @@ class PaperCheckerLab(QMainWindow):
                 self,
                 "No Abstract",
                 "The selected document has no abstract in the database.\n\n"
-                "Please use the Input tab to enter abstract text manually,\n"
+                "The abstract is needed to extract statements for fact-checking.\n"
+                "Please use the Input tab to enter text manually,\n"
                 "or select a different document."
             )
             self._workflow_tab.reset()
@@ -296,6 +301,8 @@ class PaperCheckerLab(QMainWindow):
             return
 
         # Build metadata from document
+        # document_id is critical - it enables semantic search over the full
+        # ingested text during fact-checking for evidence and clarification
         metadata = {
             'document_id': document.get('id'),
             'title': document.get('title', ''),
@@ -314,7 +321,8 @@ class PaperCheckerLab(QMainWindow):
                 if isinstance(pub_date, str) and len(pub_date) >= 4:
                     metadata['year'] = pub_date[:4]
 
-        # Start the check with the fetched abstract
+        # Start the check - abstract provides statements to check,
+        # document_id in metadata enables semantic search over full text
         self._do_start_check(abstract, metadata)
 
     def _on_document_fetch_error(self, error: str) -> None:

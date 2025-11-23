@@ -38,7 +38,9 @@ class PDFIngestWorker(QThread):
     Worker thread for PDF ingestion.
 
     Performs PDF storage, text extraction, and embedding in background.
-    This enables semantic search over the full document for fact-checking.
+    This enables semantic search over the full document text, which is used
+    during fact-checking to find evidence and clarification for statements
+    extracted from the abstract.
     """
 
     ingest_complete = Signal(object)  # IngestResult
@@ -160,8 +162,8 @@ class PDFUploadTab(QWidget):
         self._ingest_on_select.setChecked(True)
         self._ingest_on_select.setToolTip(
             "When checked, automatically ingest PDF (extract text and create embeddings)\n"
-            "when selecting or creating a document. This enables full-text semantic search\n"
-            "for comprehensive fact-checking against the complete paper content."
+            "when selecting or creating a document. This enables semantic search over the\n"
+            "full document text to find evidence and clarification during fact-checking."
         )
         options_layout.addWidget(self._ingest_on_select)
         options_layout.addStretch()
@@ -280,7 +282,8 @@ class PDFUploadTab(QWidget):
                 f"- Text extracted: {result.char_count:,} characters\n"
                 f"- Pages: {result.page_count}\n"
                 f"- Chunks created: {result.chunks_created}\n\n"
-                "The document is now ready for semantic search fact-checking."
+                "Semantic search over full text is now available for finding\n"
+                "evidence during fact-checking."
             )
         else:
             self._ingest_spinner.set_error("Ingestion completed with warnings")
