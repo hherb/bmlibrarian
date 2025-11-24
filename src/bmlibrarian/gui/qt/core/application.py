@@ -94,6 +94,13 @@ class BMLibrarianApplication:
             type=str,
             help="Username for auto-login without password (testing mode)"
         )
+        parser.add_argument(
+            "--env",
+            type=str,
+            metavar="FILE",
+            help="Load environment variables from specified file instead of .env "
+                 "(processed before application startup)"
+        )
         # Parse known args to allow Qt to handle its own arguments
         args, _ = parser.parse_known_args(argv)
         return args
@@ -319,8 +326,21 @@ class BMLibrarianApplication:
             return False
 
     def _load_env_file(self) -> None:
-        """Load environment variables from .env file."""
+        """Load environment variables from .env file.
+
+        If BMLIBRARIAN_ENV_FILE is set (indicating --env was used at startup),
+        this method does nothing since the env file was already loaded early
+        in the startup process.
+        """
         import os
+
+        # Check if a custom env file was already loaded via --env argument
+        # The entry point (bmlibrarian_qt.py) sets this when --env is used
+        if os.environ.get('BMLIBRARIAN_ENV_FILE'):
+            self.logger.debug(
+                f"Using pre-loaded env file: {os.environ.get('BMLIBRARIAN_ENV_FILE')}"
+            )
+            return
 
         env_paths = [
             Path.home() / ".bmlibrarian" / ".env",

@@ -771,11 +771,15 @@ class DatabaseSetupWorker(QThread):
         """
         Create the .env file with configuration.
 
-        Creates .env files in two locations:
+        If BMLIBRARIAN_ENV_FILE is set (via --env argument), writes ONLY to that
+        file and skips the default locations. This allows running the installer
+        against a custom environment without affecting the default configuration.
+
+        Otherwise, creates .env files in two locations:
         1. ~/.bmlibrarian/.env (PRIMARY - user configuration directory)
         2. <project_root>/.env (for development convenience)
 
-        Both files are created with restrictive permissions (0o600) to protect
+        All files are created with restrictive permissions (0o600) to protect
         sensitive credentials from unauthorized access.
         """
         env_content = f"""# BMLibrarian Configuration
@@ -795,24 +799,39 @@ PDF_BASE_DIR={self.pdf_dir}
 OLLAMA_HOST=http://localhost:11434
 """
 
-        # PRIMARY: Create in ~/.bmlibrarian (checked first when loading config)
-        config_dir = Path.home() / ".bmlibrarian"
-        config_dir.mkdir(mode=0o700, exist_ok=True)  # Secure directory permissions
-        user_env_path = config_dir / ".env"
-        user_env_path.write_text(env_content)
-        user_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
-        logger.info(f"Created primary .env file at {user_env_path} (mode 0o600)")
+        # Check if a custom env file was specified via --env argument
+        custom_env_file = os.environ.get('BMLIBRARIAN_ENV_FILE')
+        if custom_env_file:
+            # Write ONLY to the custom env file, skip default locations
+            custom_env_path = Path(custom_env_file)
+            custom_env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            custom_env_path.write_text(env_content)
+            custom_env_path.chmod(ENV_FILE_PERMISSIONS)
+            logger.info(
+                f"Created custom .env file at {custom_env_path} (mode 0o600) - "
+                "skipping default locations"
+            )
+        else:
+            # PRIMARY: Create in ~/.bmlibrarian (checked first when loading config)
+            config_dir = Path.home() / ".bmlibrarian"
+            config_dir.mkdir(mode=0o700, exist_ok=True)  # Secure directory permissions
+            user_env_path = config_dir / ".env"
+            user_env_path.write_text(env_content)
+            user_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
+            logger.info(f"Created primary .env file at {user_env_path} (mode 0o600)")
 
-        # SECONDARY: Write to project root for development convenience
-        project_root = find_project_root()
-        project_env_path = project_root / ".env"
-        try:
-            project_env_path.write_text(env_content)
-            project_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
-            logger.info(f"Created project .env file at {project_env_path} (mode 0o600)")
-        except PermissionError as e:
-            # Project directory may not be writable in some deployments
-            logger.warning(f"Could not create project .env file: {e}")
+            # SECONDARY: Write to project root for development convenience
+            project_root = find_project_root()
+            project_env_path = project_root / ".env"
+            try:
+                project_env_path.write_text(env_content)
+                project_env_path.chmod(ENV_FILE_PERMISSIONS)  # Owner read/write only
+                logger.info(
+                    f"Created project .env file at {project_env_path} (mode 0o600)"
+                )
+            except PermissionError as e:
+                # Project directory may not be writable in some deployments
+                logger.warning(f"Could not create project .env file: {e}")
 
         # Set environment variables for current session
         os.environ["POSTGRES_HOST"] = self.host
