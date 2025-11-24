@@ -21,6 +21,12 @@ from bmlibrarian.config import get_config
 from ...widgets.pdf_viewer import PDFViewerWidget
 from ...widgets.markdown_viewer import MarkdownViewer
 from ...resources.styles import get_font_scale, StylesheetGenerator
+from ...core.document_receiver import IDocumentReceiver
+from ...core.document_processor import (
+    DocumentProcessor,
+    ProcessingStage,
+    ContentSource,
+)
 
 
 class DocumentProcessingWorker(QThread):
@@ -98,6 +104,55 @@ class DocumentProcessingWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
+class DocumentPreparationWorker(QThread):
+    """Worker thread for document preparation (embedding creation) to prevent UI blocking."""
+
+    progress_update = Signal(str, str, int, int)  # stage, message, current, total
+    preparation_complete = Signal(object)  # DocumentProcessingResult
+    preparation_error = Signal(str)
+
+    def __init__(
+        self,
+        document_id: int,
+        parent: Optional[QThread] = None,
+    ):
+        """
+        Initialize worker thread.
+
+        Args:
+            document_id: Database document ID to prepare
+            parent: Parent object
+        """
+        super().__init__(parent)
+        self.document_id = document_id
+        self._processor: Optional[DocumentProcessor] = None
+
+    def run(self):
+        """Execute document preparation in background thread."""
+        try:
+            self._processor = DocumentProcessor()
+
+            def progress_callback(
+                stage: ProcessingStage,
+                message: str,
+                current: int,
+                total: int,
+            ) -> None:
+                self.progress_update.emit(stage.value, message, current, total)
+
+            result = self._processor.process_document(
+                document_id=self.document_id,
+                progress_callback=progress_callback,
+                prompt_callback=None,  # No user prompts in background thread
+                skip_pdf_search=False,
+            )
+
+            self.preparation_complete.emit(result)
+
+        except Exception as e:
+            self.preparation_error.emit(str(e))
+
+
 class ChatBubble(QFrame):
     """A single chat message bubble with DPI-aware dimensions."""
 
@@ -172,10 +227,13 @@ class ChatBubble(QFrame):
         layout.addWidget(message_label)
 
 
-class DocumentInterrogationTabWidget(QWidget):
-    """Main Document Interrogation tab widget."""
+class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
+    """Main Document Interrogation tab widget with document receiver capability."""
 
     status_message = Signal(str)
+
+    # IDocumentReceiver identifier
+    RECEIVER_ID = "document_interrogation"
 
     def __init__(self, parent: Optional[QWidget] = None):
         """
@@ -192,6 +250,7 @@ class DocumentInterrogationTabWidget(QWidget):
         self.current_document_id: Optional[int] = None  # Database document ID
         self.interrogation_agent: Optional[DocumentInterrogationAgent] = None
         self.worker: Optional[DocumentProcessingWorker] = None
+        self.preparation_worker: Optional[DocumentPreparationWorker] = None
 
         # Get DPI-aware font-relative scaling dimensions
         self.scale = get_font_scale()
@@ -746,8 +805,8 @@ class DocumentInterrogationTabWidget(QWidget):
         """
         Load a document from the database for interrogation.
 
-        Uses semantic search for efficient chunk retrieval instead of
-        loading all chunks. The document must have embeddings in the database.
+        Uses the DocumentProcessor to ensure embeddings exist, then displays
+        the document content (PDF or full text) in the viewer pane.
 
         Args:
             document_id: Database ID of the document
@@ -761,8 +820,13 @@ class DocumentInterrogationTabWidget(QWidget):
             # Set database document ID
             self.current_document_id = document_id
 
+            # Get document info first for display
+            processor = DocumentProcessor()
+            doc_info = processor.get_document_info(document_id)
+
+            display_title = title or (doc_info.title if doc_info else None) or f"Document #{document_id}"
+
             # Update label
-            display_title = title or f"Document #{document_id}"
             self.current_doc_label.setText(f"📄 {display_title}")
             self.current_doc_label.setStyleSheet(f"""
                 QLabel {{
@@ -773,28 +837,263 @@ class DocumentInterrogationTabWidget(QWidget):
             """)
 
             # Clear existing document viewer
-            while self.document_container.layout().count():
-                child = self.document_container.layout().takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+            self._clear_document_container()
 
-            # Show database document placeholder
-            placeholder = self._create_database_document_placeholder(document_id, display_title)
-            self.document_container.layout().addWidget(placeholder)
+            # Show loading placeholder initially
+            loading_widget = self._create_loading_placeholder(document_id, display_title)
+            self.document_container.layout().addWidget(loading_widget)
 
-            # Add confirmation to chat
+            # Add initial chat message
             self._add_chat_bubble(
-                f"✅ Database document loaded: {display_title}\n\n"
-                f"Document ID: {document_id}\n"
-                f"Using semantic search for efficient querying.\n\n"
+                f"📥 Loading document: {display_title}\n\n"
+                f"Checking for existing content and embeddings...",
+                is_user=False
+            )
+
+            self.status_message.emit(f"Loading database document: {display_title}")
+
+            # Start document preparation in background thread
+            self._start_document_preparation(document_id, display_title, doc_info)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load database document:\n{str(e)}")
+
+    def _clear_document_container(self) -> None:
+        """Clear all widgets from the document container."""
+        while self.document_container.layout().count():
+            child = self.document_container.layout().takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def _create_loading_placeholder(self, document_id: int, title: str) -> QWidget:
+        """Create loading placeholder widget."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel("⏳")
+        icon_label.setStyleSheet("font-size: 72pt;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        self._loading_status_label = QLabel("Checking document...")
+        self._loading_status_label.setStyleSheet("font-size: 10pt; color: #666;")
+        self._loading_status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._loading_status_label)
+
+        return widget
+
+    def _start_document_preparation(
+        self,
+        document_id: int,
+        title: str,
+        doc_info: Optional['DocumentInfo'] = None,
+    ) -> None:
+        """
+        Start document preparation in background thread.
+
+        Args:
+            document_id: Document ID
+            title: Document title for display
+            doc_info: Optional pre-fetched document info
+        """
+        # Stop any existing worker
+        if self.preparation_worker and self.preparation_worker.isRunning():
+            self.preparation_worker.quit()
+            self.preparation_worker.wait()
+
+        # Store title for later use
+        self._pending_title = title
+        self._pending_doc_info = doc_info
+
+        # Create and start worker
+        self.preparation_worker = DocumentPreparationWorker(document_id, self)
+        self.preparation_worker.progress_update.connect(self._on_preparation_progress)
+        self.preparation_worker.preparation_complete.connect(self._on_preparation_complete)
+        self.preparation_worker.preparation_error.connect(self._on_preparation_error)
+        self.preparation_worker.start()
+
+    @Slot(str, str, int, int)
+    def _on_preparation_progress(
+        self,
+        stage: str,
+        message: str,
+        current: int,
+        total: int,
+    ) -> None:
+        """Handle document preparation progress updates."""
+        # Update loading status label if it exists
+        if hasattr(self, '_loading_status_label') and self._loading_status_label:
+            self._loading_status_label.setText(message)
+        self.status_message.emit(message)
+
+    @Slot(object)
+    def _on_preparation_complete(self, result: 'DocumentProcessingResult') -> None:
+        """Handle document preparation completion."""
+        from bmlibrarian.gui.qt.core.document_processor import DocumentProcessingResult
+
+        title = getattr(self, '_pending_title', f"Document #{result.document_id}")
+
+        if result.success:
+            # Clear container and show actual document content
+            self._clear_document_container()
+
+            # Load document content into viewer
+            self._display_document_content(result)
+
+            # Build success message based on content source
+            source_descriptions = {
+                ContentSource.EXISTING_EMBEDDINGS: "using existing embeddings",
+                ContentSource.EXISTING_FULL_TEXT: "from database full text",
+                ContentSource.EXISTING_PDF: "from local PDF",
+                ContentSource.DOWNLOADED_PDF: "from downloaded PDF",
+                ContentSource.NXML_FULL_TEXT: "from PMC NXML",
+                ContentSource.ABSTRACT_ONLY: "using abstract only",
+            }
+            source_desc = source_descriptions.get(
+                result.content_source, "from available content"
+            )
+
+            self._add_chat_bubble(
+                f"✅ Document ready: {title}\n\n"
+                f"Content loaded {source_desc}.\n"
+                f"Chunks available: {result.chunks_created}\n\n"
                 f"You can now ask questions about this document.",
                 is_user=False
             )
 
-            self.status_message.emit(f"Loaded database document: {display_title}")
+            self.status_message.emit(f"Document ready: {title}")
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load database document:\n{str(e)}")
+        else:
+            # Show error state
+            self._clear_document_container()
+            error_widget = self._create_error_placeholder(
+                result.document_id,
+                title,
+                result.error_message or "Unknown error",
+            )
+            self.document_container.layout().addWidget(error_widget)
+
+            self._add_chat_bubble(
+                f"❌ Failed to load document: {title}\n\n"
+                f"Error: {result.error_message}\n\n"
+                f"Please try again or select a different document.",
+                is_user=False
+            )
+
+            self.status_message.emit(f"Failed to load document: {title}")
+
+    @Slot(str)
+    def _on_preparation_error(self, error: str) -> None:
+        """Handle document preparation error."""
+        title = getattr(self, '_pending_title', "Unknown document")
+
+        self._clear_document_container()
+        error_widget = self._create_error_placeholder(
+            self.current_document_id or 0,
+            title,
+            error,
+        )
+        self.document_container.layout().addWidget(error_widget)
+
+        self._add_chat_bubble(
+            f"❌ Error preparing document: {title}\n\n"
+            f"Error: {error}\n\n"
+            f"Please try again or select a different document.",
+            is_user=False
+        )
+
+        self.status_message.emit(f"Error: {error}")
+
+    def _create_error_placeholder(
+        self,
+        document_id: int,
+        title: str,
+        error: str,
+    ) -> QWidget:
+        """Create error placeholder widget."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel("❌")
+        icon_label.setStyleSheet("font-size: 72pt;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        error_label = QLabel(error)
+        error_label.setStyleSheet("font-size: 10pt; color: #d32f2f;")
+        error_label.setAlignment(Qt.AlignCenter)
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        return widget
+
+    def _display_document_content(self, result: 'DocumentProcessingResult') -> None:
+        """
+        Display document content in the viewer pane.
+
+        Checks for PDF first, then falls back to full text display.
+
+        Args:
+            result: Document processing result with content info
+        """
+        # Try to display PDF if available
+        if result.pdf_path and result.pdf_path.exists():
+            try:
+                self.pdf_viewer = PDFViewerWidget()
+                self.pdf_viewer.load_pdf(str(result.pdf_path))
+                self.document_container.layout().addWidget(self.pdf_viewer)
+                self.current_document_path = str(result.pdf_path)
+                return
+            except Exception as e:
+                # PDF load failed, fall through to text display
+                import logging
+                logging.getLogger(__name__).warning(f"PDF load failed: {e}")
+
+        # Check for PDF in database via processor
+        if self.current_document_id:
+            processor = DocumentProcessor()
+            doc_info = processor.get_document_info(self.current_document_id)
+            if doc_info:
+                pdf_path = processor.get_pdf_path(doc_info)
+                if pdf_path and pdf_path.exists():
+                    try:
+                        self.pdf_viewer = PDFViewerWidget()
+                        self.pdf_viewer.load_pdf(str(pdf_path))
+                        self.document_container.layout().addWidget(self.pdf_viewer)
+                        self.current_document_path = str(pdf_path)
+                        return
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"PDF load failed: {e}")
+
+        # Fall back to full text display
+        if result.full_text:
+            self.current_document_text = result.full_text
+            self.markdown_viewer = MarkdownViewer()
+            self.markdown_viewer.set_markdown(result.full_text)
+            self.document_container.layout().addWidget(self.markdown_viewer)
+            return
+
+        # No content available - show placeholder
+        placeholder = self._create_database_document_placeholder(
+            result.document_id,
+            getattr(self, '_pending_title', f"Document #{result.document_id}"),
+        )
+        self.document_container.layout().addWidget(placeholder)
 
     def _create_database_document_placeholder(
         self,
@@ -964,11 +1263,60 @@ class DocumentInterrogationTabWidget(QWidget):
         self.progress_label.setVisible(False)
         self.send_btn.setEnabled(True)
 
+    # IDocumentReceiver interface implementation
+
+    def get_receiver_id(self) -> str:
+        """Return unique identifier for this receiver."""
+        return self.RECEIVER_ID
+
+    def get_receiver_name(self) -> str:
+        """Return display name for context menu."""
+        return "Document Interrogation"
+
+    def get_receiver_description(self) -> Optional[str]:
+        """Return tooltip description for context menu."""
+        return "Ask questions about this document using AI chat interface"
+
+    def can_receive_document(self, document_data: dict) -> bool:
+        """
+        Check if this receiver can handle the document.
+
+        Args:
+            document_data: Document dictionary with document metadata
+
+        Returns:
+            True if document has an ID we can use
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        return doc_id is not None
+
+    def receive_document(self, document_data: dict) -> bool:
+        """
+        Receive a document from another tab.
+
+        Args:
+            document_data: Document dictionary with at least 'id' key
+
+        Returns:
+            True if document was accepted
+        """
+        doc_id = document_data.get('id') or document_data.get('document_id')
+        if doc_id is None:
+            return False
+
+        title = document_data.get('title')
+        self.load_database_document(doc_id, title)
+        return True
+
     def cleanup(self):
         """Cleanup resources."""
         if self.worker and self.worker.isRunning():
             self.worker.quit()
             self.worker.wait()
+
+        if self.preparation_worker and self.preparation_worker.isRunning():
+            self.preparation_worker.quit()
+            self.preparation_worker.wait()
 
 
 # Import QTimer for scroll delay
