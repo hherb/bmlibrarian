@@ -531,19 +531,35 @@ def validate_sample_size_extraction(
 def add_validation_to_dimension_score(
     dimension_score: DimensionScore,
     validation_result: ValidationResult,
+    study_type_hierarchy: dict | None = None,
 ) -> DimensionScore:
     """
     Add validation result information to a DimensionScore.
 
-    Adds a validation detail and sets conflict flags if needed.
+    When there is a conflict between rule-based extraction and LLM validation,
+    the LLM-assessed value takes precedence and the score is updated accordingly.
+    This prevents misleading keyword matches (e.g., a paper that *mentions* a
+    systematic review being classified as a systematic review).
 
     Args:
         dimension_score: Original dimension score to augment
         validation_result: Result from LLM validation
+        study_type_hierarchy: Optional dict mapping study types to scores.
+                             If not provided, uses DEFAULT_STUDY_TYPE_HIERARCHY.
 
     Returns:
-        Updated DimensionScore with validation information
+        Updated DimensionScore with validation information (score updated on conflict)
     """
+    # Import helpers
+    from .paper_weight_extractors import (
+        DEFAULT_STUDY_TYPE_HIERARCHY,
+        calculate_sample_size_score,
+    )
+    from .paper_weight_models import DIMENSION_STUDY_DESIGN, DIMENSION_SAMPLE_SIZE
+
+    if study_type_hierarchy is None:
+        study_type_hierarchy = DEFAULT_STUDY_TYPE_HIERARCHY
+
     # Add validation as a detail
     validation_status = "valid" if validation_result.is_valid else "invalid"
     if validation_result.has_conflict:
@@ -563,14 +579,44 @@ def add_validation_to_dimension_score(
         reasoning=validation_result.reasoning,
     )
 
-    # Add conflict detail if present
+    # Handle conflict: LLM assessment takes precedence over keyword/regex extraction
     if validation_result.has_conflict:
+        llm_value = validation_result.llm_assessed_value
+        old_score = dimension_score.score
+        llm_score: float | None = None
+
+        # Determine how to calculate the new score based on dimension type
+        if dimension_score.dimension_name == DIMENSION_STUDY_DESIGN:
+            # Study type: lookup in hierarchy
+            llm_score = study_type_hierarchy.get(llm_value)
+        elif dimension_score.dimension_name == DIMENSION_SAMPLE_SIZE:
+            # Sample size: recalculate using logarithmic scoring
+            try:
+                llm_n = int(llm_value) if llm_value and llm_value != "not_found" else None
+                if llm_n is not None and llm_n > 0:
+                    llm_score = calculate_sample_size_score(llm_n)
+            except (ValueError, TypeError):
+                pass
+
+        # Update the score if we have a valid LLM-assessed score
+        if llm_score is not None:
+            dimension_score.score = llm_score
+
+            logger.info(
+                f"Conflict resolved: Using LLM-assessed '{llm_value}' (score={llm_score:.2f}) "
+                f"instead of keyword-extracted '{validation_result.rule_based_value}' "
+                f"(score={old_score:.2f})"
+            )
+
         dimension_score.add_detail(
             component='validation_conflict',
-            value=validation_result.llm_assessed_value,
-            contribution=0.0,
-            evidence=validation_result.supporting_quote,  # Include quote with conflict too
-            reasoning=validation_result.conflict_details,
+            value=llm_value,
+            contribution=llm_score if llm_score is not None else 0.0,
+            evidence=validation_result.supporting_quote,
+            reasoning=(
+                f"LLM validation overrides keyword extraction. "
+                f"{validation_result.conflict_details}"
+            ),
         )
 
     return dimension_score
