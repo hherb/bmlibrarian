@@ -38,6 +38,8 @@ from .data_types import (
     ChunkContext,
     SemanticSearchAnswer,
     DocumentTextStatus,
+    ProxyCallbackResult,
+    ProxyCallback,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,9 @@ DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
 # Minimum abstract length to consider usable (characters)
 MIN_ABSTRACT_LENGTH = 50
+
+# Maximum retries when user claims PDF was made available but it's still not found
+MAX_PDF_AVAILABILITY_RETRIES = 2
 
 
 def _get_document_text_status(
@@ -253,6 +258,34 @@ def _get_document_abstract(document_id: int, db_manager: "DatabaseManager") -> O
 
     except Exception as e:
         logger.error(f"Error getting document abstract: {e}")
+        return None
+
+
+def _get_document_title(document_id: int, db_manager: "DatabaseManager") -> Optional[str]:
+    """
+    Get the title for a document.
+
+    Used to provide context in the proxy callback.
+
+    Args:
+        document_id: The document's database ID.
+        db_manager: Database manager instance.
+
+    Returns:
+        Document title, or None if not available.
+    """
+    try:
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT title FROM public.document WHERE id = %s",
+                    (document_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row and row[0] else None
+
+    except Exception as e:
+        logger.error(f"Error getting document title: {e}")
         return None
 
 
@@ -530,7 +563,8 @@ def answer_from_document(
     *,
     use_fulltext: bool = True,
     download_missing_fulltext: bool = True,
-    use_proxy: bool = True,
+    always_allow_proxy: bool = False,
+    proxy_callback: Optional[ProxyCallback] = None,
     model: Optional[str] = None,
     max_chunks: int = DEFAULT_MAX_CHUNKS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
@@ -542,7 +576,7 @@ def answer_from_document(
 
     This function provides a complete workflow for document Q&A:
     1. Checks what text is available (full-text vs abstract)
-    2. Optionally downloads missing full-text
+    2. Optionally downloads missing full-text (with optional proxy consent)
     3. Generates embeddings if needed
     4. Performs document-specific semantic search
     5. Generates an answer using the LLM
@@ -554,8 +588,14 @@ def answer_from_document(
         use_fulltext: If True, prefer full-text over abstract. Default True.
         download_missing_fulltext: If True and full-text missing, attempt download.
             Default True.
-        use_proxy: If True and download needed, use OpenAthens proxy if configured.
-            Default True.
+        always_allow_proxy: If True, automatically use OpenAthens proxy without
+            asking for user consent. If False (default), the proxy_callback is
+            invoked to request user consent before using institutional proxy.
+        proxy_callback: Optional callback function invoked when PDF is not
+            available via open-access sources. The callback receives
+            (document_id, document_title) and should return a ProxyCallbackResult.
+            This allows UI integration for user consent or manual PDF upload.
+            If None and always_allow_proxy is False, proxy won't be used.
         model: LLM model for answer generation. Uses config default if None.
         max_chunks: Maximum number of context chunks to use. Default 5.
         similarity_threshold: Minimum semantic similarity (0.0-1.0). Default 0.7.
@@ -566,6 +606,7 @@ def answer_from_document(
         SemanticSearchAnswer with the answer and metadata.
 
     Example:
+        >>> # Basic usage (no proxy)
         >>> result = answer_from_document(
         ...     document_id=12345,
         ...     question="What are the main findings?"
@@ -574,6 +615,23 @@ def answer_from_document(
         ...     print(result.answer)
         ... else:
         ...     print(f"Error: {result.error_message}")
+
+        >>> # With automatic proxy (no user consent required)
+        >>> result = answer_from_document(
+        ...     document_id=12345,
+        ...     question="What methodology was used?",
+        ...     always_allow_proxy=True
+        ... )
+
+        >>> # With callback for user consent
+        >>> def my_callback(doc_id, title):
+        ...     # Ask user for consent
+        ...     return ProxyCallbackResult(allow_proxy=True)
+        >>> result = answer_from_document(
+        ...     document_id=12345,
+        ...     question="What are the conclusions?",
+        ...     proxy_callback=my_callback
+        ... )
     """
     # Validate inputs
     if not question or not question.strip():
@@ -647,11 +705,60 @@ def answer_from_document(
     if use_fulltext:
         # Try to use full-text
         if not status.has_fulltext and download_missing_fulltext:
-            # Attempt to download
-            logger.info(f"Attempting to download full-text for document {document_id}")
-            if _download_fulltext_if_needed(document_id, db_manager, use_proxy):
-                # Refresh status after download
+            # First attempt: try open-access sources (no proxy)
+            logger.info(f"Attempting to download full-text for document {document_id} (open access)")
+            download_success = _download_fulltext_if_needed(
+                document_id, db_manager, use_proxy=False
+            )
+
+            if download_success:
+                # Refresh status after successful download
                 status = _get_document_text_status(document_id, db_manager)
+            else:
+                # Open access failed - need to decide on proxy
+                logger.info(f"Open access download failed for document {document_id}")
+
+                if always_allow_proxy:
+                    # Auto-consent: use proxy directly without asking
+                    logger.info(f"Using proxy automatically for document {document_id}")
+                    if _download_fulltext_if_needed(document_id, db_manager, use_proxy=True):
+                        status = _get_document_text_status(document_id, db_manager)
+
+                elif proxy_callback is not None:
+                    # Ask user via callback
+                    doc_title = status.title or _get_document_title(document_id, db_manager)
+                    logger.info(f"Invoking proxy callback for document {document_id}")
+
+                    callback_result = proxy_callback(document_id, doc_title)
+
+                    if callback_result.pdf_made_available:
+                        # User uploaded PDF manually - refresh status
+                        # Use retry loop in case embedding takes time
+                        logger.info(f"PDF made available externally for document {document_id}")
+                        for retry in range(MAX_PDF_AVAILABILITY_RETRIES):
+                            status = _get_document_text_status(document_id, db_manager)
+                            if status and status.has_fulltext:
+                                logger.info(f"Full-text now available for document {document_id}")
+                                break
+                            logger.warning(
+                                f"Full-text not yet visible for document {document_id} "
+                                f"(retry {retry + 1}/{MAX_PDF_AVAILABILITY_RETRIES})"
+                            )
+                        else:
+                            logger.warning(
+                                f"PDF claimed available but full-text still not found "
+                                f"for document {document_id}"
+                            )
+
+                    elif callback_result.allow_proxy:
+                        # User consented to proxy - try OpenAthens
+                        logger.info(f"User consented to proxy for document {document_id}")
+                        if _download_fulltext_if_needed(document_id, db_manager, use_proxy=True):
+                            status = _get_document_text_status(document_id, db_manager)
+                    else:
+                        # User declined both options
+                        logger.info(f"User declined proxy/upload for document {document_id}")
+                # else: no callback provided and not auto-allow → skip proxy, fall back to abstract
 
         if status.has_fulltext:
             # Ensure embeddings exist

@@ -7,7 +7,10 @@ following BMLibrarian's type-safe design principles.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TypeAlias
 
 
 class AnswerSource(Enum):
@@ -39,6 +42,8 @@ class QAError(Enum):
     LLM_ERROR = "llm_error"
     DATABASE_ERROR = "database_error"
     CONFIGURATION_ERROR = "configuration_error"
+    PROXY_REQUIRED = "proxy_required"
+    USER_CANCELLED = "user_cancelled"
 
     @property
     def description(self) -> str:
@@ -53,8 +58,42 @@ class QAError(Enum):
             QAError.LLM_ERROR: "Error during LLM inference",
             QAError.DATABASE_ERROR: "Database operation failed",
             QAError.CONFIGURATION_ERROR: "Configuration is invalid or missing required settings",
+            QAError.PROXY_REQUIRED: "PDF requires institutional access; proxy authentication needed",
+            QAError.USER_CANCELLED: "User declined to provide PDF or authorize proxy access",
         }
         return descriptions.get(self, "Unknown error")
+
+
+@dataclass
+class ProxyCallbackResult:
+    """
+    Result from the proxy callback function.
+
+    Used when the QA system needs user consent to either:
+    1. Use institutional proxy (OpenAthens) for PDF download
+    2. Accept a manually uploaded/provided PDF
+
+    Attributes:
+        pdf_made_available: True if the caller has downloaded and embedded
+            the PDF externally (e.g., user uploaded it manually via GUI).
+            If True, the QA system will refresh document status and continue
+            processing with the newly available full-text.
+        allow_proxy: True if the user consents to using institutional proxy
+            (OpenAthens) to attempt PDF download. Only used if
+            pdf_made_available is False.
+    """
+
+    pdf_made_available: bool = False
+    allow_proxy: bool = False
+
+    def __repr__(self) -> str:
+        """Return a concise representation for debugging."""
+        return f"ProxyCallbackResult(pdf_made_available={self.pdf_made_available}, allow_proxy={self.allow_proxy})"
+
+
+# Type alias for the proxy callback function signature
+# Callback receives: (document_id: int, document_title: Optional[str]) -> ProxyCallbackResult
+ProxyCallback = Callable[[int, Optional[str]], ProxyCallbackResult]
 
 
 @dataclass
