@@ -34,9 +34,10 @@ class DocumentProcessingWorker(QThread):
         self,
         agent: DocumentInterrogationAgent,
         question: str,
-        document_text: str,
-        mode: ProcessingMode,
-        max_sections: int
+        document_text: Optional[str] = None,
+        mode: ProcessingMode = ProcessingMode.EMBEDDING,
+        max_sections: int = 10,
+        document_id: Optional[int] = None
     ):
         """
         Initialize worker thread.
@@ -44,9 +45,10 @@ class DocumentProcessingWorker(QThread):
         Args:
             agent: DocumentInterrogationAgent instance
             question: User's question
-            document_text: Full document text
+            document_text: Full document text (for file-based documents)
             mode: Processing mode (SEQUENTIAL, EMBEDDING, HYBRID)
             max_sections: Maximum number of relevant sections
+            document_id: Database document ID (for database documents, uses semantic search)
         """
         super().__init__()
         self.agent = agent
@@ -54,17 +56,26 @@ class DocumentProcessingWorker(QThread):
         self.document_text = document_text
         self.mode = mode
         self.max_sections = max_sections
+        self.document_id = document_id
 
     def run(self):
         """Execute document interrogation in background thread."""
         try:
-            # Process document with agent
-            result = self.agent.process_document(
-                question=self.question,
-                document_text=self.document_text,
-                mode=self.mode,
-                max_sections=self.max_sections
-            )
+            # Use optimized answer_question for database documents
+            if self.document_id is not None:
+                result = self.agent.answer_question(
+                    document_id=self.document_id,
+                    question=self.question,
+                    max_chunks=self.max_sections
+                )
+            else:
+                # Process document with agent (file-based)
+                result = self.agent.process_document(
+                    question=self.question,
+                    document_text=self.document_text,
+                    mode=self.mode,
+                    max_sections=self.max_sections
+                )
 
             # Format response
             response_parts = [result.answer]
@@ -178,6 +189,7 @@ class DocumentInterrogationTabWidget(QWidget):
         self.config = get_config()
         self.current_document_path: Optional[str] = None
         self.current_document_text: Optional[str] = None
+        self.current_document_id: Optional[int] = None  # Database document ID
         self.interrogation_agent: Optional[DocumentInterrogationAgent] = None
         self.worker: Optional[DocumentProcessingWorker] = None
 
@@ -654,6 +666,7 @@ class DocumentInterrogationTabWidget(QWidget):
                 raise ValueError(f"File too large. Maximum size is 100MB.")
 
             self.current_document_path = file_path
+            self.current_document_id = None  # Clear database document ID
 
             # Update label
             self.current_doc_label.setText(f"📄 {path.name}")
@@ -729,6 +742,93 @@ class DocumentInterrogationTabWidget(QWidget):
         except Exception as e:
             raise Exception(f"Text loading error: {str(e)}")
 
+    def load_database_document(self, document_id: int, title: Optional[str] = None):
+        """
+        Load a document from the database for interrogation.
+
+        Uses semantic search for efficient chunk retrieval instead of
+        loading all chunks. The document must have embeddings in the database.
+
+        Args:
+            document_id: Database ID of the document
+            title: Optional document title for display
+        """
+        try:
+            # Clear file-based document state
+            self.current_document_path = None
+            self.current_document_text = None
+
+            # Set database document ID
+            self.current_document_id = document_id
+
+            # Update label
+            display_title = title or f"Document #{document_id}"
+            self.current_doc_label.setText(f"📄 {display_title}")
+            self.current_doc_label.setStyleSheet(f"""
+                QLabel {{
+                    color: #000;
+                    font-weight: bold;
+                    font-size: {self.scale['font_small']}pt;
+                }}
+            """)
+
+            # Clear existing document viewer
+            while self.document_container.layout().count():
+                child = self.document_container.layout().takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            # Show database document placeholder
+            placeholder = self._create_database_document_placeholder(document_id, display_title)
+            self.document_container.layout().addWidget(placeholder)
+
+            # Add confirmation to chat
+            self._add_chat_bubble(
+                f"✅ Database document loaded: {display_title}\n\n"
+                f"Document ID: {document_id}\n"
+                f"Using semantic search for efficient querying.\n\n"
+                f"You can now ask questions about this document.",
+                is_user=False
+            )
+
+            self.status_message.emit(f"Loaded database document: {display_title}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load database document:\n{str(e)}")
+
+    def _create_database_document_placeholder(
+        self,
+        document_id: int,
+        title: str
+    ) -> QWidget:
+        """Create placeholder widget for database document display."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignCenter)
+
+        icon_label = QLabel("🗄️")
+        icon_label.setStyleSheet("font-size: 72pt;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon_label)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        id_label = QLabel(f"Document ID: {document_id}")
+        id_label.setStyleSheet("font-size: 10pt; color: #666;")
+        id_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(id_label)
+
+        hint_label = QLabel("Using semantic search for efficient chunk retrieval")
+        hint_label.setStyleSheet("font-size: 10pt; color: #999; font-style: italic;")
+        hint_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint_label)
+
+        return widget
+
     @Slot()
     def _on_send_message(self):
         """Handle send message button click."""
@@ -737,8 +837,8 @@ class DocumentInterrogationTabWidget(QWidget):
         if not message:
             return
 
-        # Validation
-        if not self.current_document_path:
+        # Validation - require either file path or database document ID
+        if not self.current_document_path and self.current_document_id is None:
             QMessageBox.warning(self, "No Document", "Please load a document first.")
             return
 
@@ -805,7 +905,7 @@ class DocumentInterrogationTabWidget(QWidget):
         try:
             # Get processing mode from config
             doc_config = self.config.get_agent_config('document_interrogation')
-            mode_str = doc_config.get('processing_mode', 'sequential').lower()
+            mode_str = doc_config.get('processing_mode', 'embedding').lower()
             max_sections = doc_config.get('max_sections', 10)
 
             # Convert mode string to enum
@@ -816,15 +916,16 @@ class DocumentInterrogationTabWidget(QWidget):
             elif mode_str == 'hybrid':
                 mode = ProcessingMode.HYBRID
             else:
-                mode = ProcessingMode.SEQUENTIAL
+                mode = ProcessingMode.EMBEDDING  # Default to embedding for efficiency
 
-            # Create and start worker
+            # Create and start worker - pass document_id for database documents
             self.worker = DocumentProcessingWorker(
-                self.interrogation_agent,
-                question,
-                self.current_document_text,
-                mode,
-                max_sections
+                agent=self.interrogation_agent,
+                question=question,
+                document_text=self.current_document_text,
+                mode=mode,
+                max_sections=max_sections,
+                document_id=self.current_document_id
             )
 
             self.worker.result_ready.connect(self._on_result_ready)

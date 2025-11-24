@@ -227,6 +227,135 @@ class DocumentInterrogationAgent(BaseAgent):
             logger.error(f"Error retrieving chunks from database: {e}")
             raise
 
+    def answer_question(
+        self,
+        document_id: int,
+        question: str,
+        max_chunks: int = 5,
+        similarity_threshold: Optional[float] = None
+    ) -> DocumentAnswer:
+        """
+        Answer a question about a document using semantic search.
+
+        This is the primary method for answering questions about database documents.
+        Uses efficient pgvector semantic search to find only the relevant chunks,
+        avoiding iteration through all document chunks.
+
+        Args:
+            document_id: The database ID of the document
+            question: The question to answer about the document
+            max_chunks: Maximum number of context chunks to use (default: 5)
+            similarity_threshold: Minimum semantic similarity (0.0-1.0).
+                                 Uses embedding_threshold if not specified.
+
+        Returns:
+            DocumentAnswer with the answer and supporting sections
+
+        Raises:
+            ValueError: If question is empty or document not found
+        """
+        # Validate inputs
+        if not question or not question.strip():
+            raise ValueError("question cannot be empty")
+
+        # Use instance threshold if not specified
+        if similarity_threshold is None:
+            similarity_threshold = self.embedding_threshold
+
+        self._call_callback(
+            "document_interrogation_start",
+            f"Answering question about document {document_id}"
+        )
+
+        try:
+            # Import and call answer_from_document from QA module
+            from bmlibrarian.qa.document_qa import answer_from_document
+            from bmlibrarian.qa.data_types import AnswerSource
+
+            result = answer_from_document(
+                document_id=document_id,
+                question=question,
+                use_fulltext=True,
+                download_missing_fulltext=False,  # Don't auto-download in agent context
+                model=self.model,
+                max_chunks=max_chunks,
+                similarity_threshold=similarity_threshold,
+                temperature=self.temperature,
+                ollama_host=self.host,
+            )
+
+            # Convert ChunkContext to RelevantSection
+            relevant_sections = []
+            if result.chunks_used:
+                for chunk in result.chunks_used:
+                    section = RelevantSection(
+                        text=chunk.text,
+                        chunk_index=chunk.chunk_no,
+                        start_pos=0,  # Position not available from QA module
+                        end_pos=len(chunk.text),
+                        relevance_score=chunk.score,
+                        reasoning=f"Semantic similarity: {chunk.score:.3f}"
+                    )
+                    relevant_sections.append(section)
+
+            # Determine processing mode based on source
+            if result.source == AnswerSource.FULLTEXT_SEMANTIC:
+                mode = ProcessingMode.EMBEDDING
+            else:
+                mode = ProcessingMode.SEQUENTIAL  # Abstract used directly
+
+            # Handle errors
+            if result.error:
+                self._call_callback(
+                    "document_interrogation_error",
+                    f"Error: {result.error_message}"
+                )
+                return DocumentAnswer(
+                    question=question,
+                    answer=result.error_message or "Failed to answer question",
+                    relevant_sections=[],
+                    processing_mode=mode,
+                    chunks_processed=0,
+                    chunks_total=0,
+                    confidence=0.0,
+                    metadata={
+                        'error': result.error.value if result.error else None,
+                        'document_id': document_id,
+                        'model': result.model_used
+                    }
+                )
+
+            self._call_callback(
+                "answer_synthesis_complete",
+                f"Generated answer using {len(relevant_sections)} chunks"
+            )
+
+            return DocumentAnswer(
+                question=question,
+                answer=result.answer,
+                relevant_sections=relevant_sections,
+                processing_mode=mode,
+                chunks_processed=len(relevant_sections),
+                chunks_total=len(relevant_sections),
+                confidence=result.confidence if result.confidence else 0.8,
+                metadata={
+                    'source': result.source.value,
+                    'model': result.model_used,
+                    'document_id': document_id,
+                    'reasoning': result.reasoning
+                }
+            )
+
+        except ImportError as e:
+            logger.error(f"QA module not available: {e}")
+            raise ImportError(
+                "bmlibrarian.qa module not available. "
+                "Use process_document() with document_text instead."
+            ) from e
+        except Exception as e:
+            logger.error(f"Error answering question: {e}")
+            raise
+
     def process_document(self,
                         question: str,
                         document_text: Optional[str] = None,
@@ -264,6 +393,22 @@ class DocumentInterrogationAgent(BaseAgent):
         # Validate processing mode
         if not isinstance(mode, ProcessingMode):
             raise ValueError(f"Unknown processing mode: {mode}. Must be a ProcessingMode enum value.")
+
+        # Optimization: For database documents with EMBEDDING mode, use efficient
+        # semantic search via answer_question() instead of iterating all chunks
+        if document_id is not None and mode == ProcessingMode.EMBEDDING:
+            try:
+                return self.answer_question(
+                    document_id=document_id,
+                    question=question,
+                    max_chunks=max_sections,
+                    similarity_threshold=self.embedding_threshold
+                )
+            except ImportError:
+                # QA module not available, fall back to standard processing
+                logger.warning(
+                    "QA module not available, falling back to standard processing"
+                )
 
         # Get chunks - either from text or database
         if document_text is not None:
