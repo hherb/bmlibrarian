@@ -652,6 +652,47 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
         return []
 
 
+def get_document_for_viewer(document_id: int) -> Optional[Dict]:
+    """
+    Get document data needed for the document viewer tab.
+
+    Includes title, full_text, pdf_filename, and publication_date
+    for resolving PDF path.
+
+    Args:
+        document_id: Database ID of document
+
+    Returns:
+        Document dict with viewer-relevant fields, or None if not found
+    """
+    try:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id, title, full_text, pdf_filename,
+                        EXTRACT(YEAR FROM publication_date)::INTEGER as year
+                    FROM public.document
+                    WHERE id = %s
+                """, (document_id,))
+
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'full_text': row[2],
+                        'pdf_filename': row[3],
+                        'year': row[4]
+                    }
+                return None
+
+    except Exception as e:
+        logger.error(f"Error fetching document for viewer: {e}")
+        return None
+
+
 def get_document_metadata(document_id: int) -> Optional[Dict]:
     """
     Get document metadata by ID.
@@ -700,6 +741,7 @@ __all__ = [
     'search_documents',
     'semantic_search_documents',
     'get_recent_assessments',
+    'get_document_for_viewer',
     'get_document_metadata',
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',

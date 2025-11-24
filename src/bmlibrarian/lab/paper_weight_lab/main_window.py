@@ -14,7 +14,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QCloseEvent
 
-from bmlibrarian.agents.paper_weight import PaperWeightAssessmentAgent
+from bmlibrarian.agents.paper_weight import PaperWeightAssessmentAgent, get_document_for_viewer
+from bmlibrarian.utils.pdf_manager import PDFManager
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
 
@@ -26,9 +27,10 @@ from .constants import (
     TAB_INDEX_SEARCH,
     TAB_INDEX_PDF_UPLOAD,
     TAB_INDEX_RESULTS,
+    TAB_INDEX_DOCUMENT_VIEWER,
     WORKER_TERMINATE_TIMEOUT_MS,
 )
-from .tabs import SearchTab, PDFUploadTab, ResultsTab
+from .tabs import SearchTab, PDFUploadTab, ResultsTab, DocumentViewerTab
 
 
 logger = logging.getLogger(__name__)
@@ -214,11 +216,13 @@ class PaperWeightLab(QMainWindow):
         self.search_tab = SearchTab()
         self.pdf_upload_tab = PDFUploadTab()
         self.results_tab = ResultsTab(agent=self.agent)
+        self.document_viewer_tab = DocumentViewerTab()
 
         # Add tabs
         self.tab_widget.addTab(self.search_tab, "Document Search")
         self.tab_widget.addTab(self.pdf_upload_tab, "PDF Upload")
         self.tab_widget.addTab(self.results_tab, "Assessment Results")
+        self.tab_widget.addTab(self.document_viewer_tab, "Full Text")
 
         main_layout.addWidget(self.tab_widget)
 
@@ -241,11 +245,57 @@ class PaperWeightLab(QMainWindow):
         # Load document in results tab
         self.results_tab.load_document(document_id)
 
+        # Load document in document viewer tab
+        self._load_document_viewer(document_id)
+
         # Switch to results tab
         self.tab_widget.setCurrentIndex(TAB_INDEX_RESULTS)
 
         # Refresh recent assessments in search tab
         self.search_tab.load_recent_assessments()
+
+    def _load_document_viewer(self, document_id: int) -> None:
+        """
+        Load document content into the document viewer tab.
+
+        Args:
+            document_id: Database document ID
+        """
+        try:
+            # Get document data
+            doc_data = get_document_for_viewer(document_id)
+            if not doc_data:
+                logger.warning(f"Document {document_id} not found for viewer")
+                self.document_viewer_tab.clear()
+                return
+
+            title = doc_data.get('title', 'Untitled')
+            full_text = doc_data.get('full_text')
+            pdf_filename = doc_data.get('pdf_filename')
+            year = doc_data.get('year')
+
+            # Resolve PDF path if filename exists
+            pdf_path = None
+            if pdf_filename:
+                pdf_manager = PDFManager()
+                # Build document dict for pdf_manager
+                doc_for_path = {
+                    'pdf_filename': pdf_filename,
+                    'publication_date': f"{year}-01-01" if year else None
+                }
+                pdf_path = pdf_manager.get_pdf_path(doc_for_path)
+
+            # Load into viewer
+            self.document_viewer_tab.load_document(
+                document_id=document_id,
+                title=title,
+                pdf_path=pdf_path,
+                full_text=full_text
+            )
+
+        except Exception as e:
+            logger.error(f"Error loading document viewer: {e}")
+            self.document_viewer_tab.clear()
 
     def _on_full_text_downloaded(self, document_id: int, pdf_path: object) -> None:
         """
@@ -328,9 +378,10 @@ class PaperWeightLab(QMainWindow):
             self.results_tab.show_ingestion_status(f"Ingestion warning: {error_msg}")
             logger.warning(f"PDF ingestion warning for document {document_id}: {error_msg}")
 
-        # Load document in results tab
+        # Load document in results tab and document viewer
         if document_id is not None:
             self.results_tab.load_document(document_id)
+            self._load_document_viewer(document_id)
 
         # Refresh recent assessments
         self.search_tab.load_recent_assessments()
@@ -358,6 +409,7 @@ class PaperWeightLab(QMainWindow):
         # Still load document
         if document_id is not None:
             self.results_tab.load_document(document_id)
+            self._load_document_viewer(document_id)
 
     def _on_embedding_complete(self, num_chunks: int) -> None:
         """
@@ -373,9 +425,10 @@ class PaperWeightLab(QMainWindow):
         )
         logger.info(f"Embedding complete for document {document_id}: {num_chunks} chunks")
 
-        # Load document in results tab
+        # Load document in results tab and document viewer
         if document_id is not None:
             self.results_tab.load_document(document_id)
+            self._load_document_viewer(document_id)
 
         # Refresh recent assessments
         self.search_tab.load_recent_assessments()
