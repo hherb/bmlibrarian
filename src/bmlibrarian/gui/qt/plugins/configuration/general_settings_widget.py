@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QGroupBox,
     QScrollArea,
+    QCheckBox,
 )
 from PySide6.QtCore import Qt
 from typing import Optional
@@ -69,6 +70,10 @@ class GeneralSettingsWidget(QWidget):
         # CLI Defaults Group
         cli_group = self._create_cli_defaults_group()
         main_layout.addWidget(cli_group)
+
+        # PDF Discovery Settings Group
+        discovery_group = self._create_discovery_group()
+        main_layout.addWidget(discovery_group)
 
         main_layout.addStretch()
 
@@ -196,6 +201,71 @@ class GeneralSettingsWidget(QWidget):
         group.setLayout(layout)
         return group
 
+    def _create_discovery_group(self) -> QGroupBox:
+        """
+        Create PDF discovery settings group.
+
+        Returns:
+            PDF discovery settings group box
+        """
+        group = QGroupBox("PDF Discovery Settings")
+        layout = QFormLayout()
+
+        # Prefer open access
+        self.prefer_open_access_input = QCheckBox()
+        self.prefer_open_access_input.setChecked(True)
+        self.prefer_open_access_input.setToolTip(
+            "Prioritize open access sources (PMC, Unpaywall) over paywalled content"
+        )
+        layout.addRow("Prefer Open Access:", self.prefer_open_access_input)
+
+        # Use browser fallback
+        self.use_browser_fallback_input = QCheckBox()
+        self.use_browser_fallback_input.setChecked(True)
+        self.use_browser_fallback_input.setToolTip(
+            "Use browser automation to bypass Cloudflare and anti-bot protections"
+        )
+        layout.addRow("Use Browser Fallback:", self.use_browser_fallback_input)
+
+        # Browser headless mode
+        self.browser_headless_input = QCheckBox()
+        self.browser_headless_input.setChecked(True)
+        self.browser_headless_input.setToolTip(
+            "Run browser in headless mode (no visible window)"
+        )
+        layout.addRow("Browser Headless:", self.browser_headless_input)
+
+        # Discovery timeout
+        self.discovery_timeout_input = QSpinBox()
+        self.discovery_timeout_input.setRange(5, 120)
+        self.discovery_timeout_input.setValue(30)
+        self.discovery_timeout_input.setSuffix(" seconds")
+        self.discovery_timeout_input.setToolTip(
+            "HTTP request timeout for PDF discovery"
+        )
+        layout.addRow("Discovery Timeout:", self.discovery_timeout_input)
+
+        # OpenAthens proxy for discovery
+        self.use_openathens_proxy_input = QCheckBox()
+        self.use_openathens_proxy_input.setChecked(False)
+        self.use_openathens_proxy_input.setToolTip(
+            "Use OpenAthens institutional proxy as last resort for paywalled PDFs.\n"
+            "Requires OpenAthens to be enabled and configured above."
+        )
+        layout.addRow("Use OpenAthens for Discovery:", self.use_openathens_proxy_input)
+
+        # Info note
+        info_label = QLabel(
+            "Note: The 'Find PDF' button uses these settings to search PMC, "
+            "Unpaywall, DOI.org, and optionally OpenAthens for full-text PDFs."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #7f8c8d; font-style: italic;")
+        layout.addRow("", info_label)
+
+        group.setLayout(layout)
+        return group
+
     def _load_values(self):
         """Load values from configuration."""
         # Ollama settings
@@ -215,6 +285,24 @@ class GeneralSettingsWidget(QWidget):
         self.max_results_input.setValue(cli_config.get('max_search_results', 100))
         self.score_threshold_input.setValue(cli_config.get('document_score_threshold', 2.5))
         self.search_timeout_input.setValue(cli_config.get('search_timeout_seconds', 30))
+
+        # Discovery settings
+        discovery_config = self.config.get('discovery', {})
+        self.prefer_open_access_input.setChecked(
+            discovery_config.get('prefer_open_access', True)
+        )
+        self.use_browser_fallback_input.setChecked(
+            discovery_config.get('use_browser_fallback', True)
+        )
+        self.browser_headless_input.setChecked(
+            discovery_config.get('browser_headless', True)
+        )
+        self.discovery_timeout_input.setValue(
+            discovery_config.get('timeout', 30)
+        )
+        self.use_openathens_proxy_input.setChecked(
+            discovery_config.get('use_openathens_proxy', False)
+        )
 
     def get_config(self) -> dict:
         """
@@ -243,6 +331,13 @@ class GeneralSettingsWidget(QWidget):
                 'max_search_results': self.max_results_input.value(),
                 'document_score_threshold': self.score_threshold_input.value(),
                 'search_timeout_seconds': self.search_timeout_input.value(),
+            },
+            'discovery': {
+                'prefer_open_access': self.prefer_open_access_input.isChecked(),
+                'use_browser_fallback': self.use_browser_fallback_input.isChecked(),
+                'browser_headless': self.browser_headless_input.isChecked(),
+                'timeout': self.discovery_timeout_input.value(),
+                'use_openathens_proxy': self.use_openathens_proxy_input.isChecked(),
             },
         }
 

@@ -56,7 +56,8 @@ class UserContext:
 # Must match bmlsettings schema constraints
 VALID_SETTINGS_CATEGORIES = frozenset([
     'models', 'ollama', 'agents', 'database', 'search',
-    'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa'
+    'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa',
+    'discovery'
 ])
 
 
@@ -582,6 +583,14 @@ DEFAULT_CONFIG = {
         "auto_login": True,  # Automatically login on startup if session expired
         "login_timeout": 300,  # Maximum seconds to wait for login completion (default: 300 = 5 minutes)
         "headless": False  # Run browser in headless mode for login (False = visible for 2FA)
+    },
+    "discovery": {
+        "timeout": 30,  # HTTP request timeout in seconds
+        "prefer_open_access": True,  # Prioritize open access sources
+        "use_browser_fallback": True,  # Use browser automation when HTTP fails (Cloudflare bypass)
+        "browser_headless": True,  # Run browser in headless mode for PDF downloads
+        "browser_timeout": 60000,  # Browser operation timeout in milliseconds
+        "use_openathens_proxy": False  # Use OpenAthens proxy as last resort for paywalled content
     }
 }
 
@@ -1141,6 +1150,21 @@ def get_openathens_config() -> Dict[str, Any]:
         - headless (bool): Run browser in headless mode
     """
     return get_config().get("openathens", DEFAULT_CONFIG["openathens"])
+
+
+def get_discovery_config() -> Dict[str, Any]:
+    """Get PDF discovery configuration.
+
+    Returns:
+        Dictionary with discovery configuration:
+        - timeout (int): HTTP request timeout in seconds
+        - prefer_open_access (bool): Prioritize open access sources
+        - use_browser_fallback (bool): Use browser when HTTP fails
+        - browser_headless (bool): Run browser in headless mode
+        - browser_timeout (int): Browser timeout in milliseconds
+        - use_openathens_proxy (bool): Use OpenAthens as last resort
+    """
+    return get_config().get("discovery", DEFAULT_CONFIG["discovery"])
 
 
 def get_paper_weight_config() -> Dict[str, Any]:

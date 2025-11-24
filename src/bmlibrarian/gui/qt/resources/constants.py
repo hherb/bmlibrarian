@@ -23,6 +23,13 @@ class PDFButtonColors:
     UPLOAD_BG: Final[str] = "#388E3C"  # Green - Upload manual
     UPLOAD_BG_HOVER: Final[str] = "#2E7D32"  # Darker green
 
+    FIND_BG: Final[str] = "#8e44ad"  # Purple - Find PDF via discovery
+    FIND_BG_HOVER: Final[str] = "#9b59b6"  # Lighter purple
+    FIND_BG_PRESSED: Final[str] = "#7d3c98"  # Darker purple
+
+    DISABLED_BG: Final[str] = "#bdc3c7"  # Gray - Disabled state
+    DISABLED_TEXT: Final[str] = "#7f8c8d"  # Muted gray text
+
     TEXT_COLOR: Final[str] = "white"
 
 
@@ -120,6 +127,7 @@ class PDFOperationSettings:
     RETRY_ATTEMPTS: Final[int] = 3  # Number of retry attempts for failed operations
     RETRY_DELAY_MS: Final[int] = 1000  # Delay between retries in milliseconds
     DOWNLOAD_TIMEOUT_SECONDS: Final[int] = 30  # Timeout for PDF downloads
+    BUTTON_RESET_DELAY_MS: Final[int] = 3000  # Delay before resetting Find PDF button after failure
 
 
 # ============================================================================
