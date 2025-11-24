@@ -68,7 +68,7 @@ TASK:
 VALID STUDY TYPES (in order of evidence strength):
 - systematic_review: Paper IS a systematic review of multiple studies (has PRISMA, search strategy, inclusion criteria)
 - meta_analysis: Paper IS a meta-analysis with statistical pooling of data from multiple studies
-- rct: Paper IS a randomized controlled trial (random allocation, control group, intervention)
+- rct: Paper IS a randomized controlled trial (random allocation, control group, intervention). Includes crossover RCTs where participants receive all treatments in random order.
 - quasi_experimental: Paper IS a non-randomized interventional study
 - pilot_feasibility: Paper IS a pilot or feasibility study (preliminary, small-scale)
 - interventional_single_arm: Paper IS an open-label, single-arm interventional study
@@ -79,6 +79,15 @@ VALID STUDY TYPES (in order of evidence strength):
 - case_series: Paper IS a case series (multiple case reports)
 - case_report: Paper IS a single case report
 - unknown: Cannot determine study type from available text
+
+KEY PHRASES TO LOOK FOR:
+- "randomized crossover study" or "randomized crossover trial" → rct
+- "randomized controlled trial" or "RCT" → rct
+- "participants were randomized" → rct
+- "systematic review" with PRISMA/search strategy → systematic_review
+- "meta-analysis" with pooled data → meta_analysis
+- "prospective cohort" → cohort_prospective
+- "retrospective cohort" or "retrospective analysis" → cohort_retrospective
 
 IMPORTANT DISTINCTIONS:
 - A review article discussing RCTs is NOT an RCT
@@ -215,6 +224,17 @@ def extract_study_type_llm(
 
     # Extract passage texts
     passages = [c.get('chunk_text', '') for c in chunks if c.get('chunk_text')]
+
+    # Always prepend the abstract if available - it typically contains the clearest
+    # study design statement (e.g., "randomized crossover study")
+    if document:
+        abstract = document.get('abstract') or ''
+        if abstract and abstract.strip():
+            # Check if abstract is already in passages (avoid duplication)
+            abstract_already_present = any(abstract[:100] in p for p in passages if p)
+            if not abstract_already_present:
+                passages.insert(0, f"ABSTRACT:\n{abstract}")
+                logger.debug(f"Prepended abstract to passages for study type extraction")
 
     # Build and execute LLM prompt
     prompt = _build_study_type_extraction_prompt(passages)
@@ -375,6 +395,17 @@ def extract_sample_size_llm(
 
     # Extract passage texts
     passages = [c.get('chunk_text', '') for c in chunks if c.get('chunk_text')]
+
+    # Always prepend the abstract if available - it often states sample size
+    # (e.g., "Ten participants with type 2 diabetes were recruited")
+    if document:
+        abstract = document.get('abstract') or ''
+        if abstract and abstract.strip():
+            # Check if abstract is already in passages (avoid duplication)
+            abstract_already_present = any(abstract[:100] in p for p in passages if p)
+            if not abstract_already_present:
+                passages.insert(0, f"ABSTRACT:\n{abstract}")
+                logger.debug(f"Prepended abstract to passages for sample size extraction")
 
     # Build and execute LLM prompt
     prompt = _build_sample_size_extraction_prompt(passages)
