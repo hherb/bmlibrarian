@@ -90,7 +90,7 @@ def search_chunks_by_query(
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError(f"similarity_threshold must be 0.0-1.0, got {similarity_threshold}")
 
-    from ..database import get_db_manager
+    from ...database import get_db_manager
 
     try:
         db_manager = get_db_manager()
@@ -164,7 +164,7 @@ def get_all_document_chunks(
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
 
-    from ..database import get_db_manager
+    from ...database import get_db_manager
 
     try:
         db_manager = get_db_manager()
@@ -310,6 +310,7 @@ def validate_study_type_extraction(
     dimension_score: DimensionScore,
     llm_client: Any,
     model: str,
+    fallback_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> ValidationResult:
     """
     Validate study type extraction using LLM with semantic search context.
@@ -319,6 +320,7 @@ def validate_study_type_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: Ollama client instance
         model: LLM model name to use
+        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
     Returns:
         ValidationResult with validation details and conflict flags
@@ -347,8 +349,13 @@ def validate_study_type_extraction(
     )
 
     if not chunks:
-        # Fall back to getting first few chunks
+        # Fall back to getting first few chunks from database
         chunks = get_all_document_chunks(document_id, limit=5)
+
+    if not chunks and fallback_chunks:
+        # Use provided fallback chunks (e.g., synthetic chunks from full_text)
+        chunks = fallback_chunks
+        logger.info(f"Using {len(chunks)} fallback chunks for study type validation")
 
     if not chunks:
         result.reasoning = "No document chunks available for validation"
@@ -419,6 +426,7 @@ def validate_sample_size_extraction(
     dimension_score: DimensionScore,
     llm_client: Any,
     model: str,
+    fallback_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> ValidationResult:
     """
     Validate sample size extraction using LLM with semantic search context.
@@ -428,6 +436,7 @@ def validate_sample_size_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: Ollama client instance
         model: LLM model name to use
+        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
     Returns:
         ValidationResult with validation details and conflict flags
@@ -462,6 +471,11 @@ def validate_sample_size_extraction(
     if not chunks:
         # Fall back to getting first few chunks (methods section usually early)
         chunks = get_all_document_chunks(document_id, limit=5)
+
+    if not chunks and fallback_chunks:
+        # Use provided fallback chunks (e.g., synthetic chunks from full_text)
+        chunks = fallback_chunks
+        logger.info(f"Using {len(chunks)} fallback chunks for sample size validation")
 
     if not chunks:
         result.reasoning = "No document chunks available for validation"

@@ -563,6 +563,18 @@ class ResultsTab(QWidget):
         self.export_report_button.setEnabled(False)
         self.export_json_button.setEnabled(False)
 
+    def show_ingestion_status(self, status: str) -> None:
+        """
+        Show PDF ingestion status in the status spinner.
+
+        Called by main window when full text is being ingested after download.
+
+        Args:
+            status: Status message to display
+        """
+        self.status_spinner.start_spinner()
+        self.status_spinner.set_status(status)
+
     def _terminate_workers(self) -> None:
         """
         Safely terminate any running worker threads.
