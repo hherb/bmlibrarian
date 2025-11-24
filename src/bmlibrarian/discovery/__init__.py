@@ -60,7 +60,8 @@ from .resolvers import (
     DOIResolver,
     PMCResolver,
     UnpaywallResolver,
-    OpenAthensResolver
+    OpenAthensResolver,
+    CrossRefTitleResolver
 )
 
 from .full_text_finder import (
@@ -92,6 +93,7 @@ __all__ = [
     'PMCResolver',
     'UnpaywallResolver',
     'OpenAthensResolver',
+    'CrossRefTitleResolver',
     # Main classes
     'FullTextFinder',
     'PMCPackageDownloader',

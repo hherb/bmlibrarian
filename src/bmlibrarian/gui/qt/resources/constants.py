@@ -84,6 +84,7 @@ class DocumentCardColors:
 class ButtonSizes:
     """Size constants for buttons."""
     MIN_HEIGHT: Final[int] = 30  # Minimum button height in pixels (reduced for compact design)
+    MIN_WIDTH: Final[int] = 100  # Minimum button width for visual consistency
     PADDING_HORIZONTAL: Final[int] = 10  # Horizontal padding in pixels
     PADDING_VERTICAL: Final[int] = 5  # Vertical padding in pixels (reduced for compact design)
     BORDER_RADIUS: Final[int] = 4  # Border radius in pixels

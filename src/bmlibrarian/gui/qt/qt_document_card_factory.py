@@ -87,7 +87,9 @@ class PDFButtonWidget(QPushButton):
             self.setObjectName("pdf_upload_button")
 
         # Compact sizing - only slightly taller than text
+        # Set minimum width to match Find PDF button size for visual consistency
         self.setFixedHeight(ButtonSizes.MIN_HEIGHT)
+        self.setMinimumWidth(ButtonSizes.MIN_WIDTH)
         self.setCursor(Qt.PointingHandCursor)
 
         # Apply compact styling directly
@@ -284,6 +286,7 @@ class PDFDiscoveryProgressDialog(QDialog):
 
     # Discovery steps with display names
     RESOLVER_NAMES = {
+        'crossref_title': 'CrossRef Title Search',
         'pmc': 'PubMed Central',
         'unpaywall': 'Unpaywall',
         'doi': 'DOI Resolution',
@@ -848,10 +851,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             QPushButton for finding PDF, or None if no identifiers available
         """
         # Check if document has any discoverable identifiers
+        # Include title - we can search CrossRef by title to discover DOI
         has_identifiers = any([
             card_data.doi,
             card_data.pmid,
-            card_data.pdf_url
+            card_data.pdf_url,
+            card_data.title  # Can search CrossRef by title
         ])
 
         if not has_identifiers:
@@ -862,9 +867,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         find_button = QPushButton("🔍 Find PDF")
         find_button.setFixedHeight(ButtonSizes.MIN_HEIGHT)
+        find_button.setMinimumWidth(ButtonSizes.MIN_WIDTH)
         find_button.setCursor(Qt.PointingHandCursor)
         find_button.setToolTip(
-            "Search PMC, Unpaywall, and DOI.org for this paper's PDF"
+            "Search PMC, Unpaywall, CrossRef, and DOI.org for this paper's PDF.\n"
+            "Can discover DOI from title if not in database."
         )
 
         # Apply styling using constants from PDFButtonColors
@@ -1022,11 +1029,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Execute PDF discovery for a document.
 
         Uses FullTextFinder to discover and download PDFs from:
-        1. PMC (PubMed Central)
-        2. Unpaywall
-        3. DOI resolution
-        4. Direct URL
-        5. OpenAthens (if enabled in config)
+        1. CrossRef title search (to discover DOI if missing)
+        2. PMC (PubMed Central)
+        3. Unpaywall
+        4. DOI resolution
+        5. Direct URL
+        6. OpenAthens (if enabled in config)
 
         Args:
             card_data: Document card data with identifiers
@@ -1036,12 +1044,60 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             Path to downloaded PDF if successful, None otherwise
         """
         from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
+        from bmlibrarian.discovery.resolvers import CrossRefTitleResolver
         from bmlibrarian.config import get_config, get_openathens_config
 
         # Get configuration
         config = get_config()
         openathens_config = get_openathens_config()
-        discovery_config = config.get('discovery', {})
+        discovery_config = config.get('discovery', {}) or {}
+
+        # Track discovered DOI (from CrossRef title search)
+        discovered_doi = card_data.doi
+
+        # If no DOI but we have a title, try CrossRef title search first
+        if not card_data.doi and card_data.title:
+            if progress_callback:
+                progress_callback('crossref_title', 'resolving')
+
+            try:
+                title_resolver = CrossRefTitleResolver(
+                    timeout=discovery_config.get('timeout', 30),
+                    min_similarity=discovery_config.get('crossref_min_similarity', 0.85)
+                )
+
+                identifiers = DocumentIdentifiers(
+                    doc_id=card_data.doc_id,
+                    title=card_data.title
+                )
+
+                result = title_resolver.resolve(identifiers)
+
+                if result.status.value == 'success' and result.metadata.get('discovered_doi'):
+                    discovered_doi = result.metadata['discovered_doi']
+                    similarity = result.metadata.get('similarity', 0)
+
+                    if progress_callback:
+                        progress_callback('crossref_title', 'found')
+
+                    logger.info(
+                        f"Discovered DOI {discovered_doi} (similarity: {similarity:.2f}) "
+                        f"for document {card_data.doc_id}"
+                    )
+
+                    # Update the database with discovered DOI
+                    self._update_doi_in_database(card_data.doc_id, discovered_doi)
+                else:
+                    if progress_callback:
+                        progress_callback('crossref_title', 'not_found')
+                    logger.debug(
+                        f"CrossRef title search did not find DOI for document {card_data.doc_id}"
+                    )
+
+            except Exception as e:
+                if progress_callback:
+                    progress_callback('crossref_title', 'error')
+                logger.warning(f"CrossRef title search error: {e}")
 
         # Determine if OpenAthens should be used for discovery
         use_openathens_for_discovery = discovery_config.get(
@@ -1075,9 +1131,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         # Build document dictionary
         # Include both 'year' (int) and 'publication_date' (str) for compatibility
+        # Use discovered_doi if we found one via CrossRef title search
         document = {
             'id': card_data.doc_id,
-            'doi': card_data.doi,
+            'doi': discovered_doi,  # May be discovered from title search
             'pmid': card_data.pmid,
             'pdf_url': card_data.pdf_url,
             'title': card_data.title,
@@ -1105,6 +1162,40 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             f"{result.error_message}"
         )
         return None
+
+    def _update_doi_in_database(self, doc_id: int, doi: str) -> None:
+        """
+        Update the DOI in the database after discovering it via CrossRef.
+
+        Args:
+            doc_id: Document ID
+            doi: Discovered DOI
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET doi = %s WHERE id = %s AND doi IS NULL",
+                        (doi, doc_id)
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        logger.info(
+                            f"Updated document.doi for doc {doc_id}: {doi}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Document {doc_id} already has a DOI, not updating"
+                        )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update DOI in database for document {doc_id}: {e}"
+            )
+            # Don't raise - the discovery can still continue
 
     def _create_view_handler(self, card_data: DocumentCardData) -> Callable:
         """

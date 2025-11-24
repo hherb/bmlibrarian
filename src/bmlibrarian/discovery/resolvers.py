@@ -678,6 +678,285 @@ class UnpaywallResolver(BaseResolver):
         )
 
 
+class CrossRefTitleResolver(BaseResolver):
+    """Resolver that finds DOI by searching CrossRef with title.
+
+    Uses the CrossRef API to search for papers by title, which can help
+    discover DOIs for documents that don't have one in the database.
+    The discovered DOI can then be used by other resolvers (DOIResolver,
+    UnpaywallResolver, PMCResolver) to find the PDF.
+    """
+
+    CROSSREF_API_URL = "https://api.crossref.org/works"
+
+    # Minimum similarity score to accept a match (0-1 scale)
+    MIN_SIMILARITY_SCORE = 0.85
+
+    def __init__(
+        self,
+        timeout: int = DEFAULT_TIMEOUT,
+        min_similarity: float = 0.85
+    ):
+        """Initialize CrossRef title resolver.
+
+        Args:
+            timeout: HTTP request timeout in seconds
+            min_similarity: Minimum title similarity score to accept (0-1)
+        """
+        super().__init__(timeout)
+        self.min_similarity = min_similarity
+
+    @property
+    def name(self) -> str:
+        return "crossref_title"
+
+    def resolve(self, identifiers: DocumentIdentifiers) -> ResolutionResult:
+        """Search CrossRef for DOI by title.
+
+        Args:
+            identifiers: Document identifiers (must have title)
+
+        Returns:
+            ResolutionResult with discovered DOI in metadata
+        """
+        start_time = time.time()
+
+        # Skip if we already have a DOI
+        if identifiers.doi:
+            return self._create_result(
+                ResolutionStatus.SKIPPED,
+                duration_ms=(time.time() - start_time) * 1000,
+                metadata={'reason': 'DOI already present'}
+            )
+
+        if not identifiers.title:
+            return self._create_result(
+                ResolutionStatus.SKIPPED,
+                duration_ms=(time.time() - start_time) * 1000,
+                metadata={'reason': 'No title provided'}
+            )
+
+        # Clean the title for search
+        search_title = self._clean_title(identifiers.title)
+        if len(search_title) < 10:
+            return self._create_result(
+                ResolutionStatus.SKIPPED,
+                duration_ms=(time.time() - start_time) * 1000,
+                metadata={'reason': 'Title too short'}
+            )
+
+        try:
+            # Search CrossRef by title
+            params = {
+                'query.title': search_title,
+                'rows': 5,  # Get top 5 results for matching
+                'select': 'DOI,title,author,published-print,published-online,link'
+            }
+
+            response = self.session.get(
+                self.CROSSREF_API_URL,
+                params=params,
+                timeout=self.timeout
+            )
+
+            if response.status_code != 200:
+                return self._create_result(
+                    ResolutionStatus.ERROR,
+                    error_message=f"CrossRef API error: {response.status_code}",
+                    duration_ms=(time.time() - start_time) * 1000
+                )
+
+            data = response.json()
+            items = data.get('message', {}).get('items', [])
+
+            if not items:
+                return self._create_result(
+                    ResolutionStatus.NOT_FOUND,
+                    duration_ms=(time.time() - start_time) * 1000,
+                    metadata={'search_title': search_title}
+                )
+
+            # Find best matching title
+            best_match = self._find_best_match(identifiers.title, items)
+
+            if not best_match:
+                return self._create_result(
+                    ResolutionStatus.NOT_FOUND,
+                    duration_ms=(time.time() - start_time) * 1000,
+                    metadata={
+                        'search_title': search_title,
+                        'candidates': len(items),
+                        'reason': 'No sufficiently similar title found'
+                    }
+                )
+
+            discovered_doi = best_match['doi']
+            similarity = best_match['similarity']
+
+            logger.info(
+                f"CrossRef title search found DOI {discovered_doi} "
+                f"with similarity {similarity:.2f} for: {identifiers.title[:60]}..."
+            )
+
+            # Return success with discovered DOI in metadata
+            # Note: We don't return PDF sources here - the discovered DOI
+            # should be used by DOIResolver/UnpaywallResolver in a subsequent call
+            return self._create_result(
+                ResolutionStatus.SUCCESS,
+                sources=[],  # No direct PDF sources from title search
+                duration_ms=(time.time() - start_time) * 1000,
+                metadata={
+                    'discovered_doi': discovered_doi,
+                    'similarity': similarity,
+                    'matched_title': best_match['title'],
+                    'search_title': search_title
+                }
+            )
+
+        except requests.RequestException as e:
+            return self._create_result(
+                ResolutionStatus.ERROR,
+                error_message=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+        except Exception as e:
+            logger.warning(f"Error in CrossRef title search: {e}")
+            return self._create_result(
+                ResolutionStatus.ERROR,
+                error_message=str(e),
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+    def _clean_title(self, title: str) -> str:
+        """Clean title for search.
+
+        Args:
+            title: Original title
+
+        Returns:
+            Cleaned title suitable for search
+        """
+        # Remove common prefixes/suffixes that might interfere with matching
+        title = title.strip()
+
+        # Remove brackets and their contents (e.g., "[Article in Chinese]")
+        title = re.sub(r'\[.*?\]', '', title)
+
+        # Remove HTML tags
+        title = re.sub(r'<[^>]+>', '', title)
+
+        # Normalize whitespace
+        title = ' '.join(title.split())
+
+        return title.strip()
+
+    def _normalize_for_comparison(self, title: str) -> str:
+        """Normalize title for similarity comparison.
+
+        Args:
+            title: Title to normalize
+
+        Returns:
+            Normalized lowercase title
+        """
+        # Convert to lowercase
+        title = title.lower()
+
+        # Remove punctuation and special characters
+        title = re.sub(r'[^\w\s]', ' ', title)
+
+        # Normalize whitespace
+        title = ' '.join(title.split())
+
+        return title
+
+    def _calculate_similarity(self, title1: str, title2: str) -> float:
+        """Calculate similarity between two titles.
+
+        Uses a combination of token overlap and sequence matching.
+
+        Args:
+            title1: First title
+            title2: Second title
+
+        Returns:
+            Similarity score (0-1)
+        """
+        # Normalize both titles
+        norm1 = self._normalize_for_comparison(title1)
+        norm2 = self._normalize_for_comparison(title2)
+
+        if not norm1 or not norm2:
+            return 0.0
+
+        # Token-based similarity (Jaccard)
+        tokens1 = set(norm1.split())
+        tokens2 = set(norm2.split())
+
+        if not tokens1 or not tokens2:
+            return 0.0
+
+        intersection = len(tokens1 & tokens2)
+        union = len(tokens1 | tokens2)
+        jaccard = intersection / union if union > 0 else 0.0
+
+        # Sequence-based similarity (simple ratio)
+        # Count matching characters in order
+        from difflib import SequenceMatcher
+        sequence_ratio = SequenceMatcher(None, norm1, norm2).ratio()
+
+        # Combined score (weighted average)
+        # Give more weight to sequence matching for partial matches
+        combined = 0.4 * jaccard + 0.6 * sequence_ratio
+
+        return combined
+
+    def _find_best_match(
+        self,
+        original_title: str,
+        items: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Find best matching item from CrossRef results.
+
+        Args:
+            original_title: Original document title
+            items: CrossRef search results
+
+        Returns:
+            Dict with 'doi', 'title', 'similarity' if match found, None otherwise
+        """
+        best_match = None
+        best_similarity = 0.0
+
+        for item in items:
+            # CrossRef returns title as a list
+            item_titles = item.get('title', [])
+            if not item_titles:
+                continue
+
+            item_title = item_titles[0]  # Use first title
+            item_doi = item.get('DOI')
+
+            if not item_doi:
+                continue
+
+            similarity = self._calculate_similarity(original_title, item_title)
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = {
+                    'doi': item_doi,
+                    'title': item_title,
+                    'similarity': similarity
+                }
+
+        # Only return if similarity is above threshold
+        if best_match and best_match['similarity'] >= self.min_similarity:
+            return best_match
+
+        return None
+
+
 class OpenAthensResolver(BaseResolver):
     """Resolver that constructs OpenAthens proxy URLs for institutional access."""
 
