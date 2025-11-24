@@ -1,4 +1,16 @@
 /* Dark Theme for BMLibrarian Qt GUI */
+/*
+ * FALLBACK STYLESHEET - Static values for 96 DPI / 10pt font
+ *
+ * This file contains hardcoded pixel values as a FALLBACK only.
+ * For production use, the application should use theme_generator.py
+ * which generates DPI-aware stylesheets dynamically using get_font_scale().
+ *
+ * These static values assume:
+ *   - 96 DPI display
+ *   - 10pt system font
+ *   - ~16px line height
+ */
 
 /* Main Window */
 QMainWindow {
@@ -271,15 +283,20 @@ CitationCard QTextEdit {
 }
 
 /* PDF Buttons - compact sizing to match Find PDF button */
+/* FALLBACK values - use theme_generator.py for DPI-aware values:
+ *   padding: {s['padding_tiny']}px {s['padding_small']}px
+ *   min-height: {s['control_height_small']}px
+ *   max-height: {s['control_height_small']}px
+ */
 QPushButton#pdf_view_button {
     background-color: #1976D2;
     color: white;
     border: none;
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-radius: 4px;
     font-weight: bold;
     min-height: 24px;
-    max-height: 30px;
+    max-height: 24px;
 }
 
 QPushButton#pdf_view_button:hover {
@@ -290,11 +307,11 @@ QPushButton#pdf_fetch_button {
     background-color: #F57C00;
     color: white;
     border: none;
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-radius: 4px;
     font-weight: bold;
     min-height: 24px;
-    max-height: 30px;
+    max-height: 24px;
 }
 
 QPushButton#pdf_fetch_button:hover {
@@ -305,11 +322,11 @@ QPushButton#pdf_upload_button {
     background-color: #388E3C;
     color: white;
     border: none;
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-radius: 4px;
     font-weight: bold;
     min-height: 24px;
-    max-height: 30px;
+    max-height: 24px;
 }
 
 QPushButton#pdf_upload_button:hover {

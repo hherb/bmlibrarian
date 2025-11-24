@@ -74,7 +74,14 @@ class PDFButtonWidget(QPushButton):
         self.clicked.connect(self._handle_click)
 
     def _update_button_appearance(self):
-        """Update button text and object name for stylesheet styling."""
+        """Update button text and object name for stylesheet styling.
+
+        Relies entirely on centralized stylesheets (theme_generator.py) for sizing
+        and appearance. Object names are used to match the CSS selectors.
+        """
+        # Import DPI scaler for runtime-scaled dimensions
+        from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+
         # Use object names to apply centralized stylesheet styles
         if self.config.state == PDFButtonState.VIEW:
             self.setText("📄 View")
@@ -86,21 +93,20 @@ class PDFButtonWidget(QPushButton):
             self.setText("📤 Upload")
             self.setObjectName("pdf_upload_button")
 
-        # Compact sizing - only slightly taller than text
-        # Set minimum width to match Find PDF button size for visual consistency
-        self.setFixedHeight(ButtonSizes.MIN_HEIGHT)
-        self.setMinimumWidth(ButtonSizes.MIN_WIDTH)
+        # Get DPI-scaled dimensions
+        s = get_font_scale()
+
+        # Apply DPI-scaled sizing constraints
+        # Height uses control_height_small for compact buttons
+        # Width uses control_width_small for visual consistency
+        self.setFixedHeight(s['control_height_small'])
+        self.setMinimumWidth(s['control_width_small'])
         self.setCursor(Qt.PointingHandCursor)
 
-        # Apply compact styling directly
-        self.setStyleSheet(f"""
-            QPushButton {{
-                padding: {ButtonSizes.PADDING_VERTICAL}px {ButtonSizes.PADDING_HORIZONTAL}px;
-                border-radius: {ButtonSizes.BORDER_RADIUS}px;
-            }}
-        """)
+        # NO inline stylesheet - rely entirely on centralized theme_generator.py styles
+        # The object names (pdf_view_button, etc.) map to CSS selectors in the theme
 
-        # Force stylesheet refresh
+        # Force stylesheet refresh to pick up centralized styles
         self.style().unpolish(self)
         self.style().polish(self)
 

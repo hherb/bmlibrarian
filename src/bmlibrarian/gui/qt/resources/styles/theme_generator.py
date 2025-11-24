@@ -358,6 +358,7 @@ QFrame#CitationCard QTextEdit {{
 }}
 
 /* PDF Buttons - compact sizing to match Find PDF button */
+/* All dimensions are DPI-scaled via get_font_scale() */
 QPushButton#pdf_view_button {{
     background-color: #1976D2;
     color: white;
@@ -366,7 +367,7 @@ QPushButton#pdf_view_button {{
     border-radius: {s['radius_small']}px;
     font-weight: bold;
     min-height: {s['control_height_small']}px;
-    max-height: 30px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 
@@ -382,7 +383,7 @@ QPushButton#pdf_fetch_button {{
     border-radius: {s['radius_small']}px;
     font-weight: bold;
     min-height: {s['control_height_small']}px;
-    max-height: 30px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 
@@ -398,7 +399,7 @@ QPushButton#pdf_upload_button {{
     border-radius: {s['radius_small']}px;
     font-weight: bold;
     min-height: {s['control_height_small']}px;
-    max-height: 30px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 
