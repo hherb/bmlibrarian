@@ -69,6 +69,12 @@ from .full_text_finder import (
     download_pdf_for_document
 )
 
+from .pmc_package_downloader import (
+    PMCPackageDownloader,
+    NXMLParser,
+    download_pmc_package
+)
+
 __all__ = [
     # Data types
     'SourceType',
@@ -88,7 +94,10 @@ __all__ = [
     'OpenAthensResolver',
     # Main classes
     'FullTextFinder',
+    'PMCPackageDownloader',
+    'NXMLParser',
     # Convenience functions
     'discover_full_text',
     'download_pdf_for_document',
+    'download_pmc_package',
 ]

@@ -16,6 +16,7 @@ class SourceType(Enum):
     DIRECT_URL = "direct_url"  # Direct PDF URL from database
     DOI_REDIRECT = "doi_redirect"  # PDF URL via DOI resolution
     PMC = "pmc"  # PubMed Central
+    PMC_PACKAGE = "pmc_package"  # PMC tar.gz package (contains PDF + NXML)
     UNPAYWALL = "unpaywall"  # Unpaywall API
     OPENATHENS = "openathens"  # OpenAthens institutional proxy
     BROWSER = "browser"  # Browser-based download (Cloudflare bypass)
@@ -176,3 +177,7 @@ class DownloadResult:
     error_message: Optional[str] = None
     duration_ms: float = 0.0
     attempts: int = 1
+    # Extended fields for PMC package downloads
+    full_text: Optional[str] = None  # Extracted NXML/full-text content
+    full_text_path: Optional[str] = None  # Path to saved NXML file
+    package_contents: Optional[List[str]] = None  # Files in tar.gz package

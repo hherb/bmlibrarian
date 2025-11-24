@@ -10,8 +10,10 @@ Supports a two-phase download approach:
 
 import logging
 import time
+import ftplib
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
+from urllib.parse import urlparse
 
 import requests
 
@@ -23,6 +25,7 @@ from .resolvers import (
     BaseResolver, DirectURLResolver, DOIResolver,
     PMCResolver, UnpaywallResolver, OpenAthensResolver
 )
+from .pmc_package_downloader import PMCPackageDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,9 @@ class FullTextFinder:
             ),
             'Accept': 'application/pdf,*/*'
         })
+
+        # PMC package downloader for tar.gz files
+        self._pmc_package_downloader = PMCPackageDownloader(timeout=timeout)
 
     def discover(
         self,
@@ -315,9 +321,14 @@ class FullTextFinder:
                 duration_ms=(time.time() - start_time) * 1000
             )
 
-        # Try each source URL with browser download
+        # Try each source URL with browser download (skip FTP URLs - browsers can't handle them)
         last_error = None
         for source in sources:
+            # Skip FTP URLs - browsers don't support FTP protocol
+            if self._is_ftp_url(source.url):
+                logger.debug(f"Skipping FTP URL for browser download: {source.url}")
+                continue
+
             logger.info(f"Trying browser download from {source.source_type.value}: {source.url}")
 
             try:
@@ -357,16 +368,27 @@ class FullTextFinder:
             attempts=len(sources)
         )
 
-    def _download_from_source(
+    def _is_ftp_url(self, url: str) -> bool:
+        """Check if URL uses FTP protocol.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            True if URL is an FTP URL
+        """
+        return url.lower().startswith('ftp://')
+
+    def _download_via_ftp(
         self,
-        source: PDFSource,
+        url: str,
         output_path: Path,
         max_attempts: int
     ) -> DownloadResult:
-        """Download PDF from a specific source.
+        """Download file via FTP protocol.
 
         Args:
-            source: PDFSource to download from
+            url: FTP URL (e.g., ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/...)
             output_path: Path to save file
             max_attempts: Maximum retry attempts
 
@@ -374,8 +396,130 @@ class FullTextFinder:
             DownloadResult
         """
         start_time = time.time()
+        last_error = None
 
-        # Prepare headers and cookies
+        # Parse FTP URL
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or 21
+        path = parsed.path
+
+        if not host or not path:
+            return DownloadResult(
+                success=False,
+                error_message=f"Invalid FTP URL: {url}",
+                duration_ms=(time.time() - start_time) * 1000
+            )
+
+        for attempt in range(max_attempts):
+            try:
+                if attempt > 0:
+                    logger.info(f"FTP retry attempt {attempt + 1}/{max_attempts}")
+                    time.sleep(2 ** attempt)  # Exponential backoff
+
+                # Connect to FTP server
+                ftp = ftplib.FTP()
+                ftp.connect(host, port, timeout=self.timeout)
+                ftp.login()  # Anonymous login
+
+                # Create output directory if needed
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Download file
+                total_size = 0
+                with open(output_path, 'wb') as f:
+                    def write_chunk(data: bytes) -> None:
+                        nonlocal total_size
+                        f.write(data)
+                        total_size += len(data)
+
+                    ftp.retrbinary(f'RETR {path}', write_chunk)
+
+                ftp.quit()
+
+                # Verify file was written
+                if total_size == 0:
+                    last_error = "Downloaded file is empty"
+                    if output_path.exists():
+                        output_path.unlink()
+                    continue
+
+                # Verify it's actually a PDF
+                if not self._verify_pdf(output_path):
+                    last_error = "Downloaded file is not a valid PDF"
+                    output_path.unlink()
+                    continue
+
+                logger.info(f"Downloaded PDF via FTP ({total_size} bytes) from {host}")
+
+                return DownloadResult(
+                    success=True,
+                    file_path=str(output_path),
+                    file_size=total_size,
+                    duration_ms=(time.time() - start_time) * 1000,
+                    attempts=attempt + 1
+                )
+
+            except ftplib.error_perm as e:
+                last_error = f"FTP permission error: {e}"
+                logger.debug(f"FTP permission denied for {url}: {e}")
+                break  # Don't retry on permission errors
+
+            except ftplib.error_temp as e:
+                last_error = f"FTP temporary error: {e}"
+                logger.debug(f"FTP temporary error for {url}: {e}")
+
+            except (TimeoutError, ftplib.error_reply) as e:
+                last_error = f"FTP connection error: {e}"
+                logger.debug(f"FTP connection error for {url}: {e}")
+
+            except Exception as e:
+                last_error = f"FTP error: {e}"
+                logger.debug(f"FTP download error for {url}: {e}")
+
+        return DownloadResult(
+            success=False,
+            error_message=last_error,
+            duration_ms=(time.time() - start_time) * 1000,
+            attempts=max_attempts
+        )
+
+    def _download_from_source(
+        self,
+        source: PDFSource,
+        output_path: Path,
+        max_attempts: int,
+        fulltext_output_dir: Optional[Path] = None
+    ) -> DownloadResult:
+        """Download PDF from a specific source.
+
+        Args:
+            source: PDFSource to download from
+            output_path: Path to save file
+            max_attempts: Maximum retry attempts
+            fulltext_output_dir: Directory for full-text NXML (for PMC packages)
+
+        Returns:
+            DownloadResult
+        """
+        start_time = time.time()
+
+        # Handle PMC package (tar.gz) sources
+        if source.source_type == SourceType.PMC_PACKAGE:
+            return self._download_pmc_package(
+                source=source,
+                pdf_output_path=output_path,
+                fulltext_output_dir=fulltext_output_dir
+            )
+
+        # Check if this is an FTP URL - use FTP download
+        if self._is_ftp_url(source.url):
+            result = self._download_via_ftp(source.url, output_path, max_attempts)
+            if result.success:
+                result.source = source
+            return result
+
+        # Prepare headers and cookies for HTTP download
         headers = dict(self.session.headers)
         cookies = {}
 
@@ -497,6 +641,42 @@ class FullTextFinder:
                 return header.startswith(b'%PDF-')
         except Exception:
             return False
+
+    def _download_pmc_package(
+        self,
+        source: PDFSource,
+        pdf_output_path: Path,
+        fulltext_output_dir: Optional[Path] = None
+    ) -> DownloadResult:
+        """Download and extract PMC tar.gz package.
+
+        Extracts both PDF and NXML full-text from the package.
+
+        Args:
+            source: PDFSource with PMC_PACKAGE type
+            pdf_output_path: Path to save extracted PDF
+            fulltext_output_dir: Directory to save NXML (optional)
+
+        Returns:
+            DownloadResult with PDF path and full-text content
+        """
+        # Determine output directories
+        pdf_output_dir = pdf_output_path.parent
+        base_filename = pdf_output_path.stem
+
+        # Default fulltext directory: sibling to pdf directory
+        if fulltext_output_dir is None:
+            # e.g., ~/knowledgebase/pdf/2024 -> ~/knowledgebase/fulltext/2024
+            base_dir = pdf_output_dir.parent
+            year_dir = pdf_output_dir.name
+            fulltext_output_dir = base_dir.parent / 'fulltext' / year_dir
+
+        return self._pmc_package_downloader.download_and_extract(
+            source=source,
+            pdf_output_dir=pdf_output_dir,
+            fulltext_output_dir=fulltext_output_dir,
+            base_filename=base_filename
+        )
 
     def _is_duplicate_source(
         self,
@@ -661,6 +841,10 @@ class FullTextFinder:
     def _extract_year(self, document: Dict[str, Any]) -> Optional[int]:
         """Extract publication year from document.
 
+        Checks field names in priority order:
+        1. publication_date (datetime or string like "2011-01-15" or "2011")
+        2. year (int or string)
+
         Args:
             document: Document dictionary
 
@@ -669,9 +853,12 @@ class FullTextFinder:
         """
         from datetime import datetime
 
+        # Check publication_date first (handles datetime, date, and string formats)
         pub_date = document.get('publication_date')
         if pub_date:
             if isinstance(pub_date, datetime):
+                return pub_date.year
+            elif hasattr(pub_date, 'year'):  # date object
                 return pub_date.year
             elif isinstance(pub_date, str):
                 try:
@@ -682,9 +869,16 @@ class FullTextFinder:
                 except (ValueError, IndexError):
                     pass
 
+        # Check year (int or string)
         year = document.get('year')
-        if year and isinstance(year, int):
-            return year
+        if year:
+            if isinstance(year, int):
+                return year
+            elif isinstance(year, str):
+                try:
+                    return int(year[:4]) if len(year) >= 4 else int(year)
+                except (ValueError, IndexError):
+                    pass
 
         return None
 

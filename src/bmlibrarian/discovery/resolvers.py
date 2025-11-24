@@ -345,18 +345,34 @@ class PMCResolver(BaseResolver):
                 for record in root.findall('.//record'):
                     # Check for PDF link (some articles have direct PDF FTP links)
                     for link in record.findall('.//link'):
-                        if link.get('format') == 'pdf':
-                            pdf_url = link.get('href')
-                            if pdf_url:
-                                sources.append(PDFSource(
-                                    url=pdf_url,
-                                    source_type=SourceType.PMC,
-                                    access_type=AccessType.OPEN,
-                                    priority=5,  # High priority - verified OA
-                                    is_best_oa=True,
-                                    host_type='repository',
-                                    metadata={'pmcid': pmcid}
-                                ))
+                        link_format = link.get('format')
+                        link_url = link.get('href')
+
+                        if link_format == 'pdf' and link_url:
+                            sources.append(PDFSource(
+                                url=link_url,
+                                source_type=SourceType.PMC,
+                                access_type=AccessType.OPEN,
+                                priority=5,  # High priority - verified OA
+                                is_best_oa=True,
+                                host_type='repository',
+                                metadata={'pmcid': pmcid}
+                            ))
+                        elif link_format == 'tgz' and link_url:
+                            # tar.gz package contains PDF + NXML full-text
+                            sources.append(PDFSource(
+                                url=link_url,
+                                source_type=SourceType.PMC_PACKAGE,
+                                access_type=AccessType.OPEN,
+                                priority=7,  # Lower priority than direct PDF
+                                is_best_oa=True,
+                                host_type='repository',
+                                metadata={
+                                    'pmcid': pmcid,
+                                    'package_format': 'tgz',
+                                    'has_nxml': True
+                                }
+                            ))
 
         except Exception as e:
             logger.debug(f"PMC OA service error for {pmcid}: {e}")

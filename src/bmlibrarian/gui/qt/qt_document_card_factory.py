@@ -7,10 +7,11 @@ that matches the Flet implementation.
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel,
+    QDialog, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QTimer
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from typing import Optional, Callable, Dict, Any
 from pathlib import Path
@@ -265,6 +266,187 @@ class PDFButtonWidget(QPushButton):
             self.config.state = PDFButtonState.VIEW
             self._update_button_appearance()
             logger.debug(f"Transitioned to VIEW state for: {pdf_path}")
+
+
+class PDFDiscoveryProgressDialog(QDialog):
+    """
+    Modal dialog showing PDF discovery progress.
+
+    Displays real-time progress through discovery resolvers (PMC, Unpaywall, DOI, etc.)
+    and download status.
+    """
+
+    # Discovery steps with display names
+    RESOLVER_NAMES = {
+        'pmc': 'PubMed Central',
+        'unpaywall': 'Unpaywall',
+        'doi': 'DOI Resolution',
+        'direct_url': 'Direct URL',
+        'openathens': 'OpenAthens Proxy',
+        'discovery': 'Discovery',
+        'download': 'HTTP Download',
+        'browser_download': 'Browser Download',
+        'ftp_download': 'FTP Download',
+    }
+
+    STATUS_ICONS = {
+        'resolving': '🔍',
+        'starting': '▶️',
+        'found': '✅',
+        'found_oa': '✅',
+        'not_found': '❌',
+        'success': '✅',
+        'failed': '❌',
+        'error': '⚠️',
+        'skipped': '⏭️',
+    }
+
+    def __init__(self, doc_id: int, title: str, parent: Optional[QWidget] = None):
+        """
+        Initialize progress dialog.
+
+        Args:
+            doc_id: Document ID being processed
+            title: Document title for display
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.doc_id = doc_id
+        self.doc_title = title[:60] + "..." if len(title) > 60 else title
+
+        self.setWindowTitle("Finding PDF")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(300)
+
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Setup the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Title
+        title_label = QLabel(f"Finding PDF for document {self.doc_id}")
+        title_label.setFont(QFont("", 11, QFont.Bold))
+        layout.addWidget(title_label)
+
+        # Document title
+        doc_label = QLabel(self.doc_title)
+        doc_label.setStyleSheet("color: #666; font-style: italic;")
+        doc_label.setWordWrap(True)
+        layout.addWidget(doc_label)
+
+        # Separator
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #ddd;")
+        layout.addWidget(line)
+
+        # Status header
+        status_header = QLabel("Progress:")
+        status_header.setFont(QFont("", 10, QFont.Bold))
+        layout.addWidget(status_header)
+
+        # Progress log area
+        self.progress_container = QVBoxLayout()
+        self.progress_container.setSpacing(4)
+        layout.addLayout(self.progress_container)
+
+        # Stretch to push content up
+        layout.addStretch()
+
+        # Current status label
+        self.status_label = QLabel("Starting discovery...")
+        self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+        layout.addWidget(self.status_label)
+
+        # Store step widgets for updating
+        self._step_widgets: Dict[str, QLabel] = {}
+
+    def add_step(self, step_name: str, status: str) -> None:
+        """
+        Add or update a progress step.
+
+        Args:
+            step_name: Internal name of the step (e.g., 'pmc', 'download')
+            status: Status string (e.g., 'resolving', 'found', 'not_found')
+        """
+        display_name = self.RESOLVER_NAMES.get(step_name, step_name.title())
+        icon = self.STATUS_ICONS.get(status, '•')
+
+        # Color based on status
+        if status in ('found', 'found_oa', 'success'):
+            color = '#4CAF50'  # Green
+        elif status in ('not_found', 'failed', 'error'):
+            color = '#f44336'  # Red
+        elif status in ('skipped',):
+            color = '#9E9E9E'  # Grey
+        else:
+            color = '#2196F3'  # Blue (in progress)
+
+        text = f"{icon} {display_name}: {status.replace('_', ' ').title()}"
+
+        if step_name in self._step_widgets:
+            # Update existing step
+            label = self._step_widgets[step_name]
+            label.setText(text)
+            label.setStyleSheet(f"color: {color};")
+        else:
+            # Add new step
+            label = QLabel(text)
+            label.setStyleSheet(f"color: {color};")
+            self.progress_container.addWidget(label)
+            self._step_widgets[step_name] = label
+
+        # Update current status
+        if status in ('resolving', 'starting'):
+            self.status_label.setText(f"Trying {display_name}...")
+            self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+        elif status in ('found', 'found_oa'):
+            self.status_label.setText(f"Found PDF via {display_name}!")
+            self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+
+        # Process events to update UI
+        QApplication.processEvents()
+
+    def set_downloading(self, source: str) -> None:
+        """
+        Update status to show downloading.
+
+        Args:
+            source: Source being downloaded from
+        """
+        display_name = self.RESOLVER_NAMES.get(source, source.title())
+        self.status_label.setText(f"Downloading from {display_name}...")
+        self.status_label.setStyleSheet("font-weight: bold; color: #FF9800;")
+        QApplication.processEvents()
+
+    def set_success(self, file_path: Path) -> None:
+        """
+        Update status to show success.
+
+        Args:
+            file_path: Path to downloaded file
+        """
+        self.status_label.setText(f"✅ Downloaded: {file_path.name}")
+        self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+        QApplication.processEvents()
+
+    def set_failure(self, error_msg: str) -> None:
+        """
+        Update status to show failure.
+
+        Args:
+            error_msg: Error message to display
+        """
+        # Truncate long error messages
+        if len(error_msg) > 80:
+            error_msg = error_msg[:77] + "..."
+        self.status_label.setText(f"❌ {error_msg}")
+        self.status_label.setStyleSheet("font-weight: bold; color: #f44336;")
+        QApplication.processEvents()
 
 
 class QtDocumentCardFactory(DocumentCardFactoryBase):
@@ -709,31 +891,39 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         """
         Handle click on the "Find PDF" button.
 
-        Initiates PDF discovery and download in a background thread.
+        Shows a progress dialog and initiates PDF discovery and download.
 
         Args:
             find_button: The "Find PDF" button (to disable during operation)
             primary_button: The primary PDF button to update on success
             card_data: Document card data with identifiers
         """
-        from PySide6.QtCore import QThread, QObject
-        from PySide6.QtWidgets import QApplication
-
-        # Disable button and show progress
+        # Disable button
         find_button.setEnabled(False)
         original_text = find_button.text()
         find_button.setText("🔍 Searching...")
 
-        # Process events to update UI immediately
+        # Create and show progress dialog
+        progress_dialog = PDFDiscoveryProgressDialog(
+            doc_id=card_data.doc_id,
+            title=card_data.title or "Unknown",
+            parent=find_button.window()
+        )
+        progress_dialog.show()
         QApplication.processEvents()
 
         try:
-            # Execute discovery synchronously for simplicity
-            # (Consider threading for better UX in the future)
-            result = self._execute_pdf_discovery(card_data)
+            # Execute discovery with progress callback
+            def progress_callback(stage: str, status: str) -> None:
+                progress_dialog.add_step(stage, status)
+
+            result = self._execute_pdf_discovery(card_data, progress_callback)
 
             if result and result.exists():
-                # Success - update primary button to VIEW state
+                # Success - update progress dialog
+                progress_dialog.set_success(result)
+
+                # Update primary button to VIEW state
                 primary_button._transition_to_view(result)
 
                 # Update database with pdf_filename
@@ -744,7 +934,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     'pdf_url': card_data.pdf_url,
                     'title': card_data.title,
                     'authors': card_data.authors,
-                    'publication_date': str(card_data.year) if card_data.year else None,
+                    'year': card_data.year,
                     'pdf_filename': result.name,
                 }
                 self._update_pdf_filename_in_database(card_data.doc_id, result, document)
@@ -764,42 +954,56 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 find_button.setText("✓ Found")
                 find_button.setEnabled(False)
 
+                # Close dialog after a short delay
+                QTimer.singleShot(1500, progress_dialog.accept)
+
             else:
                 # Discovery failed
+                progress_dialog.set_failure("No PDF sources found")
                 logger.warning(
                     f"PDF discovery failed for document {card_data.doc_id}"
                 )
                 find_button.setText("✗ Not Found")
 
-                # Re-enable after a delay using constant
-                from PySide6.QtCore import QTimer
+                # Close dialog after a delay
+                QTimer.singleShot(2000, progress_dialog.reject)
+
+                # Re-enable button after a delay
                 QTimer.singleShot(
                     PDFOperationSettings.BUTTON_RESET_DELAY_MS,
                     lambda: self._reset_find_button(find_button, original_text)
                 )
 
         except Exception as e:
+            error_msg = str(e)
+            progress_dialog.set_failure(error_msg)
             logger.error(
                 f"Error during PDF discovery for document {card_data.doc_id}: {e}"
             )
             find_button.setText("✗ Error")
 
-            # Re-enable after a delay using constant
-            from PySide6.QtCore import QTimer
+            # Close dialog after a delay
+            QTimer.singleShot(2000, progress_dialog.reject)
+
+            # Re-enable button after a delay
             QTimer.singleShot(
                 PDFOperationSettings.BUTTON_RESET_DELAY_MS,
                 lambda: self._reset_find_button(find_button, original_text)
             )
 
             # Emit error signal through primary button
-            primary_button.error_occurred.emit(str(e))
+            primary_button.error_occurred.emit(error_msg)
 
     def _reset_find_button(self, button: QPushButton, original_text: str) -> None:
         """Reset the Find PDF button to its original state."""
         button.setText(original_text)
         button.setEnabled(True)
 
-    def _execute_pdf_discovery(self, card_data: DocumentCardData) -> Optional[Path]:
+    def _execute_pdf_discovery(
+        self,
+        card_data: DocumentCardData,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> Optional[Path]:
         """
         Execute PDF discovery for a document.
 
@@ -812,6 +1016,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         Args:
             card_data: Document card data with identifiers
+            progress_callback: Optional callback(stage, status) for progress updates
 
         Returns:
             Path to downloaded PDF if successful, None otherwise
@@ -855,23 +1060,30 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         }
 
         # Build document dictionary
+        # Include both 'year' (int) and 'publication_date' (str) for compatibility
         document = {
             'id': card_data.doc_id,
             'doi': card_data.doi,
             'pmid': card_data.pmid,
             'pdf_url': card_data.pdf_url,
             'title': card_data.title,
-            'publication_date': str(card_data.year) if card_data.year else None,
+            'year': card_data.year,  # Pass as int for reliable year extraction
+            'publication_date': str(card_data.year) if card_data.year else None,  # For backwards compat
         }
 
-        # Execute discovery and download
+        # Execute discovery and download with progress callback
         result = finder.download_for_document(
             document=document,
             output_dir=self.base_pdf_dir,
-            use_browser_fallback=discovery_config.get('use_browser_fallback', True)
+            use_browser_fallback=discovery_config.get('use_browser_fallback', True),
+            progress_callback=progress_callback
         )
 
         if result.success and result.file_path:
+            # If we got full text from a PMC package, store it in the database
+            if result.full_text:
+                self._update_full_text_in_database(card_data.doc_id, result.full_text)
+
             return Path(result.file_path)
 
         logger.warning(
@@ -1064,6 +1276,36 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         if doc_id in self._pdf_path_cache:
             del self._pdf_path_cache[doc_id]
             logger.debug(f"Invalidated PDF cache for document {doc_id}")
+
+    def _update_full_text_in_database(self, doc_id: int, full_text: str) -> None:
+        """
+        Update the full_text column in the database after extracting from NXML.
+
+        Args:
+            doc_id: Document ID
+            full_text: Extracted full text content from NXML
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET full_text = %s WHERE id = %s",
+                        (full_text, doc_id)
+                    )
+                    conn.commit()
+                    logger.info(
+                        f"Updated document.full_text for doc {doc_id} "
+                        f"({len(full_text)} chars)"
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update full_text in database for document {doc_id}: {e}"
+            )
+            # Don't raise - the PDF was successfully downloaded, database update is secondary
 
     def _update_pdf_filename_in_database(self, doc_id: int, pdf_path: Path, document: Dict[str, Any]) -> None:
         """
