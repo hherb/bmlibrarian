@@ -599,7 +599,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             return None
 
         # Get actual PDF path if available (from cache)
-        pdf_path = self._get_pdf_path_cached(card_data.doc_id, card_data.pdf_path)
+        pdf_path = self._get_pdf_path_cached(card_data.doc_id, card_data.pdf_path, card_data.pdf_filename)
 
         # Create button configuration
         config = self._create_pdf_button_config(card_data, pdf_state, pdf_path)
@@ -620,13 +620,15 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         return self.determine_pdf_state(
             card_data.doc_id,
             card_data.pdf_path,
-            card_data.pdf_url
+            card_data.pdf_url,
+            card_data.pdf_filename
         )
 
     def _get_pdf_path_cached(
         self,
         doc_id: int,
-        pdf_path: Optional[Path] = None
+        pdf_path: Optional[Path] = None,
+        pdf_filename: Optional[str] = None
     ) -> Optional[Path]:
         """
         Get PDF path with caching for performance.
@@ -634,6 +636,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Args:
             doc_id: Document ID
             pdf_path: Explicit PDF path if known
+            pdf_filename: Relative PDF path from database (e.g., "2022/paper.pdf")
 
         Returns:
             Path to PDF file if it exists, None otherwise
@@ -650,7 +653,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             # Cached path no longer exists, invalidate cache
 
         # Get path using parent method
-        result = self.get_pdf_path(doc_id, pdf_path)
+        result = self.get_pdf_path(doc_id, pdf_path, pdf_filename)
 
         # Update cache
         self._pdf_path_cache[doc_id] = result
@@ -1216,7 +1219,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 # Get PDF path (from cache)
                 pdf_path = self._get_pdf_path_cached(
                     card_data.doc_id,
-                    card_data.pdf_path
+                    card_data.pdf_path,
+                    card_data.pdf_filename
                 )
 
                 if not pdf_path or not pdf_path.exists():

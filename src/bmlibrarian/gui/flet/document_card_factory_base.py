@@ -92,6 +92,7 @@ class DocumentCardData:
     # PDF data
     pdf_path: Optional[Path] = None
     pdf_url: Optional[str] = None
+    pdf_filename: Optional[str] = None  # Relative path from database (e.g., "2022/paper.pdf")
 
     # Display options
     context: CardContext = CardContext.LITERATURE
@@ -186,7 +187,8 @@ class DocumentCardFactoryBase(ABC):
         self,
         doc_id: int,
         pdf_path: Optional[Path] = None,
-        pdf_url: Optional[str] = None
+        pdf_url: Optional[str] = None,
+        pdf_filename: Optional[str] = None
     ) -> PDFButtonState:
         """
         Determine the appropriate PDF button state for a document.
@@ -195,6 +197,7 @@ class DocumentCardFactoryBase(ABC):
             doc_id: Document ID
             pdf_path: Explicit PDF path if known
             pdf_url: PDF URL if available
+            pdf_filename: Relative PDF path from database (e.g., "2022/paper.pdf")
 
         Returns:
             The appropriate PDFButtonState
@@ -203,7 +206,13 @@ class DocumentCardFactoryBase(ABC):
         if pdf_path and pdf_path.exists():
             return PDFButtonState.VIEW
 
-        # Check standard location
+        # Check if pdf_filename from database resolves to existing file
+        if pdf_filename:
+            resolved_path = self.base_pdf_dir / pdf_filename
+            if resolved_path.exists():
+                return PDFButtonState.VIEW
+
+        # Check standard location (legacy fallback)
         standard_path = self.base_pdf_dir / f"{doc_id}.pdf"
         if standard_path.exists():
             return PDFButtonState.VIEW
@@ -215,13 +224,19 @@ class DocumentCardFactoryBase(ABC):
         # No PDF available, allow upload
         return PDFButtonState.UPLOAD
 
-    def get_pdf_path(self, doc_id: int, pdf_path: Optional[Path] = None) -> Optional[Path]:
+    def get_pdf_path(
+        self,
+        doc_id: int,
+        pdf_path: Optional[Path] = None,
+        pdf_filename: Optional[str] = None
+    ) -> Optional[Path]:
         """
         Get the actual PDF path for a document.
 
         Args:
             doc_id: Document ID
             pdf_path: Explicit PDF path if known
+            pdf_filename: Relative PDF path from database (e.g., "2022/paper.pdf")
 
         Returns:
             Path to PDF file if it exists, None otherwise
@@ -229,6 +244,13 @@ class DocumentCardFactoryBase(ABC):
         if pdf_path and pdf_path.exists():
             return pdf_path
 
+        # Check if pdf_filename from database resolves to existing file
+        if pdf_filename:
+            resolved_path = self.base_pdf_dir / pdf_filename
+            if resolved_path.exists():
+                return resolved_path
+
+        # Check standard location (legacy fallback)
         standard_path = self.base_pdf_dir / f"{doc_id}.pdf"
         if standard_path.exists():
             return standard_path
