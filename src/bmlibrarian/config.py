@@ -56,7 +56,7 @@ class UserContext:
 # Must match bmlsettings schema constraints
 VALID_SETTINGS_CATEGORIES = frozenset([
     'models', 'ollama', 'agents', 'database', 'search',
-    'query_generation', 'gui', 'openathens', 'pdf', 'general'
+    'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa'
 ])
 
 
@@ -308,6 +308,7 @@ DEFAULT_CONFIG = {
         "prisma2020_agent": "gpt-oss:20b",  # Use larger model for PRISMA 2020 compliance assessment
         "paper_weight_assessment_agent": "gpt-oss:20b",  # Use larger model for paper weight assessment
         "paper_checker_agent": "gpt-oss:20b",  # Use larger model for abstract fact-checking
+        "document_qa_agent": "gpt-oss:20b",  # Use larger model for document Q&A
 
         # Alternative models for different use cases
         "fast_model": "medgemma4B_it_q8:latest",
@@ -487,6 +488,18 @@ DEFAULT_CONFIG = {
                 "num_abstracts": 2,  # Number of hypothetical abstracts to generate
                 "max_keywords": 10  # Maximum keywords to generate
             }
+        },
+        "document_qa": {
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "max_tokens": 2000,
+            "max_chunks": 5,  # Maximum context chunks to use for answer generation
+            "similarity_threshold": 0.7,  # Minimum similarity for semantic search (0.0-1.0)
+            "use_fulltext": True,  # Prefer full-text over abstract when available
+            "download_missing_fulltext": True,  # Attempt to download PDFs if full-text missing
+            "use_proxy": True,  # Use OpenAthens proxy for paywalled content
+            "use_thinking": True,  # Enable thinking mode for supported models
+            "embedding_model": "snowflake-arctic-embed2:latest"
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
