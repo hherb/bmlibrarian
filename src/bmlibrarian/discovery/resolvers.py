@@ -269,7 +269,7 @@ class PMCResolver(BaseResolver):
     """Resolver for PubMed Central open access PDFs."""
 
     PMC_API_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi"
-    PMC_PDF_BASE = "https://www.ncbi.nlm.nih.gov/pmc/articles"
+    PMC_ARTICLE_BASE = "https://pmc.ncbi.nlm.nih.gov/articles"
     EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
     @property
@@ -328,7 +328,7 @@ class PMCResolver(BaseResolver):
         pmcid = self._normalize_pmcid(pmcid)
         sources = []
 
-        # Try OA web service first
+        # Try OA web service first (returns FTP URLs for .tar.gz or PDF)
         try:
             params = {'id': pmcid}
             response = self.session.get(
@@ -343,7 +343,7 @@ class PMCResolver(BaseResolver):
                 root = ET.fromstring(response.content)
 
                 for record in root.findall('.//record'):
-                    # Check for PDF link
+                    # Check for PDF link (some articles have direct PDF FTP links)
                     for link in record.findall('.//link'):
                         if link.get('format') == 'pdf':
                             pdf_url = link.get('href')
@@ -361,19 +361,129 @@ class PMCResolver(BaseResolver):
         except Exception as e:
             logger.debug(f"PMC OA service error for {pmcid}: {e}")
 
-        # Fallback: construct direct PDF URL
+        # Fallback: fetch the article page to extract the actual PDF filename
         if not sources:
-            pdf_url = f"{self.PMC_PDF_BASE}/{pmcid}/pdf/"
-            sources.append(PDFSource(
-                url=pdf_url,
-                source_type=SourceType.PMC,
-                access_type=AccessType.OPEN,
-                priority=6,
-                host_type='repository',
-                metadata={'pmcid': pmcid, 'constructed': True}
-            ))
+            pdf_url = self._get_pdf_url_from_article_page(pmcid)
+            if pdf_url:
+                sources.append(PDFSource(
+                    url=pdf_url,
+                    source_type=SourceType.PMC,
+                    access_type=AccessType.OPEN,
+                    priority=6,
+                    host_type='repository',
+                    metadata={'pmcid': pmcid, 'extracted': True}
+                ))
 
         return sources
+
+    def _get_pdf_url_from_article_page(self, pmcid: str) -> Optional[str]:
+        """Fetch the PMC article page and extract the actual PDF URL.
+
+        PMC article pages contain the PDF filename in href attributes.
+        The PDF is linked as 'pdf/<filename>.pdf' relative to the article URL.
+
+        Note: NCBI's new pmc.ncbi.nlm.nih.gov domain uses bot detection that
+        blocks Python's requests library but allows curl. We use curl as a
+        fallback when requests fails.
+
+        Args:
+            pmcid: Normalized PMCID (e.g., 'PMC11052067')
+
+        Returns:
+            Full PDF URL if found, None otherwise
+        """
+        article_url = f"{self.PMC_ARTICLE_BASE}/{pmcid}/"
+
+        # First try with requests (works for some PMC articles)
+        try:
+            response = self.session.get(article_url, timeout=self.timeout)
+
+            if response.status_code == 200:
+                content = response.text
+                pdf_url = self._extract_pdf_link_from_html(content, pmcid)
+                if pdf_url:
+                    return pdf_url
+
+            # If requests fails (403), fall back to curl
+            if response.status_code == 403:
+                logger.debug(f"Requests blocked for {pmcid}, trying curl fallback")
+                return self._get_pdf_url_via_curl(article_url, pmcid)
+
+            logger.debug(f"Could not find PDF link on article page for {pmcid}")
+
+        except requests.RequestException as e:
+            logger.debug(f"Error fetching article page for {pmcid}: {e}")
+            # Try curl fallback on connection errors too
+            return self._get_pdf_url_via_curl(article_url, pmcid)
+
+        return None
+
+    def _extract_pdf_link_from_html(self, content: str, pmcid: str) -> Optional[str]:
+        """Extract PDF link from HTML content.
+
+        Args:
+            content: HTML content of the article page
+            pmcid: Normalized PMCID
+
+        Returns:
+            Full PDF URL if found, None otherwise
+        """
+        # Look for PDF link in the HTML
+        # Pattern: href="pdf/<filename>.pdf"
+        pdf_pattern = re.compile(r'href="(pdf/[^"]+\.pdf)"', re.IGNORECASE)
+        match = pdf_pattern.search(content)
+
+        if match:
+            relative_pdf_path = match.group(1)
+            full_pdf_url = f"{self.PMC_ARTICLE_BASE}/{pmcid}/{relative_pdf_path}"
+            logger.debug(f"Extracted PDF URL from article page: {full_pdf_url}")
+            return full_pdf_url
+
+        return None
+
+    def _get_pdf_url_via_curl(self, article_url: str, pmcid: str) -> Optional[str]:
+        """Fetch article page via curl to bypass bot detection.
+
+        NCBI's pmc.ncbi.nlm.nih.gov uses bot detection that blocks Python's
+        requests library but allows curl. This method uses curl as a fallback.
+
+        Args:
+            article_url: Full URL to the article page
+            pmcid: Normalized PMCID
+
+        Returns:
+            Full PDF URL if found, None otherwise
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [
+                    'curl', '-s',
+                    '-H', f'User-Agent: {USER_AGENT}',
+                    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    '--max-time', str(self.timeout),
+                    article_url
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout + 5
+            )
+
+            if result.returncode == 0 and result.stdout:
+                pdf_url = self._extract_pdf_link_from_html(result.stdout, pmcid)
+                if pdf_url:
+                    logger.debug(f"Extracted PDF URL via curl: {pdf_url}")
+                    return pdf_url
+
+        except subprocess.TimeoutExpired:
+            logger.debug(f"Curl timeout for {pmcid}")
+        except FileNotFoundError:
+            logger.debug("Curl not available, cannot fetch article page")
+        except Exception as e:
+            logger.debug(f"Curl error for {pmcid}: {e}")
+
+        return None
 
     def _pmid_to_pmcid(self, pmid: str) -> Optional[str]:
         """Convert PMID to PMCID using ID converter."""
