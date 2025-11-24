@@ -109,6 +109,8 @@ from .validators import (
     get_all_document_chunks,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_SIMILARITY_THRESHOLD,
+    MIN_SIMILARITY_THRESHOLD,
+    THRESHOLD_DECREMENT,
 )
 
 # LLM Assessors - AI-based assessment
@@ -186,6 +188,8 @@ __all__ = [
     "get_all_document_chunks",
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_SIMILARITY_THRESHOLD",
+    "MIN_SIMILARITY_THRESHOLD",
+    "THRESHOLD_DECREMENT",
     # LLM Assessors
     "calculate_methodological_quality_score",
     "calculate_risk_of_bias_score",

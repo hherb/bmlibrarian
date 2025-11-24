@@ -31,13 +31,15 @@ from .extractors import (
 from .validators import (
     search_chunks_by_query,
     get_all_document_chunks,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    MIN_SIMILARITY_THRESHOLD,
+    THRESHOLD_DECREMENT,
 )
 
 logger = logging.getLogger(__name__)
 
 # Default configuration
 DEFAULT_MAX_CHUNKS = 5
-DEFAULT_SIMILARITY_THRESHOLD = 0.3
 
 
 def _build_study_type_extraction_prompt(passages: List[str]) -> str:
@@ -165,15 +167,19 @@ def extract_study_type_llm(
         hierarchy_config = DEFAULT_STUDY_TYPE_HIERARCHY
 
     # Search for relevant chunks about study design using semantic search
+    # Uses dynamic threshold reduction to find results if initial threshold too strict
     chunks = search_chunks_by_query(
         document_id=document_id,
         query="study design methodology methods randomized controlled trial cohort retrospective prospective systematic review meta-analysis we conducted this study",
         max_chunks=DEFAULT_MAX_CHUNKS,
         similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD,
+        min_threshold=MIN_SIMILARITY_THRESHOLD,
+        threshold_decrement=THRESHOLD_DECREMENT,
     )
 
     # Fall back to positional chunks if semantic search returns nothing
     if not chunks:
+        logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
         chunks = get_all_document_chunks(document_id, limit=5)
 
     # If still no chunks, try using document full_text directly
@@ -322,15 +328,19 @@ def extract_sample_size_llm(
     ci_bonus = scoring_config.get('ci_reported_bonus', 0.5)
 
     # Search for relevant chunks about sample size using semantic search
+    # Uses dynamic threshold reduction to find results if initial threshold too strict
     chunks = search_chunks_by_query(
         document_id=document_id,
         query="sample size participants subjects patients enrolled recruited n= N= total number methods population study design",
         max_chunks=DEFAULT_MAX_CHUNKS,
         similarity_threshold=DEFAULT_SIMILARITY_THRESHOLD,
+        min_threshold=MIN_SIMILARITY_THRESHOLD,
+        threshold_decrement=THRESHOLD_DECREMENT,
     )
 
     # Fall back to positional chunks if semantic search returns nothing
     if not chunks:
+        logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
         chunks = get_all_document_chunks(document_id, limit=5)
 
     # If still no chunks, try using document full_text directly
