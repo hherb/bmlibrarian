@@ -438,14 +438,20 @@ class PDFDiscoveryProgressDialog(QDialog):
         self.status_label.setStyleSheet("font-weight: bold; color: #FF9800;")
         QApplication.processEvents()
 
-    def set_success(self, file_path: Path) -> None:
+    def set_success(self, file_path: Optional[Path], message: Optional[str] = None) -> None:
         """
         Update status to show success.
 
         Args:
-            file_path: Path to downloaded file
+            file_path: Path to downloaded file (may be None for NXML-only extraction)
+            message: Optional custom success message (used when no file_path)
         """
-        self.status_label.setText(f"✅ Downloaded: {file_path.name}")
+        if file_path:
+            self.status_label.setText(f"✅ Downloaded: {file_path.name}")
+        elif message:
+            self.status_label.setText(f"✅ {message}")
+        else:
+            self.status_label.setText("✅ Success")
         self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
         QApplication.processEvents()
 
