@@ -227,7 +227,13 @@ class PDFButtonWidget(QPushButton):
             raise
 
     def _default_upload_handler(self):
-        """Default upload handler using file dialog."""
+        """
+        Default upload handler using file dialog.
+
+        Note: This method only handles file selection and validation.
+        The actual copying and database update is handled by the factory's
+        upload handler callback (on_upload), which is set in _create_upload_handler.
+        """
         from PySide6.QtWidgets import QFileDialog
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -777,6 +783,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         # Add primary button
         layout.addWidget(button)
 
+        # Connect primary button's pdf_uploaded signal to handle database updates
+        if card_data is not None:
+            button.pdf_uploaded.connect(
+                lambda path, cd=card_data: self._handle_pdf_uploaded(path, cd)
+            )
+
         # Add secondary upload button if primary is View or Fetch
         if button.config.state in (PDFButtonState.VIEW, PDFButtonState.FETCH):
             secondary_config = PDFButtonConfig(
@@ -790,10 +802,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             secondary_button = PDFButtonWidget(secondary_config)
             secondary_button.setText("📤 Replace")  # Different text for clarity
 
-            # Connect secondary button's uploaded signal to update primary button
-            def on_secondary_upload(path: Path, primary: PDFButtonWidget = button) -> None:
-                """Handle secondary upload by transitioning primary to VIEW."""
+            # Connect secondary button's uploaded signal to update primary button and database
+            def on_secondary_upload(path: Path, primary: PDFButtonWidget = button, cd: DocumentCardData = card_data) -> None:
+                """Handle secondary upload by transitioning primary to VIEW and updating database."""
                 primary._transition_to_view(path)
+                if cd is not None:
+                    self._handle_pdf_uploaded(path, cd)
 
             secondary_button.pdf_uploaded.connect(on_secondary_upload)
 
@@ -1276,6 +1290,72 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         if doc_id in self._pdf_path_cache:
             del self._pdf_path_cache[doc_id]
             logger.debug(f"Invalidated PDF cache for document {doc_id}")
+
+    def _handle_pdf_uploaded(self, source_path: Path, card_data: DocumentCardData) -> None:
+        """
+        Handle PDF upload by copying to library directory and updating database.
+
+        This method is called when a PDF is uploaded via the file dialog. It:
+        1. Copies the PDF to the year-organized directory structure (YYYY/filename.pdf)
+        2. Updates the database pdf_filename column with the relative path
+
+        Args:
+            source_path: Path to the uploaded PDF file (user's original location)
+            card_data: Document card data with doc_id, year, etc.
+        """
+        import shutil
+
+        try:
+            doc_id = card_data.doc_id
+            year = card_data.year
+
+            # Determine target directory (year-based organization)
+            if year:
+                year_dir = self.base_pdf_dir / str(year)
+            else:
+                year_dir = self.base_pdf_dir / "unknown_year"
+
+            year_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate target filename - use the original filename
+            target_filename = source_path.name
+            target_path = year_dir / target_filename
+
+            # Handle filename collisions by adding doc_id suffix
+            if target_path.exists() and target_path != source_path:
+                stem = source_path.stem
+                suffix = source_path.suffix
+                target_filename = f"{stem}_{doc_id}{suffix}"
+                target_path = year_dir / target_filename
+
+            # Copy the file (don't move, user might want to keep their original)
+            logger.info(f"[PDF UPLOAD] Copying {source_path} to {target_path}")
+            shutil.copy2(source_path, target_path)
+
+            # Calculate relative path for database
+            relative_path = f"{year or 'unknown_year'}/{target_filename}"
+
+            # Update database
+            logger.info(f"[PDF UPLOAD] Updating database for doc {doc_id}: pdf_filename = {relative_path}")
+
+            document = {
+                'id': doc_id,
+                'pdf_filename': target_filename,
+                'year': year,
+            }
+            self._update_pdf_filename_in_database(doc_id, target_path, document)
+
+            # Update cache
+            self._pdf_path_cache[doc_id] = target_path
+
+            logger.info(f"[PDF UPLOAD] Successfully uploaded and registered PDF for document {doc_id}")
+
+        except Exception as e:
+            logger.error(f"[PDF UPLOAD] Failed to process uploaded PDF for document {card_data.doc_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Re-raise so the error signal is emitted
+            raise
 
     def _update_full_text_in_database(self, doc_id: int, full_text: str) -> None:
         """
