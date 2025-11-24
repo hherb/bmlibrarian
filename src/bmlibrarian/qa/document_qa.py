@@ -39,6 +39,7 @@ from .data_types import (
     SemanticSearchAnswer,
     DocumentTextStatus,
 )
+from ..utils.url_validation import get_validated_openathens_url
 
 logger = logging.getLogger(__name__)
 
@@ -364,12 +365,10 @@ def _download_fulltext_if_needed(
             pdf_base_dir = config.get("pdf", {}).get("base_dir", "~/knowledgebase/pdf")
             output_dir = Path(pdf_base_dir).expanduser()
 
-        # Get OpenAthens proxy URL if enabled
+        # Get validated OpenAthens proxy URL if enabled (prevents SSRF attacks)
         openathens_url = None
         if use_proxy:
-            openathens_config = config.get("openathens", {})
-            if openathens_config.get("enabled", False):
-                openathens_url = openathens_config.get("institution_url")
+            openathens_url = get_validated_openathens_url(config)
 
         # Attempt download
         unpaywall_email = config.get("unpaywall_email")

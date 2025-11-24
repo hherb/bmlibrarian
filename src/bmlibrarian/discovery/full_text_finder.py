@@ -23,6 +23,7 @@ from .resolvers import (
     BaseResolver, DirectURLResolver, DOIResolver,
     PMCResolver, UnpaywallResolver, OpenAthensResolver
 )
+from ..utils.url_validation import get_validated_openathens_url
 
 logger = logging.getLogger(__name__)
 
@@ -526,11 +527,9 @@ class FullTextFinder:
             Configured FullTextFinder instance
         """
         discovery_config = config.get('discovery', {})
-        openathens_config = config.get('openathens', {})
 
-        openathens_url = None
-        if openathens_config.get('enabled', False):
-            openathens_url = openathens_config.get('institution_url')
+        # Use validated OpenAthens URL to prevent SSRF attacks
+        openathens_url = get_validated_openathens_url(config)
 
         instance = cls(
             unpaywall_email=config.get('unpaywall_email'),

@@ -582,6 +582,14 @@ DEFAULT_CONFIG = {
         "auto_login": True,  # Automatically login on startup if session expired
         "login_timeout": 300,  # Maximum seconds to wait for login completion (default: 300 = 5 minutes)
         "headless": False  # Run browser in headless mode for login (False = visible for 2FA)
+    },
+    "discovery": {
+        "timeout": 30,  # HTTP request timeout in seconds (5-120)
+        "browser_timeout": 60000,  # Browser timeout in milliseconds (5000-300000)
+        "prefer_open_access": True,  # Prefer open access sources
+        "use_browser_fallback": True,  # Use browser for Cloudflare-protected sites
+        "browser_headless": True,  # Run browser in headless mode
+        "skip_resolvers": None  # List of resolvers to skip (e.g., ["openathens", "pmc"])
     }
 }
 
