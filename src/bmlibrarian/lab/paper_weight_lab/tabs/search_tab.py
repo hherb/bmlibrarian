@@ -104,8 +104,8 @@ class SearchTab(QWidget):
         type_layout.addWidget(QLabel("Search type:"))
 
         self.search_type_combo = QComboBox()
-        self.search_type_combo.addItem("Title/PMID/DOI (keyword)", "keyword")
         self.search_type_combo.addItem("Semantic (natural language)", "semantic")
+        self.search_type_combo.addItem("Title/PMID/DOI (keyword)", "keyword")
         self.search_type_combo.currentIndexChanged.connect(
             self._on_search_type_changed
         )
@@ -117,7 +117,7 @@ class SearchTab(QWidget):
         input_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(
-            "Enter PMID, DOI, or title keywords..."
+            "Enter natural language query (e.g., 'effect of telmisartan on vascular stiffness')..."
         )
         self.search_input.returnPressed.connect(self._do_search)
         input_layout.addWidget(self.search_input, stretch=1)
