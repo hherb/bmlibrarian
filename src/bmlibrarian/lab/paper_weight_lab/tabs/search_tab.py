@@ -15,7 +15,7 @@ from PySide6.QtCore import Signal
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
-from bmlibrarian.agents.paper_weight_db import (
+from bmlibrarian.agents.paper_weight import (
     search_documents,
     semantic_search_documents,
     get_recent_assessments,

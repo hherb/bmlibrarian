@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
-from bmlibrarian.agents.paper_weight_db import (
+from bmlibrarian.agents.paper_weight.db import (
     REPLICATION_SCORE_SINGLE_COMPARABLE,
     REPLICATION_SCORE_SINGLE_HIGHER,
     REPLICATION_SCORE_MULTIPLE_COMPARABLE,
@@ -20,7 +20,7 @@ from bmlibrarian.agents.paper_weight_db import (
     _calculate_replication_score,
     _reconstruct_result_from_db,
 )
-from bmlibrarian.agents.paper_weight_models import (
+from bmlibrarian.agents.paper_weight import (
     DimensionScore,
     PaperWeightResult,
     DIMENSION_STUDY_DESIGN,

@@ -55,7 +55,7 @@ from .document_interrogation_agent import (
 from .pico_agent import PICOAgent, PICOExtraction
 from .study_assessment_agent import StudyAssessmentAgent, StudyAssessment
 from .prisma2020_agent import PRISMA2020Agent, PRISMA2020Assessment, SuitabilityAssessment
-from .paper_weight_agent import AssessmentDetail, DimensionScore, PaperWeightResult, PaperWeightAssessmentAgent
+from .paper_weight import AssessmentDetail, DimensionScore, PaperWeightResult, PaperWeightAssessmentAgent
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep

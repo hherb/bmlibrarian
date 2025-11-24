@@ -13,7 +13,7 @@ import re
 import math
 from typing import Optional, Dict, List, Any
 
-from .paper_weight_models import (
+from .models import (
     DimensionScore,
     DIMENSION_STUDY_DESIGN,
     DIMENSION_SAMPLE_SIZE,

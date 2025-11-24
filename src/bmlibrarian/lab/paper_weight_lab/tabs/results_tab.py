@@ -18,12 +18,12 @@ from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
-from bmlibrarian.agents.paper_weight_agent import PaperWeightAssessmentAgent
-from bmlibrarian.agents.paper_weight_models import (
+from bmlibrarian.agents.paper_weight import (
+    PaperWeightAssessmentAgent,
     PaperWeightResult,
     ALL_DIMENSIONS,
+    get_document_metadata,
 )
-from bmlibrarian.agents.paper_weight_db import get_document_metadata
 
 from ..constants import SCORE_DECIMALS, WORKER_TERMINATE_TIMEOUT_MS
 from ..utils import (

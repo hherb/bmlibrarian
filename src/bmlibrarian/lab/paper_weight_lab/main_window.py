@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 
-from bmlibrarian.agents.paper_weight_agent import PaperWeightAssessmentAgent
+from bmlibrarian.agents.paper_weight import PaperWeightAssessmentAgent
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
 

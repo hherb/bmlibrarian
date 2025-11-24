@@ -11,11 +11,11 @@ This test module covers:
 import pytest
 from datetime import datetime
 from unittest.mock import patch, MagicMock
-from bmlibrarian.agents.paper_weight_agent import (
+from bmlibrarian.agents.paper_weight import (
     PaperWeightAssessmentAgent,
     PaperWeightResult,
     DimensionScore,
-    AssessmentDetail
+    AssessmentDetail,
 )
 
 

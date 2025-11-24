@@ -19,11 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, TYPE_CHECKING
 
-from .base import BaseAgent
-from ..config import get_model, get_agent_config, get_ollama_host
+from ..base import BaseAgent
+from ...config import get_model, get_agent_config, get_ollama_host
 
 # Import data models
-from .paper_weight_models import (
+from .models import (
     AssessmentDetail,
     DimensionScore,
     PaperWeightResult,
@@ -35,7 +35,7 @@ from .paper_weight_models import (
 )
 
 # Import extractors
-from .paper_weight_extractors import (
+from .extractors import (
     STUDY_TYPE_PRIORITY,
     extract_study_type,
     extract_sample_size_dimension,
@@ -44,7 +44,7 @@ from .paper_weight_extractors import (
 )
 
 # Import LLM assessors
-from .paper_weight_llm_assessors import (
+from .llm_assessors import (
     prepare_text_for_analysis,
     build_methodological_quality_prompt,
     calculate_methodological_quality_score,
@@ -56,7 +56,7 @@ from .paper_weight_llm_assessors import (
 )
 
 # Import database operations
-from .paper_weight_db import (
+from .db import (
     get_cached_assessment,
     store_assessment,
     get_document,
@@ -64,7 +64,7 @@ from .paper_weight_db import (
 )
 
 # Import validators for LLM validation of rule-based extractions
-from .paper_weight_validators import (
+from .validators import (
     ValidationResult,
     validate_study_type_extraction,
     validate_sample_size_extraction,
@@ -73,7 +73,7 @@ from .paper_weight_validators import (
 )
 
 if TYPE_CHECKING:
-    from .orchestrator import AgentOrchestrator
+    from ..orchestrator import AgentOrchestrator
 
 
 logger = logging.getLogger(__name__)

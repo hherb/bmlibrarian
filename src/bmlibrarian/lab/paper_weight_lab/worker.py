@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal
 
-from bmlibrarian.agents.paper_weight_models import ALL_DIMENSIONS
+from bmlibrarian.agents.paper_weight import ALL_DIMENSIONS
 from .constants import PROGRESS_ANALYZING
 
 if TYPE_CHECKING:
-    from bmlibrarian.agents.paper_weight_agent import PaperWeightAssessmentAgent
-    from bmlibrarian.agents.paper_weight_models import PaperWeightResult
+    from bmlibrarian.agents.paper_weight import PaperWeightAssessmentAgent
+    from bmlibrarian.agents.paper_weight import PaperWeightResult
 
 
 logger = logging.getLogger(__name__)

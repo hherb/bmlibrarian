@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
-from .paper_weight_models import DimensionScore
+from .models import DimensionScore
 
 logger = logging.getLogger(__name__)
 
@@ -551,11 +551,11 @@ def add_validation_to_dimension_score(
         Updated DimensionScore with validation information (score updated on conflict)
     """
     # Import helpers
-    from .paper_weight_extractors import (
+    from .extractors import (
         DEFAULT_STUDY_TYPE_HIERARCHY,
         calculate_sample_size_score,
     )
-    from .paper_weight_models import DIMENSION_STUDY_DESIGN, DIMENSION_SAMPLE_SIZE
+    from .models import DIMENSION_STUDY_DESIGN, DIMENSION_SAMPLE_SIZE
 
     if study_type_hierarchy is None:
         study_type_hierarchy = DEFAULT_STUDY_TYPE_HIERARCHY

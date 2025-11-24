@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 
-from bmlibrarian.agents.paper_weight_llm_assessors import (
+from bmlibrarian.agents.paper_weight.llm_assessors import (
     DEFAULT_MAX_TEXT_LENGTH,
     RISK_LEVEL_SCORES,
     RANDOMIZATION_SCORE,
@@ -26,7 +26,7 @@ from bmlibrarian.agents.paper_weight_llm_assessors import (
     extract_rob_from_study_assessment,
     create_error_dimension_score,
 )
-from bmlibrarian.agents.paper_weight_models import (
+from bmlibrarian.agents.paper_weight import (
     DIMENSION_METHODOLOGICAL_QUALITY,
     DIMENSION_RISK_OF_BIAS,
 )

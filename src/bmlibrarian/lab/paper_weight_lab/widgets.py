@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
-from bmlibrarian.agents.paper_weight_models import (
+from bmlibrarian.agents.paper_weight import (
     ALL_DIMENSIONS,
     PaperWeightResult,
 )

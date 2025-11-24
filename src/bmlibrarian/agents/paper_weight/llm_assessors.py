@@ -13,12 +13,12 @@ Prompts are imported from paper_weight_prompts module.
 import logging
 from typing import Dict, Any, Optional
 
-from .paper_weight_models import (
+from .models import (
     DimensionScore,
     DIMENSION_METHODOLOGICAL_QUALITY,
     DIMENSION_RISK_OF_BIAS,
 )
-from .paper_weight_prompts import (
+from .prompts import (
     build_methodological_quality_prompt,
     build_risk_of_bias_prompt,
 )

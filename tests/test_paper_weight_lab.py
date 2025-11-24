@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
-from bmlibrarian.agents.paper_weight_db import (
+from bmlibrarian.agents.paper_weight import (
     search_documents,
     get_recent_assessments,
     get_document_metadata,

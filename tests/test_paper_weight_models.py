@@ -12,7 +12,7 @@ import pytest
 from datetime import datetime
 import json
 
-from bmlibrarian.agents.paper_weight_models import (
+from bmlibrarian.agents.paper_weight import (
     AssessmentDetail,
     DimensionScore,
     PaperWeightResult,

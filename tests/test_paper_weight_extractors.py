@@ -12,7 +12,7 @@ Tests cover:
 import pytest
 import math
 
-from bmlibrarian.agents.paper_weight_extractors import (
+from bmlibrarian.agents.paper_weight.extractors import (
     STUDY_TYPE_PRIORITY,
     DEFAULT_STUDY_TYPE_KEYWORDS,
     DEFAULT_STUDY_TYPE_HIERARCHY,
@@ -32,7 +32,7 @@ from bmlibrarian.agents.paper_weight_extractors import (
     get_extracted_sample_size,
     get_extracted_study_type,
 )
-from bmlibrarian.agents.paper_weight_models import DIMENSION_STUDY_DESIGN, DIMENSION_SAMPLE_SIZE
+from bmlibrarian.agents.paper_weight import DIMENSION_STUDY_DESIGN, DIMENSION_SAMPLE_SIZE
 
 
 class TestExtractTextContext:

@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Optional, Dict, List
 
-from .paper_weight_models import (
+from .models import (
     AssessmentDetail,
     DimensionScore,
     PaperWeightResult,
@@ -24,7 +24,7 @@ from .paper_weight_models import (
     DIMENSION_RISK_OF_BIAS,
     DIMENSION_REPLICATION_STATUS,
 )
-from ..database import get_db_manager
+from ...database import get_db_manager
 
 
 logger = logging.getLogger(__name__)
