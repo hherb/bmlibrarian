@@ -44,7 +44,9 @@ DEFAULT_EMBEDDING_MODEL_NAME = "snowflake-arctic-embed2:latest"
 EMBEDDING_DIMENSION = 1024
 
 # Queue processing constants
-MAX_RETRY_ATTEMPTS = 3
+# Ollama embedding can be unstable under load - use generous retries
+MAX_RETRY_ATTEMPTS = 5
+RETRY_BASE_DELAY = 2.0  # Base delay in seconds (doubles each retry)
 
 
 @dataclass
@@ -265,10 +267,10 @@ class ChunkEmbedder:
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4 seconds
+                    wait_time = RETRY_BASE_DELAY * (2 ** attempt)  # Exponential backoff
                     logger.warning(
                         f"Embedding attempt {attempt + 1}/{max_retries} failed: {e}. "
-                        f"Retrying in {wait_time}s..."
+                        f"Retrying in {wait_time:.1f}s..."
                     )
                     time.sleep(wait_time)
                 else:
