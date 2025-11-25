@@ -181,3 +181,8 @@ class DownloadResult:
     full_text: Optional[str] = None  # Extracted NXML/full-text content
     full_text_path: Optional[str] = None  # Path to saved NXML file
     package_contents: Optional[List[str]] = None  # Files in tar.gz package
+    # PDF verification fields
+    verified: Optional[bool] = None  # True=verified, False=mismatch, None=not checked
+    verification_confidence: Optional[float] = None  # 0.0 to 1.0
+    verification_match_type: Optional[str] = None  # 'doi', 'pmid', 'title', 'doi_mismatch'
+    verification_warnings: Optional[List[str]] = None  # Warnings from verification

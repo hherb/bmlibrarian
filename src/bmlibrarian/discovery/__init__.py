@@ -76,6 +76,21 @@ from .pmc_package_downloader import (
     download_pmc_package
 )
 
+from .pdf_verifier import (
+    PDFVerifier,
+    PDFIdentifiers,
+    VerificationResult,
+    verify_downloaded_pdf
+)
+
+from .download_logger import (
+    log_download_to_database,
+    log_download_with_verification,
+    get_download_history,
+    get_mismatched_downloads,
+    check_migration_applied
+)
+
 __all__ = [
     # Data types
     'SourceType',
@@ -102,4 +117,15 @@ __all__ = [
     'discover_full_text',
     'download_pdf_for_document',
     'download_pmc_package',
+    # PDF verification
+    'PDFVerifier',
+    'PDFIdentifiers',
+    'VerificationResult',
+    'verify_downloaded_pdf',
+    # Download logging
+    'log_download_to_database',
+    'log_download_with_verification',
+    'get_download_history',
+    'get_mismatched_downloads',
+    'check_migration_applied',
 ]

@@ -87,7 +87,9 @@ class PDFButtonWidget(QPushButton):
             self.setText("📄 View")
             self.setObjectName("pdf_view_button")
         elif self.config.state == PDFButtonState.FETCH:
-            self.setText("⬇️ Fetch")
+            # Changed from "Fetch" to "Find" - now uses discovery workflow
+            # which searches PMC, Unpaywall, DOI, etc. with content verification
+            self.setText("🔍 Find")
             self.setObjectName("pdf_fetch_button")
         elif self.config.state == PDFButtonState.UPLOAD:
             self.setText("📤 Upload")
@@ -1158,12 +1160,24 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         }
 
         # Execute discovery and download with progress callback
+        # Enable content verification by default to catch wrong PDFs
         result = finder.download_for_document(
             document=document,
             output_dir=self.base_pdf_dir,
             use_browser_fallback=discovery_config.get('use_browser_fallback', True),
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            verify_content=discovery_config.get('verify_content', True),
+            delete_on_mismatch=discovery_config.get('delete_on_mismatch', False)
         )
+
+        # Check for verification failure
+        if result.verified is False:
+            logger.warning(
+                f"PDF verification FAILED for document {card_data.doc_id}: "
+                f"{result.verification_warnings}"
+            )
+            # Still return the path but log the mismatch
+            # The file is kept for manual review unless delete_on_mismatch is True
 
         if result.success and result.file_path:
             # If we got full text from a PMC package, store it in the database
@@ -1301,49 +1315,36 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     'publication_date': str(card_data.year) if card_data.year else None,
                 }
 
-                # Use discovery-first workflow if enabled and PDFManager supports it
-                if self.use_discovery and self.pdf_manager:
-                    if hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
-                        logger.info(f"Using discovery workflow for document {card_data.doc_id}")
-                        pdf_path = self.pdf_manager.download_pdf_with_discovery(
-                            document,
-                            use_browser_fallback=True,
-                            unpaywall_email=self.unpaywall_email
-                        )
+                # Always use discovery workflow - it includes direct URL as a source
+                # and provides content verification to catch wrong PDFs
+                if self.pdf_manager and hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
+                    logger.info(f"Using discovery workflow for document {card_data.doc_id}")
+                    pdf_path = self.pdf_manager.download_pdf_with_discovery(
+                        document,
+                        use_browser_fallback=True,
+                        unpaywall_email=self.unpaywall_email,
+                        verify_content=True,  # Verify PDF matches expected document
+                        delete_on_mismatch=False  # Keep mismatched PDFs for investigation
+                    )
 
-                        if pdf_path and pdf_path.exists():
-                            # Update database with pdf_filename
-                            self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
-                            # Update cache
-                            self._pdf_path_cache[card_data.doc_id] = pdf_path
-                            logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
-                            return pdf_path
-                        # Discovery failed, will fall through to direct download below
+                    if pdf_path and pdf_path.exists():
+                        # Update database with pdf_filename
+                        self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
+                        # Update cache
+                        self._pdf_path_cache[card_data.doc_id] = pdf_path
+                        logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
+                        return pdf_path
 
-                # Fall back to direct download if discovery not available/failed
-                if self.pdf_manager and card_data.pdf_url:
-                    pdf_path = self.pdf_manager.download_pdf(document)
+                    # Discovery failed - provide helpful error message
+                    error_msg = f"Failed to download PDF for document {card_data.doc_id}"
+                    if card_data.pdf_url:
+                        if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
+                            error_msg += " (Access restricted, likely requires institutional subscription)"
+                        else:
+                            error_msg += f" - no sources found or all failed"
+                    raise FileNotFoundError(error_msg)
 
-                    if not pdf_path or not pdf_path.exists():
-                        # Provide a helpful error message
-                        error_msg = f"Failed to download PDF for document {card_data.doc_id}"
-                        if card_data.pdf_url:
-                            if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
-                                error_msg += " (HTTP 403 - Access restricted, likely requires institutional subscription)"
-                            else:
-                                error_msg += f" from {card_data.pdf_url}"
-                        raise FileNotFoundError(error_msg)
-
-                    # Update database with pdf_filename
-                    self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
-
-                    # Update cache
-                    self._pdf_path_cache[card_data.doc_id] = pdf_path
-
-                    logger.info(f"Downloaded PDF for document {card_data.doc_id}: {pdf_path}")
-                    return pdf_path
-
-                raise ValueError("No PDF manager or URL configured for fetch")
+                raise ValueError("No PDF manager configured for fetch")
 
             except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
                 logger.error(f"Failed to fetch PDF for document {card_data.doc_id}: {e}")

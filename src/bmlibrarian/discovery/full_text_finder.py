@@ -193,7 +193,9 @@ class FullTextFinder:
         use_browser_fallback: bool = True,
         browser_headless: bool = DEFAULT_BROWSER_HEADLESS,
         browser_timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
-        progress_callback: Optional[Callable[[str, str], None]] = None
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+        verify_content: bool = False,
+        delete_on_mismatch: bool = False
     ) -> DownloadResult:
         """Discover PDF sources and download the best one.
 
@@ -209,9 +211,11 @@ class FullTextFinder:
             browser_headless: Run browser in headless mode (default True)
             browser_timeout: Browser operation timeout in ms (default 60000)
             progress_callback: Optional callback(stage, status)
+            verify_content: If True, verify downloaded PDF matches expected DOI/title
+            delete_on_mismatch: If True and verify_content=True, delete mismatched PDFs
 
         Returns:
-            DownloadResult with download status
+            DownloadResult with download status and verification results
         """
         start_time = time.time()
 
@@ -248,6 +252,13 @@ class FullTextFinder:
                 result.duration_ms = (time.time() - start_time) * 1000
                 if progress_callback:
                     progress_callback("download", "success")
+
+                # Verify content if requested
+                if verify_content:
+                    result = self._verify_downloaded_pdf(
+                        result, identifiers, delete_on_mismatch, progress_callback
+                    )
+
                 return result
 
             last_error = result.error_message
@@ -269,6 +280,13 @@ class FullTextFinder:
                 result.duration_ms = (time.time() - start_time) * 1000
                 if progress_callback:
                     progress_callback("browser_download", "success")
+
+                # Verify content if requested
+                if verify_content:
+                    result = self._verify_downloaded_pdf(
+                        result, identifiers, delete_on_mismatch, progress_callback
+                    )
+
                 return result
 
             last_error = result.error_message
@@ -642,6 +660,89 @@ class FullTextFinder:
         except Exception:
             return False
 
+    def _verify_downloaded_pdf(
+        self,
+        download_result: DownloadResult,
+        identifiers: DocumentIdentifiers,
+        delete_on_mismatch: bool,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> DownloadResult:
+        """Verify that downloaded PDF matches expected document identifiers.
+
+        Extracts DOI/PMID/title from the PDF and compares against expected values.
+        Updates the DownloadResult with verification status.
+
+        Args:
+            download_result: Successful download result to verify
+            identifiers: Expected document identifiers
+            delete_on_mismatch: If True, delete PDF on verification failure
+            progress_callback: Optional progress callback
+
+        Returns:
+            Updated DownloadResult with verification fields populated
+        """
+        if not download_result.success or not download_result.file_path:
+            return download_result
+
+        if progress_callback:
+            progress_callback("verification", "starting")
+
+        try:
+            from .pdf_verifier import PDFVerifier
+
+            verifier = PDFVerifier()
+            verification = verifier.verify_pdf(
+                pdf_path=Path(download_result.file_path),
+                expected_doi=identifiers.doi,
+                expected_pmid=identifiers.pmid,
+                expected_title=identifiers.title
+            )
+
+            # Update download result with verification info
+            download_result.verified = verification.verified
+            download_result.verification_confidence = verification.confidence
+            download_result.verification_match_type = verification.match_type
+            download_result.verification_warnings = verification.warnings
+
+            if verification.verified:
+                logger.info(
+                    f"PDF verified ({verification.match_type}, "
+                    f"confidence={verification.confidence:.2f})"
+                )
+                if progress_callback:
+                    progress_callback("verification", "success")
+            else:
+                warning_msg = "; ".join(verification.warnings) if verification.warnings else "Unknown"
+                logger.warning(
+                    f"PDF verification FAILED for {download_result.file_path}: {warning_msg}"
+                )
+                if progress_callback:
+                    progress_callback("verification", "mismatch")
+
+                # Delete mismatched PDF if requested
+                if delete_on_mismatch:
+                    try:
+                        Path(download_result.file_path).unlink()
+                        logger.info(f"Deleted mismatched PDF: {download_result.file_path}")
+                        download_result.success = False
+                        download_result.error_message = f"PDF content mismatch: {warning_msg}"
+                        download_result.file_path = None
+                    except Exception as e:
+                        logger.error(f"Failed to delete mismatched PDF: {e}")
+
+        except ImportError:
+            logger.warning("PDF verifier not available - skipping verification")
+            if progress_callback:
+                progress_callback("verification", "skipped")
+
+        except Exception as e:
+            logger.error(f"PDF verification error: {e}")
+            download_result.verification_warnings = [f"Verification error: {e}"]
+            if progress_callback:
+                progress_callback("verification", "error")
+
+        return download_result
+
     def _download_pmc_package(
         self,
         source: PDFSource,
@@ -734,7 +835,9 @@ class FullTextFinder:
         document: Dict[str, Any],
         output_dir: Optional[Path] = None,
         use_browser_fallback: Optional[bool] = None,
-        progress_callback: Optional[Callable[[str, str], None]] = None
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+        verify_content: bool = False,
+        delete_on_mismatch: bool = False
     ) -> DownloadResult:
         """Download PDF for a document using discovery + direct download + browser fallback.
 
@@ -753,9 +856,11 @@ class FullTextFinder:
             output_dir: Directory to save PDF. If None, uses current directory.
             use_browser_fallback: Override browser fallback setting (None uses config)
             progress_callback: Optional callback(stage, status)
+            verify_content: If True, verify downloaded PDF matches expected DOI/title
+            delete_on_mismatch: If True and verify_content=True, delete mismatched PDFs
 
         Returns:
-            DownloadResult with download status and file path
+            DownloadResult with download status, file path, and verification results
         """
         # Extract identifiers from document
         identifiers = DocumentIdentifiers(
@@ -792,7 +897,9 @@ class FullTextFinder:
             use_browser_fallback=use_browser_fallback,
             browser_headless=browser_config.get('headless', DEFAULT_BROWSER_HEADLESS),
             browser_timeout=browser_config.get('timeout', DEFAULT_BROWSER_TIMEOUT_MS),
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            verify_content=verify_content,
+            delete_on_mismatch=delete_on_mismatch
         )
 
     def _generate_output_path(
@@ -924,7 +1031,9 @@ def download_pdf_for_document(
     use_browser_fallback: bool = True,
     browser_headless: bool = DEFAULT_BROWSER_HEADLESS,
     browser_timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
-    progress_callback: Optional[Callable[[str, str], None]] = None
+    progress_callback: Optional[Callable[[str, str], None]] = None,
+    verify_content: bool = True,
+    delete_on_mismatch: bool = False
 ) -> DownloadResult:
     """Convenience function to download PDF for a document.
 
@@ -935,13 +1044,14 @@ def download_pdf_for_document(
     1. Discovers available PDF sources (PMC, Unpaywall, DOI, direct URL)
     2. Tries direct HTTP download from each source in priority order
     3. If all HTTP attempts fail, uses browser-based download as fallback
+    4. Verifies downloaded PDF matches expected document metadata (if verify_content=True)
 
     Args:
         document: Document dictionary with keys:
             - doi: DOI string (optional but recommended)
             - pmid: PubMed ID (optional)
             - pmcid: PubMed Central ID (optional)
-            - title: Document title (optional)
+            - title: Document title (for verification)
             - pdf_url: Direct PDF URL (optional)
             - id: Document ID for filename generation (optional)
             - publication_date: For year-based storage (optional)
@@ -952,8 +1062,10 @@ def download_pdf_for_document(
         browser_headless: Run browser in headless mode (default True)
         browser_timeout: Browser operation timeout in ms (default 60000)
         progress_callback: Optional callback(stage, status) for progress updates
-            Stages: 'discovery', 'download', 'browser_download'
-            Statuses: 'starting', 'found', 'not_found', 'success', 'failed'
+            Stages: 'discovery', 'download', 'browser_download', 'verification'
+            Statuses: 'starting', 'found', 'not_found', 'success', 'failed', 'mismatch'
+        verify_content: Verify downloaded PDF matches document metadata (default True)
+        delete_on_mismatch: Delete PDF if verification fails (default False)
 
     Returns:
         DownloadResult with:
@@ -963,6 +1075,9 @@ def download_pdf_for_document(
             - file_size: Size in bytes (if successful)
             - error_message: Error description (if failed)
             - duration_ms: Total time taken
+            - verified: True if verified, False if mismatch, None if not checked
+            - verification_match_type: 'doi', 'pmid', 'title' or mismatch type
+            - verification_warnings: List of warnings from verification
 
     Example:
         from bmlibrarian.discovery import download_pdf_for_document
@@ -971,16 +1086,20 @@ def download_pdf_for_document(
         document = {
             'doi': '10.1038/nature12373',
             'id': 12345,
+            'title': 'Example Paper Title',
             'publication_date': '2024-01-15'
         }
 
         result = download_pdf_for_document(
             document=document,
             output_dir=Path('~/pdfs').expanduser(),
-            unpaywall_email='user@example.com'
+            unpaywall_email='user@example.com',
+            verify_content=True
         )
 
         if result.success:
+            if result.verified is False:
+                print(f"WARNING: Downloaded wrong PDF! {result.verification_warnings}")
             print(f"Downloaded to: {result.file_path}")
         else:
             print(f"Failed: {result.error_message}")
@@ -1001,5 +1120,7 @@ def download_pdf_for_document(
         document=document,
         output_dir=output_dir,
         use_browser_fallback=use_browser_fallback,
-        progress_callback=progress_callback
+        progress_callback=progress_callback,
+        verify_content=verify_content,
+        delete_on_mismatch=delete_on_mismatch
     )
