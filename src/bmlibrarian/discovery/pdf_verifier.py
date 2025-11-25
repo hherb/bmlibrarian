@@ -41,12 +41,24 @@ class PDFIdentifiers:
 
 
 @dataclass
+class PDFValidityResult:
+    """Result of PDF file validity check."""
+
+    is_valid: bool
+    is_pdf: bool = False  # File has PDF magic bytes
+    page_count: int = 0
+    has_text: bool = False  # Text is extractable
+    file_size: int = 0
+    error: Optional[str] = None
+
+
+@dataclass
 class VerificationResult:
     """Result of PDF content verification."""
 
     verified: bool
     confidence: float  # 0.0 to 1.0
-    match_type: Optional[str] = None  # 'doi', 'pmid', 'title', None
+    match_type: Optional[str] = None  # 'doi', 'pmid', 'title', 'title_exact', None
     expected_doi: Optional[str] = None
     extracted_doi: Optional[str] = None
     expected_pmid: Optional[str] = None
@@ -54,6 +66,7 @@ class VerificationResult:
     expected_title: Optional[str] = None
     extracted_title: Optional[str] = None
     title_similarity: Optional[float] = None
+    is_valid_pdf: bool = True  # Whether the file is a valid PDF
     error: Optional[str] = None
     warnings: Optional[List[str]] = None
 
@@ -86,9 +99,88 @@ class PDFVerifier:
     # Minimum title similarity for match
     MIN_TITLE_SIMILARITY = 0.80
 
+    # PDF magic bytes
+    PDF_MAGIC = b'%PDF'
+
     def __init__(self) -> None:
         """Initialize PDF verifier."""
         self._pymupdf = None
+
+    def check_pdf_validity(self, pdf_path: Path) -> PDFValidityResult:
+        """Check if a file is a valid PDF.
+
+        Performs multiple checks:
+        1. File exists and is readable
+        2. File has PDF magic bytes
+        3. PDF can be opened by PyMuPDF
+        4. PDF has at least one page
+        5. Text can be extracted (for scanned docs this may fail)
+
+        Args:
+            pdf_path: Path to the file to check
+
+        Returns:
+            PDFValidityResult with validity details
+        """
+        result = PDFValidityResult(is_valid=False)
+
+        # Check file exists
+        if not pdf_path.exists():
+            result.error = f"File not found: {pdf_path}"
+            return result
+
+        # Get file size
+        try:
+            result.file_size = pdf_path.stat().st_size
+        except OSError as e:
+            result.error = f"Cannot read file: {e}"
+            return result
+
+        # Check for empty file
+        if result.file_size == 0:
+            result.error = "File is empty"
+            return result
+
+        # Check PDF magic bytes
+        try:
+            with open(pdf_path, 'rb') as f:
+                header = f.read(8)
+                result.is_pdf = header.startswith(self.PDF_MAGIC)
+        except Exception as e:
+            result.error = f"Cannot read file header: {e}"
+            return result
+
+        if not result.is_pdf:
+            result.error = "File is not a PDF (invalid magic bytes)"
+            return result
+
+        # Try to open with PyMuPDF
+        try:
+            fitz = self._get_pymupdf()
+            doc = fitz.open(str(pdf_path))
+
+            result.page_count = len(doc)
+            if result.page_count == 0:
+                result.error = "PDF has no pages"
+                doc.close()
+                return result
+
+            # Try to extract text from first page
+            try:
+                first_page = doc[0]
+                text = first_page.get_text()
+                result.has_text = len(text.strip()) > MIN_TEXT_LENGTH
+            except Exception:
+                result.has_text = False
+
+            doc.close()
+            result.is_valid = True
+
+        except Exception as e:
+            result.error = f"Cannot open PDF: {e}"
+            return result
+
+        return result
 
     def _get_pymupdf(self) -> Any:
         """Lazy-load PyMuPDF.
@@ -268,6 +360,93 @@ class PDFVerifier:
 
         return SequenceMatcher(None, norm1, norm2).ratio()
 
+    def _check_exact_title_match(
+        self,
+        expected_title: Optional[str],
+        extracted_title: Optional[str]
+    ) -> bool:
+        """Check for exact title match (after normalization).
+
+        This is a stricter check than semantic similarity - the normalized
+        titles must be exactly equal.
+
+        Args:
+            expected_title: Expected title from database
+            extracted_title: Title extracted from PDF
+
+        Returns:
+            True if titles match exactly after normalization
+        """
+        norm1 = self._normalize_title(expected_title)
+        norm2 = self._normalize_title(extracted_title)
+
+        if not norm1 or not norm2:
+            return False
+
+        return norm1 == norm2
+
+    def _check_title_contains(
+        self,
+        expected_title: Optional[str],
+        pdf_text: str
+    ) -> Tuple[bool, float]:
+        """Check if expected title appears in PDF text.
+
+        This handles titles that are split across multiple lines in PDF text
+        by joining the first 30 lines into a continuous string and doing
+        a simple substring search.
+
+        Args:
+            expected_title: Expected title from database
+            pdf_text: Full extracted text from PDF
+
+        Returns:
+            Tuple of (found, confidence)
+        """
+        if not expected_title or not pdf_text:
+            return False, 0.0
+
+        # Normalize title: lowercase, remove ALL non-alphanumeric characters
+        norm_title = re.sub(r'[^a-z0-9]', '', expected_title.lower())
+
+        if not norm_title or len(norm_title) < 10:
+            return False, 0.0
+
+        # Take first 50 lines (where title typically appears) - increased from 30
+        lines = pdf_text.split('\n')[:50]
+        # Join into one continuous string, remove ALL non-alphanumeric
+        first_page_text = ''.join(lines)
+        norm_text = re.sub(r'[^a-z0-9]', '', first_page_text.lower())
+
+        # Simple substring search - title should appear in the first page text
+        if norm_title in norm_text:
+            logger.info(f"Title contains match: found '{expected_title[:50]}...' in PDF text")
+            return True, 0.95
+
+        # Fallback 1: check if first 60 chars of title appear (for very long titles)
+        if len(norm_title) > 60:
+            title_start = norm_title[:60]
+            if title_start in norm_text:
+                logger.info(f"Title start match: found first 60 chars of '{expected_title[:50]}...'")
+                return True, 0.85
+
+        # Fallback 2: Word-based matching - check if all significant words appear
+        # Extract words (3+ chars) from title
+        title_words = [w.lower() for w in re.findall(r'[a-z]{3,}', expected_title.lower())]
+        if len(title_words) >= 4:
+            # Check how many title words appear in the text
+            text_lower = first_page_text.lower()
+            matches = sum(1 for w in title_words if w in text_lower)
+            match_ratio = matches / len(title_words)
+            if match_ratio >= 0.9:  # 90% of words found
+                logger.info(
+                    f"Word-based title match: {matches}/{len(title_words)} words "
+                    f"({match_ratio:.0%}) for '{expected_title[:50]}...'"
+                )
+                return True, 0.88
+
+        return False, 0.0
+
     def verify_pdf(
         self,
         pdf_path: Path,
@@ -276,6 +455,14 @@ class PDFVerifier:
         expected_title: Optional[str] = None
     ) -> VerificationResult:
         """Verify PDF content matches expected document metadata.
+
+        Verification order:
+        1. Check PDF validity first (magic bytes, can open, has pages)
+        2. DOI match (highest confidence)
+        3. PMID match (high confidence)
+        4. Exact title match (high confidence)
+        5. Title contains check (medium-high confidence)
+        6. Title similarity (lower confidence)
 
         Args:
             pdf_path: Path to PDF file
@@ -294,15 +481,26 @@ class PDFVerifier:
             expected_title=expected_title,
         )
 
-        # Check file exists
-        if not pdf_path.exists():
-            result.error = f"PDF file not found: {pdf_path}"
+        # Step 0: Check PDF validity first
+        validity = self.check_pdf_validity(pdf_path)
+        result.is_valid_pdf = validity.is_valid
+
+        if not validity.is_valid:
+            result.error = validity.error or "Invalid PDF file"
+            if not validity.is_pdf:
+                result.error = "File is not a PDF (invalid format)"
             return result
+
+        if not validity.has_text:
+            # PDF is valid but text extraction failed (likely scanned document)
+            result.warnings.append(
+                "PDF appears to be scanned/image-based - text extraction limited"
+            )
 
         # Extract text from PDF
         text = self.extract_text_from_pdf(pdf_path)
         if not text:
-            result.error = "Could not extract text from PDF"
+            result.error = "Could not extract text from PDF (may be scanned)"
             return result
 
         # Extract identifiers from PDF content
@@ -311,7 +509,7 @@ class PDFVerifier:
         result.extracted_pmid = extracted.pmid
         result.extracted_title = extracted.title
 
-        # Verification priority: DOI > PMID > Title
+        # Verification priority: DOI > PMID > Exact Title > Title Contains > Title Similarity
 
         # 1. DOI verification (highest confidence)
         if expected_doi and extracted.doi:
@@ -360,7 +558,28 @@ class PDFVerifier:
                 )
                 return result
 
-        # 3. Title similarity verification (lower confidence)
+        # 3. Exact title match (high confidence) - NEW
+        if expected_title and extracted.title:
+            if self._check_exact_title_match(expected_title, extracted.title):
+                result.verified = True
+                result.confidence = 0.98
+                result.match_type = 'title_exact'
+                result.title_similarity = 1.0
+                logger.info(f"PDF verified by exact title match")
+                return result
+
+        # 4. Title contains check (medium-high confidence) - NEW
+        if expected_title:
+            found, confidence = self._check_title_contains(expected_title, text)
+            if found:
+                result.verified = True
+                result.confidence = confidence
+                result.match_type = 'title_in_text'
+                result.title_similarity = confidence
+                logger.info(f"PDF verified by title found in text: confidence={confidence:.2f}")
+                return result
+
+        # 5. Title similarity verification (lower confidence)
         if expected_title and extracted.title:
             similarity = self._calculate_title_similarity(expected_title, extracted.title)
             result.title_similarity = similarity
@@ -368,7 +587,7 @@ class PDFVerifier:
             if similarity >= self.MIN_TITLE_SIMILARITY:
                 result.verified = True
                 result.confidence = similarity
-                result.match_type = 'title'
+                result.match_type = 'title_similar'
                 logger.info(
                     f"PDF verified by title similarity: {similarity:.2f}"
                 )
@@ -380,7 +599,7 @@ class PDFVerifier:
                     f"Found '{extracted.title[:50] if extracted.title else 'N/A'}...'"
                 )
 
-        # 4. No match found - inconclusive
+        # 6. No match found - inconclusive
         if not extracted.has_identifiers():
             result.error = "Could not extract any identifiers from PDF"
             result.confidence = 0.0

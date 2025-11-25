@@ -79,6 +79,7 @@ from .pmc_package_downloader import (
 from .pdf_verifier import (
     PDFVerifier,
     PDFIdentifiers,
+    PDFValidityResult,
     VerificationResult,
     verify_downloaded_pdf
 )
@@ -120,6 +121,7 @@ __all__ = [
     # PDF verification
     'PDFVerifier',
     'PDFIdentifiers',
+    'PDFValidityResult',
     'VerificationResult',
     'verify_downloaded_pdf',
     # Download logging
