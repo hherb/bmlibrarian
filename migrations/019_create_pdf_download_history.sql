@@ -94,7 +94,7 @@ CREATE OR REPLACE VIEW v_document_pdf_status AS
 SELECT
     d.id AS document_id,
     d.doi,
-    d.pmid,
+    d.external_id AS pmid,  -- external_id stores PMID for PubMed documents
     d.title,
     d.pdf_filename,
     h.source_type AS last_download_source,
