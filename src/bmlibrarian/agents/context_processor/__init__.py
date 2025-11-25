@@ -46,11 +46,22 @@ from .data_types import (
     DEFAULT_OVERLAP_CHARS,
     DEFAULT_SEPARATOR,
 )
+from .semantic_chunk_processor import (
+    SemanticChunkProcessor,
+    SemanticChunk,
+    create_prisma_chunk_processor,
+    DEFAULT_EXTRACTION_PROMPT,
+    DEFAULT_CONSOLIDATION_PROMPT,
+)
 
 __all__ = [
     # Core classes
     "IterativeContextProcessor",
     "ProgressCallback",
+    # Concrete implementations
+    "SemanticChunkProcessor",
+    "SemanticChunk",
+    "create_prisma_chunk_processor",
     # Data types
     "Batch",
     "ExtractionResult",
@@ -67,4 +78,6 @@ __all__ = [
     "DEFAULT_MIN_ITEMS_FOR_RECURSION",
     "DEFAULT_OVERLAP_CHARS",
     "DEFAULT_SEPARATOR",
+    "DEFAULT_EXTRACTION_PROMPT",
+    "DEFAULT_CONSOLIDATION_PROMPT",
 ]
