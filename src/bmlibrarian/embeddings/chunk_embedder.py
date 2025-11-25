@@ -225,38 +225,58 @@ class ChunkEmbedder:
                 logger.info(f"Created embedding model entry with ID: {model_id}")
                 return model_id
 
-    def create_embedding(self, text: str) -> Optional[List[float]]:
+    def create_embedding(
+        self, text: str, max_retries: int = MAX_RETRY_ATTEMPTS
+    ) -> Optional[List[float]]:
         """
-        Generate embedding vector for text using Ollama.
+        Generate embedding vector for text using Ollama with retry logic.
 
         Args:
             text: Text to embed.
+            max_retries: Maximum number of retry attempts on failure.
 
         Returns:
             Embedding vector as list of floats, or None on failure.
         """
+        import time
+
         if not text or not text.strip():
             logger.warning("Cannot create embedding for empty text")
             return None
 
-        try:
-            response = ollama.embeddings(model=self.model_name, prompt=text)
-            embedding = response.get("embedding")
+        if ollama is None:
+            logger.error("Ollama library not available")
+            return None
 
-            if embedding:
-                if len(embedding) != EMBEDDING_DIMENSION:
+        for attempt in range(max_retries):
+            try:
+                response = ollama.embeddings(model=self.model_name, prompt=text)
+                embedding = response.get("embedding")
+
+                if embedding:
+                    if len(embedding) != EMBEDDING_DIMENSION:
+                        logger.warning(
+                            f"Unexpected embedding dimension: {len(embedding)}, "
+                            f"expected {EMBEDDING_DIMENSION}"
+                        )
+                    return embedding
+
+                logger.error(f"No embedding in Ollama response: {response}")
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4 seconds
                     logger.warning(
-                        f"Unexpected embedding dimension: {len(embedding)}, "
-                        f"expected {EMBEDDING_DIMENSION}"
+                        f"Embedding attempt {attempt + 1}/{max_retries} failed: {e}. "
+                        f"Retrying in {wait_time}s..."
                     )
-                return embedding
+                    time.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Embedding generation failed after {max_retries} attempts: {e}"
+                    )
 
-            logger.error(f"No embedding in Ollama response: {response}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
-            return None
+        return None
 
     def has_chunks(
         self,
