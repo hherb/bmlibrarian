@@ -37,6 +37,8 @@ from .data_types import (
     ProcessingResult,
     ProcessingStatus,
     ProgressInfo,
+    OversizedItemStrategy,
+    ConsolidationStrategy,
     # Constants
     DEFAULT_MAX_CONTEXT_CHARS,
     DEFAULT_MAX_RECURSION_DEPTH,
@@ -56,6 +58,9 @@ __all__ = [
     "ProcessingResult",
     "ProcessingStatus",
     "ProgressInfo",
+    # Strategy enums
+    "OversizedItemStrategy",
+    "ConsolidationStrategy",
     # Constants
     "DEFAULT_MAX_CONTEXT_CHARS",
     "DEFAULT_MAX_RECURSION_DEPTH",

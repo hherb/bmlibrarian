@@ -22,6 +22,24 @@ class ProcessingStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TRUNCATED = "truncated"  # Max recursion reached, partial results
+    PARTIAL = "partial"  # Some batches failed but others succeeded
+
+
+class OversizedItemStrategy(Enum):
+    """Strategy for handling items larger than max_context_chars."""
+
+    SPLIT = "split"  # Split the item into smaller pieces (requires split_oversized_item)
+    TRUNCATE = "truncate"  # Truncate to max_context_chars (loses information)
+    SKIP = "skip"  # Skip the item entirely (logs warning)
+    FAIL = "fail"  # Raise an error (strict mode)
+
+
+class ConsolidationStrategy(Enum):
+    """Strategy for merging extraction results."""
+
+    CONCATENATE = "concatenate"  # Simple concatenation with separator
+    WEIGHTED = "weighted"  # Weight by confidence scores
+    DEDUPLICATE = "deduplicate"  # Remove duplicate content before merging
 
 
 # Default configuration constants
@@ -52,6 +70,12 @@ class ProcessingConfig:
         separator: String used to separate items within a batch.
         preserve_metadata: If True, metadata from source items is preserved
             through consolidation levels.
+        oversized_item_strategy: How to handle items larger than max_context_chars.
+        consolidation_strategy: How to merge extraction results.
+        continue_on_error: If True, continue processing when batch extraction fails.
+            If False, fail immediately on first error.
+        min_confidence_threshold: Minimum confidence score to include a result
+            in consolidation. Results below this are filtered out.
     """
 
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS
@@ -60,6 +84,10 @@ class ProcessingConfig:
     min_items_for_recursion: int = DEFAULT_MIN_ITEMS_FOR_RECURSION
     separator: str = DEFAULT_SEPARATOR
     preserve_metadata: bool = True
+    oversized_item_strategy: OversizedItemStrategy = OversizedItemStrategy.SPLIT
+    consolidation_strategy: ConsolidationStrategy = ConsolidationStrategy.CONCATENATE
+    continue_on_error: bool = True
+    min_confidence_threshold: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
@@ -78,6 +106,11 @@ class ProcessingConfig:
         if self.min_items_for_recursion < 1:
             raise ValueError(
                 f"min_items_for_recursion must be at least 1, got {self.min_items_for_recursion}"
+            )
+        if not 0.0 <= self.min_confidence_threshold <= 1.0:
+            raise ValueError(
+                f"min_confidence_threshold must be between 0.0 and 1.0, "
+                f"got {self.min_confidence_threshold}"
             )
 
 
@@ -100,6 +133,8 @@ class ExtractionResult:
         batch_index: Index of the batch this result came from (if applicable).
         recursion_level: The recursion depth at which this result was created.
             Level 0 is the initial extraction, higher levels are consolidations.
+        is_error: True if this result represents a failed extraction.
+        error_message: Error message if extraction failed.
     """
 
     content: str
@@ -108,14 +143,23 @@ class ExtractionResult:
     confidence: float = 1.0
     batch_index: Optional[int] = None
     recursion_level: int = 0
+    is_error: bool = False
+    error_message: Optional[str] = None
 
     @property
     def content_length(self) -> int:
         """Get the length of the content in characters."""
         return len(self.content)
 
+    @property
+    def is_valid(self) -> bool:
+        """Check if this is a valid (non-error) result with content."""
+        return not self.is_error and bool(self.content)
+
     def __repr__(self) -> str:
         """Provide a concise string representation."""
+        if self.is_error:
+            return f"ExtractionResult(ERROR: {self.error_message})"
         preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
         return (
             f"ExtractionResult(content='{preview}', "
@@ -167,7 +211,7 @@ class ProcessingResult:
 
     Attributes:
         final_result: The final consolidated ExtractionResult.
-        status: Processing status (completed, truncated, failed).
+        status: Processing status (completed, truncated, failed, partial).
         total_items_processed: Total number of original items processed.
         batches_created: Number of batches created in the initial pass.
         recursion_levels_used: Number of recursive consolidation passes.
@@ -175,6 +219,9 @@ class ProcessingResult:
             for debugging or analysis.
         error_message: Error message if processing failed.
         processing_stats: Additional statistics about the processing run.
+        failed_batches: List of batch indices that failed extraction.
+        skipped_items: List of item indices that were skipped (oversized).
+        successful_batches: Number of batches that succeeded.
     """
 
     final_result: ExtractionResult
@@ -185,6 +232,9 @@ class ProcessingResult:
     intermediate_results: Optional[List[List[ExtractionResult]]] = None
     error_message: Optional[str] = None
     processing_stats: Dict[str, Any] = field(default_factory=dict)
+    failed_batches: List[int] = field(default_factory=list)
+    skipped_items: List[int] = field(default_factory=list)
+    successful_batches: int = 0
 
     @property
     def is_complete(self) -> bool:
@@ -192,18 +242,40 @@ class ProcessingResult:
         return self.status == ProcessingStatus.COMPLETED
 
     @property
+    def is_partial(self) -> bool:
+        """Check if processing completed with some failures."""
+        return self.status == ProcessingStatus.PARTIAL
+
+    @property
+    def has_failures(self) -> bool:
+        """Check if any batches failed or items were skipped."""
+        return bool(self.failed_batches) or bool(self.skipped_items)
+
+    @property
     def content(self) -> str:
         """Convenience accessor for the final result content."""
         return self.final_result.content
 
+    @property
+    def success_rate(self) -> float:
+        """Calculate the success rate of batch processing (0.0 to 1.0)."""
+        if self.batches_created == 0:
+            return 1.0
+        return self.successful_batches / self.batches_created
+
     def __repr__(self) -> str:
         """Provide a concise string representation."""
-        return (
+        base = (
             f"ProcessingResult(status={self.status.value}, "
             f"items={self.total_items_processed}, "
             f"batches={self.batches_created}, "
-            f"recursion={self.recursion_levels_used})"
+            f"recursion={self.recursion_levels_used}"
         )
+        if self.failed_batches:
+            base += f", failed={len(self.failed_batches)}"
+        if self.skipped_items:
+            base += f", skipped={len(self.skipped_items)}"
+        return base + ")"
 
 
 @dataclass
