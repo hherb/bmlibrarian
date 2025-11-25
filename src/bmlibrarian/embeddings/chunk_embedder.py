@@ -4,8 +4,8 @@ Chunk Embedder for BMLibrarian.
 Provides functionality for chunking document text and generating embeddings
 for storage in the semantic.chunks table.
 
-The chunking strategy uses character-based splitting with configurable
-overlap to ensure semantic continuity across chunk boundaries.
+The chunking strategy uses adaptive sentence-boundary-aware splitting with
+configurable overlap to ensure semantic continuity across chunk boundaries.
 
 Example usage:
     from bmlibrarian.embeddings.chunk_embedder import ChunkEmbedder
@@ -15,10 +15,10 @@ Example usage:
     print(f"Created {num_chunks} chunks")
 
     # Or use the pure function directly
-    from bmlibrarian.embeddings.chunk_embedder import chunk_text
-    chunks = chunk_text("Long document text...", chunk_size=350, overlap=50)
-    for start, end in chunks:
-        print(f"Chunk: {text[start:end+1]}")
+    from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
+    chunks = adaptive_chunker_with_positions("Long document text...", max_chars=1800, overlap_chars=320)
+    for chunk in chunks:
+        print(f"Chunk {chunk.chunk_no}: [{chunk.start_pos}:{chunk.end_pos}] {chunk.text[:50]}...")
 """
 
 import logging
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Callable
 
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,9 @@ except ImportError:
     logger.warning("ollama not installed. Embedding generation will not be available.")
     ollama = None
 
-# Default chunking parameters
-DEFAULT_CHUNK_SIZE = 350
-DEFAULT_CHUNK_OVERLAP = 50
+# Default chunking parameters (aligned with adaptive_chunker_optimized defaults)
+DEFAULT_CHUNK_SIZE = 1800
+DEFAULT_CHUNK_OVERLAP = 320
 DEFAULT_EMBEDDING_MODEL_ID = 1
 DEFAULT_EMBEDDING_MODEL_NAME = "snowflake-arctic-embed2:latest"
 EMBEDDING_DIMENSION = 1024
@@ -386,8 +387,10 @@ class ChunkEmbedder:
             logger.warning(f"Document {document_id} has no full_text, skipping")
             return 0
 
-        # Calculate chunk positions
-        chunk_positions = chunk_text(full_text, chunk_size, overlap)
+        # Calculate chunk positions using adaptive sentence-aware chunker
+        chunk_positions = adaptive_chunker_with_positions(
+            full_text, max_chars=chunk_size, overlap_chars=overlap
+        )
         if not chunk_positions:
             logger.warning(f"No chunks generated for document {document_id}")
             return 0
@@ -412,8 +415,8 @@ class ChunkEmbedder:
                     if progress_callback:
                         progress_callback(i + 1, total_chunks)
 
-                    # Extract chunk text
-                    chunk_text_content = chunk_pos.extract_text(full_text)
+                    # Use the text from the ChunkWithPosition object
+                    chunk_text_content = chunk_pos.text
 
                     # Generate embedding
                     embedding = self.create_embedding(chunk_text_content)
@@ -563,3 +566,131 @@ class ChunkEmbedder:
                     """,
                     (error[:1000], document_id),  # Truncate error to avoid overflow
                 )
+
+    def rechunk_all(
+        self,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        overlap: int = DEFAULT_CHUNK_OVERLAP,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> dict:
+        """
+        Re-chunk all documents in semantic.chunks with new chunking parameters.
+
+        This method:
+        1. Saves unique document IDs from semantic.chunks to a temp table
+        2. Truncates semantic.chunks (clears data but preserves HNSW index)
+        3. Re-chunks each document using adaptive_chunker_with_positions
+        4. Reports statistics
+
+        Args:
+            chunk_size: Target chunk size in characters (default: 1800).
+            overlap: Overlap between consecutive chunks (default: 320).
+            progress_callback: Optional callback(stage, current, total) for progress.
+
+        Returns:
+            Dictionary with statistics:
+                - total_documents: Number of documents to process
+                - processed: Successfully processed documents
+                - failed: Failed documents
+                - total_chunks_created: Total chunks created
+                - elapsed_seconds: Total time taken
+                - chunks_per_second: Processing rate
+                - avg_chunks_per_doc: Average chunks per document
+        """
+        import time
+
+        stats = {
+            "total_documents": 0,
+            "processed": 0,
+            "failed": 0,
+            "total_chunks_created": 0,
+            "elapsed_seconds": 0.0,
+            "chunks_per_second": 0.0,
+            "avg_chunks_per_doc": 0.0,
+        }
+
+        # Step 1: Get unique document IDs and save to temp table
+        logger.info("Step 1: Collecting document IDs from semantic.chunks...")
+        if progress_callback:
+            progress_callback("collecting_ids", 0, 0)
+
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Create temp table with document IDs
+                cur.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS rechunk_doc_ids AS
+                    SELECT DISTINCT document_id FROM semantic.chunks
+                """)
+
+                # Get count
+                cur.execute("SELECT COUNT(*) FROM rechunk_doc_ids")
+                result = cur.fetchone()
+                total_docs = result[0] if result else 0
+                stats["total_documents"] = total_docs
+
+                if total_docs == 0:
+                    logger.warning("No documents found in semantic.chunks")
+                    return stats
+
+                logger.info(f"Found {total_docs} documents to rechunk")
+
+                # Step 2: Truncate semantic.chunks
+                logger.info("Step 2: Truncating semantic.chunks table...")
+                if progress_callback:
+                    progress_callback("truncating", 0, total_docs)
+
+                cur.execute("TRUNCATE TABLE semantic.chunks")
+                logger.info("semantic.chunks truncated (HNSW index preserved but empty)")
+
+                # Step 3: Fetch document IDs
+                cur.execute("SELECT document_id FROM rechunk_doc_ids ORDER BY document_id")
+                document_ids = [row[0] for row in cur.fetchall()]
+
+                # Clean up temp table
+                cur.execute("DROP TABLE IF EXISTS rechunk_doc_ids")
+
+        # Step 4: Re-chunk each document
+        logger.info(f"Step 3: Re-chunking {total_docs} documents...")
+        start_time = time.perf_counter()
+
+        for i, doc_id in enumerate(document_ids):
+            if progress_callback:
+                progress_callback("chunking", i + 1, total_docs)
+
+            try:
+                num_chunks = self.chunk_and_embed(
+                    document_id=doc_id,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    overwrite=False,  # Table already truncated
+                )
+
+                if num_chunks > 0:
+                    stats["processed"] += 1
+                    stats["total_chunks_created"] += num_chunks
+                else:
+                    stats["failed"] += 1
+                    logger.warning(f"Document {doc_id}: no chunks created")
+
+            except Exception as e:
+                stats["failed"] += 1
+                logger.error(f"Document {doc_id}: rechunk failed - {e}")
+
+        # Calculate final statistics
+        elapsed = time.perf_counter() - start_time
+        stats["elapsed_seconds"] = round(elapsed, 2)
+
+        if elapsed > 0:
+            stats["chunks_per_second"] = round(stats["total_chunks_created"] / elapsed, 2)
+
+        if stats["processed"] > 0:
+            stats["avg_chunks_per_doc"] = round(
+                stats["total_chunks_created"] / stats["processed"], 2
+            )
+
+        logger.info(
+            f"Rechunk complete: {stats['processed']}/{total_docs} documents, "
+            f"{stats['total_chunks_created']} chunks in {stats['elapsed_seconds']}s"
+        )
+
+        return stats
