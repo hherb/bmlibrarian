@@ -144,6 +144,8 @@ class PDFOperationSettings:
     RETRY_DELAY_MS: Final[int] = 1000  # Delay between retries in milliseconds
     DOWNLOAD_TIMEOUT_SECONDS: Final[int] = 30  # Timeout for PDF downloads
     BUTTON_RESET_DELAY_MS: Final[int] = 3000  # Delay before resetting Find PDF button after failure
+    THREAD_GRACEFUL_SHUTDOWN_MS: Final[int] = 5000  # Wait timeout for graceful thread shutdown
+    THREAD_TERMINATE_CLEANUP_MS: Final[int] = 1000  # Brief wait after forced termination
 
 
 # ============================================================================

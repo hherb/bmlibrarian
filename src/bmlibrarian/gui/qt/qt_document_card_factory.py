@@ -311,12 +311,25 @@ class PDFButtonWidget(QPushButton):
         self.setText(status)
 
     def _cleanup_fetch_worker(self) -> None:
-        """Clean up the fetch worker after completion."""
+        """Clean up the fetch worker after completion.
+
+        Ensures proper thread cleanup with timeout handling. If the thread
+        doesn't respond to abort within the configured timeout, it is
+        forcefully terminated.
+        """
         if self._fetch_worker is not None:
             # Wait for thread to finish if still running
             if self._fetch_worker.isRunning():
                 self._fetch_worker.abort()
-                self._fetch_worker.wait(1000)  # Wait up to 1 second
+                # Wait for graceful shutdown using configured timeout
+                if not self._fetch_worker.wait(PDFOperationSettings.THREAD_GRACEFUL_SHUTDOWN_MS):
+                    # Thread didn't stop gracefully, force terminate
+                    logger.warning(
+                        "PDF fetch worker did not stop gracefully, terminating"
+                    )
+                    self._fetch_worker.terminate()
+                    # Brief wait after terminate to ensure cleanup
+                    self._fetch_worker.wait(PDFOperationSettings.THREAD_TERMINATE_CLEANUP_MS)
 
             self._fetch_worker.deleteLater()
             self._fetch_worker = None

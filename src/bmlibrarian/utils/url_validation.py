@@ -4,11 +4,47 @@ Provides secure URL validation functions to prevent SSRF attacks
 and ensure proper URL format for institutional access.
 """
 
+import ipaddress
 import logging
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def is_private_ip_address(hostname: str) -> bool:
+    """Check if a hostname resolves to a private or reserved IP address.
+
+    Handles both IPv4 and IPv6 addresses using Python's ipaddress module.
+    This includes:
+    - IPv4 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    - IPv4 loopback: 127.0.0.0/8
+    - IPv4 link-local: 169.254.0.0/16
+    - IPv6 private (Unique Local Address): fc00::/7
+    - IPv6 link-local: fe80::/10
+    - IPv6 loopback: ::1
+
+    Args:
+        hostname: The hostname or IP address string to check
+
+    Returns:
+        True if the hostname is a private/reserved IP address, False otherwise
+        (including for regular hostnames that aren't IP addresses)
+    """
+    try:
+        # Try to parse as IP address
+        ip = ipaddress.ip_address(hostname)
+        # Check for private, loopback, link-local, or reserved addresses
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+        )
+    except ValueError:
+        # Not a valid IP address (e.g., it's a hostname like "example.com")
+        return False
 
 
 def validate_openathens_url(url: Optional[str]) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -60,20 +96,15 @@ def validate_openathens_url(url: Optional[str]) -> Tuple[bool, Optional[str], Op
 
     # Check for localhost/loopback (potential SSRF vector)
     hostname = parsed.hostname.lower() if parsed.hostname else ""
-    if hostname in ('localhost', '127.0.0.1', '::1', '0.0.0.0'):
+    if hostname in ('localhost', '0.0.0.0'):
         return False, None, f"Institution URL cannot use localhost/loopback addresses: {hostname}"
 
-    # Check for private network addresses (potential SSRF vector)
-    if hostname.startswith('10.') or hostname.startswith('192.168.'):
-        return False, None, f"Institution URL cannot use private network addresses: {hostname}"
-    if hostname.startswith('172.'):
-        # Check 172.16.0.0/12 range
-        try:
-            second_octet = int(hostname.split('.')[1])
-            if 16 <= second_octet <= 31:
-                return False, None, f"Institution URL cannot use private network addresses: {hostname}"
-        except (IndexError, ValueError):
-            pass  # Not a valid private IP format, allow it
+    # Check for private/reserved network addresses (potential SSRF vector)
+    # Uses ipaddress module for comprehensive IPv4 and IPv6 validation:
+    # - IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16
+    # - IPv6: fc00::/7 (unique local), fe80::/10 (link-local), ::1 (loopback)
+    if is_private_ip_address(hostname):
+        return False, None, f"Institution URL cannot use private/reserved network addresses: {hostname}"
 
     # Normalize URL by removing trailing slash
     normalized_url = url.rstrip('/')
