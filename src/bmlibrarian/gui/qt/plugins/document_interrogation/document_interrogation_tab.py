@@ -86,22 +86,57 @@ class DocumentProcessingWorker(QThread):
             # Format response
             response_parts = [result.answer]
 
-            # Add metadata if available
-            if result.metadata:
-                chunk_info = result.metadata.get('chunk_info', {})
-                num_chunks = chunk_info.get('num_chunks', 0)
-                if num_chunks > 1:
-                    response_parts.append(
-                        f"\n\n---\n*Processed {num_chunks} chunks. "
-                        f"Found {len(result.relevant_sections)} relevant sections. "
-                        f"Confidence: {result.confidence:.2f}*"
-                    )
+            # Add debug information about chunks used
+            if result.relevant_sections:
+                debug_info = []
+                debug_info.append(f"\n\n---\n**Debug Info:**")
+                debug_info.append(
+                    f"- Processing mode: {result.processing_mode.value}"
+                )
+                debug_info.append(
+                    f"- Chunks processed: {result.chunks_processed}/{result.chunks_total}"
+                )
+                debug_info.append(
+                    f"- Relevant sections found: {len(result.relevant_sections)}"
+                )
+                debug_info.append(f"- Confidence: {result.confidence:.2f}")
+
+                # Show chunk scores
+                if result.relevant_sections:
+                    scores = [
+                        f"chunk {s.chunk_index}: {s.relevance_score:.3f}"
+                        for s in result.relevant_sections[:5]  # Show top 5
+                    ]
+                    debug_info.append(f"- Top chunk scores: {', '.join(scores)}")
+
+                # Show metadata source if available
+                if result.metadata:
+                    source = result.metadata.get('source', 'unknown')
+                    debug_info.append(f"- Source: {source}")
+                    if result.metadata.get('reasoning'):
+                        debug_info.append(
+                            f"- Reasoning: {result.metadata['reasoning'][:200]}..."
+                        )
+
+                response_parts.append('\n'.join(debug_info))
+            else:
+                # No sections found - provide debug feedback
+                response_parts.append(
+                    f"\n\n---\n**Debug Info:**\n"
+                    f"- No relevant sections found above threshold.\n"
+                    f"- Processing mode: {result.processing_mode.value}\n"
+                    f"- Chunks total: {result.chunks_total}\n"
+                    f"- Try lowering the similarity threshold in config, "
+                    f"or check if the document has been properly embedded."
+                )
 
             # Emit result
             self.result_ready.emit('\n'.join(response_parts))
 
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            import traceback
+            error_msg = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            self.error_occurred.emit(error_msg)
 
 
 class DocumentPreparationWorker(QThread):

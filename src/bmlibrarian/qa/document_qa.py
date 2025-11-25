@@ -50,7 +50,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_QA_MODEL = "gpt-oss:20b"
 DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
 DEFAULT_MAX_CHUNKS = 5
-DEFAULT_SIMILARITY_THRESHOLD = 0.7
+# Note: 0.5 is a reasonable threshold for semantic search. Higher values (0.7+)
+# may miss relevant content when query terms don't match document terminology exactly.
+# For example, "quality assessment" may not semantically match "GRADE framework".
+DEFAULT_SIMILARITY_THRESHOLD = 0.5
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
@@ -212,6 +215,29 @@ def _semantic_search_fulltext(
     try:
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
+                # First, check how many chunks exist for this document
+                cur.execute(
+                    "SELECT COUNT(*) FROM semantic.chunks WHERE document_id = %s",
+                    (document_id,),
+                )
+                total_chunks = cur.fetchone()[0]
+                logger.info(
+                    f"[DEBUG] Document {document_id} has {total_chunks} chunks in semantic.chunks"
+                )
+
+                if total_chunks == 0:
+                    logger.warning(
+                        f"[DEBUG] No chunks found for document {document_id}. "
+                        f"Document may not have been embedded yet."
+                    )
+                    return []
+
+                # Perform the semantic search with threshold
+                logger.info(
+                    f"[DEBUG] Searching document {document_id} with question: "
+                    f"'{question[:100]}...' threshold={threshold}, max_chunks={max_chunks}"
+                )
+
                 cur.execute(
                     """
                     SELECT chunk_id, chunk_no, score, chunk_text
@@ -221,6 +247,44 @@ def _semantic_search_fulltext(
                     (document_id, question, threshold, max_chunks),
                 )
                 rows = cur.fetchall()
+
+                if not rows:
+                    # No chunks above threshold - let's see what scores we're getting
+                    logger.warning(
+                        f"[DEBUG] No chunks above threshold {threshold}. "
+                        f"Checking top scores without threshold filter..."
+                    )
+                    # Query without threshold to see actual scores
+                    cur.execute(
+                        """
+                        SELECT chunk_id, chunk_no, score,
+                               LEFT(chunk_text, 100) as preview
+                        FROM semantic.chunksearch_document(%s, %s, %s, %s)
+                        ORDER BY score DESC
+                        """,
+                        (document_id, question, 0.0, 5),  # No threshold
+                    )
+                    debug_rows = cur.fetchall()
+                    if debug_rows:
+                        logger.warning(
+                            f"[DEBUG] Top 5 chunk scores (no threshold): "
+                            f"{[(r[1], round(r[2], 3)) for r in debug_rows]}"
+                        )
+                        for row in debug_rows[:3]:
+                            logger.debug(
+                                f"[DEBUG] Chunk {row[1]}: score={row[2]:.3f}, "
+                                f"preview='{row[3][:80]}...'"
+                            )
+                    else:
+                        logger.warning(
+                            f"[DEBUG] Even with threshold=0, no chunks returned. "
+                            f"Check if embedding function is working."
+                        )
+                else:
+                    logger.info(
+                        f"[DEBUG] Found {len(rows)} chunks above threshold {threshold}. "
+                        f"Scores: {[round(r[2], 3) for r in rows]}"
+                    )
 
                 return [
                     ChunkContext(
@@ -233,7 +297,7 @@ def _semantic_search_fulltext(
                 ]
 
     except Exception as e:
-        logger.error(f"Full-text semantic search failed: {e}")
+        logger.error(f"Full-text semantic search failed: {e}", exc_info=True)
         return []
 
 
@@ -260,6 +324,32 @@ def _semantic_search_abstract(
     try:
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
+                # Check for abstract embeddings
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM chunks c
+                    JOIN emb_1024 e ON c.id = e.chunk_id
+                    WHERE c.document_id = %s
+                    """,
+                    (document_id,),
+                )
+                total_chunks = cur.fetchone()[0]
+                logger.info(
+                    f"[DEBUG] Document {document_id} has {total_chunks} abstract chunks in emb_1024"
+                )
+
+                if total_chunks == 0:
+                    logger.warning(
+                        f"[DEBUG] No abstract embeddings for document {document_id}."
+                    )
+                    return []
+
+                logger.info(
+                    f"[DEBUG] Abstract search for document {document_id}: "
+                    f"'{question[:100]}...' threshold={threshold}"
+                )
+
                 cur.execute(
                     """
                     SELECT chunk_id, chunk_no, score, chunk_text
@@ -269,6 +359,16 @@ def _semantic_search_abstract(
                     (document_id, question, threshold, max_chunks),
                 )
                 rows = cur.fetchall()
+
+                if rows:
+                    logger.info(
+                        f"[DEBUG] Abstract search found {len(rows)} chunks. "
+                        f"Scores: {[round(r[2], 3) for r in rows]}"
+                    )
+                else:
+                    logger.warning(
+                        f"[DEBUG] Abstract search returned no chunks above threshold {threshold}"
+                    )
 
                 return [
                     ChunkContext(
@@ -281,7 +381,7 @@ def _semantic_search_abstract(
                 ]
 
     except Exception as e:
-        logger.error(f"Abstract semantic search failed: {e}")
+        logger.error(f"Abstract semantic search failed: {e}", exc_info=True)
         return []
 
 
@@ -651,7 +751,10 @@ def answer_from_document(
             indefinite hanging. Defaults to 300 seconds (5 minutes) if not specified.
         model: LLM model for answer generation. Uses config default if None.
         max_chunks: Maximum number of context chunks to use. Default 5.
-        similarity_threshold: Minimum semantic similarity (0.0-1.0). Default 0.7.
+        similarity_threshold: Minimum semantic similarity (0.0-1.0). Default 0.5.
+            Can be overridden via config["agents"]["document_qa"]["similarity_threshold"].
+            Lower values (0.3-0.5) capture more results but may include noise.
+            Higher values (0.6-0.8) are stricter but may miss relevant content.
         temperature: LLM temperature for generation. Default 0.3.
         ollama_host: Ollama server URL. Uses config default if None.
 
@@ -726,6 +829,21 @@ def answer_from_document(
     # Resolve parameters from config (following BMLibrarian conventions)
     model = model or models_config.get("document_qa_agent", DEFAULT_QA_MODEL)
     ollama_host = ollama_host or ollama_config.get("host", DEFAULT_OLLAMA_HOST)
+
+    # If similarity_threshold is at default, check config for override
+    # This allows config-based customization while respecting explicit parameters
+    if similarity_threshold == DEFAULT_SIMILARITY_THRESHOLD:
+        config_threshold = qa_config.get("similarity_threshold")
+        if config_threshold is not None:
+            similarity_threshold = float(config_threshold)
+            logger.debug(
+                f"[DEBUG] Using config similarity_threshold={similarity_threshold}"
+            )
+
+    logger.info(
+        f"[DEBUG] answer_from_document: doc_id={document_id}, "
+        f"threshold={similarity_threshold}, max_chunks={max_chunks}, model={model}"
+    )
 
     # Get document text status
     status = _get_document_text_status(document_id, db_manager)

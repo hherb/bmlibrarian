@@ -24,7 +24,7 @@ Example usage:
 
     # Or use the pure function directly
     from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
-    chunks = adaptive_chunker_with_positions("Long document text...", max_chars=1800, overlap_chars=320)
+    chunks = adaptive_chunker_with_positions("Long document text...", max_chars=1000, overlap_chars=100)
     for chunk in chunks:
         print(f"Chunk {chunk.chunk_no}: [{chunk.start_pos}:{chunk.end_pos}] {chunk.text[:50]}...")
 """
@@ -47,9 +47,11 @@ except ImportError:
 # Type alias for backend selection
 EmbeddingBackend = Literal["ollama", "ollama_http", "llama_cpp", "sentence_transformers"]
 
-# Default chunking parameters (aligned with adaptive_chunker_optimized defaults)
-DEFAULT_CHUNK_SIZE = 1800
-DEFAULT_CHUNK_OVERLAP = 320
+# Default chunking parameters
+# Smaller chunks (1000 chars) provide better semantic granularity for retrieval
+# compared to larger chunks (1800) which dilute the semantic signal
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 100
 DEFAULT_EMBEDDING_MODEL_ID = 1
 DEFAULT_EMBEDDING_MODEL_NAME = "snowflake-arctic-embed2:latest"
 EMBEDDING_DIMENSION = 1024

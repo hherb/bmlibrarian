@@ -495,7 +495,11 @@ DEFAULT_CONFIG = {
             "top_p": 0.9,
             "max_tokens": 2000,
             "max_chunks": 5,  # Maximum context chunks to use for answer generation
-            "similarity_threshold": 0.7,  # Minimum similarity for semantic search (0.0-1.0)
+            # Similarity threshold for semantic search (0.0-1.0).
+            # Lower values (0.3-0.5) capture more results but may include noise.
+            # Higher values (0.6-0.8) are stricter but may miss relevant content.
+            # Default 0.5 balances recall and precision for document Q&A.
+            "similarity_threshold": 0.5,
             "use_fulltext": True,  # Prefer full-text over abstract when available
             "download_missing_fulltext": True,  # Attempt to download PDFs if full-text missing
             "use_proxy": True,  # Use OpenAthens proxy for paywalled content
@@ -596,10 +600,12 @@ DEFAULT_CONFIG = {
     "embeddings": {
         # Backend for generating embeddings
         # Options: "ollama", "ollama_http", "sentence_transformers", "llama_cpp"
-        # "sentence_transformers" is recommended for stability with larger chunks
-        "backend": "sentence_transformers",
+        # "ollama" is recommended - works well with smaller chunk sizes (1000 chars)
+        "backend": "ollama",
         "model": "snowflake-arctic-embed2:latest",  # Model name (Ollama) or HuggingFace model ID
         "huggingface_model": "Snowflake/snowflake-arctic-embed-l-v2.0",  # HuggingFace model for sentence_transformers
+        "chunk_size": 1000,  # Smaller chunks provide better semantic granularity
+        "chunk_overlap": 100,  # Overlap between chunks
         "batch_size": 32,  # Batch size for embedding generation
         "n_ctx": 8192,  # Context window size (for llama_cpp backend)
         "device": "auto"  # Device for sentence_transformers: "auto", "cpu", "cuda", "mps"
