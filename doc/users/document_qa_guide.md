@@ -344,6 +344,49 @@ result = answer_from_document(
 )
 ```
 
+### Callback Timeout (Programmatic Use)
+
+For programmatic use where callbacks might hang indefinitely, you can set a timeout:
+
+```python
+result = answer_from_document(
+    document_id=12345,
+    question="What are the findings?",
+    proxy_callback=my_callback,
+    proxy_callback_timeout=30.0  # Timeout after 30 seconds
+)
+```
+
+The default timeout is 300 seconds (5 minutes). If the callback times out, the system
+falls back to using the abstract with `fallback_reason="callback_timeout"`.
+
+### Understanding Fallback Reasons
+
+When full-text isn't available and the system falls back to using the abstract, the
+`fallback_reason` field in `SemanticSearchAnswer` explains why:
+
+| Fallback Reason | Description |
+|-----------------|-------------|
+| `user_declined` | User declined to authorize proxy or upload PDF |
+| `proxy_download_failed` | Proxy was authorized but download failed |
+| `no_proxy_configured` | No callback provided and `always_allow_proxy=False` |
+| `open_access_failed` | Open-access download failed (before proxy attempt) |
+| `callback_timeout` | Proxy callback timed out |
+| `no_fulltext_chunks` | Full-text exists but embedding/chunking failed |
+
+Example usage:
+
+```python
+result = answer_from_document(document_id=123, question="What are the findings?")
+
+if result.source == AnswerSource.ABSTRACT and result.fallback_reason:
+    print(f"Using abstract because: {result.fallback_reason}")
+    if result.fallback_reason == "user_declined":
+        print("User chose not to use institutional proxy")
+    elif result.fallback_reason == "proxy_download_failed":
+        print("Proxy was authorized but download failed - check OpenAthens config")
+```
+
 ### Proxy Flow Diagram
 
 ```
