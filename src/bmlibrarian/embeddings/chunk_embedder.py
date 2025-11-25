@@ -7,12 +7,20 @@ for storage in the semantic.chunks table.
 The chunking strategy uses adaptive sentence-boundary-aware splitting with
 configurable overlap to ensure semantic continuity across chunk boundaries.
 
+Supports two embedding backends:
+- "ollama": Uses Ollama's API (default, requires running Ollama server)
+- "llama_cpp": Uses llama-cpp-python for direct GGUF inference (more stable)
+
 Example usage:
     from bmlibrarian.embeddings.chunk_embedder import ChunkEmbedder
 
+    # Using Ollama (default)
     embedder = ChunkEmbedder()
     num_chunks = embedder.chunk_and_embed(document_id=12345)
-    print(f"Created {num_chunks} chunks")
+
+    # Using llama.cpp directly (more stable for bulk operations)
+    embedder = ChunkEmbedder(backend="llama_cpp", model_path="/path/to/model.gguf")
+    num_chunks = embedder.chunk_and_embed(document_id=12345)
 
     # Or use the pure function directly
     from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
@@ -23,7 +31,7 @@ Example usage:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Callable
+from typing import List, Tuple, Optional, Callable, Literal
 
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
@@ -33,8 +41,11 @@ logger = logging.getLogger(__name__)
 try:
     import ollama
 except ImportError:
-    logger.warning("ollama not installed. Embedding generation will not be available.")
+    logger.warning("ollama not installed. Ollama backend will not be available.")
     ollama = None
+
+# Type alias for backend selection
+EmbeddingBackend = Literal["ollama", "ollama_http", "llama_cpp", "sentence_transformers"]
 
 # Default chunking parameters (aligned with adaptive_chunker_optimized defaults)
 DEFAULT_CHUNK_SIZE = 1800
@@ -47,6 +58,9 @@ EMBEDDING_DIMENSION = 1024
 # Ollama embedding can be unstable under load - use generous retries
 MAX_RETRY_ATTEMPTS = 5
 RETRY_BASE_DELAY = 2.0  # Base delay in seconds (doubles each retry)
+
+# Batch processing - process multiple chunks in one API call for efficiency
+DEFAULT_BATCH_SIZE = 10  # Number of chunks to embed in one batch
 
 
 @dataclass
@@ -159,36 +173,138 @@ class ChunkEmbedder:
     Handles chunking and embedding of document full text.
 
     Uses the semantic.chunks table for storage, with embeddings
-    generated via Ollama.
+    generated via Ollama or llama-cpp-python.
+
+    Supports four backends:
+    - "ollama": Uses Ollama Python library API (default)
+    - "ollama_http": Uses raw HTTP requests to Ollama (most stable, recommended)
+    - "sentence_transformers": Uses sentence-transformers library (slow startup)
+    - "llama_cpp": Uses llama-cpp-python for direct GGUF inference
     """
 
     def __init__(
         self,
         model_name: str = DEFAULT_EMBEDDING_MODEL_NAME,
         model_id: Optional[int] = None,
+        backend: EmbeddingBackend = "ollama",
+        model_path: Optional[str] = None,
+        n_ctx: int = 8192,
     ) -> None:
         """
         Initialize the chunk embedder.
 
         Args:
-            model_name: Ollama embedding model name.
+            model_name: Embedding model name (for Ollama or database reference).
             model_id: Database model ID (if known). If None, will be looked up.
+            backend: Embedding backend to use ("ollama", "ollama_http", "sentence_transformers", or "llama_cpp").
+            model_path: Path to GGUF model file (required for llama_cpp backend).
+                       If None with llama_cpp, will try to find Ollama's cached model.
+            n_ctx: Context window size for llama_cpp backend (default: 8192).
 
         Raises:
-            ImportError: If ollama is not installed.
+            ImportError: If required backend is not installed.
+            FileNotFoundError: If model_path doesn't exist (llama_cpp backend).
         """
-        if not ollama:
-            raise ImportError(
-                "ollama package required for embedding generation. "
-                "Install with: pip install ollama"
-            )
-
+        self.backend = backend
         self.db_manager = get_db_manager()
         self.model_name = model_name
+        self._llama_embedder = None
+        self._st_embedder = None
+        self._http_embedder = None
+
+        if backend == "ollama":
+            if not ollama:
+                raise ImportError(
+                    "ollama package required for ollama backend. "
+                    "Install with: pip install ollama"
+                )
+        elif backend == "ollama_http":
+            self._init_ollama_http(model_name)
+        elif backend == "sentence_transformers":
+            self._init_sentence_transformers(model_name)
+        elif backend == "llama_cpp":
+            self._init_llama_cpp(model_name, model_path, n_ctx)
+        else:
+            raise ValueError(
+                f"Unknown backend: {backend}. "
+                f"Use 'ollama', 'ollama_http', 'sentence_transformers', or 'llama_cpp'."
+            )
+
         self.model_id = model_id or self._get_or_create_model_id()
 
         logger.info(
-            f"ChunkEmbedder initialized with model: {model_name} (id={self.model_id})"
+            f"ChunkEmbedder initialized with model: {model_name} "
+            f"(id={self.model_id}, backend={backend})"
+        )
+
+    def _init_llama_cpp(
+        self, model_name: str, model_path: Optional[str], n_ctx: int
+    ) -> None:
+        """
+        Initialize the llama.cpp backend.
+
+        Args:
+            model_name: Model name (used to find Ollama cache if model_path is None).
+            model_path: Explicit path to GGUF file, or None to auto-detect.
+            n_ctx: Context window size.
+        """
+        from bmlibrarian.embeddings.llama_cpp_embedder import (
+            LlamaCppEmbedder,
+            find_ollama_model_path,
+        )
+
+        # If no model_path provided, try to find Ollama's cached model
+        if model_path is None:
+            model_path = find_ollama_model_path(model_name)
+            if model_path is None:
+                raise FileNotFoundError(
+                    f"Could not find GGUF model for '{model_name}'. "
+                    f"Either provide model_path explicitly or ensure the model "
+                    f"is pulled via Ollama first: ollama pull {model_name}"
+                )
+
+        self._llama_embedder = LlamaCppEmbedder(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            verbose=False,
+        )
+
+    def _init_ollama_http(self, model_name: str) -> None:
+        """
+        Initialize the Ollama HTTP backend using raw requests.
+
+        Args:
+            model_name: Ollama model name.
+        """
+        from bmlibrarian.embeddings.embedding_server import EmbeddingServer
+
+        self._http_embedder = EmbeddingServer(model=model_name)
+
+        # Verify server is available
+        if not self._http_embedder.is_available():
+            raise ConnectionError(
+                f"Ollama server not available at {self._http_embedder.config.base_url}. "
+                f"Ensure Ollama is running."
+            )
+
+    def _init_sentence_transformers(self, model_name: str) -> None:
+        """
+        Initialize the sentence-transformers backend.
+
+        Args:
+            model_name: Model name (Ollama-style or HuggingFace-style).
+        """
+        from bmlibrarian.embeddings.sentence_transformer_embedder import (
+            SentenceTransformerEmbedder,
+            get_hf_model_name,
+        )
+
+        # Convert Ollama model name to HuggingFace model name if needed
+        hf_model_name = get_hf_model_name(model_name)
+
+        self._st_embedder = SentenceTransformerEmbedder(
+            model_name=hf_model_name,
+            trust_remote_code=True,
         )
 
     def _get_or_create_model_id(self) -> int:
@@ -231,7 +347,107 @@ class ChunkEmbedder:
         self, text: str, max_retries: int = MAX_RETRY_ATTEMPTS
     ) -> Optional[List[float]]:
         """
-        Generate embedding vector for text using Ollama with retry logic.
+        Generate embedding vector for text.
+
+        Uses the configured backend (ollama or llama_cpp).
+
+        Args:
+            text: Text to embed.
+            max_retries: Maximum number of retry attempts on failure (ollama only).
+
+        Returns:
+            Embedding vector as list of floats, or None on failure.
+        """
+        if not text or not text.strip():
+            logger.warning("Cannot create embedding for empty text")
+            return None
+
+        if self.backend == "sentence_transformers":
+            return self._create_embedding_sentence_transformers(text)
+        elif self.backend == "llama_cpp":
+            return self._create_embedding_llama_cpp(text)
+        elif self.backend == "ollama_http":
+            return self._create_embedding_ollama_http(text)
+        else:
+            return self._create_embedding_ollama(text, max_retries)
+
+    def _create_embedding_llama_cpp(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding using llama.cpp backend.
+
+        Args:
+            text: Text to embed.
+
+        Returns:
+            Embedding vector as list of floats, or None on failure.
+        """
+        if self._llama_embedder is None:
+            logger.error("LlamaCpp embedder not initialized")
+            return None
+
+        embedding = self._llama_embedder.embed(text)
+
+        if embedding and len(embedding) != EMBEDDING_DIMENSION:
+            logger.warning(
+                f"Unexpected embedding dimension: {len(embedding)}, "
+                f"expected {EMBEDDING_DIMENSION}"
+            )
+
+        return embedding
+
+    def _create_embedding_sentence_transformers(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding using sentence-transformers backend.
+
+        Args:
+            text: Text to embed.
+
+        Returns:
+            Embedding vector as list of floats, or None on failure.
+        """
+        if self._st_embedder is None:
+            logger.error("SentenceTransformer embedder not initialized")
+            return None
+
+        embedding = self._st_embedder.embed(text)
+
+        if embedding and len(embedding) != EMBEDDING_DIMENSION:
+            logger.warning(
+                f"Unexpected embedding dimension: {len(embedding)}, "
+                f"expected {EMBEDDING_DIMENSION}"
+            )
+
+        return embedding
+
+    def _create_embedding_ollama_http(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding using Ollama HTTP backend.
+
+        Args:
+            text: Text to embed.
+
+        Returns:
+            Embedding vector as list of floats, or None on failure.
+        """
+        if self._http_embedder is None:
+            logger.error("Ollama HTTP embedder not initialized")
+            return None
+
+        embedding = self._http_embedder.embed(text)
+
+        if embedding and len(embedding) != EMBEDDING_DIMENSION:
+            logger.warning(
+                f"Unexpected embedding dimension: {len(embedding)}, "
+                f"expected {EMBEDDING_DIMENSION}"
+            )
+
+        return embedding
+
+    def _create_embedding_ollama(
+        self, text: str, max_retries: int
+    ) -> Optional[List[float]]:
+        """
+        Generate embedding using Ollama backend with retry logic.
 
         Args:
             text: Text to embed.
@@ -241,10 +457,6 @@ class ChunkEmbedder:
             Embedding vector as list of floats, or None on failure.
         """
         import time
-
-        if not text or not text.strip():
-            logger.warning("Cannot create embedding for empty text")
-            return None
 
         if ollama is None:
             logger.error("Ollama library not available")
@@ -279,6 +491,164 @@ class ChunkEmbedder:
                     )
 
         return None
+
+    def create_embeddings_batch(
+        self, texts: List[str], max_retries: int = MAX_RETRY_ATTEMPTS
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate embedding vectors for multiple texts.
+
+        For llama_cpp backend: processes texts sequentially (stable).
+        For ollama backend: uses batch API with retry logic.
+
+        Args:
+            texts: List of texts to embed.
+            max_retries: Maximum number of retry attempts on failure (ollama only).
+
+        Returns:
+            List of embedding vectors (or None for failed texts), same length as input.
+        """
+        if not texts:
+            return []
+
+        if self.backend == "sentence_transformers":
+            return self._create_embeddings_batch_sentence_transformers(texts)
+        elif self.backend == "llama_cpp":
+            return self._create_embeddings_batch_llama_cpp(texts)
+        elif self.backend == "ollama_http":
+            return self._create_embeddings_batch_ollama_http(texts)
+        else:
+            return self._create_embeddings_batch_ollama(texts, max_retries)
+
+    def _create_embeddings_batch_llama_cpp(
+        self, texts: List[str]
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate batch embeddings using llama.cpp backend.
+
+        Processes texts sequentially - very stable, no network issues.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors (or None for failed texts).
+        """
+        if self._llama_embedder is None:
+            logger.error("LlamaCpp embedder not initialized")
+            return [None] * len(texts)
+
+        return self._llama_embedder.embed_batch(texts)
+
+    def _create_embeddings_batch_sentence_transformers(
+        self, texts: List[str]
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate batch embeddings using sentence-transformers backend.
+
+        sentence-transformers handles batching efficiently internally.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors (or None for failed texts).
+        """
+        if self._st_embedder is None:
+            logger.error("SentenceTransformer embedder not initialized")
+            return [None] * len(texts)
+
+        return self._st_embedder.embed_batch(texts)
+
+    def _create_embeddings_batch_ollama_http(
+        self, texts: List[str]
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate batch embeddings using Ollama HTTP backend.
+
+        Uses native batch embedding via /api/embed endpoint.
+
+        Args:
+            texts: List of texts to embed.
+
+        Returns:
+            List of embedding vectors (or None for failed texts).
+        """
+        if self._http_embedder is None:
+            logger.error("Ollama HTTP embedder not initialized")
+            return [None] * len(texts)
+
+        return self._http_embedder.embed_batch(texts)
+
+    def _create_embeddings_batch_ollama(
+        self, texts: List[str], max_retries: int
+    ) -> List[Optional[List[float]]]:
+        """
+        Generate batch embeddings using Ollama backend with retry logic.
+
+        Args:
+            texts: List of texts to embed.
+            max_retries: Maximum number of retry attempts on failure.
+
+        Returns:
+            List of embedding vectors (or None for failed texts).
+        """
+        import time
+
+        if ollama is None:
+            logger.error("Ollama library not available")
+            return [None] * len(texts)
+
+        # Filter out empty texts and track their positions
+        valid_texts = []
+        valid_indices = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                valid_texts.append(text)
+                valid_indices.append(i)
+
+        if not valid_texts:
+            logger.warning("All texts in batch are empty")
+            return [None] * len(texts)
+
+        # Retry loop for the batch
+        for attempt in range(max_retries):
+            try:
+                # Use the newer embed() API which supports batching
+                response = ollama.embed(model=self.model_name, input=valid_texts)
+                embeddings = response.get("embeddings", [])
+
+                if len(embeddings) == len(valid_texts):
+                    # Build result list with None for invalid texts
+                    result: List[Optional[List[float]]] = [None] * len(texts)
+                    for idx, embedding in zip(valid_indices, embeddings):
+                        if len(embedding) != EMBEDDING_DIMENSION:
+                            logger.warning(
+                                f"Unexpected embedding dimension: {len(embedding)}, "
+                                f"expected {EMBEDDING_DIMENSION}"
+                            )
+                        result[idx] = embedding
+                    return result
+
+                logger.error(
+                    f"Batch embedding count mismatch: got {len(embeddings)}, "
+                    f"expected {len(valid_texts)}"
+                )
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        f"Batch embedding attempt {attempt + 1}/{max_retries} failed: {e}. "
+                        f"Retrying in {wait_time:.1f}s..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Batch embedding failed after {max_retries} attempts: {e}"
+                    )
+
+        return [None] * len(texts)
 
     def has_chunks(
         self,
@@ -370,9 +740,12 @@ class ChunkEmbedder:
         overlap: int = DEFAULT_CHUNK_OVERLAP,
         overwrite: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> int:
         """
-        Chunk document full_text and generate embeddings.
+        Chunk document full_text and generate embeddings using batch processing.
+
+        Uses batch embedding API calls for improved efficiency and stability.
 
         Args:
             document_id: Document database ID.
@@ -381,6 +754,7 @@ class ChunkEmbedder:
             overwrite: If True, delete existing chunks first.
                       If False, skip if chunks already exist.
             progress_callback: Optional callback(current, total) for progress updates.
+            batch_size: Number of chunks to embed in each API call.
 
         Returns:
             Number of chunks created (0 if failed or skipped).
@@ -427,63 +801,70 @@ class ChunkEmbedder:
         if overwrite:
             self.delete_existing_chunks(document_id, chunk_size, overlap)
 
-        # Generate embeddings and store chunks
+        # Generate embeddings in batches and store chunks
         chunks_created = 0
 
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                for i, chunk_pos in enumerate(chunk_positions):
-                    # Report progress
+                # Process chunks in batches
+                for batch_start in range(0, total_chunks, batch_size):
+                    batch_end = min(batch_start + batch_size, total_chunks)
+                    batch_chunks = chunk_positions[batch_start:batch_end]
+
+                    # Report progress (at batch level)
                     if progress_callback:
-                        progress_callback(i + 1, total_chunks)
+                        progress_callback(batch_end, total_chunks)
 
-                    # Use the text from the ChunkWithPosition object
-                    chunk_text_content = chunk_pos.text
+                    # Extract texts for batch embedding
+                    batch_texts = [chunk.text for chunk in batch_chunks]
 
-                    # Generate embedding
-                    embedding = self.create_embedding(chunk_text_content)
-                    if not embedding:
-                        logger.warning(
-                            f"Failed to generate embedding for chunk {chunk_pos.chunk_no} "
-                            f"of document {document_id}"
-                        )
-                        continue
+                    # Generate embeddings for the batch
+                    embeddings = self.create_embeddings_batch(batch_texts)
 
-                    # Store chunk with embedding
-                    try:
-                        embedding_str = "[" + ",".join(map(str, embedding)) + "]"
-                        cur.execute(
-                            """
-                            INSERT INTO semantic.chunks (
-                                document_id, model_id, chunk_size, chunk_overlap,
-                                chunk_no, start_pos, end_pos, embedding
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
-                            DO UPDATE SET
-                                start_pos = EXCLUDED.start_pos,
-                                end_pos = EXCLUDED.end_pos,
-                                embedding = EXCLUDED.embedding,
-                                created_at = NOW()
-                            """,
-                            (
-                                document_id,
-                                self.model_id,
-                                chunk_size,
-                                overlap,
-                                chunk_pos.chunk_no,
-                                chunk_pos.start_pos,
-                                chunk_pos.end_pos,
-                                embedding_str,
-                            ),
-                        )
-                        chunks_created += 1
+                    # Store each chunk with its embedding
+                    for chunk_pos, embedding in zip(batch_chunks, embeddings):
+                        if not embedding:
+                            logger.warning(
+                                f"Failed to generate embedding for chunk {chunk_pos.chunk_no} "
+                                f"of document {document_id}"
+                            )
+                            continue
 
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to store chunk {chunk_pos.chunk_no} "
-                            f"of document {document_id}: {e}"
-                        )
-                        # Continue with other chunks
+                        # Store chunk with embedding
+                        try:
+                            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+                            cur.execute(
+                                """
+                                INSERT INTO semantic.chunks (
+                                    document_id, model_id, chunk_size, chunk_overlap,
+                                    chunk_no, start_pos, end_pos, embedding
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (document_id, model_id, chunk_size, chunk_overlap, chunk_no)
+                                DO UPDATE SET
+                                    start_pos = EXCLUDED.start_pos,
+                                    end_pos = EXCLUDED.end_pos,
+                                    embedding = EXCLUDED.embedding,
+                                    created_at = NOW()
+                                """,
+                                (
+                                    document_id,
+                                    self.model_id,
+                                    chunk_size,
+                                    overlap,
+                                    chunk_pos.chunk_no,
+                                    chunk_pos.start_pos,
+                                    chunk_pos.end_pos,
+                                    embedding_str,
+                                ),
+                            )
+                            chunks_created += 1
+
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to store chunk {chunk_pos.chunk_no} "
+                                f"of document {document_id}: {e}"
+                            )
+                            # Continue with other chunks
 
         logger.info(
             f"Document {document_id}: created {chunks_created}/{total_chunks} chunks"
@@ -594,6 +975,7 @@ class ChunkEmbedder:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         overlap: int = DEFAULT_CHUNK_OVERLAP,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> dict:
         """
         Re-chunk all documents in semantic.chunks with new chunking parameters.
@@ -608,6 +990,7 @@ class ChunkEmbedder:
             chunk_size: Target chunk size in characters (default: 1800).
             overlap: Overlap between consecutive chunks (default: 320).
             progress_callback: Optional callback(stage, current, total) for progress.
+            batch_size: Number of chunks to embed per API call (default: 10).
 
         Returns:
             Dictionary with statistics:
@@ -638,11 +1021,29 @@ class ChunkEmbedder:
 
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Create temp table with document IDs
-                cur.execute("""
-                    CREATE TEMP TABLE IF NOT EXISTS rechunk_doc_ids AS
-                    SELECT DISTINCT document_id FROM semantic.chunks
-                """)
+                # First check if semantic.chunks has any data
+                cur.execute("SELECT COUNT(*) FROM semantic.chunks")
+                result = cur.fetchone()
+                chunks_count = result[0] if result else 0
+
+                if chunks_count > 0:
+                    # Re-chunk mode: get document IDs from existing chunks
+                    logger.info("Re-chunk mode: getting document IDs from semantic.chunks")
+                    cur.execute("""
+                        CREATE TEMP TABLE IF NOT EXISTS rechunk_doc_ids AS
+                        SELECT DISTINCT document_id FROM semantic.chunks
+                    """)
+                else:
+                    # Initial population mode: get document IDs from public.document
+                    logger.info(
+                        "Initial population mode: semantic.chunks is empty, "
+                        "getting document IDs from public.document"
+                    )
+                    cur.execute("""
+                        CREATE TEMP TABLE IF NOT EXISTS rechunk_doc_ids AS
+                        SELECT id AS document_id FROM public.document
+                        WHERE full_text IS NOT NULL AND full_text != ''
+                    """)
 
                 # Get count
                 cur.execute("SELECT COUNT(*) FROM rechunk_doc_ids")
@@ -651,7 +1052,7 @@ class ChunkEmbedder:
                 stats["total_documents"] = total_docs
 
                 if total_docs == 0:
-                    logger.warning("No documents found in semantic.chunks")
+                    logger.warning("No documents found to process")
                     return stats
 
                 logger.info(f"Found {total_docs} documents to rechunk")
@@ -685,6 +1086,7 @@ class ChunkEmbedder:
                     chunk_size=chunk_size,
                     overlap=overlap,
                     overwrite=False,  # Table already truncated
+                    batch_size=batch_size,
                 )
 
                 if num_chunks > 0:
@@ -712,6 +1114,106 @@ class ChunkEmbedder:
 
         logger.info(
             f"Rechunk complete: {stats['processed']}/{total_docs} documents, "
+            f"{stats['total_chunks_created']} chunks in {stats['elapsed_seconds']}s"
+        )
+
+        return stats
+
+    def chunk_document_list(
+        self,
+        document_ids: List[int],
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        overlap: int = DEFAULT_CHUNK_OVERLAP,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        overwrite: bool = True,
+    ) -> dict:
+        """
+        Chunk and embed a specific list of documents.
+
+        Unlike rechunk_all, this does NOT truncate the table - it only processes
+        the specified documents, optionally overwriting existing chunks.
+
+        Args:
+            document_ids: List of document IDs to process.
+            chunk_size: Target chunk size in characters (default: 1800).
+            overlap: Overlap between consecutive chunks (default: 320).
+            progress_callback: Optional callback(stage, current, total) for progress.
+            batch_size: Number of chunks to embed per API call (default: 10).
+            overwrite: If True, delete existing chunks for these documents first.
+
+        Returns:
+            Dictionary with statistics:
+                - total_documents: Number of documents to process
+                - processed: Successfully processed documents
+                - failed: Failed documents
+                - total_chunks_created: Total chunks created
+                - elapsed_seconds: Total time taken
+                - chunks_per_second: Processing rate
+                - avg_chunks_per_doc: Average chunks per document
+        """
+        import time
+
+        stats = {
+            "total_documents": len(document_ids),
+            "processed": 0,
+            "failed": 0,
+            "total_chunks_created": 0,
+            "elapsed_seconds": 0.0,
+            "chunks_per_second": 0.0,
+            "avg_chunks_per_doc": 0.0,
+        }
+
+        if not document_ids:
+            logger.warning("No document IDs provided")
+            return stats
+
+        total_docs = len(document_ids)
+        logger.info(f"Processing {total_docs} documents")
+
+        if progress_callback:
+            progress_callback("starting", 0, total_docs)
+
+        start_time = time.perf_counter()
+
+        for i, doc_id in enumerate(document_ids):
+            if progress_callback:
+                progress_callback("chunking", i + 1, total_docs)
+
+            try:
+                num_chunks = self.chunk_and_embed(
+                    document_id=doc_id,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    overwrite=overwrite,
+                    batch_size=batch_size,
+                )
+
+                if num_chunks > 0:
+                    stats["processed"] += 1
+                    stats["total_chunks_created"] += num_chunks
+                else:
+                    stats["failed"] += 1
+                    logger.warning(f"Document {doc_id}: no chunks created")
+
+            except Exception as e:
+                stats["failed"] += 1
+                logger.error(f"Document {doc_id}: chunk failed - {e}")
+
+        # Calculate final statistics
+        elapsed = time.perf_counter() - start_time
+        stats["elapsed_seconds"] = round(elapsed, 2)
+
+        if elapsed > 0:
+            stats["chunks_per_second"] = round(stats["total_chunks_created"] / elapsed, 2)
+
+        if stats["processed"] > 0:
+            stats["avg_chunks_per_doc"] = round(
+                stats["total_chunks_created"] / stats["processed"], 2
+            )
+
+        logger.info(
+            f"Chunk complete: {stats['processed']}/{total_docs} documents, "
             f"{stats['total_chunks_created']} chunks in {stats['elapsed_seconds']}s"
         )
 

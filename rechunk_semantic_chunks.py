@@ -15,6 +15,8 @@ Usage:
     uv run python rechunk_semantic_chunks.py
     uv run python rechunk_semantic_chunks.py --chunk-size 1800 --overlap 320
     uv run python rechunk_semantic_chunks.py --model snowflake-arctic-embed2:latest
+    uv run python rechunk_semantic_chunks.py --batch-size 20  # Larger batches for stability
+    uv run python rechunk_semantic_chunks.py --backend llama_cpp  # Use llama.cpp (more stable)
     uv run python rechunk_semantic_chunks.py --dry-run  # Show what would be done
 
 Example:
@@ -74,6 +76,7 @@ from bmlibrarian.embeddings.chunk_embedder import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_EMBEDDING_MODEL_NAME,
+    DEFAULT_BATCH_SIZE,
 )
 from bmlibrarian.database import get_db_manager
 
@@ -95,12 +98,12 @@ def format_duration(seconds: float) -> str:
 
 
 def get_current_stats() -> dict:
-    """Get current statistics from semantic.chunks table."""
+    """Get current statistics from semantic.chunks or public.document table."""
     db_manager = get_db_manager()
 
     with db_manager.get_connection() as conn:
         with conn.cursor() as cur:
-            # Get document count and chunk count
+            # Get document count and chunk count from semantic.chunks
             cur.execute("""
                 SELECT
                     COUNT(DISTINCT document_id) as doc_count,
@@ -110,6 +113,15 @@ def get_current_stats() -> dict:
             result = cur.fetchone()
             doc_count = result[0] if result else 0
             chunk_count = result[1] if result else 0
+
+            # If no chunks, get document count from public.document
+            if chunk_count == 0:
+                cur.execute("""
+                    SELECT COUNT(*) FROM public.document
+                    WHERE full_text IS NOT NULL AND full_text != ''
+                """)
+                result = cur.fetchone()
+                doc_count = result[0] if result else 0
 
             # Get chunking parameters in use
             cur.execute("""
@@ -126,38 +138,84 @@ def get_current_stats() -> dict:
             }
 
 
-def dry_run(chunk_size: int, overlap: int, model_name: str) -> None:
+def dry_run(
+    chunk_size: int, overlap: int, model_name: str, experiment_name: str | None = None
+) -> None:
     """Show what would be done without making changes."""
     print("\n" + "=" * 60)
     print("DRY RUN - No changes will be made")
     print("=" * 60)
 
-    stats = get_current_stats()
+    # Handle experiment mode
+    if experiment_name:
+        from bmlibrarian.validation import ExperimentService
+        exp_service = ExperimentService()
 
-    print(f"\nCurrent state:")
-    print(f"  Documents in semantic.chunks: {stats['document_count']:,}")
-    print(f"  Total chunks: {stats['chunk_count']:,}")
+        # Try to find experiment by name or ID
+        experiment = None
+        try:
+            exp_id = int(experiment_name)
+            experiment = exp_service.get_experiment(exp_id)
+        except ValueError:
+            experiment = exp_service.get_experiment_by_name(experiment_name)
 
-    if stats['chunking_params']:
-        print(f"  Current chunking parameters:")
-        for size, olap in stats['chunking_params']:
-            print(f"    - chunk_size={size}, overlap={olap}")
+        if not experiment:
+            print(f"\nError: Experiment '{experiment_name}' not found")
+            print("=" * 60 + "\n")
+            return
 
-    print(f"\nProposed changes:")
-    print(f"  Model: {model_name}")
-    print(f"  New chunk_size: {chunk_size}")
-    print(f"  New overlap: {overlap}")
+        doc_ids = exp_service.get_experiment_document_ids(experiment.id)
+        doc_count = len(doc_ids)
 
-    print(f"\nActions that would be performed:")
-    print(f"  1. Save {stats['document_count']:,} document IDs to temp table")
-    print(f"  2. TRUNCATE semantic.chunks (delete {stats['chunk_count']:,} chunks)")
-    print(f"  3. Re-chunk all {stats['document_count']:,} documents")
-    print(f"  4. Generate new embeddings with {model_name}")
+        print(f"\nExperiment mode:")
+        print(f"  Experiment: {experiment.name}")
+        print(f"  Documents: {doc_count}")
+        if experiment.description:
+            print(f"  Description: {experiment.description}")
 
-    # Estimate time based on typical processing rate
-    estimated_rate = 1.5  # documents per second (conservative)
-    estimated_time = stats['document_count'] / estimated_rate
-    print(f"\nEstimated time: {format_duration(estimated_time)} (at ~{estimated_rate} docs/s)")
+        print(f"\nProposed changes:")
+        print(f"  Model: {model_name}")
+        print(f"  chunk_size: {chunk_size}")
+        print(f"  overlap: {overlap}")
+
+        print(f"\nActions that would be performed:")
+        print(f"  1. Process {doc_count} documents from experiment")
+        print(f"  2. Overwrite any existing chunks for these documents")
+        print(f"  3. Generate new embeddings with {model_name}")
+
+        # Estimate time
+        estimated_rate = 1.5
+        estimated_time = doc_count / estimated_rate
+        print(f"\nEstimated time: {format_duration(estimated_time)} (at ~{estimated_rate} docs/s)")
+
+    else:
+        # Normal mode
+        stats = get_current_stats()
+
+        print(f"\nCurrent state:")
+        print(f"  Documents in semantic.chunks: {stats['document_count']:,}")
+        print(f"  Total chunks: {stats['chunk_count']:,}")
+
+        if stats['chunking_params']:
+            print(f"  Current chunking parameters:")
+            for size, olap in stats['chunking_params']:
+                print(f"    - chunk_size={size}, overlap={olap}")
+
+        print(f"\nProposed changes:")
+        print(f"  Model: {model_name}")
+        print(f"  New chunk_size: {chunk_size}")
+        print(f"  New overlap: {overlap}")
+
+        print(f"\nActions that would be performed:")
+        print(f"  1. Save {stats['document_count']:,} document IDs to temp table")
+        print(f"  2. TRUNCATE semantic.chunks (delete {stats['chunk_count']:,} chunks)")
+        print(f"  3. Re-chunk all {stats['document_count']:,} documents")
+        print(f"  4. Generate new embeddings with {model_name}")
+
+        # Estimate time based on typical processing rate
+        estimated_rate = 1.5  # documents per second (conservative)
+        estimated_time = stats['document_count'] / estimated_rate
+        print(f"\nEstimated time: {format_duration(estimated_time)} (at ~{estimated_rate} docs/s)")
 
     print("\nTo proceed, run without --dry-run flag")
     print("=" * 60 + "\n")
@@ -174,7 +232,15 @@ Examples:
   %(prog)s --chunk-size 2000        # Custom chunk size
   %(prog)s --dry-run                # Preview without making changes
   %(prog)s --model my-model:latest  # Use different embedding model
+  %(prog)s --experiment "Chunking Test Set"  # Process only experiment documents
         """,
+    )
+
+    parser.add_argument(
+        "--experiment",
+        type=str,
+        default=None,
+        help="Only process documents from this experiment (by name or ID)",
     )
 
     parser.add_argument(
@@ -196,6 +262,28 @@ Examples:
         type=str,
         default=DEFAULT_EMBEDDING_MODEL_NAME,
         help=f"Embedding model name (default: {DEFAULT_EMBEDDING_MODEL_NAME})",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"Number of chunks to embed per API call (default: {DEFAULT_BATCH_SIZE})",
+    )
+
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["ollama", "ollama_http", "sentence_transformers", "llama_cpp"],
+        default="ollama",
+        help="Embedding backend: 'ollama' (default), 'ollama_http' (raw HTTP), 'sentence_transformers', or 'llama_cpp'",
+    )
+
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Path to GGUF model file (required for llama_cpp if model not in Ollama cache)",
     )
 
     parser.add_argument(
@@ -228,9 +316,13 @@ Examples:
         print(f"Error: overlap ({args.overlap}) must be less than chunk-size ({args.chunk_size})")
         return 1
 
+    if args.batch_size <= 0:
+        print(f"Error: batch-size must be positive, got {args.batch_size}")
+        return 1
+
     # Handle dry run
     if args.dry_run:
-        dry_run(args.chunk_size, args.overlap, args.model)
+        dry_run(args.chunk_size, args.overlap, args.model, args.experiment)
         return 0
 
     # Print header
@@ -238,14 +330,49 @@ Examples:
     print("Re-chunk Semantic Chunks")
     print("=" * 60)
     print(f"Model: {args.model}")
+    print(f"Backend: {args.backend}")
     print(f"Chunk size: {args.chunk_size} chars")
     print(f"Overlap: {args.overlap} chars")
+    print(f"Batch size: {args.batch_size} chunks per API call")
     print("=" * 60 + "\n")
 
-    # Confirm before proceeding (this is a destructive operation)
-    current_stats = get_current_stats()
-    print(f"WARNING: This will truncate semantic.chunks and re-process")
-    print(f"         {current_stats['document_count']:,} documents ({current_stats['chunk_count']:,} chunks)")
+    # Handle experiment mode
+    experiment_doc_ids = None
+    if args.experiment:
+        from bmlibrarian.validation import ExperimentService
+        exp_service = ExperimentService()
+
+        # Try to find experiment by name or ID
+        experiment = None
+        try:
+            exp_id = int(args.experiment)
+            experiment = exp_service.get_experiment(exp_id)
+        except ValueError:
+            experiment = exp_service.get_experiment_by_name(args.experiment)
+
+        if not experiment:
+            print(f"Error: Experiment '{args.experiment}' not found")
+            return 1
+
+        experiment_doc_ids = exp_service.get_experiment_document_ids(experiment.id)
+        if not experiment_doc_ids:
+            print(f"Error: Experiment '{experiment.name}' has no documents")
+            return 1
+
+        print(f"Experiment: {experiment.name}")
+        print(f"Documents: {len(experiment_doc_ids)}")
+        print()
+        print(f"INFO: Will process {len(experiment_doc_ids)} documents from experiment")
+        print(f"      (existing chunks for these documents will be overwritten)")
+    else:
+        # Normal mode - show stats
+        current_stats = get_current_stats()
+        if current_stats['chunk_count'] > 0:
+            print(f"WARNING: This will truncate semantic.chunks and re-process")
+            print(f"         {current_stats['document_count']:,} documents ({current_stats['chunk_count']:,} chunks)")
+        else:
+            print(f"INFO: semantic.chunks is empty - will populate from public.document")
+            print(f"      Found {current_stats['document_count']:,} documents with full_text")
     print()
 
     try:
@@ -261,7 +388,11 @@ Examples:
 
     # Initialize embedder
     try:
-        embedder = ChunkEmbedder(model_name=args.model)
+        embedder = ChunkEmbedder(
+            model_name=args.model,
+            backend=args.backend,
+            model_path=args.model_path,
+        )
     except Exception as e:
         print(f"Error initializing embedder: {e}")
         return 1
@@ -307,15 +438,28 @@ Examples:
             pbar.n = current
             pbar.refresh()
 
-    # Run rechunking
+    # Run chunking/rechunking
     start_time = time.perf_counter()
 
     try:
-        stats = embedder.rechunk_all(
-            chunk_size=args.chunk_size,
-            overlap=args.overlap,
-            progress_callback=progress_callback,
-        )
+        if experiment_doc_ids:
+            # Process only experiment documents
+            stats = embedder.chunk_document_list(
+                document_ids=experiment_doc_ids,
+                chunk_size=args.chunk_size,
+                overlap=args.overlap,
+                progress_callback=progress_callback,
+                batch_size=args.batch_size,
+                overwrite=True,
+            )
+        else:
+            # Full rechunk mode
+            stats = embedder.rechunk_all(
+                chunk_size=args.chunk_size,
+                overlap=args.overlap,
+                progress_callback=progress_callback,
+                batch_size=args.batch_size,
+            )
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
         if pbar is not None:
