@@ -585,11 +585,12 @@ DEFAULT_CONFIG = {
         "headless": False  # Run browser in headless mode for login (False = visible for 2FA)
     },
     "discovery": {
-        "timeout": 30,  # HTTP request timeout in seconds
+        "timeout": 30,  # HTTP request timeout in seconds (5-120)
+        "browser_timeout": 60000,  # Browser timeout in milliseconds (5000-300000)
         "prefer_open_access": True,  # Prioritize open access sources
         "use_browser_fallback": True,  # Use browser automation when HTTP fails (Cloudflare bypass)
         "browser_headless": True,  # Run browser in headless mode for PDF downloads
-        "browser_timeout": 60000,  # Browser operation timeout in milliseconds
+        "skip_resolvers": None,  # List of resolvers to skip (e.g., ["openathens", "pmc"])
         "use_openathens_proxy": False  # Use OpenAthens proxy as last resort for paywalled content
     }
 }
@@ -1137,8 +1138,13 @@ def get_query_generation_config() -> Dict[str, Any]:
     """Get query generation configuration."""
     return get_config().get("query_generation", DEFAULT_CONFIG["query_generation"])
 
-def get_openathens_config() -> Dict[str, Any]:
+def get_openathens_config(validate: bool = False) -> Dict[str, Any]:
     """Get OpenAthens proxy configuration.
+
+    Args:
+        validate: If True, validate the configuration and raise ValueError
+            if the institution_url is invalid. Default is False for backward
+            compatibility.
 
     Returns:
         Dictionary with OpenAthens configuration:
@@ -1148,8 +1154,148 @@ def get_openathens_config() -> Dict[str, Any]:
         - auto_login (bool): Auto-login on startup
         - login_timeout (int): Maximum seconds to wait for login
         - headless (bool): Run browser in headless mode
+
+    Raises:
+        ValueError: If validate=True and the configuration is invalid.
     """
-    return get_config().get("openathens", DEFAULT_CONFIG["openathens"])
+    config = get_config().get("openathens", DEFAULT_CONFIG["openathens"])
+    if validate and config.get("enabled", False):
+        result = validate_openathens_config(config)
+        result.raise_if_invalid()
+    return config
+
+
+def validate_openathens_url(url: str) -> ValidationResult:
+    """Validate an OpenAthens institution URL.
+
+    Validates that:
+    - URL is not empty
+    - URL uses HTTPS protocol (required for security)
+    - URL has a valid hostname
+
+    Args:
+        url: The institution URL to validate.
+
+    Returns:
+        ValidationResult with valid=True if URL is valid,
+        or valid=False with errors explaining why.
+    """
+    from urllib.parse import urlparse
+
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if not url:
+        errors.append("Institution URL cannot be empty")
+        return ValidationResult(valid=False, errors=errors, warnings=warnings)
+
+    if not isinstance(url, str):
+        errors.append(f"Institution URL must be a string, got {type(url).__name__}")
+        return ValidationResult(valid=False, errors=errors, warnings=warnings)
+
+    url = url.strip()
+    if not url:
+        errors.append("Institution URL cannot be empty or whitespace only")
+        return ValidationResult(valid=False, errors=errors, warnings=warnings)
+
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        errors.append(f"Invalid URL format: {e}")
+        return ValidationResult(valid=False, errors=errors, warnings=warnings)
+
+    # Require HTTPS for security
+    if parsed.scheme != 'https':
+        if parsed.scheme == 'http':
+            errors.append(
+                f"Institution URL must use HTTPS (not HTTP) for security: {url}"
+            )
+        elif not parsed.scheme:
+            errors.append(
+                f"Institution URL must include https:// scheme: {url}"
+            )
+        else:
+            errors.append(
+                f"Institution URL must use HTTPS, got scheme '{parsed.scheme}': {url}"
+            )
+
+    # Require hostname
+    if not parsed.netloc:
+        errors.append(f"Institution URL must include a hostname: {url}")
+
+    # Warn about suspicious patterns
+    if parsed.netloc and '..' in parsed.netloc:
+        warnings.append(f"Institution URL hostname contains unusual '..' pattern: {url}")
+
+    if parsed.netloc and len(parsed.netloc) > 253:
+        errors.append(f"Institution URL hostname exceeds maximum length (253 chars): {url}")
+
+    return ValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings
+    )
+
+
+def validate_openathens_config(config: Dict[str, Any]) -> ValidationResult:
+    """Validate OpenAthens configuration.
+
+    Validates that:
+    - If enabled, institution_url is valid (HTTPS, has hostname)
+    - session_timeout_hours is a positive integer
+    - login_timeout is a positive integer
+
+    Args:
+        config: OpenAthens configuration dictionary.
+
+    Returns:
+        ValidationResult with valid=True if configuration is valid,
+        or valid=False with errors list containing all validation failures.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    enabled = config.get("enabled", False)
+
+    # If not enabled, configuration is valid (URL not required)
+    if not enabled:
+        return ValidationResult(valid=True, errors=[], warnings=[])
+
+    # Validate institution_url
+    institution_url = config.get("institution_url", "")
+    url_result = validate_openathens_url(institution_url)
+    errors.extend(url_result.errors)
+    warnings.extend(url_result.warnings)
+
+    # Validate session_timeout_hours
+    timeout_hours = config.get("session_timeout_hours")
+    if timeout_hours is not None:
+        if not isinstance(timeout_hours, (int, float)):
+            errors.append(
+                f"session_timeout_hours must be a number, got {type(timeout_hours).__name__}"
+            )
+        elif timeout_hours <= 0:
+            errors.append(
+                f"session_timeout_hours must be positive, got {timeout_hours}"
+            )
+
+    # Validate login_timeout
+    login_timeout = config.get("login_timeout")
+    if login_timeout is not None:
+        if not isinstance(login_timeout, (int, float)):
+            errors.append(
+                f"login_timeout must be a number, got {type(login_timeout).__name__}"
+            )
+        elif login_timeout <= 0:
+            errors.append(
+                f"login_timeout must be positive, got {login_timeout}"
+            )
+
+    return ValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings
+    )
 
 
 def get_discovery_config() -> Dict[str, Any]:

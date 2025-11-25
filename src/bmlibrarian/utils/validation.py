@@ -168,6 +168,129 @@ def validate_agent_config(config: Dict[str, Any], agent_type: str, strict: bool 
     return True
 
 
+def validate_discovery_config(config: Dict[str, Any], strict: bool = False) -> bool:
+    """Validate discovery configuration dictionary.
+
+    Args:
+        config: Discovery configuration to validate
+        strict: If True, raises ValueError on failure
+
+    Returns:
+        True if valid, False otherwise
+
+    Expected keys:
+        - timeout (optional): Request timeout in seconds (5-120)
+        - browser_timeout (optional): Browser timeout in ms (5000-300000)
+        - prefer_open_access (optional): Prefer open access sources (boolean)
+        - use_browser_fallback (optional): Use browser for protected PDFs (boolean)
+        - browser_headless (optional): Run browser in headless mode (boolean)
+    """
+    optional = [
+        'timeout', 'browser_timeout', 'prefer_open_access',
+        'use_browser_fallback', 'browser_headless', 'skip_resolvers'
+    ]
+
+    if not validate_config_dict(config, [], optional, strict):
+        return False
+
+    # Validate timeout (5-120 seconds)
+    if 'timeout' in config:
+        if not validate_positive_int(config['timeout'], min_value=5, max_value=120, strict=strict):
+            if strict:
+                raise ValueError(f"Invalid timeout: {config['timeout']} (must be 5-120 seconds)")
+            return False
+
+    # Validate browser_timeout (5000-300000 milliseconds = 5 seconds to 5 minutes)
+    if 'browser_timeout' in config:
+        if not validate_positive_int(config['browser_timeout'], min_value=5000, max_value=300000, strict=strict):
+            if strict:
+                raise ValueError(f"Invalid browser_timeout: {config['browser_timeout']} (must be 5000-300000 ms)")
+            return False
+
+    # Validate boolean fields
+    for bool_key in ['prefer_open_access', 'use_browser_fallback', 'browser_headless']:
+        if bool_key in config and not isinstance(config[bool_key], bool):
+            msg = f"Invalid {bool_key}: must be a boolean"
+            if strict:
+                raise ValueError(msg)
+            logger.warning(msg)
+            return False
+
+    # Validate skip_resolvers if present (should be list of strings)
+    if 'skip_resolvers' in config:
+        if config['skip_resolvers'] is not None and not isinstance(config['skip_resolvers'], list):
+            msg = "Invalid skip_resolvers: must be a list of strings"
+            if strict:
+                raise ValueError(msg)
+            logger.warning(msg)
+            return False
+
+    return True
+
+
+def validate_openathens_config(config: Dict[str, Any], strict: bool = False) -> bool:
+    """Validate OpenAthens configuration dictionary.
+
+    Args:
+        config: OpenAthens configuration to validate
+        strict: If True, raises ValueError on failure
+
+    Returns:
+        True if valid, False otherwise
+
+    Expected keys:
+        - enabled (optional): Enable OpenAthens (boolean)
+        - institution_url (optional): Institution's OpenAthens URL (HTTPS required)
+        - session_timeout_hours (optional): Session timeout in hours (1-168)
+        - auto_login (optional): Auto login on startup (boolean)
+        - login_timeout (optional): Login timeout in seconds (30-600)
+        - headless (optional): Run browser in headless mode (boolean)
+    """
+    optional = [
+        'enabled', 'institution_url', 'session_timeout_hours',
+        'auto_login', 'login_timeout', 'headless'
+    ]
+
+    if not validate_config_dict(config, [], optional, strict):
+        return False
+
+    # Only validate institution_url if OpenAthens is enabled
+    if config.get('enabled', False):
+        if 'institution_url' in config and config['institution_url']:
+            from .url_validation import validate_openathens_url
+            is_valid, _, error = validate_openathens_url(config['institution_url'])
+            if not is_valid:
+                if strict:
+                    raise ValueError(f"Invalid institution_url: {error}")
+                logger.warning(f"Invalid institution_url: {error}")
+                return False
+
+    # Validate session_timeout_hours (1-168 hours = up to 1 week)
+    if 'session_timeout_hours' in config:
+        if not validate_positive_int(config['session_timeout_hours'], min_value=1, max_value=168, strict=strict):
+            if strict:
+                raise ValueError(f"Invalid session_timeout_hours: {config['session_timeout_hours']} (must be 1-168)")
+            return False
+
+    # Validate login_timeout (30-600 seconds)
+    if 'login_timeout' in config:
+        if not validate_positive_int(config['login_timeout'], min_value=30, max_value=600, strict=strict):
+            if strict:
+                raise ValueError(f"Invalid login_timeout: {config['login_timeout']} (must be 30-600 seconds)")
+            return False
+
+    # Validate boolean fields
+    for bool_key in ['enabled', 'auto_login', 'headless']:
+        if bool_key in config and not isinstance(config[bool_key], bool):
+            msg = f"Invalid {bool_key}: must be a boolean"
+            if strict:
+                raise ValueError(msg)
+            logger.warning(msg)
+            return False
+
+    return True
+
+
 def validate_database_config(config: Dict[str, Any], strict: bool = False) -> bool:
     """Validate database configuration dictionary.
 

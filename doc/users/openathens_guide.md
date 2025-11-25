@@ -108,6 +108,44 @@ config = OpenAthensConfig(
 )
 ```
 
+### Configuration Validation
+
+You can validate your OpenAthens configuration before use to prevent runtime errors:
+
+```python
+from bmlibrarian.config import (
+    get_openathens_config,
+    validate_openathens_config,
+    validate_openathens_url
+)
+
+# Get config with validation (raises ValueError if invalid)
+config = get_openathens_config(validate=True)
+
+# Or validate manually for more control
+config = get_openathens_config()
+result = validate_openathens_config(config)
+if not result.valid:
+    print("Configuration errors:")
+    for error in result.errors:
+        print(f"  - {error}")
+if result.warnings:
+    print("Warnings:")
+    for warning in result.warnings:
+        print(f"  - {warning}")
+
+# Validate just the URL
+url_result = validate_openathens_url("https://institution.openathens.net")
+if not url_result.valid:
+    print(f"Invalid URL: {url_result.errors}")
+```
+
+**Validation checks include:**
+- Institution URL uses HTTPS (required for security)
+- Institution URL has a valid hostname
+- `session_timeout_hours` is a positive number
+- `login_timeout` is a positive number
+
 ### Finding Your Institution URL
 
 1. **Via OpenAthens Search**:
