@@ -57,7 +57,7 @@ class UserContext:
 VALID_SETTINGS_CATEGORIES = frozenset([
     'models', 'ollama', 'agents', 'database', 'search',
     'query_generation', 'gui', 'openathens', 'pdf', 'general', 'document_qa',
-    'discovery'
+    'discovery', 'embeddings'
 ])
 
 
@@ -592,6 +592,17 @@ DEFAULT_CONFIG = {
         "browser_headless": True,  # Run browser in headless mode for PDF downloads
         "skip_resolvers": None,  # List of resolvers to skip (e.g., ["openathens", "pmc"])
         "use_openathens_proxy": False  # Use OpenAthens proxy as last resort for paywalled content
+    },
+    "embeddings": {
+        # Backend for generating embeddings
+        # Options: "ollama", "ollama_http", "sentence_transformers", "llama_cpp"
+        # "sentence_transformers" is recommended for stability with larger chunks
+        "backend": "sentence_transformers",
+        "model": "snowflake-arctic-embed2:latest",  # Model name (Ollama) or HuggingFace model ID
+        "huggingface_model": "Snowflake/snowflake-arctic-embed-l-v2.0",  # HuggingFace model for sentence_transformers
+        "batch_size": 32,  # Batch size for embedding generation
+        "n_ctx": 8192,  # Context window size (for llama_cpp backend)
+        "device": "auto"  # Device for sentence_transformers: "auto", "cpu", "cuda", "mps"
     }
 }
 
@@ -1311,6 +1322,21 @@ def get_discovery_config() -> Dict[str, Any]:
         - use_openathens_proxy (bool): Use OpenAthens as last resort
     """
     return get_config().get("discovery", DEFAULT_CONFIG["discovery"])
+
+
+def get_embeddings_config() -> Dict[str, Any]:
+    """Get embeddings configuration.
+
+    Returns:
+        Dictionary with embeddings configuration:
+        - backend (str): Embedding backend ("ollama", "ollama_http", "sentence_transformers", "llama_cpp")
+        - model (str): Ollama-style model name
+        - huggingface_model (str): HuggingFace model ID for sentence_transformers
+        - batch_size (int): Batch size for embedding generation
+        - n_ctx (int): Context window size (for llama_cpp)
+        - device (str): Device for sentence_transformers ("auto", "cpu", "cuda", "mps")
+    """
+    return get_config().get("embeddings", DEFAULT_CONFIG["embeddings"])
 
 
 def get_paper_weight_config() -> Dict[str, Any]:

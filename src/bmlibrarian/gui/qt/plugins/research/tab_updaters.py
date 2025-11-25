@@ -122,6 +122,7 @@ def create_document_card_data(
         source=doc.get('source'),
         relevance_score=relevance_score,
         pdf_url=doc.get('pdf_url'),
+        pdf_filename=doc.get('pdf_filename'),  # Relative path from database (e.g., "2022/paper.pdf")
         context=context,
         show_abstract=show_abstract,
         show_metadata=show_metadata,
@@ -444,6 +445,7 @@ def _create_citation_pdf_button(
             doc_id = getattr(citation, 'document_id', None)
             pdf_url = getattr(citation, 'pdf_url', None)
             pdf_path = getattr(citation, 'pdf_path', None)
+            pdf_filename = getattr(citation, 'pdf_filename', None)
             title = getattr(citation, 'document_title', 'Unknown')
             authors = getattr(citation, 'authors', [])
             year = getattr(citation, 'publication_date', None)
@@ -451,6 +453,7 @@ def _create_citation_pdf_button(
             doc_id = citation.get('document_id')
             pdf_url = citation.get('pdf_url')
             pdf_path = citation.get('pdf_path')
+            pdf_filename = citation.get('pdf_filename')
             title = citation.get('document_title', 'Unknown')
             authors = citation.get('authors', [])
             year = citation.get('publication_date')
@@ -466,6 +469,7 @@ def _create_citation_pdf_button(
             year=int(str(year)[:4]) if year else None,
             pdf_url=pdf_url,
             pdf_path=Path(pdf_path) if pdf_path else None,
+            pdf_filename=pdf_filename,  # Relative path from database (e.g., "2022/paper.pdf")
             show_pdf_button=True
         )
 
@@ -473,8 +477,10 @@ def _create_citation_pdf_button(
         if hasattr(card_factory, '_create_pdf_button_for_card'):
             return card_factory._create_pdf_button_for_card(card_data)
         elif hasattr(card_factory, 'create_pdf_button'):
-            # Determine state
-            pdf_state = card_factory.determine_pdf_state(doc_id, card_data.pdf_path, pdf_url)
+            # Determine state (include pdf_filename for proper state detection)
+            pdf_state = card_factory.determine_pdf_state(
+                doc_id, card_data.pdf_path, pdf_url, pdf_filename
+            )
             if pdf_state == PDFButtonState.HIDDEN:
                 return None
             config = PDFButtonConfig(

@@ -776,6 +776,7 @@ class SearchTabWidget(QWidget):
                 source=doc.get('source'),
                 relevance_score=doc.get('_combined_score') or doc.get('relevance_score'),
                 pdf_url=doc.get('pdf_url'),
+                pdf_filename=doc.get('pdf_filename'),  # Relative path from database (e.g., "2022/paper.pdf")
                 context=CardContext.SEARCH,
                 show_pdf_button=True,
                 expanded_by_default=False

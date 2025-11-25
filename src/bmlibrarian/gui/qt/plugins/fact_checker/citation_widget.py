@@ -183,6 +183,7 @@ class CitationListWidget(QWidget):
             doi=citation.get('doi', ''),
             pdf_path=pdf_path,
             pdf_url=pdf_url,
+            pdf_filename=citation.get('pdf_filename'),  # Relative path from database (e.g., "2022/paper.pdf")
             show_pdf_button=True  # Show PDF button if available
         )
 

@@ -184,27 +184,52 @@ class ChunkEmbedder:
 
     def __init__(
         self,
-        model_name: str = DEFAULT_EMBEDDING_MODEL_NAME,
+        model_name: Optional[str] = None,
         model_id: Optional[int] = None,
-        backend: EmbeddingBackend = "ollama",
+        backend: Optional[EmbeddingBackend] = None,
         model_path: Optional[str] = None,
-        n_ctx: int = 8192,
+        n_ctx: Optional[int] = None,
     ) -> None:
         """
         Initialize the chunk embedder.
 
+        When parameters are None, values are loaded from the config file
+        (~/.bmlibrarian/config.json) under the "embeddings" section.
+
         Args:
             model_name: Embedding model name (for Ollama or database reference).
+                       If None, uses config["embeddings"]["model"].
             model_id: Database model ID (if known). If None, will be looked up.
             backend: Embedding backend to use ("ollama", "ollama_http", "sentence_transformers", or "llama_cpp").
+                    If None, uses config["embeddings"]["backend"].
             model_path: Path to GGUF model file (required for llama_cpp backend).
                        If None with llama_cpp, will try to find Ollama's cached model.
-            n_ctx: Context window size for llama_cpp backend (default: 8192).
+            n_ctx: Context window size for llama_cpp backend.
+                  If None, uses config["embeddings"]["n_ctx"].
 
         Raises:
             ImportError: If required backend is not installed.
             FileNotFoundError: If model_path doesn't exist (llama_cpp backend).
         """
+        # Load defaults from config
+        from bmlibrarian.config import get_embeddings_config
+        embeddings_config = get_embeddings_config()
+
+        # Apply config defaults for None parameters
+        if backend is None:
+            backend = embeddings_config.get("backend", "ollama")
+        if model_name is None:
+            # For sentence_transformers, prefer the huggingface_model if available
+            if backend == "sentence_transformers":
+                model_name = embeddings_config.get(
+                    "huggingface_model",
+                    embeddings_config.get("model", DEFAULT_EMBEDDING_MODEL_NAME)
+                )
+            else:
+                model_name = embeddings_config.get("model", DEFAULT_EMBEDDING_MODEL_NAME)
+        if n_ctx is None:
+            n_ctx = embeddings_config.get("n_ctx", 8192)
+
         self.backend = backend
         self.db_manager = get_db_manager()
         self.model_name = model_name
