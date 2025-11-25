@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel,
     QDialog, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QTimer
+from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from typing import Optional, Callable, Dict, Any
@@ -31,8 +31,79 @@ from bmlibrarian.gui.qt.resources.constants import (
     FileSystemDefaults,
     PDFButtonColors
 )
+from bmlibrarian.utils.error_messages import format_pdf_download_error
 
 logger = logging.getLogger(__name__)
+
+
+class PDFFetchWorker(QThread):
+    """
+    Worker thread for PDF fetch operations.
+
+    Runs long-running PDF discovery and download operations off the main
+    thread to prevent UI blocking and ensure responsive button states.
+
+    Signals:
+        finished: Emitted when operation completes successfully (returns Path)
+        error: Emitted when operation fails (returns error message)
+        progress: Emitted for progress updates (returns status message)
+    """
+
+    finished = Signal(Path)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(
+        self,
+        fetch_handler: Callable,
+        parent: Optional[QObject] = None
+    ):
+        """
+        Initialize PDF fetch worker.
+
+        Args:
+            fetch_handler: Callable that performs the actual fetch operation
+            parent: Optional parent QObject
+        """
+        super().__init__(parent)
+        self._fetch_handler = fetch_handler
+        self._mutex = QMutex()
+        self._abort = False
+
+    def abort(self) -> None:
+        """Request abort of the current operation."""
+        with QMutexLocker(self._mutex):
+            self._abort = True
+
+    def run(self) -> None:
+        """Execute the fetch operation in the worker thread."""
+        try:
+            # Check for early abort
+            with QMutexLocker(self._mutex):
+                if self._abort:
+                    self.error.emit("Operation cancelled")
+                    return
+
+            self.progress.emit("Starting download...")
+
+            result = self._fetch_handler()
+
+            # Check for abort after long operation
+            with QMutexLocker(self._mutex):
+                if self._abort:
+                    self.error.emit("Operation cancelled")
+                    return
+
+            if result and isinstance(result, Path):
+                self.finished.emit(result)
+            else:
+                self.error.emit("Download failed. No PDF was retrieved.")
+
+        except Exception as e:
+            # Use standardized user-friendly error messages
+            friendly_error = format_pdf_download_error(e)
+            friendly_error.log()  # Log technical details
+            self.error.emit(friendly_error.user_message)
 
 
 class PDFButtonWidget(QPushButton):
@@ -68,6 +139,7 @@ class PDFButtonWidget(QPushButton):
         super().__init__(parent)
         self.config = config
         self._state_mutex = QMutex()  # Thread-safe state transitions
+        self._fetch_worker: Optional[PDFFetchWorker] = None  # Track running fetch
         self._update_button_appearance()
 
         # Connect click handler
@@ -164,46 +236,90 @@ class PDFButtonWidget(QPushButton):
             raise
 
     def _handle_fetch(self):
-        """Handle fetch PDF action with progress feedback and error handling."""
-        try:
-            if self.config.on_fetch:
-                # Show progress indicator
-                original_text = self.text()
-                self.setText("Downloading...")
-                self.setEnabled(False)
+        """Handle fetch PDF action using background thread.
 
-                try:
-                    result = self.config.on_fetch()
-                    if result:
-                        # Callback should return the downloaded path
-                        if isinstance(result, Path):
-                            if not result.exists():
-                                raise FileNotFoundError(
-                                    f"Downloaded PDF not found: {result}"
-                                )
-                            self._transition_to_view(result)
-                            self.pdf_fetched.emit(result)
-                            logger.info(f"Successfully fetched PDF: {result}")
-                        else:
-                            raise TypeError(
-                                f"Fetch handler returned invalid type: {type(result)}"
-                            )
-                    else:
-                        raise RuntimeError("Fetch operation returned no result")
-                finally:
-                    # Always restore button state
-                    self.setEnabled(True)
-                    if self.config.state != PDFButtonState.VIEW:
-                        self.setText(original_text)
-            else:
-                raise ValueError("No fetch handler configured")
-
-        except (FileNotFoundError, TypeError, RuntimeError, ValueError, OSError) as e:
-            error_msg = f"Failed to fetch PDF: {str(e)}"
+        Uses PDFFetchWorker to run long-running PDF discovery and download
+        operations off the main thread, preventing UI blocking.
+        """
+        if not self.config.on_fetch:
+            error_msg = "No fetch handler configured"
             logger.error(error_msg)
             self.error_occurred.emit(error_msg)
-            # Don't transition state on error
-            raise
+            return
+
+        # Check if a fetch is already in progress
+        if self._fetch_worker is not None and self._fetch_worker.isRunning():
+            logger.warning("Fetch already in progress, ignoring click")
+            return
+
+        # Show progress indicator
+        self._original_text = self.text()
+        self.setText("Downloading...")
+        self.setEnabled(False)
+
+        # Create and configure worker thread
+        self._fetch_worker = PDFFetchWorker(self.config.on_fetch, parent=self)
+        self._fetch_worker.finished.connect(self._on_fetch_success)
+        self._fetch_worker.error.connect(self._on_fetch_error)
+        self._fetch_worker.progress.connect(self._on_fetch_progress)
+
+        # Start the background operation
+        self._fetch_worker.start()
+
+    def _on_fetch_success(self, pdf_path: Path) -> None:
+        """Handle successful PDF fetch.
+
+        Args:
+            pdf_path: Path to the downloaded PDF file
+        """
+        try:
+            if not pdf_path.exists():
+                raise FileNotFoundError(f"Downloaded PDF not found: {pdf_path}")
+
+            self._transition_to_view(pdf_path)
+            self.pdf_fetched.emit(pdf_path)
+            logger.info(f"Successfully fetched PDF: {pdf_path}")
+
+        except (FileNotFoundError, OSError) as e:
+            self._on_fetch_error(str(e))
+
+        finally:
+            self._cleanup_fetch_worker()
+
+    def _on_fetch_error(self, error_msg: str) -> None:
+        """Handle fetch error.
+
+        Args:
+            error_msg: Error message describing the failure
+        """
+        logger.error(f"Failed to fetch PDF: {error_msg}")
+        self.error_occurred.emit(f"Failed to fetch PDF: {error_msg}")
+
+        # Restore button state
+        self.setEnabled(True)
+        if hasattr(self, '_original_text'):
+            self.setText(self._original_text)
+
+        self._cleanup_fetch_worker()
+
+    def _on_fetch_progress(self, status: str) -> None:
+        """Handle progress update from fetch worker.
+
+        Args:
+            status: Status message
+        """
+        self.setText(status)
+
+    def _cleanup_fetch_worker(self) -> None:
+        """Clean up the fetch worker after completion."""
+        if self._fetch_worker is not None:
+            # Wait for thread to finish if still running
+            if self._fetch_worker.isRunning():
+                self._fetch_worker.abort()
+                self._fetch_worker.wait(1000)  # Wait up to 1 second
+
+            self._fetch_worker.deleteLater()
+            self._fetch_worker = None
 
     def _handle_upload(self):
         """Handle upload PDF action with validation."""

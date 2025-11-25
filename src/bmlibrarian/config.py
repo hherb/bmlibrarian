@@ -585,11 +585,12 @@ DEFAULT_CONFIG = {
         "headless": False  # Run browser in headless mode for login (False = visible for 2FA)
     },
     "discovery": {
-        "timeout": 30,  # HTTP request timeout in seconds
+        "timeout": 30,  # HTTP request timeout in seconds (5-120)
+        "browser_timeout": 60000,  # Browser timeout in milliseconds (5000-300000)
         "prefer_open_access": True,  # Prioritize open access sources
         "use_browser_fallback": True,  # Use browser automation when HTTP fails (Cloudflare bypass)
         "browser_headless": True,  # Run browser in headless mode for PDF downloads
-        "browser_timeout": 60000,  # Browser operation timeout in milliseconds
+        "skip_resolvers": None,  # List of resolvers to skip (e.g., ["openathens", "pmc"])
         "use_openathens_proxy": False  # Use OpenAthens proxy as last resort for paywalled content
     }
 }
