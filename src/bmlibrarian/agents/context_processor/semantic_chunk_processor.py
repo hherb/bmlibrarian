@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 # Type alias for semantic search chunks
 SemanticChunk = Tuple[str, float]  # (text, score)
 
+# Default configuration constants
+DEFAULT_EXTRACTION_CONFIDENCE = 0.9  # Default confidence when LLM doesn't provide one
+DEFAULT_LLM_TEMPERATURE = 0.1  # Conservative temperature for extraction
+DEFAULT_LLM_MAX_TOKENS = 1000  # Maximum tokens for LLM response
+PRISMA_MAX_RECURSION_DEPTH = 3  # Limit recursion for PRISMA single-item assessment
+PRISMA_DEFAULT_MAX_TOKENS = 800  # Max tokens for PRISMA extraction
+
 # Default extraction prompt template
 DEFAULT_EXTRACTION_PROMPT = """Extract the key information relevant to this query.
 
@@ -129,8 +136,8 @@ class SemanticChunkProcessor(IterativeContextProcessor):
         config: Optional[ProcessingConfig] = None,
         progress_callback: Optional[ProgressCallback] = None,
         use_structured_output: bool = False,
-        temperature: float = 0.1,
-        max_tokens: int = 1000,
+        temperature: float = DEFAULT_LLM_TEMPERATURE,
+        max_tokens: int = DEFAULT_LLM_MAX_TOKENS,
     ):
         """
         Initialize the semantic chunk processor.
@@ -305,7 +312,7 @@ class SemanticChunkProcessor(IterativeContextProcessor):
             )
 
             extracted_content = response["message"]["content"].strip()
-            confidence = 0.9  # Default confidence
+            confidence = DEFAULT_EXTRACTION_CONFIDENCE
 
             # Try to parse structured output if enabled
             if self.use_structured_output and recursion_level == 0:
@@ -314,7 +321,7 @@ class SemanticChunkProcessor(IterativeContextProcessor):
                     extracted_content = parsed.get(
                         "extracted_content", extracted_content
                     )
-                    confidence = float(parsed.get("confidence", 0.9))
+                    confidence = float(parsed.get("confidence", DEFAULT_EXTRACTION_CONFIDENCE))
                     batch_metadata["key_findings"] = parsed.get("key_findings", [])
                 except (json.JSONDecodeError, ValueError):
                     # Keep the raw content if JSON parsing fails
@@ -415,7 +422,7 @@ Consolidated Evidence:"""
 
     config = ProcessingConfig(
         max_context_chars=max_context_chars,
-        max_recursion_depth=3,  # Limit recursion for single-item assessment
+        max_recursion_depth=PRISMA_MAX_RECURSION_DEPTH,
         min_items_for_recursion=2,
         continue_on_error=True,
     )
@@ -427,6 +434,6 @@ Consolidated Evidence:"""
         consolidation_prompt_template=consolidation_prompt,
         config=config,
         progress_callback=progress_callback,
-        temperature=0.1,
-        max_tokens=800,
+        temperature=DEFAULT_LLM_TEMPERATURE,
+        max_tokens=PRISMA_DEFAULT_MAX_TOKENS,
     )
