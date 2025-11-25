@@ -98,6 +98,33 @@ class IterativeContextProcessor(ABC):
         """
         pass
 
+    def estimate_item_size(self, item: Any) -> int:
+        """
+        Estimate the size of an item in characters without full formatting.
+
+        Override this method for performance-critical scenarios where
+        format_item() is expensive (e.g., complex items with extensive
+        processing). The default implementation falls back to format_item()
+        for accuracy.
+
+        This method is used during batch creation to check if items fit
+        within context limits. A fast estimate can significantly improve
+        performance when processing many items.
+
+        Args:
+            item: The item to estimate size for.
+
+        Returns:
+            Estimated character count for the formatted item.
+
+        Note:
+            Implementations should err on the side of overestimating
+            to avoid creating batches that exceed context limits.
+        """
+        # Default: use actual formatting for accuracy
+        # Subclasses can override for performance optimization
+        return len(self.format_item(item, 0))
+
     @abstractmethod
     def extract_from_batch(
         self,
@@ -271,8 +298,8 @@ class IterativeContextProcessor(ABC):
         processed_items: List[Tuple[int, Any]] = []  # (original_idx, item)
 
         for idx, item in enumerate(items):
-            formatted = self.format_item(item, 0)  # Index doesn't matter for size check
-            item_chars = len(formatted)
+            # Use estimate_item_size() for performance (avoids expensive formatting)
+            item_chars = self.estimate_item_size(item)
 
             # Check if item is oversized (larger than max context on its own)
             if item_chars > config.max_context_chars:
@@ -813,9 +840,22 @@ class IterativeContextProcessor(ABC):
 
                 # Check recursion limit
                 if recursion_level >= config.max_recursion_depth:
+                    # Calculate remaining items and content size for informative warning
+                    valid_results = [r for r in results if r.is_valid]
+                    remaining_items = len(valid_results)
+                    remaining_content_chars = sum(len(r.content) for r in valid_results)
+                    remaining_with_separators = remaining_content_chars + (
+                        len(config.separator) * max(0, remaining_items - 1)
+                    )
+                    overflow_chars = remaining_with_separators - config.max_context_chars
+
                     logger.warning(
                         f"Max recursion depth ({config.max_recursion_depth}) reached. "
-                        f"Returning truncated result."
+                        f"Returning truncated result. "
+                        f"Remaining: {remaining_items} items, "
+                        f"{remaining_content_chars:,} chars content "
+                        f"({overflow_chars:+,} chars over context limit of "
+                        f"{config.max_context_chars:,})"
                     )
                     status = ProcessingStatus.TRUNCATED
                     final_result = self._merge_results(results, config, recursion_level)
