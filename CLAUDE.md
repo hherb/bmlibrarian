@@ -142,19 +142,19 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
   - `uv run python fact_checker_review_gui.py --user alice --db-file review_package.db` - Review with SQLite package (no PostgreSQL needed)
 - **Fact-Checker Distribution Tools** (for inter-rater reliability analysis):
-  - `uv run python export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
-  - `uv run python export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
-  - `uv run python import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
+  - `uv run python scripts/export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
+  - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
+  - `uv run python scripts/import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
 - **Laboratory Tools**:
-  - `uv run python query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
-  - `uv run python pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
-  - `uv run python study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
-  - `uv run python prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
-  - `uv run python paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
-  - `uv run python paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
+  - `uv run python scripts/query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
+  - `uv run python scripts/pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
+  - `uv run python scripts/study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
+  - `uv run python scripts/prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
+  - `uv run python scripts/paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
+  - `uv run python scripts/paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
 - **PDF Processing Tools**:
-  - `uv run python pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
-  - `uv run python test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
+  - `uv run python examples/pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
+  - `uv run python tests/test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
 - **Demonstrations**:
   - `uv run python examples/agent_demo.py` - Multi-agent workflow demonstration
   - `uv run python examples/citation_demo.py` - Citation extraction examples
@@ -552,30 +552,35 @@ bmlibrarian/
 │       ├── multi_model_architecture.md  # Multi-model architecture docs
 │       ├── paper_checker_architecture.md  # PaperChecker system design and architecture
 │       └── full_text_discovery_system.md  # Full-text PDF discovery architecture
+├── scripts/                   # Utility scripts and laboratory tools
+│   ├── query_lab.py           # QueryAgent experimental laboratory GUI
+│   ├── pico_lab.py            # PICOAgent experimental laboratory GUI
+│   ├── study_assessment_lab.py # StudyAssessmentAgent laboratory GUI
+│   ├── prisma2020_lab.py      # PRISMA2020Agent laboratory GUI
+│   ├── paper_weight_lab.py    # PaperWeightAssessmentAgent laboratory GUI
+│   ├── paper_checker_lab.py   # PaperChecker laboratory GUI
+│   ├── export_review_package.py # Export SQLite review packages
+│   ├── export_human_evaluations.py # Export human annotations to JSON
+│   ├── import_human_evaluations.py # Re-import human evaluations
+│   ├── chunk_worker.py        # Background worker for semantic chunk queue
+│   ├── rechunk_semantic_chunks.py # Re-chunk documents CLI
+│   └── pdf_verification_gui.py # PDF verification review GUI
+├── data/                      # Temporary test data (gitignored)
 ├── bmlibrarian_cli.py         # Interactive CLI application with full multi-agent workflow
-├── bmlibrarian_research_gui.py # Desktop research GUI application (98-line modular entry point)
-├── bmlibrarian_config_gui.py  # Graphical configuration interface
+├── bmlibrarian_qt.py          # Qt-based main entry point
+├── bmlibrarian_research_gui.py # Desktop research GUI application (modular entry point)
 ├── fact_checker_cli.py        # Fact-checker CLI for training data auditing
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
 ├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
-├── export_review_package.py   # Export SQLite review packages for distribution
-├── export_human_evaluations.py # Export human annotations to JSON
-├── import_human_evaluations.py # Re-import human evaluations to PostgreSQL
 ├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
-├── embed_documents_cli.py     # Document embedding generation CLI
+├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
-├── query_lab.py               # QueryAgent experimental laboratory GUI
-├── pico_lab.py                # PICOAgent experimental laboratory GUI for PICO component extraction
-├── study_assessment_lab.py    # StudyAssessmentAgent experimental laboratory GUI for study quality evaluation
-├── prisma2020_lab.py          # PRISMA2020Agent experimental laboratory GUI for PRISMA 2020 compliance assessment
-├── paper_weight_lab.py        # PaperWeightAssessmentAgent laboratory GUI (PySide6/Qt) for evaluating evidential weight
-├── paper_checker_lab.py       # PaperChecker laboratory GUI (PySide6/Qt) for medical abstract fact-checking
-├── pdf_processor_demo.py      # PySide6 demo application for biomedical publication section segmentation
-├── test_pdf_processor.py      # Command-line test script for PDF processor library
+├── migrate_config_to_db.py    # Settings migration CLI
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
+├── setup_wizard.py            # PySide6 setup wizard
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
 ├── migrations/                # Database migration scripts
 ├── test_database.env.example  # Example environment file for testing

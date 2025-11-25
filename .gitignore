@@ -32,3 +32,6 @@ input_annotated.json
 debug_metadata_flow.py
 ollama_models_params_context.csv
 .claude/settings.local.json
+
+# Data directory (temporary test data)
+data/
