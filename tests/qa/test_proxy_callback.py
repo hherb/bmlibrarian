@@ -95,6 +95,57 @@ class TestQAErrorExtensions:
         assert error.value == "user_cancelled"
         assert "declined" in error.description.lower() or "cancel" in error.description.lower()
 
+    def test_proxy_download_failed_error(self) -> None:
+        """Test PROXY_DOWNLOAD_FAILED error exists and has description."""
+        error = QAError.PROXY_DOWNLOAD_FAILED
+        assert error.value == "proxy_download_failed"
+        assert "proxy" in error.description.lower() or "failed" in error.description.lower()
+
+
+class TestFallbackReason:
+    """Tests for fallback_reason field in SemanticSearchAnswer."""
+
+    def test_fallback_reason_default_none(self) -> None:
+        """Test fallback_reason defaults to None."""
+        answer = SemanticSearchAnswer(answer="test")
+        assert answer.fallback_reason is None
+
+    def test_fallback_reason_user_declined(self) -> None:
+        """Test fallback_reason can track user declined."""
+        answer = SemanticSearchAnswer(
+            answer="test",
+            source=AnswerSource.ABSTRACT,
+            fallback_reason="user_declined",
+        )
+        assert answer.fallback_reason == "user_declined"
+
+    def test_fallback_reason_proxy_failed(self) -> None:
+        """Test fallback_reason can track proxy failure."""
+        answer = SemanticSearchAnswer(
+            answer="test",
+            source=AnswerSource.ABSTRACT,
+            fallback_reason="proxy_download_failed",
+        )
+        assert answer.fallback_reason == "proxy_download_failed"
+
+    def test_fallback_reason_in_to_dict(self) -> None:
+        """Test fallback_reason is included in to_dict output."""
+        answer = SemanticSearchAnswer(
+            answer="test",
+            source=AnswerSource.ABSTRACT,
+            fallback_reason="user_declined",
+        )
+        result = answer.to_dict()
+        assert "fallback_reason" in result
+        assert result["fallback_reason"] == "user_declined"
+
+    def test_fallback_reason_none_in_to_dict(self) -> None:
+        """Test fallback_reason None is included in to_dict output."""
+        answer = SemanticSearchAnswer(answer="test")
+        result = answer.to_dict()
+        assert "fallback_reason" in result
+        assert result["fallback_reason"] is None
+
 
 class TestProxyCallbackIntegration:
     """Integration tests for proxy callback in answer_from_document."""
@@ -249,6 +300,77 @@ class TestAlwaysAllowProxyParameter:
         # For now, just verify the callback contract
         assert callable(should_not_be_called)
         assert not callback_called  # Verify we haven't called it yet
+
+
+class TestCallbackTimeout:
+    """Tests for proxy callback timeout functionality."""
+
+    def test_invoke_callback_with_timeout_success(self) -> None:
+        """Test callback that completes within timeout."""
+        from bmlibrarian.qa.document_qa import _invoke_proxy_callback_with_timeout
+
+        def fast_callback(doc_id: int, title: Optional[str]) -> ProxyCallbackResult:
+            return ProxyCallbackResult(allow_proxy=True)
+
+        result, timed_out = _invoke_proxy_callback_with_timeout(
+            fast_callback, 123, "Test", timeout_seconds=5.0
+        )
+
+        assert not timed_out
+        assert result is not None
+        assert result.allow_proxy is True
+
+    def test_invoke_callback_with_timeout_timeout(self) -> None:
+        """Test callback that exceeds timeout."""
+        import time
+        from bmlibrarian.qa.document_qa import _invoke_proxy_callback_with_timeout
+
+        def slow_callback(doc_id: int, title: Optional[str]) -> ProxyCallbackResult:
+            time.sleep(2.0)  # Takes 2 seconds
+            return ProxyCallbackResult(allow_proxy=True)
+
+        result, timed_out = _invoke_proxy_callback_with_timeout(
+            slow_callback, 123, "Test", timeout_seconds=0.1
+        )
+
+        assert timed_out is True
+        assert result is None
+
+    def test_invoke_callback_with_timeout_exception(self) -> None:
+        """Test callback that raises an exception."""
+        from bmlibrarian.qa.document_qa import _invoke_proxy_callback_with_timeout
+
+        def error_callback(doc_id: int, title: Optional[str]) -> ProxyCallbackResult:
+            raise RuntimeError("Test error")
+
+        result, timed_out = _invoke_proxy_callback_with_timeout(
+            error_callback, 123, "Test", timeout_seconds=5.0
+        )
+
+        assert timed_out is False  # Not timed out, just failed
+        assert result is None
+
+
+class TestFallbackReasonConstants:
+    """Tests for fallback reason constants."""
+
+    def test_fallback_constants_exist(self) -> None:
+        """Test that fallback reason constants are defined."""
+        from bmlibrarian.qa.document_qa import (
+            FALLBACK_USER_DECLINED,
+            FALLBACK_PROXY_FAILED,
+            FALLBACK_NO_PROXY_CONFIGURED,
+            FALLBACK_OPEN_ACCESS_FAILED,
+            FALLBACK_NO_FULLTEXT_CHUNKS,
+            FALLBACK_CALLBACK_TIMEOUT,
+        )
+
+        assert FALLBACK_USER_DECLINED == "user_declined"
+        assert FALLBACK_PROXY_FAILED == "proxy_download_failed"
+        assert FALLBACK_NO_PROXY_CONFIGURED == "no_proxy_configured"
+        assert FALLBACK_OPEN_ACCESS_FAILED == "open_access_failed"
+        assert FALLBACK_NO_FULLTEXT_CHUNKS == "no_fulltext_chunks"
+        assert FALLBACK_CALLBACK_TIMEOUT == "callback_timeout"
 
 
 if __name__ == "__main__":

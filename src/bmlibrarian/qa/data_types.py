@@ -44,6 +44,7 @@ class QAError(Enum):
     CONFIGURATION_ERROR = "configuration_error"
     PROXY_REQUIRED = "proxy_required"
     USER_CANCELLED = "user_cancelled"
+    PROXY_DOWNLOAD_FAILED = "proxy_download_failed"
 
     @property
     def description(self) -> str:
@@ -60,6 +61,7 @@ class QAError(Enum):
             QAError.CONFIGURATION_ERROR: "Configuration is invalid or missing required settings",
             QAError.PROXY_REQUIRED: "PDF requires institutional access; proxy authentication needed",
             QAError.USER_CANCELLED: "User declined to provide PDF or authorize proxy access",
+            QAError.PROXY_DOWNLOAD_FAILED: "Proxy download was attempted but failed",
         }
         return descriptions.get(self, "Unknown error")
 
@@ -187,6 +189,8 @@ class SemanticSearchAnswer:
         document_id: The document that was queried.
         question: The original question asked.
         confidence: Optional confidence score (0.0 to 1.0) if model provides it.
+        fallback_reason: If abstract was used instead of full-text, explains why
+            (e.g., "user_declined", "proxy_failed", "no_proxy_configured").
     """
 
     answer: str
@@ -199,6 +203,7 @@ class SemanticSearchAnswer:
     document_id: int = 0
     question: str = ""
     confidence: Optional[float] = None
+    fallback_reason: Optional[str] = None  # Why abstract was used instead of full-text
 
     @property
     def success(self) -> bool:
@@ -236,6 +241,7 @@ class SemanticSearchAnswer:
             "document_id": self.document_id,
             "question": self.question,
             "confidence": self.confidence,
+            "fallback_reason": self.fallback_reason,
             "success": self.success,
         }
 
