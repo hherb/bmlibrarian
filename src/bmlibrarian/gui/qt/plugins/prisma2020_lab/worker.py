@@ -71,13 +71,17 @@ class PRISMA2020AssessmentWorker(QThread):
 
         Emits result_ready signal on success or error_occurred on failure.
         """
-        doc_id = self.document.get('id', 'unknown')
+        doc_id = self.document.get('id')
         logger.info(f"Starting PRISMA 2020 assessment for document {doc_id}")
 
         try:
-            # Step 1: Check document status
-            self.status_update.emit("Checking document status...")
-            status = self.prisma_agent.get_document_text_status(doc_id)
+            # Step 1: Check document status (only if we have a valid document ID)
+            status = None
+            if doc_id is not None and isinstance(doc_id, int):
+                self.status_update.emit("Checking document status...")
+                status = self.prisma_agent.get_document_text_status(doc_id)
+            else:
+                logger.warning(f"Invalid document ID: {doc_id}, skipping status check")
 
             if status:
                 logger.info(

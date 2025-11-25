@@ -48,6 +48,7 @@ SUMMARY_SEPARATOR_WIDTH = 80  # Width of separator lines in formatted summaries
 SEMANTIC_SEARCH_THRESHOLD = 0.5  # Minimum similarity for relevant chunks
 SEMANTIC_SEARCH_MAX_CHUNKS = 5  # Maximum chunks to retrieve per item
 LOW_SCORE_THRESHOLD = 1.0  # Items scoring at or below this may benefit from semantic search
+SEMANTIC_CONTEXT_MAX_CHARS = 4000  # Max characters of context to include in re-assessment prompt
 
 # PRISMA item queries for semantic search
 # Maps PRISMA field names to targeted search queries
@@ -1428,7 +1429,7 @@ Original Score: {original_score}/2.0
 Original Explanation: {original_explanation}
 
 Additional Context from Full Text:
-{additional_context[:4000]}
+{additional_context[:SEMANTIC_CONTEXT_MAX_CHARS]}
 
 INSTRUCTIONS:
 Review the additional context and determine if your original assessment should be updated.
