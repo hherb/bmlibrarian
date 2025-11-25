@@ -100,6 +100,16 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
   - **Note**: PubMed bulk importer now preserves abstract structure and formatting as Markdown (section labels, subscripts, superscripts, emphasis)
+  - `uv run python pmc_bulk_cli.py list --license oa_comm` - List available PMC Open Access packages
+  - `uv run python pmc_bulk_cli.py download --license oa_comm` - Download PMC baseline packages (with PDF + full-text NXML)
+  - `uv run python pmc_bulk_cli.py download --delay 300` - Download with 5-minute delay (polite mode)
+  - `uv run python pmc_bulk_cli.py download --range PMC001xxxxxx` - Download specific PMCID range only
+  - `uv run python pmc_bulk_cli.py extract` - Extract downloaded tar.gz packages
+  - `uv run python pmc_bulk_cli.py import` - Import extracted articles to database
+  - `uv run python pmc_bulk_cli.py sync --license oa_comm` - Full workflow: download + extract + import
+  - `uv run python pmc_bulk_cli.py status` - Show PMC bulk download progress
+  - `uv run python pmc_bulk_cli.py estimate` - Estimate download time and storage requirements
+  - **Note**: PMC bulk importer is designed for offline work with configurable rate limiting (default 2 min between files)
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics

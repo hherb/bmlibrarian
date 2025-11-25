@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 # Default configuration constants
 DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
-DEFAULT_SIMILARITY_THRESHOLD = 0.3
+DEFAULT_SIMILARITY_THRESHOLD = 0.5  # Starting threshold for semantic search
+MIN_SIMILARITY_THRESHOLD = 0.3     # Minimum threshold to try before giving up
+THRESHOLD_DECREMENT = 0.05          # Amount to reduce threshold on each retry
 DEFAULT_MAX_CHUNKS = 5
 DEFAULT_MAX_CONTEXT_LENGTH = 4000
 DEFAULT_SAMPLE_SIZE_CONFLICT_THRESHOLD = 0.2  # 20% difference triggers conflict
@@ -57,13 +59,19 @@ def search_chunks_by_query(
     query: str,
     max_chunks: int = DEFAULT_MAX_CHUNKS,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    min_threshold: float = MIN_SIMILARITY_THRESHOLD,
+    threshold_decrement: float = THRESHOLD_DECREMENT,
 ) -> List[Dict[str, Any]]:
     """
-    Search document chunks using semantic similarity.
+    Search document chunks using semantic similarity with dynamic threshold reduction.
 
     Uses embedding-based search to find chunks most relevant to the query.
     Filters by document_id first, then performs vector search on only
     that document's chunks for efficiency.
+
+    If no results are found at the initial threshold, dynamically reduces
+    the threshold in increments until results are found or min_threshold
+    is reached.
 
     The semantic.chunks table stores embeddings directly with the chunks,
     so we can query them together without joining to a separate embedding table.
@@ -72,7 +80,9 @@ def search_chunks_by_query(
         document_id: Database ID of the document (must be positive)
         query: Natural language query for semantic matching (non-empty)
         max_chunks: Maximum chunks to retrieve (must be positive)
-        similarity_threshold: Minimum similarity score (0.0-1.0)
+        similarity_threshold: Starting similarity score threshold (0.0-1.0)
+        min_threshold: Minimum threshold to try before giving up (0.0-1.0)
+        threshold_decrement: Amount to reduce threshold on each retry
 
     Returns:
         List of chunk dicts with 'chunk_no', 'chunk_text', 'similarity'
@@ -89,47 +99,78 @@ def search_chunks_by_query(
         raise ValueError(f"max_chunks must be positive, got {max_chunks}")
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError(f"similarity_threshold must be 0.0-1.0, got {similarity_threshold}")
+    if not 0.0 <= min_threshold <= 1.0:
+        raise ValueError(f"min_threshold must be 0.0-1.0, got {min_threshold}")
+    if min_threshold > similarity_threshold:
+        min_threshold = similarity_threshold  # Avoid infinite loop
 
-    from ..database import get_db_manager
+    from ...database import get_db_manager
 
     try:
         db_manager = get_db_manager()
 
+        # Try with progressively lower thresholds until we find results
+        current_threshold = similarity_threshold
+
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Generate embedding for the query, then search within document's chunks
-                # semantic.chunks stores embedding directly (not in separate table)
-                # Filter by document_id first for efficiency, then do vector search
-                cur.execute("""
-                    WITH query_embedding AS (
-                        SELECT ollama_embedding(%s) AS embedding
-                    )
-                    SELECT
-                        c.chunk_no,
-                        substr(d.full_text, c.start_pos + 1, c.end_pos - c.start_pos + 1) as chunk_text,
-                        (1 - (c.embedding <=> qe.embedding))::FLOAT AS similarity
-                    FROM semantic.chunks c
-                    JOIN public.document d ON c.document_id = d.id
-                    CROSS JOIN query_embedding qe
-                    WHERE c.document_id = %s
-                      AND (1 - (c.embedding <=> qe.embedding)) >= %s
-                    ORDER BY c.embedding <=> qe.embedding
-                    LIMIT %s
-                """, (query, document_id, similarity_threshold, max_chunks))
+                while current_threshold >= min_threshold:
+                    # Generate embedding for the query, then search within document's chunks
+                    # semantic.chunks stores embedding directly (not in separate table)
+                    # Filter by document_id first for efficiency, then do vector search
+                    cur.execute("""
+                        WITH query_embedding AS (
+                            SELECT ollama_embedding(%s) AS embedding
+                        )
+                        SELECT
+                            c.chunk_no,
+                            substr(d.full_text, c.start_pos + 1, c.end_pos - c.start_pos + 1) as chunk_text,
+                            (1 - (c.embedding <=> qe.embedding))::FLOAT AS similarity
+                        FROM semantic.chunks c
+                        JOIN public.document d ON c.document_id = d.id
+                        CROSS JOIN query_embedding qe
+                        WHERE c.document_id = %s
+                          AND (1 - (c.embedding <=> qe.embedding)) >= %s
+                        ORDER BY c.embedding <=> qe.embedding
+                        LIMIT %s
+                    """, (query, document_id, current_threshold, max_chunks))
 
-                results = []
-                for row in cur.fetchall():
-                    results.append({
-                        'chunk_no': row[0],
-                        'chunk_text': row[1] or '',
-                        'similarity': row[2],
-                    })
+                    results = []
+                    for row in cur.fetchall():
+                        results.append({
+                            'chunk_no': row[0],
+                            'chunk_text': row[1] or '',
+                            'similarity': row[2],
+                        })
 
-                logger.info(
-                    f"Semantic search found {len(results)} relevant chunks "
-                    f"for document {document_id}"
-                )
-                return results
+                    if results:
+                        if current_threshold < similarity_threshold:
+                            logger.info(
+                                f"Semantic search found {len(results)} chunks for document "
+                                f"{document_id} at reduced threshold {current_threshold:.2f} "
+                                f"(started at {similarity_threshold:.2f})"
+                            )
+                        else:
+                            logger.info(
+                                f"Semantic search found {len(results)} relevant chunks "
+                                f"for document {document_id} (threshold: {current_threshold:.2f})"
+                            )
+                        return results
+
+                    # No results, reduce threshold and retry
+                    current_threshold -= threshold_decrement
+                    if current_threshold >= min_threshold:
+                        logger.debug(
+                            f"No chunks at threshold {current_threshold + threshold_decrement:.2f}, "
+                            f"retrying at {current_threshold:.2f}"
+                        )
+
+        # No results even at minimum threshold
+        logger.info(
+            f"Semantic search found 0 relevant chunks for document {document_id} "
+            f"(tried thresholds {similarity_threshold:.2f} to {min_threshold:.2f})"
+        )
+        return []
 
     except Exception as e:
         logger.warning(f"Error in semantic chunk search: {e}")
@@ -164,7 +205,7 @@ def get_all_document_chunks(
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
 
-    from ..database import get_db_manager
+    from ...database import get_db_manager
 
     try:
         db_manager = get_db_manager()
@@ -310,6 +351,7 @@ def validate_study_type_extraction(
     dimension_score: DimensionScore,
     llm_client: Any,
     model: str,
+    fallback_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> ValidationResult:
     """
     Validate study type extraction using LLM with semantic search context.
@@ -319,6 +361,7 @@ def validate_study_type_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: Ollama client instance
         model: LLM model name to use
+        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
     Returns:
         ValidationResult with validation details and conflict flags
@@ -347,8 +390,13 @@ def validate_study_type_extraction(
     )
 
     if not chunks:
-        # Fall back to getting first few chunks
+        # Fall back to getting first few chunks from database
         chunks = get_all_document_chunks(document_id, limit=5)
+
+    if not chunks and fallback_chunks:
+        # Use provided fallback chunks (e.g., synthetic chunks from full_text)
+        chunks = fallback_chunks
+        logger.info(f"Using {len(chunks)} fallback chunks for study type validation")
 
     if not chunks:
         result.reasoning = "No document chunks available for validation"
@@ -419,6 +467,7 @@ def validate_sample_size_extraction(
     dimension_score: DimensionScore,
     llm_client: Any,
     model: str,
+    fallback_chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> ValidationResult:
     """
     Validate sample size extraction using LLM with semantic search context.
@@ -428,6 +477,7 @@ def validate_sample_size_extraction(
         dimension_score: DimensionScore from rule-based extraction
         llm_client: Ollama client instance
         model: LLM model name to use
+        fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
     Returns:
         ValidationResult with validation details and conflict flags
@@ -462,6 +512,11 @@ def validate_sample_size_extraction(
     if not chunks:
         # Fall back to getting first few chunks (methods section usually early)
         chunks = get_all_document_chunks(document_id, limit=5)
+
+    if not chunks and fallback_chunks:
+        # Use provided fallback chunks (e.g., synthetic chunks from full_text)
+        chunks = fallback_chunks
+        logger.info(f"Using {len(chunks)} fallback chunks for sample size validation")
 
     if not chunks:
         result.reasoning = "No document chunks available for validation"
@@ -629,4 +684,8 @@ __all__ = [
     'validate_study_type_extraction',
     'validate_sample_size_extraction',
     'add_validation_to_dimension_score',
+    'DEFAULT_EMBEDDING_MODEL',
+    'DEFAULT_SIMILARITY_THRESHOLD',
+    'MIN_SIMILARITY_THRESHOLD',
+    'THRESHOLD_DECREMENT',
 ]

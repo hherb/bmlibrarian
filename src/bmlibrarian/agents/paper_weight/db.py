@@ -482,7 +482,8 @@ def semantic_search_documents(
         threshold: Similarity threshold (0.0 to 1.0, higher = more similar)
 
     Returns:
-        List of document dictionaries with id, title, pmid, doi, year, similarity
+        List of document dictionaries with id, title, pmid, doi, year, similarity,
+        has_pdf, has_full_text, pdf_filename
     """
     try:
         db_manager = get_db_manager()
@@ -495,7 +496,11 @@ def semantic_search_documents(
                         CASE WHEN d.source_id = %s THEN d.external_id ELSE NULL END as pmid,
                         d.doi,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
-                        s.score as similarity
+                        s.score as similarity,
+                        d.pdf_filename IS NOT NULL AND d.pdf_filename != '' as has_pdf,
+                        d.full_text IS NOT NULL AND d.full_text != '' as has_full_text,
+                        d.pdf_filename,
+                        d.pdf_url
                     FROM semantic_docsearch(%s, %s, %s) s
                     JOIN public.document d ON s.document_id = d.id
                     ORDER BY s.score DESC
@@ -509,7 +514,11 @@ def semantic_search_documents(
                         'pmid': row[2],
                         'doi': row[3],
                         'year': row[4],
-                        'similarity': float(row[5]) if row[5] else None
+                        'similarity': float(row[5]) if row[5] else None,
+                        'has_pdf': bool(row[6]),
+                        'has_full_text': bool(row[7]),
+                        'pdf_filename': row[8],
+                        'pdf_url': row[9],
                     }
                     for row in rows
                 ]
@@ -531,35 +540,43 @@ def search_documents(
         limit: Maximum number of results to return
 
     Returns:
-        List of document dictionaries with id, title, pmid, doi, year
+        List of document dictionaries with id, title, pmid, doi, year,
+        has_pdf, has_full_text, pdf_filename, pdf_url
     """
     try:
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
+                # Common SELECT columns
+                select_cols = """
+                    id, title, external_id as pmid, doi,
+                    EXTRACT(YEAR FROM publication_date)::INTEGER as year,
+                    pdf_filename IS NOT NULL AND pdf_filename != '' as has_pdf,
+                    full_text IS NOT NULL AND full_text != '' as has_full_text,
+                    pdf_filename,
+                    pdf_url
+                """
+
                 # Try PMID first (numeric) - stored in external_id column
                 if query.isdigit():
-                    cur.execute("""
-                        SELECT id, title, external_id as pmid, doi,
-                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
+                    cur.execute(f"""
+                        SELECT {select_cols}
                         FROM public.document
                         WHERE external_id = %s
                         LIMIT %s
                     """, (query, limit))
                 # Try DOI pattern
                 elif query.startswith('10.') or '/' in query:
-                    cur.execute("""
-                        SELECT id, title, external_id as pmid, doi,
-                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
+                    cur.execute(f"""
+                        SELECT {select_cols}
                         FROM public.document
                         WHERE doi ILIKE %s
                         LIMIT %s
                     """, (f'%{query}%', limit))
                 # Title search
                 else:
-                    cur.execute("""
-                        SELECT id, title, external_id as pmid, doi,
-                               EXTRACT(YEAR FROM publication_date)::INTEGER as year
+                    cur.execute(f"""
+                        SELECT {select_cols}
                         FROM public.document
                         WHERE title ILIKE %s
                         ORDER BY publication_date DESC NULLS LAST
@@ -573,7 +590,11 @@ def search_documents(
                         'title': row[1],
                         'pmid': row[2],
                         'doi': row[3],
-                        'year': row[4]
+                        'year': row[4],
+                        'has_pdf': bool(row[5]),
+                        'has_full_text': bool(row[6]),
+                        'pdf_filename': row[7],
+                        'pdf_url': row[8],
                     }
                     for row in rows
                 ]
@@ -631,6 +652,47 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
         return []
 
 
+def get_document_for_viewer(document_id: int) -> Optional[Dict]:
+    """
+    Get document data needed for the document viewer tab.
+
+    Includes title, full_text, pdf_filename, and publication_date
+    for resolving PDF path.
+
+    Args:
+        document_id: Database ID of document
+
+    Returns:
+        Document dict with viewer-relevant fields, or None if not found
+    """
+    try:
+        db_manager = get_db_manager()
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        id, title, full_text, pdf_filename,
+                        EXTRACT(YEAR FROM publication_date)::INTEGER as year
+                    FROM public.document
+                    WHERE id = %s
+                """, (document_id,))
+
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'full_text': row[2],
+                        'pdf_filename': row[3],
+                        'year': row[4]
+                    }
+                return None
+
+    except Exception as e:
+        logger.error(f"Error fetching document for viewer: {e}")
+        return None
+
+
 def get_document_metadata(document_id: int) -> Optional[Dict]:
     """
     Get document metadata by ID.
@@ -679,6 +741,7 @@ __all__ = [
     'search_documents',
     'semantic_search_documents',
     'get_recent_assessments',
+    'get_document_for_viewer',
     'get_document_metadata',
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',

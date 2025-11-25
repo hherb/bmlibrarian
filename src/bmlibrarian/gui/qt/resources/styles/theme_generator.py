@@ -357,15 +357,17 @@ QFrame#CitationCard QTextEdit {{
     font-size: {s['font_small']}pt;
 }}
 
-/* PDF Buttons */
+/* PDF Buttons - compact sizing to match Find PDF button */
+/* All dimensions are DPI-scaled via get_font_scale() */
 QPushButton#pdf_view_button {{
     background-color: #1976D2;
     color: white;
     border: none;
-    padding: {s['padding_small']}px {s['padding_medium']}px;
+    padding: {s['padding_tiny']}px {s['padding_small']}px;
     border-radius: {s['radius_small']}px;
     font-weight: bold;
-    min-height: {s['control_height_large']}px;
+    min-height: {s['control_height_small']}px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 
@@ -377,10 +379,11 @@ QPushButton#pdf_fetch_button {{
     background-color: #F57C00;
     color: white;
     border: none;
-    padding: {s['padding_small']}px {s['padding_medium']}px;
+    padding: {s['padding_tiny']}px {s['padding_small']}px;
     border-radius: {s['radius_small']}px;
     font-weight: bold;
-    min-height: {s['control_height_large']}px;
+    min-height: {s['control_height_small']}px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 
@@ -392,10 +395,11 @@ QPushButton#pdf_upload_button {{
     background-color: #388E3C;
     color: white;
     border: none;
-    padding: {s['padding_small']}px {s['padding_medium']}px;
+    padding: {s['padding_tiny']}px {s['padding_small']}px;
     border-radius: {s['radius_small']}px;
     font-weight: bold;
-    min-height: {s['control_height_large']}px;
+    min-height: {s['control_height_small']}px;
+    max-height: {s['control_height_small']}px;
     font-size: {s['font_normal']}pt;
 }}
 

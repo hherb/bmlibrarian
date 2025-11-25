@@ -18,20 +18,32 @@ Database Functions:
 - search_documents: Search documents by text query
 - semantic_search_documents: Search documents by semantic similarity
 
-Extractors:
-- extract_study_type: Extract study design type from document
-- extract_sample_size_dimension: Extract sample size information
+LLM-First Extractors (Default - Recommended):
+- extract_study_type_llm: Extract study type using semantic search + LLM
+- extract_sample_size_llm: Extract sample size using semantic search + LLM
+- ensure_document_embeddings: Create embeddings if full_text exists but no chunks
+
+Legacy Extractors (Keyword/Regex-based):
+- extract_study_type: Extract study design type via keyword matching
+- extract_sample_size_dimension: Extract sample size via regex patterns
 - find_sample_size: Find sample size values in text
 
-Validators:
-- validate_study_type_extraction: Validate extracted study type against text
-- validate_sample_size_extraction: Validate extracted sample size
+Validators (for legacy mode):
+- validate_study_type_extraction: LLM validation of keyword extraction
+- validate_sample_size_extraction: LLM validation of regex extraction
 
 LLM Assessors:
 - calculate_methodological_quality_score: Calculate MQ from extracted components
 - calculate_risk_of_bias_score: Calculate RoB from extracted components
 - extract_mq_from_study_assessment: Extract MQ using LLM
 - extract_rob_from_study_assessment: Extract RoB using LLM
+
+Note:
+    The default workflow (use_llm_extraction=True) uses LLM-first extraction
+    with semantic search. This is more reliable than keyword matching because
+    it understands context (e.g., "mentions systematic review" vs "IS a
+    systematic review"). The legacy mode is available by setting
+    use_llm_extraction=False in assess_paper().
 """
 
 # Models - data structures
@@ -64,6 +76,7 @@ from .db import (
     search_documents,
     semantic_search_documents,
     get_recent_assessments,
+    get_document_for_viewer,
     get_document_metadata,
     SEARCH_RESULT_LIMIT,
     RECENT_ASSESSMENTS_LIMIT,
@@ -97,6 +110,8 @@ from .validators import (
     get_all_document_chunks,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_SIMILARITY_THRESHOLD,
+    MIN_SIMILARITY_THRESHOLD,
+    THRESHOLD_DECREMENT,
 )
 
 # LLM Assessors - AI-based assessment
@@ -114,6 +129,13 @@ from .llm_assessors import (
 from .prompts import (
     build_methodological_quality_prompt,
     build_risk_of_bias_prompt,
+)
+
+# LLM-first extractors - semantic search + LLM extraction
+from .llm_extractors import (
+    extract_study_type_llm,
+    extract_sample_size_llm,
+    ensure_document_embeddings,
 )
 
 __all__ = [
@@ -140,6 +162,7 @@ __all__ = [
     "search_documents",
     "semantic_search_documents",
     "get_recent_assessments",
+    "get_document_for_viewer",
     "get_document_metadata",
     "SEARCH_RESULT_LIMIT",
     "RECENT_ASSESSMENTS_LIMIT",
@@ -167,6 +190,8 @@ __all__ = [
     "get_all_document_chunks",
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_SIMILARITY_THRESHOLD",
+    "MIN_SIMILARITY_THRESHOLD",
+    "THRESHOLD_DECREMENT",
     # LLM Assessors
     "calculate_methodological_quality_score",
     "calculate_risk_of_bias_score",
@@ -178,4 +203,8 @@ __all__ = [
     # Prompts
     "build_methodological_quality_prompt",
     "build_risk_of_bias_prompt",
+    # LLM-first extractors
+    "extract_study_type_llm",
+    "extract_sample_size_llm",
+    "ensure_document_embeddings",
 ]

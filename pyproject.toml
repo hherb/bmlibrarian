@@ -34,6 +34,8 @@ dependencies = [
     "pymupdf-layout>=1.26.6",
     "opencv-python>=4.11.0.86",
     "marker-pdf>=1.10.1",
+    "llama-cpp-python>=0.3.16",
+    "sentence-transformers>=5.1.2",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +55,7 @@ dev-dependencies = [
     "pytest>=7.0",
     "pytest-mock>=3.10",
     "pytest-cov>=4.0",
+    "pygments>=2.19.2",
 ]
 
 [tool.pytest.ini_options]

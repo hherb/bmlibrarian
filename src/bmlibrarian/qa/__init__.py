@@ -36,6 +36,8 @@ from .data_types import (
     ChunkContext,
     SemanticSearchAnswer,
     DocumentTextStatus,
+    ProxyCallbackResult,
+    ProxyCallback,
 )
 from .document_qa import answer_from_document
 
@@ -45,5 +47,7 @@ __all__ = [
     "ChunkContext",
     "SemanticSearchAnswer",
     "DocumentTextStatus",
+    "ProxyCallbackResult",
+    "ProxyCallback",
     "answer_from_document",
 ]

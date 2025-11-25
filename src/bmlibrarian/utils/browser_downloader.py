@@ -154,6 +154,13 @@ class BrowserDownloader:
 
             logger.info(f"Navigating to: {url}")
 
+            # For URLs ending in .pdf, try direct fetch first (some sites like PMC
+            # block navigation but allow fetch from a page context)
+            if url.lower().endswith('.pdf'):
+                result = await self._try_direct_fetch(page, url, save_path)
+                if result:
+                    return result
+
             # Navigate to URL - don't expect download by default (most sites use PDF viewers)
             response = None
             try:
@@ -379,6 +386,122 @@ class BrowserDownloader:
                 await page.close()
             if context:
                 await context.close()
+
+    async def _try_direct_fetch(
+        self,
+        page,
+        url: str,
+        save_path: Path
+    ) -> Optional[Dict[str, Any]]:
+        """Try to fetch PDF directly, handling PMC PoW challenges.
+
+        PMC uses a Proof of Work (PoW) challenge that requires:
+        1. First navigation to trigger the PoW JavaScript
+        2. Waiting for the challenge to complete and set a cookie
+        3. Second navigation to download the actual PDF
+
+        This method handles both PMC-style PoW challenges and other sites
+        that may serve PDFs directly.
+
+        Args:
+            page: Playwright page object
+            url: PDF URL to fetch
+            save_path: Path to save the PDF
+
+        Returns:
+            Success result dict if PDF downloaded, None to try other methods
+        """
+        import asyncio
+
+        # Set up download handler to capture downloads
+        download_captured = None
+
+        def handle_download(download):
+            nonlocal download_captured
+            download_captured = download
+            logger.info(f"Download event: {download.suggested_filename}")
+
+        page.on('download', handle_download)
+
+        try:
+            logger.info(f"Trying direct fetch for PDF: {url}")
+
+            # First navigation - may trigger PoW challenge for PMC
+            try:
+                response = await page.goto(url, wait_until='load', timeout=self.timeout)
+
+                # Check if we got a PDF directly
+                if response:
+                    content_type = response.headers.get('content-type', '').lower()
+                    if 'application/pdf' in content_type:
+                        pdf_content = await response.body()
+                        if pdf_content and pdf_content[:4] == b'%PDF':
+                            save_path.write_bytes(pdf_content)
+                            logger.info(f"PDF downloaded directly ({len(pdf_content)} bytes)")
+                            return {
+                                'status': 'success',
+                                'path': str(save_path),
+                                'size': len(pdf_content)
+                            }
+            except Exception as nav_error:
+                if 'Download is starting' in str(nav_error):
+                    # Download triggered during navigation, wait for it
+                    await asyncio.sleep(2)
+                    if download_captured:
+                        await download_captured.save_as(save_path)
+                        size = save_path.stat().st_size if save_path.exists() else 0
+                        return {
+                            'status': 'success',
+                            'path': str(save_path),
+                            'size': size
+                        }
+                else:
+                    logger.debug(f"Navigation error: {nav_error}")
+
+            # Wait for potential PoW challenge to complete
+            await asyncio.sleep(3)
+
+            # Check for PoW cookie (PMC uses 'cloudpmc-viewer-pow')
+            context = page.context
+            cookies = await context.cookies()
+            has_pow_cookie = any('pow' in c.get('name', '').lower() for c in cookies)
+
+            if has_pow_cookie:
+                logger.info("PoW cookie found, attempting second navigation")
+
+                # Second navigation should trigger the actual download
+                try:
+                    await page.goto(url, wait_until='commit', timeout=self.timeout)
+                except Exception as e:
+                    if 'Download is starting' not in str(e):
+                        logger.debug(f"Second navigation error: {e}")
+
+                # Wait for download handler to capture the file
+                await asyncio.sleep(2)
+
+                if download_captured:
+                    await download_captured.save_as(save_path)
+                    size = save_path.stat().st_size if save_path.exists() else 0
+
+                    # Verify it's a PDF
+                    if save_path.exists() and size > 0:
+                        with open(save_path, 'rb') as f:
+                            header = f.read(4)
+                        if header == b'%PDF':
+                            logger.info(f"PDF downloaded via PoW challenge ({size} bytes)")
+                            return {
+                                'status': 'success',
+                                'path': str(save_path),
+                                'size': size
+                            }
+
+        except Exception as e:
+            logger.debug(f"Direct fetch exception: {e}")
+        finally:
+            # Remove the download handler
+            page.remove_listener('download', handle_download)
+
+        return None
 
     async def _wait_for_cloudflare(self, page, max_wait: int):
         """Wait for Cloudflare verification to complete.

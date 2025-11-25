@@ -79,6 +79,7 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 TAB_INDEX_SEARCH = 0
 TAB_INDEX_PDF_UPLOAD = 1
 TAB_INDEX_RESULTS = 2
+TAB_INDEX_DOCUMENT_VIEWER = 3
 
 
 # =============================================================================
@@ -158,6 +159,7 @@ __all__ = [
     'TAB_INDEX_SEARCH',
     'TAB_INDEX_PDF_UPLOAD',
     'TAB_INDEX_RESULTS',
+    'TAB_INDEX_DOCUMENT_VIEWER',
     # Source
     'SOURCE_ID_OTHER',
     # Document Matching

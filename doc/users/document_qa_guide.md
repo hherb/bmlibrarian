@@ -43,7 +43,8 @@ else:
 | `question` | str | required | The question to answer |
 | `use_fulltext` | bool | True | Prefer full-text over abstract when available |
 | `download_missing_fulltext` | bool | True | Attempt to download PDFs if full-text is missing |
-| `use_proxy` | bool | True | Use OpenAthens proxy for paywalled content |
+| `always_allow_proxy` | bool | False | Auto-use OpenAthens proxy without user consent |
+| `proxy_callback` | ProxyCallback | None | Callback for user consent when proxy is needed |
 | `model` | str | None | LLM model for answer generation (uses config if None) |
 | `max_chunks` | int | 5 | Maximum context chunks to use |
 | `similarity_threshold` | float | 0.7 | Minimum semantic similarity (0.0-1.0) |
@@ -95,6 +96,8 @@ The `QAError` enum provides structured error codes:
 | `LLM_ERROR` | Error during LLM inference |
 | `DATABASE_ERROR` | Database operation failed |
 | `CONFIGURATION_ERROR` | Invalid configuration |
+| `PROXY_REQUIRED` | PDF requires institutional access via proxy |
+| `USER_CANCELLED` | User declined proxy access or PDF upload |
 
 ## Configuration
 
@@ -114,7 +117,7 @@ Configure the document Q&A settings in `~/.bmlibrarian/config.json`:
       "similarity_threshold": 0.7,
       "use_fulltext": true,
       "download_missing_fulltext": true,
-      "use_proxy": true,
+      "always_allow_proxy": false,
       "use_thinking": true,
       "embedding_model": "snowflake-arctic-embed2:latest"
     }
@@ -210,6 +213,211 @@ if result.reasoning:
     print(result.reasoning)
     print("\nFinal answer:")
     print(result.answer)
+```
+
+## Proxy Callback for User Consent
+
+When a PDF is not available via open-access sources, you can use the `proxy_callback` parameter to let users decide whether to:
+
+1. **Upload a PDF manually** (e.g., via file picker in a GUI)
+2. **Use institutional proxy** (OpenAthens) to download the paywalled PDF
+3. **Skip** and fall back to abstract only
+
+### ProxyCallbackResult
+
+The callback must return a `ProxyCallbackResult` dataclass:
+
+```python
+from bmlibrarian.qa import ProxyCallbackResult
+
+@dataclass
+class ProxyCallbackResult:
+    pdf_made_available: bool = False  # User uploaded PDF externally
+    allow_proxy: bool = False         # User consents to proxy download
+```
+
+### Callback Signature
+
+```python
+from typing import Optional
+from bmlibrarian.qa import ProxyCallbackResult
+
+def my_callback(document_id: int, title: Optional[str]) -> ProxyCallbackResult:
+    """
+    Called when PDF is not available via open access.
+
+    Args:
+        document_id: Database ID of the document
+        title: Document title (for display to user)
+
+    Returns:
+        ProxyCallbackResult indicating user's choice
+    """
+    ...
+```
+
+### CLI Callback Example
+
+```python
+from bmlibrarian.qa import answer_from_document, ProxyCallbackResult
+
+def cli_proxy_callback(document_id: int, title: str | None) -> ProxyCallbackResult:
+    """Interactive CLI callback for proxy consent."""
+    print(f"\nPDF not available for: {title or f'Document {document_id}'}")
+    print("Options:")
+    print("  1. Upload PDF manually (then press Enter)")
+    print("  2. Try institutional proxy (OpenAthens)")
+    print("  3. Skip (use abstract only)")
+
+    choice = input("Choice [1/2/3]: ").strip()
+
+    if choice == "1":
+        input("Press Enter after uploading PDF...")
+        return ProxyCallbackResult(pdf_made_available=True)
+    elif choice == "2":
+        return ProxyCallbackResult(allow_proxy=True)
+    else:
+        return ProxyCallbackResult()
+
+# Use with callback
+result = answer_from_document(
+    document_id=12345,
+    question="What are the main findings?",
+    proxy_callback=cli_proxy_callback
+)
+```
+
+### GUI Callback Example (PySide6/Qt)
+
+```python
+from PySide6.QtWidgets import QMessageBox, QFileDialog
+from bmlibrarian.qa import answer_from_document, ProxyCallbackResult
+
+def create_gui_proxy_callback(parent_widget):
+    """Create a GUI callback for proxy consent dialog."""
+
+    def gui_callback(document_id: int, title: str | None) -> ProxyCallbackResult:
+        dialog = QMessageBox(parent_widget)
+        dialog.setWindowTitle("PDF Not Available")
+        dialog.setText(f"Full text not available for:\n{title or f'Document {document_id}'}")
+        dialog.setInformativeText("How would you like to proceed?")
+
+        upload_btn = dialog.addButton("Upload PDF", QMessageBox.ActionRole)
+        proxy_btn = dialog.addButton("Use Proxy", QMessageBox.ActionRole)
+        skip_btn = dialog.addButton("Skip", QMessageBox.RejectRole)
+
+        dialog.exec()
+
+        if dialog.clickedButton() == upload_btn:
+            file_path, _ = QFileDialog.getOpenFileName(
+                parent_widget, "Select PDF", "", "PDF Files (*.pdf)"
+            )
+            if file_path:
+                # Here the GUI would handle PDF upload/embedding
+                # (Call your PDF import function)
+                return ProxyCallbackResult(pdf_made_available=True)
+        elif dialog.clickedButton() == proxy_btn:
+            return ProxyCallbackResult(allow_proxy=True)
+
+        return ProxyCallbackResult()
+
+    return gui_callback
+
+# Usage in GUI
+callback = create_gui_proxy_callback(main_window)
+result = answer_from_document(
+    document_id=12345,
+    question="What methodology was used?",
+    proxy_callback=callback
+)
+```
+
+### Auto-Allow Proxy (No User Consent)
+
+For batch processing or when user has pre-consented:
+
+```python
+result = answer_from_document(
+    document_id=12345,
+    question="What are the findings?",
+    always_allow_proxy=True  # Auto-use proxy without callback
+)
+```
+
+### Callback Timeout (Programmatic Use)
+
+For programmatic use where callbacks might hang indefinitely, you can set a timeout:
+
+```python
+result = answer_from_document(
+    document_id=12345,
+    question="What are the findings?",
+    proxy_callback=my_callback,
+    proxy_callback_timeout=30.0  # Timeout after 30 seconds
+)
+```
+
+The default timeout is 300 seconds (5 minutes). If the callback times out, the system
+falls back to using the abstract with `fallback_reason="callback_timeout"`.
+
+### Understanding Fallback Reasons
+
+When full-text isn't available and the system falls back to using the abstract, the
+`fallback_reason` field in `SemanticSearchAnswer` explains why:
+
+| Fallback Reason | Description |
+|-----------------|-------------|
+| `user_declined` | User declined to authorize proxy or upload PDF |
+| `proxy_download_failed` | Proxy was authorized but download failed |
+| `no_proxy_configured` | No callback provided and `always_allow_proxy=False` |
+| `open_access_failed` | Open-access download failed (before proxy attempt) |
+| `callback_timeout` | Proxy callback timed out |
+| `no_fulltext_chunks` | Full-text exists but embedding/chunking failed |
+
+Example usage:
+
+```python
+result = answer_from_document(document_id=123, question="What are the findings?")
+
+if result.source == AnswerSource.ABSTRACT and result.fallback_reason:
+    print(f"Using abstract because: {result.fallback_reason}")
+    if result.fallback_reason == "user_declined":
+        print("User chose not to use institutional proxy")
+    elif result.fallback_reason == "proxy_download_failed":
+        print("Proxy was authorized but download failed - check OpenAthens config")
+```
+
+### Proxy Flow Diagram
+
+```
+answer_from_document()
+        │
+        ▼
+┌─────────────────────────┐
+│ Try Open Access Sources │
+│ (PMC, Unpaywall, DOI)   │
+└───────────┬─────────────┘
+            │ Failed
+            ▼
+┌─────────────────────────────────────┐
+│ always_allow_proxy=True?            │
+├──────────────┬──────────────────────┤
+│     Yes      │         No           │
+│      │       │          │           │
+│      │       │ proxy_callback set?  │
+│      │       ├──────┬───────────────┤
+│      │       │  Yes │       No      │
+│      ▼       │      ▼               │
+│  Use Proxy   │ Invoke callback      │
+│              │      │               │
+│              │      ▼               │
+│              │ ┌─────────────────┐  │
+│              │ │ User's Choice:  │  │
+│              │ │ pdf_made_avail? │──┤─→ Refresh & continue
+│              │ │ allow_proxy?    │──┤─→ Use Proxy
+│              │ │ (neither)       │──┤─→ Fallback to abstract
+│              │ └─────────────────┘  │
+└──────────────┴──────────────────────┘
 ```
 
 ## Examples

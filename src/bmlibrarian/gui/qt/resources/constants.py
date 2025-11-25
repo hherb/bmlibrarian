@@ -3,6 +3,10 @@ Constants for Qt GUI styling and configuration.
 
 This module defines all magic numbers, colors, and styling constants used
 throughout the Qt GUI to ensure consistency and maintainability.
+
+Note: Size constants in this module are FALLBACK values only. They are used
+when the DPI scaler is not yet initialized (e.g., during early import).
+Actual runtime values should be obtained from dpi_scale.py via get_font_scale().
 """
 
 from typing import Final
@@ -22,6 +26,13 @@ class PDFButtonColors:
 
     UPLOAD_BG: Final[str] = "#388E3C"  # Green - Upload manual
     UPLOAD_BG_HOVER: Final[str] = "#2E7D32"  # Darker green
+
+    FIND_BG: Final[str] = "#8e44ad"  # Purple - Find PDF via discovery
+    FIND_BG_HOVER: Final[str] = "#9b59b6"  # Lighter purple
+    FIND_BG_PRESSED: Final[str] = "#7d3c98"  # Darker purple
+
+    DISABLED_BG: Final[str] = "#bdc3c7"  # Gray - Disabled state
+    DISABLED_TEXT: Final[str] = "#7f8c8d"  # Muted gray text
 
     TEXT_COLOR: Final[str] = "white"
 
@@ -75,11 +86,23 @@ class DocumentCardColors:
 # ============================================================================
 
 class ButtonSizes:
-    """Size constants for buttons."""
-    MIN_HEIGHT: Final[int] = 30  # Minimum button height in pixels (reduced for compact design)
-    PADDING_HORIZONTAL: Final[int] = 10  # Horizontal padding in pixels
-    PADDING_VERTICAL: Final[int] = 5  # Vertical padding in pixels (reduced for compact design)
-    BORDER_RADIUS: Final[int] = 4  # Border radius in pixels
+    """
+    Fallback size constants for buttons.
+
+    WARNING: These are FALLBACK values only for use when DPI scaler is unavailable.
+    For actual runtime values, use get_font_scale() from dpi_scale.py:
+        - MIN_HEIGHT -> s['control_height_small']
+        - MIN_WIDTH -> s['control_width_small']
+        - PADDING_HORIZONTAL -> s['padding_small']
+        - PADDING_VERTICAL -> s['padding_tiny']
+        - BORDER_RADIUS -> s['radius_small']
+    """
+    # Fallback values (assumed 96 DPI / 10pt font / ~16px line height)
+    MIN_HEIGHT: Final[int] = 24  # Fallback: use s['control_height_small'] at runtime
+    MIN_WIDTH: Final[int] = 100  # Fallback: use s['control_width_small'] at runtime
+    PADDING_HORIZONTAL: Final[int] = 8  # Fallback: use s['padding_small'] at runtime
+    PADDING_VERTICAL: Final[int] = 4  # Fallback: use s['padding_tiny'] at runtime
+    BORDER_RADIUS: Final[int] = 4  # Fallback: use s['radius_small'] at runtime
 
 
 class LayoutSpacing:
@@ -120,6 +143,7 @@ class PDFOperationSettings:
     RETRY_ATTEMPTS: Final[int] = 3  # Number of retry attempts for failed operations
     RETRY_DELAY_MS: Final[int] = 1000  # Delay between retries in milliseconds
     DOWNLOAD_TIMEOUT_SECONDS: Final[int] = 30  # Timeout for PDF downloads
+    BUTTON_RESET_DELAY_MS: Final[int] = 3000  # Delay before resetting Find PDF button after failure
 
 
 # ============================================================================

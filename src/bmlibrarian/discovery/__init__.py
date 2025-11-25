@@ -60,13 +60,36 @@ from .resolvers import (
     DOIResolver,
     PMCResolver,
     UnpaywallResolver,
-    OpenAthensResolver
+    OpenAthensResolver,
+    CrossRefTitleResolver
 )
 
 from .full_text_finder import (
     FullTextFinder,
     discover_full_text,
     download_pdf_for_document
+)
+
+from .pmc_package_downloader import (
+    PMCPackageDownloader,
+    NXMLParser,
+    download_pmc_package
+)
+
+from .pdf_verifier import (
+    PDFVerifier,
+    PDFIdentifiers,
+    PDFValidityResult,
+    VerificationResult,
+    verify_downloaded_pdf
+)
+
+from .download_logger import (
+    log_download_to_database,
+    log_download_with_verification,
+    get_download_history,
+    get_mismatched_downloads,
+    check_migration_applied
 )
 
 __all__ = [
@@ -86,9 +109,25 @@ __all__ = [
     'PMCResolver',
     'UnpaywallResolver',
     'OpenAthensResolver',
+    'CrossRefTitleResolver',
     # Main classes
     'FullTextFinder',
+    'PMCPackageDownloader',
+    'NXMLParser',
     # Convenience functions
     'discover_full_text',
     'download_pdf_for_document',
+    'download_pmc_package',
+    # PDF verification
+    'PDFVerifier',
+    'PDFIdentifiers',
+    'PDFValidityResult',
+    'VerificationResult',
+    'verify_downloaded_pdf',
+    # Download logging
+    'log_download_to_database',
+    'log_download_with_verification',
+    'get_download_history',
+    'get_mismatched_downloads',
+    'check_migration_applied',
 ]

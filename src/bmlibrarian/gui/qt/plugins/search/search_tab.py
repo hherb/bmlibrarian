@@ -758,18 +758,24 @@ class SearchTabWidget(QWidget):
 
         # Add new results as collapsible cards (collapsed by default)
         for doc in results:
+            # Extract year from year field or publication_date
+            doc_year = extract_year_from_value(doc.get('year'))
+            if doc_year is None:
+                doc_year = extract_year_from_value(doc.get('publication_date'))
+
             # Prepare card data
             card_data = DocumentCardData(
                 doc_id=doc.get('id') or doc.get('document_id', 0),
                 title=doc.get('title', 'Untitled'),
                 abstract=doc.get('abstract'),
                 authors=doc.get('authors', []),
-                year=doc.get('year'),
+                year=doc_year,
                 journal=doc.get('journal'),
                 pmid=doc.get('pmid'),
                 doi=doc.get('doi'),
                 source=doc.get('source'),
                 relevance_score=doc.get('_combined_score') or doc.get('relevance_score'),
+                pdf_url=doc.get('pdf_url'),
                 context=CardContext.SEARCH,
                 show_pdf_button=True,
                 expanded_by_default=False

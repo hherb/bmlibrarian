@@ -70,6 +70,14 @@ from .validators import (
     validate_sample_size_extraction,
     add_validation_to_dimension_score,
     get_all_document_chunks,
+    search_chunks_by_query,
+)
+
+# Import LLM-first extractors
+from .llm_extractors import (
+    extract_study_type_llm,
+    extract_sample_size_llm,
+    ensure_document_embeddings,
 )
 
 if TYPE_CHECKING:
@@ -392,17 +400,21 @@ class PaperWeightAssessmentAgent(BaseAgent):
         document_id: int,
         study_design_score: DimensionScore,
         sample_size_score: DimensionScore,
+        document: Optional[dict] = None,
     ) -> List[str]:
         """
-        Validate rule-based extractions using LLM with semantic search.
+        Validate rule-based extractions using LLM.
 
         Performs LLM validation of study type and sample size extractions
-        against document chunks to detect potential misclassifications.
+        to detect potential misclassifications. Uses semantic chunks when
+        available, but falls back to full_text/abstract when chunks aren't
+        available.
 
         Args:
             document_id: Database ID of the document
             study_design_score: Study design DimensionScore from rule-based extraction
             sample_size_score: Sample size DimensionScore from rule-based extraction
+            document: Optional document dict with 'full_text', 'abstract' fields
 
         Returns:
             List of conflict descriptions (empty if no conflicts)
@@ -413,8 +425,36 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
         # Check if document has chunks available
         chunks = get_all_document_chunks(document_id, limit=5)
+
+        # If no chunks, try to use full_text directly
+        if not chunks and document:
+            full_text = document.get('full_text') or ''
+            abstract = document.get('abstract') or ''
+
+            # Create synthetic "chunks" from full_text or abstract
+            text_to_use = full_text if len(full_text) > len(abstract) else abstract
+
+            if text_to_use:
+                # Split into manageable chunks (roughly 2000 chars each)
+                chunk_size = 2000
+                synthetic_chunks = []
+                for i in range(0, min(len(text_to_use), 10000), chunk_size):
+                    chunk_text = text_to_use[i:i + chunk_size]
+                    if chunk_text.strip():
+                        synthetic_chunks.append({
+                            'chunk_no': i // chunk_size,
+                            'chunk_text': chunk_text,
+                        })
+                if synthetic_chunks:
+                    logger.info(
+                        f"Using {len(synthetic_chunks)} synthetic chunks from "
+                        f"{'full_text' if len(full_text) > len(abstract) else 'abstract'} "
+                        f"for validation of document {document_id}"
+                    )
+                    chunks = synthetic_chunks
+
         if not chunks:
-            logger.debug(f"No chunks available for document {document_id}, skipping validation")
+            logger.debug(f"No chunks or text available for document {document_id}, skipping validation")
             return conflicts
 
         try:
@@ -427,6 +467,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 dimension_score=study_design_score,
                 llm_client=ollama,
                 model=model,
+                fallback_chunks=chunks,
             )
 
             if study_validation.has_conflict:
@@ -440,6 +481,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 # Add validation info to dimension score
                 add_validation_to_dimension_score(study_design_score, study_validation)
+            else:
+                # Even when no conflict, add the validation info for audit trail
+                add_validation_to_dimension_score(study_design_score, study_validation)
 
             # Validate sample size
             sample_validation = validate_sample_size_extraction(
@@ -447,6 +491,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 dimension_score=sample_size_score,
                 llm_client=ollama,
                 model=model,
+                fallback_chunks=chunks,
             )
 
             if sample_validation.has_conflict:
@@ -460,6 +505,9 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 # Add validation info to dimension score
                 add_validation_to_dimension_score(sample_size_score, sample_validation)
+            else:
+                # Even when no conflict, add the validation info for audit trail
+                add_validation_to_dimension_score(sample_size_score, sample_validation)
 
         except Exception as e:
             logger.error(f"Error during extraction validation for document {document_id}: {e}")
@@ -471,7 +519,8 @@ class PaperWeightAssessmentAgent(BaseAgent):
         self,
         document_id: int,
         force_reassess: bool = False,
-        study_assessment: Optional[dict] = None
+        study_assessment: Optional[dict] = None,
+        use_llm_extraction: bool = True,
     ) -> PaperWeightResult:
         """
         Assess paper weight with intelligent caching.
@@ -482,24 +531,33 @@ class PaperWeightAssessmentAgent(BaseAgent):
             document_id: Database ID of document to assess
             force_reassess: If True, skip cache and re-assess
             study_assessment: Optional StudyAssessmentAgent output to leverage
+            use_llm_extraction: If True (default), use LLM-first extraction with
+                               semantic search. If False, use legacy keyword/regex
+                               extraction with LLM validation.
 
         Returns:
             PaperWeightResult with full audit trail
 
-        Workflow:
+        Workflow (LLM-first mode - default):
             1. Check cache (unless force_reassess=True)
             2. If cached and version matches, return cached result
             3. Otherwise, perform full assessment:
                a. Fetch document from database
-               b. Extract study type (rule-based)
-               c. Extract sample size (rule-based)
-               d. Assess methodological quality (LLM)
-               e. Assess risk of bias (LLM)
-               f. Check replication status (database query)
-               g. Compute final weight
-               h. Store in database
+               b. Ensure embeddings exist (create if full_text available but no chunks)
+               c. Extract study type using LLM + semantic search
+               d. Extract sample size using LLM + semantic search
+               e. Assess methodological quality (LLM)
+               f. Assess risk of bias (LLM)
+               g. Check replication status (database query)
+               h. Compute final weight
+               i. Store in database
             4. Return result
+
+        Workflow (legacy mode):
+            Uses keyword/regex extraction with LLM validation fallback.
         """
+        import ollama
+
         try:
             # Check cache
             if not force_reassess:
@@ -513,26 +571,70 @@ class PaperWeightAssessmentAgent(BaseAgent):
             # Fetch document
             document = get_document(document_id)
 
-            # Get config values for extractors
-            keywords_config = self.config.get('study_type_keywords')
+            # Step 1: Ensure embeddings exist if document has full_text
+            # This enables semantic search for LLM-first extraction
+            if use_llm_extraction:
+                has_full_text = bool(document.get('full_text'))
+                if has_full_text:
+                    embeddings_ready = ensure_document_embeddings(
+                        document_id=document_id,
+                        document=document,
+                    )
+                    if embeddings_ready:
+                        logger.info(f"Document {document_id} embeddings ready for semantic search")
+                    else:
+                        logger.info(f"Document {document_id} has full_text but embedding creation failed - will use synthetic chunks")
+
+            # Get config values
             hierarchy_config = self.config.get('study_type_hierarchy')
             scoring_config = self.config.get('sample_size_scoring')
 
-            # Perform assessments
-            study_design_score = extract_study_type(
-                document, keywords_config, hierarchy_config, STUDY_TYPE_PRIORITY
-            )
-            sample_size_score = extract_sample_size_dimension(document, scoring_config)
+            # Step 2: Extract study type and sample size
+            if use_llm_extraction:
+                # LLM-first extraction with semantic search
+                logger.info("Using LLM-first extraction with semantic search")
 
-            # Validate rule-based extractions with LLM if enabled and chunks available
-            validation_conflicts = []
-            if self.config.get('validate_extractions', True):
-                validation_conflicts = self._validate_extractions(
-                    document_id,
-                    study_design_score,
-                    sample_size_score,
+                study_design_score = extract_study_type_llm(
+                    document_id=document_id,
+                    llm_client=ollama,
+                    model=self.model,
+                    document=document,
+                    hierarchy_config=hierarchy_config,
                 )
 
+                sample_size_score = extract_sample_size_llm(
+                    document_id=document_id,
+                    llm_client=ollama,
+                    model=self.model,
+                    document=document,
+                    scoring_config=scoring_config,
+                )
+
+                # No validation conflicts in LLM-first mode (LLM is primary)
+                validation_conflicts = []
+
+            else:
+                # Legacy: keyword/regex extraction with LLM validation
+                logger.info("Using legacy keyword/regex extraction with LLM validation")
+
+                keywords_config = self.config.get('study_type_keywords')
+
+                study_design_score = extract_study_type(
+                    document, keywords_config, hierarchy_config, STUDY_TYPE_PRIORITY
+                )
+                sample_size_score = extract_sample_size_dimension(document, scoring_config)
+
+                # Validate rule-based extractions with LLM if enabled
+                validation_conflicts = []
+                if self.config.get('validate_extractions', True):
+                    validation_conflicts = self._validate_extractions(
+                        document_id,
+                        study_design_score,
+                        sample_size_score,
+                        document=document,
+                    )
+
+            # Step 3: LLM assessments (same for both modes)
             methodological_quality_score = self._assess_methodological_quality(document, study_assessment)
             risk_of_bias_score = self._assess_risk_of_bias(document, study_assessment)
             replication_status_score = check_replication_status(document_id)
@@ -605,7 +707,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Raises:
             FileNotFoundError: If pdf_path provided but file doesn't exist
         """
-        from ..database import get_db_manager
+        from ...database import get_db_manager
 
         try:
             # Step 1: Check if PDF ingestion is needed
@@ -619,7 +721,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
                 logger.info(f"Ingesting PDF for document {document_id}")
 
                 # Import here to avoid circular imports
-                from ..importers.pdf_ingestor import PDFIngestor
+                from ...importers.pdf_ingestor import PDFIngestor
 
                 ingestor = PDFIngestor()
                 ingest_result = ingestor.ingest_pdf_immediate(
@@ -692,7 +794,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Returns:
             List of chunk dicts with 'chunk_no', 'chunk_text', 'start_pos', 'end_pos'
         """
-        from ..database import get_db_manager
+        from ...database import get_db_manager
 
         db_manager = get_db_manager()
 

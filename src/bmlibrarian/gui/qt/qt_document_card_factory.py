@@ -7,10 +7,11 @@ that matches the Flet implementation.
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel,
+    QDialog, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from typing import Optional, Callable, Dict, Any
 from pathlib import Path
@@ -27,7 +28,8 @@ from bmlibrarian.gui.qt.resources.constants import (
     ButtonSizes,
     LayoutSpacing,
     PDFOperationSettings,
-    FileSystemDefaults
+    FileSystemDefaults,
+    PDFButtonColors
 )
 from bmlibrarian.utils.error_messages import format_pdf_download_error
 
@@ -116,12 +118,14 @@ class PDFButtonWidget(QPushButton):
         pdf_viewed: Emitted when PDF is viewed
         pdf_fetched: Emitted when PDF is fetched (returns path)
         pdf_uploaded: Emitted when PDF is uploaded (returns path)
+        pdf_discovered: Emitted when PDF is discovered (returns path)
         error_occurred: Emitted when an error occurs (returns error message)
     """
 
     pdf_viewed = Signal()
     pdf_fetched = Signal(Path)
     pdf_uploaded = Signal(Path)
+    pdf_discovered = Signal(Path)
     error_occurred = Signal(str)
 
     def __init__(self, config: PDFButtonConfig, parent: Optional[QWidget] = None):
@@ -142,31 +146,41 @@ class PDFButtonWidget(QPushButton):
         self.clicked.connect(self._handle_click)
 
     def _update_button_appearance(self):
-        """Update button text and object name for stylesheet styling."""
+        """Update button text and object name for stylesheet styling.
+
+        Relies entirely on centralized stylesheets (theme_generator.py) for sizing
+        and appearance. Object names are used to match the CSS selectors.
+        """
+        # Import DPI scaler for runtime-scaled dimensions
+        from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+
         # Use object names to apply centralized stylesheet styles
         if self.config.state == PDFButtonState.VIEW:
             self.setText("📄 View")
             self.setObjectName("pdf_view_button")
         elif self.config.state == PDFButtonState.FETCH:
-            self.setText("⬇️ Fetch")
+            # Changed from "Fetch" to "Find" - now uses discovery workflow
+            # which searches PMC, Unpaywall, DOI, etc. with content verification
+            self.setText("🔍 Find")
             self.setObjectName("pdf_fetch_button")
         elif self.config.state == PDFButtonState.UPLOAD:
             self.setText("📤 Upload")
             self.setObjectName("pdf_upload_button")
 
-        # Compact sizing - only slightly taller than text
-        self.setFixedHeight(ButtonSizes.MIN_HEIGHT)
+        # Get DPI-scaled dimensions
+        s = get_font_scale()
+
+        # Apply DPI-scaled sizing constraints
+        # Height uses control_height_small for compact buttons
+        # Width uses control_width_small for visual consistency
+        self.setFixedHeight(s['control_height_small'])
+        self.setMinimumWidth(s['control_width_small'])
         self.setCursor(Qt.PointingHandCursor)
 
-        # Apply compact styling directly
-        self.setStyleSheet(f"""
-            QPushButton {{
-                padding: {ButtonSizes.PADDING_VERTICAL}px {ButtonSizes.PADDING_HORIZONTAL}px;
-                border-radius: {ButtonSizes.BORDER_RADIUS}px;
-            }}
-        """)
+        # NO inline stylesheet - rely entirely on centralized theme_generator.py styles
+        # The object names (pdf_view_button, etc.) map to CSS selectors in the theme
 
-        # Force stylesheet refresh
+        # Force stylesheet refresh to pick up centralized styles
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -339,7 +353,13 @@ class PDFButtonWidget(QPushButton):
             raise
 
     def _default_upload_handler(self):
-        """Default upload handler using file dialog."""
+        """
+        Default upload handler using file dialog.
+
+        Note: This method only handles file selection and validation.
+        The actual copying and database update is handled by the factory's
+        upload handler callback (on_upload), which is set in _create_upload_handler.
+        """
         from PySide6.QtWidgets import QFileDialog
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -378,6 +398,194 @@ class PDFButtonWidget(QPushButton):
             self.config.state = PDFButtonState.VIEW
             self._update_button_appearance()
             logger.debug(f"Transitioned to VIEW state for: {pdf_path}")
+
+
+class PDFDiscoveryProgressDialog(QDialog):
+    """
+    Modal dialog showing PDF discovery progress.
+
+    Displays real-time progress through discovery resolvers (PMC, Unpaywall, DOI, etc.)
+    and download status.
+    """
+
+    # Discovery steps with display names
+    RESOLVER_NAMES = {
+        'crossref_title': 'CrossRef Title Search',
+        'pmc': 'PubMed Central',
+        'unpaywall': 'Unpaywall',
+        'doi': 'DOI Resolution',
+        'direct_url': 'Direct URL',
+        'openathens': 'OpenAthens Proxy',
+        'discovery': 'Discovery',
+        'download': 'HTTP Download',
+        'browser_download': 'Browser Download',
+        'ftp_download': 'FTP Download',
+    }
+
+    STATUS_ICONS = {
+        'resolving': '🔍',
+        'starting': '▶️',
+        'found': '✅',
+        'found_oa': '✅',
+        'not_found': '❌',
+        'success': '✅',
+        'failed': '❌',
+        'error': '⚠️',
+        'skipped': '⏭️',
+    }
+
+    def __init__(self, doc_id: int, title: str, parent: Optional[QWidget] = None):
+        """
+        Initialize progress dialog.
+
+        Args:
+            doc_id: Document ID being processed
+            title: Document title for display
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.doc_id = doc_id
+        self.doc_title = title[:60] + "..." if len(title) > 60 else title
+
+        self.setWindowTitle("Finding PDF")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(300)
+
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Setup the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # Title
+        title_label = QLabel(f"Finding PDF for document {self.doc_id}")
+        title_label.setFont(QFont("", 11, QFont.Bold))
+        layout.addWidget(title_label)
+
+        # Document title
+        doc_label = QLabel(self.doc_title)
+        doc_label.setStyleSheet("color: #666; font-style: italic;")
+        doc_label.setWordWrap(True)
+        layout.addWidget(doc_label)
+
+        # Separator
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #ddd;")
+        layout.addWidget(line)
+
+        # Status header
+        status_header = QLabel("Progress:")
+        status_header.setFont(QFont("", 10, QFont.Bold))
+        layout.addWidget(status_header)
+
+        # Progress log area
+        self.progress_container = QVBoxLayout()
+        self.progress_container.setSpacing(4)
+        layout.addLayout(self.progress_container)
+
+        # Stretch to push content up
+        layout.addStretch()
+
+        # Current status label
+        self.status_label = QLabel("Starting discovery...")
+        self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+        layout.addWidget(self.status_label)
+
+        # Store step widgets for updating
+        self._step_widgets: Dict[str, QLabel] = {}
+
+    def add_step(self, step_name: str, status: str) -> None:
+        """
+        Add or update a progress step.
+
+        Args:
+            step_name: Internal name of the step (e.g., 'pmc', 'download')
+            status: Status string (e.g., 'resolving', 'found', 'not_found')
+        """
+        display_name = self.RESOLVER_NAMES.get(step_name, step_name.title())
+        icon = self.STATUS_ICONS.get(status, '•')
+
+        # Color based on status
+        if status in ('found', 'found_oa', 'success'):
+            color = '#4CAF50'  # Green
+        elif status in ('not_found', 'failed', 'error'):
+            color = '#f44336'  # Red
+        elif status in ('skipped',):
+            color = '#9E9E9E'  # Grey
+        else:
+            color = '#2196F3'  # Blue (in progress)
+
+        text = f"{icon} {display_name}: {status.replace('_', ' ').title()}"
+
+        if step_name in self._step_widgets:
+            # Update existing step
+            label = self._step_widgets[step_name]
+            label.setText(text)
+            label.setStyleSheet(f"color: {color};")
+        else:
+            # Add new step
+            label = QLabel(text)
+            label.setStyleSheet(f"color: {color};")
+            self.progress_container.addWidget(label)
+            self._step_widgets[step_name] = label
+
+        # Update current status
+        if status in ('resolving', 'starting'):
+            self.status_label.setText(f"Trying {display_name}...")
+            self.status_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+        elif status in ('found', 'found_oa'):
+            self.status_label.setText(f"Found PDF via {display_name}!")
+            self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+
+        # Process events to update UI
+        QApplication.processEvents()
+
+    def set_downloading(self, source: str) -> None:
+        """
+        Update status to show downloading.
+
+        Args:
+            source: Source being downloaded from
+        """
+        display_name = self.RESOLVER_NAMES.get(source, source.title())
+        self.status_label.setText(f"Downloading from {display_name}...")
+        self.status_label.setStyleSheet("font-weight: bold; color: #FF9800;")
+        QApplication.processEvents()
+
+    def set_success(self, file_path: Optional[Path], message: Optional[str] = None) -> None:
+        """
+        Update status to show success.
+
+        Args:
+            file_path: Path to downloaded file (may be None for NXML-only extraction)
+            message: Optional custom success message (used when no file_path)
+        """
+        if file_path:
+            self.status_label.setText(f"✅ Downloaded: {file_path.name}")
+        elif message:
+            self.status_label.setText(f"✅ {message}")
+        else:
+            self.status_label.setText("✅ Success")
+        self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+        QApplication.processEvents()
+
+    def set_failure(self, error_msg: str) -> None:
+        """
+        Update status to show failure.
+
+        Args:
+            error_msg: Error message to display
+        """
+        # Truncate long error messages
+        if len(error_msg) > 80:
+            error_msg = error_msg[:77] + "..."
+        self.status_label.setText(f"❌ {error_msg}")
+        self.status_label.setStyleSheet("font-weight: bold; color: #f44336;")
+        QApplication.processEvents()
 
 
 class QtDocumentCardFactory(DocumentCardFactoryBase):
@@ -521,13 +729,13 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             return None
 
         # Get actual PDF path if available (from cache)
-        pdf_path = self._get_pdf_path_cached(card_data.doc_id, card_data.pdf_path)
+        pdf_path = self._get_pdf_path_cached(card_data.doc_id, card_data.pdf_path, card_data.pdf_filename)
 
         # Create button configuration
         config = self._create_pdf_button_config(card_data, pdf_state, pdf_path)
 
-        # Create the button widget
-        return self.create_pdf_button(config)
+        # Create the button widget with card_data for Find PDF functionality
+        return self.create_pdf_button(config, card_data)
 
     def _determine_pdf_state_cached(self, card_data: DocumentCardData) -> PDFButtonState:
         """
@@ -542,13 +750,15 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         return self.determine_pdf_state(
             card_data.doc_id,
             card_data.pdf_path,
-            card_data.pdf_url
+            card_data.pdf_url,
+            card_data.pdf_filename
         )
 
     def _get_pdf_path_cached(
         self,
         doc_id: int,
-        pdf_path: Optional[Path] = None
+        pdf_path: Optional[Path] = None,
+        pdf_filename: Optional[str] = None
     ) -> Optional[Path]:
         """
         Get PDF path with caching for performance.
@@ -556,6 +766,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Args:
             doc_id: Document ID
             pdf_path: Explicit PDF path if known
+            pdf_filename: Relative PDF path from database (e.g., "2022/paper.pdf")
 
         Returns:
             Path to PDF file if it exists, None otherwise
@@ -572,7 +783,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             # Cached path no longer exists, invalidate cache
 
         # Get path using parent method
-        result = self.get_pdf_path(doc_id, pdf_path)
+        result = self.get_pdf_path(doc_id, pdf_path, pdf_filename)
 
         # Update cache
         self._pdf_path_cache[doc_id] = result
@@ -607,12 +818,17 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             doc_id=card_data.doc_id
         )
 
-    def create_pdf_button(self, config: PDFButtonConfig) -> Optional[QWidget]:
+    def create_pdf_button(
+        self,
+        config: PDFButtonConfig,
+        card_data: Optional[DocumentCardData] = None
+    ) -> Optional[QWidget]:
         """
         Create a Qt PDF button widget.
 
         Args:
             config: Configuration for the PDF button
+            card_data: Optional document card data (enables "Find PDF" functionality)
 
         Returns:
             QWidget with the PDF button, or None if hidden
@@ -629,7 +845,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         )
 
         # Wrap in container for consistent layout
-        container = self._create_button_container(button)
+        container = self._create_button_container(button, card_data)
 
         return container
 
@@ -669,15 +885,23 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             msg_box.exec()
         # For expected errors (403, 404), just log - user can see button didn't change state
 
-    def _create_button_container(self, button: PDFButtonWidget) -> QWidget:
+    def _create_button_container(
+        self,
+        button: PDFButtonWidget,
+        card_data: Optional[DocumentCardData] = None
+    ) -> QWidget:
         """
         Create container widget for PDF button(s).
 
         If the primary button is View or Fetch, adds a secondary Upload button
         to allow PDF replacement.
 
+        If the primary button is Upload, adds a "Find PDF" button to trigger
+        PDF discovery using PMC, Unpaywall, DOI, and optionally OpenAthens.
+
         Args:
             button: The primary PDF button widget
+            card_data: Optional document card data (needed for Find PDF functionality)
 
         Returns:
             Container widget with proper layout
@@ -695,6 +919,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         # Add primary button
         layout.addWidget(button)
 
+        # Connect primary button's pdf_uploaded signal to handle database updates
+        if card_data is not None:
+            button.pdf_uploaded.connect(
+                lambda path, cd=card_data: self._handle_pdf_uploaded(path, cd)
+            )
+
         # Add secondary upload button if primary is View or Fetch
         if button.config.state in (PDFButtonState.VIEW, PDFButtonState.FETCH):
             secondary_config = PDFButtonConfig(
@@ -708,10 +938,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             secondary_button = PDFButtonWidget(secondary_config)
             secondary_button.setText("📤 Replace")  # Different text for clarity
 
-            # Connect secondary button's uploaded signal to update primary button
-            def on_secondary_upload(path: Path, primary: PDFButtonWidget = button) -> None:
-                """Handle secondary upload by transitioning primary to VIEW."""
+            # Connect secondary button's uploaded signal to update primary button and database
+            def on_secondary_upload(path: Path, primary: PDFButtonWidget = button, cd: DocumentCardData = card_data) -> None:
+                """Handle secondary upload by transitioning primary to VIEW and updating database."""
                 primary._transition_to_view(path)
+                if cd is not None:
+                    self._handle_pdf_uploaded(path, cd)
 
             secondary_button.pdf_uploaded.connect(on_secondary_upload)
 
@@ -723,9 +955,392 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
             layout.addWidget(secondary_button)
 
+        # Add "Find PDF" button if primary is Upload (no PDF available yet)
+        if button.config.state == PDFButtonState.UPLOAD and card_data is not None:
+            find_pdf_button = self._create_find_pdf_button(button, card_data)
+            if find_pdf_button:
+                layout.addWidget(find_pdf_button)
+
         layout.addStretch()
 
         return container
+
+    def _create_find_pdf_button(
+        self,
+        primary_button: PDFButtonWidget,
+        card_data: DocumentCardData
+    ) -> Optional[QPushButton]:
+        """
+        Create a "Find PDF" button that triggers PDF discovery.
+
+        Uses FullTextFinder to search PMC, Unpaywall, DOI, and optionally
+        OpenAthens to locate and download the PDF.
+
+        Args:
+            primary_button: The primary PDF button to update on success
+            card_data: Document card data with identifiers (DOI, PMID, etc.)
+
+        Returns:
+            QPushButton for finding PDF, or None if no identifiers available
+        """
+        # Check if document has any discoverable identifiers
+        # Include title - we can search CrossRef by title to discover DOI
+        has_identifiers = any([
+            card_data.doi,
+            card_data.pmid,
+            card_data.pdf_url,
+            card_data.title  # Can search CrossRef by title
+        ])
+
+        if not has_identifiers:
+            logger.debug(
+                f"Document {card_data.doc_id} has no discoverable identifiers"
+            )
+            return None
+
+        find_button = QPushButton("🔍 Find PDF")
+        find_button.setFixedHeight(ButtonSizes.MIN_HEIGHT)
+        find_button.setMinimumWidth(ButtonSizes.MIN_WIDTH)
+        find_button.setCursor(Qt.PointingHandCursor)
+        find_button.setToolTip(
+            "Search PMC, Unpaywall, CrossRef, and DOI.org for this paper's PDF.\n"
+            "Can discover DOI from title if not in database."
+        )
+
+        # Apply styling using constants from PDFButtonColors
+        find_button.setStyleSheet(f"""
+            QPushButton {{
+                padding: {ButtonSizes.PADDING_VERTICAL}px {ButtonSizes.PADDING_HORIZONTAL}px;
+                border-radius: {ButtonSizes.BORDER_RADIUS}px;
+                background-color: {PDFButtonColors.FIND_BG};
+                color: {PDFButtonColors.TEXT_COLOR};
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: {PDFButtonColors.FIND_BG_HOVER};
+            }}
+            QPushButton:pressed {{
+                background-color: {PDFButtonColors.FIND_BG_PRESSED};
+            }}
+            QPushButton:disabled {{
+                background-color: {PDFButtonColors.DISABLED_BG};
+                color: {PDFButtonColors.DISABLED_TEXT};
+            }}
+        """)
+
+        # Connect click handler
+        def on_find_clicked() -> None:
+            self._handle_find_pdf_click(find_button, primary_button, card_data)
+
+        find_button.clicked.connect(on_find_clicked)
+
+        return find_button
+
+    def _handle_find_pdf_click(
+        self,
+        find_button: QPushButton,
+        primary_button: PDFButtonWidget,
+        card_data: DocumentCardData
+    ) -> None:
+        """
+        Handle click on the "Find PDF" button.
+
+        Shows a progress dialog and initiates PDF discovery and download.
+
+        Args:
+            find_button: The "Find PDF" button (to disable during operation)
+            primary_button: The primary PDF button to update on success
+            card_data: Document card data with identifiers
+        """
+        # Disable button
+        find_button.setEnabled(False)
+        original_text = find_button.text()
+        find_button.setText("🔍 Searching...")
+
+        # Create and show progress dialog
+        progress_dialog = PDFDiscoveryProgressDialog(
+            doc_id=card_data.doc_id,
+            title=card_data.title or "Unknown",
+            parent=find_button.window()
+        )
+        progress_dialog.show()
+        QApplication.processEvents()
+
+        try:
+            # Execute discovery with progress callback
+            def progress_callback(stage: str, status: str) -> None:
+                progress_dialog.add_step(stage, status)
+
+            result = self._execute_pdf_discovery(card_data, progress_callback)
+
+            if result and result.exists():
+                # Success - update progress dialog
+                progress_dialog.set_success(result)
+
+                # Update primary button to VIEW state
+                primary_button._transition_to_view(result)
+
+                # Update database with pdf_filename
+                document = {
+                    'id': card_data.doc_id,
+                    'doi': card_data.doi,
+                    'pmid': card_data.pmid,
+                    'pdf_url': card_data.pdf_url,
+                    'title': card_data.title,
+                    'authors': card_data.authors,
+                    'year': card_data.year,
+                    'pdf_filename': result.name,
+                }
+                self._update_pdf_filename_in_database(card_data.doc_id, result, document)
+
+                # Update cache
+                self._pdf_path_cache[card_data.doc_id] = result
+
+                logger.info(
+                    f"Successfully found and downloaded PDF for document "
+                    f"{card_data.doc_id}: {result}"
+                )
+
+                # Emit signal
+                primary_button.pdf_discovered.emit(result)
+
+                # Update button to indicate success
+                find_button.setText("✓ Found")
+                find_button.setEnabled(False)
+
+                # Close dialog after a short delay
+                QTimer.singleShot(1500, progress_dialog.accept)
+
+            else:
+                # Discovery failed
+                progress_dialog.set_failure("No PDF sources found")
+                logger.warning(
+                    f"PDF discovery failed for document {card_data.doc_id}"
+                )
+                find_button.setText("✗ Not Found")
+
+                # Close dialog after a delay
+                QTimer.singleShot(2000, progress_dialog.reject)
+
+                # Re-enable button after a delay
+                QTimer.singleShot(
+                    PDFOperationSettings.BUTTON_RESET_DELAY_MS,
+                    lambda: self._reset_find_button(find_button, original_text)
+                )
+
+        except Exception as e:
+            error_msg = str(e)
+            progress_dialog.set_failure(error_msg)
+            logger.error(
+                f"Error during PDF discovery for document {card_data.doc_id}: {e}"
+            )
+            find_button.setText("✗ Error")
+
+            # Close dialog after a delay
+            QTimer.singleShot(2000, progress_dialog.reject)
+
+            # Re-enable button after a delay
+            QTimer.singleShot(
+                PDFOperationSettings.BUTTON_RESET_DELAY_MS,
+                lambda: self._reset_find_button(find_button, original_text)
+            )
+
+            # Emit error signal through primary button
+            primary_button.error_occurred.emit(error_msg)
+
+    def _reset_find_button(self, button: QPushButton, original_text: str) -> None:
+        """Reset the Find PDF button to its original state."""
+        button.setText(original_text)
+        button.setEnabled(True)
+
+    def _execute_pdf_discovery(
+        self,
+        card_data: DocumentCardData,
+        progress_callback: Optional[Callable[[str, str], None]] = None
+    ) -> Optional[Path]:
+        """
+        Execute PDF discovery for a document.
+
+        Uses FullTextFinder to discover and download PDFs from:
+        1. CrossRef title search (to discover DOI if missing)
+        2. PMC (PubMed Central)
+        3. Unpaywall
+        4. DOI resolution
+        5. Direct URL
+        6. OpenAthens (if enabled in config)
+
+        Args:
+            card_data: Document card data with identifiers
+            progress_callback: Optional callback(stage, status) for progress updates
+
+        Returns:
+            Path to downloaded PDF if successful, None otherwise
+        """
+        from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
+        from bmlibrarian.discovery.resolvers import CrossRefTitleResolver
+        from bmlibrarian.config import get_config, get_openathens_config
+
+        # Get configuration
+        config = get_config()
+        openathens_config = get_openathens_config()
+        discovery_config = config.get('discovery', {}) or {}
+
+        # Track discovered DOI (from CrossRef title search)
+        discovered_doi = card_data.doi
+
+        # If no DOI but we have a title, try CrossRef title search first
+        if not card_data.doi and card_data.title:
+            if progress_callback:
+                progress_callback('crossref_title', 'resolving')
+
+            try:
+                title_resolver = CrossRefTitleResolver(
+                    timeout=discovery_config.get('timeout', 30),
+                    min_similarity=discovery_config.get('crossref_min_similarity', 0.85)
+                )
+
+                identifiers = DocumentIdentifiers(
+                    doc_id=card_data.doc_id,
+                    title=card_data.title
+                )
+
+                result = title_resolver.resolve(identifiers)
+
+                if result.status.value == 'success' and result.metadata.get('discovered_doi'):
+                    discovered_doi = result.metadata['discovered_doi']
+                    similarity = result.metadata.get('similarity', 0)
+
+                    if progress_callback:
+                        progress_callback('crossref_title', 'found')
+
+                    logger.info(
+                        f"Discovered DOI {discovered_doi} (similarity: {similarity:.2f}) "
+                        f"for document {card_data.doc_id}"
+                    )
+
+                    # Update the database with discovered DOI
+                    self._update_doi_in_database(card_data.doc_id, discovered_doi)
+                else:
+                    if progress_callback:
+                        progress_callback('crossref_title', 'not_found')
+                    logger.debug(
+                        f"CrossRef title search did not find DOI for document {card_data.doc_id}"
+                    )
+
+            except Exception as e:
+                if progress_callback:
+                    progress_callback('crossref_title', 'error')
+                logger.warning(f"CrossRef title search error: {e}")
+
+        # Determine if OpenAthens should be used for discovery
+        use_openathens_for_discovery = discovery_config.get(
+            'use_openathens_proxy', False
+        )
+
+        # Build skip_resolvers list
+        skip_resolvers = []
+        if not use_openathens_for_discovery or not openathens_config.get('enabled', False):
+            skip_resolvers.append('openathens')
+
+        # Create finder with appropriate configuration
+        finder = FullTextFinder(
+            unpaywall_email=self.unpaywall_email or config.get('unpaywall_email'),
+            openathens_proxy_url=(
+                openathens_config.get('institution_url')
+                if use_openathens_for_discovery and openathens_config.get('enabled', False)
+                else None
+            ),
+            timeout=discovery_config.get('timeout', 30),
+            prefer_open_access=discovery_config.get('prefer_open_access', True),
+            skip_resolvers=skip_resolvers if skip_resolvers else None
+        )
+
+        # Set browser fallback config
+        finder._browser_fallback_config = {
+            'enabled': discovery_config.get('use_browser_fallback', True),
+            'headless': discovery_config.get('browser_headless', True),
+            'timeout': discovery_config.get('browser_timeout', 60000)
+        }
+
+        # Build document dictionary
+        # Include both 'year' (int) and 'publication_date' (str) for compatibility
+        # Use discovered_doi if we found one via CrossRef title search
+        document = {
+            'id': card_data.doc_id,
+            'doi': discovered_doi,  # May be discovered from title search
+            'pmid': card_data.pmid,
+            'pdf_url': card_data.pdf_url,
+            'title': card_data.title,
+            'year': card_data.year,  # Pass as int for reliable year extraction
+            'publication_date': str(card_data.year) if card_data.year else None,  # For backwards compat
+        }
+
+        # Execute discovery and download with progress callback
+        # Enable content verification by default to catch wrong PDFs
+        result = finder.download_for_document(
+            document=document,
+            output_dir=self.base_pdf_dir,
+            use_browser_fallback=discovery_config.get('use_browser_fallback', True),
+            progress_callback=progress_callback,
+            verify_content=discovery_config.get('verify_content', True),
+            delete_on_mismatch=discovery_config.get('delete_on_mismatch', False)
+        )
+
+        # Check for verification failure
+        if result.verified is False:
+            logger.warning(
+                f"PDF verification FAILED for document {card_data.doc_id}: "
+                f"{result.verification_warnings}"
+            )
+            # Still return the path but log the mismatch
+            # The file is kept for manual review unless delete_on_mismatch is True
+
+        if result.success and result.file_path:
+            # If we got full text from a PMC package, store it in the database
+            if result.full_text:
+                self._update_full_text_in_database(card_data.doc_id, result.full_text)
+
+            return Path(result.file_path)
+
+        logger.warning(
+            f"PDF discovery failed for document {card_data.doc_id}: "
+            f"{result.error_message}"
+        )
+        return None
+
+    def _update_doi_in_database(self, doc_id: int, doi: str) -> None:
+        """
+        Update the DOI in the database after discovering it via CrossRef.
+
+        Args:
+            doc_id: Document ID
+            doi: Discovered DOI
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET doi = %s WHERE id = %s AND doi IS NULL",
+                        (doi, doc_id)
+                    )
+                    if cur.rowcount > 0:
+                        conn.commit()
+                        logger.info(
+                            f"Updated document.doi for doc {doc_id}: {doi}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Document {doc_id} already has a DOI, not updating"
+                        )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update DOI in database for document {doc_id}: {e}"
+            )
+            # Don't raise - the discovery can still continue
 
     def _create_view_handler(self, card_data: DocumentCardData) -> Callable:
         """
@@ -746,7 +1361,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 # Get PDF path (from cache)
                 pdf_path = self._get_pdf_path_cached(
                     card_data.doc_id,
-                    card_data.pdf_path
+                    card_data.pdf_path,
+                    card_data.pdf_filename
                 )
 
                 if not pdf_path or not pdf_path.exists():
@@ -815,49 +1431,36 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     'publication_date': str(card_data.year) if card_data.year else None,
                 }
 
-                # Use discovery-first workflow if enabled and PDFManager supports it
-                if self.use_discovery and self.pdf_manager:
-                    if hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
-                        logger.info(f"Using discovery workflow for document {card_data.doc_id}")
-                        pdf_path = self.pdf_manager.download_pdf_with_discovery(
-                            document,
-                            use_browser_fallback=True,
-                            unpaywall_email=self.unpaywall_email
-                        )
+                # Always use discovery workflow - it includes direct URL as a source
+                # and provides content verification to catch wrong PDFs
+                if self.pdf_manager and hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
+                    logger.info(f"Using discovery workflow for document {card_data.doc_id}")
+                    pdf_path = self.pdf_manager.download_pdf_with_discovery(
+                        document,
+                        use_browser_fallback=True,
+                        unpaywall_email=self.unpaywall_email,
+                        verify_content=True,  # Verify PDF matches expected document
+                        delete_on_mismatch=False  # Keep mismatched PDFs for investigation
+                    )
 
-                        if pdf_path and pdf_path.exists():
-                            # Update database with pdf_filename
-                            self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
-                            # Update cache
-                            self._pdf_path_cache[card_data.doc_id] = pdf_path
-                            logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
-                            return pdf_path
-                        # Discovery failed, will fall through to direct download below
+                    if pdf_path and pdf_path.exists():
+                        # Update database with pdf_filename
+                        self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
+                        # Update cache
+                        self._pdf_path_cache[card_data.doc_id] = pdf_path
+                        logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
+                        return pdf_path
 
-                # Fall back to direct download if discovery not available/failed
-                if self.pdf_manager and card_data.pdf_url:
-                    pdf_path = self.pdf_manager.download_pdf(document)
+                    # Discovery failed - provide helpful error message
+                    error_msg = f"Failed to download PDF for document {card_data.doc_id}"
+                    if card_data.pdf_url:
+                        if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
+                            error_msg += " (Access restricted, likely requires institutional subscription)"
+                        else:
+                            error_msg += f" - no sources found or all failed"
+                    raise FileNotFoundError(error_msg)
 
-                    if not pdf_path or not pdf_path.exists():
-                        # Provide a helpful error message
-                        error_msg = f"Failed to download PDF for document {card_data.doc_id}"
-                        if card_data.pdf_url:
-                            if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
-                                error_msg += " (HTTP 403 - Access restricted, likely requires institutional subscription)"
-                            else:
-                                error_msg += f" from {card_data.pdf_url}"
-                        raise FileNotFoundError(error_msg)
-
-                    # Update database with pdf_filename
-                    self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
-
-                    # Update cache
-                    self._pdf_path_cache[card_data.doc_id] = pdf_path
-
-                    logger.info(f"Downloaded PDF for document {card_data.doc_id}: {pdf_path}")
-                    return pdf_path
-
-                raise ValueError("No PDF manager or URL configured for fetch")
+                raise ValueError("No PDF manager configured for fetch")
 
             except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
                 logger.error(f"Failed to fetch PDF for document {card_data.doc_id}: {e}")
@@ -911,6 +1514,102 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         if doc_id in self._pdf_path_cache:
             del self._pdf_path_cache[doc_id]
             logger.debug(f"Invalidated PDF cache for document {doc_id}")
+
+    def _handle_pdf_uploaded(self, source_path: Path, card_data: DocumentCardData) -> None:
+        """
+        Handle PDF upload by copying to library directory and updating database.
+
+        This method is called when a PDF is uploaded via the file dialog. It:
+        1. Copies the PDF to the year-organized directory structure (YYYY/filename.pdf)
+        2. Updates the database pdf_filename column with the relative path
+
+        Args:
+            source_path: Path to the uploaded PDF file (user's original location)
+            card_data: Document card data with doc_id, year, etc.
+        """
+        import shutil
+
+        try:
+            doc_id = card_data.doc_id
+            year = card_data.year
+
+            # Determine target directory (year-based organization)
+            if year:
+                year_dir = self.base_pdf_dir / str(year)
+            else:
+                year_dir = self.base_pdf_dir / "unknown_year"
+
+            year_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate target filename - use the original filename
+            target_filename = source_path.name
+            target_path = year_dir / target_filename
+
+            # Handle filename collisions by adding doc_id suffix
+            if target_path.exists() and target_path != source_path:
+                stem = source_path.stem
+                suffix = source_path.suffix
+                target_filename = f"{stem}_{doc_id}{suffix}"
+                target_path = year_dir / target_filename
+
+            # Copy the file (don't move, user might want to keep their original)
+            logger.info(f"[PDF UPLOAD] Copying {source_path} to {target_path}")
+            shutil.copy2(source_path, target_path)
+
+            # Calculate relative path for database
+            relative_path = f"{year or 'unknown_year'}/{target_filename}"
+
+            # Update database
+            logger.info(f"[PDF UPLOAD] Updating database for doc {doc_id}: pdf_filename = {relative_path}")
+
+            document = {
+                'id': doc_id,
+                'pdf_filename': target_filename,
+                'year': year,
+            }
+            self._update_pdf_filename_in_database(doc_id, target_path, document)
+
+            # Update cache
+            self._pdf_path_cache[doc_id] = target_path
+
+            logger.info(f"[PDF UPLOAD] Successfully uploaded and registered PDF for document {doc_id}")
+
+        except Exception as e:
+            logger.error(f"[PDF UPLOAD] Failed to process uploaded PDF for document {card_data.doc_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Re-raise so the error signal is emitted
+            raise
+
+    def _update_full_text_in_database(self, doc_id: int, full_text: str) -> None:
+        """
+        Update the full_text column in the database after extracting from NXML.
+
+        Args:
+            doc_id: Document ID
+            full_text: Extracted full text content from NXML
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET full_text = %s WHERE id = %s",
+                        (full_text, doc_id)
+                    )
+                    conn.commit()
+                    logger.info(
+                        f"Updated document.full_text for doc {doc_id} "
+                        f"({len(full_text)} chars)"
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update full_text in database for document {doc_id}: {e}"
+            )
+            # Don't raise - the PDF was successfully downloaded, database update is secondary
 
     def _update_pdf_filename_in_database(self, doc_id: int, pdf_path: Path, document: Dict[str, Any]) -> None:
         """

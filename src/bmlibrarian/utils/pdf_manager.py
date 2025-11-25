@@ -338,7 +338,9 @@ class PDFManager:
         document: Dict[str, Any],
         use_browser_fallback: bool = True,
         unpaywall_email: Optional[str] = None,
-        progress_callback: Optional[Callable[[str, str], None]] = None
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+        verify_content: bool = True,
+        delete_on_mismatch: bool = False
     ) -> Optional[Path]:
         """Download PDF using discovery-first workflow.
 
@@ -350,6 +352,7 @@ class PDFManager:
         1. Uses FullTextFinder to discover available sources
         2. Tries direct HTTP download from each source in priority order
         3. Falls back to browser-based download if HTTP fails
+        4. Verifies downloaded PDF matches expected document (if verify_content=True)
 
         Args:
             document: Document dictionary with:
@@ -358,20 +361,24 @@ class PDFManager:
                 - pmcid: PubMed Central ID (optional)
                 - pdf_url: Direct PDF URL (optional)
                 - id: Document ID (for filename generation)
+                - title: Document title (for verification)
                 - publication_date: For year-based storage
             use_browser_fallback: Use browser if HTTP download fails (default True)
             unpaywall_email: Email for Unpaywall API (optional)
             progress_callback: Optional callback(stage, status) for progress
+            verify_content: Verify downloaded PDF matches document metadata (default True)
+            delete_on_mismatch: Delete PDF if verification fails (default False)
 
         Returns:
             Path to downloaded file, or None if all methods failed
 
         Example:
             pdf_manager = PDFManager(base_dir='~/pdfs')
-            document = {'doi': '10.1234/example', 'id': 123}
+            document = {'doi': '10.1234/example', 'id': 123, 'title': 'Example Paper'}
             path = pdf_manager.download_pdf_with_discovery(
                 document,
-                unpaywall_email='user@example.com'
+                unpaywall_email='user@example.com',
+                verify_content=True
             )
         """
         try:
@@ -385,14 +392,16 @@ class PDFManager:
         if self.openathens_auth and hasattr(self.openathens_auth, 'config'):
             openathens_proxy_url = getattr(self.openathens_auth.config, 'institution_url', None)
 
-        # Use discovery system
+        # Use discovery system with verification
         result = download_pdf_for_document(
             document=document,
             output_dir=self.base_dir,
             unpaywall_email=unpaywall_email,
             openathens_proxy_url=openathens_proxy_url,
             use_browser_fallback=use_browser_fallback,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            verify_content=verify_content,
+            delete_on_mismatch=delete_on_mismatch
         )
 
         if result.success and result.file_path:
@@ -401,11 +410,27 @@ class PDFManager:
             # Update document with pdf_filename for database storage
             document['pdf_filename'] = pdf_path.name
 
-            logger.info(
-                f"Downloaded PDF via discovery: {pdf_path} "
-                f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
-                f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
-            )
+            # Log verification status
+            if result.verified is True:
+                logger.info(
+                    f"Downloaded PDF via discovery: {pdf_path} "
+                    f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
+                    f"VERIFIED by {result.verification_match_type}, "
+                    f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
+                )
+            elif result.verified is False:
+                logger.warning(
+                    f"Downloaded PDF via discovery: {pdf_path} "
+                    f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
+                    f"MISMATCH: {result.verification_warnings}, "
+                    f"{result.file_size} bytes)"
+                )
+            else:
+                logger.info(
+                    f"Downloaded PDF via discovery: {pdf_path} "
+                    f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
+                    f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
+                )
             return pdf_path
 
         # Log failure reason

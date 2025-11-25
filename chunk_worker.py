@@ -36,10 +36,10 @@ from typing import Optional
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Constants
+# Constants (aligned with chunk_embedder defaults)
 DEFAULT_BATCH_SIZE = 100
-DEFAULT_CHUNK_SIZE = 350
-DEFAULT_CHUNK_OVERLAP = 50
+DEFAULT_CHUNK_SIZE = 1800
+DEFAULT_CHUNK_OVERLAP = 320
 CONTINUOUS_POLL_INTERVAL_SECONDS = 30
 MAX_RETRY_ATTEMPTS = 3
 
@@ -57,6 +57,9 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Suppress noisy HTTP request logging from httpx (used by ollama)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def cmd_process(args: argparse.Namespace) -> int:

@@ -10,6 +10,7 @@ from typing import Optional
 
 from ..base_tab import BaseTabPlugin, TabPluginMetadata
 from .document_interrogation_tab import DocumentInterrogationTabWidget
+from ...core.document_receiver_registry import DocumentReceiverRegistry
 
 
 class DocumentInterrogationPlugin(BaseTabPlugin):
@@ -53,6 +54,10 @@ class DocumentInterrogationPlugin(BaseTabPlugin):
             lambda msg: self.status_changed.emit(msg)
         )
 
+        # Register as document receiver
+        registry = DocumentReceiverRegistry()
+        registry.register_receiver(self.tab_widget)
+
         return self.tab_widget
 
     def on_tab_activated(self):
@@ -65,7 +70,10 @@ class DocumentInterrogationPlugin(BaseTabPlugin):
 
     def cleanup(self):
         """Cleanup resources when plugin is unloaded."""
+        # Unregister from document receiver registry
         if self.tab_widget:
+            registry = DocumentReceiverRegistry()
+            registry.unregister_receiver(self.tab_widget.get_receiver_id())
             self.tab_widget.cleanup()
 
 
