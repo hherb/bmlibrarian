@@ -288,9 +288,15 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
                 self.worker.terminate()
                 self.worker.wait()
 
-            self.worker = PRISMA2020AssessmentWorker(self.prisma_agent, self.current_document)
+            # Create worker with semantic search enabled
+            self.worker = PRISMA2020AssessmentWorker(
+                self.prisma_agent,
+                self.current_document,
+                use_semantic_search=True  # Enable enhanced assessment
+            )
             self.worker.result_ready.connect(self._on_assessment_complete)
             self.worker.error_occurred.connect(self._on_assessment_error)
+            self.worker.status_update.connect(self._on_status_update)
             self.worker.finished.connect(lambda: self.ui.load_button.setEnabled(True))
             self.worker.start()
 
@@ -400,6 +406,11 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             f"PRISMA 2020 assessment failed: {error_msg}"
         )
         self._update_status("Assessment failed", SECTION_COLORS['error'])
+
+    def _on_status_update(self, message: str) -> None:
+        """Handle status update from worker thread."""
+        logger.debug(f"Worker status: {message}")
+        self._update_status(message, SECTION_COLORS['info'])
 
     def _display_assessment(self) -> None:
         """Display PRISMA 2020 assessment results in tabular format."""

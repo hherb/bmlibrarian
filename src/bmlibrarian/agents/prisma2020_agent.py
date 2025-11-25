@@ -23,12 +23,18 @@ guideline for reporting systematic reviews. BMJ 2021;372:n71.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 
 from .base import BaseAgent
 from bmlibrarian.config import get_model, get_agent_config, get_ollama_host
+
+# Lazy imports for QA and embedding modules (avoid circular imports)
+try:
+    from bmlibrarian.database import get_db_manager
+except ImportError:
+    get_db_manager = None
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,49 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_CONFIDENCE = 0.4  # Default minimum confidence threshold
 DEFAULT_CONFIDENCE_FALLBACK = 0.5  # Fallback confidence when not provided by LLM
 SUMMARY_SEPARATOR_WIDTH = 80  # Width of separator lines in formatted summaries
+
+# Semantic search constants for two-pass assessment
+SEMANTIC_SEARCH_THRESHOLD = 0.5  # Minimum similarity for relevant chunks
+SEMANTIC_SEARCH_MAX_CHUNKS = 5  # Maximum chunks to retrieve per item
+LOW_SCORE_THRESHOLD = 1.0  # Items scoring at or below this may benefit from semantic search
+
+# PRISMA item queries for semantic search
+# Maps PRISMA field names to targeted search queries
+PRISMA_ITEM_QUERIES = {
+    'search_strategy': 'search strategy database keywords boolean operators filter',
+    'selection_process': 'study selection screening eligibility inclusion exclusion criteria',
+    'data_collection': 'data extraction collection form variables',
+    'risk_of_bias': 'risk of bias quality assessment tool Cochrane ROBINS',
+    'synthesis_methods': 'meta-analysis statistical synthesis heterogeneity random effects',
+    'reporting_bias_assessment': 'publication bias funnel plot Egger test',
+    'certainty_assessment': 'GRADE certainty evidence quality rating',
+    'study_selection': 'PRISMA flow diagram screening included excluded',
+    'study_characteristics': 'characteristics included studies population intervention',
+    'risk_of_bias_results': 'risk of bias assessment results domains',
+    'individual_studies_results': 'individual study results forest plot effect size',
+    'synthesis_results': 'pooled results meta-analysis summary estimate',
+    'reporting_biases_results': 'publication bias funnel plot asymmetry',
+    'certainty_of_evidence': 'certainty evidence GRADE rating confidence',
+    'registration': 'protocol registration PROSPERO CRD',
+    'support': 'funding support financial conflict interest sponsor',
+}
+
+
+@dataclass
+class DocumentTextStatus:
+    """Status of document text availability and embeddings."""
+
+    document_id: int
+    has_abstract: bool
+    has_fulltext: bool
+    has_fulltext_chunks: bool
+    abstract_length: int
+    fulltext_length: int
+
+    @property
+    def can_use_semantic_search(self) -> bool:
+        """Return True if semantic search is available for this document."""
+        return self.has_fulltext and self.has_fulltext_chunks
 
 
 @dataclass
@@ -1165,3 +1214,462 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
                 writer.writerow(row)
 
         logger.info(f"Exported {len(assessments)} PRISMA assessments to {output_file}")
+
+    # ========================================================================
+    # Semantic Search and Two-Pass Assessment Methods
+    # ========================================================================
+
+    def get_document_text_status(self, document_id: int) -> Optional[DocumentTextStatus]:
+        """
+        Get text availability and embedding status for a document.
+
+        Checks whether the document has abstract, full-text, and full-text embeddings
+        that can be used for semantic search.
+
+        Args:
+            document_id: Database ID of the document.
+
+        Returns:
+            DocumentTextStatus object, or None if document not found or database unavailable.
+        """
+        if get_db_manager is None:
+            logger.warning("Database module not available - cannot check document status")
+            return None
+
+        try:
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get document text info and check for full-text chunks
+                    cur.execute(
+                        """
+                        SELECT
+                            d.id,
+                            d.abstract IS NOT NULL AND d.abstract != '' AS has_abstract,
+                            d.full_text IS NOT NULL AND d.full_text != '' AS has_fulltext,
+                            COALESCE(LENGTH(d.abstract), 0) AS abstract_length,
+                            COALESCE(LENGTH(d.full_text), 0) AS fulltext_length,
+                            EXISTS (
+                                SELECT 1 FROM semantic.chunks c
+                                WHERE c.document_id = d.id
+                                LIMIT 1
+                            ) AS has_fulltext_chunks
+                        FROM public.document d
+                        WHERE d.id = %s
+                        """,
+                        (document_id,),
+                    )
+                    row = cur.fetchone()
+
+                    if not row:
+                        logger.warning(f"Document {document_id} not found")
+                        return None
+
+                    return DocumentTextStatus(
+                        document_id=row[0],
+                        has_abstract=row[1],
+                        has_fulltext=row[2],
+                        abstract_length=row[3],
+                        fulltext_length=row[4],
+                        has_fulltext_chunks=row[5],
+                    )
+
+        except Exception as e:
+            logger.error(f"Error getting document text status: {e}")
+            return None
+
+    def ensure_document_embedded(
+        self,
+        document_id: int,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """
+        Ensure a document has full-text embeddings, creating them if needed.
+
+        If the document has full_text but no embeddings, this method will
+        chunk the full-text and generate embeddings using ChunkEmbedder.
+
+        Args:
+            document_id: Database ID of the document.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            True if embeddings exist or were successfully created, False otherwise.
+        """
+        # Check current status
+        status = self.get_document_text_status(document_id)
+        if not status:
+            return False
+
+        # Already has chunks
+        if status.has_fulltext_chunks:
+            logger.debug(f"Document {document_id} already has full-text chunks")
+            return True
+
+        # No full-text to embed
+        if not status.has_fulltext:
+            logger.info(f"Document {document_id} has no full_text to embed")
+            return False
+
+        # Try to embed
+        try:
+            from bmlibrarian.embeddings.chunk_embedder import ChunkEmbedder
+
+            if progress_callback:
+                progress_callback(f"Embedding full-text for document {document_id}...")
+
+            self._call_callback("embedding_started",
+                              f"Creating embeddings for document {document_id}")
+
+            embedder = ChunkEmbedder()
+            num_chunks = embedder.chunk_and_embed(document_id, overwrite=False)
+
+            if num_chunks > 0:
+                logger.info(f"Created {num_chunks} chunks for document {document_id}")
+                self._call_callback("embedding_completed",
+                                  f"Created {num_chunks} chunks for document {document_id}")
+                return True
+            else:
+                logger.warning(f"Failed to create chunks for document {document_id}")
+                return False
+
+        except ImportError:
+            logger.error("ChunkEmbedder not available - cannot create embeddings")
+            return False
+        except Exception as e:
+            logger.error(f"Error embedding document {document_id}: {e}")
+            return False
+
+    def _semantic_search_document(
+        self,
+        document_id: int,
+        query: str,
+        max_chunks: int = SEMANTIC_SEARCH_MAX_CHUNKS,
+        threshold: float = SEMANTIC_SEARCH_THRESHOLD
+    ) -> List[Tuple[str, float]]:
+        """
+        Perform semantic search within a specific document.
+
+        Uses the semantic.chunksearch_document() PostgreSQL function to find
+        chunks most relevant to the query.
+
+        Args:
+            document_id: Database ID of the document.
+            query: Search query text.
+            max_chunks: Maximum number of chunks to return.
+            threshold: Minimum similarity score (0.0 to 1.0).
+
+        Returns:
+            List of (chunk_text, score) tuples sorted by score descending.
+        """
+        if get_db_manager is None:
+            logger.warning("Database module not available")
+            return []
+
+        try:
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT chunk_text, score
+                        FROM semantic.chunksearch_document(%s, %s, %s, %s)
+                        ORDER BY score DESC
+                        """,
+                        (document_id, query, threshold, max_chunks),
+                    )
+                    rows = cur.fetchall()
+
+                    return [(row[0], row[1]) for row in rows]
+
+        except Exception as e:
+            logger.error(f"Semantic search failed for document {document_id}: {e}")
+            return []
+
+    def _re_assess_item_with_context(
+        self,
+        item_name: str,
+        item_description: str,
+        original_score: float,
+        original_explanation: str,
+        additional_context: str,
+        document_title: str
+    ) -> Tuple[float, str]:
+        """
+        Re-assess a single PRISMA item with additional context from semantic search.
+
+        Args:
+            item_name: Name of the PRISMA item (e.g., 'search_strategy').
+            item_description: Description of what the item requires.
+            original_score: Original score from first-pass assessment.
+            original_explanation: Original explanation from first-pass assessment.
+            additional_context: Additional text chunks found via semantic search.
+            document_title: Title of the document being assessed.
+
+        Returns:
+            Tuple of (new_score, new_explanation).
+        """
+        if not additional_context.strip():
+            return original_score, original_explanation
+
+        prompt = f"""You are an expert in systematic review methodology and PRISMA 2020 guidelines.
+
+You previously assessed a PRISMA item and gave a score of {original_score}/2.0 based on the abstract.
+Now you have been provided with additional context from the full text of the paper.
+
+Paper Title: {document_title}
+
+PRISMA Item: {item_name.replace('_', ' ').title()}
+Requirement: {item_description}
+
+Original Score: {original_score}/2.0
+Original Explanation: {original_explanation}
+
+Additional Context from Full Text:
+{additional_context[:4000]}
+
+INSTRUCTIONS:
+Review the additional context and determine if your original assessment should be updated.
+- 2.0: Fully reported / Adequately reported
+- 1.0: Partially reported / Inadequately reported
+- 0.0: Not reported / Not present
+
+If the additional context provides more complete information about this PRISMA item,
+update your score accordingly. Be specific about what you found.
+
+Response format (JSON only):
+{{
+    "score": 2.0,
+    "explanation": "Updated explanation based on full text analysis..."
+}}
+
+Respond ONLY with valid JSON."""
+
+        try:
+            result = self._generate_and_parse_json(
+                prompt,
+                max_retries=2,
+                retry_context=f"re-assess {item_name}",
+                num_predict=500
+            )
+
+            new_score = float(result.get('score', original_score))
+            new_explanation = result.get('explanation', original_explanation)
+
+            # Validate score range
+            if not (0.0 <= new_score <= 2.0):
+                logger.warning(f"Invalid re-assessed score {new_score}, using original")
+                return original_score, original_explanation
+
+            # Add note if score changed
+            if new_score != original_score:
+                new_explanation = f"[Updated from {original_score} after full-text analysis] {new_explanation}"
+                logger.info(f"PRISMA item {item_name} score updated: {original_score} -> {new_score}")
+
+            return new_score, new_explanation
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to re-assess {item_name}: {e}")
+            return original_score, original_explanation
+        except Exception as e:
+            logger.error(f"Error re-assessing {item_name}: {e}")
+            return original_score, original_explanation
+
+    def assess_prisma_compliance_with_semantic_search(
+        self,
+        document: Dict[str, Any],
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+        skip_suitability_check: bool = False,
+        re_assess_low_scores: bool = True
+    ) -> Optional[PRISMA2020Assessment]:
+        """
+        Assess PRISMA compliance with optional semantic search for low-scoring items.
+
+        This is an enhanced version of assess_prisma_compliance that uses a two-pass
+        approach:
+        1. First pass: Standard assessment using abstract/full_text
+        2. Second pass: For items scoring ≤1.0, perform semantic search within the
+           document to find additional relevant context and re-assess
+
+        Args:
+            document: Document dictionary with 'id', 'abstract', optional 'full_text'.
+            min_confidence: Minimum confidence threshold (0-1).
+            skip_suitability_check: If True, skip suitability check.
+            re_assess_low_scores: If True, use semantic search to re-assess low scores.
+
+        Returns:
+            PRISMA2020Assessment object if successful, None otherwise.
+        """
+        doc_id = document.get('id')
+        doc_title = document.get('title', 'Untitled')
+
+        # First pass: Standard assessment
+        self._call_callback("prisma_first_pass", f"Running initial PRISMA assessment for document {doc_id}")
+
+        assessment = self.assess_prisma_compliance(
+            document=document,
+            min_confidence=min_confidence,
+            skip_suitability_check=skip_suitability_check
+        )
+
+        if not assessment:
+            return None
+
+        # Check if we should do second pass
+        if not re_assess_low_scores:
+            return assessment
+
+        # Check if document has embeddings for semantic search
+        status = self.get_document_text_status(doc_id)
+        if not status or not status.can_use_semantic_search:
+            logger.info(f"Document {doc_id} does not have full-text embeddings, skipping second pass")
+            return assessment
+
+        # Identify low-scoring items that have semantic search queries
+        low_scoring_items = []
+        assessment_dict = assessment.to_dict()
+
+        for item_name, query in PRISMA_ITEM_QUERIES.items():
+            score_key = f"{item_name}_score"
+            explanation_key = f"{item_name}_explanation"
+
+            if score_key in assessment_dict:
+                score = assessment_dict[score_key]
+                if score <= LOW_SCORE_THRESHOLD:
+                    low_scoring_items.append({
+                        'name': item_name,
+                        'query': query,
+                        'score_key': score_key,
+                        'explanation_key': explanation_key,
+                        'original_score': score,
+                        'original_explanation': assessment_dict[explanation_key]
+                    })
+
+        if not low_scoring_items:
+            logger.info(f"No low-scoring items to re-assess for document {doc_id}")
+            return assessment
+
+        logger.info(f"Re-assessing {len(low_scoring_items)} low-scoring items for document {doc_id}")
+        self._call_callback("prisma_second_pass",
+                          f"Re-assessing {len(low_scoring_items)} items using semantic search")
+
+        # Second pass: Re-assess low-scoring items with semantic search
+        updated_fields = {}
+        items_improved = 0
+
+        for item in low_scoring_items:
+            # Perform semantic search for this item
+            chunks = self._semantic_search_document(
+                document_id=doc_id,
+                query=item['query'],
+                max_chunks=SEMANTIC_SEARCH_MAX_CHUNKS,
+                threshold=SEMANTIC_SEARCH_THRESHOLD
+            )
+
+            if not chunks:
+                logger.debug(f"No relevant chunks found for {item['name']}")
+                continue
+
+            # Combine chunks into context
+            context = "\n\n---\n\n".join(
+                f"[Chunk Score: {score:.2f}]\n{text}"
+                for text, score in chunks
+            )
+
+            # Get item description from prompt
+            item_descriptions = {
+                'search_strategy': 'Full search strategy for at least one database',
+                'selection_process': 'Methods for selecting studies, duplicate screening',
+                'data_collection': 'Methods for data extraction, duplicate extraction',
+                'risk_of_bias': 'Tools/methods for assessing risk of bias in individual studies',
+                'synthesis_methods': 'Methods to prepare/combine/present study results',
+                'reporting_bias_assessment': 'Methods to assess publication bias',
+                'certainty_assessment': 'Methods to assess certainty of evidence (e.g., GRADE)',
+                'study_selection': 'Results of search and selection process with PRISMA flow diagram',
+                'study_characteristics': 'Characteristics of included studies',
+                'risk_of_bias_results': 'Risk of bias assessments for included studies',
+                'individual_studies_results': 'Results of individual studies with summary statistics',
+                'synthesis_results': 'Synthesized results (meta-analysis or other)',
+                'reporting_biases_results': 'Assessment of publication bias',
+                'certainty_of_evidence': 'Assessment of certainty of evidence',
+                'registration': 'Protocol registration information',
+                'support': 'Sources of financial/non-financial support',
+            }
+
+            # Re-assess with additional context
+            new_score, new_explanation = self._re_assess_item_with_context(
+                item_name=item['name'],
+                item_description=item_descriptions.get(item['name'], ''),
+                original_score=item['original_score'],
+                original_explanation=item['original_explanation'],
+                additional_context=context,
+                document_title=doc_title
+            )
+
+            if new_score > item['original_score']:
+                updated_fields[item['score_key']] = new_score
+                updated_fields[item['explanation_key']] = new_explanation
+                items_improved += 1
+
+        if not updated_fields:
+            logger.info(f"No scores improved after second pass for document {doc_id}")
+            return assessment
+
+        # Create updated assessment
+        logger.info(f"Improved {items_improved} items for document {doc_id}")
+
+        # Copy original assessment data and update with new values
+        updated_data = assessment.to_dict()
+        updated_data.update(updated_fields)
+
+        # Recalculate summary statistics
+        score_fields = [
+            'title_score', 'abstract_score', 'rationale_score', 'objectives_score',
+            'eligibility_criteria_score', 'information_sources_score', 'search_strategy_score',
+            'selection_process_score', 'data_collection_score', 'data_items_score',
+            'risk_of_bias_score', 'effect_measures_score', 'synthesis_methods_score',
+            'reporting_bias_assessment_score', 'certainty_assessment_score',
+            'study_selection_score', 'study_characteristics_score', 'risk_of_bias_results_score',
+            'individual_studies_results_score', 'synthesis_results_score',
+            'reporting_biases_results_score', 'certainty_of_evidence_score',
+            'discussion_score', 'limitations_score', 'conclusions_score',
+            'registration_score', 'support_score'
+        ]
+
+        scores = [float(updated_data[f]) for f in score_fields]
+        overall_compliance_score = sum(scores) / len(scores)
+        overall_compliance_percentage = (overall_compliance_score / 2.0) * 100
+
+        fully_reported = sum(1 for s in scores if s >= 1.9)
+        partially_reported = sum(1 for s in scores if 0.9 <= s < 1.9)
+        not_reported = sum(1 for s in scores if s < 0.9)
+
+        # Build the updated assessment object
+        # Extract only the fields needed for PRISMA2020Assessment constructor
+        prisma_fields = self._map_prisma_fields(updated_data)
+
+        updated_assessment = PRISMA2020Assessment(
+            is_systematic_review=assessment.is_systematic_review,
+            is_meta_analysis=assessment.is_meta_analysis,
+            suitability_rationale=assessment.suitability_rationale + " [Enhanced with semantic search]",
+            **prisma_fields,
+            overall_compliance_score=overall_compliance_score,
+            overall_compliance_percentage=overall_compliance_percentage,
+            total_applicable_items=len(scores),
+            fully_reported_items=fully_reported,
+            partially_reported_items=partially_reported,
+            not_reported_items=not_reported,
+            overall_confidence=assessment.overall_confidence,
+            document_id=str(doc_id),
+            document_title=doc_title,
+            pmid=assessment.pmid,
+            doi=assessment.doi
+        )
+
+        self._call_callback("prisma_assessment_enhanced",
+                          f"Enhanced assessment: {items_improved} items improved, "
+                          f"{overall_compliance_percentage:.1f}% compliance")
+
+        return updated_assessment
