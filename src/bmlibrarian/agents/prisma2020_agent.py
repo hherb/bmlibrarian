@@ -1228,11 +1228,22 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         that can be used for semantic search.
 
         Args:
-            document_id: Database ID of the document.
+            document_id: Database ID of the document (must be positive integer).
 
         Returns:
-            DocumentTextStatus object, or None if document not found or database unavailable.
+            DocumentTextStatus object, or None if document not found, invalid ID,
+            or database unavailable.
         """
+        # Validate document_id parameter before any database operations
+        if document_id is None:
+            logger.warning("get_document_text_status called with None document_id")
+            return None
+        if not isinstance(document_id, int) or document_id <= 0:
+            logger.warning(
+                f"Invalid document_id: {document_id} (must be positive integer)"
+            )
+            return None
+
         if get_db_manager is None:
             logger.warning("Database module not available - cannot check document status")
             return None
