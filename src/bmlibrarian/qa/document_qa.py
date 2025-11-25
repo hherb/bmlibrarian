@@ -43,6 +43,7 @@ from .data_types import (
     ProxyCallback,
 )
 from ..utils.url_validation import get_validated_openathens_url
+from ..agents.semantic_query_agent import SemanticQueryAgent, SemanticSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -719,6 +720,7 @@ def answer_from_document(
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     temperature: float = DEFAULT_TEMPERATURE,
     ollama_host: Optional[str] = None,
+    use_adaptive_search: bool = True,
 ) -> SemanticSearchAnswer:
     """
     Answer a question about a specific document using semantic search and LLM.
@@ -757,6 +759,12 @@ def answer_from_document(
             Higher values (0.6-0.8) are stricter but may miss relevant content.
         temperature: LLM temperature for generation. Default 0.3.
         ollama_host: Ollama server URL. Uses config default if None.
+        use_adaptive_search: If True (default), use SemanticQueryAgent for adaptive
+            threshold adjustment and query rephrasing. This automatically:
+            - Lowers threshold if no results are found
+            - Raises threshold if too many results
+            - Rephrases query up to 3 times if needed
+            If False, uses a single fixed-threshold search.
 
     Returns:
         SemanticSearchAnswer with the answer and metadata.
@@ -980,13 +988,50 @@ def answer_from_document(
 
             if status.has_fulltext_chunks:
                 # Perform full-text semantic search
-                chunks = _semantic_search_fulltext(
-                    document_id,
-                    question,
-                    similarity_threshold,
-                    max_chunks,
-                    db_manager,
-                )
+                if use_adaptive_search:
+                    # Use SemanticQueryAgent for adaptive threshold and query rephrasing
+                    agent = SemanticQueryAgent(
+                        initial_threshold=similarity_threshold,
+                    )
+                    search_result: SemanticSearchResult = agent.search_document(
+                        document_id=document_id,
+                        query=question,
+                        min_results=1,
+                        max_results=max_chunks,
+                        use_fulltext=True,
+                        db_manager=db_manager,
+                    )
+                    if search_result.success and search_result.chunks:
+                        chunks = [
+                            ChunkContext(
+                                chunk_id=c.chunk_id,
+                                chunk_no=c.chunk_no,
+                                score=c.score,
+                                text=c.text,
+                            )
+                            for c in search_result.chunks
+                        ]
+                        logger.info(
+                            f"[AdaptiveSearch] Found {len(chunks)} chunks after "
+                            f"{search_result.iterations} iterations, "
+                            f"threshold={search_result.threshold_used:.2f}, "
+                            f"queries tried: {len(search_result.queries_tried)}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[AdaptiveSearch] Failed after {search_result.iterations} "
+                            f"iterations: {search_result.message}"
+                        )
+                        chunks = []
+                else:
+                    # Use fixed-threshold search
+                    chunks = _semantic_search_fulltext(
+                        document_id,
+                        question,
+                        similarity_threshold,
+                        max_chunks,
+                        db_manager,
+                    )
                 if chunks:
                     source = AnswerSource.FULLTEXT_SEMANTIC
                     context_text = "\n\n---\n\n".join(

@@ -15,6 +15,7 @@ Available Agents:
 - PICOAgent: Extracts Population, Intervention, Comparison, and Outcome components from research papers
 - StudyAssessmentAgent: Evaluates research quality, study type, and trustworthiness of evidence
 - PRISMA2020Agent: Assesses systematic reviews against PRISMA 2020 reporting guidelines
+- SemanticQueryAgent: Adaptive semantic search with threshold adjustment and query rephrasing
 
 Paper Weight Assessment Data Models:
 - AssessmentDetail: Audit trail entry for single assessment component
@@ -56,6 +57,12 @@ from .pico_agent import PICOAgent, PICOExtraction
 from .study_assessment_agent import StudyAssessmentAgent, StudyAssessment
 from .prisma2020_agent import PRISMA2020Agent, PRISMA2020Assessment, SuitabilityAssessment
 from .paper_weight import AssessmentDetail, DimensionScore, PaperWeightResult, PaperWeightAssessmentAgent
+from .semantic_query_agent import (
+    SemanticQueryAgent,
+    SemanticSearchResult,
+    ChunkResult,
+    adaptive_semantic_search,
+)
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
@@ -97,6 +104,10 @@ __all__ = [
     "DimensionScore",
     "PaperWeightResult",
     "PaperWeightAssessmentAgent",
+    "SemanticQueryAgent",
+    "SemanticSearchResult",
+    "ChunkResult",
+    "adaptive_semantic_search",
     "TextChunker",
     "TextChunk",
     "chunk_text",
