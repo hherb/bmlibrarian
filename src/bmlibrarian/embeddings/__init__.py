@@ -12,6 +12,8 @@ from .chunk_embedder import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
 )
+from .adaptive_chunker import adaptive_chunker
+from .fast_sentence_chunker import fast_sentence_chunker
 
 __all__ = [
     'DocumentEmbedder',
@@ -20,4 +22,6 @@ __all__ = [
     'chunk_text',
     'DEFAULT_CHUNK_SIZE',
     'DEFAULT_CHUNK_OVERLAP',
+    'adaptive_chunker',
+    'fast_sentence_chunker',
 ]
