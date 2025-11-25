@@ -28,6 +28,11 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 
 from .base import BaseAgent
+from .context_processor import (
+    create_prisma_chunk_processor,
+    ProcessingConfig,
+    ProcessingStatus,
+)
 from bmlibrarian.config import get_model, get_agent_config, get_ollama_host
 
 # Lazy imports for QA and embedding modules (avoid circular imports)
@@ -1228,11 +1233,22 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         that can be used for semantic search.
 
         Args:
-            document_id: Database ID of the document.
+            document_id: Database ID of the document (must be positive integer).
 
         Returns:
-            DocumentTextStatus object, or None if document not found or database unavailable.
+            DocumentTextStatus object, or None if document not found, invalid ID,
+            or database unavailable.
         """
+        # Validate document_id parameter before any database operations
+        if document_id is None:
+            logger.warning("get_document_text_status called with None document_id")
+            return None
+        if not isinstance(document_id, int) or document_id <= 0:
+            logger.warning(
+                f"Invalid document_id: {document_id} (must be positive integer)"
+            )
+            return None
+
         if get_db_manager is None:
             logger.warning("Database module not available - cannot check document status")
             return None
@@ -1389,6 +1405,133 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             logger.error(f"Semantic search failed for document {document_id}: {e}")
             return []
 
+    def _process_semantic_chunks_for_context(
+        self,
+        chunks: List[Tuple[str, float]],
+        item_name: str,
+        item_description: str,
+        original_score: float,
+        original_explanation: str,
+        document_title: str,
+        query: str
+    ) -> str:
+        """
+        Process semantic search chunks using iterative context processing.
+
+        Uses the SemanticChunkProcessor to batch and extract relevant information
+        from chunks without truncation. If the chunks fit within context limits,
+        they are returned directly. Otherwise, LLM extraction consolidates them.
+
+        Args:
+            chunks: List of (text, score) tuples from semantic search.
+            item_name: Name of the PRISMA item being assessed.
+            item_description: Description of the PRISMA requirement.
+            original_score: Original score from first-pass assessment.
+            original_explanation: Original explanation from first-pass assessment.
+            document_title: Title of the document being assessed.
+            query: The semantic search query used.
+
+        Returns:
+            Consolidated context string (never truncated).
+        """
+        if not chunks:
+            return ""
+
+        # Calculate total size of chunks
+        total_chars = sum(len(text) for text, _ in chunks)
+
+        # If chunks fit within context limit, return them directly (no processing needed)
+        if total_chars <= SEMANTIC_CONTEXT_MAX_CHARS:
+            return "\n\n---\n\n".join(
+                f"[Chunk Score: {score:.2f}]\n{text}"
+                for text, score in chunks
+            )
+
+        # Use iterative context processor for large chunk sets
+        logger.info(
+            f"Processing {len(chunks)} chunks ({total_chars} chars) for {item_name} "
+            f"using iterative context processor"
+        )
+
+        try:
+            processor = create_prisma_chunk_processor(
+                llm_client=self.client,
+                model=self.model,
+                item_name=item_name,
+                item_description=item_description,
+                original_score=original_score,
+                original_explanation=original_explanation,
+                document_title=document_title,
+                max_context_chars=SEMANTIC_CONTEXT_MAX_CHARS,
+            )
+
+            result = processor.process(
+                items=chunks,
+                query=query,
+            )
+
+            if result.status == ProcessingStatus.FAILED:
+                logger.warning(
+                    f"Context processing failed for {item_name}: {result.error_message}"
+                )
+                # Fallback: return first chunk that fits
+                return self._fallback_first_chunk(chunks)
+
+            if result.status == ProcessingStatus.PARTIAL:
+                logger.info(
+                    f"Context processing partial for {item_name}: "
+                    f"{len(result.failed_batches)} batches failed"
+                )
+
+            logger.info(
+                f"Processed {item_name}: {len(chunks)} chunks -> "
+                f"{len(result.content)} chars, "
+                f"{result.recursion_levels_used} recursion levels"
+            )
+
+            return result.content
+
+        except Exception as e:
+            logger.error(f"Context processor error for {item_name}: {e}")
+            # Fallback: return first chunk that fits
+            return self._fallback_first_chunk(chunks)
+
+    def _fallback_first_chunk(
+        self,
+        chunks: List[Tuple[str, float]]
+    ) -> str:
+        """
+        Fallback method to return the first chunk that fits within limits.
+
+        Used when the context processor fails. Returns a warning message
+        along with the highest-scoring chunk that fits.
+
+        Args:
+            chunks: List of (text, score) tuples.
+
+        Returns:
+            First chunk that fits, with a warning prefix.
+        """
+        # Sort by score descending to get best chunk first
+        sorted_chunks = sorted(chunks, key=lambda x: x[1], reverse=True)
+
+        for text, score in sorted_chunks:
+            if len(text) <= SEMANTIC_CONTEXT_MAX_CHARS:
+                return (
+                    f"[Note: Full context could not be processed, showing best match]\n"
+                    f"[Chunk Score: {score:.2f}]\n{text}"
+                )
+
+        # If even the best chunk is too large, truncate with warning
+        if sorted_chunks:
+            text, score = sorted_chunks[0]
+            return (
+                f"[Warning: Context truncated due to processing failure]\n"
+                f"[Chunk Score: {score:.2f}]\n{text[:SEMANTIC_CONTEXT_MAX_CHARS]}"
+            )
+
+        return ""
+
     def _re_assess_item_with_context(
         self,
         item_name: str,
@@ -1429,7 +1572,7 @@ Original Score: {original_score}/2.0
 Original Explanation: {original_explanation}
 
 Additional Context from Full Text:
-{additional_context[:SEMANTIC_CONTEXT_MAX_CHARS]}
+{additional_context}
 
 INSTRUCTIONS:
 Review the additional context and determine if your original assessment should be updated.
@@ -1560,6 +1703,26 @@ Respond ONLY with valid JSON."""
         updated_fields = {}
         items_improved = 0
 
+        # Item descriptions for PRISMA re-assessment (defined once, used for all items)
+        item_descriptions = {
+            'search_strategy': 'Full search strategy for at least one database',
+            'selection_process': 'Methods for selecting studies, duplicate screening',
+            'data_collection': 'Methods for data extraction, duplicate extraction',
+            'risk_of_bias': 'Tools/methods for assessing risk of bias in individual studies',
+            'synthesis_methods': 'Methods to prepare/combine/present study results',
+            'reporting_bias_assessment': 'Methods to assess publication bias',
+            'certainty_assessment': 'Methods to assess certainty of evidence (e.g., GRADE)',
+            'study_selection': 'Results of search and selection process with PRISMA flow diagram',
+            'study_characteristics': 'Characteristics of included studies',
+            'risk_of_bias_results': 'Risk of bias assessments for included studies',
+            'individual_studies_results': 'Results of individual studies with summary statistics',
+            'synthesis_results': 'Synthesized results (meta-analysis or other)',
+            'reporting_biases_results': 'Assessment of publication bias',
+            'certainty_of_evidence': 'Assessment of certainty of evidence',
+            'registration': 'Protocol registration information',
+            'support': 'Sources of financial/non-financial support',
+        }
+
         for item in low_scoring_items:
             # Perform semantic search for this item
             chunks = self._semantic_search_document(
@@ -1573,33 +1736,22 @@ Respond ONLY with valid JSON."""
                 logger.debug(f"No relevant chunks found for {item['name']}")
                 continue
 
-            # Combine chunks into context
-            context = "\n\n---\n\n".join(
-                f"[Chunk Score: {score:.2f}]\n{text}"
-                for text, score in chunks
+            # Process chunks using iterative context processor (no truncation)
+            context = self._process_semantic_chunks_for_context(
+                chunks=chunks,
+                item_name=item['name'],
+                item_description=item_descriptions.get(item['name'], ''),
+                original_score=item['original_score'],
+                original_explanation=item['original_explanation'],
+                document_title=doc_title,
+                query=item['query']
             )
 
-            # Get item description from prompt
-            item_descriptions = {
-                'search_strategy': 'Full search strategy for at least one database',
-                'selection_process': 'Methods for selecting studies, duplicate screening',
-                'data_collection': 'Methods for data extraction, duplicate extraction',
-                'risk_of_bias': 'Tools/methods for assessing risk of bias in individual studies',
-                'synthesis_methods': 'Methods to prepare/combine/present study results',
-                'reporting_bias_assessment': 'Methods to assess publication bias',
-                'certainty_assessment': 'Methods to assess certainty of evidence (e.g., GRADE)',
-                'study_selection': 'Results of search and selection process with PRISMA flow diagram',
-                'study_characteristics': 'Characteristics of included studies',
-                'risk_of_bias_results': 'Risk of bias assessments for included studies',
-                'individual_studies_results': 'Results of individual studies with summary statistics',
-                'synthesis_results': 'Synthesized results (meta-analysis or other)',
-                'reporting_biases_results': 'Assessment of publication bias',
-                'certainty_of_evidence': 'Assessment of certainty of evidence',
-                'registration': 'Protocol registration information',
-                'support': 'Sources of financial/non-financial support',
-            }
+            if not context:
+                logger.debug(f"Context processing returned empty for {item['name']}")
+                continue
 
-            # Re-assess with additional context
+            # Re-assess with processed context (no truncation needed)
             new_score, new_explanation = self._re_assess_item_with_context(
                 item_name=item['name'],
                 item_description=item_descriptions.get(item['name'], ''),
