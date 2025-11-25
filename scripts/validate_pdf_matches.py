@@ -33,7 +33,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Any, Optional, List, Dict, TYPE_CHECKING
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -72,20 +72,19 @@ class ValidationResult:
         return asdict(self)
 
 
-def get_database_connection() -> "psycopg.Connection":
-    """Get database connection through DatabaseManager.
+def get_database_manager() -> Any:
+    """Get DatabaseManager instance.
 
     Uses the centralized DatabaseManager which handles environment variables,
     configuration files, and connection pooling.
 
     Returns:
-        Database connection object
+        DatabaseManager instance (use with context manager for connections)
 
     Raises:
-        Exception: If connection fails
+        Exception: If initialization fails
     """
-    db_manager = get_db_manager()
-    return db_manager.get_connection()
+    return get_db_manager()
 
 
 def get_pdf_base_dir() -> Path:
@@ -117,22 +116,26 @@ def get_documents_with_pdfs(
         List of document dictionaries
     """
     with conn.cursor() as cur:
+        # Note: document table uses external_id for PMID (no separate pmid column)
+        # Filter out both NULL and empty string pdf_filename values
         if doc_ids:
             # Specific document IDs
             placeholders = ','.join(['%s'] * len(doc_ids))
             cur.execute(f"""
-                SELECT id, doi, pmid, external_id, title, pdf_filename, publication_date
+                SELECT id, doi, external_id, title, pdf_filename, publication_date
                 FROM document
                 WHERE id IN ({placeholders})
                   AND pdf_filename IS NOT NULL
+                  AND pdf_filename != ''
                 ORDER BY id
             """, doc_ids)
         else:
             # All documents with PDFs, optionally limited
             query = """
-                SELECT id, doi, pmid, external_id, title, pdf_filename, publication_date
+                SELECT id, doi, external_id, title, pdf_filename, publication_date
                 FROM document
                 WHERE pdf_filename IS NOT NULL
+                  AND pdf_filename != ''
                 ORDER BY id DESC
             """
             if limit:
@@ -143,11 +146,11 @@ def get_documents_with_pdfs(
 
         documents = []
         for row in rows:
-            doc_id, doi, pmid, external_id, title, pdf_filename, pub_date = row
+            doc_id, doi, external_id, title, pdf_filename, pub_date = row
             documents.append({
                 'id': doc_id,
                 'doi': doi,
-                'pmid': pmid or external_id,  # Use external_id as fallback for PMID
+                'pmid': external_id,  # external_id stores PMID for PubMed documents
                 'title': title,
                 'pdf_filename': pdf_filename,
                 'publication_date': str(pub_date) if pub_date else None
@@ -426,13 +429,12 @@ def main() -> int:
     print("PDF Validation Tool for BMLibrarian")
     print("=" * 70)
 
-    # Connect to database
+    # Get database manager
     print("Connecting to database...")
     try:
-        conn = get_database_connection()
-        print("  Connected successfully")
+        db_manager = get_database_manager()
     except Exception as e:
-        print(f"  Failed to connect: {e}")
+        print(f"  Failed to initialize database manager: {e}")
         return 1
 
     # Get PDF base directory
@@ -442,42 +444,45 @@ def main() -> int:
     if not base_dir.exists():
         print(f"  Warning: Directory does not exist!")
 
-    # Query documents
-    print("\nQuerying documents with PDFs...")
-    documents = get_documents_with_pdfs(conn, args.ids, args.limit)
-    print(f"  Found {len(documents)} documents to validate")
+    # Use context manager for database connection
+    with db_manager.get_connection() as conn:
+        print("  Connected successfully")
 
-    if not documents:
-        print("No documents to validate.")
-        conn.close()
-        return 0
+        # Query documents
+        print("\nQuerying documents with PDFs...")
+        documents = get_documents_with_pdfs(conn, args.ids, args.limit)
+        print(f"  Found {len(documents)} documents to validate")
 
-    # Validate each document
-    print("\nValidating PDFs...")
-    verifier = PDFVerifier()
-    results: List[ValidationResult] = []
+        if not documents:
+            print("No documents to validate.")
+            return 0
 
-    try:
-        from tqdm import tqdm
-        progress = tqdm(documents, desc="Validating", unit="doc")
-    except ImportError:
-        progress = documents
+        # Validate each document
+        print("\nValidating PDFs...")
+        verifier = PDFVerifier()
+        results: List[ValidationResult] = []
 
-    for doc in progress:
-        result = validate_document_pdf(doc, verifier, base_dir)
-        results.append(result)
+        try:
+            from tqdm import tqdm
+            progress = tqdm(documents, desc="Validating", unit="doc")
+        except ImportError:
+            progress = documents
 
-        # Verbose output
-        if args.verbose:
-            status = "VERIFIED" if result.verified else "MISMATCH" if result.verified is False else "UNKNOWN"
-            print(f"  [{status}] Doc {result.doc_id}: {result.match_type or 'N/A'}")
+        for doc in progress:
+            result = validate_document_pdf(doc, verifier, base_dir)
+            results.append(result)
 
-        # Flag mismatches in database if requested
-        if args.flag_mismatches and result.verified is False:
-            reason = "; ".join(result.warnings) if result.warnings else "Content mismatch"
-            flag_mismatch_in_database(conn, result.doc_id, reason)
+            # Verbose output
+            if args.verbose:
+                status = "VERIFIED" if result.verified else "MISMATCH" if result.verified is False else "UNKNOWN"
+                print(f"  [{status}] Doc {result.doc_id}: {result.match_type or 'N/A'}")
 
-    # Print summary
+            # Flag mismatches in database if requested
+            if args.flag_mismatches and result.verified is False:
+                reason = "; ".join(result.warnings) if result.warnings else "Content mismatch"
+                flag_mismatch_in_database(conn, result.doc_id, reason)
+
+    # Print summary (outside connection context)
     print_summary(results)
 
     # Export results if requested
@@ -499,7 +504,6 @@ def main() -> int:
 
         print(f"\nResults exported to: {output_path}")
 
-    conn.close()
     return 0
 
 

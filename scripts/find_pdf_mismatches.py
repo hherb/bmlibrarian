@@ -117,11 +117,14 @@ def get_pubmed_documents_with_pdfs(
     """
     with conn.cursor() as cur:
         # Build query for PubMed documents only
+        # Note: document table uses external_id for PMID (no separate pmid column)
+        # Filter out both NULL and empty string pdf_filename values
         query = """
-            SELECT id, doi, pmid, external_id, title, pdf_filename, publication_date
+            SELECT id, doi, external_id, title, pdf_filename, publication_date
             FROM document
             WHERE source_id = %s
               AND pdf_filename IS NOT NULL
+              AND pdf_filename != ''
         """
         params: List[Any] = [PUBMED_SOURCE_ID]
 
@@ -142,11 +145,11 @@ def get_pubmed_documents_with_pdfs(
 
         documents = []
         for row in rows:
-            doc_id, doi, pmid, external_id, title, pdf_filename, pub_date = row
+            doc_id, doi, external_id, title, pdf_filename, pub_date = row
             documents.append({
                 'id': doc_id,
                 'doi': doi,
-                'pmid': pmid or external_id,
+                'pmid': external_id,  # external_id stores PMID for PubMed documents
                 'title': title,
                 'pdf_filename': pdf_filename,
                 'publication_date': str(pub_date) if pub_date else None
@@ -169,11 +172,13 @@ def count_pubmed_documents_with_pdfs(
         Count of documents
     """
     with conn.cursor() as cur:
+        # Filter out both NULL and empty string pdf_filename values
         query = """
             SELECT COUNT(*)
             FROM document
             WHERE source_id = %s
               AND pdf_filename IS NOT NULL
+              AND pdf_filename != ''
         """
         params: List[Any] = [PUBMED_SOURCE_ID]
 
@@ -413,10 +418,8 @@ def main() -> int:
     print("Connecting to database...")
     try:
         db_manager = get_db_manager()
-        conn = db_manager.get_connection()
-        print("  Connected successfully")
     except Exception as e:
-        print(f"  Failed to connect: {e}")
+        print(f"  Failed to initialize database manager: {e}")
         return 1
 
     # Get PDF base directory
@@ -426,63 +429,66 @@ def main() -> int:
     if not base_dir.exists():
         print(f"  Warning: Directory does not exist!")
 
-    # Count total documents
-    total_count = count_pubmed_documents_with_pdfs(conn, args.year)
-    scan_count = min(total_count, args.limit) if args.limit else total_count
-    print(f"\nPubMed documents with PDFs: {total_count}")
-    print(f"Documents to scan: {scan_count}")
+    # Use context manager for database connection
+    with db_manager.get_connection() as conn:
+        print("  Connected successfully")
 
-    if scan_count == 0:
-        print("No documents to scan.")
-        conn.close()
-        return 0
+        # Count total documents
+        total_count = count_pubmed_documents_with_pdfs(conn, args.year)
+        scan_count = min(total_count, args.limit) if args.limit else total_count
+        print(f"\nPubMed documents with PDFs: {total_count}")
+        print(f"Documents to scan: {scan_count}")
 
-    # Initialize verifier
-    print("\nInitializing PDF verifier...")
-    verifier = PDFVerifier()
+        if scan_count == 0:
+            print("No documents to scan.")
+            return 0
 
-    # Process in batches
-    print(f"\nScanning PDFs (batch size: {args.batch_size})...")
-    results: List[MismatchResult] = []
-    processed = 0
+        # Initialize verifier
+        print("\nInitializing PDF verifier...")
+        verifier = PDFVerifier()
 
-    try:
-        from tqdm import tqdm
-        use_tqdm = True
-    except ImportError:
-        use_tqdm = False
+        # Process in batches
+        print(f"\nScanning PDFs (batch size: {args.batch_size})...")
+        results: List[MismatchResult] = []
+        processed = 0
 
-    if use_tqdm:
-        pbar = tqdm(total=scan_count, desc="Scanning", unit="doc")
+        try:
+            from tqdm import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
 
-    offset = 0
-    while processed < scan_count:
-        batch_limit = min(args.batch_size, scan_count - processed)
-        documents = get_pubmed_documents_with_pdfs(
-            conn, limit=batch_limit, year=args.year, offset=offset
-        )
+        if use_tqdm:
+            pbar = tqdm(total=scan_count, desc="Scanning", unit="doc")
 
-        if not documents:
-            break
+        offset = 0
+        while processed < scan_count:
+            batch_limit = min(args.batch_size, scan_count - processed)
+            documents = get_pubmed_documents_with_pdfs(
+                conn, limit=batch_limit, year=args.year, offset=offset
+            )
 
-        for doc in documents:
-            result = check_document_pdf(doc, verifier, base_dir)
-            results.append(result)
+            if not documents:
+                break
 
-            if args.verbose and not use_tqdm:
-                status = "✓" if result.verified else "✗" if result.verified is False else "?"
-                print(f"  [{status}] Doc {result.doc_id}: {result.match_type or 'N/A'}")
+            for doc in documents:
+                result = check_document_pdf(doc, verifier, base_dir)
+                results.append(result)
 
-            processed += 1
-            if use_tqdm:
-                pbar.update(1)
+                if args.verbose and not use_tqdm:
+                    status = "✓" if result.verified else "✗" if result.verified is False else "?"
+                    print(f"  [{status}] Doc {result.doc_id}: {result.match_type or 'N/A'}")
 
-        offset += len(documents)
+                processed += 1
+                if use_tqdm:
+                    pbar.update(1)
 
-    if use_tqdm:
-        pbar.close()
+            offset += len(documents)
 
-    # Print summary
+        if use_tqdm:
+            pbar.close()
+
+    # Print summary (outside connection context)
     print_summary(results, processed)
 
     # Export results if requested
@@ -518,8 +524,6 @@ def main() -> int:
         print(f"\nResults exported to: {output_path}")
         if args.mismatches_only:
             print(f"  ({len(output_results)} mismatches exported)")
-
-    conn.close()
 
     # Return non-zero if mismatches found
     mismatch_count = sum(1 for r in results if r.is_mismatch)
