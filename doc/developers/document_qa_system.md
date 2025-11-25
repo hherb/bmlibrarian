@@ -42,11 +42,33 @@ class QAError(Enum):
     LLM_ERROR = "llm_error"
     DATABASE_ERROR = "database_error"
     CONFIGURATION_ERROR = "configuration_error"
+    PROXY_REQUIRED = "proxy_required"      # PDF requires institutional access
+    USER_CANCELLED = "user_cancelled"      # User declined proxy/upload
 
     @property
     def description(self) -> str:
         """Get human-readable description."""
         ...
+```
+
+### ProxyCallbackResult
+
+Result from the proxy callback function for user consent:
+
+```python
+@dataclass
+class ProxyCallbackResult:
+    pdf_made_available: bool = False  # User uploaded PDF externally
+    allow_proxy: bool = False         # User consents to proxy download
+```
+
+### ProxyCallback Type
+
+Type alias for the callback function signature:
+
+```python
+ProxyCallback = Callable[[int, Optional[str]], ProxyCallbackResult]
+# Callback receives: (document_id, document_title) -> ProxyCallbackResult
 ```
 
 ### ChunkContext
@@ -212,9 +234,22 @@ answer_from_document(document_id, question)
     ├─► 6. If use_fulltext=True:
     │       │
     │       ├─► 6a. If no fulltext and download_missing=True:
-    │       │       └─► _download_fulltext_if_needed()
-    │       │           ├─► FullTextFinder.discover_and_download()
-    │       │           └─► (with OpenAthens if use_proxy=True)
+    │       │       └─► First try open-access sources (no proxy)
+    │       │           │
+    │       │           ├─► If success: refresh status
+    │       │           │
+    │       │           └─► If failed, decide on proxy:
+    │       │               │
+    │       │               ├─► If always_allow_proxy=True:
+    │       │               │       └─► Use proxy directly
+    │       │               │
+    │       │               ├─► If proxy_callback provided:
+    │       │               │       └─► Invoke callback
+    │       │               │           ├─► pdf_made_available → refresh status
+    │       │               │           ├─► allow_proxy → retry with proxy
+    │       │               │           └─► neither → fall back to abstract
+    │       │               │
+    │       │               └─► Otherwise: skip proxy, fall back to abstract
     │       │
     │       ├─► 6b. If fulltext exists but no chunks:
     │       │       └─► _embed_fulltext_if_needed()
@@ -282,13 +317,18 @@ def _extract_thinking(response_content: str) -> Tuple[str, Optional[str]]:
       "similarity_threshold": 0.7,
       "use_fulltext": true,
       "download_missing_fulltext": true,
-      "use_proxy": true,
+      "always_allow_proxy": false,
       "use_thinking": true,
       "embedding_model": "snowflake-arctic-embed2:latest"
     }
   }
 }
 ```
+
+**Note**: `always_allow_proxy` controls automatic proxy usage. When `false` (default),
+the system requires a `proxy_callback` to be provided for user consent before using
+institutional proxy (OpenAthens). When `true`, proxy is used automatically without
+asking the user.
 
 ### Config Integration
 
@@ -368,7 +408,8 @@ Located in `tests/qa/`:
 tests/qa/
 ├── __init__.py
 ├── test_data_types.py       # Data type tests
-└── test_document_qa.py      # Function tests (mocked)
+├── test_document_qa.py      # Function tests (mocked)
+└── test_proxy_callback.py   # Proxy callback tests
 ```
 
 ### Integration Testing
