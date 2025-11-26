@@ -340,7 +340,11 @@ class PDFManager:
         unpaywall_email: Optional[str] = None,
         progress_callback: Optional[Callable[[str, str], None]] = None,
         verify_content: bool = True,
-        delete_on_mismatch: bool = False
+        delete_on_mismatch: bool = False,
+        prompt_on_mismatch: bool = False,
+        verification_callback: Optional[Callable] = None,
+        parent_widget=None,
+        max_retries: int = 3
     ) -> Optional[Path]:
         """Download PDF using discovery-first workflow.
 
@@ -353,6 +357,7 @@ class PDFManager:
         2. Tries direct HTTP download from each source in priority order
         3. Falls back to browser-based download if HTTP fails
         4. Verifies downloaded PDF matches expected document (if verify_content=True)
+        5. If mismatch detected and prompt_on_mismatch=True, prompts user for decision
 
         Args:
             document: Document dictionary with:
@@ -367,10 +372,16 @@ class PDFManager:
             unpaywall_email: Email for Unpaywall API (optional)
             progress_callback: Optional callback(stage, status) for progress
             verify_content: Verify downloaded PDF matches document metadata (default True)
-            delete_on_mismatch: Delete PDF if verification fails (default False)
+            delete_on_mismatch: Delete PDF if verification fails (default False, ignored if prompt_on_mismatch=True)
+            prompt_on_mismatch: If True, prompt user for decision on verification failure (default False)
+            verification_callback: Optional custom callback for verification prompts.
+                Signature: callback(data: VerificationPromptData) -> tuple[VerificationDecision, Optional[Path]]
+                If None, uses GUI dialog (if parent_widget provided) or CLI prompt
+            parent_widget: Optional parent widget for GUI dialogs
+            max_retries: Maximum retry attempts when user chooses "Retry" (default 3)
 
         Returns:
-            Path to downloaded file, or None if all methods failed
+            Path to downloaded file, or None if all methods failed or user rejected
 
         Example:
             pdf_manager = PDFManager(base_dir='~/pdfs')
@@ -378,7 +389,8 @@ class PDFManager:
             path = pdf_manager.download_pdf_with_discovery(
                 document,
                 unpaywall_email='user@example.com',
-                verify_content=True
+                verify_content=True,
+                prompt_on_mismatch=True  # Interactive verification
             )
         """
         try:
@@ -392,50 +404,201 @@ class PDFManager:
         if self.openathens_auth and hasattr(self.openathens_auth, 'config'):
             openathens_proxy_url = getattr(self.openathens_auth.config, 'institution_url', None)
 
-        # Use discovery system with verification
-        result = download_pdf_for_document(
-            document=document,
-            output_dir=self.base_dir,
-            unpaywall_email=unpaywall_email,
-            openathens_proxy_url=openathens_proxy_url,
-            use_browser_fallback=use_browser_fallback,
-            progress_callback=progress_callback,
-            verify_content=verify_content,
-            delete_on_mismatch=delete_on_mismatch
-        )
+        retry_count = 0
+        while retry_count <= max_retries:
+            # Use discovery system with verification
+            result = download_pdf_for_document(
+                document=document,
+                output_dir=self.base_dir,
+                unpaywall_email=unpaywall_email,
+                openathens_proxy_url=openathens_proxy_url,
+                use_browser_fallback=use_browser_fallback,
+                progress_callback=progress_callback,
+                verify_content=verify_content,
+                delete_on_mismatch=False  # Don't auto-delete, we'll handle it
+            )
 
-        if result.success and result.file_path:
+            if not result.success or not result.file_path:
+                # Download failed completely
+                logger.warning(
+                    f"Discovery download failed for document {document.get('id')}: "
+                    f"{result.error_message}"
+                )
+                return None
+
             pdf_path = Path(result.file_path)
 
-            # Update document with pdf_filename for database storage
-            document['pdf_filename'] = pdf_path.name
-
-            # Log verification status
+            # Handle verification result
             if result.verified is True:
+                # Verified successfully - accept the PDF
+                document['pdf_filename'] = pdf_path.name
                 logger.info(
                     f"Downloaded PDF via discovery: {pdf_path} "
                     f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
                     f"VERIFIED by {result.verification_match_type}, "
                     f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
                 )
+                return pdf_path
+
             elif result.verified is False:
+                # Verification failed - mismatch detected
                 logger.warning(
-                    f"Downloaded PDF via discovery: {pdf_path} "
-                    f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
-                    f"MISMATCH: {result.verification_warnings}, "
-                    f"{result.file_size} bytes)"
+                    f"PDF verification FAILED for document {document.get('id')}: "
+                    f"{result.verification_warnings}"
                 )
+
+                if prompt_on_mismatch:
+                    # Prompt user for decision
+                    decision, save_path = self._handle_verification_mismatch(
+                        result=result,
+                        document=document,
+                        pdf_path=pdf_path,
+                        verification_callback=verification_callback,
+                        parent_widget=parent_widget
+                    )
+
+                    if decision == 'accept':
+                        # User accepted despite mismatch
+                        document['pdf_filename'] = pdf_path.name
+                        logger.info(
+                            f"User ACCEPTED mismatched PDF for document {document.get('id')}: "
+                            f"{pdf_path}"
+                        )
+                        return pdf_path
+
+                    elif decision == 'save_as':
+                        # User wants to save elsewhere without ingesting
+                        if save_path:
+                            try:
+                                shutil.copy2(pdf_path, save_path)
+                                logger.info(
+                                    f"Saved PDF to user location: {save_path} "
+                                    f"(not ingested for document {document.get('id')})"
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to save PDF to {save_path}: {e}")
+                        # Delete the original mismatched file
+                        try:
+                            pdf_path.unlink()
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temp PDF: {e}")
+                        return None
+
+                    elif decision == 'retry':
+                        # User wants to try again
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            logger.info(
+                                f"Retrying PDF download for document {document.get('id')} "
+                                f"(attempt {retry_count + 1}/{max_retries + 1})"
+                            )
+                            # Delete the mismatched file before retry
+                            try:
+                                pdf_path.unlink()
+                            except Exception as e:
+                                logger.warning(f"Failed to delete temp PDF: {e}")
+                            continue
+                        else:
+                            logger.warning(
+                                f"Max retries ({max_retries}) reached for document {document.get('id')}"
+                            )
+                            return None
+
+                    else:  # 'reject'
+                        # User rejected the PDF
+                        logger.info(
+                            f"User REJECTED mismatched PDF for document {document.get('id')}"
+                        )
+                        try:
+                            pdf_path.unlink()
+                        except Exception as e:
+                            logger.warning(f"Failed to delete rejected PDF: {e}")
+                        return None
+
+                else:
+                    # No prompting - use delete_on_mismatch behavior
+                    if delete_on_mismatch:
+                        try:
+                            pdf_path.unlink()
+                            logger.info(f"Deleted mismatched PDF: {pdf_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete mismatched PDF: {e}")
+                        return None
+                    else:
+                        # Keep the mismatched PDF but don't assign it
+                        logger.warning(
+                            f"Keeping mismatched PDF (not assigned): {pdf_path}"
+                        )
+                        return None
+
             else:
+                # Verification not performed (verified is None)
+                document['pdf_filename'] = pdf_path.name
                 logger.info(
                     f"Downloaded PDF via discovery: {pdf_path} "
                     f"(source: {result.source.source_type.value if result.source else 'unknown'}, "
                     f"{result.file_size} bytes, {result.duration_ms:.0f}ms)"
                 )
-            return pdf_path
+                return pdf_path
 
-        # Log failure reason
-        logger.warning(f"Discovery download failed for document {document.get('id')}: {result.error_message}")
+        # Should not reach here, but just in case
+        logger.warning(f"Download loop exited unexpectedly for document {document.get('id')}")
         return None
+
+    def _handle_verification_mismatch(
+        self,
+        result,
+        document: Dict[str, Any],
+        pdf_path: Path,
+        verification_callback: Optional[Callable] = None,
+        parent_widget=None
+    ) -> Tuple[str, Optional[Path]]:
+        """Handle verification mismatch by prompting user for decision.
+
+        Args:
+            result: DownloadResult with verification info
+            document: Document dictionary
+            pdf_path: Path to downloaded PDF
+            verification_callback: Optional custom callback
+            parent_widget: Optional parent widget for GUI
+
+        Returns:
+            Tuple of (decision_string, optional_save_path)
+            decision_string is one of: 'accept', 'save_as', 'retry', 'reject'
+        """
+        from bmlibrarian.discovery.verification_prompt import (
+            VerificationPromptData,
+            VerificationDecision,
+            prompt_cli_verification,
+            prompt_gui_verification
+        )
+
+        # Build verification prompt data using extracted identifiers from DownloadResult
+        prompt_data = VerificationPromptData(
+            pdf_path=pdf_path,
+            expected_doi=document.get('doi'),
+            extracted_doi=getattr(result, 'extracted_doi', None),
+            expected_title=document.get('title'),
+            extracted_title=getattr(result, 'extracted_title', None),
+            expected_pmid=document.get('pmid') or document.get('pubmed_id'),
+            extracted_pmid=getattr(result, 'extracted_pmid', None),
+            title_similarity=getattr(result, 'title_similarity', None) or result.verification_confidence,
+            verification_warnings=result.verification_warnings,
+            doc_id=document.get('id')
+        )
+
+        # Use custom callback if provided
+        if verification_callback:
+            decision, save_path = verification_callback(prompt_data)
+        elif parent_widget is not None:
+            # Use GUI dialog
+            decision, save_path = prompt_gui_verification(prompt_data, parent_widget)
+        else:
+            # Use CLI prompt
+            decision, save_path = prompt_cli_verification(prompt_data)
+
+        # Convert VerificationDecision enum to string
+        return decision.value, save_path
 
     def get_or_download_with_discovery(
         self,

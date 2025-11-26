@@ -704,6 +704,11 @@ class FullTextFinder:
             download_result.verification_confidence = verification.confidence
             download_result.verification_match_type = verification.match_type
             download_result.verification_warnings = verification.warnings
+            # Store extracted identifiers for verification dialogs
+            download_result.extracted_doi = verification.extracted_doi
+            download_result.extracted_pmid = verification.extracted_pmid
+            download_result.extracted_title = verification.extracted_title
+            download_result.title_similarity = verification.title_similarity
 
             if verification.verified:
                 logger.info(

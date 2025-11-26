@@ -92,6 +92,13 @@ from .download_logger import (
     check_migration_applied
 )
 
+from .verification_prompt import (
+    VerificationDecision,
+    VerificationPromptData,
+    prompt_cli_verification,
+    prompt_gui_verification
+)
+
 __all__ = [
     # Data types
     'SourceType',
@@ -130,4 +137,9 @@ __all__ = [
     'get_download_history',
     'get_mismatched_downloads',
     'check_migration_applied',
+    # Verification prompts
+    'VerificationDecision',
+    'VerificationPromptData',
+    'prompt_cli_verification',
+    'prompt_gui_verification',
 ]

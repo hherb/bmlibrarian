@@ -1435,12 +1435,19 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 # and provides content verification to catch wrong PDFs
                 if self.pdf_manager and hasattr(self.pdf_manager, 'download_pdf_with_discovery'):
                     logger.info(f"Using discovery workflow for document {card_data.doc_id}")
+
+                    # Get parent widget for GUI dialogs
+                    parent_widget = self._parent if hasattr(self, '_parent') else None
+
                     pdf_path = self.pdf_manager.download_pdf_with_discovery(
                         document,
                         use_browser_fallback=True,
                         unpaywall_email=self.unpaywall_email,
                         verify_content=True,  # Verify PDF matches expected document
-                        delete_on_mismatch=False  # Keep mismatched PDFs for investigation
+                        delete_on_mismatch=False,  # Don't auto-delete, prompt user instead
+                        prompt_on_mismatch=True,  # Show verification dialog on mismatch
+                        parent_widget=parent_widget,  # Parent for GUI dialog
+                        max_retries=3  # Allow user to retry up to 3 times
                     )
 
                     if pdf_path and pdf_path.exists():
@@ -1451,13 +1458,13 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                         logger.info(f"Downloaded PDF via discovery for document {card_data.doc_id}: {pdf_path}")
                         return pdf_path
 
-                    # Discovery failed - provide helpful error message
+                    # Discovery failed or user rejected - provide helpful error message
                     error_msg = f"Failed to download PDF for document {card_data.doc_id}"
                     if card_data.pdf_url:
                         if "oup.com" in card_data.pdf_url or "springer" in card_data.pdf_url:
                             error_msg += " (Access restricted, likely requires institutional subscription)"
                         else:
-                            error_msg += f" - no sources found or all failed"
+                            error_msg += f" - no sources found, all failed, or user rejected"
                     raise FileNotFoundError(error_msg)
 
                 raise ValueError("No PDF manager configured for fetch")

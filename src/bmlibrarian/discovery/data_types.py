@@ -186,3 +186,8 @@ class DownloadResult:
     verification_confidence: Optional[float] = None  # 0.0 to 1.0
     verification_match_type: Optional[str] = None  # 'doi', 'pmid', 'title', 'doi_mismatch'
     verification_warnings: Optional[List[str]] = None  # Warnings from verification
+    # Extracted identifiers from PDF (for verification dialogs)
+    extracted_doi: Optional[str] = None
+    extracted_pmid: Optional[str] = None
+    extracted_title: Optional[str] = None
+    title_similarity: Optional[float] = None  # 0.0 to 1.0
