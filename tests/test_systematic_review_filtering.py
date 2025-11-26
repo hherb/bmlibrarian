@@ -1604,6 +1604,28 @@ class TestFilterEdgeCases:
         assert "in vitro" in keywords
         assert "editorial" in keywords or "editorials" in keywords
 
+    def test_keyword_singular_plural_conversion(self) -> None:
+        """Test that singular/plural keyword conversion works correctly."""
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=[
+                "animal study",  # Singular form
+                "case reports",  # Plural form
+            ],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+        keywords = filter_obj._exclusion_keywords
+
+        # Both singular and plural forms should be present
+        assert "animal study" in keywords
+        assert "animal studies" in keywords
+        assert "case report" in keywords
+        assert "case reports" in keywords
+
     def test_definitive_pattern_compilation_errors(self) -> None:
         """Test that all definitive title patterns compile without errors."""
         from bmlibrarian.agents.systematic_review.filters import (

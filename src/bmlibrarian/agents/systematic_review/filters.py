@@ -191,12 +191,15 @@ LLM_MAX_TOKENS = 800  # Maximum tokens for LLM response
 # Display limits for prompts
 MAX_AUTHORS_TO_DISPLAY = 5  # Maximum authors to include in evaluation prompts
 
+# Pattern cache size for performance optimization
+PATTERN_CACHE_SIZE = 256  # Maximum cached pattern compilations
+
 
 # =============================================================================
 # Cached Pattern Compilation Helpers
 # =============================================================================
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=PATTERN_CACHE_SIZE)
 def _compile_negative_context_pattern(pattern_template: str, keyword: str) -> Pattern:
     """
     Compile a negative context pattern with keyword substitution.
@@ -421,18 +424,18 @@ class InitialFilter:
 
             # Handle common patterns like "X studies" -> also add "X study"
             if part.endswith(" studies"):
-                singular = part[:-7] + "study"
+                singular = part[:-7] + "study"  # Remove "studies" (7 chars)
                 keywords.add(singular)
             elif part.endswith(" study"):
-                plural = part[:-4] + "studies"
+                plural = part[:-5] + "studies"  # Remove "study" (5 chars)
                 keywords.add(plural)
 
             # Handle "X reports" -> "X report"
             if part.endswith(" reports"):
-                singular = part[:-7] + "report"
+                singular = part[:-7] + "report"  # Remove "reports" (7 chars)
                 keywords.add(singular)
             elif part.endswith(" report"):
-                plural = part[:-6] + "reports"
+                plural = part[:-6] + "reports"  # Remove "report" (6 chars)
                 keywords.add(plural)
 
         # Filter out very short or generic keywords
