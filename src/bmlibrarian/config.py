@@ -348,7 +348,12 @@ DEFAULT_CONFIG = {
         "reporting": {
             "temperature": 0.1,
             "top_p": 0.9,
-            "max_tokens": 3000
+            "max_tokens": 3000,
+            # Map-reduce settings for large citation sets
+            "map_reduce_citation_threshold": 15,  # Use map-reduce above this many citations
+            "map_batch_size": 8,  # Citations per batch in map phase
+            "effective_context_limit": 6000,  # Estimated token limit for citations
+            "map_passage_max_length": 500  # Max chars per passage in map phase (prevents context overflow)
         },
         "editor": {
             "temperature": 0.1,

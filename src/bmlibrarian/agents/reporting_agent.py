@@ -182,6 +182,9 @@ class ReportingAgent(BaseAgent):
                         callback=callback, orchestrator=orchestrator, show_model_info=show_model_info)
         self.agent_type = "reporting_agent"
 
+        # Load map-reduce configuration from config system
+        self._load_map_reduce_config()
+
         # Initialize audit tracking components if connection provided
         self._report_tracker = None
 
@@ -193,6 +196,49 @@ class ReportingAgent(BaseAgent):
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
         return "reporting_agent"
+
+    def _load_map_reduce_config(self) -> None:
+        """
+        Load map-reduce configuration from the config system.
+
+        Sets instance attributes for map-reduce processing thresholds.
+        Falls back to class-level defaults if config is unavailable.
+        """
+        try:
+            from ..config import get_agent_config
+            config = get_agent_config("reporting")
+
+            # Load map-reduce settings with fallbacks to class defaults
+            self.map_reduce_citation_threshold = config.get(
+                'map_reduce_citation_threshold',
+                self.MAP_REDUCE_CITATION_THRESHOLD
+            )
+            self.map_batch_size = config.get(
+                'map_batch_size',
+                self.MAP_BATCH_SIZE
+            )
+            self.effective_context_limit = config.get(
+                'effective_context_limit',
+                6000  # Default token limit for citations
+            )
+            self.map_passage_max_length = config.get(
+                'map_passage_max_length',
+                self.MAP_PASSAGE_MAX_LENGTH
+            )
+
+            logger.debug(
+                f"Map-reduce config loaded: threshold={self.map_reduce_citation_threshold}, "
+                f"batch_size={self.map_batch_size}, context_limit={self.effective_context_limit}, "
+                f"passage_max_length={self.map_passage_max_length}"
+            )
+
+        except Exception as e:
+            # Fallback to class defaults if config loading fails
+            logger.warning(f"Could not load map-reduce config, using defaults: {e}")
+            self.map_reduce_citation_threshold = self.MAP_REDUCE_CITATION_THRESHOLD
+            self.map_batch_size = self.MAP_BATCH_SIZE
+            self.effective_context_limit = 6000
+            self.map_passage_max_length = self.MAP_PASSAGE_MAX_LENGTH
 
     def create_references(self, citations: List[Citation]) -> List[Reference]:
         """
@@ -393,7 +439,417 @@ class ReportingAgent(BaseAgent):
             return "Limited"
         else:
             return "Insufficient"
-    
+
+    # ============================================================================
+    # Map-Reduce Pattern for Large Citation Sets
+    # ============================================================================
+    # When citation count exceeds the model's effective context window, we use a
+    # map-reduce approach:
+    # 1. MAP: Process citations in batches to extract key findings
+    # 2. REDUCE: Synthesize batch summaries into a final coherent report
+    # ============================================================================
+
+    # Configuration constants for map-reduce processing
+    MAP_REDUCE_CITATION_THRESHOLD = 15  # Use map-reduce when citations exceed this
+    MAP_BATCH_SIZE = 8  # Number of citations per batch in map phase
+    MAP_PASSAGE_MAX_LENGTH = 500  # Max characters per passage in map phase (full passage used in reduce)
+
+    def _estimate_citation_tokens(self, citations: List[Citation]) -> int:
+        """
+        Estimate the token count for a list of citations.
+
+        Uses a simple heuristic: ~4 characters per token (conservative estimate).
+        This helps determine whether map-reduce is needed.
+
+        Args:
+            citations: List of citations to estimate
+
+        Returns:
+            Estimated token count
+        """
+        total_chars = 0
+        for citation in citations:
+            # Count characters in key fields
+            total_chars += len(citation.document_title or "")
+            total_chars += len(citation.summary or "")
+            total_chars += len(citation.passage or "")
+            # Add overhead for formatting
+            total_chars += 100  # Template text per citation
+
+        # Conservative estimate: ~4 chars per token
+        return total_chars // 4
+
+    def _should_use_map_reduce(self, citations: List[Citation]) -> bool:
+        """
+        Determine whether to use map-reduce based on citation count and estimated size.
+
+        Uses instance configuration (loaded from config system) for thresholds.
+
+        Args:
+            citations: List of citations to process
+
+        Returns:
+            True if map-reduce should be used, False for direct synthesis
+        """
+        citation_count = len(citations)
+
+        # Use instance threshold (from config) or fall back to class default
+        threshold = getattr(
+            self, 'map_reduce_citation_threshold', self.MAP_REDUCE_CITATION_THRESHOLD
+        )
+
+        # Always use map-reduce above threshold
+        if citation_count > threshold:
+            logger.info(
+                f"Map-reduce triggered: {citation_count} citations "
+                f"(threshold: {threshold})"
+            )
+            return True
+
+        # Also check estimated token count for smaller sets with long passages
+        estimated_tokens = self._estimate_citation_tokens(citations)
+
+        # Use instance context limit (from config) or default
+        context_limit = getattr(self, 'effective_context_limit', 6000)
+
+        if estimated_tokens > context_limit:
+            logger.info(
+                f"Map-reduce triggered: estimated {estimated_tokens} tokens "
+                f"(limit: {context_limit})"
+            )
+            return True
+
+        return False
+
+    def _map_phase_summarize_batch(
+        self,
+        user_question: str,
+        batch_citations: List[Citation],
+        doc_to_ref: Dict[str, int],
+        batch_number: int,
+        total_batches: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        MAP PHASE: Summarize a batch of citations into key findings.
+
+        Processes a subset of citations and extracts:
+        - Main themes/findings
+        - Key evidence points with reference numbers
+        - Relevance to the research question
+
+        Args:
+            user_question: Original research question
+            batch_citations: Subset of citations to process
+            doc_to_ref: Mapping from document IDs to reference numbers
+            batch_number: Current batch number (1-indexed)
+            total_batches: Total number of batches
+
+        Returns:
+            Dictionary with batch summary or None if processing failed
+        """
+        logger.info(
+            f"Map phase: processing batch {batch_number}/{total_batches} "
+            f"({len(batch_citations)} citations)"
+        )
+
+        # Prepare citation summaries for this batch
+        # Use configurable max length for passages to manage context window
+        passage_max_length = getattr(self, 'map_passage_max_length', self.MAP_PASSAGE_MAX_LENGTH)
+
+        citation_summaries = []
+        for citation in batch_citations:
+            ref_number = doc_to_ref.get(citation.document_id, '?')
+            # Truncate passage for map phase only (full passage available in original citation)
+            passage_text = citation.passage or ""
+            if len(passage_text) > passage_max_length:
+                passage_display = f"{passage_text[:passage_max_length]}..."
+            else:
+                passage_display = passage_text
+
+            citation_summaries.append(f"""
+[Reference {ref_number}]:
+Title: {citation.document_title}
+Summary: {citation.summary}
+Key Passage: "{passage_display}"
+Relevance: {citation.relevance_score:.2f}
+""")
+
+        prompt = f"""You are a medical writing expert. Analyze this batch of citations and extract key findings relevant to the research question.
+
+Research Question: "{user_question}"
+
+Citations in this batch (batch {batch_number} of {total_batches}):
+{chr(10).join(citation_summaries)}
+
+Your task:
+1. Identify 2-4 main themes or findings from these citations
+2. For each theme, note the supporting reference numbers
+3. Highlight any contradictory or nuanced findings
+4. Note the overall relevance to the research question
+
+Response format (JSON):
+{{
+    "themes": [
+        {{
+            "theme": "Brief theme description",
+            "key_finding": "One sentence summarizing the finding",
+            "supporting_refs": [1, 2, 3],
+            "evidence_strength": "strong/moderate/limited"
+        }}
+    ],
+    "contradictions": ["Any contradictory findings noted, or empty list"],
+    "batch_relevance": "high/medium/low"
+}}
+
+Be concise but comprehensive. Focus on extracting the most important evidence."""
+
+        try:
+            llm_response = self._generate_from_prompt(
+                prompt,
+                num_predict=getattr(self, 'max_tokens', 1500)
+            )
+
+            batch_data = self._parse_json_response(llm_response)
+            batch_data['batch_number'] = batch_number
+            batch_data['citation_count'] = len(batch_citations)
+            batch_data['reference_numbers'] = [
+                doc_to_ref.get(c.document_id, '?') for c in batch_citations
+            ]
+
+            logger.info(
+                f"Batch {batch_number} extracted {len(batch_data.get('themes', []))} themes"
+            )
+            return batch_data
+
+        except Exception as e:
+            logger.error(f"Map phase batch {batch_number} failed: {e}")
+            return None
+
+    def _reduce_phase_synthesize(
+        self,
+        user_question: str,
+        batch_summaries: List[Dict[str, Any]],
+        references: List['Reference']
+    ) -> Optional[str]:
+        """
+        REDUCE PHASE: Synthesize batch summaries into final report.
+
+        Combines the extracted themes from all batches into a coherent,
+        well-structured medical report.
+
+        Args:
+            user_question: Original research question
+            batch_summaries: List of batch summary dictionaries from map phase
+            references: List of Reference objects for citation
+
+        Returns:
+            Synthesized report content or None if synthesis failed
+        """
+        logger.info(
+            f"Reduce phase: synthesizing {len(batch_summaries)} batch summaries"
+        )
+
+        # Compile all themes from batches
+        all_themes = []
+        all_contradictions = []
+        total_citations = 0
+
+        for batch in batch_summaries:
+            for theme in batch.get('themes', []):
+                theme['source_batch'] = batch.get('batch_number', 0)
+                all_themes.append(theme)
+            all_contradictions.extend(batch.get('contradictions', []))
+            total_citations += batch.get('citation_count', 0)
+
+        # Format themes for the synthesis prompt
+        themes_text = []
+        for i, theme in enumerate(all_themes, 1):
+            refs = ', '.join(str(r) for r in theme.get('supporting_refs', []))
+            themes_text.append(f"""
+Theme {i}: {theme.get('theme', 'Unknown')}
+- Finding: {theme.get('key_finding', '')}
+- References: [{refs}]
+- Strength: {theme.get('evidence_strength', 'unknown')}
+""")
+
+        contradictions_text = ""
+        if all_contradictions:
+            contradictions_text = f"\nNoted contradictions:\n" + "\n".join(
+                f"- {c}" for c in all_contradictions if c
+            )
+
+        prompt = f"""You are a medical writing expert. Synthesize these extracted themes into a comprehensive medical research report.
+
+Research Question: "{user_question}"
+
+Extracted Evidence Themes ({len(all_themes)} themes from {len(batch_summaries)} citation batches, {total_citations} total citations):
+{chr(10).join(themes_text)}
+{contradictions_text}
+
+Your task is to create a structured, readable report:
+
+1. **Introduction (2-3 sentences)**:
+   - Start with a clear, direct answer to the research question
+   - Provide context for the evidence that follows
+
+2. **Evidence and Discussion (3-4 paragraphs)**:
+   - Group related themes into coherent paragraphs
+   - Use reference numbers [X] to cite supporting evidence
+   - Address any contradictions or nuances in the evidence
+   - Synthesize findings rather than listing them
+
+3. **Conclusion (1-2 sentences)**:
+   - Summarize key findings and implications
+
+**Writing Guidelines:**
+- Use formal, professional medical writing style
+- Use specific years (e.g., "In a 2023 study") NOT vague references ("recently")
+- Ensure smooth transitions between sections
+- Create a cohesive narrative, not a list of findings
+
+Response format (JSON):
+{{
+    "introduction": "2-3 sentences directly answering the research question",
+    "evidence_discussion": "3-4 well-structured paragraphs with [X] citations",
+    "conclusion": "1-2 sentences summarizing key findings",
+    "themes_integrated": ["List of theme topics covered"]
+}}
+
+Write a professional medical report that synthesizes all evidence."""
+
+        try:
+            llm_response = self._generate_from_prompt(
+                prompt,
+                num_predict=getattr(self, 'max_tokens', 4000)
+            )
+
+            report_data = self._parse_json_response(llm_response)
+
+            # Construct the final report
+            introduction = report_data.get('introduction', '')
+            evidence_discussion = report_data.get('evidence_discussion', '')
+            conclusion = report_data.get('conclusion', '')
+
+            if not introduction or not evidence_discussion:
+                logger.warning("Incomplete reduce phase response")
+                return None
+
+            structured_content = f"{introduction}\n\n## Evidence and Discussion\n\n{evidence_discussion}"
+            if conclusion:
+                structured_content += f"\n\n## Conclusion\n\n{conclusion}"
+
+            logger.info(
+                f"Reduce phase complete: integrated {len(report_data.get('themes_integrated', []))} themes"
+            )
+            return structured_content
+
+        except Exception as e:
+            logger.error(f"Reduce phase synthesis failed: {e}")
+            return None
+
+    def map_reduce_synthesis(
+        self,
+        user_question: str,
+        citations: List[Citation],
+        doc_to_ref: Dict[str, int]
+    ) -> Optional[str]:
+        """
+        Perform map-reduce synthesis for large citation sets.
+
+        This method handles citation sets that would overflow the model's
+        context window by:
+        1. Splitting citations into manageable batches
+        2. Extracting key themes from each batch (MAP)
+        3. Synthesizing all themes into a final report (REDUCE)
+
+        Args:
+            user_question: Original research question
+            citations: List of all citations to synthesize
+            doc_to_ref: Mapping from document IDs to reference numbers
+
+        Returns:
+            Synthesized report content or None if synthesis failed
+        """
+        logger.info(
+            f"Starting map-reduce synthesis for {len(citations)} citations"
+        )
+
+        # Sort citations by relevance (highest first)
+        sorted_citations = sorted(
+            citations, key=lambda c: c.relevance_score, reverse=True
+        )
+
+        # Use instance batch size (from config) or class default
+        batch_size = getattr(self, 'map_batch_size', self.MAP_BATCH_SIZE)
+
+        # Split into batches
+        batches = []
+        for i in range(0, len(sorted_citations), batch_size):
+            batch = sorted_citations[i:i + batch_size]
+            batches.append(batch)
+
+        logger.info(f"Split into {len(batches)} batches of up to {batch_size} citations")
+
+        # MAP PHASE: Process each batch
+        batch_summaries = []
+        for batch_num, batch in enumerate(batches, 1):
+            self._call_callback(
+                "map_phase_progress",
+                f"Processing citation batch {batch_num}/{len(batches)}"
+            )
+
+            batch_summary = self._map_phase_summarize_batch(
+                user_question=user_question,
+                batch_citations=batch,
+                doc_to_ref=doc_to_ref,
+                batch_number=batch_num,
+                total_batches=len(batches)
+            )
+
+            if batch_summary:
+                batch_summaries.append(batch_summary)
+            else:
+                logger.warning(f"Batch {batch_num} failed, continuing with remaining batches")
+
+        if not batch_summaries:
+            logger.error("All batches failed in map phase")
+            return None
+
+        logger.info(
+            f"Map phase complete: {len(batch_summaries)}/{len(batches)} batches successful"
+        )
+
+        # REDUCE PHASE: Synthesize batch summaries
+        self._call_callback("reduce_phase_started", "Synthesizing evidence themes")
+
+        # Create references list for the reduce phase
+        references = []
+        for citation in sorted_citations:
+            ref_num = doc_to_ref.get(citation.document_id)
+            if ref_num:
+                references.append(Reference(
+                    number=ref_num,
+                    authors=citation.authors,
+                    title=citation.document_title,
+                    publication_date=citation.publication_date,
+                    document_id=citation.document_id,
+                    pmid=citation.pmid,
+                    doi=getattr(citation, 'doi', None)
+                ))
+
+        final_content = self._reduce_phase_synthesize(
+            user_question=user_question,
+            batch_summaries=batch_summaries,
+            references=references
+        )
+
+        if final_content:
+            logger.info("Map-reduce synthesis completed successfully")
+        else:
+            logger.error("Reduce phase failed")
+
+        return final_content
+
     def synthesize_report(self, user_question: str, citations: List[Citation],
                          min_citations: int = 2, methodology_metadata: Optional[MethodologyMetadata] = None) -> Optional[Report]:
         """
@@ -458,28 +914,45 @@ class ReportingAgent(BaseAgent):
             logger.error(f"Error synthesizing report: {e}")
             return None
     
-    def structured_synthesis(self, user_question: str, citations: List[Citation], 
+    def structured_synthesis(self, user_question: str, citations: List[Citation],
                            doc_to_ref: Dict[str, int]) -> Optional[str]:
         """
         Generate a structured, readable report with clear introduction and supporting sections.
-        
+
         Creates a medical publication-style report that:
         1. Directly answers the research question in the introduction
-        2. Organizes evidence into coherent themes/categories  
+        2. Organizes evidence into coherent themes/categories
         3. Uses supporting evidence to back up key statements
         4. Maintains professional medical writing style
-        
+
+        For large citation sets that would overflow the model's context window,
+        this method automatically delegates to map_reduce_synthesis().
+
         Args:
             user_question: Original research question
             citations: List of extracted citations
             doc_to_ref: Mapping from document IDs to reference numbers
-            
+
         Returns:
             Structured report content or None if synthesis failed
         """
-        import requests
         import json
-        
+
+        # Check if we need to use map-reduce for large citation sets
+        if self._should_use_map_reduce(citations):
+            logger.info(
+                f"Using map-reduce synthesis for {len(citations)} citations "
+                "(context window protection)"
+            )
+            self._call_callback(
+                "map_reduce_started",
+                f"Large citation set ({len(citations)}), using map-reduce synthesis"
+            )
+            return self.map_reduce_synthesis(user_question, citations, doc_to_ref)
+
+        # Standard synthesis for smaller citation sets
+        logger.info(f"Using direct synthesis for {len(citations)} citations")
+
         # Sort citations by relevance score (highest first)
         sorted_citations = sorted(citations, key=lambda c: c.relevance_score, reverse=True)
         
@@ -589,12 +1062,10 @@ Write a comprehensive, professional medical report."""
                           doc_to_ref: Dict[str, int]) -> Optional[str]:
         """
         Iteratively process citations to build a cohesive report.
-        
+
         Process one citation at a time, checking if it adds new information
         or should be combined with existing content.
         """
-        import requests
-        
         # Start with empty content
         current_content = ""
         processed_citations = []
@@ -712,8 +1183,6 @@ Be concise and avoid redundancy."""
     
     def final_formatting(self, user_question: str, content: str) -> Optional[str]:
         """Final formatting pass to ensure cohesive medical writing."""
-        import requests
-        
         prompt = f"""You are a medical writing expert. Review and reformat the following content into a cohesive medical publication-style paragraph.
 
 Research Question: "{user_question}"
