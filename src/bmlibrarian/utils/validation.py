@@ -184,10 +184,13 @@ def validate_discovery_config(config: Dict[str, Any], strict: bool = False) -> b
         - prefer_open_access (optional): Prefer open access sources (boolean)
         - use_browser_fallback (optional): Use browser for protected PDFs (boolean)
         - browser_headless (optional): Run browser in headless mode (boolean)
+        - skip_resolvers (optional): List of resolvers to skip (list of strings)
+        - use_openathens_proxy (optional): Use OpenAthens proxy as last resort (boolean)
     """
     optional = [
         'timeout', 'browser_timeout', 'prefer_open_access',
-        'use_browser_fallback', 'browser_headless', 'skip_resolvers'
+        'use_browser_fallback', 'browser_headless', 'skip_resolvers',
+        'use_openathens_proxy'
     ]
 
     if not validate_config_dict(config, [], optional, strict):
@@ -208,7 +211,7 @@ def validate_discovery_config(config: Dict[str, Any], strict: bool = False) -> b
             return False
 
     # Validate boolean fields
-    for bool_key in ['prefer_open_access', 'use_browser_fallback', 'browser_headless']:
+    for bool_key in ['prefer_open_access', 'use_browser_fallback', 'browser_headless', 'use_openathens_proxy']:
         if bool_key in config and not isinstance(config[bool_key], bool):
             msg = f"Invalid {bool_key}: must be a boolean"
             if strict:

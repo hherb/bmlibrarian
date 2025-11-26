@@ -86,6 +86,104 @@ class TestValidateOpenAthensUrl:
         assert result.valid is False
 
 
+class TestPrivateIPValidation:
+    """Tests for IPv4 and IPv6 private address validation in URL validation."""
+
+    def test_ipv4_private_10_rejected(self) -> None:
+        """Test IPv4 10.x.x.x private range is rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://10.0.0.1/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_ipv4_private_172_rejected(self) -> None:
+        """Test IPv4 172.16-31.x.x private range is rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://172.16.0.1/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_ipv4_private_192_rejected(self) -> None:
+        """Test IPv4 192.168.x.x private range is rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://192.168.1.1/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_ipv4_loopback_rejected(self) -> None:
+        """Test IPv4 127.x.x.x loopback range is rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://127.0.0.1/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower() or "loopback" in error.lower()
+
+    def test_ipv6_loopback_rejected(self) -> None:
+        """Test IPv6 ::1 loopback is rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://[::1]/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_ipv6_unique_local_rejected(self) -> None:
+        """Test IPv6 fc00::/7 unique local addresses are rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        # fc00::/7 includes fc00:: through fdff::
+        result = validate_openathens_url("https://[fd00::1]/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_ipv6_link_local_rejected(self) -> None:
+        """Test IPv6 fe80::/10 link-local addresses are rejected."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://[fe80::1]/login")
+        is_valid, _, error = result
+        assert is_valid is False
+        assert "private" in error.lower() or "reserved" in error.lower()
+
+    def test_public_ipv4_accepted(self) -> None:
+        """Test public IPv4 addresses are accepted."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        result = validate_openathens_url("https://8.8.8.8/login")
+        is_valid, _, _ = result
+        assert is_valid is True
+
+    def test_public_ipv6_accepted(self) -> None:
+        """Test public IPv6 addresses are accepted."""
+        from bmlibrarian.utils.url_validation import validate_openathens_url
+        # Google Public DNS IPv6
+        result = validate_openathens_url("https://[2001:4860:4860::8888]/login")
+        is_valid, _, _ = result
+        assert is_valid is True
+
+    def test_is_private_ip_address_helper(self) -> None:
+        """Test the is_private_ip_address helper function directly."""
+        from bmlibrarian.utils.url_validation import is_private_ip_address
+
+        # IPv4 private ranges
+        assert is_private_ip_address("10.0.0.1") is True
+        assert is_private_ip_address("172.16.0.1") is True
+        assert is_private_ip_address("192.168.1.1") is True
+        assert is_private_ip_address("127.0.0.1") is True
+
+        # IPv6 private/reserved ranges
+        assert is_private_ip_address("::1") is True
+        assert is_private_ip_address("fd00::1") is True
+        assert is_private_ip_address("fe80::1") is True
+
+        # Public addresses
+        assert is_private_ip_address("8.8.8.8") is False
+        assert is_private_ip_address("2001:4860:4860::8888") is False
+
+        # Not an IP address (hostname)
+        assert is_private_ip_address("example.com") is False
+
+
 class TestValidateOpenAthensConfig:
     """Tests for validate_openathens_config function."""
 
