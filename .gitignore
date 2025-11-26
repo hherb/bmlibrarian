@@ -35,3 +35,4 @@ ollama_models_params_context.csv
 
 # Data directory (temporary test data)
 data/
+LONG_bmlibrarian_results_20251126_220515.json
