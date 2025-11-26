@@ -11,9 +11,11 @@ import logging
 import argparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Iterator, Generator, Any
 from datetime import datetime
 from dataclasses import dataclass
+
+import psycopg
 
 from bmlibrarian.database import DatabaseManager
 
@@ -24,8 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants
+# Constants (golden rule #2: no magic numbers)
 PROGRESS_LOG_INTERVAL = 1000  # Log progress every N descriptors during validation
+STREAMING_THRESHOLD_MB = 100  # Use streaming parser for files larger than this size
+BYTES_PER_MB = 1024 * 1024  # Conversion factor for megabytes
 
 
 @dataclass
@@ -62,15 +66,21 @@ class MeshImporter:
         'OBS': 'obsolete'
     }
 
-    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+    def __init__(
+        self,
+        db_manager: Optional[DatabaseManager] = None,
+        use_streaming: bool = True
+    ):
         """
         Initialize the MeSH importer.
 
         Args:
             db_manager: Optional DatabaseManager instance (creates new if None)
+            use_streaming: Whether to use streaming parser for large files (default: True)
         """
         self.db = db_manager or DatabaseManager()
         self.stats = ImportStats()
+        self.use_streaming = use_streaming
 
     def import_mesh_xml(
         self,
@@ -105,25 +115,46 @@ class MeshImporter:
 
         self.stats.start_time = datetime.now()
 
+        # Determine if we should use streaming based on file size
+        file_size_mb = xml_path.stat().st_size / BYTES_PER_MB
+        should_stream = self.use_streaming and file_size_mb > STREAMING_THRESHOLD_MB
+
+        if should_stream:
+            logger.info(f"File size: {file_size_mb:.1f} MB - using streaming parser for memory efficiency")
+        else:
+            logger.info(f"File size: {file_size_mb:.1f} MB - using standard parser")
+
         try:
-            # Parse XML
-            logger.info("Parsing XML file...")
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-
-            descriptors = root.findall('.//DescriptorRecord')
-            total_descriptors = len(descriptors)
-            logger.info(f"Found {total_descriptors} descriptors to import")
-
-            if dry_run:
-                logger.info("Dry run mode - skipping database import")
-                self._dry_run_validation(descriptors)
+            if should_stream:
+                # Use streaming parser for large files
+                if dry_run:
+                    logger.info("Dry run mode - skipping database import")
+                    self._dry_run_validation_streaming(xml_path)
+                else:
+                    self._import_descriptors_streaming(
+                        xml_path,
+                        source_version,
+                        batch_size
+                    )
             else:
-                self._import_descriptors_batch(
-                    descriptors,
-                    source_version,
-                    batch_size
-                )
+                # Use standard parser for smaller files
+                logger.info("Parsing XML file...")
+                tree = ET.parse(xml_path)
+                root = tree.getroot()
+
+                descriptors = root.findall('.//DescriptorRecord')
+                total_descriptors = len(descriptors)
+                logger.info(f"Found {total_descriptors} descriptors to import")
+
+                if dry_run:
+                    logger.info("Dry run mode - skipping database import")
+                    self._dry_run_validation(descriptors)
+                else:
+                    self._import_descriptors_batch(
+                        descriptors,
+                        source_version,
+                        batch_size
+                    )
 
             self.stats.end_time = datetime.now()
 
@@ -212,11 +243,130 @@ class MeshImporter:
                 # Continue with next batch
                 continue
 
+    def _stream_descriptors(self, xml_path: Path) -> Generator[ET.Element, None, None]:
+        """
+        Stream DescriptorRecord elements from XML file using iterparse.
+
+        This is memory-efficient as elements are yielded one at a time
+        and cleared after processing.
+
+        Args:
+            xml_path: Path to the MeSH XML file
+
+        Yields:
+            ET.Element: Individual DescriptorRecord elements
+        """
+        # Use iterparse to stream the XML file
+        context = ET.iterparse(str(xml_path), events=['end'])
+
+        for event, elem in context:
+            if elem.tag == 'DescriptorRecord':
+                yield elem
+                # Clear the element to free memory
+                elem.clear()
+
+    def _dry_run_validation_streaming(self, xml_path: Path) -> None:
+        """Validate XML structure using streaming parser without loading all into memory."""
+        logger.info("Validating XML structure (streaming mode)...")
+
+        descriptor_count = 0
+        for descriptor in self._stream_descriptors(xml_path):
+            descriptor_count += 1
+            try:
+                # Extract descriptor ID and name
+                desc_ui = descriptor.find('DescriptorUI')
+                desc_name = descriptor.find('DescriptorName/String')
+
+                if desc_ui is None or desc_name is None:
+                    logger.warning(f"Descriptor {descriptor_count}: Missing required fields")
+                    self.stats.errors += 1
+                    continue
+
+                # Extract terms
+                terms = descriptor.findall('.//Term')
+                term_count = len(terms)
+
+                # Extract tree numbers
+                tree_numbers = descriptor.findall('.//TreeNumber')
+                tree_count = len(tree_numbers)
+
+                if descriptor_count % PROGRESS_LOG_INTERVAL == 0:
+                    logger.info(f"Validated {descriptor_count} descriptors (streaming)")
+
+                self.stats.concepts_imported += 1
+                self.stats.terms_imported += term_count
+                self.stats.hierarchies_imported += tree_count
+
+            except Exception as e:
+                logger.warning(f"Error validating descriptor {descriptor_count}: {e}")
+                self.stats.errors += 1
+
+        logger.info(f"Validation complete: {descriptor_count} descriptors processed")
+
+    def _import_descriptors_streaming(
+        self,
+        xml_path: Path,
+        source_version: str,
+        batch_size: int
+    ) -> None:
+        """Import descriptors using streaming parser for memory efficiency."""
+        batch: List[ET.Element] = []
+        batch_count = 0
+        descriptor_count = 0
+
+        for descriptor in self._stream_descriptors(xml_path):
+            descriptor_count += 1
+            # Make a deep copy since the element will be cleared by the generator
+            batch.append(ET.fromstring(ET.tostring(descriptor)))
+
+            if len(batch) >= batch_size:
+                batch_count += 1
+                try:
+                    with self.db.get_connection() as conn:
+                        with conn.cursor() as cur:
+                            for desc in batch:
+                                self._import_descriptor(desc, source_version, cur)
+                            conn.commit()
+
+                    logger.info(
+                        f"Imported batch {batch_count} ({descriptor_count} total descriptors, "
+                        f"{self.stats.concepts_imported} concepts, "
+                        f"{self.stats.terms_imported} terms, "
+                        f"{self.stats.hierarchies_imported} hierarchies)"
+                    )
+                except Exception as e:
+                    logger.error(f"Batch {batch_count} import failed: {e}")
+                    self.stats.errors += len(batch)
+
+                batch.clear()
+
+        # Process remaining items in the final batch
+        if batch:
+            batch_count += 1
+            try:
+                with self.db.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        for desc in batch:
+                            self._import_descriptor(desc, source_version, cur)
+                        conn.commit()
+
+                logger.info(
+                    f"Imported final batch {batch_count} ({descriptor_count} total descriptors, "
+                    f"{self.stats.concepts_imported} concepts, "
+                    f"{self.stats.terms_imported} terms, "
+                    f"{self.stats.hierarchies_imported} hierarchies)"
+                )
+            except Exception as e:
+                logger.error(f"Final batch {batch_count} import failed: {e}")
+                self.stats.errors += len(batch)
+
+        logger.info(f"Streaming import complete: {descriptor_count} descriptors processed")
+
     def _import_descriptor(
         self,
         descriptor: ET.Element,
         source_version: str,
-        cursor
+        cursor: psycopg.Cursor[Any]
     ) -> None:
         """Import a single MeSH descriptor with its terms and hierarchies."""
         try:
@@ -267,7 +417,12 @@ class MeshImporter:
             logger.warning(f"Error importing descriptor {desc_ui}: {e}")
             self.stats.errors += 1
 
-    def _import_term(self, term_elem: ET.Element, concept_id: int, cursor) -> None:
+    def _import_term(
+        self,
+        term_elem: ET.Element,
+        concept_id: int,
+        cursor: psycopg.Cursor[Any]
+    ) -> None:
         """Import a single term for a concept."""
         try:
             term_ui = term_elem.find('TermUI').text
@@ -291,7 +446,12 @@ class MeshImporter:
             logger.debug(f"Error importing term: {e}")
             self.stats.errors += 1
 
-    def _import_tree_number(self, tree_number: str, concept_id: int, cursor) -> None:
+    def _import_tree_number(
+        self,
+        tree_number: str,
+        concept_id: int,
+        cursor: psycopg.Cursor[Any]
+    ) -> None:
         """Import a tree number (hierarchy relationship) for a concept."""
         try:
             # Calculate tree level from number of dots
@@ -372,6 +532,13 @@ Examples:
 
   # Verbose logging
   python thesaurus_import_cli.py desc2025.xml --verbose
+
+  # Disable streaming parser (for small files or debugging)
+  python thesaurus_import_cli.py desc2025.xml --no-streaming
+
+Notes:
+  For files larger than 100 MB, streaming parsing is automatically used
+  to minimize memory consumption. Use --no-streaming to disable this.
         """
     )
 
@@ -407,6 +574,12 @@ Examples:
         help='Enable verbose logging'
     )
 
+    parser.add_argument(
+        '--no-streaming',
+        action='store_true',
+        help='Disable streaming parser (use standard parser for all file sizes)'
+    )
+
     args = parser.parse_args()
 
     # Configure logging level
@@ -414,8 +587,8 @@ Examples:
         logging.getLogger().setLevel(logging.DEBUG)
 
     try:
-        # Create importer
-        importer = MeshImporter()
+        # Create importer with streaming option
+        importer = MeshImporter(use_streaming=not args.no_streaming)
 
         # Import MeSH data
         stats = importer.import_mesh_xml(

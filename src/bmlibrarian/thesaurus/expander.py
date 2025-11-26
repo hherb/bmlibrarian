@@ -7,13 +7,51 @@ enabling improved search recall through synonym, abbreviation, and hierarchical 
 
 import logging
 import re
+import time
 from typing import List, Set, Dict, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import psycopg
 from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
+
+# Constants (golden rule #2: no magic numbers)
+DEFAULT_MIN_TERM_LENGTH = 2
+DEFAULT_MAX_EXPANSIONS_PER_TERM = 10
+DEFAULT_CACHE_MAX_SIZE = 1000
+DEFAULT_CACHE_TTL_SECONDS = 3600  # 1 hour
+DEFAULT_MAX_QUERY_TERMS = 50  # Maximum terms to expand in a single query
+CACHE_EVICTION_CHECK_INTERVAL = 100  # Check for expired entries every N additions
+CACHE_EVICTION_PERCENTAGE = 10  # Evict this percentage of entries when cache is full
+
+
+@dataclass
+class CacheEntry:
+    """A cache entry with TTL tracking."""
+    expansion: 'TermExpansion'
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class ExpansionStats:
+    """
+    Statistics for tracking expansion effectiveness.
+
+    Attributes:
+        cache_hits: Number of cache hits
+        cache_misses: Number of cache misses
+        expansions_performed: Total number of expansions performed
+        terms_expanded: Number of terms with successful expansions (not 'none')
+        queries_processed: Number of queries processed
+        queries_limited: Number of queries that exceeded term limits
+    """
+    cache_hits: int = 0
+    cache_misses: int = 0
+    expansions_performed: int = 0
+    terms_expanded: int = 0
+    queries_processed: int = 0
+    queries_limited: int = 0
 
 
 @dataclass
@@ -45,10 +83,13 @@ class ThesaurusExpander:
 
     def __init__(
         self,
-        min_term_length: int = 2,
-        max_expansions_per_term: int = 10,
+        min_term_length: int = DEFAULT_MIN_TERM_LENGTH,
+        max_expansions_per_term: int = DEFAULT_MAX_EXPANSIONS_PER_TERM,
         include_broader_terms: bool = False,
-        include_narrower_terms: bool = False
+        include_narrower_terms: bool = False,
+        cache_max_size: int = DEFAULT_CACHE_MAX_SIZE,
+        cache_ttl: int = DEFAULT_CACHE_TTL_SECONDS,
+        max_query_terms: int = DEFAULT_MAX_QUERY_TERMS
     ):
         """
         Initialize the ThesaurusExpander.
@@ -58,14 +99,23 @@ class ThesaurusExpander:
             max_expansions_per_term: Maximum number of expansions per term (default: 10)
             include_broader_terms: Whether to include broader hierarchical terms (default: False)
             include_narrower_terms: Whether to include narrower hierarchical terms (default: False)
+            cache_max_size: Maximum number of entries in the expansion cache (default: 1000)
+            cache_ttl: Time-to-live for cache entries in seconds (default: 3600)
+            max_query_terms: Maximum number of terms to expand in a single query (default: 50)
         """
         self.min_term_length = min_term_length
         self.max_expansions_per_term = max_expansions_per_term
         self.include_broader_terms = include_broader_terms
         self.include_narrower_terms = include_narrower_terms
+        self.cache_max_size = cache_max_size
+        self.cache_ttl = cache_ttl
+        self.max_query_terms = max_query_terms
 
-        # Cache for term expansions to avoid repeated database queries
-        self._expansion_cache: Dict[str, TermExpansion] = {}
+        # Cache for term expansions with TTL tracking
+        self._expansion_cache: Dict[str, CacheEntry] = {}
+
+        # Statistics for tracking expansion effectiveness
+        self._stats = ExpansionStats()
 
     def _get_connection(self) -> psycopg.Connection:
         """
@@ -85,6 +135,66 @@ class ThesaurusExpander:
         except Exception as e:
             raise RuntimeError(f"Failed to get database connection: {e}")
 
+    def _is_cache_entry_valid(self, entry: CacheEntry) -> bool:
+        """
+        Check if a cache entry is still valid based on TTL.
+
+        Args:
+            entry: The cache entry to check
+
+        Returns:
+            True if entry is still valid, False if expired
+        """
+        return (time.time() - entry.timestamp) < self.cache_ttl
+
+    def _evict_expired_entries(self) -> None:
+        """Remove expired entries from the cache."""
+        current_time = time.time()
+        expired_keys = [
+            key for key, entry in self._expansion_cache.items()
+            if (current_time - entry.timestamp) >= self.cache_ttl
+        ]
+        for key in expired_keys:
+            del self._expansion_cache[key]
+
+    def _evict_oldest_entries(self, count: int = 1) -> None:
+        """
+        Evict the oldest entries from the cache.
+
+        Args:
+            count: Number of entries to evict
+        """
+        if count <= 0 or not self._expansion_cache:
+            return
+
+        # Sort by timestamp and remove oldest
+        sorted_entries = sorted(
+            self._expansion_cache.items(),
+            key=lambda x: x[1].timestamp
+        )
+        for key, _ in sorted_entries[:count]:
+            del self._expansion_cache[key]
+
+    def _cache_expansion(self, normalized_term: str, expansion: TermExpansion) -> None:
+        """
+        Store an expansion in the cache with max size enforcement.
+
+        Args:
+            normalized_term: The normalized term key
+            expansion: The expansion to cache
+        """
+        # Evict expired entries periodically
+        if len(self._expansion_cache) % CACHE_EVICTION_CHECK_INTERVAL == 0:
+            self._evict_expired_entries()
+
+        # Evict oldest entries if at max size
+        if len(self._expansion_cache) >= self.cache_max_size:
+            # Evict percentage of entries to avoid frequent evictions
+            evict_count = max(1, self.cache_max_size // CACHE_EVICTION_PERCENTAGE)
+            self._evict_oldest_entries(evict_count)
+
+        self._expansion_cache[normalized_term] = CacheEntry(expansion=expansion)
+
     def expand_term(self, term: str, use_cache: bool = True) -> TermExpansion:
         """
         Expand a single medical term to all its variants.
@@ -99,9 +209,18 @@ class ThesaurusExpander:
         # Normalize term for cache lookup
         normalized_term = term.strip().lower()
 
-        # Check cache
+        # Check cache with TTL validation
         if use_cache and normalized_term in self._expansion_cache:
-            return self._expansion_cache[normalized_term]
+            entry = self._expansion_cache[normalized_term]
+            if self._is_cache_entry_valid(entry):
+                self._stats.cache_hits += 1
+                return entry.expansion
+            else:
+                # Entry expired, remove it
+                del self._expansion_cache[normalized_term]
+
+        self._stats.cache_misses += 1
+        self._stats.expansions_performed += 1
 
         # Skip very short terms
         if len(normalized_term) < self.min_term_length:
@@ -112,7 +231,7 @@ class ThesaurusExpander:
                 concept_ids=[],
                 expansion_type='none'
             )
-            self._expansion_cache[normalized_term] = expansion
+            self._cache_expansion(normalized_term, expansion)
             return expansion
 
         try:
@@ -178,7 +297,11 @@ class ThesaurusExpander:
 
                     # Cache the result
                     if use_cache:
-                        self._expansion_cache[normalized_term] = expansion
+                        self._cache_expansion(normalized_term, expansion)
+
+                    # Track successful expansions
+                    if expansion.expansion_type != 'none':
+                        self._stats.terms_expanded += 1
 
                     return expansion
 
@@ -239,11 +362,22 @@ class ThesaurusExpander:
             Input:  "aspirin & (heart | cardiac)"
             Output: "(aspirin | ASA | acetylsalicylic acid) & ((heart | cardiac) | cardiovascular)"
         """
+        self._stats.queries_processed += 1
+
         if not ts_query or not ts_query.strip():
             return ts_query
 
         # Extract individual terms from the query
         terms = self._extract_terms(ts_query)
+
+        # Check query complexity limit
+        if len(terms) > self.max_query_terms:
+            logger.warning(
+                f"Query too complex for expansion: {len(terms)} terms exceeds "
+                f"limit of {self.max_query_terms}"
+            )
+            self._stats.queries_limited += 1
+            return ts_query
 
         # Build expansion map
         expansion_map: Dict[str, List[str]] = {}
@@ -270,26 +404,62 @@ class ThesaurusExpander:
         """
         Extract individual terms from a to_tsquery string.
 
-        Handles quoted phrases, parentheses, and operators.
+        Handles:
+        - Quoted phrases (single and double quotes)
+        - Escaped quotes within phrases
+        - Hyphenated medical terms (e.g., beta-blocker, anti-inflammatory)
+        - Unicode characters in medical terms (e.g., α-blocker, β-carotene)
+        - Parentheses and operators
         """
-        # Remove operators and parentheses, split on whitespace
-        # This is a simple extraction - could be made more sophisticated
-
         # Remove parentheses
         query_no_parens = re.sub(r'[()]', ' ', ts_query)
 
-        # Remove operators but preserve quoted phrases
-        # Match either quoted phrases or individual words
-        pattern = r"'[^']+'|\b\w+\b"
-        matches = re.findall(pattern, query_no_parens)
+        terms: Set[str] = set()
 
-        terms = set()
+        # First, extract quoted phrases (handling both single and double quotes)
+        # Handle escaped quotes within phrases: 'phrase with \' escaped'
+        # Pattern for single-quoted phrases with optional escaped quotes
+        single_quoted_pattern = r"'(?:[^'\\]|\\.)*'"
+        # Pattern for double-quoted phrases with optional escaped quotes
+        double_quoted_pattern = r'"(?:[^"\\]|\\.)*"'
+
+        # Extract all quoted phrases first
+        quoted_phrases = re.findall(
+            f'{single_quoted_pattern}|{double_quoted_pattern}',
+            query_no_parens
+        )
+
+        for phrase in quoted_phrases:
+            # Remove outer quotes and unescape inner quotes
+            term = phrase[1:-1]  # Remove first and last quote
+            term = term.replace("\\'", "'").replace('\\"', '"')
+            term = term.strip()
+            if len(term) >= self.min_term_length:
+                terms.add(term)
+
+        # Remove quoted phrases from query for further processing
+        remaining = re.sub(
+            f'{single_quoted_pattern}|{double_quoted_pattern}',
+            ' ',
+            query_no_parens
+        )
+
+        # Extract individual terms including:
+        # - Hyphenated terms (alpha-blocker, anti-inflammatory)
+        # - Unicode word characters (\w with Unicode flag)
+        # - Terms with numeric suffixes (vitamin-B12, COVID-19)
+        # Pattern: word characters, hyphens, and Unicode letters/numbers
+        # Using \w with re.UNICODE handles Greek letters, accented chars, etc.
+        term_pattern = r'[\w\u0080-\uFFFF][\w\u0080-\uFFFF\-]*[\w\u0080-\uFFFF]|[\w\u0080-\uFFFF]+'
+        matches = re.findall(term_pattern, remaining, re.UNICODE)
+
+        # Operators to skip
+        operators = {'&', '|', '!', 'and', 'or', 'not'}
+
         for match in matches:
-            # Remove quotes if present
-            term = match.strip("'").strip()
-
+            term = match.strip()
             # Skip operators and very short terms
-            if term.lower() not in ('&', '|', '!', 'and', 'or', 'not') and len(term) >= self.min_term_length:
+            if term.lower() not in operators and len(term) >= self.min_term_length:
                 terms.add(term)
 
         return terms
@@ -335,8 +505,56 @@ class ThesaurusExpander:
         self._expansion_cache.clear()
 
     def get_cache_size(self) -> int:
-        """Get the current cache size."""
-        return len(self._expansion_cache)
+        """Get the current cache size (excluding expired entries)."""
+        # Count only non-expired entries
+        current_time = time.time()
+        return sum(
+            1 for entry in self._expansion_cache.values()
+            if (current_time - entry.timestamp) < self.cache_ttl
+        )
+
+    def get_expansion_stats(self) -> Dict[str, int]:
+        """
+        Get statistics about expansion effectiveness.
+
+        Returns:
+            Dictionary with expansion statistics:
+            - cache_hits: Number of cache hits
+            - cache_misses: Number of cache misses
+            - cache_hit_rate: Percentage of cache hits (0-100)
+            - expansions_performed: Total expansions attempted
+            - terms_expanded: Terms with successful expansions
+            - expansion_rate: Percentage of successful expansions (0-100)
+            - queries_processed: Total queries processed
+            - queries_limited: Queries exceeding term limits
+            - current_cache_size: Current number of cached entries
+        """
+        total_lookups = self._stats.cache_hits + self._stats.cache_misses
+        cache_hit_rate = (
+            int(self._stats.cache_hits * 100 / total_lookups)
+            if total_lookups > 0 else 0
+        )
+
+        expansion_rate = (
+            int(self._stats.terms_expanded * 100 / self._stats.expansions_performed)
+            if self._stats.expansions_performed > 0 else 0
+        )
+
+        return {
+            'cache_hits': self._stats.cache_hits,
+            'cache_misses': self._stats.cache_misses,
+            'cache_hit_rate': cache_hit_rate,
+            'expansions_performed': self._stats.expansions_performed,
+            'terms_expanded': self._stats.terms_expanded,
+            'expansion_rate': expansion_rate,
+            'queries_processed': self._stats.queries_processed,
+            'queries_limited': self._stats.queries_limited,
+            'current_cache_size': self.get_cache_size()
+        }
+
+    def reset_stats(self) -> None:
+        """Reset expansion statistics to zero."""
+        self._stats = ExpansionStats()
 
 
 def expand_query_terms(
