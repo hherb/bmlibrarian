@@ -480,7 +480,7 @@ class QualityAssessor:
                 agent_version=agent_version,
                 model_name=model_name,
                 model_parameters=model_parameters,
-                prompt_hash=None,  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH,  # TODO: Implement prompt hashing
                 assessment=assessment
             )
 
@@ -589,7 +589,7 @@ class QualityAssessor:
                 agent_version=agent_version,
                 model_name=model_name,
                 model_parameters=model_parameters,
-                prompt_hash=None,  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH,  # TODO: Implement prompt hashing
                 extraction=extraction
             )
 
@@ -657,7 +657,7 @@ class QualityAssessor:
                 agent_version=agent_version,
                 model_name=model_name,
                 model_parameters=model_parameters,
-                prompt_hash=None,  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH,  # TODO: Implement prompt hashing
                 assessment=assessment
             )
 
