@@ -119,9 +119,9 @@ CREATE TABLE IF NOT EXISTS thesaurus.concept_hierarchies (
     CONSTRAINT chk_thesaurus_hierarchies_tree_format
         CHECK (tree_number ~ '^[A-Z][0-9]{2}(\.[0-9]+)*$'),
 
-    -- Validate tree level
+    -- Validate tree level (MeSH can have deep hierarchies, allowing up to 15 levels)
     CONSTRAINT chk_thesaurus_hierarchies_level
-        CHECK (tree_level >= 1 AND tree_level <= 10)
+        CHECK (tree_level >= 1 AND tree_level <= 15)
 );
 
 -- Add table comment
@@ -176,6 +176,27 @@ COMMENT ON COLUMN thesaurus.import_history.terms_imported IS 'Number of terms ad
 COMMENT ON COLUMN thesaurus.import_history.hierarchies_imported IS 'Number of hierarchy relationships added';
 COMMENT ON COLUMN thesaurus.import_history.import_duration_seconds IS 'Time taken for import in seconds';
 COMMENT ON COLUMN thesaurus.import_history.import_status IS 'Import status: completed, failed, partial, in_progress';
+
+-- ============================================================================
+-- Create triggers for auto-updating timestamps
+-- ============================================================================
+
+-- Auto-update updated_at timestamp on concepts table
+CREATE OR REPLACE FUNCTION thesaurus.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_concepts_updated_at
+    BEFORE UPDATE ON thesaurus.concepts
+    FOR EACH ROW
+    EXECUTE FUNCTION thesaurus.update_updated_at_column();
+
+COMMENT ON FUNCTION thesaurus.update_updated_at_column() IS
+'Trigger function to automatically update updated_at timestamp on row modification.';
 
 -- ============================================================================
 -- Create indexes for performance
