@@ -70,6 +70,10 @@ def get_agent_version(agent_class: type) -> str:
 # Prompt Hashing for Cache Invalidation
 # =============================================================================
 
+# Default prompt hash when prompt hashing is not implemented
+DEFAULT_PROMPT_HASH = "no-hash-v1"
+
+
 def hash_prompt(prompt_template: str) -> str:
     """
     Generate SHA256 hash of prompt template for cache invalidation.
@@ -93,7 +97,7 @@ def get_cached_study_assessment(
     document_id: int,
     agent_version: str,
     model_name: str,
-    prompt_hash: Optional[str] = None
+    prompt_hash: str = DEFAULT_PROMPT_HASH
 ) -> Optional[Dict[str, Any]]:
     """
     Retrieve cached study assessment from database.
@@ -129,10 +133,10 @@ def get_cached_study_assessment(
                     WHERE document_id = %s
                       AND agent_version = %s
                       AND model_name = %s
-                      AND (%s IS NULL OR prompt_hash = %s)
+                      AND prompt_hash = %s
                     ORDER BY assessed_at DESC
                     LIMIT 1
-                """, (document_id, agent_version, model_name, prompt_hash, prompt_hash))
+                """, (document_id, agent_version, model_name, prompt_hash))
 
                 row = cur.fetchone()
                 if not row:
@@ -163,7 +167,7 @@ def store_study_assessment(
     agent_version: str,
     model_name: str,
     model_parameters: Dict[str, Any],
-    prompt_hash: Optional[str],
+    prompt_hash: str,
     assessment: Dict[str, Any]
 ) -> None:
     """
@@ -174,7 +178,7 @@ def store_study_assessment(
         agent_version: StudyAssessmentAgent version
         model_name: LLM model name
         model_parameters: Model parameters dict (temperature, top_p, etc.)
-        prompt_hash: Prompt template hash (or None)
+        prompt_hash: Prompt template hash
         assessment: Assessment dictionary to cache
     """
     try:
@@ -250,7 +254,7 @@ def get_cached_pico_extraction(
     document_id: int,
     agent_version: str,
     model_name: str,
-    prompt_hash: Optional[str] = None
+    prompt_hash: str = DEFAULT_PROMPT_HASH
 ) -> Optional[Dict[str, Any]]:
     """
     Retrieve cached PICO extraction from database.
@@ -290,10 +294,10 @@ def get_cached_pico_extraction(
                     WHERE document_id = %s
                       AND agent_version = %s
                       AND model_name = %s
-                      AND (%s IS NULL OR prompt_hash = %s)
+                      AND prompt_hash = %s
                     ORDER BY extracted_at DESC
                     LIMIT 1
-                """, (document_id, agent_version, model_name, prompt_hash, prompt_hash))
+                """, (document_id, agent_version, model_name, prompt_hash))
 
                 row = cur.fetchone()
                 if not row:
@@ -328,7 +332,7 @@ def store_pico_extraction(
     agent_version: str,
     model_name: str,
     model_parameters: Dict[str, Any],
-    prompt_hash: Optional[str],
+    prompt_hash: str,
     extraction: Dict[str, Any]
 ) -> None:
     """
@@ -339,7 +343,7 @@ def store_pico_extraction(
         agent_version: PICOAgent version
         model_name: LLM model name
         model_parameters: Model parameters dict
-        prompt_hash: Prompt template hash
+        prompt_hash: Prompt template hash (use DEFAULT_PROMPT_HASH if not hashing)
         extraction: PICO extraction dictionary to cache
     """
     try:
@@ -427,7 +431,7 @@ def get_cached_prisma_assessment(
     document_id: int,
     agent_version: str,
     model_name: str,
-    prompt_hash: Optional[str] = None
+    prompt_hash: str = DEFAULT_PROMPT_HASH
 ) -> Optional[Dict[str, Any]]:
     """
     Retrieve cached PRISMA assessment from database.
@@ -465,10 +469,10 @@ def get_cached_prisma_assessment(
                     WHERE document_id = %s
                       AND agent_version = %s
                       AND model_name = %s
-                      AND (%s IS NULL OR prompt_hash = %s)
+                      AND prompt_hash = %s
                     ORDER BY assessed_at DESC
                     LIMIT 1
-                """, (document_id, agent_version, model_name, prompt_hash, prompt_hash))
+                """, (document_id, agent_version, model_name, prompt_hash))
 
                 row = cur.fetchone()
                 if not row:
@@ -506,7 +510,7 @@ def store_prisma_assessment(
     agent_version: str,
     model_name: str,
     model_parameters: Dict[str, Any],
-    prompt_hash: Optional[str],
+    prompt_hash: str,
     assessment: Dict[str, Any]
 ) -> None:
     """
@@ -517,7 +521,7 @@ def store_prisma_assessment(
         agent_version: PRISMA2020Agent version
         model_name: LLM model name
         model_parameters: Model parameters dict
-        prompt_hash: Prompt template hash
+        prompt_hash: Prompt template hash (use DEFAULT_PROMPT_HASH if not hashing)
         assessment: PRISMA assessment dictionary to cache
     """
     try:
@@ -629,6 +633,7 @@ def get_cache_statistics() -> Dict[str, Any]:
 __all__ = [
     'get_agent_version',
     'hash_prompt',
+    'DEFAULT_PROMPT_HASH',
     'get_cached_study_assessment',
     'store_study_assessment',
     'get_cached_pico_extraction',

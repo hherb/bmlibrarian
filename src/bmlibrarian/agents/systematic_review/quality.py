@@ -37,6 +37,7 @@ from .quality_cache import (
     store_pico_extraction,
     get_cached_prisma_assessment,
     store_prisma_assessment,
+    DEFAULT_PROMPT_HASH,
 )
 
 if TYPE_CHECKING:
@@ -450,7 +451,7 @@ class QualityAssessor:
                 document_id=document["id"],
                 agent_version=agent_version,
                 model_name=model_name,
-                prompt_hash=None  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH  # TODO: Implement prompt hashing
             )
 
             if cached:
@@ -559,7 +560,7 @@ class QualityAssessor:
                 document_id=document["id"],
                 agent_version=agent_version,
                 model_name=model_name,
-                prompt_hash=None  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH  # TODO: Implement prompt hashing
             )
 
             if cached:
@@ -637,7 +638,7 @@ class QualityAssessor:
                 document_id=document["id"],
                 agent_version=agent_version,
                 model_name=model_name,
-                prompt_hash=None  # TODO: Add prompt hashing
+                prompt_hash=DEFAULT_PROMPT_HASH  # TODO: Implement prompt hashing
             )
 
             if cached:

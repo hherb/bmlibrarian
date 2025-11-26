@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS quality_assessment.study_assessments (
     agent_version TEXT NOT NULL,
     model_name TEXT NOT NULL,
     model_parameters JSONB NOT NULL DEFAULT '{}'::JSONB,
-    prompt_hash TEXT,  -- SHA256 hash of prompt template
+    prompt_hash TEXT NOT NULL DEFAULT 'no-hash-v1',  -- SHA256 hash of prompt template (default when not hashing)
 
     -- Study classification
     study_type TEXT NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS quality_assessment.pico_extractions (
     agent_version TEXT NOT NULL,
     model_name TEXT NOT NULL,
     model_parameters JSONB NOT NULL DEFAULT '{}'::JSONB,
-    prompt_hash TEXT,
+    prompt_hash TEXT NOT NULL DEFAULT 'no-hash-v1',
 
     -- Suitability assessment
     is_suitable BOOLEAN NOT NULL,
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS quality_assessment.prisma_assessments (
     agent_version TEXT NOT NULL,
     model_name TEXT NOT NULL,
     model_parameters JSONB NOT NULL DEFAULT '{}'::JSONB,
-    prompt_hash TEXT,
+    prompt_hash TEXT NOT NULL DEFAULT 'no-hash-v1',
 
     -- Suitability assessment
     is_suitable BOOLEAN NOT NULL,
