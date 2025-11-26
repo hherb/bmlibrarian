@@ -115,6 +115,9 @@ class QualityAssessor:
         >>> print(f"Assessed {len(result.assessed_papers)} papers")
     """
 
+    # Class-level cache for agent versions to avoid repeated dynamic imports
+    _agent_version_cache: Dict[str, str] = {}
+
     def __init__(
         self,
         config: Optional[SystematicReviewConfig] = None,
@@ -223,12 +226,19 @@ class QualityAssessor:
         """
         Get the version string from the corresponding agent class.
 
+        Uses class-level caching to avoid repeated dynamic imports.
+        The cache is shared across all instances for performance.
+
         Args:
             assessment_type: Type of assessment
 
         Returns:
             Version string from agent's VERSION class attribute, or "1.0.0" as fallback
         """
+        # Check class-level cache first
+        if assessment_type in QualityAssessor._agent_version_cache:
+            return QualityAssessor._agent_version_cache[assessment_type]
+
         version_map = {
             "study_assessment": ("study_assessment_agent", "StudyAssessmentAgent"),
             "pico": ("pico_agent", "PICOAgent"),
@@ -239,26 +249,28 @@ class QualityAssessor:
         if assessment_type not in version_map:
             return "1.0.0"
 
-        module_name, class_name = version_map[assessment_type]
+        version = "1.0.0"  # Default fallback
 
         try:
             # Dynamically import the agent class to get its VERSION
             if assessment_type == "paper_weight":
                 from ..paper_weight.agent import PaperWeightAssessmentAgent
-                return getattr(PaperWeightAssessmentAgent, 'VERSION', '1.0.0')
+                version = getattr(PaperWeightAssessmentAgent, 'VERSION', '1.0.0')
             elif assessment_type == "study_assessment":
                 from ..study_assessment_agent import StudyAssessmentAgent
-                return getattr(StudyAssessmentAgent, 'VERSION', '1.0.0')
+                version = getattr(StudyAssessmentAgent, 'VERSION', '1.0.0')
             elif assessment_type == "pico":
                 from ..pico_agent import PICOAgent
-                return getattr(PICOAgent, 'VERSION', '1.0.0')
+                version = getattr(PICOAgent, 'VERSION', '1.0.0')
             elif assessment_type == "prisma":
                 from ..prisma2020_agent import PRISMA2020Agent
-                return getattr(PRISMA2020Agent, 'VERSION', '1.0.0')
+                version = getattr(PRISMA2020Agent, 'VERSION', '1.0.0')
         except ImportError as e:
             logger.warning(f"Could not import agent for {assessment_type}: {e}")
 
-        return "1.0.0"
+        # Cache the result at class level
+        QualityAssessor._agent_version_cache[assessment_type] = version
+        return version
 
     # =========================================================================
     # Agent Initialization (Lazy Loading)
@@ -567,10 +579,26 @@ class QualityAssessor:
         Run study quality assessment with caching support.
 
         Args:
-            document: Document dictionary
+            document: Document dictionary with at minimum 'id', 'title', and 'abstract'
 
         Returns:
-            Study assessment dictionary
+            Study assessment dictionary with the following guaranteed fields:
+            - study_type (str): Type of study design (e.g., 'RCT', 'cohort', 'unknown')
+            - study_design (str): Detailed study design description
+            - quality_score (float): Quality score from 0.0 to 10.0
+            - strengths (List[str]): List of study strengths
+            - limitations (List[str]): List of study limitations
+            - overall_confidence (float): Confidence in assessment (0.0 to 1.0)
+            - confidence_explanation (str): Explanation of confidence level
+            - evidence_level (str): Evidence level classification
+            - document_id (str): ID of the assessed document
+            - document_title (str): Title of the assessed document
+
+            On error, the dict will also contain:
+            - error (str): Error message describing the failure
+
+            The presence of the 'error' field indicates assessment failure.
+            Downstream code should check for this field to detect errors.
 
         Note:
             No text truncation is performed as per Golden Rule #14.
@@ -641,10 +669,19 @@ class QualityAssessor:
         - Cross-assessment performance analysis
 
         Args:
-            document: Document dictionary
+            document: Document dictionary with at minimum 'id'
 
         Returns:
-            Paper weight assessment dictionary
+            Paper weight assessment dictionary with the following guaranteed fields:
+            - document_id (int): ID of the assessed document
+            - composite_score (float): Overall evidence weight score (0.0 to 10.0)
+            - dimensions (List[Dict]): Individual dimension assessments
+
+            On error, the dict will also contain:
+            - error (str): Error message describing the failure
+
+            The presence of the 'error' field indicates assessment failure.
+            Downstream code should check for this field to detect errors.
         """
         document_id = document["id"]
 
