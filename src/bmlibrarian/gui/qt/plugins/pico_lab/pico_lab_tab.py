@@ -459,11 +459,16 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
 
         doc = self.current_document
 
+        # Convert authors list to string if needed
+        authors = doc.get('authors')
+        if isinstance(authors, list):
+            authors = ', '.join(authors) if authors else None
+
         # Create DocumentViewData from document dict
         doc_data = DocumentViewData(
             document_id=doc.get('id'),
             title=doc.get('title', 'No title'),
-            authors=doc.get('authors'),
+            authors=authors,
             journal=doc.get('journal'),
             year=doc.get('year'),
             pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
