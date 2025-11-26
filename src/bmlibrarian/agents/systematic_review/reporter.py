@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO
@@ -47,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 # Report version for tracking format changes
 REPORT_FORMAT_VERSION = "1.0.0"
+
+# Display length limits for report formatting
+# These control truncation of text fields in tables and summaries
+MAX_QUERY_TEXT_DISPLAY_LENGTH = 50  # Max chars for query text in search strategy tables
+MAX_PAPERS_PER_EXCLUSION_STAGE = 20  # Max papers shown per exclusion stage in markdown
+MAX_TITLE_DISPLAY_LENGTH_EXCLUDED = 50  # Max chars for title in excluded papers tables
+MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN = 40  # Max chars for title in uncertain papers tables
+MAX_RATIONALE_DISPLAY_LENGTH = 30  # Max chars for rationale notes in tables
 
 # Markdown formatting
 MD_H1 = "#"
@@ -90,6 +99,78 @@ PRISMA_STAGES = [
     "eligibility",
     "included",
 ]
+
+
+# =============================================================================
+# Path Validation
+# =============================================================================
+
+class OutputPathError(Exception):
+    """Exception raised when output path validation fails."""
+
+    pass
+
+
+def validate_output_path(output_path: str) -> Path:
+    """
+    Validate and prepare an output file path.
+
+    Performs validation including:
+    - Path expansion (handles ~)
+    - Directory creation with appropriate permissions
+    - Write permission verification
+    - Basic directory traversal protection
+
+    Args:
+        output_path: Path string for the output file
+
+    Returns:
+        Expanded and validated Path object
+
+    Raises:
+        OutputPathError: If path validation fails (invalid path, no permission, etc.)
+    """
+    if not output_path or not output_path.strip():
+        raise OutputPathError("Output path cannot be empty")
+
+    try:
+        output = Path(output_path).expanduser().resolve()
+    except (ValueError, OSError) as e:
+        raise OutputPathError(f"Invalid output path '{output_path}': {e}")
+
+    # Basic directory traversal protection: ensure path doesn't escape expected directories
+    try:
+        # Resolve the path to catch any '..' components
+        output = output.resolve()
+    except (ValueError, OSError) as e:
+        raise OutputPathError(f"Failed to resolve output path '{output_path}': {e}")
+
+    # Ensure parent directory exists or can be created
+    parent_dir = output.parent
+    try:
+        parent_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        raise OutputPathError(
+            f"Permission denied creating directory '{parent_dir}': {e}"
+        )
+    except OSError as e:
+        raise OutputPathError(
+            f"Failed to create directory '{parent_dir}': {e}"
+        )
+
+    # Verify write permission to the directory
+    if not os.access(parent_dir, os.W_OK):
+        raise OutputPathError(
+            f"No write permission for directory '{parent_dir}'"
+        )
+
+    # Check if file exists and is writable (if it exists)
+    if output.exists() and not os.access(output, os.W_OK):
+        raise OutputPathError(
+            f"No write permission for existing file '{output}'"
+        )
+
+    return output
 
 
 # =============================================================================
@@ -155,9 +236,11 @@ class Reporter:
         Args:
             result: SystematicReviewResult to export
             output_path: Path for the output file
+
+        Raises:
+            OutputPathError: If output path validation fails
         """
-        output = Path(output_path).expanduser()
-        output.parent.mkdir(parents=True, exist_ok=True)
+        output = validate_output_path(output_path)
 
         with open(output, "w", encoding="utf-8") as f:
             f.write(result.to_json(indent=2))
@@ -389,9 +472,11 @@ class Reporter:
             output_path: Path for the output file
             include_audit_trail: Whether to include full audit trail
             include_excluded: Whether to include excluded papers list
+
+        Raises:
+            OutputPathError: If output path validation fails
         """
-        output = Path(output_path).expanduser()
-        output.parent.mkdir(parents=True, exist_ok=True)
+        output = validate_output_path(output_path)
 
         content = self._build_markdown_content(
             result, include_audit_trail, include_excluded
@@ -528,7 +613,8 @@ class Reporter:
 
             for query in search_strategy["queries_planned"]:
                 q_type = query.get("query_type", "unknown")
-                q_text = query.get("query_text", "")[:50] + "..." if len(query.get("query_text", "")) > 50 else query.get("query_text", "")
+                raw_text = query.get("query_text", "")
+                q_text = raw_text[:MAX_QUERY_TEXT_DISPLAY_LENGTH] + "..." if len(raw_text) > MAX_QUERY_TEXT_DISPLAY_LENGTH else raw_text
                 q_purpose = query.get("purpose", "")
                 lines.append(f"| {q_type} | {q_text} | {q_purpose} |")
 
@@ -646,16 +732,17 @@ class Reporter:
             lines.append("| Title | Year | Reason |")
             lines.append("|-------|------|--------|")
 
-            for paper in papers[:20]:  # Limit to 20 per stage
-                title = paper.get("title", "Unknown")[:50]
-                if len(paper.get("title", "")) > 50:
+            for paper in papers[:MAX_PAPERS_PER_EXCLUSION_STAGE]:
+                raw_title = paper.get("title", "Unknown")
+                title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_EXCLUDED]
+                if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_EXCLUDED:
                     title += "..."
                 year = paper.get("year", "N/A")
                 reasons = "; ".join(paper.get("exclusion_reasons", [])[:2])
                 lines.append(f"| {title} | {year} | {reasons} |")
 
-            if len(papers) > 20:
-                lines.append(f"| *... and {len(papers) - 20} more* | | |")
+            if len(papers) > MAX_PAPERS_PER_EXCLUSION_STAGE:
+                lines.append(f"| *... and {len(papers) - MAX_PAPERS_PER_EXCLUSION_STAGE} more* | | |")
 
             lines.append("")
 
@@ -675,12 +762,14 @@ class Reporter:
         ]
 
         for paper in uncertain_papers:
-            title = paper.get("title", "Unknown")[:40]
-            if len(paper.get("title", "")) > 40:
+            raw_title = paper.get("title", "Unknown")
+            title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN]
+            if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN:
                 title += "..."
             year = paper.get("year", "N/A")
             score = paper.get("relevance_score", "N/A")
-            rationale = paper.get("rationale", "")[:30]
+            raw_rationale = paper.get("rationale", "")
+            rationale = raw_rationale[:MAX_RATIONALE_DISPLAY_LENGTH]
             lines.append(f"| {title} | {year} | {score} | {rationale} |")
 
         lines.append("")
@@ -776,9 +865,11 @@ class Reporter:
             output_path: Base path for output files
             include_excluded: Whether to also export excluded papers
             excluded_papers: Optional list of excluded papers
+
+        Raises:
+            OutputPathError: If output path validation fails
         """
-        output = Path(output_path).expanduser()
-        output.parent.mkdir(parents=True, exist_ok=True)
+        output = validate_output_path(output_path)
 
         # Generate included papers CSV
         self._write_included_csv(papers, output)
@@ -861,9 +952,11 @@ class Reporter:
         Args:
             statistics: ReviewStatistics with counts
             output_path: Path for the output file
+
+        Raises:
+            OutputPathError: If output path validation fails
         """
-        output = Path(output_path).expanduser()
-        output.parent.mkdir(parents=True, exist_ok=True)
+        output = validate_output_path(output_path)
 
         prisma_data = self._build_prisma_data(statistics)
 
@@ -938,9 +1031,13 @@ class Reporter:
 
         Returns:
             Dictionary mapping format to output path
+
+        Raises:
+            OutputPathError: If output directory validation fails
         """
-        output_path = Path(output_dir).expanduser()
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Validate output directory by checking a test file path
+        test_path = str(Path(output_dir) / f"{base_name}.json")
+        output_path = validate_output_path(test_path).parent
 
         paths: Dict[str, str] = {}
 

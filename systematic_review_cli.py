@@ -74,7 +74,6 @@ from bmlibrarian.agents.systematic_review import (
 # Constants
 # =============================================================================
 
-DEFAULT_OUTPUT_DIR = Path.home() / ".bmlibrarian" / "systematic_reviews"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Default scoring weights (sum to 1.0)
@@ -238,7 +237,7 @@ Examples:
     parser.add_argument(
         "-o", "--output-dir",
         type=str,
-        help="Output directory for results (default: ~/.bmlibrarian/systematic_reviews)",
+        help="Output directory for results (default: from config, typically ~/.bmlibrarian/systematic_reviews)",
     )
 
     parser.add_argument(
@@ -457,12 +456,15 @@ def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
     )
 
 
-def get_output_dir(args: argparse.Namespace) -> Path:
+def get_output_dir(args: argparse.Namespace, config: SystematicReviewConfig) -> Path:
     """
     Get output directory, creating if necessary.
 
+    Uses the configuration system for default path.
+
     Args:
         args: Parsed arguments
+        config: SystematicReviewConfig instance
 
     Returns:
         Path to output directory
@@ -470,7 +472,8 @@ def get_output_dir(args: argparse.Namespace) -> Path:
     if args.output_dir:
         output_dir = Path(args.output_dir).expanduser()
     else:
-        output_dir = DEFAULT_OUTPUT_DIR
+        # Use output_dir from configuration system
+        output_dir = Path(config.output_dir).expanduser()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
@@ -618,16 +621,16 @@ def run_review(args: argparse.Namespace) -> int:
 
         print_criteria_summary(criteria)
 
-        # Get output paths
-        output_dir = get_output_dir(args)
+        # Get config and apply overrides (needed for output_dir)
+        config = get_systematic_review_config()
+
+        # Get output paths (uses config for default output directory)
+        output_dir = get_output_dir(args, config)
         output_name = get_output_name(args, criteria)
         output_path = output_dir / f"{output_name}.json"
 
         print(f"Output will be saved to: {output_dir}")
         print()
-
-        # Get config and apply overrides
-        config = get_systematic_review_config()
 
         if args.relevance_threshold:
             config.relevance_threshold = args.relevance_threshold
@@ -735,8 +738,10 @@ def show_status() -> int:
     Returns:
         Exit code
     """
+    config = get_systematic_review_config()
+    output_dir = Path(config.output_dir).expanduser()
     print("Review status tracking is not yet implemented.")
-    print(f"Check {DEFAULT_OUTPUT_DIR} for completed reviews.")
+    print(f"Check {output_dir} for completed reviews.")
     return 0
 
 
