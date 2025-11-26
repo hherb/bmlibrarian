@@ -25,6 +25,32 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class PICOSuitability:
+    """Represents assessment of whether a document is suitable for PICO extraction."""
+
+    is_intervention_study: bool  # Has an intervention/treatment being tested
+    has_comparison: bool  # Has a control or comparison group
+    is_suitable: bool  # Overall suitability for PICO extraction
+    confidence: float  # 0-1 confidence in assessment
+    rationale: str  # Explanation of why suitable or not
+    study_type: str  # Type of study (e.g., "RCT", "cohort study", "narrative review")
+    document_id: str
+    document_title: str
+    created_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now(timezone.utc)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        data = asdict(self)
+        if self.created_at:
+            data['created_at'] = self.created_at.isoformat()
+        return data
+
+
+@dataclass
 class PICOExtraction:
     """Represents extracted PICO components from a study."""
 
@@ -125,6 +151,156 @@ class PICOAgent(BaseAgent):
         """Get the agent type identifier."""
         return "pico_agent"
 
+    def check_suitability(
+        self,
+        document: Dict[str, Any]
+    ) -> Optional[PICOSuitability]:
+        """
+        Check if a document is suitable for PICO extraction.
+
+        This preliminary check determines whether the document is an intervention study
+        with defined Population, Intervention, Comparison, and Outcome components before
+        conducting the full PICO extraction.
+
+        Args:
+            document: Document dictionary with 'abstract' (required) and optional 'full_text'
+
+        Returns:
+            PICOSuitability object if check successful, None otherwise
+        """
+        if not self.test_connection():
+            logger.error("Cannot connect to Ollama - suitability check unavailable")
+            return None
+
+        # Get document metadata
+        doc_id = document.get('id', 'unknown')
+        title = document.get('title', 'Untitled')
+        abstract = document.get('abstract', '')
+        full_text = document.get('full_text', '')
+
+        # Use abstract + title for suitability check (more efficient)
+        text_to_analyze = f"{title}\n\n{abstract}"
+
+        # If abstract is very short, add some full text
+        if len(abstract) < 200 and full_text:
+            text_to_analyze += "\n\n" + full_text[:2000]
+
+        if not text_to_analyze.strip():
+            logger.warning(f"No text found for document {doc_id}")
+            return None
+
+        self._call_callback("pico_suitability_check_started",
+                           f"Checking if document {doc_id} is suitable for PICO extraction")
+
+        # Build suitability prompt
+        prompt = f"""You are an expert in clinical research methodology and evidence-based medicine.
+
+Determine if the document below is an INTERVENTION STUDY suitable for PICO (Population, Intervention, Comparison, Outcome) extraction.
+
+Document Title: {title}
+
+Document Text:
+{text_to_analyze[:3000]}
+
+INSTRUCTIONS:
+
+A document is SUITABLE for PICO extraction if it is:
+- A randomized controlled trial (RCT)
+- A clinical trial with intervention
+- A cohort study with intervention/exposure
+- A case-control study
+- A comparative effectiveness study
+- Any primary research testing an intervention, treatment, or exposure
+
+A document is NOT SUITABLE if it is:
+- A systematic review or meta-analysis (reviews other studies, doesn't test intervention itself)
+- A narrative review or literature review
+- An editorial, commentary, or opinion piece
+- A case report or case series (no comparison group)
+- A cross-sectional survey (no intervention)
+- A basic science or laboratory study (not clinical)
+- A qualitative study without quantifiable outcomes
+
+KEY INDICATORS of intervention studies suitable for PICO:
+- Tests a specific treatment, drug, procedure, or intervention
+- Has a defined patient population or study participants
+- Includes a comparison/control group (or baseline comparison)
+- Measures specific outcomes or endpoints
+- Reports results from actual patients/participants (not review of literature)
+
+Assess the following:
+1. is_intervention_study: Does this study test an intervention/treatment/exposure on participants?
+2. has_comparison: Does this study have a control or comparison group?
+3. is_suitable: Should we extract PICO components? (True if intervention study)
+4. confidence: How confident are you in this assessment? (0.0-1.0)
+5. rationale: Brief explanation (2-3 sentences) of why suitable or not suitable
+6. study_type: What type of study is this? (e.g., "RCT", "cohort study", "systematic review", "case-control study")
+
+CRITICAL REQUIREMENTS:
+- Base your assessment ONLY on what is ACTUALLY PRESENT in the text
+- DO NOT confuse systematic reviews (which review other studies) with primary research
+- Look for evidence of actual participant enrollment and intervention administration
+- If uncertain, lean towards NOT SUITABLE and explain why in the rationale
+
+Response format (JSON only):
+{{
+    "is_intervention_study": true,
+    "has_comparison": true,
+    "is_suitable": true,
+    "confidence": 0.9,
+    "rationale": "This is an RCT testing intervention X in population Y with control group Z...",
+    "study_type": "randomized controlled trial"
+}}
+
+Respond ONLY with valid JSON. Do not include any explanatory text outside the JSON."""
+
+        # Make request with retry logic
+        try:
+            suitability_data = self._generate_and_parse_json(
+                prompt,
+                max_retries=self.max_retries,
+                retry_context=f"PICO suitability check (doc {doc_id})",
+                num_predict=1000  # Shorter response for suitability check
+            )
+        except json.JSONDecodeError as e:
+            logger.error(f"Could not parse JSON from LLM after {self.max_retries + 1} attempts for document {doc_id}: {e}")
+            self._extraction_stats['parse_failures'] += 1
+            return None
+        except (ConnectionError, ValueError) as e:
+            logger.error(f"Ollama request failed for document {doc_id}: {e}")
+            self._extraction_stats['failed_extractions'] += 1
+            return None
+
+        # Validate required fields
+        required_fields = ['is_intervention_study', 'has_comparison', 'is_suitable', 'confidence', 'rationale', 'study_type']
+        if not all(field in suitability_data for field in required_fields):
+            logger.error(f"Missing required fields in suitability response for document {doc_id}")
+            self._extraction_stats['failed_extractions'] += 1
+            return None
+
+        # Create PICOSuitability object
+        suitability = PICOSuitability(
+            is_intervention_study=bool(suitability_data['is_intervention_study']),
+            has_comparison=bool(suitability_data['has_comparison']),
+            is_suitable=bool(suitability_data['is_suitable']),
+            confidence=float(suitability_data['confidence']),
+            rationale=suitability_data['rationale'],
+            study_type=suitability_data['study_type'],
+            document_id=str(doc_id),
+            document_title=title
+        )
+
+        self._call_callback("pico_suitability_check_completed",
+                           f"Document {doc_id} suitability: {suitability.is_suitable}")
+
+        logger.info(
+            f"PICO suitability check for document {doc_id}: "
+            f"suitable={suitability.is_suitable}, type={suitability.study_type}, "
+            f"confidence={suitability.confidence:.2f}"
+        )
+
+        return suitability
+
     def extract_pico_from_document(
         self,
         document: Dict[str, Any],
@@ -157,10 +333,9 @@ class PICOAgent(BaseAgent):
             logger.warning(f"No text found for document {doc_id}")
             return None
 
-        # Truncate text if too long (keep first ~8000 chars to stay within context limits)
-        if len(text_to_analyze) > 8000:
-            text_to_analyze = text_to_analyze[:8000] + "..."
-            logger.debug(f"Truncated text for document {doc_id} to 8000 characters")
+        # NO TRUNCATION: Per Golden Rule #14, truncation causes information loss
+        # which is unacceptable in medical domain. If context limits are exceeded,
+        # a map-reduce pattern should be implemented instead.
 
         self._call_callback("pico_extraction_started", f"Extracting PICO from document {doc_id}")
 

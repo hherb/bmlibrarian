@@ -44,30 +44,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # =============================================================================
 
-# Study types that warrant PICO extraction (intervention/clinical studies)
-PICO_APPLICABLE_STUDY_TYPES = {
-    "rct",
-    "randomized controlled trial",
-    "clinical trial",
-    "cohort",
-    "cohort study",
-    "case-control",
-    "case-control study",
-    "intervention study",
-    "comparative effectiveness",
-}
-
-# Study types that should be assessed with PRISMA 2020
-PRISMA_APPLICABLE_STUDY_TYPES = {
-    "systematic review",
-    "meta-analysis",
-    "systematic review and meta-analysis",
-}
-
-# Maximum text length for quality assessments
-MAX_TEXT_LENGTH_STUDY_ASSESSMENT = 12000
-MAX_TEXT_LENGTH_PICO = 8000
-MAX_TEXT_LENGTH_PRISMA = 15000
+# NOTE: Study type determination is now delegated to LLM-based suitability checks
+# in PICOAgent.check_suitability() and PRISMA2020Agent.check_suitability().
+# This follows BMLibrarian's AI-first approach and avoids unreliable keyword matching.
 
 
 # =============================================================================
@@ -368,7 +347,7 @@ class QualityAssessor:
         """
         Assess a single paper.
 
-        Runs all applicable quality assessments based on study type.
+        Runs all applicable quality assessments based on LLM-determined study suitability.
 
         Args:
             paper: Scored paper to assess
@@ -387,21 +366,38 @@ class QualityAssessor:
         # 1. Study Assessment (always run)
         study_assessment = self._run_study_assessment(document)
 
-        # Extract study type for conditional assessments
-        study_type = study_assessment.get("study_type", "").lower()
-
         # 2. Paper Weight Assessment (always run)
         paper_weight = self._run_paper_weight_assessment(document)
 
-        # 3. PICO extraction (conditional)
+        # 3. PICO extraction (conditional - use LLM-based suitability check)
         pico_components = None
-        if self._should_run_pico(study_type):
+        pico_suitability = self._check_pico_suitability(document)
+        if pico_suitability and pico_suitability.get("is_suitable", False):
+            logger.info(
+                f"Document {document['id']} suitable for PICO: "
+                f"{pico_suitability.get('rationale', 'N/A')}"
+            )
             pico_components = self._run_pico_extraction(document)
+        elif pico_suitability:
+            logger.info(
+                f"Document {document['id']} NOT suitable for PICO: "
+                f"{pico_suitability.get('rationale', 'N/A')}"
+            )
 
-        # 4. PRISMA assessment (conditional)
+        # 4. PRISMA assessment (conditional - use LLM-based suitability check)
         prisma_assessment = None
-        if self._should_run_prisma(study_type):
+        prisma_suitability = self._check_prisma_suitability(document)
+        if prisma_suitability and prisma_suitability.get("is_suitable", False):
+            logger.info(
+                f"Document {document['id']} suitable for PRISMA: "
+                f"{prisma_suitability.get('rationale', 'N/A')}"
+            )
             prisma_assessment = self._run_prisma_assessment(document)
+        elif prisma_suitability:
+            logger.info(
+                f"Document {document['id']} NOT suitable for PRISMA: "
+                f"{prisma_suitability.get('rationale', 'N/A')}"
+            )
 
         return AssessedPaper(
             scored_paper=paper,
@@ -424,15 +420,16 @@ class QualityAssessor:
 
         Returns:
             Study assessment dictionary
+
+        Note:
+            No text truncation is performed as per Golden Rule #14.
+            Truncation causes information loss which is unacceptable in medical domain.
         """
         try:
             agent = self._get_study_agent()
 
-            # Truncate abstract if needed
+            # Use full text without truncation (Golden Rule #14)
             text = document.get("abstract", "")
-            if len(text) > MAX_TEXT_LENGTH_STUDY_ASSESSMENT:
-                text = text[:MAX_TEXT_LENGTH_STUDY_ASSESSMENT]
-                logger.debug(f"Truncated abstract for study assessment: {document['id']}")
 
             result = agent.assess_study(
                 abstract=text,
@@ -499,23 +496,23 @@ class QualityAssessor:
 
         Returns:
             PICO extraction dictionary, or None on error
+
+        Note:
+            No text truncation is performed as per Golden Rule #14.
+            Truncation causes information loss which is unacceptable in medical domain.
+            The PICOAgent will handle large texts appropriately.
         """
         try:
             agent = self._get_pico_agent()
 
-            # Truncate abstract if needed
-            text = document.get("abstract", "")
-            if len(text) > MAX_TEXT_LENGTH_PICO:
-                text = text[:MAX_TEXT_LENGTH_PICO]
-                logger.debug(f"Truncated abstract for PICO extraction: {document['id']}")
-
-            result = agent.extract_pico(
-                abstract=text,
-                title=document.get("title", ""),
-                document_id=str(document["id"]),
-                pmid=document.get("pmid"),
-                doi=document.get("doi"),
+            # Use the extract_pico_from_document method which expects a full document dict
+            result = agent.extract_pico_from_document(
+                document=document,
+                min_confidence=0.5
             )
+
+            if result is None:
+                return None
 
             return result.to_dict()
 
@@ -547,51 +544,62 @@ class QualityAssessor:
             return None
 
     # =========================================================================
-    # Conditional Logic
+    # Conditional Logic (LLM-Based Suitability Checks)
     # =========================================================================
 
-    def _should_run_pico(self, study_type: str) -> bool:
+    def _check_pico_suitability(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Check if PICO extraction is applicable.
+        Check if PICO extraction is applicable using LLM-based assessment.
 
-        PICO extraction is relevant for intervention studies with
-        defined populations, interventions, comparisons, and outcomes.
+        Uses PICOAgent's check_suitability method to determine if the document
+        is an intervention study suitable for PICO component extraction.
 
         Args:
-            study_type: Study type string (lowercase)
+            document: Document dictionary
 
         Returns:
-            True if PICO extraction should be performed
+            Suitability assessment dictionary, or None on error
         """
-        study_type_lower = study_type.lower().strip()
+        try:
+            agent = self._get_pico_agent()
+            suitability = agent.check_suitability(document)
 
-        # Check against known PICO-applicable types
-        for applicable_type in PICO_APPLICABLE_STUDY_TYPES:
-            if applicable_type in study_type_lower:
-                return True
+            if suitability is None:
+                logger.warning(f"PICO suitability check returned None for document {document['id']}")
+                return None
 
-        return False
+            return suitability.to_dict()
 
-    def _should_run_prisma(self, study_type: str) -> bool:
+        except Exception as e:
+            logger.error(f"PICO suitability check failed for {document['id']}: {e}")
+            return None
+
+    def _check_prisma_suitability(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Check if PRISMA assessment is applicable.
+        Check if PRISMA assessment is applicable using LLM-based assessment.
 
-        PRISMA 2020 is relevant for systematic reviews and meta-analyses.
+        Uses PRISMA2020Agent's check_suitability method to determine if the document
+        is a systematic review or meta-analysis suitable for PRISMA assessment.
 
         Args:
-            study_type: Study type string (lowercase)
+            document: Document dictionary
 
         Returns:
-            True if PRISMA assessment should be performed
+            Suitability assessment dictionary, or None on error
         """
-        study_type_lower = study_type.lower().strip()
+        try:
+            agent = self._get_prisma_agent()
+            suitability = agent.check_suitability(document)
 
-        # Check against known PRISMA-applicable types
-        for applicable_type in PRISMA_APPLICABLE_STUDY_TYPES:
-            if applicable_type in study_type_lower:
-                return True
+            if suitability is None:
+                logger.warning(f"PRISMA suitability check returned None for document {document['id']}")
+                return None
 
-        return False
+            return suitability.to_dict()
+
+        except Exception as e:
+            logger.error(f"PRISMA suitability check failed for {document['id']}: {e}")
+            return None
 
     # =========================================================================
     # Helper Methods
