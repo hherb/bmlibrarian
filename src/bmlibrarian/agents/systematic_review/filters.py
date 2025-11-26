@@ -172,6 +172,16 @@ NEGATIVE_CONTEXT_PATTERNS: List[str] = [
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.6
 
+# Confidence values for different filter types
+STUDY_TYPE_KEYWORD_CONFIDENCE = 0.7  # Lower confidence for keyword-based study type checks
+EXCLUSION_KEYWORD_CONFIDENCE = 0.8  # Confidence for exclusion keyword matches
+
+# LLM response limits
+LLM_MAX_TOKENS = 800  # Maximum tokens for LLM response
+
+# Display limits for prompts
+MAX_AUTHORS_TO_DISPLAY = 5  # Maximum authors to include in evaluation prompts
+
 
 # =============================================================================
 # Data Types
@@ -386,7 +396,7 @@ class InitialFilter:
                     passed=False,
                     reason=study_result,
                     stage=ExclusionStage.INITIAL_FILTER,
-                    confidence=0.7,  # Keyword-based, lower confidence
+                    confidence=STUDY_TYPE_KEYWORD_CONFIDENCE,
                 )
 
         # Check exclusion keywords
@@ -397,7 +407,7 @@ class InitialFilter:
                 passed=False,
                 reason=exclusion_result,
                 stage=ExclusionStage.INITIAL_FILTER,
-                confidence=0.8,
+                confidence=EXCLUSION_KEYWORD_CONFIDENCE,
             )
 
         # Check minimum content
@@ -893,7 +903,7 @@ IMPORTANT:
                 ],
                 options={
                     "temperature": self.temperature,
-                    "num_predict": 800,
+                    "num_predict": LLM_MAX_TOKENS,
                 },
             )
 
@@ -928,12 +938,17 @@ IMPORTANT:
         relevance_score: Optional[float] = None,
     ) -> str:
         """Build the evaluation prompt for a paper."""
+        # Build author string with limit
+        authors_display = ', '.join(paper.authors[:MAX_AUTHORS_TO_DISPLAY])
+        if len(paper.authors) > MAX_AUTHORS_TO_DISPLAY:
+            authors_display += '...'
+
         # Build paper summary
         paper_info = f"""PAPER TO EVALUATE:
 
 Title: {paper.title}
 
-Authors: {', '.join(paper.authors[:5])}{'...' if len(paper.authors) > 5 else ''}
+Authors: {authors_display}
 
 Year: {paper.year}
 
