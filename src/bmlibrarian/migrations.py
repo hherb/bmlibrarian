@@ -139,6 +139,78 @@ class MigrationManager:
                     (filename, checksum)
                 )
                 conn.commit()
+
+    def mark_migration_applied(self, migration_file: Path) -> bool:
+        """Mark a migration as applied without executing it.
+
+        This is a recovery mechanism for when a migration was applied manually
+        or the schema already exists from other means.
+
+        Args:
+            migration_file: Path to the migration file to mark as applied
+
+        Returns:
+            True if successfully marked, False if already applied
+        """
+        migration_file = Path(migration_file)
+        if not migration_file.exists():
+            raise FileNotFoundError(f"Migration file not found: {migration_file}")
+
+        # Ensure migrations table exists
+        self._create_migrations_table()
+
+        # Check if already applied
+        applied_migrations = {filename for filename, _ in self._get_applied_migrations()}
+        if migration_file.name in applied_migrations:
+            logger.info(f"Migration {migration_file.name} is already marked as applied")
+            return False
+
+        # Calculate checksum and record
+        with open(migration_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        checksum = self._calculate_checksum(content)
+
+        self._record_migration(migration_file.name, checksum)
+        logger.info(f"Marked migration as applied: {migration_file.name}")
+        return True
+
+    def get_migration_status(self, migrations_dir: Path) -> dict:
+        """Get status of all migrations.
+
+        Args:
+            migrations_dir: Path to migrations directory
+
+        Returns:
+            Dictionary with 'applied', 'pending', and 'total' counts plus lists
+        """
+        migrations_dir = Path(migrations_dir)
+        result = {
+            'applied': [],
+            'pending': [],
+            'total': 0
+        }
+
+        if not migrations_dir.exists():
+            return result
+
+        # Ensure migrations table exists
+        try:
+            self._create_migrations_table()
+            applied_migrations = {filename for filename, _ in self._get_applied_migrations()}
+        except Exception as e:
+            logger.warning(f"Could not get applied migrations: {e}")
+            applied_migrations = set()
+
+        # Find all migration files
+        for file_path in sorted(migrations_dir.glob("*.sql"), key=lambda x: x.name):
+            if re.match(r'^\d+_.*\.sql$', file_path.name):
+                result['total'] += 1
+                if file_path.name in applied_migrations:
+                    result['applied'].append(file_path.name)
+                else:
+                    result['pending'].append(file_path.name)
+
+        return result
     
     def initialize_database(self, baseline_schema_path: Path):
         """Initialize database with baseline schema."""
@@ -181,15 +253,21 @@ class MigrationManager:
         
         print("Baseline schema applied successfully!")
     
-    def apply_pending_migrations(self, migrations_dir: Path, silent: bool = False) -> int:
+    def apply_pending_migrations(
+        self,
+        migrations_dir: Path,
+        silent: bool = False,
+        dry_run: bool = False
+    ) -> int:
         """Apply all pending migrations from the migrations directory.
 
         Args:
             migrations_dir: Path to migrations directory
             silent: If True, use logging instead of print statements
+            dry_run: If True, only show what would be applied without making changes
 
         Returns:
-            Number of migrations applied
+            Number of migrations applied (or would be applied in dry_run mode)
         """
         migrations_dir = Path(migrations_dir)
 
@@ -231,6 +309,33 @@ class MigrationManager:
 
         # Sort by filename (which should start with numbers for ordering)
         migration_files.sort(key=lambda x: x.name)
+
+        # Dry run mode - just show what would be applied
+        if dry_run:
+            pending_count = 0
+            for migration_file in migration_files:
+                if migration_file.name not in applied_migrations:
+                    pending_count += 1
+                    msg = f"[DRY RUN] Would apply: {migration_file.name}"
+                    if silent:
+                        logger.info(msg)
+                    else:
+                        print(msg)
+
+            if pending_count == 0:
+                msg = f"[DRY RUN] Database is up to date. {len(applied_migrations)} migrations already applied, no pending migrations."
+                if silent:
+                    logger.info(msg)
+                else:
+                    print(msg)
+            else:
+                msg = f"[DRY RUN] Total: {pending_count} migration(s) would be applied ({len(applied_migrations)} already applied)"
+                if silent:
+                    logger.info(msg)
+                else:
+                    print(msg)
+
+            return pending_count
 
         # Apply pending migrations
         applied_count = 0

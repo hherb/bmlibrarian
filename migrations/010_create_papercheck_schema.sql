@@ -4,23 +4,8 @@
 -- Date: 2025-11-21
 -- Version: 010
 
--- ============================================================================
--- Migration Tracking Setup
--- ============================================================================
-
--- Create schema_migrations table if it doesn't exist (for tracking applied migrations)
-CREATE TABLE IF NOT EXISTS public.schema_migrations (
-    version VARCHAR(100) PRIMARY KEY,
-    applied_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    description TEXT
-);
-
-COMMENT ON TABLE public.schema_migrations IS 'Tracks applied database migrations for version control';
-
--- Record this migration (idempotent - won't fail if re-run)
-INSERT INTO public.schema_migrations (version, applied_at, description)
-VALUES ('010_create_papercheck_schema', NOW(), 'PaperChecker: Paper abstract quality assessment with counter-evidence analysis')
-ON CONFLICT (version) DO NOTHING;
+-- NOTE: Migration tracking is handled by MigrationManager via bmlibrarian_migrations table.
+-- DO NOT add redundant tracking code to migration files.
 
 -- ============================================================================
 -- Create papercheck schema
@@ -82,7 +67,7 @@ COMMENT ON TYPE papercheck.search_strategy IS 'Search strategy types for counter
 -- 1. abstracts_checked - Main table for abstracts being evaluated
 -- ============================================================================
 
-CREATE TABLE papercheck.abstracts_checked (
+CREATE TABLE IF NOT EXISTS papercheck.abstracts_checked (
     id SERIAL PRIMARY KEY,
     -- Abstract content with reasonable length validation (min 50 chars, max 50KB)
     abstract_text TEXT NOT NULL CHECK (length(abstract_text) >= 50 AND length(abstract_text) <= 51200),
@@ -116,12 +101,12 @@ CREATE TABLE papercheck.abstracts_checked (
     CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at)  -- Duration sanity
 );
 
-CREATE INDEX idx_abstracts_checked_pmid ON papercheck.abstracts_checked(source_pmid);
-CREATE INDEX idx_abstracts_checked_doi ON papercheck.abstracts_checked(source_doi);
-CREATE INDEX idx_abstracts_checked_date ON papercheck.abstracts_checked(checked_at DESC);
-CREATE INDEX idx_abstracts_checked_status ON papercheck.abstracts_checked(status);
+CREATE INDEX IF NOT EXISTS idx_abstracts_checked_pmid ON papercheck.abstracts_checked(source_pmid);
+CREATE INDEX IF NOT EXISTS idx_abstracts_checked_doi ON papercheck.abstracts_checked(source_doi);
+CREATE INDEX IF NOT EXISTS idx_abstracts_checked_date ON papercheck.abstracts_checked(checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abstracts_checked_status ON papercheck.abstracts_checked(status);
 -- Partial index for monitoring failed/processing abstracts (common operational query)
-CREATE INDEX idx_abstracts_error_status ON papercheck.abstracts_checked(status)
+CREATE INDEX IF NOT EXISTS idx_abstracts_error_status ON papercheck.abstracts_checked(status)
     WHERE status IN ('failed', 'processing');
 
 COMMENT ON TABLE papercheck.abstracts_checked IS 'Abstracts being checked with processing metadata and status';
@@ -136,7 +121,7 @@ COMMENT ON COLUMN papercheck.abstracts_checked.overall_assessment IS 'High-level
 -- 2. statements - Extracted key statements from abstracts
 -- ============================================================================
 
-CREATE TABLE papercheck.statements (
+CREATE TABLE IF NOT EXISTS papercheck.statements (
     id SERIAL PRIMARY KEY,
     abstract_id INTEGER NOT NULL REFERENCES papercheck.abstracts_checked(id) ON DELETE CASCADE,
 
@@ -156,8 +141,8 @@ CREATE TABLE papercheck.statements (
     UNIQUE(abstract_id, statement_order)  -- One statement per order position
 );
 
-CREATE INDEX idx_statements_abstract ON papercheck.statements(abstract_id);
-CREATE INDEX idx_statements_type ON papercheck.statements(statement_type);
+CREATE INDEX IF NOT EXISTS idx_statements_abstract ON papercheck.statements(abstract_id);
+CREATE INDEX IF NOT EXISTS idx_statements_type ON papercheck.statements(statement_type);
 
 COMMENT ON TABLE papercheck.statements IS 'Key statements extracted from abstracts (hypotheses, findings, conclusions)';
 COMMENT ON COLUMN papercheck.statements.statement_text IS 'The extracted statement text';
@@ -169,7 +154,7 @@ COMMENT ON COLUMN papercheck.statements.statement_order IS 'Order of statement w
 -- 3. counter_statements - Counter-claims generated for each statement
 -- ============================================================================
 
-CREATE TABLE papercheck.counter_statements (
+CREATE TABLE IF NOT EXISTS papercheck.counter_statements (
     id SERIAL PRIMARY KEY,
     statement_id INTEGER NOT NULL REFERENCES papercheck.statements(id) ON DELETE CASCADE,
 
@@ -191,7 +176,7 @@ CREATE TABLE papercheck.counter_statements (
     UNIQUE(statement_id)  -- One counter-statement per statement
 );
 
-CREATE INDEX idx_counter_statements_statement ON papercheck.counter_statements(statement_id);
+CREATE INDEX IF NOT EXISTS idx_counter_statements_statement ON papercheck.counter_statements(statement_id);
 
 COMMENT ON TABLE papercheck.counter_statements IS 'Counter-claims generated for statement verification';
 COMMENT ON COLUMN papercheck.counter_statements.negated_text IS 'Negated version of the original statement';
@@ -202,7 +187,7 @@ COMMENT ON COLUMN papercheck.counter_statements.keywords IS 'Keywords for keywor
 -- 4. search_results - Documents found through multi-strategy search
 -- ============================================================================
 
-CREATE TABLE papercheck.search_results (
+CREATE TABLE IF NOT EXISTS papercheck.search_results (
     id SERIAL PRIMARY KEY,
     counter_statement_id INTEGER NOT NULL
         REFERENCES papercheck.counter_statements(id) ON DELETE CASCADE,
@@ -219,9 +204,9 @@ CREATE TABLE papercheck.search_results (
     searched_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_search_results_counter ON papercheck.search_results(counter_statement_id);
-CREATE INDEX idx_search_results_doc ON papercheck.search_results(doc_id);
-CREATE INDEX idx_search_results_strategy ON papercheck.search_results(search_strategy);
+CREATE INDEX IF NOT EXISTS idx_search_results_counter ON papercheck.search_results(counter_statement_id);
+CREATE INDEX IF NOT EXISTS idx_search_results_doc ON papercheck.search_results(doc_id);
+CREATE INDEX IF NOT EXISTS idx_search_results_strategy ON papercheck.search_results(search_strategy);
 
 COMMENT ON TABLE papercheck.search_results IS 'Documents found through semantic, HyDE, and keyword search strategies';
 COMMENT ON COLUMN papercheck.search_results.doc_id IS 'Reference to document in public.documents table';
@@ -233,7 +218,7 @@ COMMENT ON COLUMN papercheck.search_results.search_score IS 'Relevance/similarit
 -- 5. scored_documents - Relevance-scored documents from search results
 -- ============================================================================
 
-CREATE TABLE papercheck.scored_documents (
+CREATE TABLE IF NOT EXISTS papercheck.scored_documents (
     id SERIAL PRIMARY KEY,
     counter_statement_id INTEGER NOT NULL
         REFERENCES papercheck.counter_statements(id) ON DELETE CASCADE,
@@ -256,10 +241,10 @@ CREATE TABLE papercheck.scored_documents (
     UNIQUE(counter_statement_id, doc_id)  -- One score per doc per statement
 );
 
-CREATE INDEX idx_scored_documents_counter ON papercheck.scored_documents(counter_statement_id);
-CREATE INDEX idx_scored_documents_doc ON papercheck.scored_documents(doc_id);
-CREATE INDEX idx_scored_documents_score ON papercheck.scored_documents(relevance_score);
-CREATE INDEX idx_scored_documents_supports ON papercheck.scored_documents(supports_counter);
+CREATE INDEX IF NOT EXISTS idx_scored_documents_counter ON papercheck.scored_documents(counter_statement_id);
+CREATE INDEX IF NOT EXISTS idx_scored_documents_doc ON papercheck.scored_documents(doc_id);
+CREATE INDEX IF NOT EXISTS idx_scored_documents_score ON papercheck.scored_documents(relevance_score);
+CREATE INDEX IF NOT EXISTS idx_scored_documents_supports ON papercheck.scored_documents(supports_counter);
 
 COMMENT ON TABLE papercheck.scored_documents IS 'Documents scored for relevance to counter-statements';
 COMMENT ON COLUMN papercheck.scored_documents.relevance_score IS 'Relevance score 1-5 (5 = highly relevant)';
@@ -271,7 +256,7 @@ COMMENT ON COLUMN papercheck.scored_documents.found_by IS 'List of search strate
 -- 6. citations - Extracted passages from high-scoring documents
 -- ============================================================================
 
-CREATE TABLE papercheck.citations (
+CREATE TABLE IF NOT EXISTS papercheck.citations (
     id SERIAL PRIMARY KEY,
     counter_statement_id INTEGER NOT NULL
         REFERENCES papercheck.counter_statements(id) ON DELETE CASCADE,
@@ -297,9 +282,9 @@ CREATE TABLE papercheck.citations (
     UNIQUE(counter_statement_id, citation_order)  -- Ordered citations
 );
 
-CREATE INDEX idx_citations_counter ON papercheck.citations(counter_statement_id);
-CREATE INDEX idx_citations_doc ON papercheck.citations(doc_id);
-CREATE INDEX idx_citations_order ON papercheck.citations(citation_order);
+CREATE INDEX IF NOT EXISTS idx_citations_counter ON papercheck.citations(counter_statement_id);
+CREATE INDEX IF NOT EXISTS idx_citations_doc ON papercheck.citations(doc_id);
+CREATE INDEX IF NOT EXISTS idx_citations_order ON papercheck.citations(citation_order);
 
 COMMENT ON TABLE papercheck.citations IS 'Relevant passages extracted from high-scoring documents';
 COMMENT ON COLUMN papercheck.citations.passage IS 'Extracted text passage supporting counter-statement';
@@ -312,7 +297,7 @@ COMMENT ON COLUMN papercheck.citations.doc_metadata IS 'Denormalized document me
 -- 7. counter_reports - Generated reports for counter-statements
 -- ============================================================================
 
-CREATE TABLE papercheck.counter_reports (
+CREATE TABLE IF NOT EXISTS papercheck.counter_reports (
     id SERIAL PRIMARY KEY,
     counter_statement_id INTEGER NOT NULL
         REFERENCES papercheck.counter_statements(id) ON DELETE CASCADE,
@@ -334,7 +319,7 @@ CREATE TABLE papercheck.counter_reports (
     UNIQUE(counter_statement_id)  -- One report per counter-statement
 );
 
-CREATE INDEX idx_counter_reports_counter ON papercheck.counter_reports(counter_statement_id);
+CREATE INDEX IF NOT EXISTS idx_counter_reports_counter ON papercheck.counter_reports(counter_statement_id);
 
 COMMENT ON TABLE papercheck.counter_reports IS 'Reports synthesizing evidence for counter-statements';
 COMMENT ON COLUMN papercheck.counter_reports.report_text IS 'Plain text report content';
@@ -346,7 +331,7 @@ COMMENT ON COLUMN papercheck.counter_reports.search_stats IS 'Statistics about d
 -- 8. verdicts - Final verdicts on statements
 -- ============================================================================
 
-CREATE TABLE papercheck.verdicts (
+CREATE TABLE IF NOT EXISTS papercheck.verdicts (
     id SERIAL PRIMARY KEY,
     statement_id INTEGER NOT NULL
         REFERENCES papercheck.statements(id) ON DELETE CASCADE,
@@ -364,9 +349,9 @@ CREATE TABLE papercheck.verdicts (
     UNIQUE(statement_id)  -- One verdict per statement
 );
 
-CREATE INDEX idx_verdicts_statement ON papercheck.verdicts(statement_id);
-CREATE INDEX idx_verdicts_verdict ON papercheck.verdicts(verdict);
-CREATE INDEX idx_verdicts_confidence ON papercheck.verdicts(confidence);
+CREATE INDEX IF NOT EXISTS idx_verdicts_statement ON papercheck.verdicts(statement_id);
+CREATE INDEX IF NOT EXISTS idx_verdicts_verdict ON papercheck.verdicts(verdict);
+CREATE INDEX IF NOT EXISTS idx_verdicts_confidence ON papercheck.verdicts(confidence);
 
 COMMENT ON TABLE papercheck.verdicts IS 'Final verdicts on statement validity based on counter-evidence';
 COMMENT ON COLUMN papercheck.verdicts.verdict IS 'Assessment: supports (confirmed), contradicts (refuted), or undecided';
@@ -378,26 +363,26 @@ COMMENT ON COLUMN papercheck.verdicts.confidence IS 'Confidence level in verdict
 -- ============================================================================
 
 -- For filtering statements by abstract and type (common in reports)
-CREATE INDEX idx_statements_abstract_type ON papercheck.statements(abstract_id, statement_type);
+CREATE INDEX IF NOT EXISTS idx_statements_abstract_type ON papercheck.statements(abstract_id, statement_type);
 
 -- For scoring queries - finding high-scoring documents for counter-statements
-CREATE INDEX idx_scored_docs_counter_score ON papercheck.scored_documents(counter_statement_id, relevance_score);
+CREATE INDEX IF NOT EXISTS idx_scored_docs_counter_score ON papercheck.scored_documents(counter_statement_id, relevance_score);
 
 -- For finding supporting documents above threshold
-CREATE INDEX idx_scored_docs_counter_supports ON papercheck.scored_documents(counter_statement_id, supports_counter)
+CREATE INDEX IF NOT EXISTS idx_scored_docs_counter_supports ON papercheck.scored_documents(counter_statement_id, supports_counter)
     WHERE supports_counter = true;
 
 -- For verdict analysis by confidence and verdict type
-CREATE INDEX idx_verdicts_verdict_confidence ON papercheck.verdicts(verdict, confidence);
+CREATE INDEX IF NOT EXISTS idx_verdicts_verdict_confidence ON papercheck.verdicts(verdict, confidence);
 
 -- For search results by strategy and score (common in analytics)
-CREATE INDEX idx_search_results_strategy_score ON papercheck.search_results(search_strategy, search_score DESC);
+CREATE INDEX IF NOT EXISTS idx_search_results_strategy_score ON papercheck.search_results(search_strategy, search_score DESC);
 
 -- For citations ordered by counter-statement and relevance
-CREATE INDEX idx_citations_counter_score ON papercheck.citations(counter_statement_id, relevance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_citations_counter_score ON papercheck.citations(counter_statement_id, relevance_score DESC);
 
 -- For abstracts by status and date (operational queries)
-CREATE INDEX idx_abstracts_status_date ON papercheck.abstracts_checked(status, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abstracts_status_date ON papercheck.abstracts_checked(status, checked_at DESC);
 
 -- ============================================================================
 -- Views for Convenient Queries

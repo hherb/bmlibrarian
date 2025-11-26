@@ -35,10 +35,19 @@ class DatabaseManager:
     _source_id_cache: Optional[Dict[int, str]] = None
     _source_ids: Optional[Dict[str, Union[int, List[int]]]] = None
     
-    def __init__(self):
-        """Initialize the database manager with connection pool."""
+    def __init__(self, auto_migrate: bool = True, dry_run_migrations: bool = False):
+        """Initialize the database manager with connection pool.
+
+        Args:
+            auto_migrate: If True, automatically apply pending migrations on startup.
+                         Set to False for testing or when migrations should be handled manually.
+            dry_run_migrations: If True, only show what migrations would be applied
+                               without making changes. Requires auto_migrate=True.
+        """
         self._pool: Optional[ConnectionPool] = None
         self._init_pool()
+        if auto_migrate:
+            self._apply_pending_migrations(dry_run=dry_run_migrations)
         self._cache_source_ids()
     
     def _init_pool(self):
@@ -84,6 +93,56 @@ class DatabaseManager:
         except Exception as e:
             # Log the error but don't fail initialization
             print(f"Warning: Connection pool warmup failed: {e}")
+
+    def _apply_pending_migrations(self, dry_run: bool = False) -> int:
+        """Check for and apply any pending database migrations.
+
+        This method is called automatically on DatabaseManager initialization
+        to ensure the database schema is always up to date.
+
+        Args:
+            dry_run: If True, only show what would be applied without making changes.
+
+        Returns:
+            Number of migrations applied (0 if none pending or on error).
+        """
+        try:
+            from bmlibrarian.migrations import MigrationManager
+
+            # Find migrations directory relative to this module
+            module_dir = Path(__file__).parent
+            # migrations/ is at the project root, which is two levels up from src/bmlibrarian/
+            project_root = module_dir.parent.parent
+            migrations_dir = project_root / "migrations"
+
+            if not migrations_dir.exists():
+                # Try alternative location (installed package)
+                migrations_dir = module_dir / "migrations"
+
+            if not migrations_dir.exists():
+                logger.debug("Migrations directory not found, skipping auto-migration")
+                return 0
+
+            # Create migration manager from environment
+            manager = MigrationManager.from_env()
+            if not manager:
+                logger.debug("Could not create MigrationManager, skipping auto-migration")
+                return 0
+
+            # Apply pending migrations (or dry run)
+            # Always call apply_pending_migrations to get proper status output
+            applied = manager.apply_pending_migrations(
+                migrations_dir, silent=False, dry_run=dry_run
+            )
+
+            if applied > 0 and not dry_run:
+                logger.info(f"Applied {applied} migrations successfully")
+            return applied
+
+        except Exception as e:
+            # Log but don't fail - migrations might already be applied
+            logger.warning(f"Auto-migration check failed: {e}")
+            return 0
     
     def _cache_source_ids(self):
         """Cache source IDs for faster queries."""

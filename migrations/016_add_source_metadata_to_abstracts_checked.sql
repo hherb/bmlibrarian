@@ -4,10 +4,8 @@
 -- Date: 2025-11-23
 -- Version: 016
 
--- Record this migration (idempotent - won't fail if re-run)
-INSERT INTO public.schema_migrations (version, applied_at, description)
-VALUES ('016_add_source_metadata_to_abstracts_checked', NOW(), 'PaperChecker: Add source_metadata JSONB column for flexible metadata storage')
-ON CONFLICT (version) DO NOTHING;
+-- NOTE: Migration tracking is handled by MigrationManager via bmlibrarian_migrations table.
+-- DO NOT add redundant tracking code to migration files.
 
 -- ============================================================================
 -- Add source_metadata column to abstracts_checked

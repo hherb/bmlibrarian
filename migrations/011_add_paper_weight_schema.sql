@@ -21,7 +21,7 @@ COMMENT ON SCHEMA paper_weights IS 'PaperWeightAssessment: Multi-dimensional pap
 -- 1. assessments - Main table for paper weight assessments
 -- ============================================================================
 
-CREATE TABLE paper_weights.assessments (
+CREATE TABLE IF NOT EXISTS paper_weights.assessments (
     assessment_id SERIAL PRIMARY KEY,
     document_id INTEGER NOT NULL REFERENCES public.document(id),
     assessed_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -78,14 +78,14 @@ CREATE TABLE paper_weights.assessments (
 -- Composite unique index: enforces uniqueness AND provides efficient lookups
 -- This replaces both the inline UNIQUE constraint and eliminates need for separate document_id index
 -- One assessment per (document, version) combination - allows re-assessment when methodology improves
-CREATE UNIQUE INDEX idx_assessments_doc_version
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_doc_version
     ON paper_weights.assessments(document_id, assessor_version);
 
 -- Additional indexes for common query patterns
 -- Note: idx_assessments_document is NOT needed - covered by idx_assessments_doc_version (leftmost column)
-CREATE INDEX idx_assessments_version ON paper_weights.assessments(assessor_version);
-CREATE INDEX idx_assessments_final_weight ON paper_weights.assessments(final_weight DESC);
-CREATE INDEX idx_assessments_study_type ON paper_weights.assessments(study_type);
+CREATE INDEX IF NOT EXISTS idx_assessments_version ON paper_weights.assessments(assessor_version);
+CREATE INDEX IF NOT EXISTS idx_assessments_final_weight ON paper_weights.assessments(final_weight DESC);
+CREATE INDEX IF NOT EXISTS idx_assessments_study_type ON paper_weights.assessments(study_type);
 
 COMMENT ON TABLE paper_weights.assessments IS 'Main table storing multi-dimensional paper weight assessments';
 COMMENT ON COLUMN paper_weights.assessments.assessment_id IS 'Unique identifier for this assessment';
@@ -106,7 +106,7 @@ COMMENT ON COLUMN paper_weights.assessments.sample_size IS 'Extracted sample siz
 -- 2. assessment_details - Audit trail for reproducibility
 -- ============================================================================
 
-CREATE TABLE paper_weights.assessment_details (
+CREATE TABLE IF NOT EXISTS paper_weights.assessment_details (
     detail_id SERIAL PRIMARY KEY,
     assessment_id INTEGER NOT NULL
         REFERENCES paper_weights.assessments(assessment_id) ON DELETE CASCADE,
@@ -126,8 +126,8 @@ CREATE TABLE paper_weights.assessment_details (
 );
 
 -- Index for audit trail lookups
-CREATE INDEX idx_details_assessment ON paper_weights.assessment_details(assessment_id);
-CREATE INDEX idx_details_dimension ON paper_weights.assessment_details(dimension);
+CREATE INDEX IF NOT EXISTS idx_details_assessment ON paper_weights.assessment_details(assessment_id);
+CREATE INDEX IF NOT EXISTS idx_details_dimension ON paper_weights.assessment_details(dimension);
 
 COMMENT ON TABLE paper_weights.assessment_details IS 'Granular audit trail for assessment reproducibility';
 COMMENT ON COLUMN paper_weights.assessment_details.detail_id IS 'Unique identifier for this detail entry';
@@ -144,7 +144,7 @@ COMMENT ON COLUMN paper_weights.assessment_details.created_at IS 'When this deta
 -- 3. replications - Manual tracking of replication studies
 -- ============================================================================
 
-CREATE TABLE paper_weights.replications (
+CREATE TABLE IF NOT EXISTS paper_weights.replications (
     replication_id SERIAL PRIMARY KEY,
     source_document_id INTEGER NOT NULL REFERENCES public.document(id),
     replication_document_id INTEGER NOT NULL REFERENCES public.document(id),
@@ -167,9 +167,9 @@ CREATE TABLE paper_weights.replications (
 );
 
 -- Indexes for replication lookups
-CREATE INDEX idx_replications_source ON paper_weights.replications(source_document_id);
-CREATE INDEX idx_replications_replication ON paper_weights.replications(replication_document_id);
-CREATE INDEX idx_replications_type ON paper_weights.replications(replication_type);
+CREATE INDEX IF NOT EXISTS idx_replications_source ON paper_weights.replications(source_document_id);
+CREATE INDEX IF NOT EXISTS idx_replications_replication ON paper_weights.replications(replication_document_id);
+CREATE INDEX IF NOT EXISTS idx_replications_type ON paper_weights.replications(replication_type);
 
 COMMENT ON TABLE paper_weights.replications IS 'Manual tracking of replication relationships between studies';
 COMMENT ON COLUMN paper_weights.replications.replication_id IS 'Unique identifier for this replication entry';

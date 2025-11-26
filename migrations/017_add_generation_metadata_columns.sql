@@ -5,10 +5,8 @@
 -- Date: 2025-11-23
 -- Version: 017
 
--- Record this migration (idempotent - won't fail if re-run)
-INSERT INTO public.schema_migrations (version, applied_at, description)
-VALUES ('017_add_generation_metadata_columns', NOW(), 'PaperChecker: Add generation_metadata JSONB columns')
-ON CONFLICT (version) DO NOTHING;
+-- NOTE: Migration tracking is handled by MigrationManager via bmlibrarian_migrations table.
+-- DO NOT add redundant tracking code to migration files.
 
 -- ============================================================================
 -- Add generation_metadata column to counter_statements
