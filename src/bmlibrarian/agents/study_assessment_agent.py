@@ -104,6 +104,8 @@ class StudyAssessmentAgent(BaseAgent):
     This is essential for evidence synthesis, systematic reviews, and evidence-based practice.
     """
 
+    VERSION = "1.0.0"  # Agent version for cache invalidation
+
     def __init__(self,
                  model: str = "gpt-oss:20b",
                  host: str = "http://localhost:11434",

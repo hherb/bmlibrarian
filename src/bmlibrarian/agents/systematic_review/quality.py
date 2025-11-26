@@ -29,6 +29,15 @@ from .config import (
     get_systematic_review_config,
     DEFAULT_BATCH_SIZE,
 )
+from .quality_cache import (
+    get_agent_version,
+    get_cached_study_assessment,
+    store_study_assessment,
+    get_cached_pico_extraction,
+    store_pico_extraction,
+    get_cached_prisma_assessment,
+    store_prisma_assessment,
+)
 
 if TYPE_CHECKING:
     from ..study_assessment_agent import StudyAssessmentAgent
@@ -417,7 +426,7 @@ class QualityAssessor:
 
     def _run_study_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run study quality assessment.
+        Run study quality assessment with caching.
 
         Args:
             document: Document dictionary
@@ -427,6 +436,26 @@ class QualityAssessor:
         """
         try:
             agent = self._get_study_agent()
+
+            # Get agent metadata for caching
+            agent_version = get_agent_version(type(agent))
+            model_name = agent.model
+            model_parameters = {
+                "temperature": agent.temperature,
+                "top_p": agent.top_p,
+            }
+
+            # Check cache first
+            cached = get_cached_study_assessment(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                prompt_hash=None  # TODO: Add prompt hashing
+            )
+
+            if cached:
+                logger.debug(f"Using cached study assessment for document {document['id']}")
+                return cached
 
             # Truncate abstract if needed
             text = document.get("abstract", "")
@@ -442,11 +471,23 @@ class QualityAssessor:
                 doi=document.get("doi"),
             )
 
-            return result.to_dict()
+            assessment = result.to_dict()
+
+            # Store in cache
+            store_study_assessment(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                model_parameters=model_parameters,
+                prompt_hash=None,  # TODO: Add prompt hashing
+                assessment=assessment
+            )
+
+            return assessment
 
         except Exception as e:
             logger.error(f"Study assessment failed for {document['id']}: {e}")
-            # Return minimal assessment on error
+            # Return minimal assessment on error (consistent format)
             return {
                 "study_type": "unknown",
                 "study_design": "unknown",
@@ -458,6 +499,8 @@ class QualityAssessor:
                 "evidence_level": "unknown",
                 "document_id": str(document["id"]),
                 "document_title": document.get("title", ""),
+                "pmid": document.get("pmid"),
+                "doi": document.get("doi"),
             }
 
     def _run_paper_weight_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
@@ -490,18 +533,38 @@ class QualityAssessor:
                 "error": str(e),
             }
 
-    def _run_pico_extraction(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _run_pico_extraction(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run PICO component extraction.
+        Run PICO component extraction with caching.
 
         Args:
             document: Document dictionary
 
         Returns:
-            PICO extraction dictionary, or None on error
+            PICO extraction dictionary (minimal dict on error)
         """
         try:
             agent = self._get_pico_agent()
+
+            # Get agent metadata for caching
+            agent_version = get_agent_version(type(agent))
+            model_name = agent.model
+            model_parameters = {
+                "temperature": agent.temperature,
+                "top_p": agent.top_p,
+            }
+
+            # Check cache first
+            cached = get_cached_pico_extraction(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                prompt_hash=None  # TODO: Add prompt hashing
+            )
+
+            if cached:
+                logger.debug(f"Using cached PICO extraction for document {document['id']}")
+                return cached
 
             # Truncate abstract if needed
             text = document.get("abstract", "")
@@ -517,34 +580,107 @@ class QualityAssessor:
                 doi=document.get("doi"),
             )
 
-            return result.to_dict()
+            extraction = result.to_dict()
+
+            # Store in cache
+            store_pico_extraction(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                model_parameters=model_parameters,
+                prompt_hash=None,  # TODO: Add prompt hashing
+                extraction=extraction
+            )
+
+            return extraction
 
         except Exception as e:
             logger.error(f"PICO extraction failed for {document['id']}: {e}")
-            return None
+            # Return minimal dict on error (consistent error handling)
+            return {
+                "is_suitable": False,
+                "suitability_rationale": f"Extraction failed: {e}",
+                "population": None,
+                "intervention": None,
+                "comparison": None,
+                "outcome": None,
+                "overall_confidence": 0.0,
+                "document_id": str(document["id"]),
+                "document_title": document.get("title", ""),
+                "pmid": document.get("pmid"),
+                "doi": document.get("doi"),
+            }
 
-    def _run_prisma_assessment(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _run_prisma_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run PRISMA 2020 compliance assessment.
+        Run PRISMA 2020 compliance assessment with caching.
 
         Args:
             document: Document dictionary
 
         Returns:
-            PRISMA assessment dictionary, or None on error
+            PRISMA assessment dictionary (minimal dict on error)
         """
         try:
             agent = self._get_prisma_agent()
+
+            # Get agent metadata for caching
+            agent_version = get_agent_version(type(agent))
+            model_name = agent.model
+            model_parameters = {
+                "temperature": agent.temperature,
+                "top_p": agent.top_p,
+            }
+
+            # Check cache first
+            cached = get_cached_prisma_assessment(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                prompt_hash=None  # TODO: Add prompt hashing
+            )
+
+            if cached:
+                logger.debug(f"Using cached PRISMA assessment for document {document['id']}")
+                return cached
 
             result = agent.assess_document(
                 document_id=document["id"],
             )
 
-            return result.to_dict()
+            assessment = result.to_dict()
+
+            # Store in cache
+            store_prisma_assessment(
+                document_id=document["id"],
+                agent_version=agent_version,
+                model_name=model_name,
+                model_parameters=model_parameters,
+                prompt_hash=None,  # TODO: Add prompt hashing
+                assessment=assessment
+            )
+
+            return assessment
 
         except Exception as e:
             logger.error(f"PRISMA assessment failed for {document['id']}: {e}")
-            return None
+            # Return minimal dict on error (consistent error handling)
+            return {
+                "is_suitable": False,
+                "suitability_rationale": f"Assessment failed: {e}",
+                "study_type": "unknown",
+                "items_assessed": 0,
+                "items_reported": 0,
+                "compliance_score": 0.0,
+                "item_assessments": [],
+                "overall_assessment": f"Assessment failed: {e}",
+                "strengths": [],
+                "weaknesses": [f"Assessment failed: {e}"],
+                "document_id": str(document["id"]),
+                "document_title": document.get("title", ""),
+                "pmid": document.get("pmid"),
+                "doi": document.get("doi"),
+            }
 
     # =========================================================================
     # Conditional Logic
