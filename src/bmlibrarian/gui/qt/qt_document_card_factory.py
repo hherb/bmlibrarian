@@ -1292,8 +1292,66 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 f"PDF verification FAILED for document {card_data.doc_id}: "
                 f"{result.verification_warnings}"
             )
-            # Still return the path but log the mismatch
-            # The file is kept for manual review unless delete_on_mismatch is True
+            # Prompt user for decision via verification dialog
+            from bmlibrarian.discovery.verification_prompt import (
+                VerificationPromptData,
+                VerificationDecision,
+                prompt_gui_verification
+            )
+
+            pdf_path = Path(result.file_path)
+            prompt_data = VerificationPromptData(
+                pdf_path=pdf_path,
+                expected_doi=card_data.doi,
+                extracted_doi=getattr(result, 'extracted_doi', None),
+                expected_title=card_data.title,
+                extracted_title=getattr(result, 'extracted_title', None),
+                expected_pmid=card_data.pmid,
+                extracted_pmid=getattr(result, 'extracted_pmid', None),
+                title_similarity=getattr(result, 'title_similarity', None),
+                verification_warnings=result.verification_warnings,
+                doc_id=card_data.doc_id
+            )
+
+            # Show verification dialog
+            parent_widget = self._parent if hasattr(self, '_parent') else None
+            decision, save_path = prompt_gui_verification(prompt_data, parent_widget)
+
+            if decision == VerificationDecision.ACCEPT:
+                logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
+                # Continue to return the path and update full_text
+            elif decision == VerificationDecision.SAVE_AS:
+                logger.info(f"User chose to SAVE AS for document {card_data.doc_id}")
+                if save_path:
+                    import shutil
+                    try:
+                        shutil.copy2(pdf_path, save_path)
+                        logger.info(f"Saved PDF to: {save_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to save PDF to {save_path}: {e}")
+                # Delete the mismatched file and return None
+                try:
+                    pdf_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp PDF: {e}")
+                return None
+            elif decision == VerificationDecision.RETRY:
+                logger.info(f"User chose to RETRY for document {card_data.doc_id}")
+                # Delete the mismatched file
+                try:
+                    pdf_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp PDF: {e}")
+                # Note: Retry would need to be handled at a higher level
+                # For now, return None to indicate failure
+                return None
+            else:  # REJECT
+                logger.info(f"User REJECTED mismatched PDF for document {card_data.doc_id}")
+                try:
+                    pdf_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to delete rejected PDF: {e}")
+                return None
 
         if result.success and result.file_path:
             # If we got full text from a PMC package, store it in the database
