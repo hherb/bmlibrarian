@@ -26,7 +26,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from functools import lru_cache
+from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, TYPE_CHECKING
 
 import ollama
 
@@ -118,29 +119,36 @@ DEFAULT_EXCLUSION_KEYWORDS: List[str] = [
 
 # Title patterns that definitively indicate excluded study types
 # These are high-confidence patterns found at the start or as labels in titles
-DEFINITIVE_TITLE_PATTERNS: List[str] = [
+# Stored as (pattern_string, description) tuples for better error messages
+_DEFINITIVE_TITLE_PATTERN_DEFS: List[Tuple[str, str]] = [
     # Case reports - explicit labeling in title
-    r"^case report[:\s]",
-    r"\bcase report[:\s]",
-    r"^a case of\b",
-    r"^a case report\b",
-    r"\[case report\]",
+    (r"^case report[:\s]", "case report"),
+    (r"\bcase report[:\s]", "case report"),
+    (r"^a case of\b", "case report"),
+    (r"^a case report\b", "case report"),
+    (r"\[case report\]", "case report"),
     # Animal studies - explicit labeling
-    r"^animal study[:\s]",
-    r"\bin rats\b",
-    r"\bin mice\b",
-    r"\bin vivo study\b",
-    r"\bin vitro study\b",
-    r"\bmouse model[:\s]",
-    r"\brat model[:\s]",
+    (r"^animal study[:\s]", "animal study"),
+    (r"\bin rats\b", "animal study"),
+    (r"\bin mice\b", "animal study"),
+    (r"\bin vivo study\b", "in vitro/in vivo study"),
+    (r"\bin vitro study\b", "in vitro/in vivo study"),
+    (r"\bmouse model[:\s]", "animal study"),
+    (r"\brat model[:\s]", "animal study"),
     # Editorials and non-research
-    r"^editorial[:\s]",
-    r"^letter to the editor\b",
-    r"^commentary[:\s]",
-    r"^erratum[:\s]",
-    r"^corrigendum[:\s]",
-    r"^retracted[:\s]",
-    r"\bretracted\b$",
+    (r"^editorial[:\s]", "editorial"),
+    (r"^letter to the editor\b", "letter to editor"),
+    (r"^commentary[:\s]", "commentary"),
+    (r"^erratum[:\s]", "erratum/corrigendum"),
+    (r"^corrigendum[:\s]", "erratum/corrigendum"),
+    (r"^retracted[:\s]", "retracted article"),
+    (r"\bretracted\b$", "retracted article"),
+]
+
+# Pre-compile title patterns for performance
+DEFINITIVE_TITLE_PATTERNS: List[Tuple[Pattern, str]] = [
+    (re.compile(pattern), description)
+    for pattern, description in _DEFINITIVE_TITLE_PATTERN_DEFS
 ]
 
 # Context patterns that indicate exclusion keywords are NOT describing the paper itself
@@ -171,16 +179,46 @@ NEGATIVE_CONTEXT_PATTERNS: List[str] = [
 # Confidence thresholds
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.6
+LOW_CONFIDENCE_THRESHOLD = 0.4
 
-# Confidence values for different filter types
-STUDY_TYPE_KEYWORD_CONFIDENCE = 0.7  # Lower confidence for keyword-based study type checks
-EXCLUSION_KEYWORD_CONFIDENCE = 0.8  # Confidence for exclusion keyword matches
+# Confidence values for different filter types (aligned with threshold categories)
+STUDY_TYPE_KEYWORD_CONFIDENCE = MEDIUM_CONFIDENCE_THRESHOLD  # Keyword-based study type checks
+EXCLUSION_KEYWORD_CONFIDENCE = HIGH_CONFIDENCE_THRESHOLD  # Exclusion keyword matches
 
 # LLM response limits
 LLM_MAX_TOKENS = 800  # Maximum tokens for LLM response
 
 # Display limits for prompts
 MAX_AUTHORS_TO_DISPLAY = 5  # Maximum authors to include in evaluation prompts
+
+# Pattern cache size for performance optimization
+PATTERN_CACHE_SIZE = 256  # Maximum cached pattern compilations
+
+
+# =============================================================================
+# Cached Pattern Compilation Helpers
+# =============================================================================
+
+@lru_cache(maxsize=PATTERN_CACHE_SIZE)
+def _compile_negative_context_pattern(pattern_template: str, keyword: str) -> Pattern:
+    """
+    Compile a negative context pattern with keyword substitution.
+
+    Results are cached to avoid recompiling patterns for common keywords.
+
+    Args:
+        pattern_template: Pattern template with {keyword} placeholder
+        keyword: Keyword to substitute (will be escaped)
+
+    Returns:
+        Compiled regex pattern
+
+    Raises:
+        re.error: If pattern compilation fails
+    """
+    escaped_keyword = re.escape(keyword)
+    pattern_str = pattern_template.replace("{keyword}", escaped_keyword)
+    return re.compile(pattern_str)
 
 
 # =============================================================================
@@ -342,6 +380,9 @@ class InitialFilter:
         """
         Extract keywords from an exclusion criterion string.
 
+        Parses complex criteria like "No animal studies or case reports" into
+        individual meaningful keywords.
+
         Args:
             criterion: Exclusion criterion text
 
@@ -349,17 +390,59 @@ class InitialFilter:
             Set of lowercase keyword phrases
         """
         keywords: Set[str] = set()
-
-        # Simple extraction: lowercase the criterion
         criterion_lower = criterion.lower().strip()
-        keywords.add(criterion_lower)
 
-        # Also extract multi-word phrases that might be important
-        # e.g., "Animal studies" -> "animal studies"
-        words = criterion_lower.split()
-        if len(words) >= 2:
-            # Add as a phrase
-            keywords.add(" ".join(words))
+        # Remove common negative prefixes (no, exclude, without, etc.)
+        criterion_lower = re.sub(
+            r'^(?:no|exclude|excluding|without|not including)\s+',
+            '',
+            criterion_lower
+        )
+
+        # Split on common conjunctions (or, and, commas)
+        # e.g., "animal studies or case reports" -> ["animal studies", "case reports"]
+        parts = re.split(r'\s+(?:or|and)\s+|,\s*', criterion_lower)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Add the full phrase
+            keywords.add(part)
+
+            # Extract known study type patterns
+            for study_type_keywords in STUDY_TYPE_KEYWORDS.values():
+                for keyword in study_type_keywords:
+                    if keyword in part:
+                        keywords.add(keyword)
+
+            # Extract known exclusion patterns
+            for exclusion_keyword in DEFAULT_EXCLUSION_KEYWORDS:
+                if exclusion_keyword in part:
+                    keywords.add(exclusion_keyword)
+
+            # Handle common patterns like "X studies" -> also add "X study"
+            if part.endswith(" studies"):
+                singular = part[:-7] + "study"  # Remove "studies" (7 chars)
+                keywords.add(singular)
+            elif part.endswith(" study"):
+                plural = part[:-5] + "studies"  # Remove "study" (5 chars)
+                keywords.add(plural)
+
+            # Handle "X reports" -> "X report"
+            if part.endswith(" reports"):
+                singular = part[:-7] + "report"  # Remove "reports" (7 chars)
+                keywords.add(singular)
+            elif part.endswith(" report"):
+                plural = part[:-6] + "reports"  # Remove "report" (6 chars)
+                keywords.add(plural)
+
+        # Filter out very short or generic keywords
+        keywords = {
+            kw for kw in keywords
+            if len(kw) >= 3 and kw not in {"the", "and", "or", "not"}
+        }
 
         return keywords
 
@@ -607,27 +690,9 @@ class InitialFilter:
         Returns:
             Matched pattern description if excluded, None if passes
         """
-        for pattern in DEFINITIVE_TITLE_PATTERNS:
-            if re.search(pattern, title):
-                # Extract a clean description of what matched
-                if "case report" in pattern:
-                    return "case report"
-                elif "rat" in pattern or "mouse" in pattern or "mice" in pattern:
-                    return "animal study"
-                elif "in vivo" in pattern or "in vitro" in pattern:
-                    return "in vitro/in vivo study"
-                elif "editorial" in pattern:
-                    return "editorial"
-                elif "letter" in pattern:
-                    return "letter to editor"
-                elif "commentary" in pattern:
-                    return "commentary"
-                elif "erratum" in pattern or "corrigendum" in pattern:
-                    return "erratum/corrigendum"
-                elif "retracted" in pattern:
-                    return "retracted article"
-                else:
-                    return pattern
+        for compiled_pattern, description in DEFINITIVE_TITLE_PATTERNS:
+            if compiled_pattern.search(title):
+                return description
         return None
 
     def _has_negative_context(self, text: str, keyword: str) -> bool:
@@ -637,6 +702,8 @@ class InitialFilter:
         Negative context indicates the paper is NOT of that type, but merely
         mentions excluding or comparing to such papers.
 
+        Uses cached compiled patterns for performance.
+
         Args:
             text: Full text to check (lowercase)
             keyword: Exclusion keyword to check context for
@@ -644,20 +711,22 @@ class InitialFilter:
         Returns:
             True if keyword has protective context, False otherwise
         """
-        # Escape keyword for regex
-        escaped_keyword = re.escape(keyword)
-
         for pattern_template in NEGATIVE_CONTEXT_PATTERNS:
-            # Replace {keyword} placeholder with actual keyword
-            pattern = pattern_template.replace("{keyword}", escaped_keyword)
             try:
-                if re.search(pattern, text):
+                # Use cached pattern compilation
+                compiled_pattern = _compile_negative_context_pattern(
+                    pattern_template, keyword
+                )
+                if compiled_pattern.search(text):
                     logger.debug(
                         f"Found negative context for '{keyword}' matching pattern: {pattern_template}"
                     )
                     return True
             except re.error as e:
-                logger.warning(f"Invalid regex pattern '{pattern}': {e}")
+                logger.warning(
+                    f"Invalid regex pattern template '{pattern_template}' "
+                    f"with keyword '{keyword}': {e}"
+                )
 
         return False
 
