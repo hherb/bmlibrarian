@@ -12,7 +12,8 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QFileDialog, QSplitter, QWidget, QSizePolicy, QMessageBox
+    QFrame, QFileDialog, QSplitter, QWidget, QSizePolicy, QMessageBox,
+    QScrollArea
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -33,9 +34,9 @@ class PDFVerificationDialog(QDialog):
     - Reject (discard)
     """
 
-    # Minimum dialog size
-    MIN_WIDTH = 1200
-    MIN_HEIGHT = 800
+    # Default dialog size (not enforced as minimum for smaller screens)
+    DEFAULT_WIDTH = 1400
+    DEFAULT_HEIGHT = 900
 
     def __init__(
         self,
@@ -61,7 +62,7 @@ class PDFVerificationDialog(QDialog):
     def _setup_ui(self) -> None:
         """Set up the dialog UI components."""
         self.setWindowTitle("PDF Verification Required")
-        self.setMinimumSize(self.MIN_WIDTH, self.MIN_HEIGHT)
+        self.resize(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
 
         # Import resources here to avoid circular imports
         try:
@@ -96,7 +97,7 @@ class PDFVerificationDialog(QDialog):
         splitter.addWidget(info_panel)
 
         # Set initial sizes (60% PDF, 40% info)
-        splitter.setSizes([720, 480])
+        splitter.setSizes([840, 560])
 
         main_layout.addWidget(splitter, 1)
 
@@ -168,12 +169,18 @@ class PDFVerificationDialog(QDialog):
 
         return frame
 
-    def _create_info_panel(self) -> QFrame:
-        """Create the information panel showing mismatch details."""
-        frame = QFrame()
-        frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+    def _create_info_panel(self) -> QScrollArea:
+        """Create the scrollable information panel showing mismatch details."""
+        # Create scroll area for the info panel
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
 
-        layout = QVBoxLayout(frame)
+        # Content widget inside scroll area
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
         layout.setSpacing(self.scale.get('spacing_medium', 12))
 
         # Section: Expected Document
@@ -213,7 +220,8 @@ class PDFVerificationDialog(QDialog):
 
         layout.addStretch()
 
-        return frame
+        scroll_area.setWidget(content_widget)
+        return scroll_area
 
     def _create_section(
         self,
@@ -292,14 +300,14 @@ class PDFVerificationDialog(QDialog):
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
-        # Info text
+        # Info text - show full title and authors untruncated for visual verification
         info_text = f"""
         <p>The PDF's DOI matches a document in your database that <b>doesn't have a PDF yet</b>:</p>
-        <p><b>Title:</b> {alt.title[:80]}{'...' if len(alt.title) > 80 else ''}</p>
+        <p><b>Title:</b> {alt.title}</p>
         <p><b>DOI:</b> {alt.doi}</p>
         """
         if alt.authors:
-            info_text += f"<p><b>Authors:</b> {alt.authors[:60]}{'...' if len(alt.authors) > 60 else ''}</p>"
+            info_text += f"<p><b>Authors:</b> {alt.authors}</p>"
         if alt.year:
             info_text += f"<p><b>Year:</b> {alt.year}</p>"
         info_text += f"<p><b>Document ID:</b> {alt.doc_id}</p>"
@@ -307,6 +315,7 @@ class PDFVerificationDialog(QDialog):
         info_label = QLabel(info_text)
         info_label.setStyleSheet("background: transparent; border: none;")
         info_label.setWordWrap(True)
+        info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(info_label)
 
         # Reassign button (purple) - directly under the matching document info
