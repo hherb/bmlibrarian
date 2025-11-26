@@ -1366,3 +1366,386 @@ class TestFilteringScoringIntegration:
         # Should still calculate a valid score using defaults
         assert isinstance(score, float)
         assert 0.0 <= score <= 10.0
+
+
+# =============================================================================
+# Performance Tests
+# =============================================================================
+
+class TestFilterPerformance:
+    """Performance tests for filtering with large datasets."""
+
+    def test_large_keyword_set_performance(self) -> None:
+        """Test filter performance with very large exclusion keyword set."""
+        import time
+
+        # Create criteria with large keyword set
+        large_exclusion_list = [
+            f"exclusion_term_{i}" for i in range(500)
+        ]
+        criteria = SearchCriteria(
+            research_question="Test question",
+            purpose="Performance test",
+            inclusion_criteria=["Human studies"],
+            exclusion_criteria=large_exclusion_list,
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Create batch of papers
+        papers = [
+            PaperData(
+                document_id=i,
+                title=f"Test Paper {i}",
+                authors=["Author A"],
+                year=2023,
+                journal="Test Journal",
+                abstract="This is a sufficiently long test abstract. " * 10,
+            )
+            for i in range(100)
+        ]
+
+        # Time the filtering
+        start = time.time()
+        result = filter_obj.filter_batch(papers)
+        elapsed = time.time() - start
+
+        # Should complete in reasonable time (< 5 seconds for 100 papers)
+        assert elapsed < 5.0, f"Filtering took {elapsed:.2f}s, expected < 5s"
+        assert result.total_processed == 100
+
+    def test_regex_pattern_caching(self) -> None:
+        """Test that regex patterns are properly cached for performance."""
+        from bmlibrarian.agents.systematic_review.filters import (
+            _compile_negative_context_pattern,
+        )
+
+        # Clear cache
+        _compile_negative_context_pattern.cache_clear()
+
+        # First compilation
+        pattern1 = _compile_negative_context_pattern(
+            r"exclud(?:ed|ing)\s+(?:\w+\s+)*{keyword}",
+            "case report"
+        )
+
+        # Second compilation with same parameters (should use cache)
+        pattern2 = _compile_negative_context_pattern(
+            r"exclud(?:ed|ing)\s+(?:\w+\s+)*{keyword}",
+            "case report"
+        )
+
+        # Should return same compiled pattern object
+        assert pattern1 is pattern2
+
+        # Check cache info
+        cache_info = _compile_negative_context_pattern.cache_info()
+        assert cache_info.hits > 0
+
+    def test_large_document_batch_performance(self) -> None:
+        """Test filter performance with large document batches."""
+        import time
+
+        criteria = SearchCriteria(
+            research_question="Test question",
+            purpose="Performance test",
+            inclusion_criteria=["Human studies"],
+            exclusion_criteria=["Animal studies", "Case reports"],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Create large batch of 1000 papers
+        papers = [
+            PaperData(
+                document_id=i,
+                title=f"Randomized Controlled Trial {i}",
+                authors=["Author A", "Author B"],
+                year=2023,
+                journal="Medical Journal",
+                abstract=(
+                    "This randomized controlled trial investigated treatment efficacy "
+                    "in human participants. Methods included double-blinding and placebo "
+                    "control. Results showed significant improvements. " * 5
+                ),
+            )
+            for i in range(1000)
+        ]
+
+        # Time the filtering
+        start = time.time()
+        result = filter_obj.filter_batch(papers)
+        elapsed = time.time() - start
+
+        # Should process ~1000 papers/second or faster
+        papers_per_second = len(papers) / elapsed
+        assert papers_per_second > 500, (
+            f"Filter throughput {papers_per_second:.0f} papers/s, expected > 500 papers/s"
+        )
+        assert result.total_processed == 1000
+
+
+# =============================================================================
+# Edge Case Tests
+# =============================================================================
+
+class TestFilterEdgeCases:
+    """Edge case tests for filtering robustness."""
+
+    def test_invalid_regex_pattern_handling(self) -> None:
+        """Test handling of invalid regex patterns in negative context."""
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Case reports"],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Paper with unusual characters that might cause regex issues
+        paper = PaperData(
+            document_id=1,
+            title="Test Paper",
+            authors=["Author"],
+            year=2023,
+            abstract=(
+                "This study examined treatment (efficacy) in [patients] with "
+                "complex {conditions}. Special chars: $ ^ * + ? . \\ ( ) [ ] { }"
+            ),
+        )
+
+        # Should handle special characters gracefully without crashing
+        result = filter_obj.filter_paper(paper)
+        assert isinstance(result, FilterResult)
+
+    def test_empty_abstract_handling(self) -> None:
+        """Test filtering papers with empty or None abstracts."""
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Case reports"],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Paper with None abstract
+        paper_none = PaperData(
+            document_id=1,
+            title="Test Paper",
+            authors=["Author"],
+            year=2023,
+            abstract=None,
+        )
+
+        result = filter_obj.filter_paper(paper_none)
+        # Should not crash, may reject due to missing content
+        assert isinstance(result, FilterResult)
+
+    def test_very_long_abstract_performance(self) -> None:
+        """Test filtering performance with very long abstracts."""
+        import time
+
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Animal studies"],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Create paper with very long abstract (10000 words)
+        long_text = "word " * 10000
+        paper = PaperData(
+            document_id=1,
+            title="Test Paper with Very Long Abstract",
+            authors=["Author"],
+            year=2023,
+            abstract=long_text,
+        )
+
+        # Should complete quickly even with long text
+        start = time.time()
+        result = filter_obj.filter_paper(paper)
+        elapsed = time.time() - start
+
+        assert elapsed < 1.0, f"Filtering took {elapsed:.2f}s for long abstract"
+        assert isinstance(result, FilterResult)
+
+    def test_keyword_extraction_complex_criteria(self) -> None:
+        """Test keyword extraction from complex exclusion criteria."""
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=[
+                "No animal studies or case reports",
+                "Exclude in vitro experiments, editorials, and letters",
+                "Without pediatric-only populations",
+            ],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Should extract multiple keywords from complex criteria
+        keywords = filter_obj._exclusion_keywords
+
+        # Should include parsed keywords
+        assert "animal study" in keywords or "animal studies" in keywords
+        assert "case report" in keywords or "case reports" in keywords
+        assert "in vitro" in keywords
+        assert "editorial" in keywords or "editorials" in keywords
+
+    def test_definitive_pattern_compilation_errors(self) -> None:
+        """Test that all definitive title patterns compile without errors."""
+        from bmlibrarian.agents.systematic_review.filters import (
+            DEFINITIVE_TITLE_PATTERNS,
+        )
+
+        # All patterns should be pre-compiled tuples
+        assert len(DEFINITIVE_TITLE_PATTERNS) > 0
+
+        for pattern_tuple in DEFINITIVE_TITLE_PATTERNS:
+            assert isinstance(pattern_tuple, tuple)
+            assert len(pattern_tuple) == 2
+            compiled_pattern, description = pattern_tuple
+            assert hasattr(compiled_pattern, 'search')
+            assert isinstance(description, str)
+
+            # Test pattern doesn't crash on simple text
+            result = compiled_pattern.search("test text")
+            assert result is None or result is not None  # Just verify no crash
+
+    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    def test_llm_timeout_handling(
+        self,
+        mock_chat: MagicMock,
+    ) -> None:
+        """Test handling of LLM timeout/connection errors."""
+        import time
+
+        # Simulate timeout by raising exception after delay
+        def slow_response(*args: Any, **kwargs: Any) -> None:
+            time.sleep(0.1)
+            raise ConnectionError("LLM connection timeout")
+
+        mock_chat.side_effect = slow_response
+
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Animal studies"],
+        )
+
+        evaluator = InclusionEvaluator(criteria)
+        paper = PaperData(
+            document_id=1,
+            title="Test Paper",
+            authors=["Author"],
+            year=2023,
+            abstract="Test abstract content.",
+        )
+
+        # Should handle timeout gracefully
+        decision = evaluator.evaluate(paper)
+
+        assert decision.status == InclusionStatus.UNCERTAIN
+        assert decision.confidence == 0.0
+        assert "error" in decision.rationale.lower() or "unable" in decision.rationale.lower()
+
+    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    def test_llm_malformed_json_response(
+        self,
+        mock_chat: MagicMock,
+    ) -> None:
+        """Test handling of malformed JSON responses from LLM."""
+        # Return invalid JSON
+        mock_chat.return_value = {
+            "message": {
+                "content": "This is not valid JSON at all!"
+            }
+        }
+
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Animal studies"],
+        )
+
+        evaluator = InclusionEvaluator(criteria)
+        paper = PaperData(
+            document_id=1,
+            title="Test Paper",
+            authors=["Author"],
+            year=2023,
+            abstract="Test abstract.",
+        )
+
+        # Should handle malformed JSON gracefully
+        decision = evaluator.evaluate(paper)
+
+        assert decision.status == InclusionStatus.UNCERTAIN
+        assert decision.confidence == 0.0
+
+    def test_concurrent_filter_operations(self) -> None:
+        """Test that filter can handle concurrent operations safely."""
+        import threading
+
+        criteria = SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=["Animal studies"],
+            date_range=(2010, 2024),
+        )
+
+        filter_obj = InitialFilter(criteria)
+
+        # Create test papers
+        papers = [
+            PaperData(
+                document_id=i,
+                title=f"Test Paper {i}",
+                authors=["Author"],
+                year=2023,
+                abstract="Test abstract content. " * 10,
+            )
+            for i in range(50)
+        ]
+
+        results = []
+        errors = []
+
+        def filter_batch(papers_subset: List[PaperData]) -> None:
+            try:
+                result = filter_obj.filter_batch(papers_subset)
+                results.append(result)
+            except Exception as e:
+                errors.append(e)
+
+        # Run multiple threads concurrently
+        threads = []
+        for i in range(5):
+            subset = papers[i*10:(i+1)*10]
+            thread = threading.Thread(target=filter_batch, args=(subset,))
+            threads.append(thread)
+            thread.start()
+
+        # Wait for all threads
+        for thread in threads:
+            thread.join()
+
+        # Should complete without errors
+        assert len(errors) == 0, f"Concurrent operations had errors: {errors}"
+        assert len(results) == 5
+        assert all(r.total_processed == 10 for r in results)

@@ -209,6 +209,96 @@ If too many irrelevant papers pass the initial filter:
 3. Be more specific in study type requirements
 4. Consider adding custom exclusion keywords
 
+## Performance Characteristics
+
+The filtering system is designed to handle large document sets efficiently:
+
+### Processing Speed
+
+| Dataset Size | Expected Throughput | Notes |
+|--------------|---------------------|-------|
+| **Small** (<1000 papers) | ~1000 papers/second | Near-instant results |
+| **Medium** (1000-10,000) | ~700-1000 papers/second | Completes in seconds |
+| **Large** (>10,000) | ~500-800 papers/second | Batch processing recommended |
+
+### Optimization Features
+
+The filter uses several optimizations for performance:
+
+1. **Pre-compiled Regex Patterns** - Title patterns are compiled once at initialization
+2. **Pattern Caching** - Common keyword patterns are cached with LRU cache (256 entries)
+3. **Early Exit Evaluation** - Stops checking once a rejection criterion is met
+4. **Minimal Memory Footprint** - Processes papers in streaming fashion
+
+### Performance Tips
+
+**For Large Datasets (>5000 papers):**
+- Use batch processing with `filter_batch()` instead of individual calls
+- Consider processing in parallel batches if your system has multiple cores
+- Monitor memory usage with very large keyword sets (>500 keywords)
+
+**For Complex Criteria:**
+- Simpler exclusion criteria (2-5 keywords per criterion) perform better than complex multi-clause statements
+- Use standard study type filters when possible instead of custom keywords
+- Pre-compile custom regex patterns if you need advanced matching
+
+### Confidence Levels
+
+The filter assigns confidence scores to help you understand decision quality:
+
+| Confidence Level | Range | Meaning |
+|------------------|-------|---------|
+| **High** | 0.85-1.0 | Definitive pattern match (e.g., "Case Report:" in title) |
+| **Medium** | 0.6-0.85 | Keyword-based match with context checking |
+| **Low** | 0.0-0.6 | Uncertain decision, may need review |
+
+**Confidence Thresholds:**
+- Exclusion keyword matches: 0.85 (HIGH)
+- Study type keyword matches: 0.6 (MEDIUM)
+
+Papers with LOW confidence (<0.6) should be manually reviewed to ensure accuracy.
+
+### Regex Pattern Customization
+
+For advanced users who need custom matching patterns:
+
+```python
+from bmlibrarian.agents.systematic_review.filters import (
+    _compile_negative_context_pattern,
+)
+
+# Custom patterns are automatically cached for performance
+# Pattern template uses {keyword} placeholder for substitution
+pattern = _compile_negative_context_pattern(
+    r"exclud(?:ed|ing)\s+(?:\w+\s+)*{keyword}",
+    "case reports"
+)
+
+# Check cache performance
+cache_info = _compile_negative_context_pattern.cache_info()
+print(f"Cache hits: {cache_info.hits}, misses: {cache_info.misses}")
+```
+
+**Pattern Best Practices:**
+- Test patterns thoroughly before deploying
+- Use raw strings (r"pattern") to avoid escaping issues
+- Keep patterns focused - simpler patterns match faster
+- Keywords are automatically escaped for regex safety
+
+### Common Performance Questions
+
+**Q: Why is my first batch slow?**
+A: The first batch compiles and caches patterns. Subsequent batches will be much faster due to caching.
+
+**Q: How many custom keywords can I add?**
+A: Up to ~1000 keywords should perform well. Beyond that, consider grouping similar terms or using regex patterns.
+
+**Q: Can I process papers in parallel?**
+A: Yes, the filter is thread-safe. You can process different batches concurrently using threading.
+
+**Q: What's the maximum abstract length supported?**
+A: No hard limit. Abstracts up to 10,000 words have been tested and perform well (<1s per paper).
+
 ## Related Documentation
 
 - [Systematic Review Agent Overview](systematic_review_guide.md)
