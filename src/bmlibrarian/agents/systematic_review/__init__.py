@@ -12,6 +12,10 @@ Main Components:
 - Documenter: Audit trail logging component for reproducibility
 - Planner: LLM-based search strategy planning (Phase 2)
 - SearchExecutor: Search query execution and result aggregation (Phase 2)
+- InitialFilter: Fast heuristic-based paper filtering (Phase 3)
+- InclusionEvaluator: LLM-based inclusion/exclusion evaluation (Phase 3)
+- RelevanceScorer: Relevance scoring with batch support (Phase 3)
+- CompositeScorer: Weighted composite scoring for ranking (Phase 3)
 
 Data Models:
 - PaperData: Core paper metadata
@@ -23,6 +27,8 @@ Data Models:
 - ReviewStatistics, SystematicReviewResult: Output models
 - PICOComponents: PICO framework extraction results (Phase 2)
 - SearchResult, AggregatedResults: Search execution results (Phase 2)
+- FilterResult, BatchFilterResult: Filtering results (Phase 3)
+- ScoringResult, BatchScoringResult: Scoring results (Phase 3)
 
 Configuration:
 - SystematicReviewConfig: Configuration container
@@ -177,6 +183,23 @@ from .executor import (
     AggregatedResults,
 )
 
+# Phase 3: Filtering and Scoring
+from .filters import (
+    InitialFilter,
+    InclusionEvaluator,
+    FilterResult,
+    BatchFilterResult,
+    STUDY_TYPE_KEYWORDS,
+    DEFAULT_EXCLUSION_KEYWORDS,
+)
+
+from .scorer import (
+    RelevanceScorer,
+    CompositeScorer,
+    ScoringResult,
+    BatchScoringResult,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -253,4 +276,16 @@ __all__ = [
     "SearchExecutor",
     "SearchResult",
     "AggregatedResults",
+    # Phase 3: Filtering
+    "InitialFilter",
+    "InclusionEvaluator",
+    "FilterResult",
+    "BatchFilterResult",
+    "STUDY_TYPE_KEYWORDS",
+    "DEFAULT_EXCLUSION_KEYWORDS",
+    # Phase 3: Scoring
+    "RelevanceScorer",
+    "CompositeScorer",
+    "ScoringResult",
+    "BatchScoringResult",
 ]
