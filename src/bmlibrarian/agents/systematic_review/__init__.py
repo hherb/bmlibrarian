@@ -16,6 +16,7 @@ Main Components:
 - InclusionEvaluator: LLM-based inclusion/exclusion evaluation (Phase 3)
 - RelevanceScorer: Relevance scoring with batch support (Phase 3)
 - CompositeScorer: Weighted composite scoring for ranking (Phase 3)
+- QualityAssessor: Quality assessment orchestrator (Phase 4)
 
 Data Models:
 - PaperData: Core paper metadata
@@ -29,6 +30,7 @@ Data Models:
 - SearchResult, AggregatedResults: Search execution results (Phase 2)
 - FilterResult, BatchFilterResult: Filtering results (Phase 3)
 - ScoringResult, BatchScoringResult: Scoring results (Phase 3)
+- QualityAssessmentResult: Quality assessment results (Phase 4)
 
 Configuration:
 - SystematicReviewConfig: Configuration container
@@ -211,6 +213,12 @@ from .scorer import (
     BatchScoringResult,
 )
 
+# Phase 4: Quality Assessment
+from .quality import (
+    QualityAssessor,
+    QualityAssessmentResult,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -310,4 +318,7 @@ __all__ = [
     "CompositeScorer",
     "ScoringResult",
     "BatchScoringResult",
+    # Phase 4: Quality Assessment
+    "QualityAssessor",
+    "QualityAssessmentResult",
 ]

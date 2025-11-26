@@ -1,0 +1,673 @@
+"""
+Quality Assessment Orchestrator for SystematicReviewAgent
+
+This module coordinates quality assessment tools to evaluate papers
+that have passed relevance scoring. It orchestrates:
+- Study design and quality assessment (StudyAssessmentAgent)
+- Evidential weight assessment (PaperWeightAssessmentAgent)
+- PICO component extraction (PICOAgent) for applicable studies
+- PRISMA 2020 compliance (PRISMA2020Agent) for systematic reviews
+
+The QualityAssessor applies conditional logic to run only relevant
+assessments based on study type.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from .data_models import (
+    ScoredPaper,
+    AssessedPaper,
+    StudyTypeFilter,
+)
+from .config import (
+    SystematicReviewConfig,
+    get_systematic_review_config,
+    DEFAULT_BATCH_SIZE,
+)
+
+if TYPE_CHECKING:
+    from ..study_assessment_agent import StudyAssessmentAgent
+    from ..paper_weight.agent import PaperWeightAssessmentAgent
+    from ..pico_agent import PICOAgent
+    from ..prisma2020_agent import PRISMA2020Agent
+    from ..orchestrator import AgentOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Study types that warrant PICO extraction (intervention/clinical studies)
+PICO_APPLICABLE_STUDY_TYPES = {
+    "rct",
+    "randomized controlled trial",
+    "clinical trial",
+    "cohort",
+    "cohort study",
+    "case-control",
+    "case-control study",
+    "intervention study",
+    "comparative effectiveness",
+}
+
+# Study types that should be assessed with PRISMA 2020
+PRISMA_APPLICABLE_STUDY_TYPES = {
+    "systematic review",
+    "meta-analysis",
+    "systematic review and meta-analysis",
+}
+
+# Maximum text length for quality assessments
+MAX_TEXT_LENGTH_STUDY_ASSESSMENT = 12000
+MAX_TEXT_LENGTH_PICO = 8000
+MAX_TEXT_LENGTH_PRISMA = 15000
+
+
+# =============================================================================
+# Data Types
+# =============================================================================
+
+@dataclass
+class QualityAssessmentResult:
+    """
+    Result of quality assessment for a batch of papers.
+
+    Attributes:
+        assessed_papers: Papers with quality assessments
+        failed_papers: Papers that failed assessment
+        total_processed: Total papers attempted
+        execution_time_seconds: Total time taken
+        assessment_statistics: Breakdown by assessment type
+    """
+
+    assessed_papers: List[AssessedPaper] = field(default_factory=list)
+    failed_papers: List[Tuple[ScoredPaper, str]] = field(default_factory=list)
+    total_processed: int = 0
+    execution_time_seconds: float = 0.0
+    assessment_statistics: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def success_rate(self) -> float:
+        """Percentage of papers successfully assessed."""
+        if self.total_processed == 0:
+            return 0.0
+        return len(self.assessed_papers) / self.total_processed
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "assessed_count": len(self.assessed_papers),
+            "failed_count": len(self.failed_papers),
+            "total_processed": self.total_processed,
+            "success_rate_percent": round(self.success_rate * 100, 2),
+            "execution_time_seconds": round(self.execution_time_seconds, 2),
+            "assessment_statistics": self.assessment_statistics,
+        }
+
+
+# =============================================================================
+# QualityAssessor Class
+# =============================================================================
+
+class QualityAssessor:
+    """
+    Orchestrates quality assessment tools for systematic reviews.
+
+    This class coordinates multiple specialized agents to perform
+    comprehensive quality assessment of papers. It applies conditional
+    logic to run only relevant assessments based on study type.
+
+    Attributes:
+        config: Full systematic review configuration
+        callback: Optional progress callback
+        orchestrator: Optional orchestrator for queue-based processing
+
+    Example:
+        >>> assessor = QualityAssessor()
+        >>> result = assessor.assess_batch(scored_papers)
+        >>> print(f"Assessed {len(result.assessed_papers)} papers")
+    """
+
+    def __init__(
+        self,
+        config: Optional[SystematicReviewConfig] = None,
+        callback: Optional[Callable[[str, str], None]] = None,
+        orchestrator: Optional["AgentOrchestrator"] = None,
+    ) -> None:
+        """
+        Initialize the QualityAssessor.
+
+        Args:
+            config: Optional configuration
+            callback: Optional progress callback
+            orchestrator: Optional orchestrator for queue-based processing
+        """
+        self.callback = callback
+        self.orchestrator = orchestrator
+
+        # Load config
+        self._config = config or get_systematic_review_config()
+
+        # Lazy-loaded agents
+        self._study_agent: Optional["StudyAssessmentAgent"] = None
+        self._weight_agent: Optional["PaperWeightAssessmentAgent"] = None
+        self._pico_agent: Optional["PICOAgent"] = None
+        self._prisma_agent: Optional["PRISMA2020Agent"] = None
+
+        logger.info("QualityAssessor initialized")
+
+    def _call_callback(self, event: str, data: str) -> None:
+        """Call progress callback if registered."""
+        if self.callback:
+            try:
+                self.callback(event, data)
+            except Exception as e:
+                logger.warning(f"Callback error: {e}")
+
+    # =========================================================================
+    # Agent Initialization (Lazy Loading)
+    # =========================================================================
+
+    def _get_study_agent(self) -> "StudyAssessmentAgent":
+        """
+        Get or create StudyAssessmentAgent.
+
+        Returns:
+            StudyAssessmentAgent instance
+        """
+        if self._study_agent is None:
+            from ..study_assessment_agent import StudyAssessmentAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("study_assessment")
+            host = get_ollama_host()
+            agent_config = get_agent_config("study_assessment")
+
+            self._study_agent = StudyAssessmentAgent(
+                model=model,
+                host=host,
+                temperature=agent_config.get("temperature", 0.1),
+                top_p=agent_config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+
+        return self._study_agent
+
+    def _get_weight_agent(self) -> "PaperWeightAssessmentAgent":
+        """
+        Get or create PaperWeightAssessmentAgent.
+
+        Returns:
+            PaperWeightAssessmentAgent instance
+        """
+        if self._weight_agent is None:
+            from ..paper_weight.agent import PaperWeightAssessmentAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("paper_weight")
+            host = get_ollama_host()
+            agent_config = get_agent_config("paper_weight")
+
+            self._weight_agent = PaperWeightAssessmentAgent(
+                model=model,
+                host=host,
+                temperature=agent_config.get("temperature", 0.3),
+                top_p=agent_config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+
+        return self._weight_agent
+
+    def _get_pico_agent(self) -> "PICOAgent":
+        """
+        Get or create PICOAgent.
+
+        Returns:
+            PICOAgent instance
+        """
+        if self._pico_agent is None:
+            from ..pico_agent import PICOAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("pico")
+            host = get_ollama_host()
+            agent_config = get_agent_config("pico")
+
+            self._pico_agent = PICOAgent(
+                model=model,
+                host=host,
+                temperature=agent_config.get("temperature", 0.1),
+                top_p=agent_config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+
+        return self._pico_agent
+
+    def _get_prisma_agent(self) -> "PRISMA2020Agent":
+        """
+        Get or create PRISMA2020Agent.
+
+        Returns:
+            PRISMA2020Agent instance
+        """
+        if self._prisma_agent is None:
+            from ..prisma2020_agent import PRISMA2020Agent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("prisma2020")
+            host = get_ollama_host()
+            agent_config = get_agent_config("prisma2020")
+
+            self._prisma_agent = PRISMA2020Agent(
+                model=model,
+                host=host,
+                temperature=agent_config.get("temperature", 0.1),
+                top_p=agent_config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+
+        return self._prisma_agent
+
+    # =========================================================================
+    # Main Assessment Methods
+    # =========================================================================
+
+    def assess_batch(
+        self,
+        papers: List[ScoredPaper],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> QualityAssessmentResult:
+        """
+        Run quality assessments on all papers.
+
+        Conditionally runs PICO/PRISMA based on study type.
+
+        Args:
+            papers: List of scored papers to assess
+            progress_callback: Optional callback(current, total) for progress
+
+        Returns:
+            QualityAssessmentResult with all assessed papers
+        """
+        self._call_callback(
+            "quality_assessment_started",
+            f"Assessing {len(papers)} papers"
+        )
+
+        start_time = time.time()
+        assessed_papers: List[AssessedPaper] = []
+        failed_papers: List[Tuple[ScoredPaper, str]] = []
+
+        # Track assessment statistics
+        stats = {
+            "study_assessments": 0,
+            "weight_assessments": 0,
+            "pico_assessments": 0,
+            "prisma_assessments": 0,
+        }
+
+        for i, paper in enumerate(papers):
+            try:
+                assessed_paper = self._assess_single(paper)
+                assessed_papers.append(assessed_paper)
+
+                # Update statistics
+                stats["study_assessments"] += 1
+                stats["weight_assessments"] += 1
+                if assessed_paper.pico_components is not None:
+                    stats["pico_assessments"] += 1
+                if assessed_paper.prisma_assessment is not None:
+                    stats["prisma_assessments"] += 1
+
+            except Exception as e:
+                logger.error(f"Failed to assess paper {paper.paper.document_id}: {e}")
+                failed_papers.append((paper, str(e)))
+
+            if progress_callback:
+                progress_callback(i + 1, len(papers))
+
+        execution_time = time.time() - start_time
+
+        self._call_callback(
+            "quality_assessment_completed",
+            f"Assessed {len(assessed_papers)}, failed {len(failed_papers)}"
+        )
+
+        logger.info(
+            f"Quality assessment complete: {len(assessed_papers)} assessed, "
+            f"{len(failed_papers)} failed ({execution_time:.2f}s)"
+        )
+
+        return QualityAssessmentResult(
+            assessed_papers=assessed_papers,
+            failed_papers=failed_papers,
+            total_processed=len(papers),
+            execution_time_seconds=execution_time,
+            assessment_statistics=stats,
+        )
+
+    def _assess_single(
+        self,
+        paper: ScoredPaper,
+    ) -> AssessedPaper:
+        """
+        Assess a single paper.
+
+        Runs all applicable quality assessments based on study type.
+
+        Args:
+            paper: Scored paper to assess
+
+        Returns:
+            AssessedPaper with all quality assessments
+        """
+        self._call_callback(
+            "assessing_paper",
+            f"{paper.paper.title[:50]}..."
+        )
+
+        # Prepare document dict for agents
+        document = self._paper_to_document(paper.paper)
+
+        # 1. Study Assessment (always run)
+        study_assessment = self._run_study_assessment(document)
+
+        # Extract study type for conditional assessments
+        study_type = study_assessment.get("study_type", "").lower()
+
+        # 2. Paper Weight Assessment (always run)
+        paper_weight = self._run_paper_weight_assessment(document)
+
+        # 3. PICO extraction (conditional)
+        pico_components = None
+        if self._should_run_pico(study_type):
+            pico_components = self._run_pico_extraction(document)
+
+        # 4. PRISMA assessment (conditional)
+        prisma_assessment = None
+        if self._should_run_prisma(study_type):
+            prisma_assessment = self._run_prisma_assessment(document)
+
+        return AssessedPaper(
+            scored_paper=paper,
+            study_assessment=study_assessment,
+            paper_weight=paper_weight,
+            pico_components=pico_components,
+            prisma_assessment=prisma_assessment,
+        )
+
+    # =========================================================================
+    # Individual Assessment Runners
+    # =========================================================================
+
+    def _run_study_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run study quality assessment.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            Study assessment dictionary
+        """
+        try:
+            agent = self._get_study_agent()
+
+            # Truncate abstract if needed
+            text = document.get("abstract", "")
+            if len(text) > MAX_TEXT_LENGTH_STUDY_ASSESSMENT:
+                text = text[:MAX_TEXT_LENGTH_STUDY_ASSESSMENT]
+                logger.debug(f"Truncated abstract for study assessment: {document['id']}")
+
+            result = agent.assess_study(
+                abstract=text,
+                title=document.get("title", ""),
+                document_id=str(document["id"]),
+                pmid=document.get("pmid"),
+                doi=document.get("doi"),
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"Study assessment failed for {document['id']}: {e}")
+            # Return minimal assessment on error
+            return {
+                "study_type": "unknown",
+                "study_design": "unknown",
+                "quality_score": 5.0,
+                "strengths": [],
+                "limitations": [f"Assessment failed: {e}"],
+                "overall_confidence": 0.0,
+                "confidence_explanation": "Assessment failed",
+                "evidence_level": "unknown",
+                "document_id": str(document["id"]),
+                "document_title": document.get("title", ""),
+            }
+
+    def _run_paper_weight_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run paper weight assessment.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            Paper weight assessment dictionary
+        """
+        try:
+            agent = self._get_weight_agent()
+
+            result = agent.assess_paper(
+                document_id=document["id"],
+                use_cache=True,
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"Paper weight assessment failed for {document['id']}: {e}")
+            # Return minimal assessment on error
+            return {
+                "document_id": document["id"],
+                "composite_score": 5.0,
+                "dimensions": [],
+                "error": str(e),
+            }
+
+    def _run_pico_extraction(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Run PICO component extraction.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            PICO extraction dictionary, or None on error
+        """
+        try:
+            agent = self._get_pico_agent()
+
+            # Truncate abstract if needed
+            text = document.get("abstract", "")
+            if len(text) > MAX_TEXT_LENGTH_PICO:
+                text = text[:MAX_TEXT_LENGTH_PICO]
+                logger.debug(f"Truncated abstract for PICO extraction: {document['id']}")
+
+            result = agent.extract_pico(
+                abstract=text,
+                title=document.get("title", ""),
+                document_id=str(document["id"]),
+                pmid=document.get("pmid"),
+                doi=document.get("doi"),
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"PICO extraction failed for {document['id']}: {e}")
+            return None
+
+    def _run_prisma_assessment(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Run PRISMA 2020 compliance assessment.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            PRISMA assessment dictionary, or None on error
+        """
+        try:
+            agent = self._get_prisma_agent()
+
+            result = agent.assess_document(
+                document_id=document["id"],
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"PRISMA assessment failed for {document['id']}: {e}")
+            return None
+
+    # =========================================================================
+    # Conditional Logic
+    # =========================================================================
+
+    def _should_run_pico(self, study_type: str) -> bool:
+        """
+        Check if PICO extraction is applicable.
+
+        PICO extraction is relevant for intervention studies with
+        defined populations, interventions, comparisons, and outcomes.
+
+        Args:
+            study_type: Study type string (lowercase)
+
+        Returns:
+            True if PICO extraction should be performed
+        """
+        study_type_lower = study_type.lower().strip()
+
+        # Check against known PICO-applicable types
+        for applicable_type in PICO_APPLICABLE_STUDY_TYPES:
+            if applicable_type in study_type_lower:
+                return True
+
+        return False
+
+    def _should_run_prisma(self, study_type: str) -> bool:
+        """
+        Check if PRISMA assessment is applicable.
+
+        PRISMA 2020 is relevant for systematic reviews and meta-analyses.
+
+        Args:
+            study_type: Study type string (lowercase)
+
+        Returns:
+            True if PRISMA assessment should be performed
+        """
+        study_type_lower = study_type.lower().strip()
+
+        # Check against known PRISMA-applicable types
+        for applicable_type in PRISMA_APPLICABLE_STUDY_TYPES:
+            if applicable_type in study_type_lower:
+                return True
+
+        return False
+
+    # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    def _paper_to_document(self, paper) -> Dict[str, Any]:
+        """
+        Convert PaperData to document dict for agents.
+
+        Args:
+            paper: PaperData instance
+
+        Returns:
+            Document dictionary compatible with quality agents
+        """
+        return {
+            "id": paper.document_id,
+            "title": paper.title,
+            "abstract": paper.abstract or "",
+            "authors": paper.authors,
+            "publication": paper.journal,
+            "publication_date": str(paper.year),
+            "doi": paper.doi,
+            "pmid": paper.pmid,
+            "pmc_id": paper.pmc_id,
+            "full_text": paper.full_text,
+        }
+
+    # =========================================================================
+    # Statistics
+    # =========================================================================
+
+    def get_assessment_statistics(
+        self,
+        result: QualityAssessmentResult,
+    ) -> Dict[str, Any]:
+        """
+        Get detailed statistics about assessment results.
+
+        Args:
+            result: QualityAssessmentResult to analyze
+
+        Returns:
+            Dictionary with detailed statistics
+        """
+        if not result.assessed_papers:
+            return {
+                "total": result.total_processed,
+                "assessed": 0,
+                "failed": len(result.failed_papers),
+            }
+
+        # Study type distribution
+        study_types: Dict[str, int] = {}
+        for paper in result.assessed_papers:
+            study_type = paper.study_assessment.get("study_type", "unknown")
+            study_types[study_type] = study_types.get(study_type, 0) + 1
+
+        # Quality score distribution
+        quality_scores = [
+            p.study_assessment.get("quality_score", 0.0)
+            for p in result.assessed_papers
+        ]
+
+        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
+
+        return {
+            "total_papers": result.total_processed,
+            "successfully_assessed": len(result.assessed_papers),
+            "failed": len(result.failed_papers),
+            "success_rate_percent": round(result.success_rate * 100, 2),
+            "assessment_types": result.assessment_statistics,
+            "study_type_distribution": study_types,
+            "average_quality_score": round(avg_quality, 2),
+            "execution_time_seconds": round(result.execution_time_seconds, 2),
+            "papers_per_second": round(
+                len(result.assessed_papers) / result.execution_time_seconds, 2
+            ) if result.execution_time_seconds > 0 else 0,
+        }
