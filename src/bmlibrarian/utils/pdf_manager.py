@@ -449,7 +449,7 @@ class PDFManager:
 
                 if prompt_on_mismatch:
                     # Prompt user for decision
-                    decision, save_path = self._handle_verification_mismatch(
+                    decision, save_path, reassign_doc_id = self._handle_verification_mismatch(
                         result=result,
                         document=document,
                         pdf_path=pdf_path,
@@ -466,18 +466,21 @@ class PDFManager:
                         )
                         return pdf_path
 
+                    elif decision == 'reassign':
+                        # User wants to assign to a different document
+                        if reassign_doc_id:
+                            logger.info(
+                                f"User chose to REASSIGN PDF to document {reassign_doc_id} "
+                                f"(original request was for document {document.get('id')})"
+                            )
+                            # Assign PDF to the alternative document
+                            self._assign_pdf_to_document(reassign_doc_id, pdf_path)
+                        # Return None since we didn't assign to the original document
+                        return None
+
                     elif decision == 'save_as':
-                        # User wants to save elsewhere without ingesting
-                        if save_path:
-                            try:
-                                shutil.copy2(pdf_path, save_path)
-                                logger.info(
-                                    f"Saved PDF to user location: {save_path} "
-                                    f"(not ingested for document {document.get('id')})"
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to save PDF to {save_path}: {e}")
-                        # Delete the original mismatched file
+                        # User saved a copy - the dialog already saved it
+                        # Now just delete the temp file and return None
                         try:
                             pdf_path.unlink()
                         except Exception as e:
@@ -563,42 +566,89 @@ class PDFManager:
             parent_widget: Optional parent widget for GUI
 
         Returns:
-            Tuple of (decision_string, optional_save_path)
-            decision_string is one of: 'accept', 'save_as', 'retry', 'reject'
+            Tuple of (decision_string, optional_save_path, optional_reassign_doc_id)
+            decision_string is one of: 'accept', 'save_as', 'retry', 'reject', 'reassign'
         """
         from bmlibrarian.discovery.verification_prompt import (
             VerificationPromptData,
             VerificationDecision,
             prompt_cli_verification,
-            prompt_gui_verification
+            prompt_gui_verification,
+            find_alternative_document
         )
+
+        # Look up alternative document if we have an extracted DOI
+        extracted_doi = getattr(result, 'extracted_doi', None)
+        alternative_doc = find_alternative_document(extracted_doi) if extracted_doi else None
 
         # Build verification prompt data using extracted identifiers from DownloadResult
         prompt_data = VerificationPromptData(
             pdf_path=pdf_path,
             expected_doi=document.get('doi'),
-            extracted_doi=getattr(result, 'extracted_doi', None),
+            extracted_doi=extracted_doi,
             expected_title=document.get('title'),
             extracted_title=getattr(result, 'extracted_title', None),
             expected_pmid=document.get('pmid') or document.get('pubmed_id'),
             extracted_pmid=getattr(result, 'extracted_pmid', None),
             title_similarity=getattr(result, 'title_similarity', None) or result.verification_confidence,
             verification_warnings=result.verification_warnings,
-            doc_id=document.get('id')
+            doc_id=document.get('id'),
+            alternative_document=alternative_doc
         )
 
         # Use custom callback if provided
         if verification_callback:
-            decision, save_path = verification_callback(prompt_data)
+            decision, save_path, reassign_doc_id = verification_callback(prompt_data)
         elif parent_widget is not None:
             # Use GUI dialog
-            decision, save_path = prompt_gui_verification(prompt_data, parent_widget)
+            decision, save_path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
         else:
             # Use CLI prompt
-            decision, save_path = prompt_cli_verification(prompt_data)
+            decision, save_path, reassign_doc_id = prompt_cli_verification(prompt_data)
 
         # Convert VerificationDecision enum to string
-        return decision.value, save_path
+        return decision.value, save_path, reassign_doc_id
+
+    def _assign_pdf_to_document(self, doc_id: int, pdf_path: Path) -> bool:
+        """Assign a PDF to a document in the database.
+
+        Args:
+            doc_id: Document ID to assign PDF to
+            pdf_path: Path to the PDF file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            # Calculate relative path
+            if self.base_dir and pdf_path.is_relative_to(self.base_dir):
+                relative_path = str(pdf_path.relative_to(self.base_dir))
+            else:
+                relative_path = pdf_path.name
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET pdf_filename = %s WHERE id = %s",
+                        (relative_path, doc_id)
+                    )
+                    conn.commit()
+
+                    if cur.rowcount > 0:
+                        logger.info(
+                            f"Assigned PDF to document {doc_id}: {relative_path}"
+                        )
+                        return True
+                    else:
+                        logger.warning(f"No document found with ID {doc_id}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"Failed to assign PDF to document {doc_id}: {e}")
+            return False
 
     def get_or_download_with_discovery(
         self,

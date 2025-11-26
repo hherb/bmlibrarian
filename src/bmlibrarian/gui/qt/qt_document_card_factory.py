@@ -1296,40 +1296,56 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             from bmlibrarian.discovery.verification_prompt import (
                 VerificationPromptData,
                 VerificationDecision,
-                prompt_gui_verification
+                prompt_gui_verification,
+                find_alternative_document
             )
 
             pdf_path = Path(result.file_path)
+
+            # Look up alternative document if we have an extracted DOI
+            extracted_doi = getattr(result, 'extracted_doi', None)
+            alternative_doc = find_alternative_document(extracted_doi) if extracted_doi else None
+
             prompt_data = VerificationPromptData(
                 pdf_path=pdf_path,
                 expected_doi=card_data.doi,
-                extracted_doi=getattr(result, 'extracted_doi', None),
+                extracted_doi=extracted_doi,
                 expected_title=card_data.title,
                 extracted_title=getattr(result, 'extracted_title', None),
                 expected_pmid=card_data.pmid,
                 extracted_pmid=getattr(result, 'extracted_pmid', None),
                 title_similarity=getattr(result, 'title_similarity', None),
                 verification_warnings=result.verification_warnings,
-                doc_id=card_data.doc_id
+                doc_id=card_data.doc_id,
+                alternative_document=alternative_doc
             )
 
             # Show verification dialog
             parent_widget = self._parent if hasattr(self, '_parent') else None
-            decision, save_path = prompt_gui_verification(prompt_data, parent_widget)
+            decision, save_path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
 
             if decision == VerificationDecision.ACCEPT:
                 logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
                 # Continue to return the path and update full_text
+            elif decision == VerificationDecision.REASSIGN:
+                logger.info(
+                    f"User chose to REASSIGN PDF to document {reassign_doc_id} "
+                    f"(original request was for document {card_data.doc_id})"
+                )
+                # Assign PDF to the alternative document
+                if reassign_doc_id:
+                    self._update_pdf_filename_in_database(
+                        reassign_doc_id, pdf_path,
+                        {'id': reassign_doc_id, 'pdf_filename': pdf_path.name}
+                    )
+                    # If we got full text, update that too
+                    if result.full_text:
+                        self._update_full_text_in_database(reassign_doc_id, result.full_text)
+                # Return None since we didn't assign to the original document
+                return None
             elif decision == VerificationDecision.SAVE_AS:
-                logger.info(f"User chose to SAVE AS for document {card_data.doc_id}")
-                if save_path:
-                    import shutil
-                    try:
-                        shutil.copy2(pdf_path, save_path)
-                        logger.info(f"Saved PDF to: {save_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to save PDF to {save_path}: {e}")
-                # Delete the mismatched file and return None
+                # Dialog already saved the file, just delete temp and return None
+                logger.info(f"User saved PDF copy for document {card_data.doc_id}")
                 try:
                     pdf_path.unlink()
                 except Exception as e:

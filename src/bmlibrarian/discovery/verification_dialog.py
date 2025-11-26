@@ -5,12 +5,13 @@ that fail automatic verification (DOI/title mismatch).
 """
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QFileDialog, QSplitter, QWidget, QSizePolicy
+    QFrame, QFileDialog, QSplitter, QWidget, QSizePolicy, QMessageBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -25,7 +26,8 @@ class PDFVerificationDialog(QDialog):
 
     Shows the PDF in a viewer alongside mismatch details, with options to:
     - Accept (ingest despite mismatch)
-    - Save As (save to custom location without ingesting)
+    - Reassign (assign to matching document if found)
+    - Save As (save to custom location, then continue choosing)
     - Retry (try searching again)
     - Reject (discard)
     """
@@ -49,6 +51,8 @@ class PDFVerificationDialog(QDialog):
         self.data = data
         self.decision: VerificationDecision = VerificationDecision.REJECT
         self.save_path: Optional[Path] = None
+        self.reassign_doc_id: Optional[int] = None
+        self._pdf_saved = False  # Track if user already saved a copy
 
         self._setup_ui()
 
@@ -95,8 +99,8 @@ class PDFVerificationDialog(QDialog):
         main_layout.addWidget(splitter, 1)
 
         # Button panel
-        button_panel = self._create_button_panel()
-        main_layout.addWidget(button_panel)
+        self.button_panel = self._create_button_panel()
+        main_layout.addWidget(self.button_panel)
 
     def _create_header(self) -> QFrame:
         """Create the warning header."""
@@ -200,6 +204,11 @@ class PDFVerificationDialog(QDialog):
         mismatch_section = self._create_mismatch_section()
         layout.addWidget(mismatch_section)
 
+        # Section: Alternative Document (if available)
+        if self.data.alternative_document and not self.data.alternative_document.has_pdf:
+            alt_section = self._create_alternative_section()
+            layout.addWidget(alt_section)
+
         layout.addStretch()
 
         return frame
@@ -251,6 +260,52 @@ class PDFVerificationDialog(QDialog):
             field_layout.addWidget(value_label, 1)
 
             layout.addLayout(field_layout)
+
+        return frame
+
+    def _create_alternative_section(self) -> QFrame:
+        """Create the alternative document section."""
+        alt = self.data.alternative_document
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #E8F5E9;
+                border: 2px solid #4CAF50;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+
+        # Header
+        header_layout = QHBoxLayout()
+        icon_label = QLabel("📄")
+        icon_label.setStyleSheet("font-size: 18pt; background: transparent; border: none;")
+        header_layout.addWidget(icon_label)
+
+        title_label = QLabel("<b>Matching Document Found!</b>")
+        title_label.setStyleSheet("background: transparent; border: none; color: #2E7D32;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        # Info text
+        info_text = f"""
+        <p>The PDF's DOI matches a document in your database that <b>doesn't have a PDF yet</b>:</p>
+        <p><b>Title:</b> {alt.title[:80]}{'...' if len(alt.title) > 80 else ''}</p>
+        <p><b>DOI:</b> {alt.doi}</p>
+        """
+        if alt.authors:
+            info_text += f"<p><b>Authors:</b> {alt.authors[:60]}{'...' if len(alt.authors) > 60 else ''}</p>"
+        if alt.year:
+            info_text += f"<p><b>Year:</b> {alt.year}</p>"
+        info_text += f"<p><b>Document ID:</b> {alt.doc_id}</p>"
+
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("background: transparent; border: none;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
 
         return frame
 
@@ -323,9 +378,9 @@ class PDFVerificationDialog(QDialog):
         layout.setSpacing(self.scale.get('spacing_medium', 12))
 
         # Accept button (green)
-        accept_btn = QPushButton("✓ Accept && Ingest")
-        accept_btn.setToolTip("Accept this PDF and add it to the document record")
-        accept_btn.setStyleSheet("""
+        self.accept_btn = QPushButton("✓ Accept && Ingest")
+        self.accept_btn.setToolTip("Accept this PDF and add it to the document record")
+        self.accept_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
@@ -338,13 +393,36 @@ class PDFVerificationDialog(QDialog):
                 background-color: #388E3C;
             }
         """)
-        accept_btn.clicked.connect(self._on_accept)
-        layout.addWidget(accept_btn)
+        self.accept_btn.clicked.connect(self._on_accept)
+        layout.addWidget(self.accept_btn)
+
+        # Reassign button (purple) - only if alternative document available
+        if self.data.alternative_document and not self.data.alternative_document.has_pdf:
+            alt = self.data.alternative_document
+            self.reassign_btn = QPushButton(f"📄 Assign to Doc {alt.doc_id}")
+            self.reassign_btn.setToolTip(
+                f"Assign this PDF to '{alt.title[:50]}...' instead"
+            )
+            self.reassign_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #9C27B0;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 12px 24px;
+                    font-size: 12pt;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #7B1FA2;
+                }
+            """)
+            self.reassign_btn.clicked.connect(self._on_reassign)
+            layout.addWidget(self.reassign_btn)
 
         # Save As button (blue)
-        save_btn = QPushButton("💾 Save As...")
-        save_btn.setToolTip("Save this PDF to a custom location without ingesting")
-        save_btn.setStyleSheet("""
+        self.save_btn = QPushButton("💾 Save As...")
+        self.save_btn.setToolTip("Save this PDF to a custom location (then choose what to do next)")
+        self.save_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
                 color: white;
@@ -357,13 +435,13 @@ class PDFVerificationDialog(QDialog):
                 background-color: #1976D2;
             }
         """)
-        save_btn.clicked.connect(self._on_save_as)
-        layout.addWidget(save_btn)
+        self.save_btn.clicked.connect(self._on_save_as)
+        layout.addWidget(self.save_btn)
 
         # Retry button (orange)
-        retry_btn = QPushButton("🔄 Retry Search")
-        retry_btn.setToolTip("Discard this PDF and try searching for the correct one again")
-        retry_btn.setStyleSheet("""
+        self.retry_btn = QPushButton("🔄 Retry Search")
+        self.retry_btn.setToolTip("Discard this PDF and try searching for the correct one again")
+        self.retry_btn.setStyleSheet("""
             QPushButton {
                 background-color: #FF9800;
                 color: white;
@@ -376,13 +454,13 @@ class PDFVerificationDialog(QDialog):
                 background-color: #F57C00;
             }
         """)
-        retry_btn.clicked.connect(self._on_retry)
-        layout.addWidget(retry_btn)
+        self.retry_btn.clicked.connect(self._on_retry)
+        layout.addWidget(self.retry_btn)
 
         # Reject button (red)
-        reject_btn = QPushButton("✗ Reject")
-        reject_btn.setToolTip("Discard this PDF completely")
-        reject_btn.setStyleSheet("""
+        self.reject_btn = QPushButton("✗ Reject")
+        self.reject_btn.setToolTip("Discard this PDF completely")
+        self.reject_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f44336;
                 color: white;
@@ -395,8 +473,8 @@ class PDFVerificationDialog(QDialog):
                 background-color: #D32F2F;
             }
         """)
-        reject_btn.clicked.connect(self._on_reject)
-        layout.addWidget(reject_btn)
+        self.reject_btn.clicked.connect(self._on_reject)
+        layout.addWidget(self.reject_btn)
 
         return frame
 
@@ -405,8 +483,14 @@ class PDFVerificationDialog(QDialog):
         self.decision = VerificationDecision.ACCEPT
         self.accept()
 
+    def _on_reassign(self) -> None:
+        """Handle Reassign button click."""
+        self.decision = VerificationDecision.REASSIGN
+        self.reassign_doc_id = self.data.alternative_document.doc_id
+        self.accept()
+
     def _on_save_as(self) -> None:
-        """Handle Save As button click."""
+        """Handle Save As button click - save copy but continue dialog."""
         # Open file save dialog
         save_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -416,9 +500,43 @@ class PDFVerificationDialog(QDialog):
         )
 
         if save_path:
-            self.decision = VerificationDecision.SAVE_AS
-            self.save_path = Path(save_path)
-            self.accept()
+            save_path = Path(save_path)
+            try:
+                shutil.copy2(self.data.pdf_path, save_path)
+                self.save_path = save_path
+                self._pdf_saved = True
+
+                # Show success message
+                QMessageBox.information(
+                    self,
+                    "PDF Saved",
+                    f"PDF saved to:\n{save_path}\n\n"
+                    "Now choose what to do with the original download."
+                )
+
+                # Disable Save As button (already saved)
+                self.save_btn.setEnabled(False)
+                self.save_btn.setText("✓ Saved")
+                self.save_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #90CAF9;
+                        color: #1565C0;
+                        border-radius: 6px;
+                        padding: 12px 24px;
+                        font-size: 12pt;
+                        font-weight: bold;
+                    }
+                """)
+
+                # Update reject button text since we saved a copy
+                self.reject_btn.setText("✗ Reject (copy saved)")
+
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Save Failed",
+                    f"Failed to save PDF:\n{e}"
+                )
 
     def _on_retry(self) -> None:
         """Handle Retry button click."""

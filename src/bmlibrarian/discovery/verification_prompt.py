@@ -7,10 +7,10 @@ Supports both CLI prompts and GUI dialogs.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,19 @@ class VerificationDecision(Enum):
     SAVE_AS = "save_as"  # Save PDF to custom location without ingesting
     RETRY = "retry"  # Reject and try searching again
     REJECT = "reject"  # Reject completely
+    REASSIGN = "reassign"  # Assign PDF to a different document (by extracted DOI)
+
+
+@dataclass
+class AlternativeDocument:
+    """Information about a document that matches the extracted DOI."""
+
+    doc_id: int
+    title: str
+    doi: str
+    has_pdf: bool  # Whether this document already has a PDF assigned
+    authors: Optional[str] = None
+    year: Optional[int] = None
 
 
 @dataclass
@@ -38,6 +51,8 @@ class VerificationPromptData:
     title_similarity: Optional[float] = None
     verification_warnings: Optional[list] = None
     doc_id: Optional[int] = None
+    # Alternative document that matches the extracted DOI (if found)
+    alternative_document: Optional[AlternativeDocument] = None
 
     def get_mismatch_summary(self) -> str:
         """Get a human-readable summary of the mismatch."""
@@ -64,10 +79,58 @@ class VerificationPromptData:
         return "\n".join(lines) if lines else "Unknown mismatch"
 
 
+def find_alternative_document(extracted_doi: str) -> Optional[AlternativeDocument]:
+    """Look up a document in the database by DOI.
+
+    Args:
+        extracted_doi: The DOI extracted from the PDF
+
+    Returns:
+        AlternativeDocument if found and has no PDF, None otherwise
+    """
+    if not extracted_doi:
+        return None
+
+    try:
+        from bmlibrarian.database import get_db_manager
+        db_manager = get_db_manager()
+
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Look for document with this DOI that doesn't have a PDF yet
+                cur.execute("""
+                    SELECT id, title, doi, pdf_filename,
+                           authors, EXTRACT(YEAR FROM publication_date)::int as year
+                    FROM document
+                    WHERE LOWER(doi) = LOWER(%s)
+                    LIMIT 1
+                """, (extracted_doi,))
+
+                row = cur.fetchone()
+                if row:
+                    doc_id, title, doi, pdf_filename, authors, year = row
+                    has_pdf = bool(pdf_filename)
+
+                    return AlternativeDocument(
+                        doc_id=doc_id,
+                        title=title or "Unknown Title",
+                        doi=doi,
+                        has_pdf=has_pdf,
+                        authors=authors,
+                        year=year
+                    )
+
+        return None
+
+    except Exception as e:
+        logger.warning(f"Failed to look up alternative document for DOI {extracted_doi}: {e}")
+        return None
+
+
 def prompt_cli_verification(
     data: VerificationPromptData,
     show_pdf_callback: Optional[Callable[[Path], None]] = None
-) -> tuple[VerificationDecision, Optional[Path]]:
+) -> tuple[VerificationDecision, Optional[Path], Optional[int]]:
     """Prompt user in CLI for verification decision.
 
     Args:
@@ -75,13 +138,30 @@ def prompt_cli_verification(
         show_pdf_callback: Optional callback to display PDF (e.g., open in viewer)
 
     Returns:
-        Tuple of (decision, save_path) where save_path is only set for SAVE_AS
+        Tuple of (decision, save_path, reassign_doc_id) where:
+        - save_path is only set for SAVE_AS
+        - reassign_doc_id is only set for REASSIGN
     """
     print("\n" + "=" * 70)
     print("PDF VERIFICATION REQUIRED")
     print("=" * 70)
     print(f"\nDownloaded PDF: {data.pdf_path.name}")
     print(f"\n{data.get_mismatch_summary()}")
+
+    # Show alternative document if available
+    if data.alternative_document and not data.alternative_document.has_pdf:
+        alt = data.alternative_document
+        print("\n" + "-" * 70)
+        print("📄 MATCHING DOCUMENT FOUND IN DATABASE:")
+        print(f"   Title: {alt.title[:70]}{'...' if len(alt.title) > 70 else ''}")
+        print(f"   DOI: {alt.doi}")
+        if alt.authors:
+            print(f"   Authors: {alt.authors[:50]}{'...' if len(alt.authors) > 50 else ''}")
+        if alt.year:
+            print(f"   Year: {alt.year}")
+        print(f"   Document ID: {alt.doc_id}")
+        print("   This document does NOT have a PDF assigned yet.")
+
     print("\n" + "-" * 70)
 
     # Offer to open PDF if callback provided
@@ -93,17 +173,27 @@ def prompt_cli_verification(
             except Exception as e:
                 logger.warning(f"Failed to open PDF: {e}")
 
+    # Build options dynamically
     print("\nOptions:")
     print("  [A] Accept - Ingest this PDF despite the mismatch")
-    print("  [S] Save As - Save to a different location (don't ingest)")
+    if data.alternative_document and not data.alternative_document.has_pdf:
+        print(f"  [D] Reassign - Assign this PDF to document {data.alternative_document.doc_id} instead")
+    print("  [S] Save As - Save to a different location (then continue)")
     print("  [R] Retry - Try searching for the correct PDF again")
     print("  [X] Reject - Discard this PDF")
 
+    valid_choices = ['A', 'S', 'R', 'X']
+    if data.alternative_document and not data.alternative_document.has_pdf:
+        valid_choices.append('D')
+
     while True:
-        choice = input("\nYour choice [A/S/R/X]: ").strip().upper()
+        choice = input(f"\nYour choice [{'/'.join(valid_choices)}]: ").strip().upper()
 
         if choice == 'A':
-            return VerificationDecision.ACCEPT, None
+            return VerificationDecision.ACCEPT, None, None
+
+        elif choice == 'D' and data.alternative_document and not data.alternative_document.has_pdf:
+            return VerificationDecision.REASSIGN, None, data.alternative_document.doc_id
 
         elif choice == 'S':
             save_path_str = input("Enter save path (or press Enter for Downloads): ").strip()
@@ -111,22 +201,54 @@ def prompt_cli_verification(
                 save_path = Path(save_path_str).expanduser()
             else:
                 save_path = Path("~/Downloads").expanduser() / data.pdf_path.name
-            return VerificationDecision.SAVE_AS, save_path
+
+            # Copy the file
+            import shutil
+            try:
+                shutil.copy2(data.pdf_path, save_path)
+                print(f"✓ Saved to: {save_path}")
+            except Exception as e:
+                print(f"✗ Failed to save: {e}")
+
+            # After saving, continue with other options (remove Save As from choices)
+            print("\nPDF saved. What would you like to do next?")
+            print("  [A] Accept - Also ingest this PDF to the original document")
+            if data.alternative_document and not data.alternative_document.has_pdf:
+                print(f"  [D] Reassign - Assign this PDF to document {data.alternative_document.doc_id}")
+            print("  [R] Retry - Try searching for the correct PDF again")
+            print("  [X] Reject - Discard this PDF (already saved a copy)")
+
+            continue_choices = ['A', 'R', 'X']
+            if data.alternative_document and not data.alternative_document.has_pdf:
+                continue_choices.append('D')
+
+            while True:
+                choice2 = input(f"\nYour choice [{'/'.join(continue_choices)}]: ").strip().upper()
+                if choice2 == 'A':
+                    return VerificationDecision.ACCEPT, save_path, None
+                elif choice2 == 'D' and data.alternative_document and not data.alternative_document.has_pdf:
+                    return VerificationDecision.REASSIGN, save_path, data.alternative_document.doc_id
+                elif choice2 == 'R':
+                    return VerificationDecision.RETRY, save_path, None
+                elif choice2 == 'X':
+                    return VerificationDecision.REJECT, save_path, None
+                else:
+                    print(f"Invalid choice. Please enter {'/'.join(continue_choices)}.")
 
         elif choice == 'R':
-            return VerificationDecision.RETRY, None
+            return VerificationDecision.RETRY, None, None
 
         elif choice == 'X':
-            return VerificationDecision.REJECT, None
+            return VerificationDecision.REJECT, None, None
 
         else:
-            print("Invalid choice. Please enter A, S, R, or X.")
+            print(f"Invalid choice. Please enter {'/'.join(valid_choices)}.")
 
 
 def prompt_gui_verification(
     data: VerificationPromptData,
     parent=None
-) -> tuple[VerificationDecision, Optional[Path]]:
+) -> tuple[VerificationDecision, Optional[Path], Optional[int]]:
     """Show GUI dialog for verification decision.
 
     Args:
@@ -134,7 +256,9 @@ def prompt_gui_verification(
         parent: Optional parent widget
 
     Returns:
-        Tuple of (decision, save_path) where save_path is only set for SAVE_AS
+        Tuple of (decision, save_path, reassign_doc_id) where:
+        - save_path is set if user saved a copy
+        - reassign_doc_id is only set for REASSIGN
     """
     # Import here to avoid PySide6 dependency for CLI-only usage
     from .verification_dialog import PDFVerificationDialog
@@ -143,6 +267,6 @@ def prompt_gui_verification(
     result = dialog.exec()
 
     if result == PDFVerificationDialog.Accepted:
-        return dialog.decision, dialog.save_path
+        return dialog.decision, dialog.save_path, dialog.reassign_doc_id
     else:
-        return VerificationDecision.REJECT, None
+        return VerificationDecision.REJECT, None, None

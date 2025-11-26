@@ -95,8 +95,10 @@ from .download_logger import (
 from .verification_prompt import (
     VerificationDecision,
     VerificationPromptData,
+    AlternativeDocument,
     prompt_cli_verification,
-    prompt_gui_verification
+    prompt_gui_verification,
+    find_alternative_document
 )
 
 __all__ = [
@@ -140,6 +142,8 @@ __all__ = [
     # Verification prompts
     'VerificationDecision',
     'VerificationPromptData',
+    'AlternativeDocument',
     'prompt_cli_verification',
     'prompt_gui_verification',
+    'find_alternative_document',
 ]
