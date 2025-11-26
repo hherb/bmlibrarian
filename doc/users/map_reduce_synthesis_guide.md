@@ -4,7 +4,7 @@
 
 When BMLibrarian processes research questions that return many relevant documents (typically 15+ citations), the ReportingAgent automatically uses a **map-reduce synthesis pattern** to prevent context window overflow and ensure reliable report generation.
 
-This feature is transparent to users - it activates automatically when needed and produces the same high-quality medical reports as the standard synthesis method.
+This feature is transparent to users - it activates automatically when needed and produces the same high-quality medical reports as the standard synthesis method. The system uses UUID-based reference tracking internally to ensure accurate citation preservation across all processing stages.
 
 ## When Map-Reduce is Used
 
@@ -78,7 +78,8 @@ Map-reduce settings can be configured in `~/.bmlibrarian/config.json` under the 
 1. **Reliability**: Prevents context window overflow that causes empty model responses
 2. **Scalability**: Can process hundreds of citations without memory issues
 3. **Quality**: Extracts themes systematically, often improving report coherence
-4. **Transparency**: Preserves all reference numbers for accurate citations
+4. **Accurate Citations**: UUID-based tracking ensures no reference confusion between batches
+5. **Familiar Output**: Final report uses standard sequential numbering [1], [2], etc.
 
 ## Troubleshooting
 

@@ -7,8 +7,10 @@ reference formatting in the style of peer-reviewed medical publications.
 
 import json
 import logging
+import re
+import uuid
 from typing import Dict, List, Optional, Any, Tuple, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import psycopg
 
@@ -131,6 +133,56 @@ class Reference:
 
 
 @dataclass
+class CitationRef:
+    """
+    Reference identifier for tracking citations through map-reduce synthesis.
+
+    Uses a short UUID-based identifier (e.g., 'REF_a7b3c2d1') that:
+    - Remains stable during reordering and batch processing
+    - Is non-sequential to prevent LLM confusion between batches
+    - Can be deterministically converted to sequential numbers in final output
+
+    Attributes:
+        ref_id: Unique identifier (format: REF_XXXXXXXX)
+        document_id: Database document ID
+        citation: Original Citation object
+        final_number: Sequential number assigned in final output (None until post-processing)
+    """
+    ref_id: str
+    document_id: str
+    citation: 'Citation'
+    final_number: Optional[int] = None
+
+    @classmethod
+    def generate_ref_id(cls) -> str:
+        """
+        Generate a unique reference ID.
+
+        Returns:
+            String in format 'REF_XXXXXXXX' where X is a hex character
+        """
+        # Use first 8 characters of UUID4 for shorter, more readable IDs
+        return f"REF_{uuid.uuid4().hex[:8]}"
+
+    @classmethod
+    def from_citation(cls, citation: 'Citation') -> 'CitationRef':
+        """
+        Create a CitationRef from a Citation object.
+
+        Args:
+            citation: The Citation object to wrap
+
+        Returns:
+            New CitationRef with generated ref_id
+        """
+        return cls(
+            ref_id=cls.generate_ref_id(),
+            document_id=citation.document_id,
+            citation=citation
+        )
+
+
+@dataclass
 class Report:
     """Represents a synthesized report with citations and references."""
     user_question: str
@@ -142,7 +194,7 @@ class Report:
     citation_count: int
     unique_documents: int
     methodology_metadata: Optional[MethodologyMetadata] = None
-    
+
     def __post_init__(self):
         if not isinstance(self.created_at, datetime):
             self.created_at = datetime.now(timezone.utc)
@@ -465,8 +517,6 @@ class ReportingAgent(BaseAgent):
             content: Generated report content to validate
             valid_numbers: Set of valid reference numbers
         """
-        import re
-
         # Find all reference patterns like [1], [12], [123]
         ref_pattern = r'\[(\d+)\]'
         found_refs = re.findall(ref_pattern, content)
@@ -495,6 +545,100 @@ class ReportingAgent(BaseAgent):
             f"Reference validation: {len(found_numbers)} unique refs used, "
             f"{len(invalid_refs)} invalid, {len(found_numbers & valid_numbers)} valid"
         )
+
+    def _validate_uuid_references(self, content: str, valid_ref_ids: set) -> None:
+        """
+        Validate that UUID reference IDs in generated content match valid references.
+
+        Logs warnings for any reference IDs that don't match the expected set.
+        This helps catch cases where the LLM invents reference IDs.
+
+        Args:
+            content: Generated report content to validate
+            valid_ref_ids: Set of valid UUID reference IDs (e.g., {'REF_a7b3c2d1', ...})
+        """
+        # Find all UUID reference patterns like [REF_a7b3c2d1]
+        # Pattern matches REF_ followed by 8 hexadecimal characters (lowercase)
+        ref_pattern = r'\[(REF_[a-f0-9]{8})\]'
+        found_refs = set(re.findall(ref_pattern, content, re.IGNORECASE))
+
+        if not found_refs:
+            logger.warning("No UUID reference IDs found in generated content")
+            return
+
+        invalid_refs = found_refs - valid_ref_ids
+        missing_refs = valid_ref_ids - found_refs
+
+        if invalid_refs:
+            logger.warning(
+                f"Generated content contains invalid reference IDs: {sorted(invalid_refs)}. "
+                f"Expected IDs from: {sorted(list(valid_ref_ids)[:5])}..."
+            )
+
+        if missing_refs and len(missing_refs) < len(valid_ref_ids):
+            # Only log if some refs are used (not all missing)
+            logger.debug(
+                f"Some valid reference IDs not used in content: {len(missing_refs)} IDs"
+            )
+
+        logger.info(
+            f"UUID reference validation: {len(found_refs)} unique refs used, "
+            f"{len(invalid_refs)} invalid, {len(found_refs & valid_ref_ids)} valid"
+        )
+
+    def _convert_uuid_refs_to_sequential(
+        self,
+        content: str,
+        citation_refs: List[CitationRef]
+    ) -> Tuple[str, Dict[str, int]]:
+        """
+        Convert UUID reference IDs to sequential numbers in final output.
+
+        Finds all UUID references in the content (e.g., [REF_a7b3c2d1]) and replaces
+        them with sequential numbers (e.g., [1], [2], etc.) based on order of first
+        appearance in the text.
+
+        Args:
+            content: Report content with UUID references
+            citation_refs: List of CitationRef objects
+
+        Returns:
+            Tuple of (converted_content, ref_id_to_number_mapping)
+            - converted_content: Content with [1], [2], etc. instead of UUIDs
+            - ref_id_to_number_mapping: Dict mapping UUID ref_ids to their final numbers
+        """
+        # Build lookup from ref_id to CitationRef
+        ref_id_to_citation_ref = {cr.ref_id: cr for cr in citation_refs}
+
+        # Find all UUID references in order of appearance
+        ref_pattern = r'\[(REF_[a-f0-9]{8})\]'
+        found_refs_ordered = []
+        for match in re.finditer(ref_pattern, content):
+            ref_id = match.group(1)
+            if ref_id not in found_refs_ordered:
+                found_refs_ordered.append(ref_id)
+
+        # Assign sequential numbers based on order of appearance
+        ref_id_to_number = {}
+        for i, ref_id in enumerate(found_refs_ordered, 1):
+            ref_id_to_number[ref_id] = i
+            # Update CitationRef with final number
+            if ref_id in ref_id_to_citation_ref:
+                ref_id_to_citation_ref[ref_id].final_number = i
+
+        # Replace UUID refs with sequential numbers
+        def replace_ref(match: re.Match) -> str:
+            ref_id = match.group(1)
+            number = ref_id_to_number.get(ref_id, '?')
+            return f'[{number}]'
+
+        converted_content = re.sub(ref_pattern, replace_ref, content)
+
+        logger.info(
+            f"Converted {len(ref_id_to_number)} UUID references to sequential numbers"
+        )
+
+        return converted_content, ref_id_to_number
 
     def _estimate_citation_tokens(self, citations: List[Citation]) -> int:
         """
@@ -566,8 +710,7 @@ class ReportingAgent(BaseAgent):
     def _map_phase_summarize_batch(
         self,
         user_question: str,
-        batch_citations: List[Citation],
-        doc_to_ref: Dict[str, int],
+        batch_citation_refs: List[CitationRef],
         batch_number: int,
         total_batches: int
     ) -> Optional[Dict[str, Any]]:
@@ -576,22 +719,25 @@ class ReportingAgent(BaseAgent):
 
         Processes a subset of citations and extracts:
         - Main themes/findings
-        - Key evidence points with reference numbers
+        - Key evidence points with UUID reference identifiers
         - Relevance to the research question
+
+        Uses UUID-based reference identifiers (e.g., [REF_a7b3c2d1]) instead of
+        sequential numbers to prevent confusion during batch processing. These
+        are converted to sequential numbers in post-processing.
 
         Args:
             user_question: Original research question
-            batch_citations: Subset of citations to process
-            doc_to_ref: Mapping from document IDs to reference numbers
+            batch_citation_refs: List of CitationRef objects for this batch
             batch_number: Current batch number (1-indexed)
             total_batches: Total number of batches
 
         Returns:
-            Dictionary with batch summary or None if processing failed
+            Dictionary with batch summary including ref_ids, or None if processing failed
         """
         logger.info(
             f"Map phase: processing batch {batch_number}/{total_batches} "
-            f"({len(batch_citations)} citations)"
+            f"({len(batch_citation_refs)} citations)"
         )
 
         # Prepare citation summaries for this batch
@@ -599,8 +745,13 @@ class ReportingAgent(BaseAgent):
         passage_max_length = getattr(self, 'map_passage_max_length', self.MAP_PASSAGE_MAX_LENGTH)
 
         citation_summaries = []
-        for citation in batch_citations:
-            ref_number = doc_to_ref.get(citation.document_id, '?')
+        ref_id_list = []  # Track ref_ids in this batch for metadata
+
+        for citation_ref in batch_citation_refs:
+            citation = citation_ref.citation
+            ref_id = citation_ref.ref_id
+            ref_id_list.append(ref_id)
+
             # Truncate passage for map phase only (full passage available in original citation)
             passage_text = citation.passage or ""
             if len(passage_text) > passage_max_length:
@@ -609,7 +760,7 @@ class ReportingAgent(BaseAgent):
                 passage_display = passage_text
 
             citation_summaries.append(f"""
-[Reference {ref_number}]:
+[{ref_id}]:
 Title: {citation.document_title}
 Summary: {citation.summary}
 Key Passage: "{passage_display}"
@@ -625,9 +776,11 @@ Citations in this batch (batch {batch_number} of {total_batches}):
 
 Your task:
 1. Identify 2-4 main themes or findings from these citations
-2. For each theme, note the supporting reference numbers
+2. For each theme, note the supporting reference IDs (use the exact IDs like REF_XXXXXXXX)
 3. Highlight any contradictory or nuanced findings
 4. Note the overall relevance to the research question
+
+IMPORTANT: Use the exact reference IDs provided (e.g., [{ref_id_list[0]}]) - do NOT invent new IDs or use sequential numbers.
 
 Response format (JSON):
 {{
@@ -635,7 +788,7 @@ Response format (JSON):
         {{
             "theme": "Brief theme description",
             "key_finding": "One sentence summarizing the finding",
-            "supporting_refs": [1, 2, 3],
+            "supporting_refs": ["{ref_id_list[0]}", "{ref_id_list[1] if len(ref_id_list) > 1 else ref_id_list[0]}"],
             "evidence_strength": "strong/moderate/limited"
         }}
     ],
@@ -653,10 +806,8 @@ Be concise but comprehensive. Focus on extracting the most important evidence.""
 
             batch_data = self._parse_json_response(llm_response)
             batch_data['batch_number'] = batch_number
-            batch_data['citation_count'] = len(batch_citations)
-            batch_data['reference_numbers'] = [
-                doc_to_ref.get(c.document_id, '?') for c in batch_citations
-            ]
+            batch_data['citation_count'] = len(batch_citation_refs)
+            batch_data['ref_ids'] = ref_id_list  # Store UUID ref_ids instead of numbers
 
             logger.info(
                 f"Batch {batch_number} extracted {len(batch_data.get('themes', []))} themes"
@@ -671,25 +822,29 @@ Be concise but comprehensive. Focus on extracting the most important evidence.""
         self,
         user_question: str,
         batch_summaries: List[Dict[str, Any]],
-        references: List['Reference']
+        citation_refs: List[CitationRef]
     ) -> Optional[str]:
         """
         REDUCE PHASE: Synthesize batch summaries into final report.
 
         Combines the extracted themes from all batches into a coherent,
-        well-structured medical report.
+        well-structured medical report. Uses UUID-based reference identifiers
+        which are converted to sequential numbers in post-processing.
 
         Args:
             user_question: Original research question
             batch_summaries: List of batch summary dictionaries from map phase
-            references: List of Reference objects for citation
+            citation_refs: List of CitationRef objects with UUID identifiers
 
         Returns:
-            Synthesized report content or None if synthesis failed
+            Synthesized report content with UUID references, or None if synthesis failed
         """
         logger.info(
             f"Reduce phase: synthesizing {len(batch_summaries)} batch summaries"
         )
+
+        # Build ref_id to citation mapping for reference list
+        ref_id_to_citation = {cr.ref_id: cr for cr in citation_refs}
 
         # Compile all themes from batches
         all_themes = []
@@ -703,9 +858,10 @@ Be concise but comprehensive. Focus on extracting the most important evidence.""
             all_contradictions.extend(batch.get('contradictions', []))
             total_citations += batch.get('citation_count', 0)
 
-        # Format themes for the synthesis prompt
+        # Format themes for the synthesis prompt (with UUID ref_ids)
         themes_text = []
         for i, theme in enumerate(all_themes, 1):
+            # supporting_refs may be UUID strings or could still be numbers from LLM
             refs = ', '.join(str(r) for r in theme.get('supporting_refs', []))
             themes_text.append(f"""
 Theme {i}: {theme.get('theme', 'Unknown')}
@@ -714,20 +870,21 @@ Theme {i}: {theme.get('theme', 'Unknown')}
 - Strength: {theme.get('evidence_strength', 'unknown')}
 """)
 
-        # Build reference list for LLM context (ensures correct citation numbers)
+        # Build reference list with UUID identifiers for LLM context
         reference_list_text = []
-        seen_refs = set()
-        for ref in references:
-            if ref.number not in seen_refs:
-                seen_refs.add(ref.number)
-                # Format: [1] Author et al. Title (Year)
-                author_str = ref.authors[0] if ref.authors else "Unknown"
-                if len(ref.authors) > 1:
-                    author_str += " et al."
-                year = str(ref.publication_date)[:4] if ref.publication_date else "n.d."
-                reference_list_text.append(
-                    f"[{ref.number}] {author_str}. {ref.title[:80]}{'...' if len(ref.title) > 80 else ''} ({year})"
-                )
+        for citation_ref in citation_refs:
+            citation = citation_ref.citation
+            ref_id = citation_ref.ref_id
+            # Format: [REF_a7b3c2d1] Author et al. Title (Year)
+            authors = citation.authors if hasattr(citation, 'authors') and citation.authors else ["Unknown"]
+            author_str = authors[0] if authors else "Unknown"
+            if len(authors) > 1:
+                author_str += " et al."
+            year = str(citation.publication_date)[:4] if hasattr(citation, 'publication_date') and citation.publication_date else "n.d."
+            title = citation.document_title or "Untitled"
+            reference_list_text.append(
+                f"[{ref_id}] {author_str}. {title[:80]}{'...' if len(title) > 80 else ''} ({year})"
+            )
 
         contradictions_text = ""
         if all_contradictions:
@@ -735,11 +892,11 @@ Theme {i}: {theme.get('theme', 'Unknown')}
                 f"- {c}" for c in all_contradictions if c
             )
 
-        # Build available references section
+        # Build available references section with UUID identifiers
         references_section = ""
         if reference_list_text:
             references_section = f"""
-Available References (use these exact numbers in your citations):
+Available References (use these exact reference IDs in your citations):
 {chr(10).join(reference_list_text)}
 """
 
@@ -759,7 +916,7 @@ Your task is to create a structured, readable report:
 
 2. **Evidence and Discussion (3-4 paragraphs)**:
    - Group related themes into coherent paragraphs
-   - Use reference numbers [X] to cite supporting evidence
+   - Use reference IDs like [REF_XXXXXXXX] to cite supporting evidence
    - Address any contradictions or nuances in the evidence
    - Synthesize findings rather than listing them
 
@@ -771,13 +928,13 @@ Your task is to create a structured, readable report:
 - Use specific years (e.g., "In a 2023 study") NOT vague references ("recently")
 - Ensure smooth transitions between sections
 - Create a cohesive narrative, not a list of findings
-- IMPORTANT: Only use reference numbers from the "Available References" list above
-- Use the exact reference numbers provided (e.g., [1], [5], [12]) - do not invent new numbers
+- IMPORTANT: Only use reference IDs from the "Available References" list above
+- Use the exact reference IDs provided (e.g., [REF_a7b3c2d1]) - do not invent new IDs or use sequential numbers
 
 Response format (JSON):
 {{
     "introduction": "2-3 sentences directly answering the research question",
-    "evidence_discussion": "3-4 well-structured paragraphs with [X] citations",
+    "evidence_discussion": "3-4 well-structured paragraphs with [REF_XXXXXXXX] citations",
     "conclusion": "1-2 sentences summarizing key findings",
     "themes_integrated": ["List of theme topics covered"]
 }}
@@ -805,9 +962,9 @@ Write a professional medical report that synthesizes all evidence."""
             if conclusion:
                 structured_content += f"\n\n## Conclusion\n\n{conclusion}"
 
-            # Validate reference numbers in generated content
-            valid_ref_numbers = {ref.number for ref in references}
-            self._validate_reference_numbers(structured_content, valid_ref_numbers)
+            # Validate UUID reference IDs in generated content
+            valid_ref_ids = {cr.ref_id for cr in citation_refs}
+            self._validate_uuid_references(structured_content, valid_ref_ids)
 
             logger.info(
                 f"Reduce phase complete: integrated {len(report_data.get('themes_integrated', []))} themes"
@@ -829,17 +986,23 @@ Write a professional medical report that synthesizes all evidence."""
 
         This method handles citation sets that would overflow the model's
         context window by:
-        1. Splitting citations into manageable batches
-        2. Extracting key themes from each batch (MAP)
-        3. Synthesizing all themes into a final report (REDUCE)
+        1. Creating UUID-based CitationRef objects for stable tracking
+        2. Splitting citations into manageable batches
+        3. Extracting key themes from each batch (MAP) using UUID refs
+        4. Synthesizing all themes into a final report (REDUCE) using UUID refs
+        5. Converting UUID references to sequential numbers in final output
+
+        The UUID-based approach prevents reference number confusion during
+        batch processing, as each citation maintains a unique identifier
+        throughout the map-reduce process.
 
         Args:
             user_question: Original research question
             citations: List of all citations to synthesize
-            doc_to_ref: Mapping from document IDs to reference numbers
+            doc_to_ref: Mapping from document IDs to reference numbers (kept for compatibility)
 
         Returns:
-            Synthesized report content or None if synthesis failed
+            Synthesized report content with sequential reference numbers, or None if failed
         """
         logger.info(
             f"Starting map-reduce synthesis for {len(citations)} citations"
@@ -850,18 +1013,24 @@ Write a professional medical report that synthesizes all evidence."""
             citations, key=lambda c: c.relevance_score, reverse=True
         )
 
+        # Create CitationRef objects with UUID identifiers for each citation
+        # This provides stable tracking throughout the map-reduce process
+        citation_refs = [CitationRef.from_citation(c) for c in sorted_citations]
+
+        logger.info(f"Created {len(citation_refs)} UUID-based citation references")
+
         # Use instance batch size (from config) or class default
         batch_size = getattr(self, 'map_batch_size', self.MAP_BATCH_SIZE)
 
-        # Split into batches
+        # Split into batches of CitationRef objects
         batches = []
-        for i in range(0, len(sorted_citations), batch_size):
-            batch = sorted_citations[i:i + batch_size]
+        for i in range(0, len(citation_refs), batch_size):
+            batch = citation_refs[i:i + batch_size]
             batches.append(batch)
 
         logger.info(f"Split into {len(batches)} batches of up to {batch_size} citations")
 
-        # MAP PHASE: Process each batch
+        # MAP PHASE: Process each batch using UUID references
         batch_summaries = []
         for batch_num, batch in enumerate(batches, 1):
             self._call_callback(
@@ -871,8 +1040,7 @@ Write a professional medical report that synthesizes all evidence."""
 
             batch_summary = self._map_phase_summarize_batch(
                 user_question=user_question,
-                batch_citations=batch,
-                doc_to_ref=doc_to_ref,
+                batch_citation_refs=batch,
                 batch_number=batch_num,
                 total_batches=len(batches)
             )
@@ -890,34 +1058,30 @@ Write a professional medical report that synthesizes all evidence."""
             f"Map phase complete: {len(batch_summaries)}/{len(batches)} batches successful"
         )
 
-        # REDUCE PHASE: Synthesize batch summaries
+        # REDUCE PHASE: Synthesize batch summaries using UUID references
         self._call_callback("reduce_phase_started", "Synthesizing evidence themes")
 
-        # Create references list for the reduce phase
-        references = []
-        for citation in sorted_citations:
-            ref_num = doc_to_ref.get(citation.document_id)
-            if ref_num:
-                references.append(Reference(
-                    number=ref_num,
-                    authors=citation.authors,
-                    title=citation.document_title,
-                    publication_date=citation.publication_date,
-                    document_id=citation.document_id,
-                    pmid=citation.pmid,
-                    doi=getattr(citation, 'doi', None)
-                ))
-
-        final_content = self._reduce_phase_synthesize(
+        uuid_content = self._reduce_phase_synthesize(
             user_question=user_question,
             batch_summaries=batch_summaries,
-            references=references
+            citation_refs=citation_refs
         )
 
-        if final_content:
-            logger.info("Map-reduce synthesis completed successfully")
-        else:
+        if not uuid_content:
             logger.error("Reduce phase failed")
+            return None
+
+        # POST-PROCESSING: Convert UUID references to sequential numbers
+        self._call_callback("post_processing", "Converting references to sequential numbers")
+
+        final_content, ref_id_to_number = self._convert_uuid_refs_to_sequential(
+            uuid_content, citation_refs
+        )
+
+        logger.info(
+            f"Map-reduce synthesis completed successfully with "
+            f"{len(ref_id_to_number)} references"
+        )
 
         return final_content
 
