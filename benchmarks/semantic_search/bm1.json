@@ -1,0 +1,126 @@
+{ "doi": "10.1002/npr2.12528",
+ "PMID" : 39871536,
+ "QA" : [
+  {
+    "question": "What medication was evaluated for cognitive effects in this study?",
+    "answer": "Metformin"
+  },
+  {
+    "question": "What form of the medication was used in the trial?",
+    "answer": "Immediate-release"
+  },
+  {
+    "question": "What was the control condition in the study?",
+    "answer": "Placebo"
+  },
+  {
+    "question": "Which cognitive domain showed improvement with metformin?",
+    "answer": "Learning"
+  },
+  {
+    "question": "Which cognitive subtest improved significantly in the metformin group?",
+    "answer": "Hopkins"
+  },
+  {
+    "question": "Which racial group represented the largest proportion of participants?",
+    "answer": "White"
+  },
+  {
+    "question": "Which sex made up the majority of participants?",
+    "answer": "Male"
+  },
+  {
+    "question": "Which metabolic hormone showed reduced levels with metformin?",
+    "answer": "Insulin"
+  },
+  {
+    "question": "Which long-term glycemic biomarker decreased with metformin?",
+    "answer": "Hemoglobin"
+  },
+  {
+    "question": "Which vascular risk factor showed improvement with metformin?",
+    "answer": "Cholesterol"
+  },
+  {
+    "question": "What was the most common psychiatric diagnosis among participants?",
+    "answer": "Schizophrenia"
+  },
+  {
+    "question": "Which antipsychotic class participants were required to be stable on?",
+    "answer": "Second-generation"
+  },
+  {
+    "question": "Which psychiatric symptom subscale was measured using the PANSS?",
+    "answer": "Negative"
+  },
+  {
+    "question": "Which neuropsychological composite was derived from the MCCB?",
+    "answer": "Cognition"
+  },
+  {
+    "question": "Which subgroup showed larger cognitive benefits from metformin?",
+    "answer": "Obese"
+  },
+  {
+    "question": "Which symptom domain correlated with functional improvement?",
+    "answer": "Cognition"
+  },
+  {
+    "question": "What was the most common ethnicity reported?",
+    "answer": "Hispanic"
+  },
+  {
+    "question": "Which cardiovascular risk factor was defined using BMI criteria?",
+    "answer": "Obesity"
+  },
+  {
+    "question": "Which metabolic syndrome feature was reduced by metformin?",
+    "answer": "Triglycerides"
+  },
+  {
+    "question": "Which biomarker category was analyzed using fasting samples?",
+    "answer": "Glucose"
+  },
+  {
+    "question": "What was the general design of the clinical trial?",
+    "answer": "Randomized"
+  },
+  {
+    "question": "Which assessment method was used for verbal learning performance?",
+    "answer": "Hopkins"
+  },
+  {
+    "question": "Which functional measure was used to assess adaptive outcome?",
+    "answer": "UPSA"
+  },
+  {
+    "question": "Which blood parameter decreased significantly at week 24?",
+    "answer": "Insulin"
+  },
+  {
+    "question": "Which lipid fraction was lower in the metformin group at baseline?",
+    "answer": "HDL"
+  },
+  {
+    "question": "Which biological fluid was used for metabolic profiling?",
+    "answer": "Plasma"
+  },
+  {
+    "question": "Which symptom cluster did not differ between groups at baseline?",
+    "answer": "Depression"
+  },
+  {
+    "question": "Which broad cognitive domain did not improve with treatment?",
+    "answer": "Processing"
+  },
+  {
+    "question": "Which subscale showed no between-group differences after treatment?",
+    "answer": "PANSS"
+  },
+  {
+    "question": "Which biological system was hypothesized to mediate cognitive benefits?",
+    "answer": "Metabolic"
+  }
+]
+}
+

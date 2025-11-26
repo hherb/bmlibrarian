@@ -1,0 +1,205 @@
+{ "doi": "10.1016/j.isci.2022.104869",
+ "PMID": 36034224,
+ "QA" : [
+  {
+    "question": "What percentage of body weight is the soleus muscle?",
+    "answer": "1.34"
+  },
+  {
+    "question": "What percentage of the triceps surae muscle group is composed of soleus?",
+    "answer": "67"
+  },
+  {
+    "question": "How many minutes of SPU contractions were performed in Experiment I?",
+    "answer": "270"
+  },
+  {
+    "question": "What percentage of activity energy expenditure came from soleus glycogen?",
+    "answer": "4"
+  },
+  {
+    "question": "How many total muscle biopsies were obtained in Experiment I?",
+    "answer": "60"
+  },
+  {
+    "question": "What was the soleus glycogen depletion rate in mmol/kg/min?",
+    "answer": "0.080"
+  },
+  {
+    "question": "What percentage of muscle fibers in soleus are type I slow-twitch?",
+    "answer": "88"
+  },
+  {
+    "question": "How many other human muscles have been fiber typed besides soleus?",
+    "answer": "36"
+  },
+  {
+    "question": "What was the MET level during SPU1 contractions?",
+    "answer": "1.31"
+  },
+  {
+    "question": "What was the MET level during SPU2 contractions?",
+    "answer": "1.69"
+  },
+  {
+    "question": "What was the percentage increase in whole-body energy expenditure during SPU?",
+    "answer": "124"
+  },
+  {
+    "question": "What was the estimated soleus VO2 in mL/min/kg during SPU contractions?",
+    "answer": "237"
+  },
+  {
+    "question": "What percentage of postprandial glucose oxidation does muscle account for at rest?",
+    "answer": "15"
+  },
+  {
+    "question": "What is the resting VO2 of inactive muscle in mL/min/kg?",
+    "answer": "2"
+  },
+  {
+    "question": "What was the combined mass of both soleus muscles in kg?",
+    "answer": "1.07"
+  },
+  {
+    "question": "What was Cohen's d effect size for glucose reduction with SPU2?",
+    "answer": "4.9"
+  },
+  {
+    "question": "How many grams of carbohydrate were oxidized during sedentary control?",
+    "answer": "24.2"
+  },
+  {
+    "question": "How many grams of carbohydrate were oxidized during SPU2?",
+    "answer": "70.6"
+  },
+  {
+    "question": "What was the total lower limb muscle mass in kg?",
+    "answer": "14.8"
+  },
+  {
+    "question": "What was the lateral gastrocnemius mass in kg?",
+    "answer": "0.169"
+  },
+  {
+    "question": "What was the medial gastrocnemius mass in kg?",
+    "answer": "0.350"
+  },
+  {
+    "question": "What percentage of recruited mass was soleus during SPU contractions?",
+    "answer": "80"
+  },
+  {
+    "question": "What was the average heart rate during SPU2 in beats per minute?",
+    "answer": "89"
+  },
+  {
+    "question": "What was the RER during SPU contractions?",
+    "answer": "0.80"
+  },
+  {
+    "question": "What percentage reduction in C-peptide occurred with SPU1?",
+    "answer": "30"
+  },
+  {
+    "question": "What percentage reduction in C-peptide occurred with SPU2?",
+    "answer": "44"
+  },
+  {
+    "question": "What was the average sitting time per day in hours?",
+    "answer": "10.7"
+  },
+  {
+    "question": "What percentage of Americans over 65 have prediabetes or diabetes?",
+    "answer": "80"
+  },
+  {
+    "question": "How many grams of glucose were in the OGTT load?",
+    "answer": "75"
+  },
+  {
+    "question": "What was the maximum age of participants in Experiment II?",
+    "answer": "82"
+  },
+  {
+    "question": "What was the minimum age of participants in Experiment II?",
+    "answer": "22"
+  },
+  {
+    "question": "How many blood samples were taken during each OGTT?",
+    "answer": "13"
+  },
+  {
+    "question": "What percentage of oxygen consumption during exercise comes from lower limbs?",
+    "answer": "75"
+  },
+  {
+    "question": "What percentage of leg lean mass is skeletal muscle?",
+    "answer": "90"
+  },
+  {
+    "question": "How much did glucose decrease at 60 minutes with SPU1 in mg/dL?",
+    "answer": "33"
+  },
+  {
+    "question": "What percentage reduction in insulin occurred with SPU1?",
+    "answer": "41"
+  },
+  {
+    "question": "What percentage reduction in insulin occurred with SPU2?",
+    "answer": "60"
+  },
+  {
+    "question": "How many participants completed both SPU1 and SPU2 in Experiment II?",
+    "answer": "10"
+  },
+  {
+    "question": "What was the total energy expenditure increase in kcal per hour with SPU1?",
+    "answer": "36"
+  },
+  {
+    "question": "What was the total energy expenditure increase in kcal per hour with SPU2?",
+    "answer": "67"
+  },
+  {
+    "question": "What was the fold increase in carbohydrate oxidation with SPU1?",
+    "answer": "2.1"
+  },
+  {
+    "question": "What was the fold increase in carbohydrate oxidation with SPU2?",
+    "answer": "2.9"
+  },
+  {
+    "question": "How many participants were in Experiment I?",
+    "answer": "10"
+  },
+  {
+    "question": "How many participants were in Experiment II?",
+    "answer": "15"
+  },
+  {
+    "question": "What was the range of sitting time observed in hours per day?",
+    "answer": "6-14"
+  },
+  {
+    "question": "What was the maximum HbA1c level allowed?",
+    "answer": "6.4"
+  },
+  {
+    "question": "What was the upper limit of fasting glucose for inclusion in mg/dL?",
+    "answer": "125"
+  },
+  {
+    "question": "How long was the OGTT in minutes?",
+    "answer": "180"
+  },
+  {
+    "question": "What was Cohen's d effect size for insulin reduction with SPU1?",
+    "answer": "3.8"
+  },
+  {
+    "question": "What percentage reduction in postprandial glucose occurred with SPU2?",
+    "answer": "52"
+  }
+]
+}

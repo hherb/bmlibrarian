@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "benchmark_file": "/Users/hherb/src/bmlibrarian/benchmarks/semantic_search/bm2.json",
+    "doi": "10.1016/j.isci.2022.104869",
+    "pmid": 36034224,
+    "document_id": 62843873,
+    "document_title": "A potent physiological method to magnify and sustain soleus oxidative metabolism improves glucose and lipid regulation.",
+    "qa_model": "gpt-oss:20b",
+    "qa_temperature": 0.1,
+    "embedding_model": "snowflake-arctic-embed2:latest",
+    "chunk_size": 1000,
+    "chunk_overlap": 100,
+    "initial_threshold": 0.5,
+    "adaptive_search_enabled": true,
+    "run_timestamp": "2025-11-26T08:21:33.381420",
+    "total_questions": 50,
+    "unique_questions": 5,
+    "search_mode": "semantic"
+  },
+  "results": [
+    {
+      "question": "What percentage of body weight is the soleus muscle?",
+      "expected": "1.34",
+      "got": "1.34%",
+      "correct": true,
+      "similarity_score": 1.0,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 10.29246735572815,
+      "error": null
+    },
+    {
+      "question": "What percentage of the triceps surae muscle group is composed of soleus?",
+      "expected": "67",
+      "got": "67%",
+      "correct": true,
+      "similarity_score": 1.0,
+      "chunks_used": 2,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 2.3464300632476807,
+      "error": null
+    },
+    {
+      "question": "How many minutes of SPU contractions were performed in Experiment I?",
+      "expected": "270",
+      "got": "270",
+      "correct": true,
+      "similarity_score": 1.0,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 6.065082788467407,
+      "error": null
+    },
+    {
+      "question": "What percentage of activity energy expenditure came from soleus glycogen?",
+      "expected": "4",
+      "got": "4.1",
+      "correct": true,
+      "similarity_score": 0.9,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 5.307269811630249,
+      "error": null
+    },
+    {
+      "question": "How many total muscle biopsies were obtained in Experiment I?",
+      "expected": "60",
+      "got": "60",
+      "correct": true,
+      "similarity_score": 1.0,
+      "chunks_used": 5,
+      "threshold_used": 0.4,
+      "iterations": 2,
+      "queries_tried": 1,
+      "processing_time_seconds": 14.320047855377197,
+      "error": null
+    }
+  ],
+  "statistics": {
+    "total_questions": 5,
+    "correct": 5,
+    "incorrect": 0,
+    "accuracy": 1.0,
+    "accuracy_percent": "100.0%",
+    "total_time_seconds": 38.331297874450684,
+    "avg_time_per_question": 7.6662595748901365,
+    "questions_with_errors": 0
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "metadata": {
+    "benchmark_file": "benchmarks/semantic_search/bm1.json",
+    "doi": "10.1002/npr2.12528",
+    "pmid": 39871536,
+    "document_id": 67046995,
+    "document_title": "Metformin and Cognitive Performance in Patients With Type 2 Diabetes: An Umbrella Review.",
+    "qa_model": "gpt-oss:20b",
+    "qa_temperature": 0.1,
+    "embedding_model": "snowflake-arctic-embed2:latest",
+    "chunk_size": 1000,
+    "chunk_overlap": 100,
+    "initial_threshold": 0.5,
+    "adaptive_search_enabled": true,
+    "run_timestamp": "2025-11-25T23:16:49.072403",
+    "total_questions": 30,
+    "unique_questions": 5
+  },
+  "results": [
+    {
+      "question": "What medication was evaluated for cognitive effects in this study?",
+      "expected": "Metformin",
+      "got": "Metformin",
+      "correct": true,
+      "similarity_score": 1.0,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 5.090354919433594,
+      "error": null
+    },
+    {
+      "question": "What form of the medication was used in the trial?",
+      "expected": "Immediate-release",
+      "got": "Metformin 1000\u202fmg (oral)",
+      "correct": false,
+      "similarity_score": 0.0,
+      "chunks_used": 5,
+      "threshold_used": 0.30000000000000004,
+      "iterations": 3,
+      "queries_tried": 1,
+      "processing_time_seconds": 5.52459716796875,
+      "error": null
+    },
+    {
+      "question": "What was the control condition in the study?",
+      "expected": "Placebo",
+      "got": "other patients with diabetes",
+      "correct": false,
+      "similarity_score": 0.0,
+      "chunks_used": 5,
+      "threshold_used": 0.30000000000000004,
+      "iterations": 3,
+      "queries_tried": 1,
+      "processing_time_seconds": 21.549007177352905,
+      "error": null
+    },
+    {
+      "question": "Which cognitive domain showed improvement with metformin?",
+      "expected": "Learning",
+      "got": "Executive functioning",
+      "correct": false,
+      "similarity_score": 0.0,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 4.107126951217651,
+      "error": null
+    },
+    {
+      "question": "Which cognitive subtest improved significantly in the metformin group?",
+      "expected": "Hopkins",
+      "got": "Selective Reminding Test (SRT)",
+      "correct": false,
+      "similarity_score": 0.0,
+      "chunks_used": 5,
+      "threshold_used": 0.5,
+      "iterations": 1,
+      "queries_tried": 1,
+      "processing_time_seconds": 3.479443073272705,
+      "error": null
+    }
+  ],
+  "statistics": {
+    "total_questions": 5,
+    "correct": 1,
+    "incorrect": 4,
+    "accuracy": 0.2,
+    "accuracy_percent": "20.0%",
+    "total_time_seconds": 39.750529289245605,
+    "avg_time_per_question": 7.950105857849121,
+    "questions_with_errors": 0
+  }
+}

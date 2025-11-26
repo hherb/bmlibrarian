@@ -43,7 +43,12 @@ from .data_types import (
     ProxyCallback,
 )
 from ..utils.url_validation import get_validated_openathens_url
-from ..agents.semantic_query_agent import SemanticQueryAgent, SemanticSearchResult
+from ..agents.semantic_query_agent import (
+    SemanticQueryAgent,
+    SemanticSearchResult,
+    SearchMode,
+    DEFAULT_SEMANTIC_WEIGHT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -721,6 +726,8 @@ def answer_from_document(
     temperature: float = DEFAULT_TEMPERATURE,
     ollama_host: Optional[str] = None,
     use_adaptive_search: bool = True,
+    search_mode: str = "expanded",
+    semantic_weight: float = DEFAULT_SEMANTIC_WEIGHT,
 ) -> SemanticSearchAnswer:
     """
     Answer a question about a specific document using semantic search and LLM.
@@ -765,6 +772,13 @@ def answer_from_document(
             - Raises threshold if too many results
             - Rephrases query up to 3 times if needed
             If False, uses a single fixed-threshold search.
+        search_mode: Search mode to use when use_adaptive_search=True:
+            - "expanded" (default): Hybrid search with query expansion - best accuracy
+            - "hybrid": Semantic + keyword search with RRF fusion
+            - "semantic": Pure semantic similarity search (baseline)
+        semantic_weight: Weight for semantic vs keyword in hybrid modes (0.0-1.0).
+            Higher values favor semantic similarity, lower favor keyword matching.
+            Default 0.6.
 
     Returns:
         SemanticSearchAnswer with the answer and metadata.
@@ -990,17 +1004,48 @@ def answer_from_document(
                 # Perform full-text semantic search
                 if use_adaptive_search:
                     # Use SemanticQueryAgent for adaptive threshold and query rephrasing
+                    # Determine search mode
+                    if search_mode == "expanded":
+                        agent_search_mode = SearchMode.HYBRID
+                        use_expansion = True
+                    elif search_mode == "hybrid":
+                        agent_search_mode = SearchMode.HYBRID
+                        use_expansion = False
+                    else:  # "semantic"
+                        agent_search_mode = SearchMode.SEMANTIC
+                        use_expansion = False
+
                     agent = SemanticQueryAgent(
                         initial_threshold=similarity_threshold,
+                        default_search_mode=agent_search_mode,
+                        semantic_weight=semantic_weight,
                     )
-                    search_result: SemanticSearchResult = agent.search_document(
-                        document_id=document_id,
-                        query=question,
-                        min_results=1,
-                        max_results=max_chunks,
-                        use_fulltext=True,
-                        db_manager=db_manager,
-                    )
+
+                    if use_expansion:
+                        # Use expanded hybrid search (best accuracy)
+                        search_result: SemanticSearchResult = agent.search_with_expansion(
+                            document_id=document_id,
+                            query=question,
+                            min_results=1,
+                            max_results=max_chunks,
+                            use_fulltext=True,
+                            db_manager=db_manager,
+                            search_mode=agent_search_mode,
+                            semantic_weight=semantic_weight,
+                        )
+                    else:
+                        # Use standard search (semantic or hybrid without expansion)
+                        search_result: SemanticSearchResult = agent.search_document(
+                            document_id=document_id,
+                            query=question,
+                            min_results=1,
+                            max_results=max_chunks,
+                            use_fulltext=True,
+                            db_manager=db_manager,
+                            search_mode=agent_search_mode,
+                            semantic_weight=semantic_weight,
+                        )
+
                     if search_result.success and search_result.chunks:
                         chunks = [
                             ChunkContext(
@@ -1011,11 +1056,23 @@ def answer_from_document(
                             )
                             for c in search_result.chunks
                         ]
+                        # Include hybrid stats if available
+                        hybrid_info = ""
+                        if search_result.search_mode == SearchMode.HYBRID:
+                            stats = search_result.hybrid_stats
+                            if stats:
+                                hybrid_info = (
+                                    f", hybrid_stats={{semantic:{stats.get('semantic_only', 0)}, "
+                                    f"keyword:{stats.get('keyword_only', 0)}, "
+                                    f"both:{stats.get('both', 0)}}}"
+                                )
                         logger.info(
                             f"[AdaptiveSearch] Found {len(chunks)} chunks after "
                             f"{search_result.iterations} iterations, "
                             f"threshold={search_result.threshold_used:.2f}, "
+                            f"mode={search_result.search_mode.value}, "
                             f"queries tried: {len(search_result.queries_tried)}"
+                            f"{hybrid_info}"
                         )
                     else:
                         logger.warning(
