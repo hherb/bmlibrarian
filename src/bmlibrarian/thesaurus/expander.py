@@ -45,7 +45,6 @@ class ThesaurusExpander:
 
     def __init__(
         self,
-        connection_string: Optional[str] = None,
         min_term_length: int = 2,
         max_expansions_per_term: int = 10,
         include_broader_terms: bool = False,
@@ -55,13 +54,11 @@ class ThesaurusExpander:
         Initialize the ThesaurusExpander.
 
         Args:
-            connection_string: PostgreSQL connection string (if None, uses DatabaseManager)
             min_term_length: Minimum term length to consider for expansion (default: 2)
             max_expansions_per_term: Maximum number of expansions per term (default: 10)
             include_broader_terms: Whether to include broader hierarchical terms (default: False)
             include_narrower_terms: Whether to include narrower hierarchical terms (default: False)
         """
-        self.connection_string = connection_string
         self.min_term_length = min_term_length
         self.max_expansions_per_term = max_expansions_per_term
         self.include_broader_terms = include_broader_terms
@@ -72,7 +69,7 @@ class ThesaurusExpander:
 
     def _get_connection(self) -> psycopg.Connection:
         """
-        Get a database connection.
+        Get a database connection using DatabaseManager.
 
         Returns:
             psycopg.Connection instance
@@ -80,19 +77,13 @@ class ThesaurusExpander:
         Raises:
             RuntimeError: If connection cannot be established
         """
-        if self.connection_string:
-            try:
-                return psycopg.connect(self.connection_string, row_factory=dict_row)
-            except Exception as e:
-                raise RuntimeError(f"Failed to connect to database: {e}")
-        else:
-            # Use DatabaseManager from bmlibrarian
-            try:
-                from ..database import DatabaseManager
-                db = DatabaseManager()
-                return db.get_connection()
-            except Exception as e:
-                raise RuntimeError(f"Failed to get database connection: {e}")
+        # Always use DatabaseManager (golden rule #5)
+        try:
+            from ..database import DatabaseManager
+            db = DatabaseManager()
+            return db.get_connection()
+        except Exception as e:
+            raise RuntimeError(f"Failed to get database connection: {e}")
 
     def expand_term(self, term: str, use_cache: bool = True) -> TermExpansion:
         """
@@ -350,7 +341,6 @@ class ThesaurusExpander:
 
 def expand_query_terms(
     ts_query: str,
-    connection_string: Optional[str] = None,
     max_expansions_per_term: int = 10
 ) -> str:
     """
@@ -358,7 +348,6 @@ def expand_query_terms(
 
     Args:
         ts_query: Original to_tsquery string
-        connection_string: Optional database connection string
         max_expansions_per_term: Maximum expansions per term (default: 10)
 
     Returns:
@@ -369,7 +358,6 @@ def expand_query_terms(
         "(aspirin | ASA | acetylsalicylic acid) & (heart attack | myocardial infarction | MI)"
     """
     expander = ThesaurusExpander(
-        connection_string=connection_string,
         max_expansions_per_term=max_expansions_per_term
     )
     return expander.expand_query(ts_query)
