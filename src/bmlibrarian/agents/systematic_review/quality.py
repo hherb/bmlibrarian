@@ -29,6 +29,7 @@ from .config import (
     get_systematic_review_config,
     DEFAULT_BATCH_SIZE,
 )
+from .cache_manager import ResultsCacheManager
 
 if TYPE_CHECKING:
     from ..study_assessment_agent import StudyAssessmentAgent
@@ -134,11 +135,24 @@ class QualityAssessor:
         # Load config
         self._config = config or get_systematic_review_config()
 
+        # Initialize cache manager (lazy-loaded if cache is enabled)
+        self._cache_manager: Optional[ResultsCacheManager] = None
+        if self._config.use_results_cache:
+            try:
+                self._cache_manager = ResultsCacheManager()
+                logger.info("Results cache manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize cache manager: {e}. Proceeding without cache.")
+                self._cache_manager = None
+
         # Lazy-loaded agents
         self._study_agent: Optional["StudyAssessmentAgent"] = None
         self._weight_agent: Optional["PaperWeightAssessmentAgent"] = None
         self._pico_agent: Optional["PICOAgent"] = None
         self._prisma_agent: Optional["PRISMA2020Agent"] = None
+
+        # Track version IDs for caching
+        self._version_ids: Dict[str, int] = {}
 
         logger.info("QualityAssessor initialized")
 
@@ -149,6 +163,58 @@ class QualityAssessor:
                 self.callback(event, data)
             except Exception as e:
                 logger.warning(f"Callback error: {e}")
+
+    # =========================================================================
+    # Cache Management
+    # =========================================================================
+
+    def _get_version_id(self, assessment_type: str, agent_name: str) -> Optional[int]:
+        """
+        Get or register version ID for an assessment type.
+
+        Args:
+            assessment_type: Type of assessment ('study_assessment', 'pico', 'prisma', 'paper_weight')
+            agent_name: Name of the agent (for getting config)
+
+        Returns:
+            Version ID for caching, or None if cache is disabled
+        """
+        if not self._cache_manager or self._config.force_recompute:
+            return None
+
+        # Check if already cached
+        cache_key = f"{assessment_type}:{agent_name}"
+        if cache_key in self._version_ids:
+            return self._version_ids[cache_key]
+
+        # Get agent configuration
+        from ...config import get_model, get_agent_config
+
+        try:
+            model = get_model(agent_name)
+            agent_config = get_agent_config(agent_name)
+
+            # Build parameters dict for versioning
+            parameters = {
+                "temperature": agent_config.get("temperature", 0.1),
+                "top_p": agent_config.get("top_p", 0.9),
+            }
+
+            # Register version
+            version_id = self._cache_manager.register_version(
+                assessment_type=assessment_type,
+                model_name=model,
+                agent_version="1.0.0",  # TODO: Get from agent class
+                parameters=parameters
+            )
+
+            # Cache it
+            self._version_ids[cache_key] = version_id
+            return version_id
+
+        except Exception as e:
+            logger.warning(f"Failed to register version for {assessment_type}: {e}")
+            return None
 
     # =========================================================================
     # Agent Initialization (Lazy Loading)
@@ -347,7 +413,8 @@ class QualityAssessor:
         """
         Assess a single paper.
 
-        Runs all applicable quality assessments based on LLM-determined study suitability.
+        Runs all applicable quality assessments based on LLM-determined study suitability
+        and configuration flags. Uses cached results when available unless force_recompute is set.
 
         Args:
             paper: Scored paper to assess
@@ -363,41 +430,55 @@ class QualityAssessor:
         # Prepare document dict for agents
         document = self._paper_to_document(paper.paper)
 
-        # 1. Study Assessment (always run)
-        study_assessment = self._run_study_assessment(document)
+        # 1. Study Assessment (conditional based on config flag)
+        study_assessment = None
+        if self._config.run_study_assessment:
+            study_assessment = self._run_study_assessment(document)
+        else:
+            logger.debug(f"Skipping study assessment for document {document['id']} (disabled in config)")
 
-        # 2. Paper Weight Assessment (always run)
-        paper_weight = self._run_paper_weight_assessment(document)
+        # 2. Paper Weight Assessment (conditional based on config flag)
+        paper_weight = None
+        if self._config.run_paper_weight:
+            paper_weight = self._run_paper_weight_assessment(document)
+        else:
+            logger.debug(f"Skipping paper weight assessment for document {document['id']} (disabled in config)")
 
-        # 3. PICO extraction (conditional - use LLM-based suitability check)
+        # 3. PICO extraction (conditional - config flag + LLM-based suitability check)
         pico_components = None
-        pico_suitability = self._check_pico_suitability(document)
-        if pico_suitability and pico_suitability.get("is_suitable", False):
-            logger.info(
-                f"Document {document['id']} suitable for PICO: "
-                f"{pico_suitability.get('rationale', 'N/A')}"
-            )
-            pico_components = self._run_pico_extraction(document)
-        elif pico_suitability:
-            logger.info(
-                f"Document {document['id']} NOT suitable for PICO: "
-                f"{pico_suitability.get('rationale', 'N/A')}"
-            )
+        if self._config.run_pico_extraction:
+            pico_suitability = self._check_pico_suitability(document)
+            if pico_suitability and pico_suitability.get("is_suitable", False):
+                logger.info(
+                    f"Document {document['id']} suitable for PICO: "
+                    f"{pico_suitability.get('rationale', 'N/A')}"
+                )
+                pico_components = self._run_pico_extraction(document)
+            elif pico_suitability:
+                logger.info(
+                    f"Document {document['id']} NOT suitable for PICO: "
+                    f"{pico_suitability.get('rationale', 'N/A')}"
+                )
+        else:
+            logger.debug(f"Skipping PICO extraction for document {document['id']} (disabled in config)")
 
-        # 4. PRISMA assessment (conditional - use LLM-based suitability check)
+        # 4. PRISMA assessment (conditional - config flag + LLM-based suitability check)
         prisma_assessment = None
-        prisma_suitability = self._check_prisma_suitability(document)
-        if prisma_suitability and prisma_suitability.get("is_suitable", False):
-            logger.info(
-                f"Document {document['id']} suitable for PRISMA: "
-                f"{prisma_suitability.get('rationale', 'N/A')}"
-            )
-            prisma_assessment = self._run_prisma_assessment(document)
-        elif prisma_suitability:
-            logger.info(
-                f"Document {document['id']} NOT suitable for PRISMA: "
-                f"{prisma_suitability.get('rationale', 'N/A')}"
-            )
+        if self._config.run_prisma_assessment:
+            prisma_suitability = self._check_prisma_suitability(document)
+            if prisma_suitability and prisma_suitability.get("is_suitable", False):
+                logger.info(
+                    f"Document {document['id']} suitable for PRISMA: "
+                    f"{prisma_suitability.get('rationale', 'N/A')}"
+                )
+                prisma_assessment = self._run_prisma_assessment(document)
+            elif prisma_suitability:
+                logger.info(
+                    f"Document {document['id']} NOT suitable for PRISMA: "
+                    f"{prisma_suitability.get('rationale', 'N/A')}"
+                )
+        else:
+            logger.debug(f"Skipping PRISMA assessment for document {document['id']} (disabled in config)")
 
         return AssessedPaper(
             scored_paper=paper,
@@ -413,7 +494,7 @@ class QualityAssessor:
 
     def _run_study_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run study quality assessment.
+        Run study quality assessment with caching support.
 
         Args:
             document: Document dictionary
@@ -425,7 +506,19 @@ class QualityAssessor:
             No text truncation is performed as per Golden Rule #14.
             Truncation causes information loss which is unacceptable in medical domain.
         """
+        document_id = document["id"]
+
+        # Check cache first (unless force_recompute is set)
+        version_id = self._get_version_id("study_assessment", "study_assessment")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_study_assessment(document_id, version_id)
+            if cached_result:
+                logger.info(f"Using cached study assessment for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run assessment
         try:
+            start_time = time.time()
             agent = self._get_study_agent()
 
             # Use full text without truncation (Golden Rule #14)
@@ -434,15 +527,24 @@ class QualityAssessor:
             result = agent.assess_study(
                 abstract=text,
                 title=document.get("title", ""),
-                document_id=str(document["id"]),
+                document_id=str(document_id),
                 pmid=document.get("pmid"),
                 doi=document.get("doi"),
             )
 
-            return result.to_dict()
+            result_dict = result.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in cache
+            if version_id and self._cache_manager:
+                self._cache_manager.store_study_assessment(
+                    document_id, version_id, result_dict, execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"Study assessment failed for {document['id']}: {e}")
+            logger.error(f"Study assessment failed for {document_id}: {e}")
             # Return minimal assessment on error
             return {
                 "study_type": "unknown",
@@ -453,7 +555,7 @@ class QualityAssessor:
                 "overall_confidence": 0.0,
                 "confidence_explanation": "Assessment failed",
                 "evidence_level": "unknown",
-                "document_id": str(document["id"]),
+                "document_id": str(document_id),
                 "document_title": document.get("title", ""),
             }
 
@@ -489,7 +591,7 @@ class QualityAssessor:
 
     def _run_pico_extraction(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Run PICO component extraction.
+        Run PICO component extraction with caching support.
 
         Args:
             document: Document dictionary
@@ -502,7 +604,19 @@ class QualityAssessor:
             Truncation causes information loss which is unacceptable in medical domain.
             The PICOAgent will handle large texts appropriately.
         """
+        document_id = document["id"]
+
+        # Check cache first (unless force_recompute is set)
+        version_id = self._get_version_id("pico", "pico")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_pico_extraction(document_id, version_id)
+            if cached_result:
+                logger.info(f"Using cached PICO extraction for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run extraction
         try:
+            start_time = time.time()
             agent = self._get_pico_agent()
 
             # Use the extract_pico_from_document method which expects a full document dict
@@ -514,10 +628,19 @@ class QualityAssessor:
             if result is None:
                 return None
 
-            return result.to_dict()
+            result_dict = result.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in cache
+            if version_id and self._cache_manager:
+                self._cache_manager.store_pico_extraction(
+                    document_id, version_id, result_dict, execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"PICO extraction failed for {document['id']}: {e}")
+            logger.error(f"PICO extraction failed for {document_id}: {e}")
             return None
 
     def _run_prisma_assessment(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:

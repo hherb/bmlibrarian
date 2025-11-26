@@ -123,10 +123,15 @@ class SystematicReviewConfig:
     )
     study_type_filter: Optional[List[str]] = None
 
-    # Feature flags
-    use_pico_extraction: bool = True
-    use_prisma_assessment: bool = True
-    use_paper_weight_assessment: bool = True
+    # Feature flags (partial assessment support)
+    run_study_assessment: bool = True
+    run_paper_weight: bool = True
+    run_pico_extraction: bool = True
+    run_prisma_assessment: bool = True
+
+    # Cache settings
+    use_results_cache: bool = True
+    force_recompute: bool = False  # Bypass cache and recompute assessments
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -152,9 +157,12 @@ class SystematicReviewConfig:
             "checkpoint_dir": self.checkpoint_dir,
             "search_strategies": self.search_strategies,
             "study_type_filter": self.study_type_filter,
-            "use_pico_extraction": self.use_pico_extraction,
-            "use_prisma_assessment": self.use_prisma_assessment,
-            "use_paper_weight_assessment": self.use_paper_weight_assessment,
+            "run_study_assessment": self.run_study_assessment,
+            "run_paper_weight": self.run_paper_weight,
+            "run_pico_extraction": self.run_pico_extraction,
+            "run_prisma_assessment": self.run_prisma_assessment,
+            "use_results_cache": self.use_results_cache,
+            "force_recompute": self.force_recompute,
         }
 
     @classmethod
@@ -192,9 +200,12 @@ class SystematicReviewConfig:
             checkpoint_dir=data.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR),
             search_strategies=data.get("search_strategies", ["semantic", "keyword"]),
             study_type_filter=data.get("study_type_filter"),
-            use_pico_extraction=data.get("use_pico_extraction", True),
-            use_prisma_assessment=data.get("use_prisma_assessment", True),
-            use_paper_weight_assessment=data.get("use_paper_weight_assessment", True),
+            run_study_assessment=data.get("run_study_assessment", True),
+            run_paper_weight=data.get("run_paper_weight", True),
+            run_pico_extraction=data.get("run_pico_extraction", True),
+            run_prisma_assessment=data.get("run_prisma_assessment", True),
+            use_results_cache=data.get("use_results_cache", True),
+            force_recompute=data.get("force_recompute", False),
         )
 
     @classmethod
@@ -273,12 +284,12 @@ class SystematicReviewConfig:
                     ["semantic", "keyword"]
                 ),
                 study_type_filter=agent_config.get("study_type_filter"),
-                use_pico_extraction=agent_config.get("use_pico_extraction", True),
-                use_prisma_assessment=agent_config.get("use_prisma_assessment", True),
-                use_paper_weight_assessment=agent_config.get(
-                    "use_paper_weight_assessment",
-                    True
-                ),
+                run_study_assessment=agent_config.get("run_study_assessment", True),
+                run_paper_weight=agent_config.get("run_paper_weight", True),
+                run_pico_extraction=agent_config.get("run_pico_extraction", True),
+                run_prisma_assessment=agent_config.get("run_prisma_assessment", True),
+                use_results_cache=agent_config.get("use_results_cache", True),
+                force_recompute=agent_config.get("force_recompute", False),
             )
 
         except Exception as e:
@@ -380,9 +391,12 @@ DEFAULT_SYSTEMATIC_REVIEW_CONFIG: Dict[str, Any] = {
     "checkpoint_dir": DEFAULT_CHECKPOINT_DIR,
     "search_strategies": ["semantic", "keyword"],
     "study_type_filter": None,
-    "use_pico_extraction": True,
-    "use_prisma_assessment": True,
-    "use_paper_weight_assessment": True,
+    "run_study_assessment": True,
+    "run_paper_weight": True,
+    "run_pico_extraction": True,
+    "run_prisma_assessment": True,
+    "use_results_cache": True,
+    "force_recompute": False,
     "scoring_weights": {
         "relevance": 0.30,
         "study_quality": 0.25,
