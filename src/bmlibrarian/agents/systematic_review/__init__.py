@@ -191,6 +191,8 @@ from .filters import (
     BatchFilterResult,
     STUDY_TYPE_KEYWORDS,
     DEFAULT_EXCLUSION_KEYWORDS,
+    DEFINITIVE_TITLE_PATTERNS,
+    NEGATIVE_CONTEXT_PATTERNS,
 )
 
 from .scorer import (
@@ -283,6 +285,8 @@ __all__ = [
     "BatchFilterResult",
     "STUDY_TYPE_KEYWORDS",
     "DEFAULT_EXCLUSION_KEYWORDS",
+    "DEFINITIVE_TITLE_PATTERNS",
+    "NEGATIVE_CONTEXT_PATTERNS",
     # Phase 3: Scoring
     "RelevanceScorer",
     "CompositeScorer",

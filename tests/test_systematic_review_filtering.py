@@ -52,6 +52,8 @@ from bmlibrarian.agents.systematic_review import (
     BatchFilterResult,
     STUDY_TYPE_KEYWORDS,
     DEFAULT_EXCLUSION_KEYWORDS,
+    DEFINITIVE_TITLE_PATTERNS,
+    NEGATIVE_CONTEXT_PATTERNS,
     # Phase 3: Scoring
     RelevanceScorer,
     CompositeScorer,
@@ -422,6 +424,333 @@ class TestStudyTypeKeywords:
         assert StudyTypeFilter.SYSTEMATIC_REVIEW in STUDY_TYPE_KEYWORDS
         keywords = STUDY_TYPE_KEYWORDS[StudyTypeFilter.SYSTEMATIC_REVIEW]
         assert "systematic review" in keywords
+
+
+# =============================================================================
+# Context-Aware Filtering Tests
+# =============================================================================
+
+class TestContextAwareFiltering:
+    """Tests for context-aware exclusion keyword filtering.
+
+    These tests verify that the filter correctly handles edge cases where
+    exclusion keywords appear in non-exclusionary contexts:
+    - Systematic reviews that mention excluding certain study types
+    - Human studies that reference prior animal experiments
+    - Papers that compare to or discuss excluded study types
+    """
+
+    @pytest.fixture
+    def simple_criteria(self) -> SearchCriteria:
+        """Create minimal criteria for testing context-aware filtering."""
+        return SearchCriteria(
+            research_question="Test question about human studies",
+            purpose="Testing context-aware filtering",
+            inclusion_criteria=["Human studies"],
+            exclusion_criteria=["Animal studies", "Case reports"],
+            date_range=(2010, 2025),
+        )
+
+    def test_rejects_definitive_case_report_title(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that papers with definitive case report titles are rejected."""
+        paper = PaperData(
+            document_id=1001,
+            title="Case Report: Rare Adverse Reaction to Treatment",
+            authors=["Author A"],
+            year=2023,
+            journal="Case Reports Journal",
+            abstract=(
+                "We present a detailed case report of a patient who experienced "
+                "an unusual adverse reaction. The patient was a 45-year-old male."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        assert "case report" in result.reason.lower()
+
+    def test_passes_systematic_review_excluding_case_reports(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that systematic reviews mentioning excluded case reports pass.
+
+        A systematic review that says 'we excluded case reports' should NOT
+        be excluded just because it contains 'case report'.
+        """
+        paper = PaperData(
+            document_id=1002,
+            title="Systematic Review of Treatment Efficacy in Adults",
+            authors=["Reviewer A", "Reviewer B"],
+            year=2023,
+            journal="Systematic Reviews Journal",
+            abstract=(
+                "Background: We conducted a systematic review of randomized trials. "
+                "Methods: We searched PubMed and Cochrane databases. We excluded case reports "
+                "and case series from our analysis. Only randomized controlled trials with "
+                "human participants were included. Results: 45 studies met inclusion criteria."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is True, f"Paper should pass but was rejected: {result.reason}"
+
+    def test_passes_human_study_mentioning_prior_animal_experiments(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that human studies mentioning prior animal work pass.
+
+        A human clinical trial that says 'following prior animal experiments'
+        should NOT be excluded for containing 'animal'.
+        """
+        paper = PaperData(
+            document_id=1003,
+            title="Randomized Trial of Novel Treatment in Human Patients",
+            authors=["Clinical A", "Clinical B"],
+            year=2023,
+            journal="Clinical Trials Journal",
+            abstract=(
+                "Background: Following prior animal model studies that demonstrated "
+                "efficacy, we conducted a randomized controlled trial in human adults. "
+                "Unlike earlier animal experiments, our study enrolled 500 human participants. "
+                "Methods: This was a double-blind RCT. Results: Treatment was effective."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is True, f"Paper should pass but was rejected: {result.reason}"
+
+    def test_rejects_actual_animal_study(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that actual animal studies are still rejected."""
+        paper = PaperData(
+            document_id=1004,
+            title="Treatment Effects in a Mouse Model of Disease",
+            authors=["Animal Researcher"],
+            year=2023,
+            journal="Animal Research Journal",
+            abstract=(
+                "We investigated treatment effects using a mouse model. Mice were "
+                "randomized to treatment or control groups. The animal study demonstrated "
+                "significant improvements in outcomes."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        # Should be rejected due to definitive title pattern or exclusion keyword
+        assert "animal" in result.reason.lower() or "mouse" in result.reason.lower()
+
+    def test_passes_review_comparing_to_animal_studies(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that papers comparing human and animal findings pass."""
+        paper = PaperData(
+            document_id=1005,
+            title="Meta-Analysis of Treatment Efficacy in Human Trials",
+            authors=["Meta A"],
+            year=2023,
+            journal="Meta Analysis Journal",
+            abstract=(
+                "We conducted a meta-analysis of human clinical trials. In contrast to "
+                "animal model studies, human trials showed moderate effect sizes. "
+                "Compared to in vitro studies, clinical outcomes differed significantly. "
+                "Our analysis included only human randomized controlled trials."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is True, f"Paper should pass but was rejected: {result.reason}"
+
+    def test_rejects_title_with_in_rats(self, simple_criteria: SearchCriteria) -> None:
+        """Test that titles explicitly stating 'in rats' are rejected."""
+        paper = PaperData(
+            document_id=1006,
+            title="Cardiovascular Effects of Treatment in Rats",
+            authors=["Rat Researcher"],
+            year=2023,
+            journal="Animal Research",
+            abstract=(
+                "This study examined the cardiovascular effects of treatment in rats. "
+                "We used Sprague-Dawley rats for all experiments."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        assert "animal" in result.reason.lower() or "rat" in result.reason.lower()
+
+    def test_rejects_title_with_in_mice(self, simple_criteria: SearchCriteria) -> None:
+        """Test that titles explicitly stating 'in mice' are rejected."""
+        paper = PaperData(
+            document_id=1007,
+            title="Neuroprotective Effects in Mice After Treatment",
+            authors=["Mouse Researcher"],
+            year=2023,
+            journal="Mouse Models",
+            abstract=(
+                "We evaluated neuroprotective effects of treatment in mice. "
+                "C57BL/6 mice were used throughout the study."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+
+    def test_passes_human_study_with_limitation_mention(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that studies discussing animal model limitations pass."""
+        paper = PaperData(
+            document_id=1008,
+            title="Clinical Trial of Novel Therapy in Adult Patients",
+            authors=["Clinical Team"],
+            year=2023,
+            journal="Clinical Medicine",
+            abstract=(
+                "This randomized controlled trial enrolled 200 adult patients. "
+                "Limitations of prior animal model research necessitated human validation. "
+                "Our results differ from mouse model predictions, suggesting species-specific "
+                "effects. All participants were human adults aged 18-65."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is True, f"Paper should pass but was rejected: {result.reason}"
+
+    def test_passes_study_reviewing_excluded_literature(
+        self, simple_criteria: SearchCriteria
+    ) -> None:
+        """Test that reviews discussing why certain study types were excluded pass."""
+        paper = PaperData(
+            document_id=1009,
+            title="Evidence Synthesis of Treatment in Adults",
+            authors=["Evidence Team"],
+            year=2023,
+            journal="Evidence Synthesis",
+            abstract=(
+                "We synthesized evidence from human trials. Case report literature was "
+                "reviewed but excluded from quantitative analysis. Animal studies were "
+                "also excluded as they have limited generalizability to humans. "
+                "Our synthesis included 30 randomized controlled trials."
+            ),
+        )
+        filter_obj = InitialFilter(simple_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is True, f"Paper should pass but was rejected: {result.reason}"
+
+    def test_definitive_patterns_list_not_empty(self) -> None:
+        """Test that definitive title patterns list is defined."""
+        assert len(DEFINITIVE_TITLE_PATTERNS) > 0
+        # Should include case report patterns
+        assert any("case report" in p for p in DEFINITIVE_TITLE_PATTERNS)
+
+    def test_negative_context_patterns_list_not_empty(self) -> None:
+        """Test that negative context patterns list is defined."""
+        assert len(NEGATIVE_CONTEXT_PATTERNS) > 0
+        # Should include patterns for "excluded", "prior", "unlike"
+        patterns_str = " ".join(NEGATIVE_CONTEXT_PATTERNS)
+        assert "exclud" in patterns_str
+        assert "prior" in patterns_str or "previous" in patterns_str
+
+
+class TestDefinitiveTitlePatterns:
+    """Tests specifically for definitive title pattern matching."""
+
+    @pytest.fixture
+    def minimal_criteria(self) -> SearchCriteria:
+        """Create minimal criteria without date restrictions."""
+        return SearchCriteria(
+            research_question="Test",
+            purpose="Test",
+            inclusion_criteria=["Studies"],
+            exclusion_criteria=[],
+            date_range=(1900, 2100),
+        )
+
+    def test_case_report_colon_at_start(self, minimal_criteria: SearchCriteria) -> None:
+        """Test 'Case Report: ...' pattern."""
+        paper = PaperData(
+            document_id=2001,
+            title="Case Report: Unusual Presentation of Disease",
+            authors=["A"],
+            year=2023,
+            abstract="Sufficient abstract content here for testing purposes.",
+        )
+        filter_obj = InitialFilter(minimal_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        assert "case report" in result.reason.lower()
+
+    def test_a_case_of_pattern(self, minimal_criteria: SearchCriteria) -> None:
+        """Test 'A case of ...' pattern."""
+        paper = PaperData(
+            document_id=2002,
+            title="A case of severe complications following treatment",
+            authors=["A"],
+            year=2023,
+            abstract="This paper describes a single patient case with complications.",
+        )
+        filter_obj = InitialFilter(minimal_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+
+    def test_editorial_colon_at_start(self, minimal_criteria: SearchCriteria) -> None:
+        """Test 'Editorial: ...' pattern."""
+        paper = PaperData(
+            document_id=2003,
+            title="Editorial: The Future of Treatment Research",
+            authors=["Editor A"],
+            year=2023,
+            abstract="This editorial discusses the future directions of research in this field.",
+        )
+        filter_obj = InitialFilter(minimal_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        assert "editorial" in result.reason.lower()
+
+    def test_retracted_at_end(self, minimal_criteria: SearchCriteria) -> None:
+        """Test '... [Retracted]' pattern."""
+        paper = PaperData(
+            document_id=2004,
+            title="Original Study Title RETRACTED",
+            authors=["Disgraced Author"],
+            year=2023,
+            abstract="This paper has been retracted due to data fabrication concerns.",
+        )
+        filter_obj = InitialFilter(minimal_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
+        assert "retracted" in result.reason.lower()
+
+    def test_in_vivo_study_title(self, minimal_criteria: SearchCriteria) -> None:
+        """Test 'in vivo study' pattern."""
+        paper = PaperData(
+            document_id=2005,
+            title="Therapeutic Efficacy: An In Vivo Study",
+            authors=["Lab Researcher"],
+            year=2023,
+            abstract="We conducted an in vivo study to evaluate therapeutic efficacy.",
+        )
+        filter_obj = InitialFilter(minimal_criteria)
+        result = filter_obj.filter_paper(paper)
+
+        assert result.passed is False
 
 
 # =============================================================================

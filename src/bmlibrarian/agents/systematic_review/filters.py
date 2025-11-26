@@ -116,6 +116,58 @@ DEFAULT_EXCLUSION_KEYWORDS: List[str] = [
     "case report", "case reports", "case series",
 ]
 
+# Title patterns that definitively indicate excluded study types
+# These are high-confidence patterns found at the start or as labels in titles
+DEFINITIVE_TITLE_PATTERNS: List[str] = [
+    # Case reports - explicit labeling in title
+    r"^case report[:\s]",
+    r"\bcase report[:\s]",
+    r"^a case of\b",
+    r"^a case report\b",
+    r"\[case report\]",
+    # Animal studies - explicit labeling
+    r"^animal study[:\s]",
+    r"\bin rats\b",
+    r"\bin mice\b",
+    r"\bin vivo study\b",
+    r"\bin vitro study\b",
+    r"\bmouse model[:\s]",
+    r"\brat model[:\s]",
+    # Editorials and non-research
+    r"^editorial[:\s]",
+    r"^letter to the editor\b",
+    r"^commentary[:\s]",
+    r"^erratum[:\s]",
+    r"^corrigendum[:\s]",
+    r"^retracted[:\s]",
+    r"\bretracted\b$",
+]
+
+# Context patterns that indicate exclusion keywords are NOT describing the paper itself
+# e.g., "we excluded case reports" should NOT exclude the paper
+NEGATIVE_CONTEXT_PATTERNS: List[str] = [
+    # Exclusion statements in methods (with optional words between)
+    r"(?:we |were |was )?exclud(?:ed|ing)\s+(?:\w+\s+)*{keyword}",
+    r"(?:we |were |was )?not includ(?:ed|ing)\s+(?:\w+\s+)*{keyword}",
+    r"{keyword}\s+(?:\w+\s+)?(?:were|was)\s+(?:\w+\s+)?excluded",
+    r"except(?:ing)?\s+(?:for\s+)?(?:\w+\s+)*{keyword}",
+    r"excluding\s+(?:\w+\s+)*{keyword}",
+    # Comparative statements
+    r"unlike\s+(?:\w+\s+)*{keyword}",
+    r"(?:in\s+)?contrast\s+to\s+(?:\w+\s+)*{keyword}",
+    r"(?:prior|previous|earlier)\s+(?:\w+\s+)*{keyword}",
+    r"{keyword}\s+(?:have|has)\s+shown\s+(?:that\s+)?(?:but|however)",
+    r"differ(?:s|ed|ing|ent)?\s+(?:from\s+)?(?:\w+\s+)*{keyword}",
+    # Literature review references
+    r"review(?:ed|ing)?\s+(?:\w+\s+)*{keyword}",
+    r"{keyword}\s+(?:literature|studies|publications)",
+    # Limitation/comparison discussions
+    r"limit(?:ed|ation)s?\s+(?:of\s+)?(?:\w+\s+)*{keyword}",
+    r"(?:compared|comparing)\s+(?:to|with)\s+(?:\w+\s+)*{keyword}",
+    # Predictions/results from other study types
+    r"{keyword}\s+(?:prediction|finding|result|outcome)s?",
+]
+
 # Confidence thresholds
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.6
@@ -478,7 +530,12 @@ class InitialFilter:
 
     def _check_exclusion_keywords(self, paper: PaperData) -> Optional[str]:
         """
-        Check if paper matches any exclusion keywords.
+        Check if paper matches any exclusion keywords using context-aware filtering.
+
+        Uses a multi-tier approach:
+        1. Check title for definitive patterns (high confidence exclusion)
+        2. Check for exclusion keywords with negative context patterns
+        3. Only exclude if keyword appears without protective context
 
         Args:
             paper: Paper to check
@@ -486,14 +543,113 @@ class InitialFilter:
         Returns:
             Error message with matched keyword if excluded, None if passes
         """
-        # Combine title and abstract for checking
-        text_to_check = f"{paper.title} {paper.abstract or ''}".lower()
+        title_lower = paper.title.lower()
+        abstract_lower = (paper.abstract or "").lower()
+
+        # Tier 1: Check for definitive title patterns (high confidence)
+        title_match = self._check_definitive_title_patterns(title_lower)
+        if title_match:
+            return f"Title indicates excluded study type: '{title_match}'"
+
+        # Tier 2: Context-aware keyword checking
+        full_text = f"{title_lower} {abstract_lower}"
 
         for keyword in self._exclusion_keywords:
-            if keyword in text_to_check:
+            if keyword not in full_text:
+                continue
+
+            # Check if keyword appears in title (strong signal)
+            in_title = keyword in title_lower
+            # Check if keyword has protective/negative context
+            has_negative_context = self._has_negative_context(full_text, keyword)
+
+            if in_title and not has_negative_context:
+                # Keyword in title without protective context - high confidence exclusion
+                return f"Matches exclusion keyword in title: '{keyword}'"
+            elif not in_title and not has_negative_context:
+                # Keyword in abstract only without protective context
+                # This is a softer signal - log but still exclude
+                # The InclusionEvaluator can review if needed
+                logger.debug(
+                    f"Paper {paper.document_id} has exclusion keyword '{keyword}' "
+                    f"in abstract without clear context - excluding with lower confidence"
+                )
                 return f"Matches exclusion keyword: '{keyword}'"
+            else:
+                # Keyword has protective context - likely a reference/comparison
+                logger.debug(
+                    f"Paper {paper.document_id} mentions '{keyword}' in protected "
+                    f"context (e.g., 'excluded case reports') - allowing paper to pass"
+                )
 
         return None
+
+    def _check_definitive_title_patterns(self, title: str) -> Optional[str]:
+        """
+        Check if title matches definitive exclusion patterns.
+
+        These patterns indicate with high confidence that the paper itself
+        is of an excluded type (not just mentioning it).
+
+        Args:
+            title: Lowercase title to check
+
+        Returns:
+            Matched pattern description if excluded, None if passes
+        """
+        for pattern in DEFINITIVE_TITLE_PATTERNS:
+            if re.search(pattern, title):
+                # Extract a clean description of what matched
+                if "case report" in pattern:
+                    return "case report"
+                elif "rat" in pattern or "mouse" in pattern or "mice" in pattern:
+                    return "animal study"
+                elif "in vivo" in pattern or "in vitro" in pattern:
+                    return "in vitro/in vivo study"
+                elif "editorial" in pattern:
+                    return "editorial"
+                elif "letter" in pattern:
+                    return "letter to editor"
+                elif "commentary" in pattern:
+                    return "commentary"
+                elif "erratum" in pattern or "corrigendum" in pattern:
+                    return "erratum/corrigendum"
+                elif "retracted" in pattern:
+                    return "retracted article"
+                else:
+                    return pattern
+        return None
+
+    def _has_negative_context(self, text: str, keyword: str) -> bool:
+        """
+        Check if keyword appears in a protective/negative context.
+
+        Negative context indicates the paper is NOT of that type, but merely
+        mentions excluding or comparing to such papers.
+
+        Args:
+            text: Full text to check (lowercase)
+            keyword: Exclusion keyword to check context for
+
+        Returns:
+            True if keyword has protective context, False otherwise
+        """
+        # Escape keyword for regex
+        escaped_keyword = re.escape(keyword)
+
+        for pattern_template in NEGATIVE_CONTEXT_PATTERNS:
+            # Replace {keyword} placeholder with actual keyword
+            pattern = pattern_template.replace("{keyword}", escaped_keyword)
+            try:
+                if re.search(pattern, text):
+                    logger.debug(
+                        f"Found negative context for '{keyword}' matching pattern: {pattern_template}"
+                    )
+                    return True
+            except re.error as e:
+                logger.warning(f"Invalid regex pattern '{pattern}': {e}")
+
+        return False
 
     def _check_minimum_content(self, paper: PaperData) -> Optional[str]:
         """
