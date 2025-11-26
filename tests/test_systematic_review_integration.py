@@ -222,26 +222,29 @@ class TestPlannerExecutorIntegration:
         # Should have at least semantic queries
         assert QueryType.SEMANTIC in query_types
 
-    @patch('bmlibrarian.agents.systematic_review.executor.semantic_search')
-    @patch('bmlibrarian.agents.systematic_review.executor.find_abstracts')
-    @patch('bmlibrarian.agents.systematic_review.executor.search_hybrid')
-    @patch('bmlibrarian.agents.systematic_review.executor.fetch_documents_by_ids')
+    @patch('bmlibrarian.database.fetch_documents_by_ids')
+    @patch('bmlibrarian.database.search_with_semantic')
+    @patch('bmlibrarian.database.find_abstracts')
+    @patch('bmlibrarian.database.search_hybrid')
+    @patch('bmlibrarian.agents.utils.query_syntax.fix_tsquery_syntax')
     def test_plan_execution_deduplication(
         self,
-        mock_fetch: MagicMock,
+        mock_fix_syntax: MagicMock,
         mock_hybrid: MagicMock,
         mock_keyword: MagicMock,
         mock_semantic: MagicMock,
+        mock_fetch: MagicMock,
         mock_paper_database: List[Dict[str, Any]],
     ) -> None:
         """Test that plan execution properly deduplicates results."""
         # Set up mocks - each search finds overlapping results
-        mock_semantic.return_value = [mock_paper_database[0], mock_paper_database[1]]
+        mock_semantic.return_value = iter([mock_paper_database[0], mock_paper_database[1]])
         mock_keyword.return_value = [mock_paper_database[1], mock_paper_database[2]]
         mock_hybrid.return_value = (
             [mock_paper_database[0], mock_paper_database[2]],
             {"strategy": "hybrid"}
         )
+        mock_fix_syntax.return_value = "test"
         mock_fetch.return_value = mock_paper_database
 
         # Create a simple plan
@@ -338,12 +341,12 @@ class TestEndToEndWorkflow:
     """End-to-end workflow tests with mocked dependencies."""
 
     @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
-    @patch('bmlibrarian.agents.systematic_review.executor.semantic_search')
-    @patch('bmlibrarian.agents.systematic_review.executor.fetch_documents_by_ids')
+    @patch('bmlibrarian.database.fetch_documents_by_ids')
+    @patch('bmlibrarian.database.search_with_semantic')
     def test_complete_search_workflow(
         self,
-        mock_fetch: MagicMock,
         mock_search: MagicMock,
+        mock_fetch: MagicMock,
         mock_llm: MagicMock,
         clinical_criteria: SearchCriteria,
         mock_paper_database: List[Dict[str, Any]],
@@ -352,7 +355,7 @@ class TestEndToEndWorkflow:
         """Test complete workflow from criteria to aggregated results."""
         # Set up mocks
         mock_llm.return_value = mock_pico_response
-        mock_search.return_value = mock_paper_database
+        mock_search.return_value = iter(mock_paper_database)
         mock_fetch.return_value = mock_paper_database
 
         # Step 1: Plan
@@ -375,7 +378,7 @@ class TestEndToEndWorkflow:
 
         # Step 3: Verify results
         for query_result in results.executed_queries:
-            assert query_result.query_id
+            assert query_result.planned_query.query_id
             assert query_result.execution_time_seconds >= 0
 
     @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
@@ -503,8 +506,8 @@ class TestDataFlow:
         # Verify ExecutedQuery matches PlannedQuery
         assert len(results.executed_queries) == 1
         eq = results.executed_queries[0]
-        assert eq.query_id == "test_q1"
-        assert eq.results_count == 3
+        assert eq.planned_query.query_id == "test_q1"
+        assert eq.actual_results == 3
         assert eq.success
 
     def test_aggregated_results_to_summary(
@@ -514,6 +517,20 @@ class TestDataFlow:
         # Create papers from mock database
         papers = [PaperData.from_database_row(row) for row in mock_paper_database]
 
+        test_query1 = PlannedQuery(
+            query_id="q1",
+            query_text="test1",
+            query_type=QueryType.SEMANTIC,
+            purpose="Test",
+            expected_coverage="Test",
+        )
+        test_query2 = PlannedQuery(
+            query_id="q2",
+            query_text="test2",
+            query_type=QueryType.KEYWORD,
+            purpose="Test",
+            expected_coverage="Test",
+        )
         results = AggregatedResults(
             papers=papers,
             paper_sources={
@@ -524,20 +541,16 @@ class TestDataFlow:
             total_before_dedup=5,
             executed_queries=[
                 ExecutedQuery(
-                    query_id="q1",
-                    actual_query_text="test1",
-                    results_count=3,
-                    new_documents_found=2,
+                    planned_query=test_query1,
+                    document_ids=[1001, 1002],
                     execution_time_seconds=1.0,
-                    success=True,
+                    actual_results=3,
                 ),
                 ExecutedQuery(
-                    query_id="q2",
-                    actual_query_text="test2",
-                    results_count=2,
-                    new_documents_found=1,
+                    planned_query=test_query2,
+                    document_ids=[1001, 1003],
                     execution_time_seconds=0.8,
-                    success=True,
+                    actual_results=2,
                 ),
             ],
             execution_time_seconds=2.5,
@@ -621,7 +634,7 @@ class TestErrorHandling:
         assert len(results.executed_queries) == 2
         assert results.executed_queries[0].success
         assert not results.executed_queries[1].success
-        assert "Database error" in results.executed_queries[1].error_message
+        assert "Database error" in results.executed_queries[1].error
 
     def test_executor_handles_empty_plan(self) -> None:
         """Test that Executor handles empty plan gracefully."""

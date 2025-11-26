@@ -39,6 +39,7 @@ AGENT_MODEL_KEY = "systematic_review_agent"
 
 # Default configuration values
 DEFAULT_MODEL = "gpt-oss:20b"
+DEFAULT_EMBEDDING_MODEL = "nomic-embed-text:latest"
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_TOP_P = 0.9
 DEFAULT_MAX_TOKENS = 4000
@@ -96,6 +97,7 @@ class SystematicReviewConfig:
 
     # Model settings
     model: str = DEFAULT_MODEL
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
     host: str = "http://localhost:11434"
     temperature: float = DEFAULT_TEMPERATURE
     top_p: float = DEFAULT_TOP_P
@@ -135,6 +137,7 @@ class SystematicReviewConfig:
         """
         return {
             "model": self.model,
+            "embedding_model": self.embedding_model,
             "host": self.host,
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -174,6 +177,7 @@ class SystematicReviewConfig:
 
         return cls(
             model=data.get("model", DEFAULT_MODEL),
+            embedding_model=data.get("embedding_model", DEFAULT_EMBEDDING_MODEL),
             host=data.get("host", "http://localhost:11434"),
             temperature=data.get("temperature", DEFAULT_TEMPERATURE),
             top_p=data.get("top_p", DEFAULT_TOP_P),
@@ -228,8 +232,15 @@ class SystematicReviewConfig:
             else:
                 scoring_weights = ScoringWeights()
 
+            # Get embedding model from config or use default
+            embedding_model = agent_config.get(
+                "embedding_model",
+                DEFAULT_EMBEDDING_MODEL
+            )
+
             return cls(
                 model=model,
+                embedding_model=embedding_model,
                 host=host,
                 temperature=agent_config.get("temperature", DEFAULT_TEMPERATURE),
                 top_p=agent_config.get("top_p", DEFAULT_TOP_P),
@@ -356,6 +367,7 @@ class SystematicReviewConfig:
 # Default configuration that can be added to DEFAULT_CONFIG in config.py
 DEFAULT_SYSTEMATIC_REVIEW_CONFIG: Dict[str, Any] = {
     "model": DEFAULT_MODEL,
+    "embedding_model": DEFAULT_EMBEDDING_MODEL,
     "temperature": DEFAULT_TEMPERATURE,
     "top_p": DEFAULT_TOP_P,
     "max_tokens": DEFAULT_MAX_TOKENS,

@@ -32,7 +32,6 @@ from .config import (
     SystematicReviewConfig,
     get_systematic_review_config,
     DEFAULT_MAX_SEARCH_RESULTS,
-    DEFAULT_MIN_SIMILARITY_THRESHOLD,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +48,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_RESULTS_PER_QUERY = 100
 MAX_RESULTS_PER_QUERY = 500
 MIN_RESULTS_PER_QUERY = 10
+
+# Similarity threshold for semantic search
+DEFAULT_SIMILARITY_THRESHOLD = 0.3
 
 # Retry configuration
 MAX_QUERY_RETRIES = 3
@@ -159,7 +161,7 @@ class SearchExecutor:
         self,
         config: Optional[SystematicReviewConfig] = None,
         results_per_query: int = DEFAULT_RESULTS_PER_QUERY,
-        similarity_threshold: float = DEFAULT_MIN_SIMILARITY_THRESHOLD,
+        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         callback: Optional[Callable[[str, str], None]] = None,
         db_manager: Optional["DatabaseManager"] = None,
     ) -> None:
@@ -287,13 +289,11 @@ class SearchExecutor:
 
             # Record execution
             executed_queries.append(ExecutedQuery(
-                query_id=query.query_id,
-                actual_query_text=query.query_text,
-                results_count=result.count,
-                new_documents_found=len(new_docs),
+                planned_query=query,
+                document_ids=list(result.document_ids),
                 execution_time_seconds=result.execution_time_seconds,
-                success=result.success,
-                error_message=result.error_message,
+                actual_results=result.count,
+                error=result.error_message if not result.success else None,
             ))
 
             self._call_callback(
@@ -424,17 +424,22 @@ class SearchExecutor:
     ) -> SearchResult:
         """Execute a semantic similarity search."""
         try:
-            from bmlibrarian.database import semantic_search
+            from bmlibrarian.database import search_with_semantic
 
             # Perform semantic search
-            results = semantic_search(
+            # Note: search_with_semantic doesn't support source filtering
+            # so we filter results after retrieval
+            results = list(search_with_semantic(
                 search_text=query.query_text,
                 threshold=self.similarity_threshold,
                 max_results=self.results_per_query,
-                use_pubmed=use_pubmed,
-                use_medrxiv=use_medrxiv,
-                use_others=use_others,
-            )
+            ))
+
+            # Filter by source if specified
+            if not (use_pubmed and use_medrxiv and use_others):
+                results = self._filter_results_by_source(
+                    results, use_pubmed, use_medrxiv, use_others
+                )
 
             document_ids = {r.get('id') for r in results if r.get('id')}
 
@@ -446,7 +451,7 @@ class SearchExecutor:
             )
 
         except ImportError:
-            logger.warning("semantic_search not available, falling back to hybrid")
+            logger.warning("search_with_semantic not available, falling back to hybrid")
             return self._execute_hybrid_query(
                 query, use_pubmed, use_medrxiv, use_others
             )
@@ -594,6 +599,53 @@ class SearchExecutor:
             )
 
     # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    def _filter_results_by_source(
+        self,
+        results: List[Dict[str, Any]],
+        use_pubmed: bool,
+        use_medrxiv: bool,
+        use_others: bool,
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter search results by source type.
+
+        Args:
+            results: List of document dictionaries
+            use_pubmed: Include PubMed sources
+            use_medrxiv: Include medRxiv sources
+            use_others: Include other sources
+
+        Returns:
+            Filtered list of documents
+        """
+        if use_pubmed and use_medrxiv and use_others:
+            return results
+
+        filtered = []
+        for doc in results:
+            source_name = doc.get('source_name', '').lower()
+            source_id = doc.get('source_id', 0)
+
+            # PubMed source (source_id=1 or source_name contains 'pubmed')
+            is_pubmed = source_id == 1 or 'pubmed' in source_name
+
+            # medRxiv source (source_id=2 or source_name contains 'medrxiv')
+            is_medrxiv = source_id == 2 or 'medrxiv' in source_name
+
+            # Check if this document should be included
+            if is_pubmed and use_pubmed:
+                filtered.append(doc)
+            elif is_medrxiv and use_medrxiv:
+                filtered.append(doc)
+            elif not is_pubmed and not is_medrxiv and use_others:
+                filtered.append(doc)
+
+        return filtered
+
+    # =========================================================================
     # Data Retrieval
     # =========================================================================
 
@@ -681,12 +733,13 @@ class SearchExecutor:
 
         for eq in results.executed_queries:
             status = "✓" if eq.success else "✗"
+            query_id = eq.planned_query.query_id
             lines.append(
-                f"  {status} {eq.query_id}: {eq.results_count} results "
-                f"({eq.new_documents_found} new) in {eq.execution_time_seconds:.2f}s"
+                f"  {status} {query_id}: {eq.actual_results} results "
+                f"({len(eq.document_ids)} unique) in {eq.execution_time_seconds:.2f}s"
             )
             if not eq.success:
-                lines.append(f"      Error: {eq.error_message}")
+                lines.append(f"      Error: {eq.error}")
 
         # Source coverage
         lines.append("")

@@ -642,17 +642,17 @@ class TestSearchExecutor:
         executor_high = SearchExecutor(results_per_query=10000)
         assert executor_high.results_per_query <= 500
 
-    @patch('bmlibrarian.agents.systematic_review.executor.semantic_search')
+    @patch('bmlibrarian.database.search_with_semantic')
     def test_execute_semantic_query(
         self,
         mock_search: MagicMock,
         sample_executor: SearchExecutor,
     ) -> None:
         """Test semantic query execution."""
-        mock_search.return_value = [
+        mock_search.return_value = iter([
             {"id": 1, "title": "Paper 1"},
             {"id": 2, "title": "Paper 2"},
-        ]
+        ])
 
         query = PlannedQuery(
             query_id="test",
@@ -671,16 +671,19 @@ class TestSearchExecutor:
         assert 1 in result.document_ids
         assert 2 in result.document_ids
 
-    @patch('bmlibrarian.agents.systematic_review.executor.find_abstracts')
+    @patch('bmlibrarian.agents.utils.query_syntax.fix_tsquery_syntax')
+    @patch('bmlibrarian.database.find_abstracts')
     def test_execute_keyword_query(
         self,
         mock_search: MagicMock,
+        mock_fix_syntax: MagicMock,
         sample_executor: SearchExecutor,
     ) -> None:
         """Test keyword query execution."""
         mock_search.return_value = [
             {"id": 3, "title": "Paper 3"},
         ]
+        mock_fix_syntax.return_value = "statin & cardiovascular"
 
         query = PlannedQuery(
             query_id="test",
@@ -697,10 +700,12 @@ class TestSearchExecutor:
         assert result.success
         assert 3 in result.document_ids
 
-    @patch('bmlibrarian.agents.systematic_review.executor.search_hybrid')
+    @patch('bmlibrarian.agents.utils.query_syntax.fix_tsquery_syntax')
+    @patch('bmlibrarian.database.search_hybrid')
     def test_execute_hybrid_query(
         self,
         mock_search: MagicMock,
+        mock_fix_syntax: MagicMock,
         sample_executor: SearchExecutor,
     ) -> None:
         """Test hybrid query execution."""
@@ -708,6 +713,7 @@ class TestSearchExecutor:
             [{"id": 4, "title": "Paper 4"}, {"id": 5, "title": "Paper 5"}],
             {"strategy": "hybrid"},
         )
+        mock_fix_syntax.return_value = "test query"
 
         query = PlannedQuery(
             query_id="test",
@@ -783,18 +789,23 @@ class TestSearchExecutor:
         self, sample_executor: SearchExecutor, sample_paper_data: PaperData
     ) -> None:
         """Test execution summary generation."""
+        test_query = PlannedQuery(
+            query_id="q1",
+            query_text="test",
+            query_type=QueryType.SEMANTIC,
+            purpose="Test",
+            expected_coverage="Test",
+        )
         results = AggregatedResults(
             papers=[sample_paper_data],
             paper_sources={12345: ["q1"]},
             total_before_dedup=5,
             executed_queries=[
                 ExecutedQuery(
-                    query_id="q1",
-                    actual_query_text="test",
-                    results_count=5,
-                    new_documents_found=1,
+                    planned_query=test_query,
+                    document_ids=[12345],
                     execution_time_seconds=1.0,
-                    success=True,
+                    actual_results=5,
                 ),
             ],
             execution_time_seconds=1.5,
