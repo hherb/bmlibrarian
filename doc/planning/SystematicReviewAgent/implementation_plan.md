@@ -428,9 +428,21 @@ def test_relevance_scoring_batch():
 
 **Goal**: Integrate quality assessment tools and compute composite scores
 
+**Status**: ✓ COMPLETED (with refinements needed)
+
 ### 4.1 Implement Quality Orchestrator
 
 **File**: `quality.py`
+
+**Implementation Notes**:
+- ✓ Lazy loading of all assessment agents (performance)
+- ✓ Batch processing with progress callbacks
+- ✓ Error handling with graceful degradation
+- ✓ Assessment statistics generation
+- **REVISION NEEDED**: Study type determination should be delegated to PICO/PRISMA agents
+- **REVISION NEEDED**: Add permanent storage with versioning (model, params, prompt metadata)
+- **REVISION NEEDED**: Support partial assessments (configurable which tools to run)
+- **REVISION NEEDED**: User prompts on workflow-blocking errors
 
 ```python
 class QualityAssessor:
@@ -438,40 +450,85 @@ class QualityAssessor:
 
     def __init__(self, config: Dict):
         self.config = config
-        self.study_agent = StudyAssessmentAgent()
-        self.weight_agent = PaperWeightAssessmentAgent()
-        self.pico_agent = PICOAgent()
-        self.prisma_agent = PRISMA2020Agent()
+        # Lazy-loaded agents
+        self._study_agent = None
+        self._weight_agent = None
+        self._pico_agent = None
+        self._prisma_agent = None
 
     def assess_batch(
         self,
         papers: List[ScoredPaper],
         progress_callback: Optional[Callable] = None,
-    ) -> List[AssessedPaper]:
+        run_pico: bool = True,  # NEW: Support partial assessments
+        run_prisma: bool = True,  # NEW: Support partial assessments
+        store_results: bool = True,  # NEW: Permanent storage
+    ) -> QualityAssessmentResult:
         """
         Run quality assessments on all papers.
 
-        Conditionally runs PICO/PRISMA based on study type.
+        PICO/PRISMA agents determine their own applicability.
         """
 
     def _assess_single(
         self,
         paper: ScoredPaper,
+        run_pico: bool = True,
+        run_prisma: bool = True,
     ) -> AssessedPaper:
         """Assess a single paper."""
 
-    def _should_run_pico(
-        self,
-        study_type: str,
-    ) -> bool:
-        """Check if PICO extraction is applicable."""
+    # REMOVED: _should_run_pico() - delegated to PICOAgent
+    # REMOVED: _should_run_prisma() - delegated to PRISMA2020Agent
 
-    def _should_run_prisma(
+    def _store_assessment(
         self,
-        study_type: str,
-    ) -> bool:
-        """Check if PRISMA assessment is applicable."""
+        paper: AssessedPaper,
+        metadata: Dict[str, Any],  # NEW: Model, params, prompt info
+    ) -> None:
+        """Store assessment with versioning."""
 ```
+
+### 4.1.1 Design Changes from User Feedback
+
+**Study Type Determination** (CRITICAL REVISION):
+- Original design: QualityAssessor uses keyword-based logic to decide if PICO/PRISMA apply
+- **Revised design**: PICO/PRISMA agents assess their own applicability using LLM
+- **Rationale**: Keyword-based extraction has proven unreliable in experiments
+- **Implementation**:
+  - PICOAgent.extract_pico() returns error with rationale if study type not applicable
+  - PRISMA2020Agent.assess_document() already has suitability assessment
+  - PICO widely applicable (population + observation usually present, intervention/control can be N/A)
+  - QualityAssessor handles errors gracefully (logs, continues with other assessments)
+
+**Permanent Storage with Versioning** (NEW REQUIREMENT):
+- Quality assessments must be permanently stored, not just cached
+- Each assessment stored with metadata:
+  - Model name and version
+  - Model parameters (temperature, top_p, etc.)
+  - Prompt version/hash
+  - Assessment timestamp
+  - Agent version
+- Supports reproducibility and longitudinal analysis
+- Database schema needs assessment_history table
+
+**Partial Assessment Support** (NEW REQUIREMENT):
+- QualityAssessor should accept flags for which assessments to run
+- Use cases:
+  - Skip PICO for non-intervention studies
+  - Skip PRISMA for non-reviews
+  - Re-run only specific assessments after prompt updates
+  - Performance optimization for large batches
+- Configuration via method parameters or config file
+
+**Interactive Error Handling** (NEW REQUIREMENT):
+- When errors would abort the workflow, prompt user for clarification
+- Error scenarios:
+  - Agent failure (LLM timeout, parsing error)
+  - Applicability rejection (study type mismatch)
+  - Database storage failure
+- User options: Skip paper, retry, abort workflow, continue without assessment
+- Non-interactive mode: Use configured fallback behavior
 
 ### 4.2 Implement Composite Scorer
 
@@ -529,13 +586,30 @@ def test_quality_gate_filtering():
     """Test quality threshold filtering."""
 ```
 
+**Quality Thresholds** (EVOLVING REQUIREMENT):
+- Quality thresholds will be determined through testing and validation
+- Initial conservative thresholds will be relaxed based on benchmark performance
+- System should support easy threshold adjustment without code changes
+- Document threshold rationale for reproducibility
+
 ### Phase 4 Deliverables
 
-| Deliverable | File(s) |
-|-------------|---------|
-| Quality orchestrator | `src/bmlibrarian/agents/systematic_review/quality.py` |
-| Composite scorer | `src/bmlibrarian/agents/systematic_review/scorer.py` |
-| Quality tests | `tests/test_systematic_review_quality.py` |
+| Deliverable | Status | File(s) | Notes |
+|-------------|--------|---------|-------|
+| Quality orchestrator | ✓ Complete (needs revision) | `src/bmlibrarian/agents/systematic_review/quality.py` | Needs: storage, partial assessment, delegated applicability |
+| Composite scorer | ✓ Complete | `src/bmlibrarian/agents/systematic_review/scorer.py` | Implemented in Phase 3 |
+| Quality tests | ✓ Complete (needs expansion) | `tests/test_systematic_review_quality.py` | Need tests for new features |
+| Module exports | ✓ Complete | `src/bmlibrarian/agents/systematic_review/__init__.py` | QualityAssessor exported |
+
+**Remaining Work for Phase 4**:
+1. Database schema for assessment storage with versioning
+2. Implement _store_assessment() with metadata
+3. Add partial assessment flags (run_pico, run_prisma, run_study, run_weight)
+4. Remove _should_run_pico() and _should_run_prisma() logic
+5. Delegate applicability to PICO/PRISMA agents (verify/modify agents)
+6. Interactive error handling with user prompts
+7. Update tests for new functionality
+8. Configuration for quality thresholds
 
 ---
 
