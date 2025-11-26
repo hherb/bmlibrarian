@@ -13,6 +13,7 @@ from datetime import date
 from .base import BaseAgent
 from ..database import find_abstracts, search_hybrid
 from .utils.query_syntax import fix_tsquery_syntax
+from ..thesaurus.expander import ThesaurusExpander
 
 if TYPE_CHECKING:
     from .orchestrator import AgentOrchestrator
@@ -39,7 +40,9 @@ class QueryAgent(BaseAgent):
         max_tokens: int = 500,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
-        show_model_info: bool = True
+        show_model_info: bool = True,
+        use_thesaurus: bool = False,
+        thesaurus_max_expansions: int = 10
     ):
         """
         Initialize the QueryAgent.
@@ -53,6 +56,8 @@ class QueryAgent(BaseAgent):
             callback: Optional callback function for progress updates
             orchestrator: Optional orchestrator for queue-based processing
             show_model_info: Whether to display model information on initialization
+            use_thesaurus: Whether to use medical thesaurus for term expansion (default: False)
+            thesaurus_max_expansions: Maximum term expansions per term (default: 10)
         """
         super().__init__(model, host, temperature, top_p, callback, orchestrator, show_model_info)
 
@@ -63,6 +68,11 @@ class QueryAgent(BaseAgent):
 
         # Store last search strategy metadata for audit trail
         self.last_search_metadata: Optional[Dict[str, Any]] = None
+
+        # Thesaurus configuration
+        self.use_thesaurus = use_thesaurus
+        self.thesaurus_max_expansions = thesaurus_max_expansions
+        self._thesaurus_expander: Optional[ThesaurusExpander] = None
         
         # System prompt for biomedical query conversion
         self.system_prompt = """You are a biomedical literature search expert. Your task is to convert natural language questions into PostgreSQL to_tsquery format for searching biomedical publication abstracts.
@@ -162,11 +172,65 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             
             self._call_callback("query_generated", query)
             return query
-            
+
         except Exception as e:
             self._call_callback("conversion_failed", str(e))
             raise
-    
+
+    def _get_thesaurus_expander(self) -> ThesaurusExpander:
+        """
+        Get or create the thesaurus expander instance (lazy initialization).
+
+        Returns:
+            ThesaurusExpander instance
+
+        Raises:
+            RuntimeError: If thesaurus connection fails
+        """
+        if self._thesaurus_expander is None:
+            self._thesaurus_expander = ThesaurusExpander(
+                max_expansions_per_term=self.thesaurus_max_expansions
+            )
+        return self._thesaurus_expander
+
+    def expand_query_with_thesaurus(self, ts_query: str) -> str:
+        """
+        Expand a to_tsquery string using medical thesaurus.
+
+        Adds synonym, abbreviation, and related term variants to improve search recall.
+
+        Args:
+            ts_query: Original to_tsquery string
+
+        Returns:
+            Expanded to_tsquery string with additional term variants
+
+        Example:
+            Input:  "aspirin & heart attack"
+            Output: "(aspirin | ASA | acetylsalicylic acid) & (heart attack | myocardial infarction | MI)"
+
+        Raises:
+            RuntimeError: If thesaurus is not available or connection fails
+        """
+        if not self.use_thesaurus:
+            logger.debug("Thesaurus expansion disabled, returning original query")
+            return ts_query
+
+        try:
+            expander = self._get_thesaurus_expander()
+            expanded_query = expander.expand_query(ts_query)
+
+            logger.info(f"Original query: {ts_query}")
+            logger.info(f"Expanded query: {expanded_query}")
+
+            self._call_callback("query_expanded", expanded_query)
+            return expanded_query
+
+        except Exception as e:
+            logger.warning(f"Thesaurus expansion failed: {e}. Using original query.")
+            self._call_callback("thesaurus_expansion_failed", str(e))
+            return ts_query
+
     def _clean_quotes(self, query: str) -> str:
         """
         Clean up and properly quote phrases in the query string.
@@ -400,6 +464,19 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
         ts_query_str = fix_tsquery_syntax(ts_query_str)
         if ts_query_str != ts_query_str_before:
             logger.info(f"Query syntax fixed: '{ts_query_str_before}' -> '{ts_query_str}'")
+
+        # Step 2.75: Expand query with medical thesaurus (if enabled)
+        if self.use_thesaurus:
+            try:
+                ts_query_str_original = ts_query_str
+                ts_query_str = self.expand_query_with_thesaurus(ts_query_str)
+                if ts_query_str != ts_query_str_original:
+                    logger.info(f"Query expanded with thesaurus")
+                    logger.info(f"  Original: {ts_query_str_original}")
+                    logger.info(f"  Expanded: {ts_query_str}")
+            except Exception as e:
+                logger.warning(f"Thesaurus expansion failed, using original query: {e}")
+                # Continue with original query on error
 
         # Step 3: Search database with the final query using hybrid search
         try:
