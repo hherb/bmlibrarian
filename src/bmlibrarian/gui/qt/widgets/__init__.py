@@ -44,6 +44,14 @@ from .draggable_list import (
     DragHandle,
     DropIndicator,
 )
+from .document_view_widget import (
+    DocumentViewWidget,
+    DocumentViewData,
+    MetadataTab,
+    PDFViewerTab,
+    FullTextTab,
+    ChunkEmbeddingWorker,
+)
 from . import card_utils
 
 __all__ = [
@@ -81,5 +89,12 @@ __all__ = [
     'DraggableItemWrapper',
     'DragHandle',
     'DropIndicator',
+    # Document view widget
+    'DocumentViewWidget',
+    'DocumentViewData',
+    'MetadataTab',
+    'PDFViewerTab',
+    'FullTextTab',
+    'ChunkEmbeddingWorker',
     'card_utils',
 ]
