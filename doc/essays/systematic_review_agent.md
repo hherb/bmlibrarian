@@ -4,7 +4,7 @@
 
 ## The Problem We All Know Too Well
 
-If you've ever conducted a systematic review, you know the burden. The average systematic review takes 67 weeks from registration to publication, with the literature search and screening phases consuming a substantial portion of that time. A single reviewer screening 1,000 abstracts—a modest number for many clinical topics—faces 8-10 hours of concentrated work just to reach the full-text review stage.
+If you've ever conducted a systematic review, you know the burden. The average systematic review takes 67 weeks from registration to publication, with the literature search and screening phases consuming a substantial portion of that time. A single reviewer screening 1,000 abstracts—a modest number for many clinical topics—faces days of concentrated work just to reach the full-text review stage.
 
 And yet, despite this investment, we miss relevant papers. We exclude papers we shouldn't. We disagree with our co-reviewers on borderline cases. The process is simultaneously exhausting and error-prone.
 
@@ -12,11 +12,11 @@ The consequence is not merely inconvenience. Systematic reviews inform clinical 
 
 ## What If We Had a Tireless Research Assistant?
 
-BMLibrarian's **SystematicReviewAgent** is an attempt to address this challenge. Not to replace human judgment—systematic reviews are too important for that—but to augment it. To handle the mechanical burden of searching, screening, and organizing while preserving human oversight where it matters most.
+BMLibrarian's **SystematicReviewAgent** is an attempt to address this challenge. Not to replace human judgment—systematic reviews are too important for that—but to augment it. Not to support academic laziness, but to improve productivity and efficiency and ease the tedium aspects of scientific rigor. To handle the mechanical burden of searching, screening, and organizing while preserving human oversight where it matters most.
 
 The agent accepts what any systematic review begins with:
 - A research question
-- Inclusion and exclusion criteria
+- Inclusion and exclusion criteria (the system can assist you with suggestions)
 - The types of studies you're looking for
 
 From there, it does what would take a human team weeks:
@@ -79,12 +79,12 @@ We are also open to formal research collaborations. If your institution is inter
 
 The SystematicReviewAgent is part of BMLibrarian, a broader effort to make biomedical literature more accessible through AI assistance. The project includes tools for:
 
-- Semantic search across millions of abstracts
-- Automated quality assessment of individual studies
-- Citation extraction and evidence synthesis
+- Sophisticated search strategies (semantic, expanded keywords, re-ranking …) across millions of abstracts
+- Automated quality assessment of individual studies by generally accepted and transparent criteria
+- Citation extraction and evidence synthesis (with full audit trail of provenance and rationale)
 - Fact-checking claims against the literature
 
-All of this is built on a foundation of local, privacy-preserving AI. Your queries and documents never leave your infrastructure. The models run on your hardware, using your institution's literature database.
+All of this is built on a foundation of local, privacy-preserving AI. Your queries and documents never leave your infrastructure. The models run on your own hardware, using your institution's literature database.
 
 ## How to Get Involved
 
@@ -106,7 +106,7 @@ For collaboration inquiries, open an issue on GitHub or reach out through the re
 
 Systematic reviews are the backbone of evidence-based medicine. They're also a bottleneck—too slow, too labor-intensive, and too often out of date by the time they're published.
 
-We don't claim to have solved this problem. What we have is a prototype and a plan. The prototype shows promise, but promise is not proof. That's why we're writing this: to find the collaborators who can help us move from promising to proven.
+We don't claim to have solved this problem. What we have is a prototype (presenty > 120,000 lines of well documented and mostly tested) and a detaild implementation plan. The prototype shows promise, but promise is not proof. That's why we're writing this: to find the collaborators who can help us move from promising to proven.
 
 If you've ever wished for a better way to conduct systematic reviews—or if you're skeptical that AI can help and want to see it tested rigorously—we'd like to work with you.
 
@@ -114,4 +114,4 @@ The literature isn't getting any smaller. Let's build tools that help us make se
 
 ---
 
-*BMLibrarian is an open-source project focused on AI-assisted biomedical literature analysis. The SystematicReviewAgent is currently in the planning phase, with implementation expected to proceed through 2025. For technical details, see the planning documentation in the project repository.*
+*BMLibrarian is an open-source project focused on AI-assisted biomedical literature analysis. The SystematicReviewAgent is currently in the planning phase, with implementation expected to proceed through 2025/mid 2026. For technical details, see the planning documentation in the project repository.*
