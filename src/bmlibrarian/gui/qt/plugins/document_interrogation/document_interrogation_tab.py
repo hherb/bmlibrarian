@@ -9,7 +9,7 @@ DocumentInterrogationAgent with sliding window chunk processing.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QSplitter, QFileDialog, QMessageBox, QComboBox,
-    QScrollArea, QFrame, QSizePolicy, QTextBrowser, QMenu
+    QScrollArea, QFrame, QSizePolicy, QTextBrowser, QMenu, QSpinBox
 )
 from PySide6.QtCore import Qt, Signal, QThread, Slot
 from typing import Optional, List
@@ -45,7 +45,8 @@ class DocumentProcessingWorker(QThread):
         document_text: Optional[str] = None,
         mode: ProcessingMode = ProcessingMode.EMBEDDING,
         max_sections: int = 10,
-        document_id: Optional[int] = None
+        document_id: Optional[int] = None,
+        conversation_context: Optional[str] = None
     ):
         """
         Initialize worker thread.
@@ -57,6 +58,7 @@ class DocumentProcessingWorker(QThread):
             mode: Processing mode (SEQUENTIAL, EMBEDDING, HYBRID)
             max_sections: Maximum number of relevant sections
             document_id: Database document ID (for database documents, uses semantic search)
+            conversation_context: Optional formatted string of previous Q&A pairs for context
         """
         super().__init__()
         self.agent = agent
@@ -65,21 +67,31 @@ class DocumentProcessingWorker(QThread):
         self.mode = mode
         self.max_sections = max_sections
         self.document_id = document_id
+        self.conversation_context = conversation_context
 
     def run(self):
         """Execute document interrogation in background thread."""
         try:
+            # Build the effective question with conversation context if provided
+            if self.conversation_context:
+                effective_question = (
+                    f"Previous conversation context:\n{self.conversation_context}\n\n"
+                    f"Current question: {self.question}"
+                )
+            else:
+                effective_question = self.question
+
             # Use optimized answer_question for database documents
             if self.document_id is not None:
                 result = self.agent.answer_question(
                     document_id=self.document_id,
-                    question=self.question,
+                    question=effective_question,
                     max_chunks=self.max_sections
                 )
             else:
                 # Process document with agent (file-based)
                 result = self.agent.process_document(
-                    question=self.question,
+                    question=effective_question,
                     document_text=self.document_text,
                     mode=self.mode,
                     max_sections=self.max_sections
@@ -435,6 +447,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         self.message_input: Optional[QTextEdit] = None
         self.send_btn: Optional[QPushButton] = None
         self.save_btn: Optional[QPushButton] = None
+        self.history_spinbox: Optional[QSpinBox] = None
         self.progress_label: Optional[QLabel] = None
 
         # Conversation history for export
@@ -649,8 +662,50 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         """)
         header_layout.addWidget(header_label)
 
-        # Spacer to push save button to the right
+        # Spacer to push controls to the right
         header_layout.addStretch()
+
+        # History context control - how many previous Q&A pairs to include
+        history_label = QLabel("Remember:")
+        history_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: {s['font_small']}pt;
+                background-color: transparent;
+            }}
+        """)
+        header_layout.addWidget(history_label)
+
+        self.history_spinbox = QSpinBox()
+        self.history_spinbox.setRange(0, 10)
+        self.history_spinbox.setValue(0)  # Default: no history context
+        self.history_spinbox.setSuffix(" Q&A")
+        self.history_spinbox.setFixedHeight(s['control_height_small'])
+        self.history_spinbox.setFixedWidth(max(70, int(s['char_width'] * 10)))
+        self.history_spinbox.setToolTip(
+            "Number of previous Q&A pairs to include as context.\n\n"
+            "• 0 = No history (each question is independent)\n"
+            "• 1-3 = Good for follow-up questions\n"
+            "• 4-10 = Extended context for complex discussions\n\n"
+            "Trade-off: More history provides better context continuity\n"
+            "but reduces space for document content in the LLM context.\n"
+            "Start with 0-2 for most use cases."
+        )
+        self.history_spinbox.setStyleSheet(f"""
+            QSpinBox {{
+                font-size: {s['font_small']}pt;
+                padding: {s['padding_tiny']}px;
+                border: 1px solid #CCC;
+                border-radius: {s['radius_small']}px;
+                background-color: #FFFFFF;
+            }}
+            QSpinBox:focus {{
+                border: 1px solid #2196F3;
+            }}
+        """)
+        header_layout.addWidget(self.history_spinbox)
+
+        # Small spacing before save button
+        header_layout.addSpacing(s['spacing_medium'])
 
         # Save conversation button
         self.save_btn = QPushButton("💾 Save")
@@ -1102,6 +1157,46 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
 
         # Re-add welcome message
         self._add_welcome_message()
+
+    def _build_conversation_context(self) -> Optional[str]:
+        """
+        Build conversation context string from recent history.
+
+        Returns:
+            Formatted context string with recent Q&A pairs, or None if disabled/empty.
+        """
+        if self.history_spinbox is None:
+            return None
+
+        history_count = self.history_spinbox.value()
+        if history_count <= 0:
+            return None
+
+        if not self.conversation_history:
+            return None
+
+        # Get last N Q&A pairs (each pair = 2 messages: user + assistant)
+        # We want pairs, so multiply by 2 for message count
+        messages_to_include = history_count * 2
+        recent_messages = self.conversation_history[-messages_to_include:]
+
+        if not recent_messages:
+            return None
+
+        # Build context string
+        context_parts = []
+        for msg in recent_messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if role == "user":
+                context_parts.append(f"User: {content}")
+            elif role == "assistant":
+                context_parts.append(f"Assistant: {content}")
+
+        if not context_parts:
+            return None
+
+        return "\n\n".join(context_parts)
 
     def _load_models(self):
         """Load available Ollama models."""
@@ -1668,6 +1763,9 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             else:
                 mode = ProcessingMode.EMBEDDING  # Default to embedding for efficiency
 
+            # Build conversation context from history (if enabled)
+            conversation_context = self._build_conversation_context()
+
             # Create and start worker - pass document_id for database documents
             self.worker = DocumentProcessingWorker(
                 agent=self.interrogation_agent,
@@ -1675,7 +1773,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
                 document_text=self.current_document_text,
                 mode=mode,
                 max_sections=max_sections,
-                document_id=self.current_document_id
+                document_id=self.current_document_id,
+                conversation_context=conversation_context
             )
 
             self.worker.result_ready.connect(self._on_result_ready)
