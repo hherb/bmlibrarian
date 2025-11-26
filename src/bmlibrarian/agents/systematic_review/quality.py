@@ -431,18 +431,36 @@ class QualityAssessor:
         document = self._paper_to_document(paper.paper)
 
         # 1. Study Assessment (conditional based on config flag)
-        study_assessment = None
         if self._config.run_study_assessment:
             study_assessment = self._run_study_assessment(document)
         else:
             logger.debug(f"Skipping study assessment for document {document['id']} (disabled in config)")
+            # Return minimal assessment when disabled (AssessedPaper expects Dict, not None)
+            study_assessment = {
+                "study_type": "not_assessed",
+                "study_design": "not_assessed",
+                "quality_score": 5.0,
+                "strengths": [],
+                "limitations": ["Assessment disabled in configuration"],
+                "overall_confidence": 0.0,
+                "confidence_explanation": "Assessment skipped (disabled in config)",
+                "evidence_level": "not_assessed",
+                "document_id": str(document["id"]),
+                "document_title": document.get("title", ""),
+            }
 
         # 2. Paper Weight Assessment (conditional based on config flag)
-        paper_weight = None
         if self._config.run_paper_weight:
             paper_weight = self._run_paper_weight_assessment(document)
         else:
             logger.debug(f"Skipping paper weight assessment for document {document['id']} (disabled in config)")
+            # Return minimal assessment when disabled (AssessedPaper expects Dict, not None)
+            paper_weight = {
+                "document_id": document["id"],
+                "composite_score": 5.0,
+                "dimensions": [],
+                "note": "Assessment disabled in configuration",
+            }
 
         # 3. PICO extraction (conditional - config flag + LLM-based suitability check)
         pico_components = None
