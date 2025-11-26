@@ -23,7 +23,6 @@ from ...config import (
     get_ollama_host,
     get_agent_config,
     ValidationResult,
-    FLOAT_TOLERANCE,
 )
 from .data_models import ScoringWeights
 
