@@ -55,6 +55,148 @@ All AI processing happens locally on your hardware:
 ## What's New 🎉
 
 **Latest Features (11/2025):**
+```mermaid
+flowchart TB
+    subgraph User["User Input"]
+        U1[Research Question]
+        U2[Inclusion/Exclusion Criteria]
+        U3[Scoring Weights]
+    end
+
+    subgraph Phase1["Phase 1: Search Planning"]
+        P1[Planner]
+        P1A[PICO Analysis]
+        P1B[Query Generation]
+        P1C[Strategy Optimization]
+    end
+
+    subgraph Phase2["Phase 2: Search Execution"]
+        E1[SearchExecutor]
+        E1A[Semantic Queries]
+        E1B[Keyword Queries]
+        E1C[Hybrid Queries]
+        E1D[HyDE Queries]
+        E2[Deduplication]
+    end
+
+    subgraph Phase3["Phase 3: Initial Filtering"]
+        F1[InitialFilter]
+        F1A[Date Range Check]
+        F1B[Language Check]
+        F1C[Study Type Keywords]
+        F1D[Exclusion Keywords]
+    end
+
+    subgraph Phase4["Phase 4: Relevance Scoring"]
+        S1[RelevanceScorer]
+        S1A[DocumentScoringAgent]
+        S2[InclusionEvaluator]
+        S2A[Criteria Matching]
+        S3[Threshold Filter]
+    end
+
+    subgraph Phase5["Phase 5: Quality Assessment"]
+        Q1[QualityAssessor]
+        Q1A[StudyAssessmentAgent]
+        Q1B[PaperWeightAssessmentAgent]
+        Q1C[PICOAgent]
+        Q1D[PRISMA2020Agent]
+    end
+
+    subgraph Phase6["Phase 6: Composite Scoring"]
+        C1[CompositeScorer]
+        C1A[Weight Application]
+        C1B[Score Normalization]
+        C2[Quality Gate]
+        C3[Final Ranking]
+    end
+
+    subgraph Phase7["Phase 7: Classification"]
+        CL1{Decision}
+        CL2[Included Papers]
+        CL3[Excluded Papers]
+        CL4[Uncertain Papers]
+    end
+
+    subgraph Phase8["Phase 8: Report Generation"]
+        R1[Reporter]
+        R1A[JSON Report]
+        R1B[Markdown Report]
+        R1C[CSV Export]
+        R1D[PRISMA Flow Diagram]
+    end
+
+    subgraph AuditTrail["Audit Trail"]
+        D1[Documenter]
+        D1A[Process Steps]
+        D1B[Checkpoints]
+        D1C[Metrics]
+    end
+
+    %% Flow connections
+    U1 --> P1
+    U2 --> P1
+    U3 --> C1
+
+    P1 --> P1A --> P1B --> P1C
+    P1C --> E1
+
+    E1 --> E1A & E1B & E1C & E1D
+    E1A & E1B & E1C & E1D --> E2
+    E2 --> F1
+
+    F1 --> F1A --> F1B --> F1C --> F1D
+    F1D --> S1
+
+    S1 --> S1A --> S2
+    S2 --> S2A --> S3
+    S3 --> Q1
+
+    Q1 --> Q1A & Q1B
+    Q1 -.-> Q1C
+    Q1 -.-> Q1D
+    Q1A & Q1B --> C1
+
+    C1 --> C1A --> C1B --> C2
+    C2 --> C3 --> CL1
+
+    CL1 -->|Above threshold| CL2
+    CL1 -->|Below threshold| CL3
+    CL1 -->|Borderline| CL4
+
+    CL2 & CL3 & CL4 --> R1
+    R1 --> R1A & R1B & R1C & R1D
+
+    %% Audit trail connections (dashed)
+    P1 -.-> D1
+    E1 -.-> D1
+    F1 -.-> D1
+    S1 -.-> D1
+    Q1 -.-> D1
+    C1 -.-> D1
+    R1 -.-> D1
+
+    D1 --> D1A & D1B & D1C
+
+    %% Checkpoint interactions
+    P1C -->|Checkpoint 1| CHK1((Human Review))
+    E2 -->|Checkpoint 2| CHK2((Human Review))
+    S3 -->|Checkpoint 3| CHK3((Human Review))
+    Q1 -->|Checkpoint 4| CHK4((Human Review))
+
+    %% Styling
+    classDef phase fill:#e1f5fe,stroke:#0277bd
+    classDef agent fill:#fff3e0,stroke:#ff6f00
+    classDef output fill:#e8f5e9,stroke:#2e7d32
+    classDef checkpoint fill:#fce4ec,stroke:#c2185b
+    classDef audit fill:#f3e5f5,stroke:#7b1fa2
+
+    class P1,E1,F1,S1,Q1,C1,R1 phase
+    class S1A,Q1A,Q1B,Q1C,Q1D agent
+    class R1A,R1B,R1C,R1D output
+    class CHK1,CHK2,CHK3,CHK4 checkpoint
+    class D1,D1A,D1B,D1C audit
+```
 
 - 📊 **Paper Weight Assessment**: Evaluate research papers across five quality dimensions (study design, sample size, methodology, bias risk, replication)
 - 🔬 **PICO Extraction**: Automatically extract Population, Intervention, Comparison, and Outcome for systematic reviews
