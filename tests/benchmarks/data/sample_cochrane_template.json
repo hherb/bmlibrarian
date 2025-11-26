@@ -1,0 +1,54 @@
+{
+  "cochrane_id": "CD000000",
+  "title": "SAMPLE TEMPLATE - Replace with actual Cochrane review title",
+  "research_question": "Replace with the actual research question from the Cochrane review",
+  "pico": {
+    "population": "Describe the population studied",
+    "intervention": "Describe the intervention",
+    "comparison": "Describe the comparator (placebo, standard care, etc.)",
+    "outcome": "Describe the primary outcome"
+  },
+  "inclusion_criteria": [
+    "Example: Randomized controlled trials",
+    "Example: Adult participants (age >= 18)",
+    "Example: Published in peer-reviewed journals"
+  ],
+  "exclusion_criteria": [
+    "Example: Animal studies",
+    "Example: Case reports",
+    "Example: Non-English language"
+  ],
+  "included_studies": [
+    {
+      "pmid": "12345678",
+      "doi": "10.1000/example1",
+      "title": "First included study title",
+      "authors": ["Author A", "Author B"],
+      "year": 2020,
+      "cochrane_ref_id": "Study1",
+      "notes": "Optional notes about why this study was included"
+    },
+    {
+      "pmid": "23456789",
+      "doi": null,
+      "title": "Second included study (no DOI available)",
+      "authors": ["Author C", "Author D"],
+      "year": 2019,
+      "cochrane_ref_id": "Study2",
+      "notes": null
+    },
+    {
+      "pmid": null,
+      "doi": "10.1000/example3",
+      "title": "Third study (no PMID, match by DOI)",
+      "authors": null,
+      "year": 2021,
+      "cochrane_ref_id": "Study3",
+      "notes": null
+    }
+  ],
+  "authors_conclusion": "One to two sentence summary of the Cochrane review's conclusion. This will be used for future verdict similarity testing.",
+  "date_range": [2010, 2023],
+  "notes": "Template file - replace with actual Cochrane review data. Delete this file when real benchmarks are added.",
+  "source_url": "https://www.cochranelibrary.com/cdsr/doi/10.1002/14651858.CD000000/full"
+}
