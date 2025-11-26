@@ -169,51 +169,43 @@ class DocumentFetchWorker(QThread):
         self.pmid = pmid
 
     def run(self) -> None:
-        """Fetch document from database."""
+        """Fetch document from database.
+
+        Uses the canonical get_document_details function for consistent
+        document fetching. For PMID lookups, first resolves to document_id.
+        """
         try:
             # Import here to avoid circular imports
-            from bmlibrarian.database import get_db_manager
+            from bmlibrarian.database import get_document_details, get_db_manager
 
-            db = get_db_manager()
+            doc_id = self.document_id
 
-            # Determine query based on available identifier
-            # Note: PMID is stored in external_id column for PubMed documents (source_id=1)
-            if self.document_id is not None:
-                logger.info(f"Fetching document with ID: {self.document_id}")
-                query = """
-                    SELECT id, title, abstract, authors, publication_date,
-                           external_id, doi, publication, source_id
-                    FROM document
-                    WHERE id = %s
-                    LIMIT 1
-                """
-                query_param = self.document_id
-                identifier_desc = f"ID {self.document_id}"
-            elif self.pmid is not None:
-                logger.info(f"Fetching document with PMID: {self.pmid}")
-                query = """
-                    SELECT id, title, abstract, authors, publication_date,
-                           external_id, doi, publication, source_id
-                    FROM document
-                    WHERE external_id = %s
-                    LIMIT 1
-                """
-                query_param = self.pmid
-                identifier_desc = f"PMID {self.pmid}"
-            else:
+            # If PMID provided but not document_id, look up the document_id first
+            if doc_id is None and self.pmid is not None:
+                logger.info(f"Looking up document_id for PMID: {self.pmid}")
+                db = get_db_manager()
+                with db.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM document WHERE external_id = %s LIMIT 1",
+                            (str(self.pmid),)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            doc_id = row[0]
+                        else:
+                            raise ValueError(f"No document found with PMID {self.pmid}")
+
+            if doc_id is None:
                 raise ValueError("Either document_id or pmid must be provided")
 
-            with db.get_connection() as conn:
-                from psycopg.rows import dict_row
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(query, (query_param,))
-                    row = cur.fetchone()
+            # Use canonical function to get complete document details
+            logger.info(f"Fetching document with ID: {doc_id}")
+            result = get_document_details(doc_id)
 
-            if row is None:
-                raise ValueError(f"No document found with {identifier_desc}")
+            if result is None:
+                raise ValueError(f"No document found with ID {doc_id}")
 
-            # Convert to dict
-            result = dict(row)
             logger.info(f"Found document: {result.get('title', 'No title')[:50]}")
             self.fetch_complete.emit(result)
 

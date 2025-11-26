@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any
 from bmlibrarian.agents import StudyAssessmentAgent, AgentOrchestrator
 from bmlibrarian.agents.study_assessment_agent import StudyAssessment
 from bmlibrarian.config import get_config
-from bmlibrarian.database import fetch_documents_by_ids
+from bmlibrarian.database import get_document_details
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
 from ...widgets import DocumentViewWidget, DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
@@ -414,10 +414,10 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
         self.load_button.setEnabled(False)
 
         try:
-            # Fetch document
-            documents = fetch_documents_by_ids({doc_id})
+            # Fetch document using canonical function
+            doc = get_document_details(doc_id)
 
-            if not documents:
+            if not doc:
                 QMessageBox.warning(
                     self,
                     "Not Found",
@@ -427,7 +427,7 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
                 self.load_button.setEnabled(True)
                 return
 
-            self.current_document = documents[0]
+            self.current_document = doc
             self._display_document()
 
             # Check agent
@@ -468,24 +468,31 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
             self.load_button.setEnabled(True)
 
     def _display_document(self):
-        """Display the loaded document using DocumentViewWidget."""
+        """Display the loaded document using DocumentViewWidget.
+
+        Uses document data from get_document_details which provides
+        pre-formatted authors string and consistent field names.
+        """
         if not self.current_document:
             return
 
         doc = self.current_document
 
         # Create DocumentViewData from document dict
+        # get_document_details returns 'authors' already formatted as string
         doc_data = DocumentViewData(
             document_id=doc.get('id'),
             title=doc.get('title', 'No title'),
-            authors=doc.get('authors'),
+            authors=doc.get('authors'),  # Already formatted by get_document_details
             journal=doc.get('journal'),
             year=doc.get('year'),
-            pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
+            pmid=doc.get('pmid'),
             doi=doc.get('doi'),
             abstract=doc.get('abstract'),
             full_text=doc.get('full_text'),
-            pdf_path=doc.get('pdf_path'),
+            pdf_path=doc.get('pdf_filename'),  # Note: pdf_filename from get_document_details
+            pdf_url=doc.get('pdf_url'),
+            publication_date=doc.get('publication_date'),
         )
 
         self.document_view.set_document(doc_data)

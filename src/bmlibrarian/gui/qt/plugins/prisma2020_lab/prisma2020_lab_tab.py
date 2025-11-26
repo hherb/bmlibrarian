@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, Signal
 from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from bmlibrarian.config import get_config
-from bmlibrarian.database import fetch_documents_by_ids
+from bmlibrarian.database import get_document_details
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
 from ...widgets import DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
@@ -254,16 +254,17 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         self.ui.load_button.setEnabled(False)
 
         try:
-            documents = fetch_documents_by_ids({doc_id})
+            # Fetch document using canonical function
+            doc = get_document_details(doc_id)
 
-            if not documents:
+            if not doc:
                 logger.warning(f"Document {doc_id} not found in database")
                 QMessageBox.warning(self, "Not Found", f"Document {doc_id} not found in database.")
                 self._update_status(STATUS_READY, 'gray')
                 self.ui.load_button.setEnabled(True)
                 return
 
-            self.current_document = documents[0]
+            self.current_document = doc
             doc_title = self.current_document.get('title', 'Untitled')
             logger.info(f"Document {doc_id} loaded successfully: {doc_title[:100]}")
             self._display_document()
@@ -309,24 +310,31 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             self.ui.load_button.setEnabled(True)
 
     def _display_document(self) -> None:
-        """Display the loaded document using DocumentViewWidget."""
+        """Display the loaded document using DocumentViewWidget.
+
+        Uses document data from get_document_details which provides
+        pre-formatted authors string and consistent field names.
+        """
         if not self.current_document:
             return
 
         doc = self.current_document
 
         # Create DocumentViewData from document dict
+        # get_document_details returns 'authors' already formatted as string
         doc_data = DocumentViewData(
             document_id=doc.get('id'),
             title=doc.get('title', 'No title'),
-            authors=doc.get('authors'),
+            authors=doc.get('authors'),  # Already formatted by get_document_details
             journal=doc.get('journal'),
             year=doc.get('year'),
-            pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
+            pmid=doc.get('pmid'),
             doi=doc.get('doi'),
             abstract=doc.get('abstract'),
             full_text=doc.get('full_text'),
-            pdf_path=doc.get('pdf_path'),
+            pdf_path=doc.get('pdf_filename'),  # Note: pdf_filename from get_document_details
+            pdf_url=doc.get('pdf_url'),
+            publication_date=doc.get('publication_date'),
         )
 
         self.ui.document_view.set_document(doc_data)

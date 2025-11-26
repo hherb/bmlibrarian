@@ -43,9 +43,8 @@ class PaperWeightLabTabWidget(QWidget, IDocumentReceiver):
         from bmlibrarian.lab.paper_weight_lab.main_window import (
             PDFIngestWorker, EmbeddingWorker
         )
-        from bmlibrarian.agents.paper_weight import (
-            PaperWeightAssessmentAgent, get_document_for_viewer
-        )
+        from bmlibrarian.agents.paper_weight import PaperWeightAssessmentAgent
+        from bmlibrarian.database import get_document_details
         from bmlibrarian.utils.pdf_manager import PDFManager
         from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
         from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
@@ -71,7 +70,7 @@ class PaperWeightLabTabWidget(QWidget, IDocumentReceiver):
         # Store references to worker classes
         self._PDFIngestWorker = PDFIngestWorker
         self._EmbeddingWorker = EmbeddingWorker
-        self._get_document_for_viewer = get_document_for_viewer
+        self._get_document_details = get_document_details
         self._PDFManager = PDFManager
 
         # Set up UI
@@ -119,12 +118,16 @@ class PaperWeightLabTabWidget(QWidget, IDocumentReceiver):
         self.status_message.emit(f"Document {document_id} selected for assessment")
 
     def _load_document_viewer(self, document_id: int) -> None:
-        """Load document into document viewer tab."""
+        """Load document into document viewer tab.
+
+        Uses the canonical get_document_details function for consistent
+        document fetching across all widgets.
+        """
         import logging
         logger = logging.getLogger(__name__)
 
         try:
-            doc_data = self._get_document_for_viewer(document_id)
+            doc_data = self._get_document_details(document_id)
             if not doc_data:
                 logger.warning(f"Document {document_id} not found for viewer")
                 self.document_viewer_tab.clear()

@@ -716,6 +716,9 @@ class DocumentViewWidget(QWidget):
     def load_document_by_id(self, document_id: int) -> bool:
         """Load document from database by ID.
 
+        Uses the canonical get_document_details function for consistent
+        document fetching across all widgets.
+
         Args:
             document_id: Document database ID
 
@@ -723,41 +726,57 @@ class DocumentViewWidget(QWidget):
             True if loaded successfully
         """
         try:
-            from bmlibrarian.database import get_db_manager
+            from bmlibrarian.database import get_document_details
+            from bmlibrarian.config import get_config
 
-            db_manager = get_db_manager()
-            with db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT
-                            id, title, authors, journal,
-                            EXTRACT(YEAR FROM publication_date)::integer as year,
-                            pmid, doi, abstract, full_text, pdf_path,
-                            publication_date::text
-                        FROM public.document
-                        WHERE id = %s
-                        """,
-                        (document_id,),
-                    )
-                    row = cur.fetchone()
+            doc = get_document_details(document_id)
 
-            if not row:
+            if not doc:
                 logger.warning(f"Document not found: {document_id}")
                 return False
 
+            # Resolve PDF path from pdf_filename and config base directory
+            pdf_path: Optional[str] = None
+            pdf_filename = doc.get('pdf_filename')
+            if pdf_filename:
+                config = get_config()
+                pdf_config = config.get('pdf') or {}
+                pdf_base_dir = Path(
+                    pdf_config.get('base_dir', '~/knowledgebase/pdf')
+                ).expanduser()
+
+                # Handle both relative (year/file.pdf) and absolute paths
+                if '/' in pdf_filename:
+                    candidate_path = pdf_base_dir / pdf_filename
+                else:
+                    # Try with year subdirectory
+                    year = doc.get('year')
+                    if year:
+                        candidate_path = pdf_base_dir / str(year) / pdf_filename
+                    else:
+                        candidate_path = pdf_base_dir / pdf_filename
+
+                if candidate_path.exists():
+                    pdf_path = str(candidate_path)
+                else:
+                    # Try without year directory as fallback
+                    fallback_path = pdf_base_dir / Path(pdf_filename).name
+                    if fallback_path.exists():
+                        pdf_path = str(fallback_path)
+
             data = DocumentViewData(
-                document_id=row[0],
-                title=row[1] or "",
-                authors=row[2],
-                journal=row[3],
-                year=row[4],
-                pmid=str(row[5]) if row[5] else None,
-                doi=row[6],
-                abstract=row[7],
-                full_text=row[8],
-                pdf_path=row[9],
-                publication_date=row[10],
+                document_id=doc.get('id'),
+                title=doc.get('title') or "",
+                authors=doc.get('authors'),  # Already formatted as string
+                journal=doc.get('journal'),
+                year=doc.get('year'),
+                pmid=doc.get('pmid'),
+                doi=doc.get('doi'),
+                abstract=doc.get('abstract'),
+                full_text=doc.get('full_text'),
+                pdf_path=pdf_path,
+                pdf_url=doc.get('pdf_url'),
+                publication_date=doc.get('publication_date'),
             )
 
             self.set_document(data)

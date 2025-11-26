@@ -1462,7 +1462,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         """
         Display document content in the DocumentViewWidget.
 
-        Uses DocumentViewData to populate the widget with available content.
+        Uses the canonical get_document_details function to fetch complete
+        document metadata, then populates the DocumentViewWidget.
 
         Args:
             result: Document processing result with content info
@@ -1470,41 +1471,83 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         import logging
         logger = logging.getLogger(__name__)
 
-        # Get document info if available
-        doc_info = getattr(self, '_pending_doc_info', None)
-        title = getattr(self, '_pending_title', f"Document #{result.document_id}")
+        # Use the canonical get_document_details function for complete metadata
+        from bmlibrarian.database import get_document_details
+        from bmlibrarian.config import get_config
+
+        doc = get_document_details(result.document_id)
+
+        if not doc:
+            logger.warning(f"Document {result.document_id} not found in database")
+            # Fall back to minimal display
+            title = getattr(self, '_pending_title', f"Document #{result.document_id}")
+            doc_data = DocumentViewData(
+                document_id=result.document_id,
+                title=title,
+                full_text=result.full_text,
+            )
+            self.document_view.set_document(doc_data)
+            return
 
         # Determine PDF path
         pdf_path_str: Optional[str] = None
+
+        # First check if result has a PDF path
         if result.pdf_path and result.pdf_path.exists():
             pdf_path_str = str(result.pdf_path)
+        else:
+            # Resolve from pdf_filename in document record
+            pdf_filename = doc.get('pdf_filename')
+            if pdf_filename:
+                config = get_config()
+                pdf_config = config.get('pdf') or {}
+                pdf_base_dir = Path(
+                    pdf_config.get('base_dir', '~/knowledgebase/pdf')
+                ).expanduser()
+
+                # Handle both relative (year/file.pdf) and absolute paths
+                if '/' in pdf_filename:
+                    candidate_path = pdf_base_dir / pdf_filename
+                else:
+                    year = doc.get('year')
+                    if year:
+                        candidate_path = pdf_base_dir / str(year) / pdf_filename
+                    else:
+                        candidate_path = pdf_base_dir / pdf_filename
+
+                if candidate_path.exists():
+                    pdf_path_str = str(candidate_path)
+                else:
+                    # Fallback without year directory
+                    fallback_path = pdf_base_dir / Path(pdf_filename).name
+                    if fallback_path.exists():
+                        pdf_path_str = str(fallback_path)
+
+        # Update current document path for interrogation
+        if pdf_path_str:
             self.current_document_path = pdf_path_str
-        elif self.current_document_id:
-            # Check for PDF in database via processor
-            processor = DocumentProcessor()
-            info = processor.get_document_info(self.current_document_id)
-            if info:
-                pdf_path = processor.get_pdf_path(info)
-                if pdf_path and pdf_path.exists():
-                    pdf_path_str = str(pdf_path)
-                    self.current_document_path = pdf_path_str
 
         # Store full text for LLM processing
-        if result.full_text:
-            self.current_document_text = result.full_text
+        # Use result.full_text if available (may be freshly extracted),
+        # otherwise fall back to database full_text
+        full_text = result.full_text or doc.get('full_text')
+        if full_text:
+            self.current_document_text = full_text
 
-        # Build document data for the view widget
+        # Build document data for the view widget using fetched details
         doc_data = DocumentViewData(
-            document_id=result.document_id,
-            title=title,
-            authors=doc_info.authors if doc_info else None,
-            journal=doc_info.journal if doc_info else None,
-            year=doc_info.publication_date.year if doc_info and doc_info.publication_date else None,
-            pmid=str(doc_info.pmid) if doc_info and doc_info.pmid else None,
-            doi=doc_info.doi if doc_info else None,
-            abstract=doc_info.abstract if doc_info else None,
-            full_text=result.full_text,
+            document_id=doc.get('id'),
+            title=doc.get('title') or "",
+            authors=doc.get('authors'),  # Already formatted as string by get_document_details
+            journal=doc.get('journal'),
+            year=doc.get('year'),
+            pmid=doc.get('pmid'),
+            doi=doc.get('doi'),
+            abstract=doc.get('abstract'),
+            full_text=full_text,
             pdf_path=pdf_path_str,
+            pdf_url=doc.get('pdf_url'),
+            publication_date=doc.get('publication_date'),
         )
 
         # Set document in the view widget

@@ -1234,6 +1234,142 @@ def search_hybrid(
     return documents, strategy_metadata
 
 
+def get_document_details(document_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch comprehensive document details by ID.
+
+    This is the canonical function for getting all document metadata.
+    Use this when passing documents between widgets/components instead
+    of passing partial data structures.
+
+    Args:
+        document_id: Database ID of the document
+
+    Returns:
+        Dictionary with all document fields, properly formatted:
+        - id: Document ID
+        - title: Document title
+        - abstract: Document abstract
+        - authors: Authors as formatted string (e.g., "Smith J, Jones A, et al.")
+        - authors_list: Authors as list (original array from database)
+        - journal: Publication/journal name (from 'publication' field)
+        - year: Publication year as integer
+        - publication_date: Full publication date as ISO string
+        - doi: DOI if available
+        - pmid: PubMed ID (from external_id if source is PubMed)
+        - external_id: Original external_id value
+        - source_id: Source ID
+        - source_name: Source name (PubMed, medRxiv, etc.)
+        - url: Document URL
+        - pdf_url: PDF URL if available
+        - pdf_filename: PDF filename if available
+        - full_text: Full text content if available
+        - keywords: List of keywords
+        - mesh_terms: List of MeSH terms
+        - has_full_text: Boolean indicating if full text exists
+
+        Returns None if document not found.
+
+    Example:
+        >>> doc = get_document_details(12345)
+        >>> if doc:
+        ...     print(f"{doc['title']} by {doc['authors']}")
+        ...     print(f"Published in {doc['journal']} ({doc['year']})")
+    """
+    db_manager = get_db_manager()
+
+    try:
+        with db_manager.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        d.id,
+                        d.title,
+                        d.abstract,
+                        d.authors,
+                        d.publication as journal,
+                        d.publication_date,
+                        EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
+                        d.doi,
+                        d.external_id,
+                        d.source_id,
+                        d.url,
+                        d.pdf_url,
+                        d.pdf_filename,
+                        d.full_text,
+                        d.keywords,
+                        d.mesh_terms,
+                        s.name as source_name
+                    FROM public.document d
+                    LEFT JOIN sources s ON d.source_id = s.id
+                    WHERE d.id = %s
+                    """,
+                    (document_id,),
+                )
+                row = cur.fetchone()
+
+                if not row:
+                    logger.debug(f"Document {document_id} not found")
+                    return None
+
+                # Convert to dict and process fields
+                doc = dict(row)
+
+                # Format authors from array to string
+                authors_list = doc.get('authors') or []
+                if isinstance(authors_list, list) and authors_list:
+                    if len(authors_list) > 3:
+                        doc['authors'] = ', '.join(authors_list[:3]) + ', et al.'
+                    else:
+                        doc['authors'] = ', '.join(authors_list)
+                else:
+                    doc['authors'] = None
+                doc['authors_list'] = authors_list
+
+                # Extract PMID from external_id for PubMed sources
+                # source_id=1 is typically PubMed
+                external_id = doc.get('external_id', '')
+                pmid = None
+                if external_id:
+                    if doc.get('source_id') == 1:
+                        # PubMed source - external_id is the PMID
+                        pmid = external_id
+                    elif external_id.isdigit():
+                        # Simple numeric ID
+                        pmid = external_id
+                    elif 'pmid:' in external_id.lower():
+                        # Handle "PMID:12345678" format
+                        import re
+                        pmid_match = re.search(r'pmid:(\d+)', external_id.lower())
+                        if pmid_match:
+                            pmid = pmid_match.group(1)
+                doc['pmid'] = pmid
+
+                # Convert publication_date to ISO string
+                pub_date = doc.get('publication_date')
+                if pub_date is not None and hasattr(pub_date, 'isoformat'):
+                    doc['publication_date'] = pub_date.isoformat()
+                elif pub_date is not None:
+                    doc['publication_date'] = str(pub_date)
+
+                # Ensure list fields are not None
+                for field in ['keywords', 'mesh_terms']:
+                    if doc.get(field) is None:
+                        doc[field] = []
+
+                # Add convenience boolean for full text availability
+                full_text = doc.get('full_text')
+                doc['has_full_text'] = bool(full_text and full_text.strip())
+
+                logger.debug(f"Fetched document details for {document_id}: {doc.get('title', 'untitled')[:50]}")
+                return doc
+
+    except Exception as e:
+        logger.error(f"Error fetching document details for {document_id}: {e}")
+        return None
+
+
 def close_database():
     """Close the database connection pool."""
     global _db_manager
