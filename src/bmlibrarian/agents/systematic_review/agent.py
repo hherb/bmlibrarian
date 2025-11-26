@@ -60,6 +60,58 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Exceptions
+# =============================================================================
+
+class SystematicReviewError(Exception):
+    """Base exception for systematic review errors."""
+
+    pass
+
+
+class SearchPlanningError(SystematicReviewError):
+    """Exception raised when search plan generation fails."""
+
+    pass
+
+
+class SearchExecutionError(SystematicReviewError):
+    """Exception raised when search execution fails."""
+
+    pass
+
+
+class ScoringError(SystematicReviewError):
+    """Exception raised when document scoring fails."""
+
+    pass
+
+
+class QualityAssessmentError(SystematicReviewError):
+    """Exception raised when quality assessment fails."""
+
+    pass
+
+
+class ReportGenerationError(SystematicReviewError):
+    """Exception raised when report generation fails."""
+
+    pass
+
+
+class LLMConnectionError(SystematicReviewError):
+    """Exception raised when LLM connection fails."""
+
+    pass
+
+
+class DatabaseConnectionError(SystematicReviewError):
+    """Exception raised when database connection fails."""
+
+    pass
+
+
+# =============================================================================
 # Constants
 # =============================================================================
 
@@ -671,18 +723,83 @@ class SystematicReviewAgent(BaseAgent):
 
             return result
 
-        except Exception as e:
-            logger.error(f"Systematic review failed: {e}", exc_info=True)
+        except SystematicReviewError:
+            # Re-raise our custom exceptions as-is
+            self.documenter.end_review()
+            raise
+        except ConnectionError as e:
+            # Database or network connectivity issues
+            error_msg = f"Connection error during systematic review: {e}"
+            logger.error(error_msg, exc_info=True)
             self.documenter.log_step(
                 action="review_failed",
                 tool=None,
-                input_summary="Review encountered error",
-                output_summary=f"Failed: {str(e)}",
-                decision_rationale="Error during review execution",
+                input_summary="Review encountered connection error",
+                output_summary=error_msg,
+                decision_rationale="Database or network connectivity failure",
                 error=str(e),
             )
             self.documenter.end_review()
+            raise DatabaseConnectionError(error_msg) from e
+        except TimeoutError as e:
+            # Timeout during LLM or database operations
+            error_msg = f"Timeout during systematic review: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.documenter.log_step(
+                action="review_failed",
+                tool=None,
+                input_summary="Review timed out",
+                output_summary=error_msg,
+                decision_rationale="Operation timeout - consider increasing timeout settings",
+                error=str(e),
+            )
+            self.documenter.end_review()
+            raise LLMConnectionError(error_msg) from e
+        except ValueError as e:
+            # Data validation or configuration errors
+            error_msg = f"Validation error during systematic review: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.documenter.log_step(
+                action="review_failed",
+                tool=None,
+                input_summary="Review encountered validation error",
+                output_summary=error_msg,
+                decision_rationale="Data validation or configuration error",
+                error=str(e),
+            )
+            self.documenter.end_review()
+            raise SystematicReviewError(error_msg) from e
+        except KeyboardInterrupt:
+            # User interrupted the review
+            logger.info("Systematic review interrupted by user")
+            self.documenter.log_step(
+                action="review_interrupted",
+                tool=None,
+                input_summary="Review interrupted by user",
+                output_summary="Review was cancelled by user",
+                decision_rationale="User requested cancellation",
+            )
+            self.documenter.end_review()
             raise
+        except Exception as e:
+            # Catch-all for unexpected errors with detailed context
+            error_type = type(e).__name__
+            error_msg = f"Unexpected error ({error_type}) during systematic review: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.documenter.log_step(
+                action="review_failed",
+                tool=None,
+                input_summary=f"Review encountered unexpected {error_type}",
+                output_summary=error_msg,
+                decision_rationale="Unexpected error - please report this issue",
+                error=str(e),
+                metrics={
+                    "error_type": error_type,
+                    "phase": self.documenter._current_phase,
+                }
+            )
+            self.documenter.end_review()
+            raise SystematicReviewError(error_msg) from e
 
     def _build_empty_result(
         self,

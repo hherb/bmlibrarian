@@ -98,7 +98,18 @@ Example:
         print(f"  - {paper['title']} (score: {paper['scores']['composite_score']})")
 """
 
-from .agent import SystematicReviewAgent
+from .agent import (
+    SystematicReviewAgent,
+    # Exceptions
+    SystematicReviewError,
+    SearchPlanningError,
+    SearchExecutionError,
+    ScoringError,
+    QualityAssessmentError,
+    ReportGenerationError,
+    LLMConnectionError,
+    DatabaseConnectionError,
+)
 
 from .config import (
     SystematicReviewConfig,
@@ -223,11 +234,22 @@ from .quality import (
 from .reporter import (
     Reporter,
     REPORT_FORMAT_VERSION,
+    OutputPathError,
+    validate_output_path,
 )
 
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
+    # Exceptions
+    "SystematicReviewError",
+    "SearchPlanningError",
+    "SearchExecutionError",
+    "ScoringError",
+    "QualityAssessmentError",
+    "ReportGenerationError",
+    "LLMConnectionError",
+    "DatabaseConnectionError",
     # Configuration
     "SystematicReviewConfig",
     "get_systematic_review_config",
@@ -330,4 +352,6 @@ __all__ = [
     # Phase 5: Reporting
     "Reporter",
     "REPORT_FORMAT_VERSION",
+    "OutputPathError",
+    "validate_output_path",
 ]

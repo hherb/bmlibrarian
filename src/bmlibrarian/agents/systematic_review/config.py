@@ -57,6 +57,9 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_CHECKPOINT_ENABLED = True
 DEFAULT_CHECKPOINT_DIR = "~/.bmlibrarian/checkpoints"
 
+# Output defaults
+DEFAULT_OUTPUT_DIR = "~/.bmlibrarian/systematic_reviews"
+
 
 # =============================================================================
 # Configuration Dataclass
@@ -117,6 +120,9 @@ class SystematicReviewConfig:
     checkpoint_enabled: bool = DEFAULT_CHECKPOINT_ENABLED
     checkpoint_dir: str = DEFAULT_CHECKPOINT_DIR
 
+    # Output settings
+    output_dir: str = DEFAULT_OUTPUT_DIR
+
     # Search strategy settings
     search_strategies: List[str] = field(
         default_factory=lambda: ["semantic", "keyword"]
@@ -155,6 +161,7 @@ class SystematicReviewConfig:
             "scoring_weights": self.scoring_weights.to_dict(),
             "checkpoint_enabled": self.checkpoint_enabled,
             "checkpoint_dir": self.checkpoint_dir,
+            "output_dir": self.output_dir,
             "search_strategies": self.search_strategies,
             "study_type_filter": self.study_type_filter,
             "run_study_assessment": self.run_study_assessment,
@@ -198,6 +205,7 @@ class SystematicReviewConfig:
             scoring_weights=scoring_weights,
             checkpoint_enabled=data.get("checkpoint_enabled", DEFAULT_CHECKPOINT_ENABLED),
             checkpoint_dir=data.get("checkpoint_dir", DEFAULT_CHECKPOINT_DIR),
+            output_dir=data.get("output_dir", DEFAULT_OUTPUT_DIR),
             search_strategies=data.get("search_strategies", ["semantic", "keyword"]),
             study_type_filter=data.get("study_type_filter"),
             run_study_assessment=data.get("run_study_assessment", True),
@@ -278,6 +286,10 @@ class SystematicReviewConfig:
                 checkpoint_dir=agent_config.get(
                     "checkpoint_dir",
                     DEFAULT_CHECKPOINT_DIR
+                ),
+                output_dir=agent_config.get(
+                    "output_dir",
+                    DEFAULT_OUTPUT_DIR
                 ),
                 search_strategies=agent_config.get(
                     "search_strategies",
@@ -389,6 +401,7 @@ DEFAULT_SYSTEMATIC_REVIEW_CONFIG: Dict[str, Any] = {
     "max_retries": DEFAULT_MAX_RETRIES,
     "checkpoint_enabled": DEFAULT_CHECKPOINT_ENABLED,
     "checkpoint_dir": DEFAULT_CHECKPOINT_DIR,
+    "output_dir": DEFAULT_OUTPUT_DIR,
     "search_strategies": ["semantic", "keyword"],
     "study_type_filter": None,
     "run_study_assessment": True,
