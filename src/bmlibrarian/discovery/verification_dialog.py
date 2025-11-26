@@ -6,6 +6,7 @@ that fail automatic verification (DOI/title mismatch).
 
 import logging
 import shutil
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +54,7 @@ class PDFVerificationDialog(QDialog):
         self.save_path: Optional[Path] = None
         self.reassign_doc_id: Optional[int] = None
         self._pdf_saved = False  # Track if user already saved a copy
+        self._pdf_reassigned = False  # Track if PDF was reassigned to another document
 
         self._setup_ui()
 
@@ -264,7 +266,7 @@ class PDFVerificationDialog(QDialog):
         return frame
 
     def _create_alternative_section(self) -> QFrame:
-        """Create the alternative document section."""
+        """Create the alternative document section with Reassign button."""
         alt = self.data.alternative_document
         frame = QFrame()
         frame.setStyleSheet("""
@@ -306,6 +308,32 @@ class PDFVerificationDialog(QDialog):
         info_label.setStyleSheet("background: transparent; border: none;")
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
+
+        # Reassign button (purple) - directly under the matching document info
+        self.reassign_btn = QPushButton(f"📄 Assign PDF to Document {alt.doc_id}")
+        self.reassign_btn.setToolTip(
+            f"Assign this PDF to '{alt.title[:50]}...' instead\n"
+            "The dialog will remain open for further actions."
+        )
+        self.reassign_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 11pt;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:disabled {
+                background-color: #CE93D8;
+                color: #E1BEE7;
+            }
+        """)
+        self.reassign_btn.clicked.connect(self._on_reassign)
+        layout.addWidget(self.reassign_btn)
 
         return frame
 
@@ -372,10 +400,21 @@ class PDFVerificationDialog(QDialog):
         return frame
 
     def _create_button_panel(self) -> QFrame:
-        """Create the action button panel."""
+        """Create the action button panel.
+
+        Button layout (two rows for better organization):
+        Row 1: Accept, Manual Upload
+        Row 2: Open in Browser (if available), Save As, Retry, Reject
+
+        Note: Reassign button is now in the alternative document section.
+        """
         frame = QFrame()
-        layout = QHBoxLayout(frame)
-        layout.setSpacing(self.scale.get('spacing_medium', 12))
+        main_layout = QVBoxLayout(frame)
+        main_layout.setSpacing(self.scale.get('spacing_small', 8))
+
+        # Row 1: Primary actions
+        row1_layout = QHBoxLayout()
+        row1_layout.setSpacing(self.scale.get('spacing_medium', 12))
 
         # Accept button (green)
         self.accept_btn = QPushButton("✓ Accept && Ingest")
@@ -394,18 +433,44 @@ class PDFVerificationDialog(QDialog):
             }
         """)
         self.accept_btn.clicked.connect(self._on_accept)
-        layout.addWidget(self.accept_btn)
+        row1_layout.addWidget(self.accept_btn)
 
-        # Reassign button (purple) - only if alternative document available
-        if self.data.alternative_document and not self.data.alternative_document.has_pdf:
-            alt = self.data.alternative_document
-            self.reassign_btn = QPushButton(f"📄 Assign to Doc {alt.doc_id}")
-            self.reassign_btn.setToolTip(
-                f"Assign this PDF to '{alt.title[:50]}...' instead"
+        # Manual Upload button (teal) - select a different PDF
+        self.upload_btn = QPushButton("📁 Manual Upload")
+        self.upload_btn.setToolTip("Select a different PDF file to ingest instead")
+        self.upload_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #009688;
+                color: white;
+                border-radius: 6px;
+                padding: 12px 24px;
+                font-size: 12pt;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #00796B;
+            }
+        """)
+        self.upload_btn.clicked.connect(self._on_manual_upload)
+        row1_layout.addWidget(self.upload_btn)
+
+        row1_layout.addStretch()
+        main_layout.addLayout(row1_layout)
+
+        # Row 2: Secondary actions
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(self.scale.get('spacing_medium', 12))
+
+        # Open in Browser button (cyan) - only if source URL available
+        if self.data.source_url:
+            self.browser_btn = QPushButton("🌐 Open in Browser")
+            self.browser_btn.setToolTip(
+                f"Open the source URL in your browser to manually find the correct PDF\n"
+                f"URL: {self.data.source_url[:60]}..."
             )
-            self.reassign_btn.setStyleSheet("""
+            self.browser_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #9C27B0;
+                    background-color: #00BCD4;
                     color: white;
                     border-radius: 6px;
                     padding: 12px 24px;
@@ -413,11 +478,11 @@ class PDFVerificationDialog(QDialog):
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: #7B1FA2;
+                    background-color: #0097A7;
                 }
             """)
-            self.reassign_btn.clicked.connect(self._on_reassign)
-            layout.addWidget(self.reassign_btn)
+            self.browser_btn.clicked.connect(self._on_open_browser)
+            row2_layout.addWidget(self.browser_btn)
 
         # Save As button (blue)
         self.save_btn = QPushButton("💾 Save As...")
@@ -436,7 +501,7 @@ class PDFVerificationDialog(QDialog):
             }
         """)
         self.save_btn.clicked.connect(self._on_save_as)
-        layout.addWidget(self.save_btn)
+        row2_layout.addWidget(self.save_btn)
 
         # Retry button (orange)
         self.retry_btn = QPushButton("🔄 Retry Search")
@@ -455,7 +520,7 @@ class PDFVerificationDialog(QDialog):
             }
         """)
         self.retry_btn.clicked.connect(self._on_retry)
-        layout.addWidget(self.retry_btn)
+        row2_layout.addWidget(self.retry_btn)
 
         # Reject button (red)
         self.reject_btn = QPushButton("✗ Reject")
@@ -474,7 +539,10 @@ class PDFVerificationDialog(QDialog):
             }
         """)
         self.reject_btn.clicked.connect(self._on_reject)
-        layout.addWidget(self.reject_btn)
+        row2_layout.addWidget(self.reject_btn)
+
+        row2_layout.addStretch()
+        main_layout.addLayout(row2_layout)
 
         return frame
 
@@ -484,10 +552,81 @@ class PDFVerificationDialog(QDialog):
         self.accept()
 
     def _on_reassign(self) -> None:
-        """Handle Reassign button click."""
-        self.decision = VerificationDecision.REASSIGN
-        self.reassign_doc_id = self.data.alternative_document.doc_id
-        self.accept()
+        """Handle Reassign button click.
+
+        Assigns the PDF to the alternative document but keeps the dialog open
+        so the user can perform additional actions (like opening browser to
+        find the correct PDF for the original document).
+        """
+        alt = self.data.alternative_document
+        self.reassign_doc_id = alt.doc_id
+
+        try:
+            # Perform the reassignment immediately
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            # Calculate relative path for database
+            from bmlibrarian.utils.pdf_manager import PDFManager
+            pdf_manager = PDFManager()
+
+            # Get the relative path (year/filename.pdf format)
+            document = {
+                'id': alt.doc_id,
+                'pdf_filename': self.data.pdf_path.name
+            }
+            # We need to get the year from the alternative document
+            # For now, use the filename as-is and let the database store it
+            relative_path = self.data.pdf_path.name
+            if pdf_manager.base_dir and self.data.pdf_path.is_relative_to(pdf_manager.base_dir):
+                relative_path = str(self.data.pdf_path.relative_to(pdf_manager.base_dir))
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET pdf_filename = %s WHERE id = %s",
+                        (relative_path, alt.doc_id)
+                    )
+                    conn.commit()
+
+            logger.info(f"Reassigned PDF to document {alt.doc_id}: {relative_path}")
+
+            # Update button to show success and disable it
+            self.reassign_btn.setEnabled(False)
+            self.reassign_btn.setText(f"✓ Assigned to Doc {alt.doc_id}")
+            self.reassign_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #CE93D8;
+                    color: #4A148C;
+                    border-radius: 6px;
+                    padding: 10px 20px;
+                    font-size: 11pt;
+                    font-weight: bold;
+                }
+            """)
+
+            # Show success message
+            QMessageBox.information(
+                self,
+                "PDF Reassigned",
+                f"PDF has been assigned to document {alt.doc_id}:\n"
+                f"{alt.title[:60]}...\n\n"
+                "You can now:\n"
+                "• Open the source URL in browser to find the correct PDF\n"
+                "• Manually upload the correct PDF\n"
+                "• Reject to close without further action"
+            )
+
+            # Mark that we've done a reassignment (for return value)
+            self._pdf_reassigned = True
+
+        except Exception as e:
+            logger.error(f"Failed to reassign PDF to document {alt.doc_id}: {e}")
+            QMessageBox.critical(
+                self,
+                "Reassignment Failed",
+                f"Failed to assign PDF to document {alt.doc_id}:\n{e}"
+            )
 
     def _on_save_as(self) -> None:
         """Handle Save As button click - save copy but continue dialog."""
@@ -547,3 +686,49 @@ class PDFVerificationDialog(QDialog):
         """Handle Reject button click."""
         self.decision = VerificationDecision.REJECT
         self.reject()
+
+    def _on_open_browser(self) -> None:
+        """Handle Open in Browser button click.
+
+        Opens the source URL in the default browser but keeps the dialog open
+        so the user can manually download and then use Manual Upload.
+        """
+        if self.data.source_url:
+            try:
+                webbrowser.open(self.data.source_url)
+                logger.info(f"Opened source URL in browser: {self.data.source_url}")
+            except Exception as e:
+                logger.error(f"Failed to open browser: {e}")
+                QMessageBox.warning(
+                    self,
+                    "Browser Error",
+                    f"Failed to open browser:\n{e}\n\n"
+                    f"URL: {self.data.source_url}"
+                )
+
+    def _on_manual_upload(self) -> None:
+        """Handle Manual Upload button click.
+
+        Opens a file dialog to select a different PDF file.
+        If selected, closes the dialog with MANUAL_UPLOAD decision.
+        """
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select PDF File",
+            str(Path.home() / "Downloads"),
+            "PDF Files (*.pdf)"
+        )
+
+        if file_path:
+            upload_path = Path(file_path)
+            if upload_path.exists() and upload_path.suffix.lower() == '.pdf':
+                self.data.manual_upload_path = upload_path
+                self.decision = VerificationDecision.MANUAL_UPLOAD
+                logger.info(f"User selected manual upload: {upload_path}")
+                self.accept()
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Invalid File",
+                    "Please select a valid PDF file."
+                )

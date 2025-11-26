@@ -466,6 +466,34 @@ class PDFManager:
                         )
                         return pdf_path
 
+                    elif decision == 'manual_upload':
+                        # User manually selected a different PDF file
+                        if save_path and save_path.exists():
+                            # Delete the mismatched temp file
+                            try:
+                                pdf_path.unlink()
+                            except Exception as e:
+                                logger.warning(f"Failed to delete temp PDF: {e}")
+
+                            # Copy the manually selected file to the correct location
+                            target_path = self.get_pdf_path(document, create_dirs=True)
+                            if target_path:
+                                shutil.copy2(save_path, target_path)
+                                document['pdf_filename'] = target_path.name
+                                logger.info(
+                                    f"User MANUALLY UPLOADED PDF for document {document.get('id')}: "
+                                    f"{save_path} -> {target_path}"
+                                )
+                                return target_path
+                            else:
+                                logger.error(
+                                    f"Could not determine target path for manual upload"
+                                )
+                                return None
+                        else:
+                            logger.warning("Manual upload selected but no valid path provided")
+                            return None
+
                     elif decision == 'reassign':
                         # User wants to assign to a different document
                         if reassign_doc_id:
@@ -555,7 +583,7 @@ class PDFManager:
         pdf_path: Path,
         verification_callback: Optional[Callable] = None,
         parent_widget=None
-    ) -> Tuple[str, Optional[Path]]:
+    ) -> Tuple[str, Optional[Path], Optional[int]]:
         """Handle verification mismatch by prompting user for decision.
 
         Args:
@@ -566,8 +594,9 @@ class PDFManager:
             parent_widget: Optional parent widget for GUI
 
         Returns:
-            Tuple of (decision_string, optional_save_path, optional_reassign_doc_id)
-            decision_string is one of: 'accept', 'save_as', 'retry', 'reject', 'reassign'
+            Tuple of (decision_string, optional_path, optional_reassign_doc_id)
+            decision_string is one of: 'accept', 'save_as', 'retry', 'reject', 'reassign', 'manual_upload'
+            optional_path is save_path for 'save_as', or uploaded file path for 'manual_upload'
         """
         from bmlibrarian.discovery.verification_prompt import (
             VerificationPromptData,
@@ -581,6 +610,11 @@ class PDFManager:
         extracted_doi = getattr(result, 'extracted_doi', None)
         alternative_doc = find_alternative_document(extracted_doi) if extracted_doi else None
 
+        # Extract source URL from the download result
+        source_url = None
+        if result.source and hasattr(result.source, 'url'):
+            source_url = result.source.url
+
         # Build verification prompt data using extracted identifiers from DownloadResult
         prompt_data = VerificationPromptData(
             pdf_path=pdf_path,
@@ -593,21 +627,22 @@ class PDFManager:
             title_similarity=getattr(result, 'title_similarity', None) or result.verification_confidence,
             verification_warnings=result.verification_warnings,
             doc_id=document.get('id'),
-            alternative_document=alternative_doc
+            alternative_document=alternative_doc,
+            source_url=source_url
         )
 
         # Use custom callback if provided
         if verification_callback:
-            decision, save_path, reassign_doc_id = verification_callback(prompt_data)
+            decision, path, reassign_doc_id = verification_callback(prompt_data)
         elif parent_widget is not None:
             # Use GUI dialog
-            decision, save_path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
+            decision, path, reassign_doc_id = prompt_gui_verification(prompt_data, parent_widget)
         else:
             # Use CLI prompt
-            decision, save_path, reassign_doc_id = prompt_cli_verification(prompt_data)
+            decision, path, reassign_doc_id = prompt_cli_verification(prompt_data)
 
         # Convert VerificationDecision enum to string
-        return decision.value, save_path, reassign_doc_id
+        return decision.value, path, reassign_doc_id
 
     def _assign_pdf_to_document(self, doc_id: int, pdf_path: Path) -> bool:
         """Assign a PDF to a document in the database.

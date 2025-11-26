@@ -1306,6 +1306,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             extracted_doi = getattr(result, 'extracted_doi', None)
             alternative_doc = find_alternative_document(extracted_doi) if extracted_doi else None
 
+            # Extract source URL from the download result
+            source_url = None
+            if result.source and hasattr(result.source, 'url'):
+                source_url = result.source.url
+
             prompt_data = VerificationPromptData(
                 pdf_path=pdf_path,
                 expected_doi=card_data.doi,
@@ -1317,7 +1322,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 title_similarity=getattr(result, 'title_similarity', None),
                 verification_warnings=result.verification_warnings,
                 doc_id=card_data.doc_id,
-                alternative_document=alternative_doc
+                alternative_document=alternative_doc,
+                source_url=source_url
             )
 
             # Show verification dialog
@@ -1327,6 +1333,45 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             if decision == VerificationDecision.ACCEPT:
                 logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
                 # Continue to return the path and update full_text
+            elif decision == VerificationDecision.MANUAL_UPLOAD:
+                # User manually selected a different PDF file
+                logger.info(f"User chose MANUAL_UPLOAD for document {card_data.doc_id}")
+                if save_path and save_path.exists():
+                    # Delete the mismatched temp file
+                    try:
+                        pdf_path.unlink()
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp PDF: {e}")
+
+                    # Copy the manually selected file to the correct location
+                    import shutil
+                    from bmlibrarian.utils.pdf_manager import PDFManager
+                    pdf_manager = PDFManager()
+                    document = {
+                        'id': card_data.doc_id,
+                        'publication_date': card_data.publication_date,
+                        'pdf_filename': save_path.name
+                    }
+                    target_path = pdf_manager.get_pdf_path(document, create_dirs=True)
+                    if target_path:
+                        shutil.copy2(save_path, target_path)
+                        # Update database with the new filename
+                        self._update_pdf_filename_in_database(
+                            card_data.doc_id, target_path, document
+                        )
+                        logger.info(
+                            f"User MANUALLY UPLOADED PDF for document {card_data.doc_id}: "
+                            f"{save_path} -> {target_path}"
+                        )
+                        return target_path
+                    else:
+                        logger.error(
+                            f"Could not determine target path for manual upload"
+                        )
+                        return None
+                else:
+                    logger.warning("Manual upload selected but no valid path provided")
+                    return None
             elif decision == VerificationDecision.REASSIGN:
                 logger.info(
                     f"User chose to REASSIGN PDF to document {reassign_doc_id} "
