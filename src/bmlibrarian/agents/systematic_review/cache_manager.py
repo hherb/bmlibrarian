@@ -464,6 +464,105 @@ class ResultsCacheManager:
             return False
 
     # =========================================================================
+    # Paper Weight Caching
+    # =========================================================================
+
+    def get_paper_weight(
+        self,
+        document_id: int,
+        version_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve cached paper weight assessment.
+
+        Args:
+            document_id: Document ID
+            version_id: Assessment version ID
+
+        Returns:
+            Cached paper weight result dictionary, or None if not cached
+        """
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT result, assessed_at
+                        FROM results_cache.paper_weight_cache
+                        WHERE document_id = %s AND version_id = %s
+                        """,
+                        (document_id, version_id)
+                    )
+                    row = cursor.fetchone()
+
+            if row:
+                logger.debug(
+                    f"Cache HIT: Paper weight assessment for document {document_id} "
+                    f"(assessed {row[1]})"
+                )
+                return row[0]
+
+            logger.debug(f"Cache MISS: Paper weight assessment for document {document_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve cached paper weight assessment: {e}")
+            return None
+
+    def store_paper_weight(
+        self,
+        document_id: int,
+        version_id: int,
+        result: Dict[str, Any],
+        paper_weight_assessment_id: Optional[int] = None,
+        execution_time_ms: Optional[int] = None
+    ) -> bool:
+        """
+        Store paper weight assessment result in cache.
+
+        Args:
+            document_id: Document ID
+            version_id: Assessment version ID
+            result: Assessment result dictionary
+            paper_weight_assessment_id: Optional ID from paper_weights.assessments
+            execution_time_ms: Optional execution time in milliseconds
+
+        Returns:
+            True if stored successfully, False otherwise
+        """
+        try:
+            composite_score = result.get('composite_score')
+
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO results_cache.paper_weight_cache
+                            (document_id, version_id, paper_weight_assessment_id,
+                             composite_score, result, execution_time_ms)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (document_id, version_id) DO UPDATE
+                        SET paper_weight_assessment_id = EXCLUDED.paper_weight_assessment_id,
+                            composite_score = EXCLUDED.composite_score,
+                            result = EXCLUDED.result,
+                            assessed_at = NOW(),
+                            execution_time_ms = EXCLUDED.execution_time_ms
+                        """,
+                        (
+                            document_id, version_id, paper_weight_assessment_id,
+                            composite_score, json.dumps(result), execution_time_ms
+                        )
+                    )
+                    conn.commit()
+
+            logger.debug(f"Stored paper weight assessment for document {document_id} in cache")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to store paper weight assessment in cache: {e}")
+            return False
+
+    # =========================================================================
     # Statistics
     # =========================================================================
 
@@ -484,6 +583,7 @@ class ResultsCacheManager:
                             (SELECT COUNT(*) FROM results_cache.pico_extractions) as pico_count,
                             (SELECT COUNT(*) FROM results_cache.prisma_assessments) as prisma_count,
                             (SELECT COUNT(*) FROM results_cache.suitability_checks) as suitability_count,
+                            (SELECT COUNT(*) FROM results_cache.paper_weight_cache) as paper_weight_count,
                             (SELECT COUNT(*) FROM results_cache.assessment_versions) as version_count
                         """
                     )
@@ -494,7 +594,8 @@ class ResultsCacheManager:
                 "pico_extractions_cached": row[1],
                 "prisma_assessments_cached": row[2],
                 "suitability_checks_cached": row[3],
-                "total_versions": row[4]
+                "paper_weight_cached": row[4],
+                "total_versions": row[5]
             }
 
         except Exception as e:

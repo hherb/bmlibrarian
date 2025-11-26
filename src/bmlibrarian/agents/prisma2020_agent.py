@@ -275,6 +275,9 @@ class PRISMA2020Agent(BaseAgent):
     - Editorial review and peer review processes
     """
 
+    # Version for cache invalidation when assessment logic changes
+    VERSION = "1.0.0"
+
     def __init__(self,
                  model: Optional[str] = None,
                  host: Optional[str] = None,
