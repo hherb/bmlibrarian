@@ -1370,6 +1370,62 @@ def get_document_details(document_id: int) -> Optional[Dict[str, Any]]:
         return None
 
 
+def resolve_pdf_path(doc: Dict[str, Any]) -> Optional[str]:
+    """
+    Resolve the full PDF file path from document details.
+
+    Takes a document dict (from get_document_details) and resolves the
+    pdf_filename to a full filesystem path using the configured PDF base
+    directory.
+
+    Args:
+        doc: Document dictionary with 'pdf_filename' and optionally 'year'
+
+    Returns:
+        Full path to PDF file if it exists, None otherwise.
+
+    Example:
+        >>> doc = get_document_details(12345)
+        >>> pdf_path = resolve_pdf_path(doc)
+        >>> if pdf_path:
+        ...     print(f"PDF at: {pdf_path}")
+    """
+    from pathlib import Path
+    from bmlibrarian.config import get_config
+
+    pdf_filename = doc.get('pdf_filename')
+    if not pdf_filename:
+        return None
+
+    config = get_config()
+    pdf_config = config.get('pdf') or {}
+    pdf_base_dir = Path(
+        pdf_config.get('base_dir', '~/knowledgebase/pdf')
+    ).expanduser()
+
+    # Handle both relative paths (year/file.pdf) and simple filenames
+    if '/' in pdf_filename:
+        # Already has path structure
+        candidate_path = pdf_base_dir / pdf_filename
+    else:
+        # Try with year subdirectory first
+        year = doc.get('year')
+        if year:
+            candidate_path = pdf_base_dir / str(year) / pdf_filename
+        else:
+            candidate_path = pdf_base_dir / pdf_filename
+
+    if candidate_path.exists():
+        return str(candidate_path)
+
+    # Fallback: try without year directory
+    fallback_path = pdf_base_dir / Path(pdf_filename).name
+    if fallback_path.exists():
+        return str(fallback_path)
+
+    return None
+
+
 def close_database():
     """Close the database connection pool."""
     global _db_manager

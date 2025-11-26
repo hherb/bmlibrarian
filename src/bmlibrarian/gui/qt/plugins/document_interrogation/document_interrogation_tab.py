@@ -1471,9 +1471,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         import logging
         logger = logging.getLogger(__name__)
 
-        # Use the canonical get_document_details function for complete metadata
-        from bmlibrarian.database import get_document_details
-        from bmlibrarian.config import get_config
+        # Use the canonical functions for complete metadata and PDF path resolution
+        from bmlibrarian.database import get_document_details, resolve_pdf_path
 
         doc = get_document_details(result.document_id)
 
@@ -1489,39 +1488,13 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             self.document_view.set_document(doc_data)
             return
 
-        # Determine PDF path
+        # Determine PDF path - prefer result.pdf_path if available (may be freshly downloaded)
         pdf_path_str: Optional[str] = None
-
-        # First check if result has a PDF path
         if result.pdf_path and result.pdf_path.exists():
             pdf_path_str = str(result.pdf_path)
         else:
             # Resolve from pdf_filename in document record
-            pdf_filename = doc.get('pdf_filename')
-            if pdf_filename:
-                config = get_config()
-                pdf_config = config.get('pdf') or {}
-                pdf_base_dir = Path(
-                    pdf_config.get('base_dir', '~/knowledgebase/pdf')
-                ).expanduser()
-
-                # Handle both relative (year/file.pdf) and absolute paths
-                if '/' in pdf_filename:
-                    candidate_path = pdf_base_dir / pdf_filename
-                else:
-                    year = doc.get('year')
-                    if year:
-                        candidate_path = pdf_base_dir / str(year) / pdf_filename
-                    else:
-                        candidate_path = pdf_base_dir / pdf_filename
-
-                if candidate_path.exists():
-                    pdf_path_str = str(candidate_path)
-                else:
-                    # Fallback without year directory
-                    fallback_path = pdf_base_dir / Path(pdf_filename).name
-                    if fallback_path.exists():
-                        pdf_path_str = str(fallback_path)
+            pdf_path_str = resolve_pdf_path(doc)
 
         # Update current document path for interrogation
         if pdf_path_str:

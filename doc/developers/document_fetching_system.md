@@ -49,12 +49,29 @@ This function fetches comprehensive document details by database ID and returns 
 
 4. **Null Safety**: List fields (`keywords`, `mesh_terms`) are guaranteed to be lists, never None.
 
+## PDF Path Resolution
+
+### `resolve_pdf_path(doc: Dict[str, Any]) -> Optional[str]`
+
+Located in: `src/bmlibrarian/database.py`
+
+This companion function takes a document dict (from `get_document_details`) and resolves the `pdf_filename` to a full filesystem path.
+
+**Important**: The `pdf_filename` field from `get_document_details` is just the filename (e.g., `"paper.pdf"` or `"2023/paper.pdf"`), NOT a full path. Use `resolve_pdf_path()` to get the actual file path.
+
+```python
+from bmlibrarian.database import get_document_details, resolve_pdf_path
+
+doc = get_document_details(12345)
+pdf_path = resolve_pdf_path(doc)  # Returns "/Users/.../knowledgebase/pdf/2023/paper.pdf" or None
+```
+
 ## Usage Pattern
 
 ### In Widget/Tab Code
 
 ```python
-from bmlibrarian.database import get_document_details
+from bmlibrarian.database import get_document_details, resolve_pdf_path
 from bmlibrarian.gui.qt.widgets import DocumentViewData
 
 def _load_document(self, doc_id: int):
@@ -65,6 +82,9 @@ def _load_document(self, doc_id: int):
     if not doc:
         # Handle not found
         return
+
+    # Resolve PDF path from pdf_filename
+    pdf_path = resolve_pdf_path(doc)
 
     # Create DocumentViewData - fields are already properly formatted
     doc_data = DocumentViewData(
@@ -77,7 +97,7 @@ def _load_document(self, doc_id: int):
         doi=doc.get('doi'),
         abstract=doc.get('abstract'),
         full_text=doc.get('full_text'),
-        pdf_path=doc.get('pdf_filename'),
+        pdf_path=pdf_path,  # Use resolved path, not pdf_filename
         pdf_url=doc.get('pdf_url'),
         publication_date=doc.get('publication_date'),
     )
@@ -108,44 +128,6 @@ class DocumentFetchWorker(QThread):
                 self.fetch_error.emit(f"Document {self.document_id} not found")
         except Exception as e:
             self.fetch_error.emit(str(e))
-```
-
-## PDF Path Resolution
-
-The `get_document_details()` function returns `pdf_filename` (the relative filename from the database), not a full path. To resolve the full PDF path:
-
-```python
-from pathlib import Path
-from bmlibrarian.config import get_config
-
-def resolve_pdf_path(doc: dict) -> Optional[str]:
-    """Resolve full PDF path from document dict."""
-    pdf_filename = doc.get('pdf_filename')
-    if not pdf_filename:
-        return None
-
-    config = get_config()
-    pdf_config = config.get('pdf') or {}
-    pdf_base_dir = Path(
-        pdf_config.get('base_dir', '~/knowledgebase/pdf')
-    ).expanduser()
-
-    # Handle both relative (year/file.pdf) and simple filenames
-    if '/' in pdf_filename:
-        candidate_path = pdf_base_dir / pdf_filename
-    else:
-        year = doc.get('year')
-        if year:
-            candidate_path = pdf_base_dir / str(year) / pdf_filename
-        else:
-            candidate_path = pdf_base_dir / pdf_filename
-
-    if candidate_path.exists():
-        return str(candidate_path)
-
-    # Fallback without year directory
-    fallback_path = pdf_base_dir / Path(pdf_filename).name
-    return str(fallback_path) if fallback_path.exists() else None
 ```
 
 ## Components Using This Pattern

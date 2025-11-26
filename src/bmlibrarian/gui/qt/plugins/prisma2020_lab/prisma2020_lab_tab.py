@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, Signal
 from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from bmlibrarian.config import get_config
-from bmlibrarian.database import get_document_details
+from bmlibrarian.database import get_document_details, resolve_pdf_path
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
 from ...widgets import DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
@@ -314,14 +314,17 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
 
         Uses document data from get_document_details which provides
         pre-formatted authors string and consistent field names.
+        Uses resolve_pdf_path to convert pdf_filename to full path.
         """
         if not self.current_document:
             return
 
         doc = self.current_document
 
+        # Resolve PDF path from pdf_filename
+        pdf_path = resolve_pdf_path(doc)
+
         # Create DocumentViewData from document dict
-        # get_document_details returns 'authors' already formatted as string
         doc_data = DocumentViewData(
             document_id=doc.get('id'),
             title=doc.get('title', 'No title'),
@@ -332,7 +335,7 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             doi=doc.get('doi'),
             abstract=doc.get('abstract'),
             full_text=doc.get('full_text'),
-            pdf_path=doc.get('pdf_filename'),  # Note: pdf_filename from get_document_details
+            pdf_path=pdf_path,
             pdf_url=doc.get('pdf_url'),
             publication_date=doc.get('publication_date'),
         )
