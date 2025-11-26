@@ -44,6 +44,7 @@ Instance attributes are loaded from `config.json` via `_load_map_reduce_config()
 | `_map_phase_summarize_batch()` | Extracts themes from a citation batch |
 | `_reduce_phase_synthesize()` | Synthesizes all themes into final report |
 | `map_reduce_synthesis()` | Orchestrates the full map-reduce workflow |
+| `_validate_reference_numbers()` | Validates that generated content uses correct reference numbers |
 
 ### Flow Diagram
 
@@ -131,6 +132,36 @@ Each batch produces:
     "conclusion": "1-2 sentences summarizing findings",
     "themes_integrated": ["List of theme topics covered"]
 }
+```
+
+## Reference Number Preservation
+
+A critical requirement is that reference numbers must be preserved throughout the map-reduce process. The system ensures this through:
+
+### 1. Consistent Reference Mapping
+- `doc_to_ref` mapping is created ONCE in `synthesize_report()` before any synthesis
+- The same mapping is passed to both MAP and REDUCE phases
+- Reference numbers are assigned based on document order, not batch order
+
+### 2. Reference List in REDUCE Prompt
+The REDUCE phase receives a complete reference list:
+```
+Available References (use these exact numbers in your citations):
+[1] Smith et al. Study of cardiovascular effects... (2023)
+[5] Johnson et al. Long-term outcomes in... (2022)
+[12] Williams et al. Meta-analysis of... (2024)
+```
+
+### 3. Reference Validation
+After the REDUCE phase generates content, `_validate_reference_numbers()` checks:
+- All `[X]` patterns in the content are extracted
+- Invalid references (not in the valid set) trigger warnings
+- Missing references are logged at debug level
+
+```python
+# Example validation output
+logger.info("Reference validation: 8 unique refs used, 0 invalid, 8 valid")
+logger.warning("Generated content contains invalid reference numbers: [99]. Valid: [1, 2, 3, 4, 5]")
 ```
 
 ## Error Handling

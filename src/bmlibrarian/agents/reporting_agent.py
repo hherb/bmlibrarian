@@ -454,6 +454,48 @@ class ReportingAgent(BaseAgent):
     MAP_BATCH_SIZE = 8  # Number of citations per batch in map phase
     MAP_PASSAGE_MAX_LENGTH = 500  # Max characters per passage in map phase (full passage used in reduce)
 
+    def _validate_reference_numbers(self, content: str, valid_numbers: set) -> None:
+        """
+        Validate that reference numbers in generated content match valid references.
+
+        Logs warnings for any reference numbers that don't match the expected set.
+        This helps catch cases where the LLM invents reference numbers.
+
+        Args:
+            content: Generated report content to validate
+            valid_numbers: Set of valid reference numbers
+        """
+        import re
+
+        # Find all reference patterns like [1], [12], [123]
+        ref_pattern = r'\[(\d+)\]'
+        found_refs = re.findall(ref_pattern, content)
+
+        if not found_refs:
+            logger.warning("No reference numbers found in generated content")
+            return
+
+        found_numbers = {int(ref) for ref in found_refs}
+        invalid_refs = found_numbers - valid_numbers
+        missing_refs = valid_numbers - found_numbers
+
+        if invalid_refs:
+            logger.warning(
+                f"Generated content contains invalid reference numbers: {sorted(invalid_refs)}. "
+                f"Valid numbers are: {sorted(valid_numbers)}"
+            )
+
+        if missing_refs and len(missing_refs) < len(valid_numbers):
+            # Only log if some refs are used (not all missing)
+            logger.debug(
+                f"Some valid references not used in content: {sorted(missing_refs)}"
+            )
+
+        logger.info(
+            f"Reference validation: {len(found_numbers)} unique refs used, "
+            f"{len(invalid_refs)} invalid, {len(found_numbers & valid_numbers)} valid"
+        )
+
     def _estimate_citation_tokens(self, citations: List[Citation]) -> int:
         """
         Estimate the token count for a list of citations.
@@ -672,11 +714,34 @@ Theme {i}: {theme.get('theme', 'Unknown')}
 - Strength: {theme.get('evidence_strength', 'unknown')}
 """)
 
+        # Build reference list for LLM context (ensures correct citation numbers)
+        reference_list_text = []
+        seen_refs = set()
+        for ref in references:
+            if ref.number not in seen_refs:
+                seen_refs.add(ref.number)
+                # Format: [1] Author et al. Title (Year)
+                author_str = ref.authors[0] if ref.authors else "Unknown"
+                if len(ref.authors) > 1:
+                    author_str += " et al."
+                year = str(ref.publication_date)[:4] if ref.publication_date else "n.d."
+                reference_list_text.append(
+                    f"[{ref.number}] {author_str}. {ref.title[:80]}{'...' if len(ref.title) > 80 else ''} ({year})"
+                )
+
         contradictions_text = ""
         if all_contradictions:
             contradictions_text = f"\nNoted contradictions:\n" + "\n".join(
                 f"- {c}" for c in all_contradictions if c
             )
+
+        # Build available references section
+        references_section = ""
+        if reference_list_text:
+            references_section = f"""
+Available References (use these exact numbers in your citations):
+{chr(10).join(reference_list_text)}
+"""
 
         prompt = f"""You are a medical writing expert. Synthesize these extracted themes into a comprehensive medical research report.
 
@@ -685,7 +750,7 @@ Research Question: "{user_question}"
 Extracted Evidence Themes ({len(all_themes)} themes from {len(batch_summaries)} citation batches, {total_citations} total citations):
 {chr(10).join(themes_text)}
 {contradictions_text}
-
+{references_section}
 Your task is to create a structured, readable report:
 
 1. **Introduction (2-3 sentences)**:
@@ -706,6 +771,8 @@ Your task is to create a structured, readable report:
 - Use specific years (e.g., "In a 2023 study") NOT vague references ("recently")
 - Ensure smooth transitions between sections
 - Create a cohesive narrative, not a list of findings
+- IMPORTANT: Only use reference numbers from the "Available References" list above
+- Use the exact reference numbers provided (e.g., [1], [5], [12]) - do not invent new numbers
 
 Response format (JSON):
 {{
@@ -737,6 +804,10 @@ Write a professional medical report that synthesizes all evidence."""
             structured_content = f"{introduction}\n\n## Evidence and Discussion\n\n{evidence_discussion}"
             if conclusion:
                 structured_content += f"\n\n## Conclusion\n\n{conclusion}"
+
+            # Validate reference numbers in generated content
+            valid_ref_numbers = {ref.number for ref in references}
+            self._validate_reference_numbers(structured_content, valid_ref_numbers)
 
             logger.info(
                 f"Reduce phase complete: integrated {len(report_data.get('themes_integrated', []))} themes"
