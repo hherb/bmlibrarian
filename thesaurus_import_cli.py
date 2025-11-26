@@ -24,6 +24,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Constants
+PROGRESS_LOG_INTERVAL = 1000  # Log progress every N descriptors during validation
+
 
 @dataclass
 class ImportStats:
@@ -163,7 +166,7 @@ class MeshImporter:
                 tree_numbers = descriptor.findall('.//TreeNumber')
                 tree_count = len(tree_numbers)
 
-                if i % 1000 == 0:
+                if i % PROGRESS_LOG_INTERVAL == 0:
                     logger.info(f"Validated {i}/{len(descriptors)} descriptors")
 
                 self.stats.concepts_imported += 1
