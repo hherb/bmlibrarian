@@ -1,0 +1,699 @@
+"""
+SystematicReviewAgent - Main Agent Class
+
+This module provides the SystematicReviewAgent, an AI-assisted systematic
+literature review agent that automates the process of finding, filtering,
+evaluating, and ranking scientific papers based on user-defined criteria.
+
+The agent operates autonomously but pauses at key decision points for
+human approval, balancing efficiency with scientific rigor.
+
+Key Features:
+- Checkpoint-based autonomy with human oversight
+- Multi-strategy search (semantic, keyword, hybrid)
+- LLM-powered relevance scoring and inclusion/exclusion evaluation
+- Quality assessment integration (PICO, PRISMA, paper weight)
+- Complete audit trail for reproducibility
+- Configurable scoring weights
+
+Phase 1 Implementation:
+- Agent skeleton with configuration and component initialization
+- Basic workflow structure with NotImplementedError stubs
+- Integration with BaseAgent patterns
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+from ..base import BaseAgent, PerformanceMetrics
+
+from .config import (
+    SystematicReviewConfig,
+    get_systematic_review_config,
+    AGENT_TYPE,
+)
+from .data_models import (
+    SearchCriteria,
+    ScoringWeights,
+    SearchPlan,
+    ExecutedQuery,
+    PaperData,
+    ScoredPaper,
+    AssessedPaper,
+    ReviewStatistics,
+    SystematicReviewResult,
+    validate_search_criteria,
+    validate_scoring_weights,
+)
+from .documenter import Documenter
+
+if TYPE_CHECKING:
+    from ..orchestrator import AgentOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+AGENT_VERSION = "1.0.0"
+
+
+# =============================================================================
+# SystematicReviewAgent
+# =============================================================================
+
+class SystematicReviewAgent(BaseAgent):
+    """
+    AI-assisted systematic literature review agent.
+
+    Automates the systematic review process while maintaining human oversight
+    at key decision points. Integrates with existing BMLibrarian agents for
+    search, scoring, and quality assessment.
+
+    Workflow Phases:
+    1. Search Strategy: Generate diverse queries for comprehensive coverage
+    2. Search Execution: Run queries and deduplicate results
+    3. Initial Filtering: Fast heuristic-based paper filtering
+    4. Relevance Scoring: LLM-based relevance assessment
+    5. Inclusion Evaluation: Apply inclusion/exclusion criteria
+    6. Quality Assessment: Detailed quality and methodology evaluation
+    7. Final Ranking: Calculate composite scores and rank papers
+    8. Report Generation: Generate comprehensive output report
+
+    Attributes:
+        config: SystematicReviewConfig with agent settings
+        documenter: Audit trail logging component
+        criteria: Current SearchCriteria (set when run_review is called)
+        weights: Current ScoringWeights (set when run_review is called)
+
+    Example:
+        >>> agent = SystematicReviewAgent()
+        >>> criteria = SearchCriteria(
+        ...     research_question="Effect of statins on CVD prevention?",
+        ...     purpose="Clinical guideline development",
+        ...     inclusion_criteria=["Human studies", "Statin intervention"],
+        ...     exclusion_criteria=["Animal studies", "Case reports"]
+        ... )
+        >>> result = agent.run_review(criteria, interactive=True)
+        >>> result.save("systematic_review_results.json")
+    """
+
+    def __init__(
+        self,
+        config: Optional[SystematicReviewConfig] = None,
+        callback: Optional[Callable[[str, str], None]] = None,
+        orchestrator: Optional["AgentOrchestrator"] = None,
+        show_model_info: bool = True,
+    ) -> None:
+        """
+        Initialize the SystematicReviewAgent.
+
+        Args:
+            config: Optional configuration. If None, loads from BMLibrarian config.
+            callback: Optional callback for progress updates.
+            orchestrator: Optional orchestrator for queue-based processing.
+            show_model_info: Whether to display model information on init.
+        """
+        # Load configuration
+        self.config = config or get_systematic_review_config()
+
+        # Initialize base agent with model settings
+        super().__init__(
+            model=self.config.model,
+            host=self.config.host,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            callback=callback,
+            orchestrator=orchestrator,
+            show_model_info=show_model_info,
+        )
+
+        # Initialize documenter for audit trail
+        self.documenter = Documenter()
+
+        # Current review state (set when run_review is called)
+        self._criteria: Optional[SearchCriteria] = None
+        self._weights: Optional[ScoringWeights] = None
+        self._search_plan: Optional[SearchPlan] = None
+        self._executed_queries: List[ExecutedQuery] = []
+        self._all_papers: List[PaperData] = []
+        self._scored_papers: List[ScoredPaper] = []
+        self._assessed_papers: List[AssessedPaper] = []
+
+        # Child agents (initialized lazily)
+        self._query_agent = None
+        self._scoring_agent = None
+        self._citation_agent = None
+        self._pico_agent = None
+        self._study_assessment_agent = None
+        self._paper_weight_agent = None
+        self._prisma_agent = None
+        self._semantic_query_agent = None
+
+        logger.info(f"SystematicReviewAgent v{AGENT_VERSION} initialized")
+
+    # =========================================================================
+    # BaseAgent Implementation
+    # =========================================================================
+
+    def get_agent_type(self) -> str:
+        """
+        Get the type/name of this agent.
+
+        Returns:
+            String identifier "SystematicReviewAgent"
+        """
+        return "SystematicReviewAgent"
+
+    # =========================================================================
+    # Properties
+    # =========================================================================
+
+    @property
+    def criteria(self) -> Optional[SearchCriteria]:
+        """Get current search criteria."""
+        return self._criteria
+
+    @property
+    def weights(self) -> Optional[ScoringWeights]:
+        """Get current scoring weights."""
+        return self._weights
+
+    # =========================================================================
+    # Main Entry Point
+    # =========================================================================
+
+    def run_review(
+        self,
+        criteria: SearchCriteria,
+        weights: Optional[ScoringWeights] = None,
+        interactive: bool = True,
+        output_path: Optional[str] = None,
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]] = None,
+    ) -> SystematicReviewResult:
+        """
+        Run complete systematic review workflow.
+
+        This is the main entry point for conducting a systematic review.
+        The workflow proceeds through multiple phases, pausing at checkpoints
+        for human approval when in interactive mode.
+
+        Args:
+            criteria: SearchCriteria defining what papers to find
+            weights: Optional ScoringWeights for composite scoring.
+                    Defaults to equal weights if not provided.
+            interactive: If True, pause at checkpoints for approval.
+                        If False, run autonomously.
+            output_path: Optional path to save results JSON.
+            checkpoint_callback: Optional callback for checkpoint decisions.
+                               Receives (checkpoint_type, state) and returns
+                               True to continue or False to abort.
+
+        Returns:
+            SystematicReviewResult with all papers and audit trail
+
+        Raises:
+            ValueError: If criteria validation fails
+            NotImplementedError: Phase 1 skeleton - full implementation in Phase 2-5
+
+        Example:
+            >>> result = agent.run_review(
+            ...     criteria=criteria,
+            ...     weights=ScoringWeights(relevance=0.4, study_quality=0.3),
+            ...     interactive=True,
+            ...     output_path="results.json"
+            ... )
+        """
+        # Validate inputs
+        criteria_errors = validate_search_criteria(criteria)
+        if criteria_errors:
+            raise ValueError(f"Invalid search criteria: {'; '.join(criteria_errors)}")
+
+        # Use provided weights or defaults
+        if weights is None:
+            weights = self.config.scoring_weights
+        else:
+            weight_errors = validate_scoring_weights(weights)
+            if weight_errors:
+                raise ValueError(f"Invalid scoring weights: {'; '.join(weight_errors)}")
+
+        # Store current review parameters
+        self._criteria = criteria
+        self._weights = weights
+
+        # Initialize documenter for this review
+        self.documenter = Documenter()
+        self.documenter.start_review()
+
+        # Log initialization
+        self.documenter.log_step(
+            action="initialize_review",
+            tool=None,
+            input_summary=f"Research question: {criteria.research_question[:100]}...",
+            output_summary="Review initialized successfully",
+            decision_rationale="Starting systematic review with user-defined criteria",
+            metrics={
+                "inclusion_criteria_count": len(criteria.inclusion_criteria),
+                "exclusion_criteria_count": len(criteria.exclusion_criteria),
+                "has_date_range": criteria.date_range is not None,
+                "has_study_type_filter": criteria.target_study_types is not None,
+            }
+        )
+
+        # Phase 1 skeleton - raise NotImplementedError
+        # Full implementation will be added in Phase 2-5
+        raise NotImplementedError(
+            "SystematicReviewAgent.run_review() is not yet implemented. "
+            "Phase 1 provides the skeleton. Implementation continues in Phase 2-5."
+        )
+
+    # =========================================================================
+    # Workflow Phase Methods (Stubs for Phase 1)
+    # =========================================================================
+
+    def _generate_search_plan(
+        self,
+        criteria: SearchCriteria,
+    ) -> SearchPlan:
+        """
+        Generate search strategy (Phase 2).
+
+        Uses LLM to analyze the research question and generate
+        diverse search queries for comprehensive coverage.
+
+        Args:
+            criteria: Search criteria to base plan on
+
+        Returns:
+            SearchPlan with queries to execute
+
+        Note:
+            Implementation in Phase 2
+        """
+        raise NotImplementedError("Implemented in Phase 2")
+
+    def _execute_search_plan(
+        self,
+        plan: SearchPlan,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> tuple[List[ExecutedQuery], List[PaperData]]:
+        """
+        Execute all queries in the search plan (Phase 2).
+
+        Runs each query and collects papers, deduplicating results.
+
+        Args:
+            plan: SearchPlan to execute
+            progress_callback: Optional callback(current, total) for progress
+
+        Returns:
+            Tuple of (executed_queries, unique_papers)
+
+        Note:
+            Implementation in Phase 2
+        """
+        raise NotImplementedError("Implemented in Phase 2")
+
+    def _apply_initial_filter(
+        self,
+        papers: List[PaperData],
+        criteria: SearchCriteria,
+    ) -> tuple[List[PaperData], List[tuple[PaperData, str]]]:
+        """
+        Apply fast heuristic filtering (Phase 3).
+
+        Quickly filters papers based on date range, keywords,
+        and other fast checks before expensive LLM scoring.
+
+        Args:
+            papers: Papers to filter
+            criteria: Criteria to apply
+
+        Returns:
+            Tuple of (passed_papers, rejected_with_reasons)
+
+        Note:
+            Implementation in Phase 3
+        """
+        raise NotImplementedError("Implemented in Phase 3")
+
+    def _score_papers(
+        self,
+        papers: List[PaperData],
+        criteria: SearchCriteria,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[ScoredPaper]:
+        """
+        Score papers for relevance (Phase 3).
+
+        Uses DocumentScoringAgent to evaluate relevance and
+        applies inclusion/exclusion criteria.
+
+        Args:
+            papers: Papers to score
+            criteria: Criteria for evaluation
+            progress_callback: Optional callback for progress
+
+        Returns:
+            List of ScoredPaper with relevance scores
+
+        Note:
+            Implementation in Phase 3
+        """
+        raise NotImplementedError("Implemented in Phase 3")
+
+    def _assess_quality(
+        self,
+        papers: List[ScoredPaper],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[AssessedPaper]:
+        """
+        Perform quality assessment (Phase 4).
+
+        Runs study assessment, paper weight evaluation, and
+        optionally PICO/PRISMA assessment based on study type.
+
+        Args:
+            papers: Scored papers to assess
+            progress_callback: Optional callback for progress
+
+        Returns:
+            List of AssessedPaper with quality scores
+
+        Note:
+            Implementation in Phase 4
+        """
+        raise NotImplementedError("Implemented in Phase 4")
+
+    def _calculate_composite_scores(
+        self,
+        papers: List[AssessedPaper],
+        weights: ScoringWeights,
+    ) -> List[AssessedPaper]:
+        """
+        Calculate weighted composite scores (Phase 4).
+
+        Combines relevance, quality, and other scores using
+        user-defined weights.
+
+        Args:
+            papers: Assessed papers
+            weights: Weights for score combination
+
+        Returns:
+            Papers with composite_score set
+
+        Note:
+            Implementation in Phase 4
+        """
+        raise NotImplementedError("Implemented in Phase 4")
+
+    def _generate_report(
+        self,
+        included: List[AssessedPaper],
+        excluded: List[ScoredPaper],
+        uncertain: List[ScoredPaper],
+    ) -> SystematicReviewResult:
+        """
+        Generate final report (Phase 5).
+
+        Creates comprehensive output with all papers,
+        rationales, and audit trail.
+
+        Args:
+            included: Papers that passed all criteria
+            excluded: Papers that were rejected
+            uncertain: Papers needing human review
+
+        Returns:
+            Complete SystematicReviewResult
+
+        Note:
+            Implementation in Phase 5
+        """
+        raise NotImplementedError("Implemented in Phase 5")
+
+    # =========================================================================
+    # Checkpoint Handling
+    # =========================================================================
+
+    def _checkpoint(
+        self,
+        checkpoint_type: str,
+        state: Dict[str, Any],
+        interactive: bool,
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]] = None,
+    ) -> bool:
+        """
+        Handle a workflow checkpoint.
+
+        In interactive mode, pauses for human approval.
+        In auto mode, continues unless callback returns False.
+
+        Args:
+            checkpoint_type: Type of checkpoint (e.g., "search_strategy")
+            state: Current state snapshot
+            interactive: Whether running in interactive mode
+            checkpoint_callback: Optional callback for decision
+
+        Returns:
+            True to continue, False to abort
+        """
+        # Log checkpoint
+        checkpoint = self.documenter.log_checkpoint(
+            checkpoint_type=checkpoint_type,
+            phase=self.documenter._current_phase,
+            state_snapshot=state,
+        )
+
+        # If callback provided, use it
+        if checkpoint_callback:
+            decision = checkpoint_callback(checkpoint_type, state)
+            checkpoint.user_decision = "approved" if decision else "rejected"
+            return decision
+
+        # In non-interactive mode, auto-approve
+        if not interactive:
+            checkpoint.user_decision = "auto_approved"
+            return True
+
+        # Interactive mode without callback - would need UI integration
+        # For now, auto-approve with warning
+        logger.warning(
+            f"Checkpoint '{checkpoint_type}' reached in interactive mode "
+            "but no callback provided. Auto-approving."
+        )
+        checkpoint.user_decision = "auto_approved_no_callback"
+        return True
+
+    # =========================================================================
+    # Child Agent Initialization (Lazy)
+    # =========================================================================
+
+    def _get_query_agent(self):
+        """Get or create QueryAgent instance."""
+        if self._query_agent is None:
+            from ..query_agent import QueryAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("query_agent")
+            config = get_agent_config("query")
+
+            self._query_agent = QueryAgent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.1),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._query_agent
+
+    def _get_scoring_agent(self):
+        """Get or create DocumentScoringAgent instance."""
+        if self._scoring_agent is None:
+            from ..scoring_agent import DocumentScoringAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("scoring_agent")
+            config = get_agent_config("scoring")
+
+            self._scoring_agent = DocumentScoringAgent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.1),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._scoring_agent
+
+    def _get_semantic_query_agent(self):
+        """Get or create SemanticQueryAgent instance."""
+        if self._semantic_query_agent is None:
+            from ..semantic_query_agent import SemanticQueryAgent
+
+            self._semantic_query_agent = SemanticQueryAgent(
+                callback=self.callback,
+                show_model_info=False,
+            )
+        return self._semantic_query_agent
+
+    def _get_pico_agent(self):
+        """Get or create PICOAgent instance."""
+        if self._pico_agent is None:
+            from ..pico_agent import PICOAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("pico_agent")
+            config = get_agent_config("pico")
+
+            self._pico_agent = PICOAgent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.1),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._pico_agent
+
+    def _get_study_assessment_agent(self):
+        """Get or create StudyAssessmentAgent instance."""
+        if self._study_assessment_agent is None:
+            from ..study_assessment_agent import StudyAssessmentAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("study_assessment_agent")
+            config = get_agent_config("study_assessment")
+
+            self._study_assessment_agent = StudyAssessmentAgent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.1),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._study_assessment_agent
+
+    def _get_paper_weight_agent(self):
+        """Get or create PaperWeightAssessmentAgent instance."""
+        if self._paper_weight_agent is None:
+            from ..paper_weight import PaperWeightAssessmentAgent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("paper_weight_assessment_agent")
+            config = get_agent_config("paper_weight_assessment")
+
+            self._paper_weight_agent = PaperWeightAssessmentAgent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.3),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._paper_weight_agent
+
+    def _get_prisma_agent(self):
+        """Get or create PRISMA2020Agent instance."""
+        if self._prisma_agent is None:
+            from ..prisma2020_agent import PRISMA2020Agent
+            from ...config import get_model, get_ollama_host, get_agent_config
+
+            model = get_model("prisma2020_agent")
+            config = get_agent_config("prisma2020")
+
+            self._prisma_agent = PRISMA2020Agent(
+                model=model,
+                host=get_ollama_host(),
+                temperature=config.get("temperature", 0.1),
+                top_p=config.get("top_p", 0.9),
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                show_model_info=False,
+            )
+        return self._prisma_agent
+
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
+
+    def get_review_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about the current/last review.
+
+        Returns:
+            Dictionary with review statistics
+        """
+        return {
+            "review_id": self.documenter.review_id,
+            "papers_found": len(self._all_papers),
+            "papers_scored": len(self._scored_papers),
+            "papers_assessed": len(self._assessed_papers),
+            "process_steps": len(self.documenter.steps),
+            "checkpoints": len(self.documenter.checkpoints),
+            "duration_seconds": self.documenter.get_duration(),
+        }
+
+    def export_audit_trail(
+        self,
+        output_path: str,
+        format: str = "markdown"
+    ) -> None:
+        """
+        Export the audit trail to a file.
+
+        Args:
+            output_path: Path for the output file
+            format: Output format ("markdown" or "json")
+        """
+        self.documenter.save_to_file(output_path, format=format)
+
+    def test_connection(self) -> bool:
+        """
+        Test connection to Ollama and verify model availability.
+
+        Returns:
+            True if connection is successful and model is available
+        """
+        try:
+            result = super().test_connection()
+            if result:
+                logger.info(
+                    f"SystematicReviewAgent connection test passed. "
+                    f"Model: {self.model}"
+                )
+            return result
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return False
+
+    def reset(self) -> None:
+        """
+        Reset agent state for a new review.
+
+        Clears all papers, scores, and creates new documenter.
+        Does not reset configuration.
+        """
+        self._criteria = None
+        self._weights = None
+        self._search_plan = None
+        self._executed_queries = []
+        self._all_papers = []
+        self._scored_papers = []
+        self._assessed_papers = []
+        self.documenter = Documenter()
+        self.reset_metrics()
+        logger.info("SystematicReviewAgent state reset")
