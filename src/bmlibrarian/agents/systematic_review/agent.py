@@ -625,7 +625,8 @@ class SystematicReviewAgent(BaseAgent):
                 input_summary=f"Generating report: {len(included_papers)} included, {len(excluded_papers)} excluded",
                 decision_rationale="Creating comprehensive review report",
             ) as timer:
-                # Build statistics
+                # Build statistics (use public accessor for LLM metrics)
+                doc_stats = self.documenter.get_statistics()
                 statistics = ReviewStatistics(
                     total_considered=total_considered,
                     passed_initial_filter=passed_initial_filter,
@@ -635,8 +636,8 @@ class SystematicReviewAgent(BaseAgent):
                     final_excluded=len(excluded_papers),
                     uncertain_for_review=len(uncertain_papers),
                     processing_time_seconds=self.documenter.get_duration(),
-                    total_llm_calls=self.documenter._total_llm_calls,
-                    total_tokens_used=self.documenter._total_tokens,
+                    total_llm_calls=doc_stats.get("total_llm_calls", 0),
+                    total_tokens_used=doc_stats.get("total_tokens", 0),
                 )
 
                 # Build result
@@ -708,6 +709,7 @@ class SystematicReviewAgent(BaseAgent):
             weights=weights,
         )
 
+        doc_stats = self.documenter.get_statistics()
         statistics = ReviewStatistics(
             total_considered=0,
             passed_initial_filter=0,
@@ -717,8 +719,8 @@ class SystematicReviewAgent(BaseAgent):
             final_excluded=0,
             uncertain_for_review=0,
             processing_time_seconds=self.documenter.get_duration(),
-            total_llm_calls=self.documenter._total_llm_calls,
-            total_tokens_used=self.documenter._total_tokens,
+            total_llm_calls=doc_stats.get("total_llm_calls", 0),
+            total_tokens_used=doc_stats.get("total_tokens", 0),
         )
 
         return reporter.build_json_result(

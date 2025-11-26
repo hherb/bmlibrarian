@@ -799,6 +799,13 @@ class Reporter:
             writer.writerow(CSV_COLUMNS_INCLUDED)
 
             for paper in papers:
+                # Handle optional study_assessment
+                study_type = ""
+                quality_score = ""
+                if paper.study_assessment is not None:
+                    study_type = paper.study_assessment.get("study_type", "")
+                    quality_score = paper.study_assessment.get("quality_score", "")
+
                 row = [
                     paper.final_rank,
                     paper.scored_paper.paper.document_id,
@@ -810,8 +817,8 @@ class Reporter:
                     paper.scored_paper.paper.pmid or "",
                     paper.scored_paper.relevance_score,
                     paper.composite_score,
-                    paper.study_assessment.get("study_type", ""),
-                    paper.study_assessment.get("quality_score", ""),
+                    study_type,
+                    quality_score,
                     paper.scored_paper.inclusion_decision.rationale,
                 ]
                 writer.writerow(row)
