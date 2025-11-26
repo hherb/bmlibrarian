@@ -10,6 +10,8 @@ Main Components:
 - SearchCriteria: Input specification for what papers to find
 - ScoringWeights: User-configurable weights for composite scoring
 - Documenter: Audit trail logging component for reproducibility
+- Planner: LLM-based search strategy planning (Phase 2)
+- SearchExecutor: Search query execution and result aggregation (Phase 2)
 
 Data Models:
 - PaperData: Core paper metadata
@@ -19,6 +21,8 @@ Data Models:
 - InclusionDecision: Inclusion/exclusion decision records
 - ProcessStep, Checkpoint: Audit trail models
 - ReviewStatistics, SystematicReviewResult: Output models
+- PICOComponents: PICO framework extraction results (Phase 2)
+- SearchResult, AggregatedResults: Search execution results (Phase 2)
 
 Configuration:
 - SystematicReviewConfig: Configuration container
@@ -161,6 +165,18 @@ from .documenter import (
     ACTION_GENERATE_REPORT,
 )
 
+# Phase 2: Planner and SearchExecutor
+from .planner import (
+    Planner,
+    PICOComponents,
+)
+
+from .executor import (
+    SearchExecutor,
+    SearchResult,
+    AggregatedResults,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -230,4 +246,11 @@ __all__ = [
     "MAX_QUALITY_SCORE",
     "MIN_CONFIDENCE",
     "MAX_CONFIDENCE",
+    # Phase 2: Planner
+    "Planner",
+    "PICOComponents",
+    # Phase 2: SearchExecutor
+    "SearchExecutor",
+    "SearchResult",
+    "AggregatedResults",
 ]
