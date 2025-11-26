@@ -22,6 +22,8 @@ DEFAULT_MAX_EXPANSIONS_PER_TERM = 10
 DEFAULT_CACHE_MAX_SIZE = 1000
 DEFAULT_CACHE_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_MAX_QUERY_TERMS = 50  # Maximum terms to expand in a single query
+CACHE_EVICTION_CHECK_INTERVAL = 100  # Check for expired entries every N additions
+CACHE_EVICTION_PERCENTAGE = 10  # Evict this percentage of entries when cache is full
 
 
 @dataclass
@@ -181,14 +183,14 @@ class ThesaurusExpander:
             normalized_term: The normalized term key
             expansion: The expansion to cache
         """
-        # Evict expired entries periodically (every 100 additions)
-        if len(self._expansion_cache) % 100 == 0:
+        # Evict expired entries periodically
+        if len(self._expansion_cache) % CACHE_EVICTION_CHECK_INTERVAL == 0:
             self._evict_expired_entries()
 
         # Evict oldest entries if at max size
         if len(self._expansion_cache) >= self.cache_max_size:
-            # Evict 10% of entries to avoid frequent evictions
-            evict_count = max(1, self.cache_max_size // 10)
+            # Evict percentage of entries to avoid frequent evictions
+            evict_count = max(1, self.cache_max_size // CACHE_EVICTION_PERCENTAGE)
             self._evict_oldest_entries(evict_count)
 
         self._expansion_cache[normalized_term] = CacheEntry(expansion=expansion)

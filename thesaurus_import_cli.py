@@ -11,9 +11,11 @@ import logging
 import argparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Iterator, Generator
+from typing import Dict, List, Tuple, Optional, Iterator, Generator, Any
 from datetime import datetime
 from dataclasses import dataclass
+
+import psycopg
 
 from bmlibrarian.database import DatabaseManager
 
@@ -364,7 +366,7 @@ class MeshImporter:
         self,
         descriptor: ET.Element,
         source_version: str,
-        cursor
+        cursor: psycopg.Cursor[Any]
     ) -> None:
         """Import a single MeSH descriptor with its terms and hierarchies."""
         try:
@@ -415,7 +417,12 @@ class MeshImporter:
             logger.warning(f"Error importing descriptor {desc_ui}: {e}")
             self.stats.errors += 1
 
-    def _import_term(self, term_elem: ET.Element, concept_id: int, cursor) -> None:
+    def _import_term(
+        self,
+        term_elem: ET.Element,
+        concept_id: int,
+        cursor: psycopg.Cursor[Any]
+    ) -> None:
         """Import a single term for a concept."""
         try:
             term_ui = term_elem.find('TermUI').text
@@ -439,7 +446,12 @@ class MeshImporter:
             logger.debug(f"Error importing term: {e}")
             self.stats.errors += 1
 
-    def _import_tree_number(self, tree_number: str, concept_id: int, cursor) -> None:
+    def _import_tree_number(
+        self,
+        tree_number: str,
+        concept_id: int,
+        cursor: psycopg.Cursor[Any]
+    ) -> None:
         """Import a tree number (hierarchy relationship) for a concept."""
         try:
             # Calculate tree level from number of dots
