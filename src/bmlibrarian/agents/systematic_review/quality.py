@@ -200,11 +200,14 @@ class QualityAssessor:
                 "top_p": agent_config.get("top_p", 0.9),
             }
 
+            # Get agent version from the agent class
+            agent_version = self._get_agent_version(assessment_type)
+
             # Register version
             version_id = self._cache_manager.register_version(
                 assessment_type=assessment_type,
                 model_name=model,
-                agent_version="1.0.0",  # TODO: Get from agent class
+                agent_version=agent_version,
                 parameters=parameters
             )
 
@@ -215,6 +218,47 @@ class QualityAssessor:
         except Exception as e:
             logger.warning(f"Failed to register version for {assessment_type}: {e}")
             return None
+
+    def _get_agent_version(self, assessment_type: str) -> str:
+        """
+        Get the version string from the corresponding agent class.
+
+        Args:
+            assessment_type: Type of assessment
+
+        Returns:
+            Version string from agent's VERSION class attribute, or "1.0.0" as fallback
+        """
+        version_map = {
+            "study_assessment": ("study_assessment_agent", "StudyAssessmentAgent"),
+            "pico": ("pico_agent", "PICOAgent"),
+            "prisma": ("prisma2020_agent", "PRISMA2020Agent"),
+            "paper_weight": ("paper_weight.agent", "PaperWeightAssessmentAgent"),
+        }
+
+        if assessment_type not in version_map:
+            return "1.0.0"
+
+        module_name, class_name = version_map[assessment_type]
+
+        try:
+            # Dynamically import the agent class to get its VERSION
+            if assessment_type == "paper_weight":
+                from ..paper_weight.agent import PaperWeightAssessmentAgent
+                return getattr(PaperWeightAssessmentAgent, 'VERSION', '1.0.0')
+            elif assessment_type == "study_assessment":
+                from ..study_assessment_agent import StudyAssessmentAgent
+                return getattr(StudyAssessmentAgent, 'VERSION', '1.0.0')
+            elif assessment_type == "pico":
+                from ..pico_agent import PICOAgent
+                return getattr(PICOAgent, 'VERSION', '1.0.0')
+            elif assessment_type == "prisma":
+                from ..prisma2020_agent import PRISMA2020Agent
+                return getattr(PRISMA2020Agent, 'VERSION', '1.0.0')
+        except ImportError as e:
+            logger.warning(f"Could not import agent for {assessment_type}: {e}")
+
+        return "1.0.0"
 
     # =========================================================================
     # Agent Initialization (Lazy Loading)
@@ -508,6 +552,14 @@ class QualityAssessor:
 
     # =========================================================================
     # Individual Assessment Runners
+    #
+    # Error Handling Design:
+    # - Required assessments (study_assessment, paper_weight): Return minimal dict
+    #   with 'error' field on failure. These are always expected in AssessedPaper.
+    # - Optional assessments (pico, prisma): Return None on failure or when not
+    #   applicable. Downstream code handles None gracefully.
+    # - Suitability checks: Return None on failure to signal "unknown suitability",
+    #   which results in skipping the optional assessment.
     # =========================================================================
 
     def _run_study_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
@@ -563,7 +615,7 @@ class QualityAssessor:
 
         except Exception as e:
             logger.error(f"Study assessment failed for {document_id}: {e}")
-            # Return minimal assessment on error
+            # Return minimal assessment on error (with 'error' field for detection)
             return {
                 "study_type": "unknown",
                 "study_design": "unknown",
@@ -575,11 +627,18 @@ class QualityAssessor:
                 "evidence_level": "unknown",
                 "document_id": str(document_id),
                 "document_title": document.get("title", ""),
+                "error": str(e),
             }
 
     def _run_paper_weight_assessment(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run paper weight assessment.
+        Run paper weight assessment with caching support.
+
+        The paper weight agent has its own internal caching (via paper_weights.assessments),
+        but we also integrate with ResultsCacheManager for:
+        - Unified cache statistics
+        - Consistent version tracking
+        - Cross-assessment performance analysis
 
         Args:
             document: Document dictionary
@@ -587,21 +646,47 @@ class QualityAssessor:
         Returns:
             Paper weight assessment dictionary
         """
+        document_id = document["id"]
+
+        # Check ResultsCacheManager first (unless force_recompute is set)
+        version_id = self._get_version_id("paper_weight", "paper_weight")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_paper_weight(document_id, version_id)
+            if cached_result:
+                logger.info(f"Using cached paper weight assessment for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run assessment
         try:
+            start_time = time.time()
             agent = self._get_weight_agent()
 
+            # Use agent's internal caching as well for performance
             result = agent.assess_paper(
-                document_id=document["id"],
+                document_id=document_id,
                 use_cache=True,
             )
 
-            return result.to_dict()
+            result_dict = result.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in ResultsCacheManager for unified tracking
+            if version_id and self._cache_manager:
+                # Get assessment_id from result if available
+                assessment_id = result_dict.get('assessment_id')
+                self._cache_manager.store_paper_weight(
+                    document_id, version_id, result_dict,
+                    paper_weight_assessment_id=assessment_id,
+                    execution_time_ms=execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"Paper weight assessment failed for {document['id']}: {e}")
+            logger.error(f"Paper weight assessment failed for {document_id}: {e}")
             # Return minimal assessment on error
             return {
-                "document_id": document["id"],
+                "document_id": document_id,
                 "composite_score": 5.0,
                 "dimensions": [],
                 "error": str(e),
@@ -663,7 +748,7 @@ class QualityAssessor:
 
     def _run_prisma_assessment(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Run PRISMA 2020 compliance assessment.
+        Run PRISMA 2020 compliance assessment with caching support.
 
         Args:
             document: Document dictionary
@@ -671,17 +756,38 @@ class QualityAssessor:
         Returns:
             PRISMA assessment dictionary, or None on error
         """
+        document_id = document["id"]
+
+        # Check cache first (unless force_recompute is set)
+        version_id = self._get_version_id("prisma", "prisma2020")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_prisma_assessment(document_id, version_id)
+            if cached_result:
+                logger.info(f"Using cached PRISMA assessment for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run assessment
         try:
+            start_time = time.time()
             agent = self._get_prisma_agent()
 
             result = agent.assess_document(
-                document_id=document["id"],
+                document_id=document_id,
             )
 
-            return result.to_dict()
+            result_dict = result.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in cache
+            if version_id and self._cache_manager:
+                self._cache_manager.store_prisma_assessment(
+                    document_id, version_id, result_dict, execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"PRISMA assessment failed for {document['id']}: {e}")
+            logger.error(f"PRISMA assessment failed for {document_id}: {e}")
             return None
 
     # =========================================================================
@@ -690,7 +796,7 @@ class QualityAssessor:
 
     def _check_pico_suitability(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Check if PICO extraction is applicable using LLM-based assessment.
+        Check if PICO extraction is applicable using LLM-based assessment with caching.
 
         Uses PICOAgent's check_suitability method to determine if the document
         is an intervention study suitable for PICO component extraction.
@@ -701,23 +807,46 @@ class QualityAssessor:
         Returns:
             Suitability assessment dictionary, or None on error
         """
+        document_id = document["id"]
+
+        # Check cache first (unless force_recompute is set)
+        version_id = self._get_version_id("pico", "pico")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_suitability_check(
+                document_id, "pico", version_id
+            )
+            if cached_result:
+                logger.info(f"Using cached PICO suitability check for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run check
         try:
+            start_time = time.time()
             agent = self._get_pico_agent()
             suitability = agent.check_suitability(document)
 
             if suitability is None:
-                logger.warning(f"PICO suitability check returned None for document {document['id']}")
+                logger.warning(f"PICO suitability check returned None for document {document_id}")
                 return None
 
-            return suitability.to_dict()
+            result_dict = suitability.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in cache
+            if version_id and self._cache_manager:
+                self._cache_manager.store_suitability_check(
+                    document_id, "pico", version_id, result_dict, execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"PICO suitability check failed for {document['id']}: {e}")
+            logger.error(f"PICO suitability check failed for {document_id}: {e}")
             return None
 
     def _check_prisma_suitability(self, document: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Check if PRISMA assessment is applicable using LLM-based assessment.
+        Check if PRISMA assessment is applicable using LLM-based assessment with caching.
 
         Uses PRISMA2020Agent's check_suitability method to determine if the document
         is a systematic review or meta-analysis suitable for PRISMA assessment.
@@ -728,18 +857,41 @@ class QualityAssessor:
         Returns:
             Suitability assessment dictionary, or None on error
         """
+        document_id = document["id"]
+
+        # Check cache first (unless force_recompute is set)
+        version_id = self._get_version_id("prisma", "prisma2020")
+        if version_id and self._cache_manager:
+            cached_result = self._cache_manager.get_suitability_check(
+                document_id, "prisma", version_id
+            )
+            if cached_result:
+                logger.info(f"Using cached PRISMA suitability check for document {document_id}")
+                return cached_result
+
+        # Not in cache or force recompute - run check
         try:
+            start_time = time.time()
             agent = self._get_prisma_agent()
             suitability = agent.check_suitability(document)
 
             if suitability is None:
-                logger.warning(f"PRISMA suitability check returned None for document {document['id']}")
+                logger.warning(f"PRISMA suitability check returned None for document {document_id}")
                 return None
 
-            return suitability.to_dict()
+            result_dict = suitability.to_dict()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+
+            # Store in cache
+            if version_id and self._cache_manager:
+                self._cache_manager.store_suitability_check(
+                    document_id, "prisma", version_id, result_dict, execution_time_ms
+                )
+
+            return result_dict
 
         except Exception as e:
-            logger.error(f"PRISMA suitability check failed for {document['id']}: {e}")
+            logger.error(f"PRISMA suitability check failed for {document_id}: {e}")
             return None
 
     # =========================================================================

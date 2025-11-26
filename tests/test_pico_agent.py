@@ -461,5 +461,307 @@ class TestPICOAgent:
         assert any("completed" in str(args) for args in call_args_list)
 
 
+# =============================================================================
+# PICO Suitability Tests
+# =============================================================================
+
+# Sample documents for suitability testing
+INTERVENTION_STUDY_DOCUMENT = {
+    'id': '11111111',
+    'title': 'Effect of Exercise on Blood Pressure: A Randomized Controlled Trial',
+    'abstract': """
+    Background: Hypertension is a major cardiovascular risk factor.
+
+    Methods: We conducted a randomized controlled trial comparing aerobic exercise (intervention)
+    with usual care (control) in 200 adults with stage 1 hypertension. Participants were randomly
+    assigned to either a 12-week supervised exercise program (n=100) or usual care (n=100).
+    The primary outcome was change in systolic blood pressure at 12 weeks.
+
+    Results: The exercise group showed significant reduction in systolic BP (-8.5 mmHg vs -2.1 mmHg, p<0.001).
+
+    Conclusion: Structured exercise significantly reduces blood pressure in hypertensive adults.
+    """,
+    'pmid': '11111111',
+    'doi': '10.1000/intervention.test',
+}
+
+SYSTEMATIC_REVIEW_DOCUMENT = {
+    'id': '22222222',
+    'title': 'Systematic Review and Meta-Analysis of Exercise Interventions for Hypertension',
+    'abstract': """
+    Background: Multiple trials have evaluated exercise for hypertension management.
+
+    Methods: We systematically searched MEDLINE, Embase, and Cochrane databases. Two reviewers
+    independently screened 2,543 records. We extracted data from 45 RCTs meeting inclusion criteria.
+    Random-effects meta-analysis was performed.
+
+    Results: Pooled analysis showed exercise reduces systolic BP by 6.8 mmHg (95% CI: 5.2-8.4).
+    Heterogeneity was moderate (I2=54%).
+
+    Conclusion: Strong evidence supports exercise for blood pressure reduction.
+    """,
+    'pmid': '22222222',
+    'doi': '10.1000/systematic.test',
+}
+
+NARRATIVE_REVIEW_DOCUMENT = {
+    'id': '33333333',
+    'title': 'Exercise and Cardiovascular Health: A Narrative Review',
+    'abstract': """
+    This narrative review discusses the relationship between physical activity and cardiovascular
+    health. We examine physiological mechanisms, discuss key studies in the field, and provide
+    clinical recommendations. Exercise provides numerous benefits including improved lipid profiles,
+    reduced inflammation, and enhanced endothelial function. Clinicians should encourage patients
+    to engage in regular physical activity.
+    """,
+    'pmid': '33333333',
+    'doi': '10.1000/narrative.test',
+}
+
+CASE_REPORT_DOCUMENT = {
+    'id': '44444444',
+    'title': 'Unusual Presentation of Exercise-Induced Hypotension: A Case Report',
+    'abstract': """
+    We report a case of a 45-year-old male who experienced severe hypotension during moderate
+    exercise. The patient had no prior history of cardiovascular disease. Initial workup was
+    unremarkable. After extensive evaluation, the patient was diagnosed with rare autonomic
+    dysfunction. Treatment with midodrine resulted in symptom resolution.
+    """,
+    'pmid': '44444444',
+    'doi': '10.1000/case.test',
+}
+
+
+class TestPICOSuitability:
+    """Test suite for PICO suitability checking."""
+
+    @pytest.fixture
+    def mock_ollama_client(self):
+        """Create a mock Ollama client."""
+        with patch('bmlibrarian.agents.base.ollama.Client') as mock_client:
+            yield mock_client
+
+    @pytest.fixture
+    def pico_agent(self, mock_ollama_client):
+        """Create a PICOAgent instance with mocked Ollama."""
+        from bmlibrarian.agents import PICOAgent
+        agent = PICOAgent(
+            model="gpt-oss:20b",
+            show_model_info=False
+        )
+        agent.client = Mock()
+        return agent
+
+    def test_suitability_intervention_study_detected(self, pico_agent):
+        """Test that intervention studies are detected as suitable."""
+        from bmlibrarian.agents.pico_agent import PICOSuitability
+
+        # Mock LLM response for intervention study
+        suitability_response = {
+            "is_intervention_study": True,
+            "has_comparison": True,
+            "is_suitable": True,
+            "confidence": 0.95,
+            "rationale": "This is a randomized controlled trial with clear intervention and control groups",
+            "study_type": "randomized controlled trial"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(INTERVENTION_STUDY_DOCUMENT)
+
+        assert result is not None
+        assert isinstance(result, PICOSuitability)
+        assert result.is_suitable is True
+        assert result.is_intervention_study is True
+        assert result.has_comparison is True
+        assert result.confidence >= 0.9
+        assert "trial" in result.study_type.lower() or "rct" in result.study_type.lower()
+
+    def test_suitability_review_detected(self, pico_agent):
+        """Test that systematic reviews are detected as NOT suitable for PICO."""
+        suitability_response = {
+            "is_intervention_study": False,
+            "has_comparison": False,
+            "is_suitable": False,
+            "confidence": 0.92,
+            "rationale": "This is a systematic review and meta-analysis, not a primary intervention study",
+            "study_type": "systematic review"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(SYSTEMATIC_REVIEW_DOCUMENT)
+
+        assert result is not None
+        assert result.is_suitable is False
+        assert result.is_intervention_study is False
+        assert "review" in result.study_type.lower() or "meta" in result.study_type.lower()
+
+    def test_suitability_narrative_review_not_suitable(self, pico_agent):
+        """Test that narrative reviews are detected as NOT suitable for PICO."""
+        suitability_response = {
+            "is_intervention_study": False,
+            "has_comparison": False,
+            "is_suitable": False,
+            "confidence": 0.88,
+            "rationale": "Narrative review without specific intervention or comparison",
+            "study_type": "narrative review"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(NARRATIVE_REVIEW_DOCUMENT)
+
+        assert result is not None
+        assert result.is_suitable is False
+        assert "narrative" in result.study_type.lower() or "review" in result.study_type.lower()
+
+    def test_suitability_case_report_not_suitable(self, pico_agent):
+        """Test that case reports are detected as NOT suitable for PICO."""
+        suitability_response = {
+            "is_intervention_study": False,
+            "has_comparison": False,
+            "is_suitable": False,
+            "confidence": 0.95,
+            "rationale": "Case report describes single patient, no controlled comparison",
+            "study_type": "case report"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(CASE_REPORT_DOCUMENT)
+
+        assert result is not None
+        assert result.is_suitable is False
+        assert "case" in result.study_type.lower()
+
+    def test_suitability_empty_abstract_handling(self, pico_agent):
+        """Test handling of document with empty abstract."""
+        empty_doc = {
+            'id': '55555555',
+            'title': 'Study with No Abstract',
+            'abstract': '',
+        }
+
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(empty_doc)
+
+        # Should return None or not suitable for empty abstract
+        assert result is None or result.is_suitable is False
+
+    def test_suitability_connection_failure(self, pico_agent):
+        """Test suitability check handles connection failure gracefully."""
+        pico_agent.test_connection = Mock(return_value=False)
+
+        result = pico_agent.check_suitability(INTERVENTION_STUDY_DOCUMENT)
+
+        assert result is None
+
+    def test_suitability_json_parse_error(self, pico_agent):
+        """Test suitability check handles invalid JSON response."""
+        pico_agent.client.generate = Mock(return_value={
+            'response': "Not valid JSON {broken"
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(INTERVENTION_STUDY_DOCUMENT)
+
+        assert result is None
+
+    def test_suitability_low_confidence_result(self, pico_agent):
+        """Test handling of low confidence suitability check."""
+        suitability_response = {
+            "is_intervention_study": True,
+            "has_comparison": False,
+            "is_suitable": False,
+            "confidence": 0.35,
+            "rationale": "Unclear study design, insufficient information",
+            "study_type": "unclear"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        result = pico_agent.check_suitability(INTERVENTION_STUDY_DOCUMENT)
+
+        assert result is not None
+        assert result.confidence < 0.5
+
+    def test_suitability_cohort_study_with_comparison(self, pico_agent):
+        """Test that cohort studies with comparison groups are suitable."""
+        suitability_response = {
+            "is_intervention_study": True,
+            "has_comparison": True,
+            "is_suitable": True,
+            "confidence": 0.88,
+            "rationale": "Prospective cohort study comparing exposed vs unexposed groups",
+            "study_type": "cohort study"
+        }
+
+        pico_agent.client.generate = Mock(return_value={
+            'response': json.dumps(suitability_response)
+        })
+        pico_agent.test_connection = Mock(return_value=True)
+
+        cohort_doc = {
+            'id': '66666666',
+            'title': 'Long-term outcomes of statin users vs non-users: A prospective cohort study',
+            'abstract': """
+            Methods: We followed 5,000 adults for 10 years, comparing 2,500 statin users
+            with 2,500 non-users matched for cardiovascular risk. Primary outcome was
+            major cardiovascular events.
+            Results: Statin users had 30% lower event rate (HR 0.70, p<0.001).
+            """,
+        }
+
+        result = pico_agent.check_suitability(cohort_doc)
+
+        assert result is not None
+        assert result.is_suitable is True
+        assert result.has_comparison is True
+
+    def test_suitability_to_dict_method(self, pico_agent):
+        """Test PICOSuitability to_dict method."""
+        from bmlibrarian.agents.pico_agent import PICOSuitability
+
+        suitability = PICOSuitability(
+            is_intervention_study=True,
+            has_comparison=True,
+            is_suitable=True,
+            confidence=0.95,
+            rationale="Test rationale",
+            study_type="RCT",
+            document_id="12345",
+            document_title="Test Study"
+        )
+
+        data = suitability.to_dict()
+
+        assert data['is_intervention_study'] is True
+        assert data['has_comparison'] is True
+        assert data['is_suitable'] is True
+        assert data['confidence'] == 0.95
+        assert data['rationale'] == "Test rationale"
+        assert data['study_type'] == "RCT"
+        assert data['document_id'] == "12345"
+        assert 'created_at' in data
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

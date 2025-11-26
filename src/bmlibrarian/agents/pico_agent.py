@@ -102,6 +102,9 @@ class PICOAgent(BaseAgent):
     evidence synthesis workflows.
     """
 
+    # Version for cache invalidation when extraction logic changes
+    VERSION = "1.0.0"
+
     def __init__(self,
                  model: str = "gpt-oss:20b",
                  host: str = "http://localhost:11434",
