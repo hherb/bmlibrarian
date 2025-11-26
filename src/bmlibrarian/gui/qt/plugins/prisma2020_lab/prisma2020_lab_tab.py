@@ -6,27 +6,25 @@ against PRISMA 2020 reporting guidelines using PRISMA2020Agent.
 """
 
 import logging
-import os
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMessageBox, QSplitter
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtPdf import QPdfDocument
 
 from bmlibrarian.agents import PRISMA2020Agent, AgentOrchestrator
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
+from ...widgets import DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
 from .constants import (
     SECTION_COLORS, DEFAULT_SPLITTER_SIZES,
     DEFAULT_PRISMA_MODEL, DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P, DEFAULT_MAX_TOKENS, DEFAULT_MAX_WORKERS,
-    STATUS_READY, NO_DOCUMENT_LOADED, ASSESSMENT_PLACEHOLDER,
+    STATUS_READY, ASSESSMENT_PLACEHOLDER,
 )
 from .worker import PRISMA2020AssessmentWorker
 from .ui_builders import (
@@ -63,7 +61,6 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
         self.worker: Optional[PRISMA2020AssessmentWorker] = None
         self.current_document: Optional[Dict[str, Any]] = None
         self.current_assessment: Optional[PRISMA2020Assessment] = None
-        self.doc_pdf_document: Optional[QPdfDocument] = None
 
         # UI Components container
         self.ui = UIComponents()
@@ -312,76 +309,27 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
             self.ui.load_button.setEnabled(True)
 
     def _display_document(self) -> None:
-        """Display the loaded document with abstract and full text tabs."""
+        """Display the loaded document using DocumentViewWidget."""
         if not self.current_document:
             return
 
         doc = self.current_document
 
-        self.ui.doc_title_label.setText(doc.get('title', 'No title'))
+        # Create DocumentViewData from document dict
+        doc_data = DocumentViewData(
+            document_id=doc.get('id'),
+            title=doc.get('title', 'No title'),
+            authors=doc.get('authors'),
+            journal=doc.get('journal'),
+            year=doc.get('year'),
+            pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
+            doi=doc.get('doi'),
+            abstract=doc.get('abstract'),
+            full_text=doc.get('full_text'),
+            pdf_path=doc.get('pdf_path'),
+        )
 
-        metadata_parts = []
-        if doc.get('year'):
-            metadata_parts.append(f"Year: {doc['year']}")
-        if doc.get('pmid'):
-            metadata_parts.append(f"PMID: {doc['pmid']}")
-        if doc.get('doi'):
-            metadata_parts.append(f"DOI: {doc['doi']}")
-        self.ui.doc_metadata_label.setText(" | ".join(metadata_parts))
-
-        abstract = doc.get('abstract', 'No abstract available')
-        self.ui.doc_abstract_edit.setPlainText(abstract)
-
-        self._display_fulltext(doc)
-
-    def _display_fulltext(self, doc: Dict[str, Any]) -> None:
-        """Display full text content in the appropriate viewer (PDF or text)."""
-        if self.ui.doc_fulltext_edit:
-            self.ui.doc_fulltext_edit.setVisible(False)
-        if self.ui.doc_pdf_view:
-            self.ui.doc_pdf_view.setVisible(False)
-
-        pdf_filename = doc.get('pdf_filename')
-        if pdf_filename:
-            pdf_base_dir = Path(os.path.expanduser(
-                os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
-            ))
-            pdf_path = pdf_base_dir / pdf_filename
-
-            if pdf_path.exists():
-                logger.info(f"Loading PDF from {pdf_path}")
-                try:
-                    if not self.doc_pdf_document:
-                        self.doc_pdf_document = QPdfDocument(self)
-
-                    self.doc_pdf_document.load(str(pdf_path))
-                    if self.ui.doc_pdf_view:
-                        self.ui.doc_pdf_view.setDocument(self.doc_pdf_document)
-                        self.ui.doc_pdf_view.setVisible(True)
-
-                    if self.ui.doc_tabs:
-                        self.ui.doc_tabs.setTabText(1, "Full Text (PDF)")
-                    logger.info(f"Successfully loaded PDF: {pdf_filename}")
-                    return
-                except Exception as e:
-                    logger.error(f"Failed to load PDF {pdf_path}: {e}", exc_info=True)
-            else:
-                logger.warning(f"PDF file not found: {pdf_path}")
-
-        full_text = doc.get('full_text')
-        if full_text and self.ui.doc_fulltext_edit:
-            logger.info(f"Displaying text full_text ({len(full_text)} characters)")
-            self.ui.doc_fulltext_edit.setPlainText(full_text)
-            self.ui.doc_fulltext_edit.setVisible(True)
-            if self.ui.doc_tabs:
-                self.ui.doc_tabs.setTabText(1, "Full Text")
-        else:
-            logger.info("No full text available for this document")
-            if self.ui.doc_fulltext_edit:
-                self.ui.doc_fulltext_edit.setPlaceholderText("Full text not available for this document...")
-                self.ui.doc_fulltext_edit.setVisible(True)
-            if self.ui.doc_tabs:
-                self.ui.doc_tabs.setTabText(1, "Full Text")
+        self.ui.document_view.set_document(doc_data)
 
     def _on_assessment_complete(self, assessment: PRISMA2020Assessment) -> None:
         """Handle PRISMA 2020 assessment completion."""
@@ -446,25 +394,10 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
 
         if self.ui.doc_id_input:
             self.ui.doc_id_input.clear()
-        if self.ui.doc_title_label:
-            self.ui.doc_title_label.setText(NO_DOCUMENT_LOADED)
-        if self.ui.doc_metadata_label:
-            self.ui.doc_metadata_label.setText("")
-        if self.ui.doc_abstract_edit:
-            self.ui.doc_abstract_edit.clear()
 
-        if self.ui.doc_fulltext_edit:
-            self.ui.doc_fulltext_edit.clear()
-            self.ui.doc_fulltext_edit.setVisible(False)
-
-        if self.doc_pdf_document:
-            self.doc_pdf_document.close()
-        if self.ui.doc_pdf_view:
-            self.ui.doc_pdf_view.setVisible(False)
-
-        if self.ui.doc_tabs:
-            self.ui.doc_tabs.setTabText(1, "Full Text")
-            self.ui.doc_tabs.setCurrentIndex(0)
+        # Clear document view widget
+        if self.ui.document_view:
+            self.ui.document_view.clear()
 
         clear_layout(self.ui.assessment_layout)
 
@@ -530,13 +463,6 @@ class PRISMA2020LabTabWidget(QWidget, IDocumentReceiver):
     def cleanup(self) -> None:
         """Cleanup resources."""
         logger.info("Cleaning up PRISMA 2020 Lab plugin resources")
-
-        if self.doc_pdf_document:
-            try:
-                self.doc_pdf_document.close()
-                logger.debug("PDF document closed")
-            except Exception as e:
-                logger.error(f"Error closing PDF document: {e}", exc_info=True)
 
         if self.worker and self.worker.isRunning():
             logger.debug("Terminating worker thread")

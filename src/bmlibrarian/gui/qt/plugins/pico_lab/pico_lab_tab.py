@@ -19,6 +19,7 @@ from bmlibrarian.agents.pico_agent import PICOExtraction
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px
+from ...widgets import DocumentViewWidget, DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
 
 
@@ -84,10 +85,8 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
         self.clear_button: Optional[QPushButton] = None
         self.refresh_button: Optional[QPushButton] = None
 
-        # Document display
-        self.doc_title_label: Optional[QLabel] = None
-        self.doc_metadata_label: Optional[QLabel] = None
-        self.doc_abstract_edit: Optional[QTextEdit] = None
+        # Document display - using reusable DocumentViewWidget
+        self.document_view: Optional[DocumentViewWidget] = None
 
         # PICO results
         self.pico_confidence_label: Optional[QLabel] = None
@@ -245,39 +244,10 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
 
         return group
 
-    def _create_document_panel(self) -> QGroupBox:
-        """Create document display panel."""
-        s = self.scale
-        group = QGroupBox("Document")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(scale_px(10))
-
-        # Title
-        self.doc_title_label = QLabel("No document loaded")
-        self.doc_title_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
-        self.doc_title_label.setWordWrap(True)
-        self.doc_title_label.setStyleSheet("color: #424242;")
-
-        # Metadata
-        self.doc_metadata_label = QLabel("")
-        self.doc_metadata_label.setStyleSheet(f"color: gray; font-size: {scale_px(11)}px;")
-        self.doc_metadata_label.setWordWrap(True)
-
-        # Abstract
-        abstract_label = QLabel("Abstract:")
-        abstract_label.setFont(QFont("", 10, QFont.Bold))  # Font size from centralized theme
-
-        self.doc_abstract_edit = QTextEdit()
-        self.doc_abstract_edit.setReadOnly(True)
-        self.doc_abstract_edit.setPlaceholderText("Document abstract will appear here...")
-
-        layout.addWidget(self.doc_title_label)
-        layout.addWidget(self.doc_metadata_label)
-        layout.addSpacing(scale_px(10))
-        layout.addWidget(abstract_label)
-        layout.addWidget(self.doc_abstract_edit)
-
-        return group
+    def _create_document_panel(self) -> QWidget:
+        """Create document display panel using DocumentViewWidget."""
+        self.document_view = DocumentViewWidget()
+        return self.document_view
 
     def _create_pico_panel(self) -> QGroupBox:
         """Create PICO results display panel."""
@@ -483,30 +453,27 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
             self.load_button.setEnabled(True)
 
     def _display_document(self):
-        """Display the loaded document."""
+        """Display the loaded document using DocumentViewWidget."""
         if not self.current_document:
             return
 
         doc = self.current_document
 
-        # Title
-        title = doc.get('title', 'No title')
-        self.doc_title_label.setText(title)
+        # Create DocumentViewData from document dict
+        doc_data = DocumentViewData(
+            document_id=doc.get('id'),
+            title=doc.get('title', 'No title'),
+            authors=doc.get('authors'),
+            journal=doc.get('journal'),
+            year=doc.get('year'),
+            pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
+            doi=doc.get('doi'),
+            abstract=doc.get('abstract'),
+            full_text=doc.get('full_text'),
+            pdf_path=doc.get('pdf_path'),
+        )
 
-        # Metadata
-        metadata_parts = []
-        if doc.get('year'):
-            metadata_parts.append(f"Year: {doc['year']}")
-        if doc.get('pmid'):
-            metadata_parts.append(f"PMID: {doc['pmid']}")
-        if doc.get('doi'):
-            metadata_parts.append(f"DOI: {doc['doi']}")
-
-        self.doc_metadata_label.setText(" | ".join(metadata_parts))
-
-        # Abstract
-        abstract = doc.get('abstract', 'No abstract available')
-        self.doc_abstract_edit.setPlainText(abstract)
+        self.document_view.set_document(doc_data)
 
     def _on_extraction_complete(self, extraction: PICOExtraction):
         """Handle PICO extraction completion."""
@@ -590,9 +557,9 @@ class PICOLabTabWidget(QWidget, IDocumentReceiver):
         """Clear all fields."""
         s = self.scale
         self.doc_id_input.clear()
-        self.doc_title_label.setText("No document loaded")
-        self.doc_metadata_label.setText("")
-        self.doc_abstract_edit.clear()
+
+        # Clear document view widget
+        self.document_view.clear()
 
         self.pico_confidence_label.setText("")
         self.study_info_label.setText("")

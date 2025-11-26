@@ -19,6 +19,7 @@ from bmlibrarian.agents.study_assessment_agent import StudyAssessment
 from bmlibrarian.config import get_config
 from bmlibrarian.database import fetch_documents_by_ids
 from ...resources.styles import get_font_scale, scale_px, StylesheetGenerator
+from ...widgets import DocumentViewWidget, DocumentViewData
 from ...core.document_receiver import IDocumentReceiver
 from .constants import (
     QUALITY_COLORS, CONFIDENCE_COLORS, BIAS_RISK_COLORS,
@@ -89,10 +90,8 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
         self.clear_button: Optional[QPushButton] = None
         self.refresh_button: Optional[QPushButton] = None
 
-        # Document display
-        self.doc_title_label: Optional[QLabel] = None
-        self.doc_metadata_label: Optional[QLabel] = None
-        self.doc_abstract_edit: Optional[QTextEdit] = None
+        # Document display - using reusable DocumentViewWidget
+        self.document_view: Optional[DocumentViewWidget] = None
 
         # Assessment results
         self.assessment_scroll: Optional[QScrollArea] = None
@@ -283,52 +282,10 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
 
         return input_row
 
-    def _create_document_panel(self) -> QGroupBox:
-        """Create document display panel."""
-        group = QGroupBox("Document")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(scale_px(10))
-
-        # Title
-        self.doc_title_label = QLabel("No document loaded")
-        self.doc_title_label.setFont(QFont("", 10, QFont.Bold))
-        self.doc_title_label.setWordWrap(True)
-        self.doc_title_label.setStyleSheet(
-            self.stylesheet_gen.label_stylesheet(
-                font_size_key='font_medium',
-                color='#424242',
-                bold=True
-            )
-        )
-
-        # Metadata
-        self.doc_metadata_label = QLabel("")
-        self.doc_metadata_label.setWordWrap(True)
-        self.doc_metadata_label.setStyleSheet(
-            self.stylesheet_gen.label_stylesheet(
-                font_size_key='font_small',
-                color='gray'
-            )
-        )
-
-        # Abstract
-        abstract_label = QLabel("Abstract:")
-        abstract_label.setFont(QFont("", 10, QFont.Bold))
-
-        self.doc_abstract_edit = QTextEdit()
-        self.doc_abstract_edit.setReadOnly(True)
-        self.doc_abstract_edit.setPlaceholderText("Document abstract will appear here...")
-        self.doc_abstract_edit.setStyleSheet(
-            self.stylesheet_gen.input_stylesheet()
-        )
-
-        layout.addWidget(self.doc_title_label)
-        layout.addWidget(self.doc_metadata_label)
-        layout.addSpacing(scale_px(10))
-        layout.addWidget(abstract_label)
-        layout.addWidget(self.doc_abstract_edit)
-
-        return group
+    def _create_document_panel(self) -> QWidget:
+        """Create document display panel using DocumentViewWidget."""
+        self.document_view = DocumentViewWidget()
+        return self.document_view
 
     def _create_assessment_panel(self) -> QGroupBox:
         """Create assessment results display panel."""
@@ -511,30 +468,27 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
             self.load_button.setEnabled(True)
 
     def _display_document(self):
-        """Display the loaded document."""
+        """Display the loaded document using DocumentViewWidget."""
         if not self.current_document:
             return
 
         doc = self.current_document
 
-        # Title
-        title = doc.get('title', 'No title')
-        self.doc_title_label.setText(title)
+        # Create DocumentViewData from document dict
+        doc_data = DocumentViewData(
+            document_id=doc.get('id'),
+            title=doc.get('title', 'No title'),
+            authors=doc.get('authors'),
+            journal=doc.get('journal'),
+            year=doc.get('year'),
+            pmid=str(doc.get('pmid')) if doc.get('pmid') else None,
+            doi=doc.get('doi'),
+            abstract=doc.get('abstract'),
+            full_text=doc.get('full_text'),
+            pdf_path=doc.get('pdf_path'),
+        )
 
-        # Metadata
-        metadata_parts = []
-        if doc.get('year'):
-            metadata_parts.append(f"Year: {doc['year']}")
-        if doc.get('pmid'):
-            metadata_parts.append(f"PMID: {doc['pmid']}")
-        if doc.get('doi'):
-            metadata_parts.append(f"DOI: {doc['doi']}")
-
-        self.doc_metadata_label.setText(" | ".join(metadata_parts))
-
-        # Abstract
-        abstract = doc.get('abstract', 'No abstract available')
-        self.doc_abstract_edit.setPlainText(abstract)
+        self.document_view.set_document(doc_data)
 
     def _on_assessment_complete(self, assessment: StudyAssessment):
         """Handle study assessment completion."""
@@ -898,9 +852,9 @@ class StudyAssessmentTabWidget(QWidget, IDocumentReceiver):
     def _clear_all(self):
         """Clear all fields."""
         self.doc_id_input.clear()
-        self.doc_title_label.setText("No document loaded")
-        self.doc_metadata_label.setText("")
-        self.doc_abstract_edit.clear()
+
+        # Clear document view widget
+        self.document_view.clear()
 
         # Clear assessment results
         while self.assessment_layout.count():

@@ -17,6 +17,7 @@ from PySide6.QtGui import QFont, QIntValidator
 from PySide6.QtPdfWidgets import QPdfView
 
 from ...resources.styles import StylesheetGenerator, scale_px
+from ...widgets import DocumentViewWidget
 from .constants import (
     SECTION_COLORS,
     DOC_ID_MIN_VALUE, DOC_ID_MAX_VALUE,
@@ -47,13 +48,8 @@ class UIComponents:
         self.clear_button: Optional[QPushButton] = None
         self.refresh_button: Optional[QPushButton] = None
 
-        # Document display
-        self.doc_title_label: Optional[QLabel] = None
-        self.doc_metadata_label: Optional[QLabel] = None
-        self.doc_tabs: Optional[QTabWidget] = None
-        self.doc_abstract_edit: Optional[QTextEdit] = None
-        self.doc_fulltext_edit: Optional[QTextEdit] = None
-        self.doc_pdf_view: Optional[QPdfView] = None
+        # Document display - using reusable DocumentViewWidget
+        self.document_view: Optional[DocumentViewWidget] = None
 
         # Assessment results
         self.assessment_scroll: Optional[QScrollArea] = None
@@ -246,89 +242,19 @@ def create_input_panel(
 def create_document_panel(
     stylesheet_gen: StylesheetGenerator,
     components: UIComponents
-) -> QGroupBox:
+) -> QWidget:
     """
-    Create document display panel with tabbed interface.
+    Create document display panel using DocumentViewWidget.
 
     Args:
-        stylesheet_gen: StylesheetGenerator for styling
+        stylesheet_gen: StylesheetGenerator for styling (unused, kept for API compatibility)
         components: UIComponents to store widget references
 
     Returns:
-        QGroupBox containing document display widgets
+        DocumentViewWidget for document display
     """
-    group = QGroupBox("Document")
-    layout = QVBoxLayout(group)
-    layout.setSpacing(scale_px(10))
-
-    # Title
-    components.doc_title_label = QLabel(NO_DOCUMENT_LOADED)
-    components.doc_title_label.setFont(QFont("", 10, QFont.Bold))
-    components.doc_title_label.setWordWrap(True)
-    components.doc_title_label.setStyleSheet(
-        stylesheet_gen.label_stylesheet(
-            font_size_key='font_medium',
-            color='#424242',
-            bold=True
-        )
-    )
-
-    # Metadata
-    components.doc_metadata_label = QLabel("")
-    components.doc_metadata_label.setWordWrap(True)
-    components.doc_metadata_label.setStyleSheet(
-        stylesheet_gen.label_stylesheet(
-            font_size_key='font_small',
-            color='gray'
-        )
-    )
-
-    # Tabbed interface for document content
-    components.doc_tabs = QTabWidget()
-    components.doc_tabs.setStyleSheet(
-        stylesheet_gen.input_stylesheet()
-    )
-
-    # Tab 1: Abstract
-    abstract_tab = QWidget()
-    abstract_layout = QVBoxLayout(abstract_tab)
-    abstract_layout.setContentsMargins(0, 0, 0, 0)
-
-    components.doc_abstract_edit = QTextEdit()
-    components.doc_abstract_edit.setReadOnly(True)
-    components.doc_abstract_edit.setPlaceholderText("Document abstract will appear here...")
-    components.doc_abstract_edit.setStyleSheet(
-        stylesheet_gen.input_stylesheet()
-    )
-    abstract_layout.addWidget(components.doc_abstract_edit)
-    components.doc_tabs.addTab(abstract_tab, "Abstract")
-
-    # Tab 2: Full Text
-    fulltext_tab = QWidget()
-    fulltext_layout = QVBoxLayout(fulltext_tab)
-    fulltext_layout.setContentsMargins(0, 0, 0, 0)
-
-    components.doc_fulltext_edit = QTextEdit()
-    components.doc_fulltext_edit.setReadOnly(True)
-    components.doc_fulltext_edit.setPlaceholderText("Full text not available for this document...")
-    components.doc_fulltext_edit.setStyleSheet(
-        stylesheet_gen.input_stylesheet()
-    )
-    components.doc_fulltext_edit.setVisible(False)
-    fulltext_layout.addWidget(components.doc_fulltext_edit)
-
-    components.doc_pdf_view = QPdfView()
-    components.doc_pdf_view.setVisible(False)
-    fulltext_layout.addWidget(components.doc_pdf_view)
-
-    components.doc_tabs.addTab(fulltext_tab, "Full Text")
-
-    layout.addWidget(components.doc_title_label)
-    layout.addWidget(components.doc_metadata_label)
-    layout.addSpacing(scale_px(10))
-    layout.addWidget(components.doc_tabs, stretch=1)
-
-    return group
+    components.document_view = DocumentViewWidget()
+    return components.document_view
 
 
 def create_assessment_panel(
