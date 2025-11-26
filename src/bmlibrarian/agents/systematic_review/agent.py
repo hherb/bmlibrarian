@@ -45,6 +45,9 @@ from .data_models import (
     AssessedPaper,
     ReviewStatistics,
     SystematicReviewResult,
+    InclusionDecision,
+    InclusionStatus,
+    ExclusionStage,
     validate_search_criteria,
     validate_scoring_weights,
 )
@@ -61,6 +64,21 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 AGENT_VERSION = "1.0.0"
+
+# Action names for audit trail
+ACTION_GENERATE_SEARCH_PLAN = "generate_search_plan"
+ACTION_EXECUTE_SEARCH = "execute_search"
+ACTION_INITIAL_FILTER = "initial_filter"
+ACTION_SCORE_RELEVANCE = "score_relevance"
+ACTION_ASSESS_QUALITY = "assess_quality"
+ACTION_CALCULATE_COMPOSITE = "calculate_composite"
+ACTION_GENERATE_REPORT = "generate_report"
+
+# Checkpoint types
+CHECKPOINT_SEARCH_STRATEGY = "search_strategy"
+CHECKPOINT_INITIAL_RESULTS = "initial_results"
+CHECKPOINT_SCORING_COMPLETE = "scoring_complete"
+CHECKPOINT_QUALITY_ASSESSMENT = "quality_assessment"
 
 
 # =============================================================================
@@ -265,11 +283,451 @@ class SystematicReviewAgent(BaseAgent):
             }
         )
 
-        # Phase 1 skeleton - raise NotImplementedError
-        # Full implementation will be added in Phase 2-5
-        raise NotImplementedError(
-            "SystematicReviewAgent.run_review() is not yet implemented. "
-            "Phase 1 provides the skeleton. Implementation continues in Phase 2-5."
+        # =====================================================================
+        # Phase 5: Complete Workflow Implementation
+        # =====================================================================
+
+        try:
+            # Import required components
+            from .planner import Planner
+            from .executor import SearchExecutor
+            from .filters import InitialFilter, InclusionEvaluator
+            from .scorer import RelevanceScorer, CompositeScorer
+            from .quality import QualityAssessor
+            from .reporter import Reporter
+
+            # Initialize components
+            planner = Planner(
+                model=self.config.model,
+                host=self.config.host,
+                config=self.config,
+                callback=self.callback,
+            )
+
+            executor = SearchExecutor(
+                config=self.config,
+                results_per_query=self.config.max_results_per_query,
+                callback=self.callback,
+            )
+
+            initial_filter = InitialFilter(
+                criteria=criteria,
+                config=self.config,
+            )
+
+            scorer = RelevanceScorer(
+                research_question=criteria.research_question,
+                config=self.config,
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+                criteria=criteria,
+            )
+
+            quality_assessor = QualityAssessor(
+                config=self.config,
+                callback=self.callback,
+                orchestrator=self.orchestrator,
+            )
+
+            composite_scorer = CompositeScorer(weights=weights)
+
+            reporter = Reporter(
+                documenter=self.documenter,
+                criteria=criteria,
+                weights=weights,
+            )
+
+            # =================================================================
+            # Phase 1: Generate Search Plan
+            # =================================================================
+            self.documenter.set_phase("search_planning")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_GENERATE_SEARCH_PLAN,
+                tool="Planner",
+                input_summary=f"Research question: {criteria.research_question[:100]}...",
+                decision_rationale="Generating diverse queries for comprehensive coverage",
+            ) as timer:
+                self._search_plan = planner.generate_search_plan(criteria)
+                timer.set_output(f"Generated {len(self._search_plan.queries)} queries")
+                timer.add_metrics({
+                    "queries_generated": len(self._search_plan.queries),
+                    "estimated_yield": self._search_plan.total_estimated_yield,
+                })
+
+            # Checkpoint: Review search strategy
+            if not self._checkpoint(
+                checkpoint_type=CHECKPOINT_SEARCH_STRATEGY,
+                state={
+                    "search_plan": self._search_plan.to_dict(),
+                    "queries_count": len(self._search_plan.queries),
+                },
+                interactive=interactive,
+                checkpoint_callback=checkpoint_callback,
+            ):
+                logger.info("Review aborted at search strategy checkpoint")
+                self.documenter.end_review()
+                return self._build_empty_result(criteria, weights, "Aborted at search strategy")
+
+            # =================================================================
+            # Phase 2: Execute Search Plan
+            # =================================================================
+            self.documenter.set_phase("search_execution")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_EXECUTE_SEARCH,
+                tool="SearchExecutor",
+                input_summary=f"Executing {len(self._search_plan.queries)} queries",
+                decision_rationale="Running all planned queries to find candidate papers",
+            ) as timer:
+                search_results = executor.execute_plan(self._search_plan)
+                self._executed_queries = search_results.executed_queries
+                self._all_papers = search_results.papers
+
+                timer.set_output(
+                    f"Found {search_results.count} unique papers "
+                    f"from {search_results.total_before_dedup} total"
+                )
+                timer.add_metrics({
+                    "total_papers_found": search_results.total_before_dedup,
+                    "unique_papers": search_results.count,
+                    "deduplication_rate": round(search_results.deduplication_rate * 100, 2),
+                })
+
+            # Track statistics
+            total_considered = len(self._all_papers)
+
+            # Checkpoint: Review initial results
+            if not self._checkpoint(
+                checkpoint_type=CHECKPOINT_INITIAL_RESULTS,
+                state={
+                    "unique_papers": len(self._all_papers),
+                    "total_before_dedup": search_results.total_before_dedup,
+                    "sample_titles": [p.title[:80] for p in self._all_papers[:10]],
+                },
+                interactive=interactive,
+                checkpoint_callback=checkpoint_callback,
+            ):
+                logger.info("Review aborted at initial results checkpoint")
+                self.documenter.end_review()
+                return self._build_empty_result(criteria, weights, "Aborted at initial results")
+
+            # =================================================================
+            # Phase 3: Initial Filtering
+            # =================================================================
+            self.documenter.set_phase("initial_filtering")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_INITIAL_FILTER,
+                tool="InitialFilter",
+                input_summary=f"Filtering {len(self._all_papers)} papers with heuristics",
+                decision_rationale="Fast filtering before expensive LLM scoring",
+            ) as timer:
+                filter_result = initial_filter.filter_batch(self._all_papers)
+                passed_filter = filter_result.passed_papers
+                rejected_filter = filter_result.rejected_papers
+
+                timer.set_output(
+                    f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
+                )
+                timer.add_metrics({
+                    "passed": len(passed_filter),
+                    "rejected": len(rejected_filter),
+                    "pass_rate": round(len(passed_filter) / total_considered * 100, 2) if total_considered > 0 else 0,
+                })
+
+            passed_initial_filter = len(passed_filter)
+
+            # =================================================================
+            # Phase 4: Relevance Scoring
+            # =================================================================
+            self.documenter.set_phase("relevance_scoring")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_SCORE_RELEVANCE,
+                tool="RelevanceScorer",
+                input_summary=f"Scoring {len(passed_filter)} papers for relevance",
+                decision_rationale="Assessing relevance to research question using LLM",
+            ) as timer:
+                scoring_result = scorer.score_batch(
+                    papers=passed_filter,
+                    evaluate_inclusion=True,
+                    paper_sources=search_results.paper_sources,
+                )
+                self._scored_papers = scoring_result.scored_papers
+
+                timer.set_output(
+                    f"Scored {len(scoring_result.scored_papers)} papers, "
+                    f"avg score: {scoring_result.average_score:.2f}"
+                )
+                timer.add_metrics({
+                    "papers_scored": len(scoring_result.scored_papers),
+                    "average_score": round(scoring_result.average_score, 2),
+                    "failed_scoring": len(scoring_result.failed_papers),
+                })
+
+            # Apply relevance threshold
+            above_threshold, below_threshold = scorer.apply_relevance_threshold(
+                self._scored_papers,
+                threshold=self.config.relevance_threshold,
+            )
+
+            passed_relevance = len(above_threshold)
+
+            # Log threshold application
+            self.documenter.log_step(
+                action="apply_relevance_threshold",
+                tool=None,
+                input_summary=f"Threshold: {self.config.relevance_threshold}",
+                output_summary=f"Above: {len(above_threshold)}, Below: {len(below_threshold)}",
+                decision_rationale=f"Filtering by relevance threshold {self.config.relevance_threshold}",
+                metrics={
+                    "above_threshold": len(above_threshold),
+                    "below_threshold": len(below_threshold),
+                    "threshold": self.config.relevance_threshold,
+                }
+            )
+
+            # Checkpoint: Review scoring results
+            if not self._checkpoint(
+                checkpoint_type=CHECKPOINT_SCORING_COMPLETE,
+                state={
+                    "total_scored": len(self._scored_papers),
+                    "above_threshold": len(above_threshold),
+                    "below_threshold": len(below_threshold),
+                    "average_score": scoring_result.average_score,
+                },
+                interactive=interactive,
+                checkpoint_callback=checkpoint_callback,
+            ):
+                logger.info("Review aborted at scoring checkpoint")
+                self.documenter.end_review()
+                return self._build_empty_result(criteria, weights, "Aborted at scoring")
+
+            # =================================================================
+            # Phase 5: Quality Assessment
+            # =================================================================
+            self.documenter.set_phase("quality_assessment")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_ASSESS_QUALITY,
+                tool="QualityAssessor",
+                input_summary=f"Assessing quality of {len(above_threshold)} papers",
+                decision_rationale="Evaluating study quality and methodology",
+            ) as timer:
+                quality_result = quality_assessor.assess_batch(above_threshold)
+                self._assessed_papers = quality_result.assessed_papers
+
+                timer.set_output(
+                    f"Assessed {len(quality_result.assessed_papers)} papers, "
+                    f"failed: {len(quality_result.failed_papers)}"
+                )
+                timer.add_metrics({
+                    "papers_assessed": len(quality_result.assessed_papers),
+                    "failed_assessment": len(quality_result.failed_papers),
+                    **quality_result.assessment_statistics,
+                })
+
+            # Checkpoint: Review quality assessment
+            if not self._checkpoint(
+                checkpoint_type=CHECKPOINT_QUALITY_ASSESSMENT,
+                state={
+                    "papers_assessed": len(self._assessed_papers),
+                    "assessment_stats": quality_result.assessment_statistics,
+                },
+                interactive=interactive,
+                checkpoint_callback=checkpoint_callback,
+            ):
+                logger.info("Review aborted at quality assessment checkpoint")
+                self.documenter.end_review()
+                return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
+
+            # =================================================================
+            # Phase 6: Composite Scoring and Ranking
+            # =================================================================
+            self.documenter.set_phase("ranking")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_CALCULATE_COMPOSITE,
+                tool="CompositeScorer",
+                input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+                decision_rationale="Combining scores using user-defined weights",
+            ) as timer:
+                ranked_papers = composite_scorer.score_and_rank(self._assessed_papers)
+
+                timer.set_output(f"Ranked {len(ranked_papers)} papers")
+                timer.add_metrics({
+                    "papers_ranked": len(ranked_papers),
+                })
+
+            # Apply quality gate
+            included_papers, failed_quality = composite_scorer.apply_quality_gate(
+                ranked_papers,
+                threshold=self.config.quality_threshold,
+            )
+
+            passed_quality_gate = len(included_papers)
+
+            self.documenter.log_step(
+                action="apply_quality_gate",
+                tool=None,
+                input_summary=f"Quality threshold: {self.config.quality_threshold}",
+                output_summary=f"Passed: {len(included_papers)}, Failed: {len(failed_quality)}",
+                decision_rationale=f"Final quality gate at threshold {self.config.quality_threshold}",
+                metrics={
+                    "passed": len(included_papers),
+                    "failed": len(failed_quality),
+                    "threshold": self.config.quality_threshold,
+                }
+            )
+
+            # =================================================================
+            # Phase 7: Separate papers by status
+            # =================================================================
+
+            # Collect all excluded papers
+            excluded_papers: List[ScoredPaper] = []
+
+            # From initial filter
+            for paper, reason in rejected_filter:
+                excluded_papers.append(ScoredPaper(
+                    paper=paper,
+                    relevance_score=0.0,
+                    relevance_rationale=reason,
+                    inclusion_decision=InclusionDecision.create_excluded(
+                        stage=ExclusionStage.INITIAL_FILTER,
+                        reasons=[reason],
+                        rationale=reason,
+                    ),
+                ))
+
+            # From below relevance threshold
+            excluded_papers.extend(below_threshold)
+
+            # From failed quality gate (convert back to ScoredPaper representation)
+            for assessed in failed_quality:
+                excluded_papers.append(assessed.scored_paper)
+
+            # Collect uncertain papers
+            uncertain_papers = [
+                p for p in self._scored_papers
+                if p.inclusion_decision.status == InclusionStatus.UNCERTAIN
+            ]
+
+            # =================================================================
+            # Phase 8: Generate Report
+            # =================================================================
+            self.documenter.set_phase("reporting")
+
+            with self.documenter.log_step_with_timer(
+                action=ACTION_GENERATE_REPORT,
+                tool="Reporter",
+                input_summary=f"Generating report: {len(included_papers)} included, {len(excluded_papers)} excluded",
+                decision_rationale="Creating comprehensive review report",
+            ) as timer:
+                # Build statistics
+                statistics = ReviewStatistics(
+                    total_considered=total_considered,
+                    passed_initial_filter=passed_initial_filter,
+                    passed_relevance_threshold=passed_relevance,
+                    passed_quality_gate=passed_quality_gate,
+                    final_included=len(included_papers),
+                    final_excluded=len(excluded_papers),
+                    uncertain_for_review=len(uncertain_papers),
+                    processing_time_seconds=self.documenter.get_duration(),
+                    total_llm_calls=self.documenter._total_llm_calls,
+                    total_tokens_used=self.documenter._total_tokens,
+                )
+
+                # Build result
+                result = reporter.build_json_result(
+                    included_papers=included_papers,
+                    excluded_papers=excluded_papers,
+                    uncertain_papers=uncertain_papers,
+                    search_plan=self._search_plan,
+                    executed_queries=self._executed_queries,
+                    statistics=statistics,
+                )
+
+                timer.set_output(f"Report generated with {statistics.final_included} included papers")
+                timer.add_metrics(statistics.to_dict())
+
+            # Save to file if path provided
+            if output_path:
+                reporter.generate_json_report(result, output_path)
+                # Also generate markdown report
+                md_path = output_path.replace(".json", ".md") if output_path.endswith(".json") else output_path + ".md"
+                reporter.generate_markdown_report(result, md_path)
+
+            # End review
+            self.documenter.end_review()
+
+            logger.info(
+                f"Systematic review complete: {statistics.final_included} included, "
+                f"{statistics.final_excluded} excluded, "
+                f"{statistics.uncertain_for_review} uncertain"
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Systematic review failed: {e}", exc_info=True)
+            self.documenter.log_step(
+                action="review_failed",
+                tool=None,
+                input_summary="Review encountered error",
+                output_summary=f"Failed: {str(e)}",
+                decision_rationale="Error during review execution",
+                error=str(e),
+            )
+            self.documenter.end_review()
+            raise
+
+    def _build_empty_result(
+        self,
+        criteria: SearchCriteria,
+        weights: ScoringWeights,
+        reason: str,
+    ) -> SystematicReviewResult:
+        """
+        Build an empty result when review is aborted.
+
+        Args:
+            criteria: The search criteria that was used
+            weights: The scoring weights that were configured
+            reason: Why the review was aborted
+
+        Returns:
+            SystematicReviewResult with zero papers and abort reason
+        """
+        from .reporter import Reporter
+
+        reporter = Reporter(
+            documenter=self.documenter,
+            criteria=criteria,
+            weights=weights,
+        )
+
+        statistics = ReviewStatistics(
+            total_considered=0,
+            passed_initial_filter=0,
+            passed_relevance_threshold=0,
+            passed_quality_gate=0,
+            final_included=0,
+            final_excluded=0,
+            uncertain_for_review=0,
+            processing_time_seconds=self.documenter.get_duration(),
+            total_llm_calls=self.documenter._total_llm_calls,
+            total_tokens_used=self.documenter._total_tokens,
+        )
+
+        return reporter.build_json_result(
+            included_papers=[],
+            excluded_papers=[],
+            uncertain_papers=[],
+            search_plan=self._search_plan,
+            executed_queries=self._executed_queries,
+            statistics=statistics,
         )
 
     # =========================================================================

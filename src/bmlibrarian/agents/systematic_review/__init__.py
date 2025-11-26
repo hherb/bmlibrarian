@@ -219,6 +219,12 @@ from .quality import (
     QualityAssessmentResult,
 )
 
+# Phase 5: Reporting
+from .reporter import (
+    Reporter,
+    REPORT_FORMAT_VERSION,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -321,4 +327,7 @@ __all__ = [
     # Phase 4: Quality Assessment
     "QualityAssessor",
     "QualityAssessmentResult",
+    # Phase 5: Reporting
+    "Reporter",
+    "REPORT_FORMAT_VERSION",
 ]
