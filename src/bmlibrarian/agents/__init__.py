@@ -53,7 +53,7 @@ from .document_interrogation_agent import (
     ProcessingMode,
     DatabaseChunk
 )
-from .pico_agent import PICOAgent, PICOExtraction
+from .pico_agent import PICOAgent, PICOExtraction, PICOSuitability
 from .study_assessment_agent import StudyAssessmentAgent, StudyAssessment
 from .prisma2020_agent import PRISMA2020Agent, PRISMA2020Assessment, SuitabilityAssessment
 from .paper_weight import AssessmentDetail, DimensionScore, PaperWeightResult, PaperWeightAssessmentAgent
@@ -95,6 +95,7 @@ __all__ = [
     "DatabaseChunk",
     "PICOAgent",
     "PICOExtraction",
+    "PICOSuitability",
     "StudyAssessmentAgent",
     "StudyAssessment",
     "PRISMA2020Agent",
