@@ -9,12 +9,14 @@ DocumentInterrogationAgent with sliding window chunk processing.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QSplitter, QFileDialog, QMessageBox, QComboBox,
-    QScrollArea, QFrame, QSizePolicy
+    QScrollArea, QFrame, QSizePolicy, QTextBrowser, QMenu
 )
 from PySide6.QtCore import Qt, Signal, QThread, Slot
-from PySide6.QtGui import QFont, QTextCursor
 from typing import Optional, List
 from pathlib import Path
+from datetime import datetime
+import json
+import markdown
 
 from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 from bmlibrarian.config import get_config
@@ -189,59 +191,49 @@ class DocumentPreparationWorker(QThread):
 
 
 class ChatBubble(QFrame):
-    """A single chat message bubble with DPI-aware dimensions."""
+    """A single chat message bubble with DPI-aware dimensions and markdown support."""
 
     def __init__(self, text: str, is_user: bool, scale: dict, parent: Optional[QWidget] = None):
         """
-        Initialize chat bubble.
+        Initialize chat bubble with markdown rendering.
 
         Args:
-            text: Message text
+            text: Message text (supports markdown formatting)
             is_user: True if user message, False if AI message
             scale: Font-relative scaling dimensions from get_font_scale()
             parent: Optional parent widget
         """
         super().__init__(parent)
 
-        # Get scaled dimensions
-        radius = scale['bubble_radius']
-        padding = scale['bubble_padding']
+        # Store original text for conversation export
+        self.original_text = text
+        self.is_user = is_user
+
+        # Get scaled dimensions - double the padding and use larger radius
+        # Doubled padding for more comfortable spacing
+        radius = max(20, int(scale['bubble_radius'] * 1.8))  # Much more rounded corners
 
         # Allow bubble to expand horizontally based on content
-        # Set size policy to expand with content
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        # Styling with proper colors and rounded corners
+        # Determine colors based on message type
         if is_user:
-            # User: pale sand background
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: #F4EAD5;
-                    border-radius: {radius}px;
-                    padding: {padding}px;
-                }}
-                QLabel {{
-                    color: #333333;
-                    background-color: transparent;
-                }}
-            """)
+            bg_color = "#F4EAD5"  # Pale sand background
+            text_color = "#333333"
         else:
-            # LLM: pale blue background
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: #E3F2FD;
-                    border-radius: {radius}px;
-                    padding: {padding}px;
-                }}
-                QLabel {{
-                    color: #1A1A1A;
-                    background-color: transparent;
-                }}
-            """)
+            bg_color = "#E3F2FD"  # Pale blue background
+            text_color = "#1A1A1A"
 
-        # Simple layout with just the message (no icon, no header)
+        # Apply frame styling with rounded corners
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border-radius: {radius}px;
+            }}
+        """)
+
+        # Layout with original padding (not doubled)
         layout = QVBoxLayout(self)
-        # Increased padding for more comfortable spacing around text
         layout.setContentsMargins(
             scale['padding_large'],
             scale['padding_medium'],
@@ -250,16 +242,155 @@ class ChatBubble(QFrame):
         )
         layout.setSpacing(0)
 
-        # Message text only
-        message_label = QLabel(text)
-        message_label.setWordWrap(True)
-        message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        message_font = QFont()
-        # Use larger font size for better readability
-        message_font.setPointSize(scale['font_large'])
-        message_label.setFont(message_font)
-        layout.addWidget(message_label)
+        # Use QTextBrowser for markdown rendering
+        message_browser = QTextBrowser()
+        message_browser.setOpenExternalLinks(True)
+        message_browser.setFrameShape(QFrame.Shape.NoFrame)
+        message_browser.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+
+        # Configure markdown processor
+        md = markdown.Markdown(
+            extensions=[
+                "extra",  # Tables, fenced code blocks, etc.
+                "nl2br",  # Newline to <br>
+                "sane_lists",  # Better list handling
+            ]
+        )
+
+        # Convert markdown to HTML
+        html_body = md.convert(text)
+
+        # Create styled HTML document
+        font_size = scale['font_large']
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-size: {font_size}pt;
+                    line-height: 1.5;
+                    color: {text_color};
+                    background-color: transparent;
+                    margin: 0;
+                    padding: 0;
+                }}
+                p {{
+                    margin: 0.3em 0;
+                }}
+                code {{
+                    background-color: rgba(0,0,0,0.05);
+                    border-radius: 3px;
+                    padding: 2px 4px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 0.9em;
+                }}
+                pre {{
+                    background-color: rgba(0,0,0,0.05);
+                    border-radius: 6px;
+                    padding: 8px;
+                    overflow-x: auto;
+                }}
+                pre code {{
+                    background-color: transparent;
+                    padding: 0;
+                }}
+                ul, ol {{
+                    margin: 0.3em 0;
+                    padding-left: 1.5em;
+                }}
+                li {{
+                    margin: 0.2em 0;
+                }}
+                blockquote {{
+                    border-left: 3px solid #3498db;
+                    padding-left: 0.8em;
+                    margin-left: 0;
+                    color: #666;
+                }}
+                strong {{
+                    font-weight: 600;
+                }}
+                em {{
+                    font-style: italic;
+                }}
+                a {{
+                    color: #2196F3;
+                    text-decoration: none;
+                }}
+                a:hover {{
+                    text-decoration: underline;
+                }}
+                hr {{
+                    border: none;
+                    border-top: 1px solid rgba(0,0,0,0.1);
+                    margin: 0.8em 0;
+                }}
+                h1, h2, h3, h4, h5, h6 {{
+                    margin-top: 0.6em;
+                    margin-bottom: 0.3em;
+                    font-weight: 600;
+                }}
+                h1 {{ font-size: 1.4em; }}
+                h2 {{ font-size: 1.2em; }}
+                h3 {{ font-size: 1.1em; }}
+                table {{
+                    border-collapse: collapse;
+                    margin: 0.5em 0;
+                }}
+                th, td {{
+                    border: 1px solid rgba(0,0,0,0.15);
+                    padding: 4px 8px;
+                    text-align: left;
+                }}
+                th {{
+                    background-color: rgba(0,0,0,0.05);
+                    font-weight: 600;
+                }}
+            </style>
+        </head>
+        <body>{html_body}</body>
+        </html>
+        """
+
+        message_browser.setHtml(html)
+
+        # Style the browser to be transparent
+        message_browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: transparent;
+                border: none;
+                color: {text_color};
+            }}
+        """)
+
+        # Make the browser auto-resize to content
+        message_browser.document().setDocumentMargin(0)
+        message_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        message_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Store reference for dynamic height adjustment
+        self._message_browser = message_browser
+
+        # Connect document size changes to height adjustment
+        message_browser.document().documentLayout().documentSizeChanged.connect(
+            self._adjust_browser_height
+        )
+
+        layout.addWidget(message_browser)
+
+        # Initial height adjustment after widget is added
+        self._adjust_browser_height()
+
+    def _adjust_browser_height(self):
+        """Adjust the QTextBrowser height to fit its content."""
+        if hasattr(self, '_message_browser') and self._message_browser:
+            doc_height = self._message_browser.document().size().height()
+            # Add small margin to prevent clipping
+            self._message_browser.setFixedHeight(int(doc_height) + 8)
 
 
 class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
@@ -303,7 +434,11 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         self.chat_layout: Optional[QVBoxLayout] = None
         self.message_input: Optional[QTextEdit] = None
         self.send_btn: Optional[QPushButton] = None
+        self.save_btn: Optional[QPushButton] = None
         self.progress_label: Optional[QLabel] = None
+
+        # Conversation history for export
+        self.conversation_history: List[dict] = []
 
         self._setup_ui()
         self._load_models()
@@ -489,17 +624,54 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header with minimal padding
-        header = QLabel("💬 Chat")
-        header.setStyleSheet(f"""
-            QLabel {{
+        # Header with save button
+        header_widget = QWidget()
+        header_widget.setStyleSheet(f"""
+            QWidget {{
                 background-color: #E0E0E0;
-                padding: {s['padding_small']}px {s['padding_medium']}px;
-                font-weight: bold;
-                font-size: {s['font_large']}pt;
             }}
         """)
-        layout.addWidget(header)
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(
+            s['padding_medium'], s['padding_small'],
+            s['padding_medium'], s['padding_small']
+        )
+        header_layout.setSpacing(s['spacing_small'])
+
+        # Header label
+        header_label = QLabel("💬 Chat")
+        header_label.setStyleSheet(f"""
+            QLabel {{
+                font-weight: bold;
+                font-size: {s['font_large']}pt;
+                background-color: transparent;
+            }}
+        """)
+        header_layout.addWidget(header_label)
+
+        # Spacer to push save button to the right
+        header_layout.addStretch()
+
+        # Save conversation button
+        self.save_btn = QPushButton("💾 Save")
+        self.save_btn.setToolTip("Save conversation as JSON or Markdown")
+        self.save_btn.clicked.connect(self._on_save_conversation)
+        self.save_btn.setFixedHeight(s['control_height_small'])
+        self.save_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_tiny']}px {s['padding_small']}px;
+                font-size: {s['font_small']}pt;
+                background-color: #FFFFFF;
+                border: 1px solid #CCC;
+                border-radius: {s['radius_small']}px;
+            }}
+            QPushButton:hover {{
+                background-color: #F0F0F0;
+            }}
+        """)
+        header_layout.addWidget(self.save_btn)
+
+        layout.addWidget(header_widget)
 
         # Chat messages area - expands to fill available vertical space
         self.chat_scroll_area = QScrollArea()
@@ -511,7 +683,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             }
         """)
 
-        # Chat container with reduced padding
+        # Chat container with doubled spacing between bubbles
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(
@@ -520,7 +692,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             s['spacing_medium'],
             s['spacing_medium']
         )
-        self.chat_layout.setSpacing(s['spacing_medium'])
+        # Double the spacing between chat bubbles for better visual separation
+        self.chat_layout.setSpacing(s['spacing_medium'] * 2)
         self.chat_layout.setAlignment(Qt.AlignTop)
 
         # Welcome message
@@ -623,9 +796,23 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         )
         self._add_chat_bubble(welcome_text, is_user=False)
 
-    def _add_chat_bubble(self, text: str, is_user: bool):
-        """Add a chat bubble to the chat area with icon on the left."""
+    def _add_chat_bubble(self, text: str, is_user: bool, track_history: bool = True):
+        """Add a chat bubble to the chat area with icon on the left.
+
+        Args:
+            text: Message text (supports markdown formatting)
+            is_user: True if user message, False if AI message
+            track_history: If True, add message to conversation history for export
+        """
         s = self.scale
+
+        # Track in conversation history for export
+        if track_history:
+            self.conversation_history.append({
+                "role": "user" if is_user else "assistant",
+                "content": text,
+                "timestamp": datetime.now().isoformat()
+            })
 
         # Create the bubble
         bubble = ChatBubble(text, is_user, s)
@@ -646,7 +833,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         # Create container for icon + bubble with asymmetric padding
         container = QWidget()
         container.setStyleSheet("background-color: transparent;")
-        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         container_layout = QHBoxLayout(container)
         container_layout.setSpacing(s['spacing_small'])
 
@@ -686,6 +873,235 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         """Scroll chat area to bottom."""
         scrollbar = self.chat_scroll_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _get_save_directory(self) -> Path:
+        """Get the configured save directory for conversation exports.
+
+        Returns:
+            Path to the save directory (creates if doesn't exist)
+        """
+        # Get from config or use default
+        doc_qa_config = self.config.get_agent_config('document_qa')
+        save_dir_str = doc_qa_config.get(
+            'conversation_save_dir',
+            str(Path.home() / '.bmlibrarian' / 'document_qa')
+        )
+        save_dir = Path(save_dir_str).expanduser()
+
+        # Create directory if it doesn't exist
+        save_dir.mkdir(parents=True, exist_ok=True)
+        return save_dir
+
+    def _generate_filename_base(self) -> str:
+        """Generate a base filename for conversation export.
+
+        Returns:
+            Filename base string (without extension)
+        """
+        # Get document name if available
+        doc_name = "conversation"
+        if self.current_document_path:
+            doc_name = Path(self.current_document_path).stem
+        elif self.current_document_id:
+            doc_name = f"doc_{self.current_document_id}"
+
+        # Add timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"{doc_name}_{timestamp}"
+
+    @Slot()
+    def _on_save_conversation(self):
+        """Handle save conversation button click - show format selection menu."""
+        if not self.conversation_history:
+            QMessageBox.information(
+                self, "No Conversation",
+                "No conversation to save yet. Ask some questions first!"
+            )
+            return
+
+        # Show menu with format options
+        menu = QMenu(self)
+
+        json_action = menu.addAction("💾 Save as JSON")
+        md_action = menu.addAction("📝 Save as Markdown")
+        menu.addSeparator()
+        both_action = menu.addAction("📁 Save Both Formats")
+
+        # Show menu at button position
+        if self.save_btn is None:
+            return
+        action = menu.exec_(self.save_btn.mapToGlobal(self.save_btn.rect().bottomLeft()))
+
+        if action == json_action:
+            self._save_conversation_json()
+        elif action == md_action:
+            self._save_conversation_markdown()
+        elif action == both_action:
+            self._save_conversation_json()
+            self._save_conversation_markdown()
+
+    def _save_conversation_json(self, custom_path: Optional[Path] = None) -> Optional[Path]:
+        """Save conversation history as JSON.
+
+        Args:
+            custom_path: Optional custom file path. If None, uses default directory.
+
+        Returns:
+            Path to saved file, or None if cancelled/failed
+        """
+        try:
+            if custom_path:
+                file_path = custom_path
+            else:
+                # Get default save directory and filename
+                save_dir = self._get_save_directory()
+                default_filename = f"{self._generate_filename_base()}.json"
+                default_path = save_dir / default_filename
+
+                # Show file dialog
+                file_path_str, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Conversation as JSON",
+                    str(default_path),
+                    "JSON Files (*.json);;All Files (*)"
+                )
+
+                if not file_path_str:
+                    return None  # User cancelled
+                file_path = Path(file_path_str)
+
+            # Build export data
+            export_data = {
+                "metadata": {
+                    "exported_at": datetime.now().isoformat(),
+                    "document_path": self.current_document_path,
+                    "document_id": self.current_document_id,
+                    "model": self.model_combo.currentText() if self.model_combo else None,
+                    "message_count": len(self.conversation_history)
+                },
+                "messages": self.conversation_history
+            }
+
+            # Write JSON file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+
+            self.status_message.emit(f"Conversation saved to: {file_path.name}")
+            return file_path
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Save Error",
+                f"Failed to save conversation as JSON:\n{str(e)}"
+            )
+            return None
+
+    def _save_conversation_markdown(self, custom_path: Optional[Path] = None) -> Optional[Path]:
+        """Save conversation history as Markdown.
+
+        Args:
+            custom_path: Optional custom file path. If None, uses default directory.
+
+        Returns:
+            Path to saved file, or None if cancelled/failed
+        """
+        try:
+            if custom_path:
+                file_path = custom_path
+            else:
+                # Get default save directory and filename
+                save_dir = self._get_save_directory()
+                default_filename = f"{self._generate_filename_base()}.md"
+                default_path = save_dir / default_filename
+
+                # Show file dialog
+                file_path_str, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Save Conversation as Markdown",
+                    str(default_path),
+                    "Markdown Files (*.md);;All Files (*)"
+                )
+
+                if not file_path_str:
+                    return None  # User cancelled
+                file_path = Path(file_path_str)
+
+            # Build markdown content
+            lines = []
+
+            # Header
+            lines.append("# Document Q&A Conversation")
+            lines.append("")
+
+            # Metadata section
+            lines.append("## Metadata")
+            lines.append("")
+            lines.append(f"- **Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            if self.current_document_path:
+                lines.append(f"- **Document:** {Path(self.current_document_path).name}")
+            elif self.current_document_id:
+                lines.append(f"- **Document ID:** {self.current_document_id}")
+            if self.model_combo and self.model_combo.currentText():
+                lines.append(f"- **Model:** {self.model_combo.currentText()}")
+            lines.append(f"- **Messages:** {len(self.conversation_history)}")
+            lines.append("")
+
+            # Conversation section
+            lines.append("## Conversation")
+            lines.append("")
+
+            for msg in self.conversation_history:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                timestamp = msg.get("timestamp", "")
+
+                if role == "user":
+                    lines.append("### 👤 User")
+                else:
+                    lines.append("### 🤖 Assistant")
+
+                if timestamp:
+                    # Format timestamp for display
+                    try:
+                        dt = datetime.fromisoformat(timestamp)
+                        lines.append(f"*{dt.strftime('%H:%M:%S')}*")
+                    except ValueError:
+                        pass
+
+                lines.append("")
+                lines.append(content)
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+
+            # Write markdown file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+
+            self.status_message.emit(f"Conversation saved to: {file_path.name}")
+            return file_path
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Save Error",
+                f"Failed to save conversation as Markdown:\n{str(e)}"
+            )
+            return None
+
+    def clear_conversation(self):
+        """Clear the conversation history and chat display."""
+        self.conversation_history.clear()
+
+        # Clear chat layout
+        if self.chat_layout is not None:
+            while self.chat_layout.count():
+                child = self.chat_layout.takeAt(0)
+                widget = child.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        # Re-add welcome message
+        self._add_welcome_message()
 
     def _load_models(self):
         """Load available Ollama models."""

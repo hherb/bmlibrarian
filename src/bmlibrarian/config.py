@@ -504,7 +504,9 @@ DEFAULT_CONFIG = {
             "download_missing_fulltext": True,  # Attempt to download PDFs if full-text missing
             "use_proxy": True,  # Use OpenAthens proxy for paywalled content
             "use_thinking": True,  # Enable thinking mode for supported models
-            "embedding_model": "snowflake-arctic-embed2:latest"
+            "embedding_model": "snowflake-arctic-embed2:latest",
+            # Directory for saving conversation exports (JSON and Markdown)
+            "conversation_save_dir": "~/.bmlibrarian/document_qa"
         },
         "formatting": {
             "require_specific_years": True,  # Use specific years instead of "recent study"
