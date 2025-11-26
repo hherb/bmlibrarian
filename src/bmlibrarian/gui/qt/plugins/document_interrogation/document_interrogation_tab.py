@@ -20,9 +20,8 @@ import markdown
 
 from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 from bmlibrarian.config import get_config
-from ...widgets.pdf_viewer import PDFViewerWidget
-from ...widgets.markdown_viewer import MarkdownViewer
-from ...resources.styles import get_font_scale, StylesheetGenerator
+from ...widgets import DocumentViewWidget, DocumentViewData
+from ...resources.styles import get_font_scale
 from ...core.document_receiver import IDocumentReceiver
 from ...core.document_processor import (
     DocumentProcessor,
@@ -438,9 +437,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         self.current_doc_label: Optional[QLabel] = None
         self.model_combo: Optional[QComboBox] = None
         self.refresh_models_btn: Optional[QPushButton] = None
-        self.pdf_viewer: Optional[PDFViewerWidget] = None
-        self.markdown_viewer: Optional[MarkdownViewer] = None
-        self.document_container: Optional[QWidget] = None
+        self.document_view: Optional[DocumentViewWidget] = None
         self.chat_scroll_area: Optional[QScrollArea] = None
         self.chat_container: Optional[QWidget] = None
         self.chat_layout: Optional[QVBoxLayout] = None
@@ -559,7 +556,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         return splitter
 
     def _create_document_pane(self) -> QWidget:
-        """Create document viewer pane."""
+        """Create document viewer pane using DocumentViewWidget."""
         s = self.scale
 
         widget = QWidget()
@@ -579,54 +576,12 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         """)
         layout.addWidget(header)
 
-        # Document container (will hold PDF viewer or markdown viewer)
-        # Minimal padding to maximize PDF viewing area
-        self.document_container = QWidget()
-        self.document_container.setStyleSheet(f"""
-            QWidget {{
-                background-color: #FFFFFF;
-                padding: {s['padding_tiny']}px;
-            }}
-        """)
-        container_layout = QVBoxLayout(self.document_container)
-        container_layout.setContentsMargins(
-            s['padding_tiny'],
-            s['padding_tiny'],
-            s['padding_tiny'],
-            s['padding_tiny']
-        )
-        container_layout.setSpacing(0)
-
-        # Initial empty state
-        empty_state = self._create_empty_document_state()
-        container_layout.addWidget(empty_state)
-
-        layout.addWidget(self.document_container)
+        # Use reusable DocumentViewWidget
+        self.document_view = DocumentViewWidget()
+        layout.addWidget(self.document_view, 1)
 
         return widget
 
-    def _create_empty_document_state(self) -> QWidget:
-        """Create empty state widget for document viewer."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignCenter)
-
-        icon_label = QLabel("📄")
-        icon_label.setStyleSheet("font-size: 72pt;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        text_label = QLabel("No document loaded")
-        text_label.setStyleSheet("font-size: 14pt; color: #666;")
-        text_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(text_label)
-
-        hint_label = QLabel("Click 'Load Document' to open a PDF or Markdown file")
-        hint_label.setStyleSheet("font-size: 10pt; color: #999;")
-        hint_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint_label)
-
-        return widget
 
     def _create_chat_pane(self) -> QWidget:
         """Create chat interface pane."""
@@ -1283,12 +1238,6 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
                 }}
             """)
 
-            # Clear existing document viewer
-            while self.document_container.layout().count():
-                child = self.document_container.layout().takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
-
             # Load based on file type
             if path.suffix.lower() == '.pdf':
                 self._load_pdf(file_path)
@@ -1309,40 +1258,43 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             QMessageBox.critical(self, "Error", f"Failed to load document:\n{str(e)}")
 
     def _load_pdf(self, file_path: str):
-        """Load and display PDF document."""
+        """Load and display PDF document using DocumentViewWidget."""
         try:
-            # Create PDF viewer
-            self.pdf_viewer = PDFViewerWidget()
-            self.pdf_viewer.load_pdf(file_path)
+            path = Path(file_path)
 
-            # Add to container
-            self.document_container.layout().addWidget(self.pdf_viewer)
+            # Create document data for the PDF
+            doc_data = DocumentViewData(
+                title=path.stem,
+                pdf_path=file_path,
+            )
 
-            # Extract text for LLM processing
-            self.current_document_text = self.pdf_viewer.get_all_text()
+            # Set document in the view widget
+            self.document_view.set_document(doc_data)
+
+            # Extract text for LLM processing from the PDF tab
+            self.current_document_text = self.document_view.get_pdf_text()
 
         except Exception as e:
             raise Exception(f"PDF loading error: {str(e)}")
 
     def _load_text_document(self, file_path: str):
-        """Load and display text/markdown document."""
+        """Load and display text/markdown document using DocumentViewWidget."""
         try:
+            path = Path(file_path)
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             self.current_document_text = content
 
-            if Path(file_path).suffix.lower() == '.md':
-                # Use markdown viewer
-                self.markdown_viewer = MarkdownViewer()
-                self.markdown_viewer.set_markdown(content)
-                self.document_container.layout().addWidget(self.markdown_viewer)
-            else:
-                # Use plain text viewer
-                text_viewer = QTextEdit()
-                text_viewer.setReadOnly(True)
-                text_viewer.setPlainText(content)
-                self.document_container.layout().addWidget(text_viewer)
+            # Create document data with full text (displayed in Full Text tab)
+            doc_data = DocumentViewData(
+                title=path.stem,
+                full_text=content,
+            )
+
+            # Set document in the view widget
+            self.document_view.set_document(doc_data)
 
         except Exception as e:
             raise Exception(f"Text loading error: {str(e)}")
@@ -1352,7 +1304,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         Load a document from the database for interrogation.
 
         Uses the DocumentProcessor to ensure embeddings exist, then displays
-        the document content (PDF or full text) in the viewer pane.
+        the document content (PDF or full text) in the viewer pane via DocumentViewWidget.
 
         Args:
             document_id: Database ID of the document
@@ -1382,13 +1334,6 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
                 }}
             """)
 
-            # Clear existing document viewer
-            self._clear_document_container()
-
-            # Show loading placeholder initially
-            loading_widget = self._create_loading_placeholder(document_id, display_title)
-            self.document_container.layout().addWidget(loading_widget)
-
             # Add initial chat message
             self._add_chat_bubble(
                 f"📥 Loading document: {display_title}\n\n"
@@ -1398,42 +1343,15 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
 
             self.status_message.emit(f"Loading database document: {display_title}")
 
+            # Store title for later use
+            self._pending_title = display_title
+            self._pending_doc_info = doc_info
+
             # Start document preparation in background thread
             self._start_document_preparation(document_id, display_title, doc_info)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load database document:\n{str(e)}")
-
-    def _clear_document_container(self) -> None:
-        """Clear all widgets from the document container."""
-        while self.document_container.layout().count():
-            child = self.document_container.layout().takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
-    def _create_loading_placeholder(self, document_id: int, title: str) -> QWidget:
-        """Create loading placeholder widget."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignCenter)
-
-        icon_label = QLabel("⏳")
-        icon_label.setStyleSheet("font-size: 72pt;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setWordWrap(True)
-        layout.addWidget(title_label)
-
-        self._loading_status_label = QLabel("Checking document...")
-        self._loading_status_label.setStyleSheet("font-size: 10pt; color: #666;")
-        self._loading_status_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._loading_status_label)
-
-        return widget
 
     def _start_document_preparation(
         self,
@@ -1474,9 +1392,6 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         total: int,
     ) -> None:
         """Handle document preparation progress updates."""
-        # Update loading status label if it exists
-        if hasattr(self, '_loading_status_label') and self._loading_status_label:
-            self._loading_status_label.setText(message)
         self.status_message.emit(message)
 
     @Slot(object)
@@ -1487,10 +1402,7 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         title = getattr(self, '_pending_title', f"Document #{result.document_id}")
 
         if result.success:
-            # Clear container and show actual document content
-            self._clear_document_container()
-
-            # Load document content into viewer
+            # Load document content into DocumentViewWidget
             self._display_document_content(result)
 
             # Build success message based on content source
@@ -1517,14 +1429,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
             self.status_message.emit(f"Document ready: {title}")
 
         else:
-            # Show error state
-            self._clear_document_container()
-            error_widget = self._create_error_placeholder(
-                result.document_id,
-                title,
-                result.error_message or "Unknown error",
-            )
-            self.document_container.layout().addWidget(error_widget)
+            # Clear document view and show error in chat
+            self.document_view.clear()
 
             self._add_chat_bubble(
                 f"❌ Failed to load document: {title}\n\n"
@@ -1540,13 +1446,8 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
         """Handle document preparation error."""
         title = getattr(self, '_pending_title', "Unknown document")
 
-        self._clear_document_container()
-        error_widget = self._create_error_placeholder(
-            self.current_document_id or 0,
-            title,
-            error,
-        )
-        self.document_container.layout().addWidget(error_widget)
+        # Clear document view
+        self.document_view.clear()
 
         self._add_chat_bubble(
             f"❌ Error preparing document: {title}\n\n"
@@ -1557,122 +1458,57 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
 
         self.status_message.emit(f"Error: {error}")
 
-    def _create_error_placeholder(
-        self,
-        document_id: int,
-        title: str,
-        error: str,
-    ) -> QWidget:
-        """Create error placeholder widget."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignCenter)
-
-        icon_label = QLabel("❌")
-        icon_label.setStyleSheet("font-size: 72pt;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setWordWrap(True)
-        layout.addWidget(title_label)
-
-        error_label = QLabel(error)
-        error_label.setStyleSheet("font-size: 10pt; color: #d32f2f;")
-        error_label.setAlignment(Qt.AlignCenter)
-        error_label.setWordWrap(True)
-        layout.addWidget(error_label)
-
-        return widget
-
     def _display_document_content(self, result: 'DocumentProcessingResult') -> None:
         """
-        Display document content in the viewer pane.
+        Display document content in the DocumentViewWidget.
 
-        Checks for PDF first, then falls back to full text display.
+        Uses DocumentViewData to populate the widget with available content.
 
         Args:
             result: Document processing result with content info
         """
-        # Try to display PDF if available
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Get document info if available
+        doc_info = getattr(self, '_pending_doc_info', None)
+        title = getattr(self, '_pending_title', f"Document #{result.document_id}")
+
+        # Determine PDF path
+        pdf_path_str: Optional[str] = None
         if result.pdf_path and result.pdf_path.exists():
-            try:
-                self.pdf_viewer = PDFViewerWidget()
-                self.pdf_viewer.load_pdf(str(result.pdf_path))
-                self.document_container.layout().addWidget(self.pdf_viewer)
-                self.current_document_path = str(result.pdf_path)
-                return
-            except Exception as e:
-                # PDF load failed, fall through to text display
-                import logging
-                logging.getLogger(__name__).warning(f"PDF load failed: {e}")
-
-        # Check for PDF in database via processor
-        if self.current_document_id:
+            pdf_path_str = str(result.pdf_path)
+            self.current_document_path = pdf_path_str
+        elif self.current_document_id:
+            # Check for PDF in database via processor
             processor = DocumentProcessor()
-            doc_info = processor.get_document_info(self.current_document_id)
-            if doc_info:
-                pdf_path = processor.get_pdf_path(doc_info)
+            info = processor.get_document_info(self.current_document_id)
+            if info:
+                pdf_path = processor.get_pdf_path(info)
                 if pdf_path and pdf_path.exists():
-                    try:
-                        self.pdf_viewer = PDFViewerWidget()
-                        self.pdf_viewer.load_pdf(str(pdf_path))
-                        self.document_container.layout().addWidget(self.pdf_viewer)
-                        self.current_document_path = str(pdf_path)
-                        return
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(f"PDF load failed: {e}")
+                    pdf_path_str = str(pdf_path)
+                    self.current_document_path = pdf_path_str
 
-        # Fall back to full text display
+        # Store full text for LLM processing
         if result.full_text:
             self.current_document_text = result.full_text
-            self.markdown_viewer = MarkdownViewer()
-            self.markdown_viewer.set_markdown(result.full_text)
-            self.document_container.layout().addWidget(self.markdown_viewer)
-            return
 
-        # No content available - show placeholder
-        placeholder = self._create_database_document_placeholder(
-            result.document_id,
-            getattr(self, '_pending_title', f"Document #{result.document_id}"),
+        # Build document data for the view widget
+        doc_data = DocumentViewData(
+            document_id=result.document_id,
+            title=title,
+            authors=doc_info.authors if doc_info else None,
+            journal=doc_info.journal if doc_info else None,
+            year=doc_info.publication_date.year if doc_info and doc_info.publication_date else None,
+            pmid=str(doc_info.pmid) if doc_info and doc_info.pmid else None,
+            doi=doc_info.doi if doc_info else None,
+            abstract=doc_info.abstract if doc_info else None,
+            full_text=result.full_text,
+            pdf_path=pdf_path_str,
         )
-        self.document_container.layout().addWidget(placeholder)
 
-    def _create_database_document_placeholder(
-        self,
-        document_id: int,
-        title: str
-    ) -> QWidget:
-        """Create placeholder widget for database document display."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignCenter)
-
-        icon_label = QLabel("🗄️")
-        icon_label.setStyleSheet("font-size: 72pt;")
-        icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
-
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #333;")
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setWordWrap(True)
-        layout.addWidget(title_label)
-
-        id_label = QLabel(f"Document ID: {document_id}")
-        id_label.setStyleSheet("font-size: 10pt; color: #666;")
-        id_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(id_label)
-
-        hint_label = QLabel("Using semantic search for efficient chunk retrieval")
-        hint_label.setStyleSheet("font-size: 10pt; color: #999; font-style: italic;")
-        hint_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint_label)
-
-        return widget
+        # Set document in the view widget
+        self.document_view.set_document(doc_data)
 
     @Slot()
     def _on_send_message(self):
