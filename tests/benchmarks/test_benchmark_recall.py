@@ -135,7 +135,8 @@ def run_benchmark(
     criteria = SearchCriteria.from_dict(criteria_dict)
 
     # Run the systematic review
-    logger.info(f"Running benchmark for {ground_truth.cochrane_id}")
+    logger.info(f"Running benchmark for {ground_truth.cochrane_id} with {len(ground_truth.included_studies)} studies")
+    logger.debug(f"Search criteria: {criteria_dict}")
     result = agent.run_review(
         criteria=criteria,
         interactive=False,  # Non-interactive for benchmarks

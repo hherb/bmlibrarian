@@ -733,7 +733,7 @@ def load_ground_truth(path: str) -> CochraneGroundTruth:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in ground truth file '{path}': {e}") from e
+        raise ValueError(f"Invalid JSON in ground truth file '{path}' at line {e.lineno}: {e.msg}") from e
 
     try:
         return CochraneGroundTruth.from_dict(data)
