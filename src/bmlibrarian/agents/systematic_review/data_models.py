@@ -63,14 +63,39 @@ WEIGHT_SUM_TOLERANCE = 0.01  # Allow for floating point precision issues
 DEFAULT_MAX_RESULTS = 500
 
 # Default scoring weights (balanced profile - sum to 1.0)
-# These weights combine both Cochrane and BMLibrarian dimensions
+# These weights combine both Cochrane and BMLibrarian dimensions for comprehensive
+# evidence assessment in systematic reviews.
+
+# Evidence relevance to research question (primary factor in literature review)
+# Highest weight as irrelevant papers provide no value regardless of quality
 DEFAULT_WEIGHT_RELEVANCE = 0.25
+
+# Overall study design and methodology quality (Cochrane core dimension)
+# Second-highest weight reflecting importance of study design hierarchy
 DEFAULT_WEIGHT_STUDY_QUALITY = 0.20
+
+# Methodological rigor assessment (Cochrane dimension)
+# Evaluates adherence to best practices in study execution
 DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR = 0.15
+
+# Sample size adequacy (Cochrane dimension)
+# Lower weight as large samples don't guarantee quality
 DEFAULT_WEIGHT_SAMPLE_SIZE = 0.05
+
+# Publication recency (general dimension)
+# Moderate weight to balance recent findings with established evidence
 DEFAULT_WEIGHT_RECENCY = 0.10
+
+# Replication and reproducibility status (Cochrane dimension)
+# Lower weight due to limited availability of replication data
 DEFAULT_WEIGHT_REPLICATION_STATUS = 0.05
+
+# BMLibrarian paper weight assessment (practical dimension)
+# Integrates multiple quality signals from BMLibrarian's PaperWeightAgent
 DEFAULT_WEIGHT_PAPER_WEIGHT = 0.15
+
+# Source/journal reliability (practical dimension)
+# Lower weight as journal quality varies within publications
 DEFAULT_WEIGHT_SOURCE_RELIABILITY = 0.05
 
 
