@@ -62,6 +62,17 @@ WEIGHT_SUM_TOLERANCE = 0.01  # Allow for floating point precision issues
 # Default limits
 DEFAULT_MAX_RESULTS = 500
 
+# Default scoring weights (balanced profile - sum to 1.0)
+# These weights combine both Cochrane and BMLibrarian dimensions
+DEFAULT_WEIGHT_RELEVANCE = 0.25
+DEFAULT_WEIGHT_STUDY_QUALITY = 0.20
+DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR = 0.15
+DEFAULT_WEIGHT_SAMPLE_SIZE = 0.05
+DEFAULT_WEIGHT_RECENCY = 0.10
+DEFAULT_WEIGHT_REPLICATION_STATUS = 0.05
+DEFAULT_WEIGHT_PAPER_WEIGHT = 0.15
+DEFAULT_WEIGHT_SOURCE_RELIABILITY = 0.05
+
 
 # =============================================================================
 # Enums
@@ -315,14 +326,14 @@ class ScoringWeights:
         >>> weights.validate()  # Returns False if weights don't sum to 1.0
     """
 
-    relevance: float = 0.25
-    study_quality: float = 0.20
-    methodological_rigor: float = 0.15
-    sample_size: float = 0.05
-    recency: float = 0.10
-    replication_status: float = 0.05
-    paper_weight: float = 0.15
-    source_reliability: float = 0.05
+    relevance: float = DEFAULT_WEIGHT_RELEVANCE
+    study_quality: float = DEFAULT_WEIGHT_STUDY_QUALITY
+    methodological_rigor: float = DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR
+    sample_size: float = DEFAULT_WEIGHT_SAMPLE_SIZE
+    recency: float = DEFAULT_WEIGHT_RECENCY
+    replication_status: float = DEFAULT_WEIGHT_REPLICATION_STATUS
+    paper_weight: float = DEFAULT_WEIGHT_PAPER_WEIGHT
+    source_reliability: float = DEFAULT_WEIGHT_SOURCE_RELIABILITY
 
     def to_dict(self) -> Dict[str, float]:
         """
@@ -354,14 +365,14 @@ class ScoringWeights:
             New ScoringWeights instance
         """
         return cls(
-            relevance=data.get("relevance", 0.25),
-            study_quality=data.get("study_quality", 0.20),
-            methodological_rigor=data.get("methodological_rigor", 0.15),
-            sample_size=data.get("sample_size", 0.05),
-            recency=data.get("recency", 0.10),
-            replication_status=data.get("replication_status", 0.05),
-            paper_weight=data.get("paper_weight", 0.15),
-            source_reliability=data.get("source_reliability", 0.05),
+            relevance=data.get("relevance", DEFAULT_WEIGHT_RELEVANCE),
+            study_quality=data.get("study_quality", DEFAULT_WEIGHT_STUDY_QUALITY),
+            methodological_rigor=data.get("methodological_rigor", DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR),
+            sample_size=data.get("sample_size", DEFAULT_WEIGHT_SAMPLE_SIZE),
+            recency=data.get("recency", DEFAULT_WEIGHT_RECENCY),
+            replication_status=data.get("replication_status", DEFAULT_WEIGHT_REPLICATION_STATUS),
+            paper_weight=data.get("paper_weight", DEFAULT_WEIGHT_PAPER_WEIGHT),
+            source_reliability=data.get("source_reliability", DEFAULT_WEIGHT_SOURCE_RELIABILITY),
         )
 
     @classmethod

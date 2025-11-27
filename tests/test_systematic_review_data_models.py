@@ -49,6 +49,14 @@ from bmlibrarian.agents.systematic_review import (
     # Constants
     MIN_RELEVANCE_SCORE,
     MAX_RELEVANCE_SCORE,
+    DEFAULT_WEIGHT_RELEVANCE,
+    DEFAULT_WEIGHT_STUDY_QUALITY,
+    DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR,
+    DEFAULT_WEIGHT_SAMPLE_SIZE,
+    DEFAULT_WEIGHT_RECENCY,
+    DEFAULT_WEIGHT_REPLICATION_STATUS,
+    DEFAULT_WEIGHT_PAPER_WEIGHT,
+    DEFAULT_WEIGHT_SOURCE_RELIABILITY,
 )
 
 
@@ -83,14 +91,16 @@ def sample_criteria() -> SearchCriteria:
 
 @pytest.fixture
 def sample_weights() -> ScoringWeights:
-    """Create sample ScoringWeights for testing."""
+    """Create sample ScoringWeights for testing (all 8 dimensions)."""
     return ScoringWeights(
-        relevance=0.30,
-        study_quality=0.25,
-        methodological_rigor=0.20,
-        sample_size=0.10,
+        relevance=0.25,
+        study_quality=0.20,
+        methodological_rigor=0.15,
+        sample_size=0.05,
         recency=0.10,
         replication_status=0.05,
+        paper_weight=0.15,
+        source_reliability=0.05,
     )
 
 
@@ -228,10 +238,12 @@ class TestScoringWeights:
         weights = ScoringWeights(
             relevance=0.5,
             study_quality=0.5,
-            methodological_rigor=0.5,  # Sum = 1.5, invalid
+            methodological_rigor=0.5,  # Sum > 1.0, invalid
             sample_size=0.0,
             recency=0.0,
             replication_status=0.0,
+            paper_weight=0.0,
+            source_reliability=0.0,
         )
         assert not weights.validate()
 
@@ -239,21 +251,26 @@ class TestScoringWeights:
         """Test negative weights produce validation errors."""
         weights = ScoringWeights(
             relevance=-0.1,  # Negative
-            study_quality=0.55,
+            study_quality=0.45,
             methodological_rigor=0.25,
             sample_size=0.1,
             recency=0.1,
-            replication_status=0.1,
+            replication_status=0.05,
+            paper_weight=0.1,
+            source_reliability=0.05,
         )
         errors = weights.get_validation_errors()
         assert len(errors) > 0
         assert any("negative" in e.lower() for e in errors)
 
     def test_to_dict_serialization(self, sample_weights: ScoringWeights) -> None:
-        """Test to_dict produces valid dictionary."""
+        """Test to_dict produces valid dictionary with all 8 dimensions."""
         data = sample_weights.to_dict()
-        assert data["relevance"] == 0.30
-        assert data["study_quality"] == 0.25
+        assert data["relevance"] == 0.25
+        assert data["study_quality"] == 0.20
+        assert data["paper_weight"] == 0.15
+        assert data["source_reliability"] == 0.05
+        assert len(data) == 8  # All 8 dimensions present
         assert sum(data.values()) == pytest.approx(1.0, abs=0.01)
 
     def test_from_dict_deserialization(self, sample_weights: ScoringWeights) -> None:
@@ -262,6 +279,42 @@ class TestScoringWeights:
         restored = ScoringWeights.from_dict(data)
         assert restored.relevance == sample_weights.relevance
         assert restored.validate()
+
+    def test_cochrane_focused_factory(self) -> None:
+        """Test cochrane_focused factory method creates valid Cochrane-style weights."""
+        weights = ScoringWeights.cochrane_focused()
+        assert weights.validate()
+        # Cochrane weights zero out BMLibrarian-specific dimensions
+        assert weights.paper_weight == 0.0
+        assert weights.source_reliability == 0.0
+        # Cochrane weights emphasize methodological dimensions
+        assert weights.methodological_rigor == 0.20
+        assert weights.replication_status == 0.10
+        assert weights.sample_size == 0.10
+
+    def test_practical_focused_factory(self) -> None:
+        """Test practical_focused factory method creates valid BMLibrarian weights."""
+        weights = ScoringWeights.practical_focused()
+        assert weights.validate()
+        # Practical weights zero out Cochrane-specific dimensions
+        assert weights.methodological_rigor == 0.0
+        assert weights.sample_size == 0.0
+        assert weights.replication_status == 0.0
+        # Practical weights emphasize paper_weight dimensions
+        assert weights.paper_weight == 0.25
+        assert weights.source_reliability == 0.10
+
+    def test_weight_constants_used_in_defaults(self) -> None:
+        """Test that default weights use the defined constants."""
+        weights = ScoringWeights()
+        assert weights.relevance == DEFAULT_WEIGHT_RELEVANCE
+        assert weights.study_quality == DEFAULT_WEIGHT_STUDY_QUALITY
+        assert weights.methodological_rigor == DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR
+        assert weights.sample_size == DEFAULT_WEIGHT_SAMPLE_SIZE
+        assert weights.recency == DEFAULT_WEIGHT_RECENCY
+        assert weights.replication_status == DEFAULT_WEIGHT_REPLICATION_STATUS
+        assert weights.paper_weight == DEFAULT_WEIGHT_PAPER_WEIGHT
+        assert weights.source_reliability == DEFAULT_WEIGHT_SOURCE_RELIABILITY
 
 
 # =============================================================================
