@@ -70,6 +70,68 @@ class DocumentViewData:
         )
 
 
+class PDFDiscoveryWorker(QThread):
+    """Background worker for PDF discovery and download."""
+
+    progress = Signal(str, str)  # stage, status
+    finished = Signal(str)  # file_path on success
+    error = Signal(str)  # error message
+
+    def __init__(
+        self,
+        doc_dict: Dict[str, Any],
+        output_dir: Path,
+        unpaywall_email: Optional[str] = None,
+        parent: Optional[QWidget] = None
+    ) -> None:
+        """Initialize PDF discovery worker.
+
+        Args:
+            doc_dict: Document dictionary with id, doi, pmid, title, etc.
+            output_dir: Base directory for PDF storage
+            unpaywall_email: Email for Unpaywall API
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.doc_dict = doc_dict
+        self.output_dir = output_dir
+        self.unpaywall_email = unpaywall_email
+        self._cancelled = False
+
+    def run(self) -> None:
+        """Execute PDF discovery and download."""
+        try:
+            from bmlibrarian.discovery import download_pdf_for_document
+
+            def progress_callback(stage: str, status: str) -> None:
+                if not self._cancelled:
+                    self.progress.emit(stage, status)
+
+            result = download_pdf_for_document(
+                document=self.doc_dict,
+                output_dir=self.output_dir,
+                unpaywall_email=self.unpaywall_email,
+                progress_callback=progress_callback
+            )
+
+            if self._cancelled:
+                return
+
+            if result.success and result.file_path:
+                self.finished.emit(result.file_path)
+            else:
+                self.error.emit(result.error_message or "Unknown error")
+
+        except Exception as e:
+            logger.error(f"PDF discovery failed: {e}")
+            if not self._cancelled:
+                self.error.emit(str(e))
+
+    def cancel(self) -> None:
+        """Request cancellation of the operation."""
+        self._cancelled = True
+
+
 class ChunkEmbeddingWorker(QThread):
     """Background worker for chunking and embedding a document."""
 
@@ -643,6 +705,7 @@ class DocumentViewWidget(QWidget):
 
         self._document_data: Optional[DocumentViewData] = None
         self._embedding_worker: Optional[ChunkEmbeddingWorker] = None
+        self._pdf_discovery_worker: Optional[PDFDiscoveryWorker] = None
         self._progress_dialog: Optional[QProgressDialog] = None
 
         self._setup_ui()
@@ -771,76 +834,111 @@ class DocumentViewWidget(QWidget):
         if not self._document_data:
             return
 
+        from bmlibrarian.config import get_config
+
+        config = get_config()
+        pdf_base_dir = Path(config.get('pdf', {}).get('base_dir', '~/knowledgebase/pdf'))
+        pdf_base_dir = pdf_base_dir.expanduser()
+
+        # Build document dict for discovery
+        doc_dict = {
+            'id': self._document_data.document_id,
+            'doi': self._document_data.doi,
+            'pmid': self._document_data.pmid,
+            'title': self._document_data.title,
+            'publication_date': self._document_data.publication_date,
+            'year': self._document_data.year,
+        }
+
         # Create progress dialog
-        progress = QProgressDialog(
+        self._progress_dialog = QProgressDialog(
             "Discovering PDF sources...",
             "Cancel",
             0, 0,
             self
         )
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
+        self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.canceled.connect(self._cancel_pdf_discovery)
+        self._progress_dialog.show()
 
-        try:
-            from bmlibrarian.discovery import download_pdf_for_document
-            from bmlibrarian.config import get_config
+        # Create and start background worker
+        self._pdf_discovery_worker = PDFDiscoveryWorker(
+            doc_dict=doc_dict,
+            output_dir=pdf_base_dir,
+            unpaywall_email=config.get('unpaywall_email'),
+            parent=self
+        )
+        self._pdf_discovery_worker.progress.connect(self._on_pdf_discovery_progress)
+        self._pdf_discovery_worker.finished.connect(self._on_pdf_discovery_finished)
+        self._pdf_discovery_worker.error.connect(self._on_pdf_discovery_error)
+        self._pdf_discovery_worker.start()
 
-            config = get_config()
-            pdf_base_dir = Path(config.get('pdf', {}).get('base_dir', '~/knowledgebase/pdf'))
-            pdf_base_dir = pdf_base_dir.expanduser()
+    def _on_pdf_discovery_progress(self, stage: str, status: str) -> None:
+        """Handle PDF discovery progress update.
 
-            # Build document dict for discovery
-            doc_dict = {
-                'id': self._document_data.document_id,
-                'doi': self._document_data.doi,
-                'pmid': self._document_data.pmid,
-                'title': self._document_data.title,
-                'publication_date': self._document_data.publication_date,
-            }
+        Args:
+            stage: Current stage of discovery
+            status: Status message
+        """
+        if self._progress_dialog:
+            self._progress_dialog.setLabelText(f"{stage}: {status}")
 
-            def update_progress(stage: str, status: str) -> None:
-                progress.setLabelText(f"{stage}: {status}")
+    def _on_pdf_discovery_finished(self, file_path: str) -> None:
+        """Handle successful PDF discovery.
 
-            result = download_pdf_for_document(
-                document=doc_dict,
-                output_dir=pdf_base_dir,
-                unpaywall_email=config.get('unpaywall_email'),
-                progress_callback=update_progress
-            )
+        Args:
+            file_path: Path to downloaded PDF
+        """
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
 
-            progress.close()
+        self._pdf_discovery_worker = None
 
-            if result.success and result.file_path:
-                # Update database with PDF path
-                self._update_pdf_path(result.file_path)
+        # Update database with PDF filename (relative path)
+        self._update_pdf_filename(file_path)
 
-                # Reload document
-                if self._document_data.document_id:
-                    self.load_document_by_id(self._document_data.document_id)
+        # Reload document to show PDF
+        if self._document_data and self._document_data.document_id:
+            self.load_document_by_id(self._document_data.document_id)
 
-                self.pdf_downloaded.emit(result.file_path)
+        self.pdf_downloaded.emit(file_path)
 
-                QMessageBox.information(
-                    self,
-                    "PDF Downloaded",
-                    f"PDF successfully downloaded and saved.\n\n{result.file_path}"
-                )
-            else:
-                QMessageBox.warning(
-                    self,
-                    "PDF Discovery Failed",
-                    f"Could not find or download PDF.\n\n{result.error_message}"
-                )
+        QMessageBox.information(
+            self,
+            "PDF Downloaded",
+            f"PDF successfully downloaded and saved.\n\n{file_path}"
+        )
 
-        except Exception as e:
-            progress.close()
-            logger.error(f"PDF discovery failed: {e}")
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"PDF discovery failed:\n\n{e}"
-            )
+    def _on_pdf_discovery_error(self, error_message: str) -> None:
+        """Handle PDF discovery error.
+
+        Args:
+            error_message: Error description
+        """
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        self._pdf_discovery_worker = None
+
+        QMessageBox.warning(
+            self,
+            "PDF Discovery Failed",
+            f"Could not find or download PDF.\n\n{error_message}"
+        )
+
+    def _cancel_pdf_discovery(self) -> None:
+        """Cancel ongoing PDF discovery operation."""
+        if self._pdf_discovery_worker:
+            self._pdf_discovery_worker.cancel()
+            self._pdf_discovery_worker.wait()
+            self._pdf_discovery_worker = None
+
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
 
     def _on_pdf_upload(self) -> None:
         """Handle PDF upload request."""
@@ -912,8 +1010,8 @@ class DocumentViewWidget(QWidget):
             # Copy file
             shutil.copy2(source_path, dest_path)
 
-            # Update database
-            self._update_pdf_path(str(dest_path))
+            # Update database with relative path
+            self._update_pdf_filename(str(dest_path))
 
             # Reload document
             if self._document_data and self._document_data.document_id:
@@ -936,17 +1034,36 @@ class DocumentViewWidget(QWidget):
                 f"Failed to upload PDF:\n\n{e}"
             )
 
-    def _update_pdf_path(self, pdf_path: str) -> None:
-        """Update PDF path in database.
+    def _update_pdf_filename(self, full_pdf_path: str) -> None:
+        """Update pdf_filename in database with relative path.
+
+        Converts full path to relative path (year/filename.pdf) for storage
+        in the pdf_filename column, which is what resolve_pdf_path expects.
 
         Args:
-            pdf_path: Path to PDF file
+            full_pdf_path: Full path to PDF file
         """
         if not self._document_data or not self._document_data.document_id:
             return
 
         try:
             from bmlibrarian.database import get_db_manager
+            from bmlibrarian.config import get_config
+
+            # Get PDF base directory to compute relative path
+            config = get_config()
+            pdf_base_dir = Path(config.get('pdf', {}).get('base_dir', '~/knowledgebase/pdf'))
+            pdf_base_dir = pdf_base_dir.expanduser()
+
+            full_path = Path(full_pdf_path)
+
+            # Compute relative path from base directory
+            try:
+                relative_path = full_path.relative_to(pdf_base_dir)
+                pdf_filename = str(relative_path)
+            except ValueError:
+                # Path is not relative to base dir, use just filename
+                pdf_filename = full_path.name
 
             db_manager = get_db_manager()
             with db_manager.get_connection() as conn:
@@ -954,14 +1071,16 @@ class DocumentViewWidget(QWidget):
                     cur.execute(
                         """
                         UPDATE public.document
-                        SET pdf_path = %s
+                        SET pdf_filename = %s
                         WHERE id = %s
                         """,
-                        (pdf_path, self._document_data.document_id),
+                        (pdf_filename, self._document_data.document_id),
                     )
 
+            logger.info(f"Updated pdf_filename for document {self._document_data.document_id}: {pdf_filename}")
+
         except Exception as e:
-            logger.error(f"Failed to update PDF path: {e}")
+            logger.error(f"Failed to update pdf_filename: {e}")
 
     def _on_chunk_embedding(self) -> None:
         """Handle chunk embedding request."""

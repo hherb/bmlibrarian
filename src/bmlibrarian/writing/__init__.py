@@ -9,6 +9,7 @@ Provides the citation-aware markdown editor functionality including:
 
 from .models import (
     Citation,
+    DocumentMetadata,
     FormattedReference,
     WritingDocument,
     DocumentVersion,
@@ -28,6 +29,7 @@ from .constants import (
 __all__ = [
     # Models
     'Citation',
+    'DocumentMetadata',
     'FormattedReference',
     'WritingDocument',
     'DocumentVersion',

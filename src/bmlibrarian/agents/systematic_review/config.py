@@ -46,6 +46,7 @@ DEFAULT_MAX_TOKENS = 4000
 
 # Search defaults
 DEFAULT_MAX_SEARCH_RESULTS = 500
+DEFAULT_MAX_RESULTS_PER_QUERY = 100
 DEFAULT_RELEVANCE_THRESHOLD = 2.5
 DEFAULT_QUALITY_THRESHOLD = 4.0
 
@@ -81,6 +82,7 @@ class SystematicReviewConfig:
         max_tokens: Maximum tokens per LLM response
 
         max_search_results: Maximum papers to retrieve from search
+        max_results_per_query: Maximum results per individual search query
         relevance_threshold: Minimum relevance score (1-5) for inclusion
         quality_threshold: Minimum quality score (0-10) for final ranking
         batch_size: Papers to process per batch
@@ -108,6 +110,7 @@ class SystematicReviewConfig:
 
     # Search settings
     max_search_results: int = DEFAULT_MAX_SEARCH_RESULTS
+    max_results_per_query: int = DEFAULT_MAX_RESULTS_PER_QUERY
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     quality_threshold: float = DEFAULT_QUALITY_THRESHOLD
     batch_size: int = DEFAULT_BATCH_SIZE
@@ -154,6 +157,7 @@ class SystematicReviewConfig:
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
             "max_search_results": self.max_search_results,
+            "max_results_per_query": self.max_results_per_query,
             "relevance_threshold": self.relevance_threshold,
             "quality_threshold": self.quality_threshold,
             "batch_size": self.batch_size,
@@ -198,6 +202,7 @@ class SystematicReviewConfig:
             top_p=data.get("top_p", DEFAULT_TOP_P),
             max_tokens=data.get("max_tokens", DEFAULT_MAX_TOKENS),
             max_search_results=data.get("max_search_results", DEFAULT_MAX_SEARCH_RESULTS),
+            max_results_per_query=data.get("max_results_per_query", DEFAULT_MAX_RESULTS_PER_QUERY),
             relevance_threshold=data.get("relevance_threshold", DEFAULT_RELEVANCE_THRESHOLD),
             quality_threshold=data.get("quality_threshold", DEFAULT_QUALITY_THRESHOLD),
             batch_size=data.get("batch_size", DEFAULT_BATCH_SIZE),
@@ -267,6 +272,10 @@ class SystematicReviewConfig:
                 max_search_results=agent_config.get(
                     "max_search_results",
                     search_config.get("max_results", DEFAULT_MAX_SEARCH_RESULTS)
+                ),
+                max_results_per_query=agent_config.get(
+                    "max_results_per_query",
+                    DEFAULT_MAX_RESULTS_PER_QUERY
                 ),
                 relevance_threshold=agent_config.get(
                     "relevance_threshold",
@@ -363,6 +372,12 @@ class SystematicReviewConfig:
                 f"Max search results must be at least 1, got {self.max_search_results}"
             )
 
+        # Validate max_results_per_query
+        if self.max_results_per_query < 1:
+            errors.append(
+                f"Max results per query must be at least 1, got {self.max_results_per_query}"
+            )
+
         # Validate scoring weights
         weight_errors = self.scoring_weights.get_validation_errors()
         errors.extend(weight_errors)
@@ -395,6 +410,7 @@ DEFAULT_SYSTEMATIC_REVIEW_CONFIG: Dict[str, Any] = {
     "top_p": DEFAULT_TOP_P,
     "max_tokens": DEFAULT_MAX_TOKENS,
     "max_search_results": DEFAULT_MAX_SEARCH_RESULTS,
+    "max_results_per_query": DEFAULT_MAX_RESULTS_PER_QUERY,
     "relevance_threshold": DEFAULT_RELEVANCE_THRESHOLD,
     "quality_threshold": DEFAULT_QUALITY_THRESHOLD,
     "batch_size": DEFAULT_BATCH_SIZE,

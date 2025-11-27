@@ -271,12 +271,21 @@ class MarkdownEditorWidget(QPlainTextEdit):
         """
         Insert a citation marker at the cursor position.
 
+        If text is selected, the selection is cleared and the citation
+        is inserted at the end of where the selection was (cursor position).
+
         Args:
             document_id: Database document ID
             label: Human-readable label (e.g., "Smith2023")
         """
         citation = f"[@id:{document_id}:{label}]"
         cursor = self.textCursor()
+
+        # Clear any selection without deleting text - move cursor to end of selection
+        if cursor.hasSelection():
+            cursor.clearSelection()
+            self.setTextCursor(cursor)
+
         cursor.insertText(citation)
         self.setTextCursor(cursor)
 

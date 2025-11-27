@@ -200,6 +200,8 @@ class ReferenceBuilder:
         with db.get_connection() as conn:
             with conn.cursor() as cur:
                 # Use ANY for array lookup
+                # Note: authors are stored as text[] in document table
+                # Note: volume/issue/pages columns don't exist in schema
                 cur.execute(
                     """
                     SELECT
@@ -207,19 +209,11 @@ class ReferenceBuilder:
                         d.title,
                         d.doi,
                         d.abstract,
-                        d.journal,
-                        d.volume,
-                        d.issue,
-                        d.pages,
+                        d.publication,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
                         d.publication_date,
                         CASE WHEN d.source_id = 1 THEN d.external_id ELSE NULL END as pmid,
-                        (
-                            SELECT string_agg(a.name, '; ' ORDER BY da.author_position)
-                            FROM public.document_author da
-                            JOIN public.author a ON da.author_id = a.id
-                            WHERE da.document_id = d.id
-                        ) as authors
+                        array_to_string(d.authors, '; ') as authors
                     FROM public.document d
                     WHERE d.id = ANY(%s)
                     """,
@@ -229,20 +223,20 @@ class ReferenceBuilder:
 
         for row in rows:
             doc_id = row[0]
-            authors_str = row[11] or ""
+            authors_str = row[8] or ""
             authors = [a.strip() for a in authors_str.split(';') if a.strip()]
 
             metadata_map[doc_id] = DocumentMetadata(
                 document_id=doc_id,
                 title=row[1] or "",
                 doi=row[2],
-                journal=row[4],
-                volume=row[5],
-                issue=row[6],
-                pages=row[7],
-                year=row[8],
-                publication_date=str(row[9]) if row[9] else None,
-                pmid=row[10],
+                journal=row[4],  # publication column
+                volume=None,
+                issue=None,
+                pages=None,
+                year=row[5],
+                publication_date=str(row[6]) if row[6] else None,
+                pmid=row[7],
                 authors=authors
             )
 

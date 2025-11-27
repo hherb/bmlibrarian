@@ -141,15 +141,14 @@ class SearchWorker(QThread):
 
         with db.get_connection() as conn:
             with conn.cursor() as cur:
+                # Authors are stored as text[] array in document table
                 cur.execute(
                     """
                     SELECT
-                        da.document_id,
-                        string_agg(a.name, ', ' ORDER BY da.author_position)
-                    FROM public.document_author da
-                    JOIN public.author a ON da.author_id = a.id
-                    WHERE da.document_id = ANY(%s)
-                    GROUP BY da.document_id
+                        id,
+                        array_to_string(authors, ', ') as authors_str
+                    FROM public.document
+                    WHERE id = ANY(%s)
                     """,
                     (doc_ids,)
                 )
