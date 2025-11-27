@@ -299,8 +299,8 @@ Examples:
     parser.add_argument(
         "--resume",
         type=str,
-        metavar="REVIEW_ID",
-        help="Resume review from checkpoint (not yet implemented)",
+        metavar="REVIEW_ID_OR_PATH",
+        help="Resume review from checkpoint file (provide review ID or path to checkpoint JSON)",
     )
 
     # Display status
@@ -813,6 +813,195 @@ def show_status() -> int:
     return 0
 
 
+def resume_review(args: argparse.Namespace) -> int:
+    """
+    Resume a systematic review from a checkpoint.
+
+    Args:
+        args: Parsed command-line arguments with resume parameter
+
+    Returns:
+        Exit code (0 for success, non-zero for error)
+    """
+    print_banner()
+
+    try:
+        # Find checkpoint file
+        checkpoint_path = find_checkpoint_file(args.resume)
+
+        if not checkpoint_path:
+            print(f"Error: Could not find checkpoint for review: {args.resume}")
+            print()
+            print("Checkpoint files are stored in:")
+            print("  <output_dir>/checkpoints/<review_id>_<checkpoint_type>.json")
+            print()
+            print("You can provide:")
+            print("  - Full path to checkpoint file")
+            print("  - Review ID (e.g., review_abc123def456)")
+            return 1
+
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        print()
+
+        # Load checkpoint to display info
+        with open(checkpoint_path, "r", encoding="utf-8") as f:
+            checkpoint_data = json.load(f)
+
+        review_id = checkpoint_data.get("review_id", "unknown")
+        checkpoint_type = checkpoint_data.get("checkpoint_type", "unknown")
+        paper_count = checkpoint_data.get("paper_count", 0)
+        timestamp = checkpoint_data.get("timestamp", "unknown")
+
+        print("Checkpoint Information:")
+        print(f"  Review ID: {review_id}")
+        print(f"  Checkpoint Type: {checkpoint_type}")
+        print(f"  Papers Saved: {paper_count}")
+        print(f"  Created: {timestamp}")
+        print()
+
+        # Get config
+        config = get_systematic_review_config()
+        output_dir = get_output_dir(args, config)
+
+        # Initialize agent
+        agent = SystematicReviewAgent(
+            config=config,
+            callback=progress_callback,
+        )
+
+        # Determine output path
+        output_name = f"{review_id}_resumed"
+        output_path = output_dir / f"{output_name}.json"
+
+        # Interactive mode unless --auto specified
+        interactive = not args.auto
+
+        if args.auto:
+            print("Running in automatic mode (no checkpoints)")
+            print()
+
+        # Resume the review
+        result = agent.run_review_from_checkpoint(
+            checkpoint_path=str(checkpoint_path),
+            interactive=interactive,
+            output_path=str(output_path),
+            checkpoint_callback=checkpoint_callback if interactive else None,
+        )
+
+        # Save results
+        from bmlibrarian.agents.systematic_review.reporter import Reporter
+        from bmlibrarian.agents.systematic_review.data_models import SearchCriteria, ScoringWeights
+
+        criteria = result.criteria
+        weights = result.weights
+
+        reporter = Reporter(
+            documenter=agent.documenter,
+            criteria=criteria,
+            weights=weights,
+        )
+
+        # Save JSON report
+        reporter.generate_json_report(result, str(output_path))
+        print(f"\nJSON report saved: {output_path}")
+
+        # Save Markdown report
+        md_path = output_dir / f"{output_name}.md"
+        reporter.generate_markdown_report(result, str(md_path))
+        print(f"Markdown report saved: {md_path}")
+
+        # PRISMA flow diagram
+        prisma_path = output_dir / f"{output_name}_prisma.json"
+        reporter.generate_prisma_flowchart(result.statistics, str(prisma_path))
+        print(f"PRISMA flow diagram data saved: {prisma_path}")
+
+        # Print summary
+        print()
+        print("=" * 50)
+        print("REVIEW COMPLETE (RESUMED)")
+        print("=" * 50)
+
+        stats = result.statistics.to_dict()
+        print(f"  Total papers considered: {stats['total_considered']}")
+        print(f"  Passed initial filter: {stats['passed_initial_filter']}")
+        print(f"  Passed relevance threshold: {stats['passed_relevance_threshold']}")
+        print(f"  Final included: {stats['final_included']}")
+        print(f"  Final excluded: {stats['final_excluded']}")
+        print(f"  Processing time: {stats['processing_time_seconds']:.2f}s")
+        print()
+
+        return 0
+
+    except FileNotFoundError as e:
+        print(f"\nCheckpoint not found: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"\nInvalid checkpoint: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n\nResume interrupted by user.")
+        return 130
+    except Exception as e:
+        logging.exception("Unexpected error during resume")
+        print(f"\nError: {e}", file=sys.stderr)
+        return 1
+
+
+def find_checkpoint_file(resume_arg: str) -> Optional[Path]:
+    """
+    Find checkpoint file from resume argument.
+
+    Args:
+        resume_arg: Either a path to checkpoint file or a review ID
+
+    Returns:
+        Path to checkpoint file, or None if not found
+    """
+    # First, check if it's a direct path
+    direct_path = Path(resume_arg).expanduser()
+    if direct_path.exists() and direct_path.is_file():
+        return direct_path
+
+    # Otherwise, search for checkpoint files by review ID
+    config = get_systematic_review_config()
+    output_dir = Path(config.output_dir).expanduser()
+    checkpoint_dir = output_dir / "checkpoints"
+
+    if not checkpoint_dir.exists():
+        return None
+
+    # Look for files matching the review ID pattern
+    pattern = f"{resume_arg}_*.json"
+    matches = list(checkpoint_dir.glob(pattern))
+
+    if not matches:
+        # Try with review_ prefix
+        if not resume_arg.startswith("review_"):
+            pattern = f"review_{resume_arg}_*.json"
+            matches = list(checkpoint_dir.glob(pattern))
+
+    if not matches:
+        return None
+
+    # If multiple matches, prefer the most recent checkpoint type
+    # Order: initial_results > search_strategy (resume from later is better)
+    checkpoint_priority = {
+        "initial_results": 2,
+        "scoring_complete": 3,
+        "quality_assessment": 4,
+        "search_strategy": 1,
+    }
+
+    def get_priority(path: Path) -> int:
+        for cp_type, priority in checkpoint_priority.items():
+            if cp_type in path.name:
+                return priority
+        return 0
+
+    matches.sort(key=get_priority, reverse=True)
+    return matches[0]
+
+
 def main() -> int:
     """
     Main entry point for CLI.
@@ -829,10 +1018,9 @@ def main() -> int:
     if args.status:
         return show_status()
 
-    # Handle resume (not yet implemented)
+    # Handle resume from checkpoint
     if args.resume:
-        print("Resume from checkpoint is not yet implemented.")
-        return 1
+        return resume_review(args)
 
     # Validate we have something to do
     if not args.question and not args.criteria_file:
