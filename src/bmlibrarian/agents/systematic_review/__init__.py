@@ -238,6 +238,44 @@ from .reporter import (
     validate_output_path,
 )
 
+# Cochrane-Aligned Assessment (Cochrane Handbook compliant output)
+from .cochrane_models import (
+    # Risk of Bias models
+    RiskOfBiasJudgement,
+    RiskOfBiasItem,
+    CochraneRiskOfBias,
+    # Study Characteristics models
+    CochraneParticipants,
+    CochraneInterventions,
+    CochraneOutcomes,
+    CochraneNotes,
+    CochraneStudyCharacteristics,
+    # Complete Assessment
+    CochraneStudyAssessment,
+    # Factory functions
+    create_default_risk_of_bias_item,
+    create_default_cochrane_risk_of_bias,
+    # Constants
+    ROB_JUDGEMENT_LOW,
+    ROB_JUDGEMENT_HIGH,
+    ROB_JUDGEMENT_UNCLEAR,
+)
+
+from .cochrane_formatter import (
+    format_study_characteristics_markdown,
+    format_risk_of_bias_markdown,
+    format_complete_assessment_markdown,
+    format_multiple_assessments_markdown,
+    format_risk_of_bias_summary_markdown,
+    format_study_characteristics_html,
+    format_risk_of_bias_html,
+    get_cochrane_css,
+)
+
+from .cochrane_assessor import (
+    CochraneAssessmentAgent,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -354,4 +392,30 @@ __all__ = [
     "REPORT_FORMAT_VERSION",
     "OutputPathError",
     "validate_output_path",
+    # Cochrane-Aligned Assessment
+    "RiskOfBiasJudgement",
+    "RiskOfBiasItem",
+    "CochraneRiskOfBias",
+    "CochraneParticipants",
+    "CochraneInterventions",
+    "CochraneOutcomes",
+    "CochraneNotes",
+    "CochraneStudyCharacteristics",
+    "CochraneStudyAssessment",
+    "create_default_risk_of_bias_item",
+    "create_default_cochrane_risk_of_bias",
+    "ROB_JUDGEMENT_LOW",
+    "ROB_JUDGEMENT_HIGH",
+    "ROB_JUDGEMENT_UNCLEAR",
+    # Cochrane Formatters
+    "format_study_characteristics_markdown",
+    "format_risk_of_bias_markdown",
+    "format_complete_assessment_markdown",
+    "format_multiple_assessments_markdown",
+    "format_risk_of_bias_summary_markdown",
+    "format_study_characteristics_html",
+    "format_risk_of_bias_html",
+    "get_cochrane_css",
+    # Cochrane Assessment Agent
+    "CochraneAssessmentAgent",
 ]

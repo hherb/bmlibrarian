@@ -38,6 +38,15 @@ from .data_models import (
     ExclusionStage,
 )
 from .documenter import Documenter
+from .cochrane_models import CochraneStudyAssessment
+from .cochrane_formatter import (
+    format_complete_assessment_markdown,
+    format_multiple_assessments_markdown,
+    format_risk_of_bias_summary_markdown,
+    format_study_characteristics_html,
+    format_risk_of_bias_html,
+    get_cochrane_css,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1008,6 +1017,207 @@ class Reporter:
                 "for_human_review": stats["uncertain_for_review"],
             },
         }
+
+    # =========================================================================
+    # Cochrane-Style Reports
+    # =========================================================================
+
+    def generate_cochrane_characteristics_report(
+        self,
+        cochrane_assessments: List[CochraneStudyAssessment],
+        output_path: str,
+        format_type: str = "markdown",
+    ) -> None:
+        """
+        Generate Cochrane-style "Characteristics of Included Studies" report.
+
+        Creates a report matching the Cochrane Handbook template with:
+        - Study Characteristics tables (Methods, Participants, Interventions, Outcomes, Notes)
+        - Risk of Bias tables (9 domains with judgement + support)
+
+        Args:
+            cochrane_assessments: List of CochraneStudyAssessment objects
+            output_path: Path for the output file
+            format_type: Output format ("markdown" or "html")
+
+        Raises:
+            OutputPathError: If output path validation fails
+            ValueError: If format_type is invalid
+        """
+        output = validate_output_path(output_path)
+
+        if format_type == "markdown":
+            content = format_multiple_assessments_markdown(
+                cochrane_assessments,
+                title="Characteristics of included studies"
+            )
+        elif format_type == "html":
+            content = self._build_cochrane_html_report(cochrane_assessments)
+        else:
+            raise ValueError(f"Invalid format_type: {format_type}. Use 'markdown' or 'html'.")
+
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Cochrane characteristics report saved to: {output}")
+
+    def generate_risk_of_bias_summary(
+        self,
+        cochrane_assessments: List[CochraneStudyAssessment],
+        output_path: str,
+    ) -> None:
+        """
+        Generate Risk of Bias summary table across all studies.
+
+        Creates a summary table showing judgements across all studies
+        for each bias domain, useful for identifying patterns.
+
+        Args:
+            cochrane_assessments: List of CochraneStudyAssessment objects
+            output_path: Path for the output file
+
+        Raises:
+            OutputPathError: If output path validation fails
+        """
+        output = validate_output_path(output_path)
+
+        content = format_risk_of_bias_summary_markdown(cochrane_assessments)
+
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"Risk of bias summary saved to: {output}")
+
+    def _build_cochrane_html_report(
+        self,
+        assessments: List[CochraneStudyAssessment],
+    ) -> str:
+        """
+        Build HTML report with Cochrane-style formatting.
+
+        Args:
+            assessments: List of CochraneStudyAssessment objects
+
+        Returns:
+            Complete HTML document string
+        """
+        html_parts: List[str] = [
+            "<!DOCTYPE html>",
+            "<html lang='en'>",
+            "<head>",
+            "<meta charset='UTF-8'>",
+            "<meta name='viewport' content='width=device-width, initial-scale=1.0'>",
+            "<title>Characteristics of Included Studies</title>",
+            get_cochrane_css(),
+            "</head>",
+            "<body>",
+            "<h1>Characteristics of included studies</h1>",
+        ]
+
+        for assessment in assessments:
+            html_parts.append(
+                format_study_characteristics_html(assessment.study_characteristics)
+            )
+            html_parts.append(
+                format_risk_of_bias_html(assessment.risk_of_bias)
+            )
+            html_parts.append("<hr>")
+
+        html_parts.extend([
+            "</body>",
+            "</html>",
+        ])
+
+        return "\n".join(html_parts)
+
+    def _format_cochrane_included_section(
+        self,
+        included_papers: List[Dict[str, Any]],
+        cochrane_assessments: Optional[List[CochraneStudyAssessment]] = None,
+    ) -> List[str]:
+        """
+        Format included papers section with Cochrane assessments if available.
+
+        Enhanced version of _format_included_papers_section that includes
+        Cochrane-style study characteristics and risk of bias when available.
+
+        Args:
+            included_papers: List of included paper dictionaries
+            cochrane_assessments: Optional list of Cochrane assessments
+
+        Returns:
+            List of Markdown lines
+        """
+        lines = [
+            f"{MD_H2} Included Papers ({len(included_papers)})",
+            "",
+        ]
+
+        if not included_papers:
+            lines.append("*No papers met all inclusion criteria.*")
+            lines.append("")
+            return lines
+
+        # Create lookup for Cochrane assessments by document_id
+        cochrane_lookup: Dict[int, CochraneStudyAssessment] = {}
+        if cochrane_assessments:
+            for ca in cochrane_assessments:
+                if ca.document_id is not None:
+                    cochrane_lookup[ca.document_id] = ca
+
+        for paper in included_papers:
+            doc_id = paper.get("document_id")
+            rank = paper.get("final_rank", "N/A")
+            title = paper.get("title", "Unknown Title")
+            authors = ", ".join(paper.get("authors", [])[:3])
+            if len(paper.get("authors", [])) > 3:
+                authors += " et al."
+            year = paper.get("year", "N/A")
+
+            lines.append(f"{MD_H3} {rank}. {title}")
+            lines.append("")
+
+            # Check if Cochrane assessment is available
+            if doc_id and doc_id in cochrane_lookup:
+                ca = cochrane_lookup[doc_id]
+                # Use Cochrane formatting
+                lines.append(format_complete_assessment_markdown(ca))
+            else:
+                # Fall back to standard formatting
+                lines.append(f"**Authors:** {authors}")
+                lines.append(f"**Year:** {year}")
+
+                if paper.get("journal"):
+                    lines.append(f"**Journal:** {paper['journal']}")
+
+                if paper.get("doi"):
+                    lines.append(f"**DOI:** {paper['doi']}")
+
+                if paper.get("pmid"):
+                    lines.append(f"**PMID:** {paper['pmid']}")
+
+                lines.append("")
+
+                # Scores
+                scores = paper.get("scores", {})
+                lines.append("**Scores:**")
+                lines.append(f"{MD_BULLET} Relevance: {scores.get('relevance', 'N/A')}/5")
+                lines.append(f"{MD_BULLET} Composite: {scores.get('composite_score', 'N/A'):.2f}/10")
+
+                if scores.get("study_quality"):
+                    lines.append(f"{MD_BULLET} Study Quality: {scores['study_quality']:.2f}/10")
+
+                lines.append("")
+
+                # Inclusion rationale
+                if paper.get("inclusion_rationale"):
+                    lines.append(f"**Inclusion Rationale:** {paper['inclusion_rationale']}")
+                    lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        return lines
 
     # =========================================================================
     # Combined Export
