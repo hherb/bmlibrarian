@@ -89,23 +89,35 @@ class ScoringWeights:
     """
     User-configurable weights for composite score calculation.
 
-    All weights should sum to 1.0 for normalized scoring.
+    This comprehensive scoring system supports both:
+    - Cochrane-style systematic review dimensions: methodological_rigor,
+      sample_size, replication_status
+    - BMLibrarian practical evidence dimensions: paper_weight,
+      source_reliability
+
+    All weights should sum to 1.0 for normalized scoring. Users can choose
+    which dimensions to emphasize based on their review type using presets
+    or custom configurations.
 
     Attributes:
-        relevance: Weight for relevance to research question (default: 0.30)
-        study_quality: Weight for study design quality (default: 0.25)
-        methodological_rigor: Weight for methodological quality (default: 0.20)
-        sample_size: Weight for sample size adequacy (default: 0.10)
+        relevance: Weight for relevance to research question (default: 0.25)
+        study_quality: Weight for study design quality (default: 0.20)
+        methodological_rigor: Weight for methodological quality (default: 0.15)
+        sample_size: Weight for sample size adequacy (default: 0.05)
         recency: Weight for publication recency (default: 0.10)
         replication_status: Weight for replication evidence (default: 0.05)
+        paper_weight: Weight for BMLibrarian paper weight assessment (default: 0.15)
+        source_reliability: Weight for source/journal reliability (default: 0.05)
     """
 
-    relevance: float = 0.30
-    study_quality: float = 0.25
-    methodological_rigor: float = 0.20
-    sample_size: float = 0.10
+    relevance: float = 0.25
+    study_quality: float = 0.20
+    methodological_rigor: float = 0.15
+    sample_size: float = 0.05
     recency: float = 0.10
     replication_status: float = 0.05
+    paper_weight: float = 0.15
+    source_reliability: float = 0.05
 
     def to_dict(self) -> Dict[str, float]:
         """Convert to dictionary."""
@@ -116,7 +128,27 @@ class ScoringWeights:
             "sample_size": self.sample_size,
             "recency": self.recency,
             "replication_status": self.replication_status,
+            "paper_weight": self.paper_weight,
+            "source_reliability": self.source_reliability,
         }
+
+    @classmethod
+    def cochrane_focused(cls) -> "ScoringWeights":
+        """Create weights emphasizing Cochrane-style systematic review dimensions."""
+        return cls(
+            relevance=0.30, study_quality=0.20, methodological_rigor=0.20,
+            sample_size=0.10, recency=0.10, replication_status=0.10,
+            paper_weight=0.0, source_reliability=0.0,
+        )
+
+    @classmethod
+    def practical_focused(cls) -> "ScoringWeights":
+        """Create weights emphasizing BMLibrarian practical evidence dimensions."""
+        return cls(
+            relevance=0.30, study_quality=0.25, methodological_rigor=0.0,
+            sample_size=0.0, recency=0.10, replication_status=0.0,
+            paper_weight=0.25, source_reliability=0.10,
+        )
 
     def validate(self) -> bool:
         """Check that weights sum to approximately 1.0."""
