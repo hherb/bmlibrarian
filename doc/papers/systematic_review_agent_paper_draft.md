@@ -162,7 +162,65 @@ This infrastructure enables search strategies that would be impractical with ext
 
 The periodic synchronization model (daily for medRxiv, weekly for PubMed updates) ensures currency while maintaining the independence from external services required for reproducible, high-volume systematic reviews.
 
-### 2.2 System Architecture Overview
+### 2.2 Local Language Model Infrastructure
+
+Complementing the local literature database, BMLibrarian employs locally-executed language models via Ollama, an open-source framework for running LLMs on commodity hardware. This architectural choice prioritizes accessibility, privacy, and operational independence over maximum model capability.
+
+```mermaid
+flowchart LR
+    subgraph Agents["Multi-Agent System"]
+        QA[QueryAgent]
+        SA[ScoringAgent]
+        CA[CitationAgent]
+        RA[ReportingAgent]
+        PA[PICOAgent]
+        STA[StudyAssessmentAgent]
+    end
+
+    subgraph Ollama["Local Ollama Server"]
+        M1[gpt-oss:20b<br/>General reasoning]
+        M2[medgemma:27b<br/>Medical domain]
+        M3[Custom fine-tuned<br/>Task-specific]
+    end
+
+    subgraph Hardware["Commodity Hardware"]
+        GPU[Consumer GPU<br/>16-24GB VRAM]
+        CPU[CPU Fallback<br/>Slower but functional]
+    end
+
+    Agents --> Ollama
+    Ollama --> Hardware
+
+    style Agents fill:#e6f3ff,stroke:#0066cc
+    style Ollama fill:#e6ffe6,stroke:#006600
+    style Hardware fill:#fff0e6,stroke:#cc6600
+```
+
+**Current Model Configuration:**
+- **Primary model (gpt-oss:20b):** A 20-billion parameter model optimized for general reasoning, query generation, and report synthesis
+- **Medical domain model (medgemma:27b):** Specialized for biomedical terminology, study assessment, and clinical interpretation
+- **Fast processing model (medgemma:4b):** Smaller model for high-throughput tasks like initial relevance scoring
+
+**Advantages of Local Execution:**
+- **Zero marginal cost:** No per-token API charges enables exploratory analysis and iterative refinement
+- **Complete privacy:** Sensitive research questions and institutional data never leave the local network
+- **Offline capability:** Full functionality without internet connectivity after initial setup
+- **Reproducibility:** Exact model versions can be preserved indefinitely for replication studies
+- **No rate limits:** Unlimited throughput constrained only by local hardware
+
+**Current Limitations:**
+- **Model capability:** Local models (7B-27B parameters) lag behind frontier API models (GPT-4, Claude) in reasoning depth
+- **Processing speed:** Consumer hardware processes 10-50 tokens/second vs. hundreds for cloud infrastructure
+- **Memory constraints:** Model size limited by available VRAM (typically 16-24GB on consumer GPUs)
+
+**Hardware Requirements:**
+- Minimum: 16GB VRAM GPU (e.g., RTX 4080) for 20B parameter models
+- Recommended: 24GB VRAM GPU (e.g., RTX 4090) for 27B+ parameter models
+- CPU fallback: Functional but significantly slower (10-20x)
+
+This local-first architecture reflects a deliberate design philosophy: systematic reviews should be accessible to researchers without institutional cloud computing budgets or in settings with limited connectivity. The system demonstrates that meaningful automation is achievable with commodity hardware, while remaining architecturally prepared for cloud LLM integration when circumstances favor that approach.
+
+### 2.4 System Architecture Overview
 
 The SystematicReviewAgent implements a complete systematic review workflow through eight integrated phases, each with configurable parameters and optional human checkpoint approval.
 
@@ -228,15 +286,15 @@ flowchart TB
     style Phase8 fill:#ffe6f0,stroke:#cc0066
 ```
 
-### 2.3 Phase 1: Intelligent Search Planning
+### 2.5 Phase 1: Intelligent Search Planning
 
 The search planning phase converts a natural language research question into a diverse set of database queries optimized for comprehensive retrieval.
 
-#### 2.3.1 PICO Extraction
+#### 2.5.1 PICO Extraction
 
 The system first extracts Population, Intervention, Comparison, and Outcome (PICO) components from the research question using a specialized PICOAgent. This structured representation guides subsequent query generation and enables alignment with Cochrane methodology.
 
-#### 2.3.2 Multi-Strategy Query Generation
+#### 2.5.2 Multi-Strategy Query Generation
 
 Rather than relying on a single query formulation, the system generates multiple complementary queries using different strategies:
 
@@ -265,9 +323,9 @@ flowchart LR
 
 **Query Diversity Optimization:** The LLM generates query variations using synonym expansion, alternative phrasings, and different emphasis on PICO components, maximizing the probability of retrieving relevant documents that might be missed by any single query formulation.
 
-### 2.4 Phase 2: Search Execution with Hybrid Retrieval
+### 2.6 Phase 2: Search Execution with Hybrid Retrieval
 
-#### 2.4.1 The Hybrid Search Problem
+#### 2.6.1 The Hybrid Search Problem
 
 Semantic search using vector embeddings excels at capturing conceptual similarity but struggles with specific numbers, abbreviations, and terminology not well-represented in training data. Keyword search provides precise matching but misses relevant documents using alternative terminology.
 
@@ -310,11 +368,11 @@ Where:
 
 This approach uses only rank positions rather than raw scores (which are not comparable across different systems), naturally handling the different score scales of semantic similarity and full-text relevance scoring.
 
-#### 2.4.2 Deduplication and Provenance Tracking
+#### 2.6.2 Deduplication and Provenance Tracking
 
 After executing all queries, results are deduplicated while preserving provenance—recording which queries found each paper. This information enables analysis of query effectiveness and supports iterative query refinement.
 
-### 2.5 Phase 3: Context-Aware Initial Filtering
+### 2.7 Phase 3: Context-Aware Initial Filtering
 
 The initial filtering phase rapidly excludes clearly irrelevant papers using heuristic rules before engaging more expensive LLM-based evaluation. However, naive keyword matching produces unacceptable false positive rates (incorrectly excluding relevant papers). Our three-tier approach addresses this:
 
@@ -346,7 +404,7 @@ Before excluding based on keywords, the system checks whether the keyword appear
 **Tier 3: Standard Keyword Matching**
 Keywords from explicit exclusion criteria are matched against titles (high confidence) and abstracts (medium confidence). Confidence scores inform downstream processing and audit trail documentation.
 
-### 2.6 Phase 4: LLM-Based Relevance Scoring
+### 2.8 Phase 4: LLM-Based Relevance Scoring
 
 Papers passing initial filtering undergo relevance scoring using a specialized DocumentScoringAgent. The system employs batch processing to efficiently evaluate large citation sets:
 
@@ -383,7 +441,7 @@ flowchart LR
 
 Each paper receives a relevance score from 1 (not relevant) to 5 (highly relevant), along with explicit rationale documenting how the paper relates (or fails to relate) to the research question. Papers scoring below the configurable threshold (default: 2.5) are excluded with documented reasoning.
 
-### 2.7 Phase 5: Multi-Agent Quality Assessment
+### 2.9 Phase 5: Multi-Agent Quality Assessment
 
 Quality assessment orchestrates multiple specialized agents, each providing complementary evaluation dimensions:
 
@@ -430,7 +488,7 @@ flowchart TB
 
 4. **PRISMA2020Agent:** For included systematic reviews and meta-analyses, assesses compliance with the 27-item PRISMA 2020 reporting checklist.
 
-### 2.8 Phase 6: Composite Scoring and Quality Gating
+### 2.10 Phase 6: Composite Scoring and Quality Gating
 
 Multiple assessment dimensions are combined into a composite score using configurable weights:
 
@@ -445,7 +503,7 @@ Multiple assessment dimensions are combined into a composite score using configu
 
 Papers must exceed a configurable quality threshold (default: 4.0/10) to be included. Papers falling below this threshold are excluded with documented composite score breakdown.
 
-### 2.9 Addressing Context Window Limitations: Map-Reduce Synthesis
+### 2.11 Addressing Context Window Limitations: Map-Reduce Synthesis
 
 When generating synthesis reports from large citation sets, direct prompting approaches fail due to LLM context window limitations. Packing 30+ citations into a single prompt causes attention dilution, citation number confusion, and truncated or empty outputs.
 
@@ -497,7 +555,7 @@ Sequential citation numbers cause confusion during the reduce phase. If Batch 1 
 - Effective context limit: 6,000 tokens
 - Maximum passage length: 500 characters per citation
 
-### 2.10 Audit Trail and Decision Documentation
+### 2.12 Audit Trail and Decision Documentation
 
 The Documenter component maintains a comprehensive audit trail exceeding the documentation standards of published systematic reviews:
 
@@ -551,7 +609,7 @@ flowchart TB
 
 4. **Peer Scrutiny Enablement:** The granular documentation enables peer reviewers to examine not just included studies (as in traditional reviews) but the decision rationale for every screened citation.
 
-### 2.11 Human-in-the-Loop Implementation
+### 2.13 Human-in-the-Loop Implementation
 
 The system implements checkpoint-based human oversight at critical decision points:
 
@@ -601,7 +659,7 @@ sequenceDiagram
 
 Each checkpoint can operate in automatic mode (for batch processing or validation) or interactive mode (for production reviews requiring human judgment).
 
-### 2.12 Benchmark Validation Framework
+### 2.14 Benchmark Validation Framework
 
 System performance is validated against published Cochrane systematic reviews:
 
@@ -748,15 +806,50 @@ Several limitations warrant discussion:
 
 1. **Database coverage:** The system can only find papers indexed in the underlying database. Papers not in PubMed or lacking full-text availability may be missed regardless of system performance.
 
-2. **LLM limitations:** Current language models can exhibit biases, hallucinations, and inconsistent behavior. Human checkpoint review remains essential.
+2. **Local model capability:** The current implementation uses locally-executed models (7B-27B parameters) that, while capable, do not match the reasoning depth of frontier API models like GPT-4 or Claude. Complex edge cases may benefit from more powerful models.
 
-3. **Validation scope:** Benchmark validation against Cochrane reviews tests recall of included studies but may not fully capture the nuances of exclusion decisions.
+3. **Processing speed:** Local execution on consumer hardware (10-50 tokens/second) is substantially slower than cloud inference. A review processing 1,000 papers may require several hours of computation.
 
-4. **Resource requirements:** Running multiple specialized agents requires computational resources that may not be available in all settings.
+4. **Hardware requirements:** Effective local execution requires consumer GPUs with 16-24GB VRAM—accessible but not universal. CPU-only fallback is functional but impractically slow for production use.
 
-5. **Domain specificity:** The system is optimized for biomedical literature and may require adaptation for other domains.
+5. **LLM inherent limitations:** All language models can exhibit biases, hallucinations, and inconsistent behavior. Human checkpoint review remains essential regardless of model capability.
 
-### 4.6 Implications for Practice
+6. **Validation scope:** Benchmark validation against Cochrane reviews tests recall of included studies but may not fully capture the nuances of exclusion decisions.
+
+7. **Domain specificity:** The system is optimized for biomedical literature and may require adaptation for other domains.
+
+### 4.6 Future Directions: Cloud LLM Integration
+
+The current local-first architecture represents a deliberate trade-off favoring accessibility, privacy, and zero marginal cost over maximum model capability. However, the system's modular design supports future integration with cloud LLM APIs, offering an alternative deployment model for institutional users:
+
+**Potential Cloud Integration Benefits:**
+- **Enhanced reasoning:** Frontier models (GPT-4, Claude, Gemini) offer substantially deeper reasoning for complex inclusion decisions and nuanced quality assessment
+- **Faster processing:** Cloud infrastructure typically provides 10-100x faster inference than local execution
+- **Reduced hardware requirements:** No local GPU needed; any internet-connected device becomes capable
+- **Batch API pricing:** Asynchronous batch APIs offer significant cost reductions for systematic review workloads
+
+**Trade-offs of Cloud Integration:**
+- **Per-token costs:** High-volume systematic reviews (processing thousands of papers) incur non-trivial API costs
+- **Internet dependency:** Loss of offline capability and vulnerability to network interruptions
+- **Privacy considerations:** Research questions and document content transmitted to third-party servers
+- **Reproducibility challenges:** Model versions may change over time; exact replication becomes more difficult
+- **Rate limiting:** API rate limits may constrain parallel processing strategies
+
+**Hybrid Deployment Model:**
+
+Future implementations may support configurable deployment, allowing users to select based on their constraints:
+
+| Deployment Mode | Speed | Cost | Privacy | Offline | Hardware |
+|----------------|-------|------|---------|---------|----------|
+| Local (current) | Moderate | Zero | Complete | Yes | GPU required |
+| Cloud API | Fast | Per-token | Limited | No | Minimal |
+| Hybrid | Variable | Moderate | Partial | Partial | Minimal |
+
+A hybrid model could use local models for high-volume initial screening (where speed matters less) and reserve cloud APIs for complex quality assessments requiring maximum model capability.
+
+The architectural decision to support local models first ensures the system remains accessible to researchers without institutional cloud computing budgets—a population often underserved by existing research automation tools. Cloud integration, when implemented, will provide an optional enhancement rather than a requirement.
+
+### 4.7 Implications for Practice
 
 If our system consistently performs comparably to published Cochrane reviews—achieving 100% recall of included studies with acceptable precision—it could substantially transform evidence synthesis practice:
 
@@ -768,7 +861,7 @@ If our system consistently performs comparably to published Cochrane reviews—a
 
 4. **Methodological standards:** Comprehensive audit trails could become expected rather than exceptional, raising transparency standards across the field.
 
-### 4.7 The Human-AI Collaboration Model
+### 4.8 The Human-AI Collaboration Model
 
 We emphasize that our system is designed as a tool for human researchers, not a replacement for human judgment. The checkpoint-based architecture explicitly preserves human oversight at critical decisions while automating mechanical tasks.
 
