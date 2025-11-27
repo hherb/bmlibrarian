@@ -178,13 +178,13 @@ flowchart LR
     end
 
     subgraph Ollama["Local Ollama Server"]
-        M1[gpt-oss:20b<br/>General reasoning]
-        M2[medgemma:27b<br/>Medical domain]
-        M3[Custom fine-tuned<br/>Task-specific]
+        M1[General Purpose<br/>7B-120B models]
+        M2[Medical Domain<br/>Fine-tuned variants]
+        M3[Task-Specific<br/>Custom models]
     end
 
     subgraph Hardware["Commodity Hardware"]
-        GPU[Consumer GPU<br/>16-24GB VRAM]
+        GPU[Consumer GPU<br/>16-48GB+ VRAM]
         CPU[CPU Fallback<br/>Slower but functional]
     end
 
@@ -196,10 +196,18 @@ flowchart LR
     style Hardware fill:#fff0e6,stroke:#cc6600
 ```
 
-**Current Model Configuration:**
-- **Primary model (gpt-oss:20b):** A 20-billion parameter model optimized for general reasoning, query generation, and report synthesis
-- **Medical domain model (medgemma:27b):** Specialized for biomedical terminology, study assessment, and clinical interpretation
-- **Fast processing model (medgemma:4b):** Smaller model for high-throughput tasks like initial relevance scoring
+**Model Ecosystem:**
+
+The system is designed to be model-agnostic, supporting any Ollama-compatible model. Different tasks benefit from different model characteristics, and ongoing benchmarking continues to identify optimal configurations. Example models currently in use or under evaluation include:
+
+- **General reasoning models:** GPT-OSS variants (20B for routine tasks, 120B for final report editing and complex synthesis), Qwen family models, Mistral 32B
+- **Medical domain models:** MedGemma (4B for fast screening, 27B for detailed assessment), Llama3-Med42-8B, Granite medical variants
+- **Task-specific fine-tuning:** Active development includes fine-tuning newer architectures (e.g., OLMo 32B) for systematic review-specific tasks such as inclusion/exclusion classification and quality assessment
+
+The modular architecture allows different models to be assigned to different agents based on task requirements:
+- **High-throughput tasks** (initial screening): Smaller, faster models (4B-8B parameters)
+- **Complex reasoning tasks** (quality assessment, PICO extraction): Medium models (20B-32B parameters)
+- **Final synthesis and editing**: Larger models (70B-120B parameters) where quality justifies longer inference time
 
 **Advantages of Local Execution:**
 - **Zero marginal cost:** No per-token API charges enables exploratory analysis and iterative refinement
@@ -207,15 +215,17 @@ flowchart LR
 - **Offline capability:** Full functionality without internet connectivity after initial setup
 - **Reproducibility:** Exact model versions can be preserved indefinitely for replication studies
 - **No rate limits:** Unlimited throughput constrained only by local hardware
+- **Model experimentation:** Freedom to test and benchmark diverse models without cost constraints
 
 **Current Limitations:**
-- **Model capability:** Local models (7B-27B parameters) lag behind frontier API models (GPT-4, Claude) in reasoning depth
+- **Model capability:** Even the largest locally-runnable models lag behind frontier API models (GPT-4, Claude) in reasoning depth
 - **Processing speed:** Consumer hardware processes 10-50 tokens/second vs. hundreds for cloud infrastructure
-- **Memory constraints:** Model size limited by available VRAM (typically 16-24GB on consumer GPUs)
+- **Memory constraints:** Model size limited by available VRAM (16GB minimum, 48GB+ for largest models)
 
 **Hardware Requirements:**
-- Minimum: 16GB VRAM GPU (e.g., RTX 4080) for 20B parameter models
-- Recommended: 24GB VRAM GPU (e.g., RTX 4090) for 27B+ parameter models
+- Minimum: 16GB VRAM GPU (e.g., RTX 4080) for models up to 20B parameters
+- Recommended: 24-48GB VRAM GPU (e.g., RTX 4090, A6000) for 27B-70B parameter models
+- High-end: 80GB+ VRAM (e.g., A100, H100) for 120B+ parameter models
 - CPU fallback: Functional but significantly slower (10-20x)
 
 This local-first architecture reflects a deliberate design philosophy: systematic reviews should be accessible to researchers without institutional cloud computing budgets or in settings with limited connectivity. The system demonstrates that meaningful automation is achievable with commodity hardware, while remaining architecturally prepared for cloud LLM integration when circumstances favor that approach.
