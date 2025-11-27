@@ -62,6 +62,17 @@ WEIGHT_SUM_TOLERANCE = 0.01  # Allow for floating point precision issues
 # Default limits
 DEFAULT_MAX_RESULTS = 500
 
+# Default scoring weights (balanced profile - sum to 1.0)
+# These weights combine both Cochrane and BMLibrarian dimensions
+DEFAULT_WEIGHT_RELEVANCE = 0.25
+DEFAULT_WEIGHT_STUDY_QUALITY = 0.20
+DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR = 0.15
+DEFAULT_WEIGHT_SAMPLE_SIZE = 0.05
+DEFAULT_WEIGHT_RECENCY = 0.10
+DEFAULT_WEIGHT_REPLICATION_STATUS = 0.05
+DEFAULT_WEIGHT_PAPER_WEIGHT = 0.15
+DEFAULT_WEIGHT_SOURCE_RELIABILITY = 0.05
+
 
 # =============================================================================
 # Enums
@@ -277,28 +288,52 @@ class ScoringWeights:
     """
     User-configurable weights for composite score calculation.
 
+    This comprehensive scoring system supports both:
+    - **Cochrane-style systematic review dimensions**: methodological_rigor,
+      sample_size, replication_status
+    - **BMLibrarian practical evidence dimensions**: paper_weight,
+      source_reliability
+
     Weights should sum to 1.0 for normalized scoring. The validate()
     method checks this constraint with tolerance for floating point precision.
 
+    Users can choose which dimensions to emphasize based on their review type:
+    - Formal systematic reviews may emphasize Cochrane dimensions
+    - Practical evidence synthesis may emphasize paper_weight dimensions
+    - Both can be combined for comprehensive assessment
+
     Attributes:
-        relevance: Weight for relevance to research question (default: 0.30)
-        study_quality: Weight for study design quality (default: 0.25)
-        methodological_rigor: Weight for methodological quality (default: 0.20)
-        sample_size: Weight for sample size adequacy (default: 0.10)
+        relevance: Weight for relevance to research question (default: 0.25)
+        study_quality: Weight for study design quality (default: 0.20)
+        methodological_rigor: Weight for methodological quality (default: 0.15)
+        sample_size: Weight for sample size adequacy (default: 0.05)
         recency: Weight for publication recency (default: 0.10)
         replication_status: Weight for replication evidence (default: 0.05)
+        paper_weight: Weight for BMLibrarian paper weight assessment (default: 0.15)
+        source_reliability: Weight for source/journal reliability (default: 0.05)
 
     Example:
-        >>> weights = ScoringWeights(relevance=0.40, study_quality=0.30)
+        >>> # Cochrane-focused weights
+        >>> weights = ScoringWeights(
+        ...     relevance=0.30, methodological_rigor=0.25, sample_size=0.15,
+        ...     paper_weight=0.0, source_reliability=0.0
+        ... )
+        >>> # BMLibrarian practical weights
+        >>> weights = ScoringWeights(
+        ...     relevance=0.30, paper_weight=0.25, source_reliability=0.10,
+        ...     methodological_rigor=0.0, sample_size=0.0
+        ... )
         >>> weights.validate()  # Returns False if weights don't sum to 1.0
     """
 
-    relevance: float = 0.30
-    study_quality: float = 0.25
-    methodological_rigor: float = 0.20
-    sample_size: float = 0.10
-    recency: float = 0.10
-    replication_status: float = 0.05
+    relevance: float = DEFAULT_WEIGHT_RELEVANCE
+    study_quality: float = DEFAULT_WEIGHT_STUDY_QUALITY
+    methodological_rigor: float = DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR
+    sample_size: float = DEFAULT_WEIGHT_SAMPLE_SIZE
+    recency: float = DEFAULT_WEIGHT_RECENCY
+    replication_status: float = DEFAULT_WEIGHT_REPLICATION_STATUS
+    paper_weight: float = DEFAULT_WEIGHT_PAPER_WEIGHT
+    source_reliability: float = DEFAULT_WEIGHT_SOURCE_RELIABILITY
 
     def to_dict(self) -> Dict[str, float]:
         """
@@ -314,6 +349,8 @@ class ScoringWeights:
             "sample_size": self.sample_size,
             "recency": self.recency,
             "replication_status": self.replication_status,
+            "paper_weight": self.paper_weight,
+            "source_reliability": self.source_reliability,
         }
 
     @classmethod
@@ -328,12 +365,52 @@ class ScoringWeights:
             New ScoringWeights instance
         """
         return cls(
-            relevance=data.get("relevance", 0.30),
-            study_quality=data.get("study_quality", 0.25),
-            methodological_rigor=data.get("methodological_rigor", 0.20),
-            sample_size=data.get("sample_size", 0.10),
-            recency=data.get("recency", 0.10),
-            replication_status=data.get("replication_status", 0.05),
+            relevance=data.get("relevance", DEFAULT_WEIGHT_RELEVANCE),
+            study_quality=data.get("study_quality", DEFAULT_WEIGHT_STUDY_QUALITY),
+            methodological_rigor=data.get("methodological_rigor", DEFAULT_WEIGHT_METHODOLOGICAL_RIGOR),
+            sample_size=data.get("sample_size", DEFAULT_WEIGHT_SAMPLE_SIZE),
+            recency=data.get("recency", DEFAULT_WEIGHT_RECENCY),
+            replication_status=data.get("replication_status", DEFAULT_WEIGHT_REPLICATION_STATUS),
+            paper_weight=data.get("paper_weight", DEFAULT_WEIGHT_PAPER_WEIGHT),
+            source_reliability=data.get("source_reliability", DEFAULT_WEIGHT_SOURCE_RELIABILITY),
+        )
+
+    @classmethod
+    def cochrane_focused(cls) -> "ScoringWeights":
+        """
+        Create weights emphasizing Cochrane-style systematic review dimensions.
+
+        Returns:
+            ScoringWeights with Cochrane-focused distribution
+        """
+        return cls(
+            relevance=0.30,
+            study_quality=0.20,
+            methodological_rigor=0.20,
+            sample_size=0.10,
+            recency=0.10,
+            replication_status=0.10,
+            paper_weight=0.0,
+            source_reliability=0.0,
+        )
+
+    @classmethod
+    def practical_focused(cls) -> "ScoringWeights":
+        """
+        Create weights emphasizing BMLibrarian practical evidence dimensions.
+
+        Returns:
+            ScoringWeights with practical-focused distribution
+        """
+        return cls(
+            relevance=0.30,
+            study_quality=0.25,
+            methodological_rigor=0.0,
+            sample_size=0.0,
+            recency=0.10,
+            replication_status=0.0,
+            paper_weight=0.25,
+            source_reliability=0.10,
         )
 
     def validate(self) -> bool:

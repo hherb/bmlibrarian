@@ -77,12 +77,17 @@ from bmlibrarian.agents.systematic_review import (
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Default scoring weights (sum to 1.0)
+# This comprehensive weight set supports both Cochrane-style systematic review
+# dimensions and BMLibrarian's practical paper weight assessment dimensions.
 DEFAULT_WEIGHTS = {
-    "relevance": 0.30,
-    "study_quality": 0.25,
-    "paper_weight": 0.25,
+    "relevance": 0.25,
+    "study_quality": 0.20,
+    "methodological_rigor": 0.15,
+    "sample_size": 0.05,
     "recency": 0.10,
-    "source_reliability": 0.10,
+    "replication_status": 0.05,
+    "paper_weight": 0.15,
+    "source_reliability": 0.05,
 }
 
 
@@ -204,6 +209,17 @@ Examples:
         "--weights-file",
         type=str,
         help="Path to JSON file with scoring weights",
+    )
+
+    parser.add_argument(
+        "--weight-preset",
+        choices=["balanced", "cochrane", "practical"],
+        default="balanced",
+        help=(
+            "Weight preset: 'balanced' (default, combines all dimensions), "
+            "'cochrane' (emphasizes methodological rigor, sample size, replication), "
+            "'practical' (emphasizes paper_weight, source_reliability)"
+        ),
     )
 
     parser.add_argument(
@@ -416,13 +432,22 @@ def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
     """
     Build ScoringWeights from command-line arguments.
 
+    Supports both:
+    - Cochrane-style dimensions: methodological_rigor, sample_size, replication_status
+    - BMLibrarian dimensions: paper_weight, source_reliability
+
+    Weight presets:
+    - 'balanced': Default weights combining all dimensions
+    - 'cochrane': Emphasizes Cochrane systematic review methodology
+    - 'practical': Emphasizes BMLibrarian paper weight assessment
+
     Args:
         args: Parsed arguments
 
     Returns:
         ScoringWeights instance
     """
-    # If weights file specified, load from file
+    # If weights file specified, load from file (highest priority)
     if args.weights_file:
         weights = load_weights_from_file(args.weights_file)
 
@@ -431,29 +456,72 @@ def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
             weights = ScoringWeights(
                 relevance=args.relevance_weight,
                 study_quality=weights.study_quality,
-                paper_weight=weights.paper_weight,
+                methodological_rigor=weights.methodological_rigor,
+                sample_size=weights.sample_size,
                 recency=weights.recency,
+                replication_status=weights.replication_status,
+                paper_weight=weights.paper_weight,
                 source_reliability=weights.source_reliability,
             )
         if args.quality_weight is not None:
             weights = ScoringWeights(
                 relevance=weights.relevance,
                 study_quality=args.quality_weight,
-                paper_weight=weights.paper_weight,
+                methodological_rigor=weights.methodological_rigor,
+                sample_size=weights.sample_size,
                 recency=weights.recency,
+                replication_status=weights.replication_status,
+                paper_weight=weights.paper_weight,
                 source_reliability=weights.source_reliability,
             )
 
         return weights
 
-    # Use defaults with optional overrides
-    return ScoringWeights(
-        relevance=args.relevance_weight if args.relevance_weight is not None else DEFAULT_WEIGHTS["relevance"],
-        study_quality=args.quality_weight if args.quality_weight is not None else DEFAULT_WEIGHTS["study_quality"],
-        paper_weight=DEFAULT_WEIGHTS["paper_weight"],
-        recency=DEFAULT_WEIGHTS["recency"],
-        source_reliability=DEFAULT_WEIGHTS["source_reliability"],
-    )
+    # Check for weight preset
+    preset = getattr(args, "weight_preset", "balanced")
+
+    if preset == "cochrane":
+        weights = ScoringWeights.cochrane_focused()
+    elif preset == "practical":
+        weights = ScoringWeights.practical_focused()
+    else:
+        # Use balanced defaults
+        weights = ScoringWeights(
+            relevance=DEFAULT_WEIGHTS["relevance"],
+            study_quality=DEFAULT_WEIGHTS["study_quality"],
+            methodological_rigor=DEFAULT_WEIGHTS["methodological_rigor"],
+            sample_size=DEFAULT_WEIGHTS["sample_size"],
+            recency=DEFAULT_WEIGHTS["recency"],
+            replication_status=DEFAULT_WEIGHTS["replication_status"],
+            paper_weight=DEFAULT_WEIGHTS["paper_weight"],
+            source_reliability=DEFAULT_WEIGHTS["source_reliability"],
+        )
+
+    # Apply command-line overrides if provided
+    if args.relevance_weight is not None:
+        weights = ScoringWeights(
+            relevance=args.relevance_weight,
+            study_quality=weights.study_quality,
+            methodological_rigor=weights.methodological_rigor,
+            sample_size=weights.sample_size,
+            recency=weights.recency,
+            replication_status=weights.replication_status,
+            paper_weight=weights.paper_weight,
+            source_reliability=weights.source_reliability,
+        )
+    if args.quality_weight is not None:
+        weights = ScoringWeights(
+            relevance=weights.relevance,
+            study_quality=args.quality_weight,
+            methodological_rigor=weights.methodological_rigor,
+            sample_size=weights.sample_size,
+            recency=weights.recency,
+            replication_status=weights.replication_status,
+            paper_weight=weights.paper_weight,
+            source_reliability=weights.source_reliability,
+        )
+
+    return weights
 
 
 def get_output_dir(args: argparse.Namespace, config: SystematicReviewConfig) -> Path:
