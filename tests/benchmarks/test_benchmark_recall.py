@@ -36,6 +36,7 @@ from .benchmark_utils import (
     load_ground_truth,
     save_benchmark_result,
     TARGET_RECALL_RATE,
+    DISPLAY_TITLE_TRUNCATION_SHORT,
 )
 
 logger = logging.getLogger(__name__)
@@ -422,7 +423,8 @@ class TestDatabaseCoverage:
             logger.warning(
                 f"Missing papers:\n" +
                 "\n".join(
-                    f"  - PMID:{p.get('pmid')} DOI:{p.get('doi')} {p.get('title', '')[:50]}"
+                    f"  - PMID:{p.get('pmid')} DOI:{p.get('doi')} "
+                    f"{p.get('title', '')[:DISPLAY_TITLE_TRUNCATION_SHORT]}"
                     for p in coverage['missing_papers']
                 )
             )

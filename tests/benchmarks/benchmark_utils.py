@@ -42,6 +42,10 @@ TARGET_RECALL_RATE = 1.0
 # Minimum acceptable precision rate
 MIN_ACCEPTABLE_PRECISION_RATE = 0.60
 
+# Display truncation limits for human-readable output
+DISPLAY_TITLE_TRUNCATION_LENGTH = 60
+DISPLAY_TITLE_TRUNCATION_SHORT = 50
+
 
 # =============================================================================
 # Data Models
@@ -115,8 +119,9 @@ class GroundTruthPaper:
     def get_display_name(self) -> str:
         """Get a human-readable name for this paper."""
         if self.title:
-            short_title = self.title[:60] + "..." if len(self.title) > 60 else self.title
-            return short_title
+            if len(self.title) > DISPLAY_TITLE_TRUNCATION_LENGTH:
+                return self.title[:DISPLAY_TITLE_TRUNCATION_LENGTH] + "..."
+            return self.title
         if self.pmid:
             return f"PMID:{self.pmid}"
         if self.doi:
@@ -188,7 +193,24 @@ class CochraneGroundTruth:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CochraneGroundTruth":
-        """Create from dictionary."""
+        """
+        Create from dictionary.
+
+        Args:
+            data: Dictionary with ground truth fields
+
+        Returns:
+            CochraneGroundTruth instance
+
+        Raises:
+            ValueError: If required fields are missing
+        """
+        # Validate required fields
+        required_fields = ["cochrane_id", "title", "research_question"]
+        missing = [f for f in required_fields if f not in data or not data[f]]
+        if missing:
+            raise ValueError(f"Missing required fields: {', '.join(missing)}")
+
         studies = [
             GroundTruthPaper.from_dict(s)
             for s in data.get("included_studies", [])
@@ -701,16 +723,22 @@ def load_ground_truth(path: str) -> CochraneGroundTruth:
 
     Raises:
         FileNotFoundError: If file doesn't exist
-        ValueError: If file format is invalid
+        ValueError: If file format is invalid or JSON parsing fails
     """
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(f"Ground truth file not found: {path}")
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in ground truth file '{path}': {e}") from e
 
-    return CochraneGroundTruth.from_dict(data)
+    try:
+        return CochraneGroundTruth.from_dict(data)
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"Invalid ground truth format in '{path}': {e}") from e
 
 
 def save_ground_truth(ground_truth: CochraneGroundTruth, path: str) -> None:
