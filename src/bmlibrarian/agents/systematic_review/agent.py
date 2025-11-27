@@ -312,6 +312,12 @@ class SystematicReviewAgent(BaseAgent):
             if weight_errors:
                 raise ValueError(f"Invalid scoring weights: {'; '.join(weight_errors)}")
 
+        # Extract output directory for checkpoint saving
+        from pathlib import Path
+        output_dir: Optional[str] = None
+        if output_path:
+            output_dir = str(Path(output_path).expanduser().parent)
+
         # Store current review parameters
         self._criteria = criteria
         self._weights = weights
@@ -416,6 +422,7 @@ class SystematicReviewAgent(BaseAgent):
                 },
                 interactive=interactive,
                 checkpoint_callback=checkpoint_callback,
+                output_dir=output_dir,
             ):
                 logger.info("Review aborted at search strategy checkpoint")
                 self.documenter.end_review()
@@ -459,6 +466,7 @@ class SystematicReviewAgent(BaseAgent):
                 },
                 interactive=interactive,
                 checkpoint_callback=checkpoint_callback,
+                output_dir=output_dir,
             ):
                 logger.info("Review aborted at initial results checkpoint")
                 self.documenter.end_review()
@@ -476,8 +484,8 @@ class SystematicReviewAgent(BaseAgent):
                 decision_rationale="Fast filtering before expensive LLM scoring",
             ) as timer:
                 filter_result = initial_filter.filter_batch(self._all_papers)
-                passed_filter = filter_result.passed_papers
-                rejected_filter = filter_result.rejected_papers
+                passed_filter = filter_result.passed
+                rejected_filter = filter_result.rejected
 
                 timer.set_output(
                     f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
@@ -1025,18 +1033,21 @@ class SystematicReviewAgent(BaseAgent):
         state: Dict[str, Any],
         interactive: bool,
         checkpoint_callback: Optional[Callable[[str, Dict], bool]] = None,
+        output_dir: Optional[str] = None,
     ) -> bool:
         """
         Handle a workflow checkpoint.
 
         In interactive mode, pauses for human approval.
         In auto mode, continues unless callback returns False.
+        When output_dir is provided, saves a checkpoint file for resumability.
 
         Args:
             checkpoint_type: Type of checkpoint (e.g., "search_strategy")
             state: Current state snapshot
             interactive: Whether running in interactive mode
             checkpoint_callback: Optional callback for decision
+            output_dir: Optional directory for saving checkpoint files
 
         Returns:
             True to continue, False to abort
@@ -1047,6 +1058,12 @@ class SystematicReviewAgent(BaseAgent):
             phase=self.documenter._current_phase,
             state_snapshot=state,
         )
+
+        # Save checkpoint file for resumability (before getting user decision)
+        if output_dir:
+            checkpoint_path = self._save_checkpoint_file(checkpoint_type, output_dir)
+            if checkpoint_path:
+                logger.info(f"Checkpoint saved for resume: {checkpoint_path}")
 
         # If callback provided, use it
         if checkpoint_callback:
@@ -1067,6 +1084,614 @@ class SystematicReviewAgent(BaseAgent):
         )
         checkpoint.user_decision = "auto_approved_no_callback"
         return True
+
+    def _save_checkpoint_file(
+        self,
+        checkpoint_type: str,
+        output_dir: str,
+    ) -> Optional[str]:
+        """
+        Save complete checkpoint state to a file for resumability.
+
+        Saves all state needed to resume the review from this checkpoint:
+        - Search criteria and weights
+        - Search plan and executed queries
+        - All paper document IDs (papers are re-fetched on resume)
+        - Documenter state
+
+        Args:
+            checkpoint_type: Type of checkpoint being saved
+            output_dir: Directory to save checkpoint files
+
+        Returns:
+            Path to saved checkpoint file, or None if save failed
+        """
+        from pathlib import Path
+        import json
+
+        try:
+            # Build complete state for resumability
+            resume_state = {
+                "version": AGENT_VERSION,
+                "checkpoint_type": checkpoint_type,
+                "review_id": self.documenter.review_id,
+                "timestamp": datetime.now().isoformat(),
+                # Input parameters
+                "criteria": self._criteria.to_dict() if self._criteria else None,
+                "weights": self._weights.to_dict() if self._weights else None,
+                # Search state
+                "search_plan": self._search_plan.to_dict() if self._search_plan else None,
+                "executed_queries": [q.to_dict() for q in self._executed_queries],
+                # Paper IDs (full data re-fetched on resume)
+                "paper_document_ids": [p.document_id for p in self._all_papers],
+                "paper_count": len(self._all_papers),
+                # Scored papers if available
+                "scored_paper_ids": [sp.paper.document_id for sp in self._scored_papers],
+                # Documenter state
+                "documenter_phase": self.documenter._current_phase,
+            }
+
+            # Create checkpoint directory
+            checkpoint_dir = Path(output_dir).expanduser() / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save checkpoint file
+            filename = f"{self.documenter.review_id}_{checkpoint_type}.json"
+            filepath = checkpoint_dir / filename
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(resume_state, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"Checkpoint saved to: {filepath}")
+            return str(filepath)
+
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint file: {e}")
+            return None
+
+    def run_review_from_checkpoint(
+        self,
+        checkpoint_path: str,
+        interactive: bool = True,
+        output_path: Optional[str] = None,
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]] = None,
+    ) -> SystematicReviewResult:
+        """
+        Resume a systematic review from a saved checkpoint.
+
+        Loads state from a checkpoint file and continues the review
+        from the phase following the checkpoint.
+
+        Args:
+            checkpoint_path: Path to the checkpoint JSON file
+            interactive: If True, pause at subsequent checkpoints for approval
+            output_path: Optional path to save results JSON
+            checkpoint_callback: Optional callback for checkpoint decisions
+
+        Returns:
+            SystematicReviewResult with all papers and audit trail
+
+        Raises:
+            FileNotFoundError: If checkpoint file doesn't exist
+            ValueError: If checkpoint file is invalid or incompatible
+            SystematicReviewError: If resume fails
+
+        Example:
+            >>> result = agent.run_review_from_checkpoint(
+            ...     checkpoint_path="reviews/review_abc123_initial_results.json",
+            ...     interactive=True
+            ... )
+        """
+        from pathlib import Path
+        import json
+
+        checkpoint_file = Path(checkpoint_path).expanduser()
+
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+
+        # Load checkpoint data
+        try:
+            with open(checkpoint_file, "r", encoding="utf-8") as f:
+                checkpoint_data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid checkpoint file format: {e}")
+
+        # Validate checkpoint version
+        checkpoint_version = checkpoint_data.get("version", "unknown")
+        if checkpoint_version != AGENT_VERSION:
+            logger.warning(
+                f"Checkpoint version mismatch: {checkpoint_version} vs {AGENT_VERSION}. "
+                "Attempting resume anyway."
+            )
+
+        checkpoint_type = checkpoint_data.get("checkpoint_type")
+        review_id = checkpoint_data.get("review_id")
+
+        logger.info(f"Resuming review {review_id} from checkpoint: {checkpoint_type}")
+
+        # Restore state
+        self._restore_state_from_checkpoint(checkpoint_data)
+
+        # Initialize documenter with the same review ID
+        self.documenter = Documenter(review_id=review_id)
+        self.documenter.start_review()
+        self.documenter._current_phase = checkpoint_data.get("documenter_phase", "initial_filtering")
+
+        # Log the resume event
+        self.documenter.log_step(
+            action="resume_from_checkpoint",
+            tool=None,
+            input_summary=f"Resuming from {checkpoint_type} checkpoint",
+            output_summary=f"Restored {len(self._all_papers)} papers, continuing review",
+            decision_rationale="User requested resume from saved checkpoint",
+            metrics={
+                "checkpoint_type": checkpoint_type,
+                "papers_restored": len(self._all_papers),
+                "original_review_id": review_id,
+            }
+        )
+
+        # Continue from the appropriate phase based on checkpoint type
+        try:
+            if checkpoint_type == CHECKPOINT_SEARCH_STRATEGY:
+                # Resume from search execution (Phase 2)
+                return self._continue_from_search_execution(
+                    interactive=interactive,
+                    output_path=output_path,
+                    checkpoint_callback=checkpoint_callback,
+                )
+            elif checkpoint_type == CHECKPOINT_INITIAL_RESULTS:
+                # Resume from initial filtering (Phase 3)
+                return self._continue_from_initial_filtering(
+                    interactive=interactive,
+                    output_path=output_path,
+                    checkpoint_callback=checkpoint_callback,
+                )
+            elif checkpoint_type == CHECKPOINT_SCORING_COMPLETE:
+                # Resume from quality assessment (Phase 5)
+                return self._continue_from_quality_assessment(
+                    interactive=interactive,
+                    output_path=output_path,
+                    checkpoint_callback=checkpoint_callback,
+                )
+            else:
+                raise ValueError(f"Unknown checkpoint type: {checkpoint_type}")
+
+        except KeyboardInterrupt:
+            logger.info("Review cancelled by user during resume")
+            self.documenter.end_review()
+            raise
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"Error resuming review: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.documenter.end_review()
+            raise SystematicReviewError(error_msg) from e
+
+    def _restore_state_from_checkpoint(
+        self,
+        checkpoint_data: Dict[str, Any],
+    ) -> None:
+        """
+        Restore agent state from checkpoint data.
+
+        Args:
+            checkpoint_data: Dictionary with checkpoint state
+        """
+        from bmlibrarian.database import fetch_documents_by_ids
+
+        # Restore criteria
+        criteria_data = checkpoint_data.get("criteria")
+        if criteria_data:
+            self._criteria = SearchCriteria.from_dict(criteria_data)
+        else:
+            raise ValueError("Checkpoint missing required 'criteria' data")
+
+        # Restore weights
+        weights_data = checkpoint_data.get("weights")
+        if weights_data:
+            self._weights = ScoringWeights.from_dict(weights_data)
+        else:
+            self._weights = self.config.scoring_weights
+
+        # Restore search plan
+        search_plan_data = checkpoint_data.get("search_plan")
+        if search_plan_data:
+            self._search_plan = SearchPlan.from_dict(search_plan_data)
+
+        # Restore executed queries
+        executed_queries_data = checkpoint_data.get("executed_queries", [])
+        self._executed_queries = [
+            ExecutedQuery.from_dict(q) for q in executed_queries_data
+        ]
+
+        # Re-fetch papers from database using saved document IDs
+        paper_ids = checkpoint_data.get("paper_document_ids", [])
+        if paper_ids:
+            logger.info(f"Re-fetching {len(paper_ids)} papers from database...")
+            documents = fetch_documents_by_ids(set(paper_ids))
+
+            self._all_papers = []
+            for doc in documents:
+                try:
+                    paper = PaperData.from_database_row(doc)
+                    self._all_papers.append(paper)
+                except Exception as e:
+                    logger.warning(f"Failed to restore paper {doc.get('id')}: {e}")
+
+            logger.info(f"Restored {len(self._all_papers)} papers")
+
+            # Check for missing papers
+            if len(self._all_papers) < len(paper_ids):
+                missing = len(paper_ids) - len(self._all_papers)
+                logger.warning(f"{missing} papers could not be restored from database")
+
+    def _continue_from_search_execution(
+        self,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Continue review from after search strategy checkpoint.
+
+        Executes: Search Execution → Initial Filtering → Scoring → Quality → Report
+        """
+        from .planner import Planner
+        from .executor import SearchExecutor
+        from .filters import InitialFilter, InclusionEvaluator
+        from .scorer import RelevanceScorer, CompositeScorer
+        from .quality import QualityAssessor
+        from .reporter import Reporter
+
+        # Initialize components
+        executor = SearchExecutor(
+            config=self.config,
+            results_per_query=self.config.max_results_per_query,
+            callback=self.callback,
+        )
+
+        # Phase 2: Execute Search Plan
+        self.documenter.set_phase("search_execution")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_EXECUTE_SEARCH,
+            tool="SearchExecutor",
+            input_summary=f"Executing {len(self._search_plan.queries)} queries (resumed)",
+            decision_rationale="Continuing from search strategy checkpoint",
+        ) as timer:
+            search_results = executor.execute_plan(self._search_plan)
+            self._executed_queries = search_results.executed_queries
+            self._all_papers = search_results.papers
+
+            timer.set_output(
+                f"Found {search_results.count} unique papers "
+                f"from {search_results.total_before_dedup} total"
+            )
+
+        # Continue with remaining phases via the common continuation path
+        return self._continue_from_initial_results_checkpoint(
+            search_results=search_results,
+            interactive=interactive,
+            output_path=output_path,
+            checkpoint_callback=checkpoint_callback,
+        )
+
+    def _continue_from_initial_filtering(
+        self,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Continue review from after initial results checkpoint.
+
+        Executes: Initial Filtering → Scoring → Quality → Report
+        """
+        from .filters import InitialFilter, InclusionEvaluator
+        from .scorer import RelevanceScorer, CompositeScorer
+        from .quality import QualityAssessor
+        from .reporter import Reporter
+
+        criteria = self._criteria
+        weights = self._weights
+
+        # Initialize remaining components
+        initial_filter = InitialFilter(
+            criteria=criteria,
+            config=self.config,
+        )
+
+        scorer = RelevanceScorer(
+            research_question=criteria.research_question,
+            config=self.config,
+            callback=self.callback,
+            orchestrator=self.orchestrator,
+            criteria=criteria,
+        )
+
+        quality_assessor = QualityAssessor(
+            config=self.config,
+            callback=self.callback,
+            orchestrator=self.orchestrator,
+        )
+
+        composite_scorer = CompositeScorer(weights=weights)
+
+        reporter = Reporter(
+            documenter=self.documenter,
+            criteria=criteria,
+            weights=weights,
+        )
+
+        total_considered = len(self._all_papers)
+
+        # Phase 3: Initial Filtering
+        self.documenter.set_phase("initial_filtering")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_INITIAL_FILTER,
+            tool="InitialFilter",
+            input_summary=f"Filtering {len(self._all_papers)} papers with heuristics (resumed)",
+            decision_rationale="Continuing from initial results checkpoint",
+        ) as timer:
+            filter_result = initial_filter.filter_batch(self._all_papers)
+            passed_filter = filter_result.passed
+            rejected_filter = filter_result.rejected
+
+            timer.set_output(
+                f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
+            )
+            timer.add_metrics({
+                "passed": len(passed_filter),
+                "rejected": len(rejected_filter),
+                "pass_rate": round(len(passed_filter) / total_considered * 100, 2) if total_considered > 0 else 0,
+            })
+
+        passed_initial_filter = len(passed_filter)
+
+        # Continue with scoring, quality assessment, and report generation
+        return self._continue_from_scoring_phase(
+            passed_filter=passed_filter,
+            scorer=scorer,
+            quality_assessor=quality_assessor,
+            composite_scorer=composite_scorer,
+            reporter=reporter,
+            total_considered=total_considered,
+            passed_initial_filter=passed_initial_filter,
+            interactive=interactive,
+            output_path=output_path,
+            checkpoint_callback=checkpoint_callback,
+        )
+
+    def _continue_from_quality_assessment(
+        self,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Continue review from after scoring checkpoint.
+
+        Executes: Quality Assessment → Report
+        """
+        from .scorer import CompositeScorer
+        from .quality import QualityAssessor
+        from .reporter import Reporter
+
+        criteria = self._criteria
+        weights = self._weights
+
+        quality_assessor = QualityAssessor(
+            config=self.config,
+            callback=self.callback,
+            orchestrator=self.orchestrator,
+        )
+
+        composite_scorer = CompositeScorer(weights=weights)
+
+        reporter = Reporter(
+            documenter=self.documenter,
+            criteria=criteria,
+            weights=weights,
+        )
+
+        # Continue from quality assessment phase
+        self.documenter.set_phase("quality_assessment")
+
+        # This is a simplified implementation - full implementation would
+        # restore scored papers and continue from there
+        logger.warning("Resume from scoring_complete checkpoint is experimental")
+
+        # Build empty result for now
+        return self._build_empty_result(
+            criteria,
+            weights,
+            "Resume from scoring_complete not fully implemented"
+        )
+
+    def _continue_from_initial_results_checkpoint(
+        self,
+        search_results,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Common continuation path after search results are available.
+
+        This is called when resuming from search_strategy checkpoint
+        after search execution is complete.
+        """
+        # Checkpoint: Review initial results
+        if not self._checkpoint(
+            checkpoint_type=CHECKPOINT_INITIAL_RESULTS,
+            state={
+                "unique_papers": len(self._all_papers),
+                "total_before_dedup": search_results.total_before_dedup,
+                "sample_titles": [p.title[:80] for p in self._all_papers[:10]],
+            },
+            interactive=interactive,
+            checkpoint_callback=checkpoint_callback,
+        ):
+            logger.info("Review aborted at initial results checkpoint")
+            self.documenter.end_review()
+            return self._build_empty_result(
+                self._criteria, self._weights, "Aborted at initial results"
+            )
+
+        # Continue with initial filtering
+        return self._continue_from_initial_filtering(
+            interactive=interactive,
+            output_path=output_path,
+            checkpoint_callback=checkpoint_callback,
+        )
+
+    def _continue_from_scoring_phase(
+        self,
+        passed_filter: List[PaperData],
+        scorer,
+        quality_assessor,
+        composite_scorer,
+        reporter,
+        total_considered: int,
+        passed_initial_filter: int,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Continue from the scoring phase onwards.
+
+        Executes: Relevance Scoring → Inclusion Evaluation → Quality Assessment → Report
+        """
+        from .filters import InclusionEvaluator
+
+        criteria = self._criteria
+        weights = self._weights
+
+        # Phase 4: Relevance Scoring
+        self.documenter.set_phase("relevance_scoring")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_SCORE_RELEVANCE,
+            tool="RelevanceScorer",
+            input_summary=f"Scoring {len(passed_filter)} papers for relevance",
+            decision_rationale="Assessing relevance to research question using LLM",
+        ) as timer:
+            # Get paper sources for scoring
+            paper_sources = {p.document_id: ["resumed"] for p in passed_filter}
+
+            scoring_result = scorer.score_batch(
+                papers=passed_filter,
+                evaluate_inclusion=True,
+                paper_sources=paper_sources,
+            )
+            self._scored_papers = scoring_result.scored_papers
+
+            timer.set_output(
+                f"Scored {len(scoring_result.scored_papers)} papers, "
+                f"avg score: {scoring_result.average_score:.2f}"
+            )
+            timer.add_metrics({
+                "papers_scored": len(scoring_result.scored_papers),
+                "average_score": round(scoring_result.average_score, 2),
+                "failed_scoring": len(scoring_result.failed_papers),
+            })
+
+        # Apply relevance threshold
+        relevance_threshold = self.config.relevance_threshold
+        relevant_papers = [
+            sp for sp in self._scored_papers
+            if sp.relevance_score >= relevance_threshold
+        ]
+
+        passed_relevance = len(relevant_papers)
+        logger.info(f"{passed_relevance} papers passed relevance threshold ({relevance_threshold})")
+
+        # Phase 5: Quality Assessment
+        self.documenter.set_phase("quality_assessment")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_ASSESS_QUALITY,
+            tool="QualityAssessor",
+            input_summary=f"Assessing quality of {len(relevant_papers)} papers",
+            decision_rationale="Evaluating study quality for final ranking",
+        ) as timer:
+            assessment_result = quality_assessor.assess_batch(
+                scored_papers=relevant_papers,
+                research_question=criteria.research_question,
+            )
+            self._assessed_papers = assessment_result.assessed_papers
+
+            timer.set_output(
+                f"Assessed {len(assessment_result.assessed_papers)} papers"
+            )
+
+        # Phase 6: Composite Scoring
+        with self.documenter.log_step_with_timer(
+            action=ACTION_CALCULATE_COMPOSITE,
+            tool="CompositeScorer",
+            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            decision_rationale="Combining all scores for final ranking",
+        ) as timer:
+            for assessed in self._assessed_papers:
+                assessed.composite_score = composite_scorer.calculate(assessed)
+
+            # Sort by composite score
+            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+
+            timer.set_output(
+                f"Ranked {len(self._assessed_papers)} papers by composite score"
+            )
+
+        # Determine final inclusion
+        final_included = [ap for ap in self._assessed_papers if ap.include_in_review]
+        final_excluded = [ap for ap in self._assessed_papers if not ap.include_in_review]
+
+        # Build statistics
+        stats = ReviewStatistics(
+            total_considered=total_considered,
+            passed_initial_filter=passed_initial_filter,
+            passed_relevance_threshold=passed_relevance,
+            passed_quality_gate=len(self._assessed_papers),
+            final_included=len(final_included),
+            final_excluded=len(final_excluded),
+            uncertain_for_review=0,
+            processing_time_seconds=self.documenter.get_duration(),
+            total_llm_calls=self.documenter._total_llm_calls,
+            total_tokens_used=self.documenter._total_tokens,
+        )
+
+        # Phase 7: Report Generation
+        self.documenter.set_phase("reporting")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_GENERATE_REPORT,
+            tool="Reporter",
+            input_summary=f"Generating report for {len(final_included)} included papers",
+            decision_rationale="Creating final systematic review output",
+        ) as timer:
+            result = SystematicReviewResult(
+                review_id=self.documenter.review_id,
+                criteria=criteria,
+                weights=weights,
+                statistics=stats,
+                included_papers=final_included,
+                excluded_papers=final_excluded,
+                uncertain_papers=[],
+                search_plan=self._search_plan,
+                audit_trail=self.documenter.generate_process_log(),
+            )
+
+            if output_path:
+                reporter.generate_json_report(result, output_path)
+
+            timer.set_output(f"Report generated with {len(final_included)} papers")
+
+        self.documenter.end_review()
+        return result
 
     # =========================================================================
     # Child Agent Initialization (Lazy)
