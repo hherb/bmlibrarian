@@ -104,3 +104,12 @@ CITATION_SEPARATOR: Final[str] = ","
 
 # Format for combined citations (e.g., [1,2,3] or [1-3])
 COMBINE_SEQUENTIAL_CITATIONS: Final[bool] = True
+
+
+# ============================================================================
+# UI Colors (for consistent theming)
+# ============================================================================
+
+# Line number area colors
+LINE_NUMBER_BG_COLOR: Final[str] = "#F5F5F5"
+LINE_NUMBER_TEXT_COLOR: Final[str] = "#9E9E9E"

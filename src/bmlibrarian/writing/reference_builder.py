@@ -6,12 +6,15 @@ formatted reference lists using the citation formatter.
 """
 
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any, TYPE_CHECKING
 
 from .models import Citation, DocumentMetadata, FormattedReference
 from .citation_parser import CitationParser
 from .citation_formatter import CitationFormatter
 from .constants import CitationStyle, COMBINE_SEQUENTIAL_CITATIONS
+
+if TYPE_CHECKING:
+    from bmlibrarian.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +46,13 @@ class ReferenceBuilder:
         self._formatter = CitationFormatter(style)
         self._db_manager = None
 
-    def _get_db_manager(self):
-        """Lazy load database manager."""
+    def _get_db_manager(self) -> "DatabaseManager":
+        """
+        Lazy load database manager.
+
+        Returns:
+            DatabaseManager instance
+        """
         if self._db_manager is None:
             from bmlibrarian.database import get_db_manager
             self._db_manager = get_db_manager()
@@ -335,7 +343,7 @@ class ReferenceBuilder:
     def validate_citations(
         self,
         text: str
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, Any]]:
         """
         Validate all citations in text.
 

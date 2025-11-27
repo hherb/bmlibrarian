@@ -10,10 +10,13 @@ Provides database operations for the writing schema including:
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 from .models import WritingDocument, DocumentVersion
 from .constants import MAX_VERSIONS
+
+if TYPE_CHECKING:
+    from bmlibrarian.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +32,13 @@ class DocumentStore:
         """Initialize document store."""
         self._db_manager = None
 
-    def _get_db_manager(self):
-        """Lazy load database manager."""
+    def _get_db_manager(self) -> "DatabaseManager":
+        """
+        Lazy load database manager.
+
+        Returns:
+            DatabaseManager instance
+        """
         if self._db_manager is None:
             from bmlibrarian.database import get_db_manager
             self._db_manager = get_db_manager()

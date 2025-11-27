@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 
 from ...resources.styles import get_font_scale, StylesheetGenerator
 from .syntax_highlighter import MarkdownCitationHighlighter
+from bmlibrarian.writing.constants import LINE_NUMBER_BG_COLOR, LINE_NUMBER_TEXT_COLOR
 
 logger = logging.getLogger(__name__)
 
@@ -104,19 +105,8 @@ class MarkdownEditorWidget(QPlainTextEdit):
         metrics = QFontMetrics(font)
         self.setTabStopDistance(4 * metrics.horizontalAdvance(' '))
 
-        # Styling
-        self.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background-color: #FAFAFA;
-                color: #212121;
-                border: 1px solid #E0E0E0;
-                border-radius: {s['radius_small']}px;
-                padding: {s['padding_small']}px;
-            }}
-            QPlainTextEdit:focus {{
-                border: 1px solid #2196F3;
-            }}
-        """)
+        # Styling - use stylesheet generator
+        self.setStyleSheet(self.style_gen.text_edit_stylesheet())
 
         # Line wrapping
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -384,7 +374,7 @@ class MarkdownEditorWidget(QPlainTextEdit):
             return
 
         painter = QPainter(self._line_number_area)
-        painter.fillRect(event.rect(), QColor("#F5F5F5"))
+        painter.fillRect(event.rect(), QColor(LINE_NUMBER_BG_COLOR))
 
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
@@ -395,7 +385,7 @@ class MarkdownEditorWidget(QPlainTextEdit):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 number = str(block_number + 1)
-                painter.setPen(QColor("#9E9E9E"))
+                painter.setPen(QColor(LINE_NUMBER_TEXT_COLOR))
                 painter.drawText(
                     0, top,
                     self._line_number_area.width() - 3,
