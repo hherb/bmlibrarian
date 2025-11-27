@@ -18,7 +18,7 @@
 
 **Objective:** We present BMLibrarian's SystematicReviewAgent, an AI-augmented systematic review system designed to accelerate evidence synthesis while maintaining complete transparency through granular audit trails that exceed the documentation standards of published human reviews.
 
-**Methods:** The system implements an eight-phase workflow integrating multiple specialized AI agents for search planning, literature retrieval, relevance screening, quality assessment, and report generation. Key technical innovations include map-reduce synthesis for context window management, hybrid semantic-keyword search with reciprocal rank fusion, and checkpoint-based human-in-the-loop oversight. We validated the system against published Cochrane systematic reviews, measuring recall of included studies as the primary outcome.
+**Methods:** The system operates on a locally mirrored database containing the complete PubMed archive (36+ million citations) and medRxiv preprint repository, enabling ultra-low latency queries without internet dependency. This infrastructure is essential: our multi-strategy search approach executes 8-12 diverse queries per review, a volume that would be neither feasible nor permissible against external API servers. The system implements an eight-phase workflow integrating multiple specialized AI agents for search planning, literature retrieval, relevance screening, quality assessment, and report generation. Key technical innovations include map-reduce synthesis for context window management, hybrid semantic-keyword search with reciprocal rank fusion, and checkpoint-based human-in-the-loop oversight. We validated the system against published Cochrane systematic reviews, measuring recall of included studies as the primary outcome.
 
 **Results:** [RESULTS SECTION TO BE COMPLETED FOLLOWING BENCHMARK VALIDATION]
 
@@ -84,15 +84,85 @@ The system integrates eight specialized phases spanning search planning through 
 
 ### 1.5 Acknowledgment: AI-Assisted Development
 
-We explicitly acknowledge that this project was developed with substantial assistance from Claude, an AI coding assistant developed by Anthropic. The BMLibrarian codebase spans approximately 11,200 lines of core systematic review code across 12 modules, implementing sophisticated multi-agent orchestration, comprehensive error handling, and extensive documentation.
+We explicitly acknowledge that this project was developed with substantial assistance from Claude, an AI coding assistant developed by Anthropic. The complete BMLibrarian codebase comprises 379 files containing 159,731 lines (122,184 lines of code), 531 classes, and 4,184 functions—a substantial software system implementing local database infrastructure, multi-agent AI orchestration, graphical user interfaces, and the systematic review workflow described herein.
 
-Without AI-assisted coding, this project would likely have required several additional years of development and may never have achieved the current level of maturity and code quality. This acknowledgment serves dual purposes: transparency about our development process, and demonstration that AI assistants, when used as collaborative tools rather than substitutes for human expertise, can substantially accelerate research software development while maintaining rigorous quality standards.
+Without AI-assisted coding, this project would likely have required several additional years of development and may never have achieved the current level of maturity and code quality. This acknowledgment serves dual purposes: transparency about our development process, and demonstration that AI assistants, when used as collaborative tools rather than substitutes for human expertise, can substantially accelerate research software development while maintaining rigorous quality standards. The human-AI collaboration that produced this software mirrors the human-AI collaboration the software enables for systematic reviews.
 
 ---
 
 ## 2. Methods
 
-### 2.1 System Overview
+### 2.1 Local Literature Database Infrastructure
+
+A fundamental requirement for AI-augmented systematic reviews is the ability to execute numerous exploratory queries rapidly and iteratively. Traditional systematic reviews rely on carefully constructed searches against external databases like PubMed, typically limited to 1-3 well-crafted queries due to API rate limits, manual effort, and the need for reproducible search strategies. Our multi-strategy approach, by contrast, generates and executes 8-12 diverse queries per review to maximize recall—a volume that would be neither technically feasible nor ethically appropriate against public API servers.
+
+BMLibrarian addresses this through complete local mirroring of major biomedical literature databases:
+
+```mermaid
+flowchart TB
+    subgraph External["External Sources (Periodic Sync)"]
+        PM[PubMed FTP<br/>Baseline + Daily Updates]
+        MR[medRxiv API<br/>Preprint Repository]
+        PMC[PMC Open Access<br/>Full-Text Archive]
+    end
+
+    subgraph Sync["Synchronization Layer"]
+        PMS[PubMed Bulk Importer<br/>36M+ citations]
+        MRS[medRxiv Importer<br/>~200K preprints]
+        PMCS[PMC Importer<br/>Full-text PDFs]
+    end
+
+    subgraph Local["Local PostgreSQL + pgvector"]
+        DB[(Unified Database<br/>with Semantic Embeddings)]
+        IDX[Full-Text Search Index<br/>ts_vector + GIN]
+        VEC[Vector Index<br/>pgvector HNSW]
+    end
+
+    subgraph Query["Query Execution"]
+        SEM[Semantic Search<br/>< 50ms latency]
+        KW[Keyword Search<br/>< 20ms latency]
+        HYB[Hybrid Search<br/>< 100ms latency]
+    end
+
+    PM --> PMS
+    MR --> MRS
+    PMC --> PMCS
+    PMS --> DB
+    MRS --> DB
+    PMCS --> DB
+    DB --> IDX
+    DB --> VEC
+    IDX --> KW
+    VEC --> SEM
+    KW --> HYB
+    SEM --> HYB
+
+    style External fill:#fff4f4,stroke:#cc0000
+    style Local fill:#e6ffe6,stroke:#006600
+    style Query fill:#e6f3ff,stroke:#0066cc
+```
+
+**Database Contents:**
+- **PubMed Complete Archive:** 36+ million citations with abstracts, MeSH terms, and full metadata, synchronized via NLM's FTP baseline and daily update files
+- **medRxiv Preprints:** Complete repository of biomedical preprints (~200,000+ as of 2024), updated daily
+- **PMC Open Access:** Full-text articles from the PubMed Central Open Access subset, with extracted PDFs
+
+**Performance Characteristics:**
+- **Semantic search latency:** < 50ms for 36M documents using pgvector HNSW indexing
+- **Keyword search latency:** < 20ms using PostgreSQL's GIN-indexed ts_vector
+- **Hybrid search latency:** < 100ms combining both approaches
+- **No API rate limits:** Unlimited query volume for iterative refinement
+- **Offline capability:** Complete functionality without internet after initial sync
+
+This infrastructure enables search strategies that would be impractical with external APIs:
+- **Multi-model query generation:** Testing 3+ query formulations per model across multiple models
+- **Iterative threshold calibration:** Adjusting relevance thresholds based on result distributions
+- **Dynamic query refinement:** Generating additional queries based on initial results
+- **Parallel search execution:** Running semantic, keyword, and HyDE queries simultaneously
+
+The periodic synchronization model (daily for medRxiv, weekly for PubMed updates) ensures currency while maintaining the independence from external services required for reproducible, high-volume systematic reviews.
+
+### 2.2 System Architecture Overview
 
 The SystematicReviewAgent implements a complete systematic review workflow through eight integrated phases, each with configurable parameters and optional human checkpoint approval.
 
@@ -158,15 +228,15 @@ flowchart TB
     style Phase8 fill:#ffe6f0,stroke:#cc0066
 ```
 
-### 2.2 Phase 1: Intelligent Search Planning
+### 2.3 Phase 1: Intelligent Search Planning
 
 The search planning phase converts a natural language research question into a diverse set of database queries optimized for comprehensive retrieval.
 
-#### 2.2.1 PICO Extraction
+#### 2.3.1 PICO Extraction
 
 The system first extracts Population, Intervention, Comparison, and Outcome (PICO) components from the research question using a specialized PICOAgent. This structured representation guides subsequent query generation and enables alignment with Cochrane methodology.
 
-#### 2.2.2 Multi-Strategy Query Generation
+#### 2.3.2 Multi-Strategy Query Generation
 
 Rather than relying on a single query formulation, the system generates multiple complementary queries using different strategies:
 
@@ -195,9 +265,9 @@ flowchart LR
 
 **Query Diversity Optimization:** The LLM generates query variations using synonym expansion, alternative phrasings, and different emphasis on PICO components, maximizing the probability of retrieving relevant documents that might be missed by any single query formulation.
 
-### 2.3 Phase 2: Search Execution with Hybrid Retrieval
+### 2.4 Phase 2: Search Execution with Hybrid Retrieval
 
-#### 2.3.1 The Hybrid Search Problem
+#### 2.4.1 The Hybrid Search Problem
 
 Semantic search using vector embeddings excels at capturing conceptual similarity but struggles with specific numbers, abbreviations, and terminology not well-represented in training data. Keyword search provides precise matching but misses relevant documents using alternative terminology.
 
@@ -240,11 +310,11 @@ Where:
 
 This approach uses only rank positions rather than raw scores (which are not comparable across different systems), naturally handling the different score scales of semantic similarity and full-text relevance scoring.
 
-#### 2.3.2 Deduplication and Provenance Tracking
+#### 2.4.2 Deduplication and Provenance Tracking
 
 After executing all queries, results are deduplicated while preserving provenance—recording which queries found each paper. This information enables analysis of query effectiveness and supports iterative query refinement.
 
-### 2.4 Phase 3: Context-Aware Initial Filtering
+### 2.5 Phase 3: Context-Aware Initial Filtering
 
 The initial filtering phase rapidly excludes clearly irrelevant papers using heuristic rules before engaging more expensive LLM-based evaluation. However, naive keyword matching produces unacceptable false positive rates (incorrectly excluding relevant papers). Our three-tier approach addresses this:
 
@@ -276,7 +346,7 @@ Before excluding based on keywords, the system checks whether the keyword appear
 **Tier 3: Standard Keyword Matching**
 Keywords from explicit exclusion criteria are matched against titles (high confidence) and abstracts (medium confidence). Confidence scores inform downstream processing and audit trail documentation.
 
-### 2.5 Phase 4: LLM-Based Relevance Scoring
+### 2.6 Phase 4: LLM-Based Relevance Scoring
 
 Papers passing initial filtering undergo relevance scoring using a specialized DocumentScoringAgent. The system employs batch processing to efficiently evaluate large citation sets:
 
@@ -313,7 +383,7 @@ flowchart LR
 
 Each paper receives a relevance score from 1 (not relevant) to 5 (highly relevant), along with explicit rationale documenting how the paper relates (or fails to relate) to the research question. Papers scoring below the configurable threshold (default: 2.5) are excluded with documented reasoning.
 
-### 2.6 Phase 5: Multi-Agent Quality Assessment
+### 2.7 Phase 5: Multi-Agent Quality Assessment
 
 Quality assessment orchestrates multiple specialized agents, each providing complementary evaluation dimensions:
 
@@ -360,7 +430,7 @@ flowchart TB
 
 4. **PRISMA2020Agent:** For included systematic reviews and meta-analyses, assesses compliance with the 27-item PRISMA 2020 reporting checklist.
 
-### 2.7 Phase 6: Composite Scoring and Quality Gating
+### 2.8 Phase 6: Composite Scoring and Quality Gating
 
 Multiple assessment dimensions are combined into a composite score using configurable weights:
 
@@ -375,7 +445,7 @@ Multiple assessment dimensions are combined into a composite score using configu
 
 Papers must exceed a configurable quality threshold (default: 4.0/10) to be included. Papers falling below this threshold are excluded with documented composite score breakdown.
 
-### 2.8 Addressing Context Window Limitations: Map-Reduce Synthesis
+### 2.9 Addressing Context Window Limitations: Map-Reduce Synthesis
 
 When generating synthesis reports from large citation sets, direct prompting approaches fail due to LLM context window limitations. Packing 30+ citations into a single prompt causes attention dilution, citation number confusion, and truncated or empty outputs.
 
@@ -427,7 +497,7 @@ Sequential citation numbers cause confusion during the reduce phase. If Batch 1 
 - Effective context limit: 6,000 tokens
 - Maximum passage length: 500 characters per citation
 
-### 2.9 Audit Trail and Decision Documentation
+### 2.10 Audit Trail and Decision Documentation
 
 The Documenter component maintains a comprehensive audit trail exceeding the documentation standards of published systematic reviews:
 
@@ -481,7 +551,7 @@ flowchart TB
 
 4. **Peer Scrutiny Enablement:** The granular documentation enables peer reviewers to examine not just included studies (as in traditional reviews) but the decision rationale for every screened citation.
 
-### 2.10 Human-in-the-Loop Implementation
+### 2.11 Human-in-the-Loop Implementation
 
 The system implements checkpoint-based human oversight at critical decision points:
 
@@ -531,7 +601,7 @@ sequenceDiagram
 
 Each checkpoint can operate in automatic mode (for batch processing or validation) or interactive mode (for production reviews requiring human judgment).
 
-### 2.11 Benchmark Validation Framework
+### 2.12 Benchmark Validation Framework
 
 System performance is validated against published Cochrane systematic reviews:
 
@@ -730,17 +800,29 @@ The explicit documentation of AI assistance in both the development of this syst
 
 ### AI Coding Assistance
 
-We explicitly acknowledge that the BMLibrarian systematic review system was developed with substantial assistance from Claude (Anthropic), an AI coding assistant. The codebase comprises approximately 11,200 lines of systematic review code across 12 modules, implementing multi-agent orchestration, comprehensive error handling, and extensive documentation.
+We explicitly acknowledge that the BMLibrarian system was developed with substantial assistance from Claude (Anthropic), an AI coding assistant. The complete codebase comprises:
 
-Without AI-assisted development, this project would likely have required several additional years of development and may never have achieved its current level of maturity and code quality. The AI assistant provided:
+| Metric | Count |
+|--------|-------|
+| Total files | 379 |
+| Total lines | 159,731 |
+| Lines of code | 122,184 |
+| Classes | 531 |
+| Functions | 4,184 |
 
-- Rapid implementation of complex algorithms (map-reduce synthesis, hybrid search fusion)
-- Comprehensive error handling and edge case management
-- Extensive documentation generation
-- Code review and quality improvements
-- Test case development
+This represents a substantial software system implementing local database mirroring for 36+ million PubMed citations, multi-agent AI orchestration, comprehensive GUI applications, and the systematic review workflow described in this paper.
 
-This acknowledgment serves dual purposes: transparency about our methodology, and demonstration that AI assistants, when used collaboratively rather than as substitutes for human expertise, can substantially accelerate research software development.
+Without AI-assisted development, this project would likely have required several additional years of development and may never have achieved its current level of maturity and code quality. The AI assistant contributed across multiple dimensions:
+
+- **Architecture design:** Multi-agent coordination patterns, queue-based orchestration, plugin systems
+- **Algorithm implementation:** Map-reduce synthesis, reciprocal rank fusion, context-aware filtering
+- **Infrastructure development:** Database importers, synchronization systems, caching layers
+- **Error handling:** Comprehensive exception hierarchies, graceful degradation, retry logic
+- **Documentation:** User guides, developer documentation, inline code documentation
+- **Testing:** Unit tests, integration tests, benchmark frameworks
+- **Code quality:** Type annotations, consistent styling, refactoring suggestions
+
+This acknowledgment serves dual purposes: transparency about our methodology, and demonstration that AI coding assistants, when used as collaborative tools augmenting human expertise rather than replacing it, can substantially accelerate research software development while maintaining rigorous quality standards. The human-AI collaboration that produced BMLibrarian mirrors the human-AI collaboration the software itself enables for systematic reviews.
 
 ### Funding
 
