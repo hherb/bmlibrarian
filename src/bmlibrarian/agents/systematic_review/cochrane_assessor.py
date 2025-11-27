@@ -47,9 +47,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # =============================================================================
 
-# Maximum text length for context (fits within LLM context window)
-MAX_TEXT_LENGTH = 12000
-
 # Default confidence threshold for accepting assessments
 DEFAULT_MIN_CONFIDENCE = 0.4
 
@@ -174,16 +171,13 @@ class CochraneAssessmentAgent(BaseAgent):
             study_id = f"Study {doc_id}"
 
         # Use full text if available, fall back to abstract
+        # NOTE: No truncation is performed per Golden Rule #14.
+        # The LLM will handle large texts appropriately.
         text_to_analyze = full_text if full_text else abstract
 
         if not text_to_analyze:
             logger.warning(f"No text found for document {doc_id}")
             return None
-
-        # Truncate if needed
-        if len(text_to_analyze) > MAX_TEXT_LENGTH:
-            text_to_analyze = text_to_analyze[:MAX_TEXT_LENGTH] + "..."
-            logger.debug(f"Truncated text for document {doc_id}")
 
         self._call_callback(
             "cochrane_assessment_started",
