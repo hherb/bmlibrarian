@@ -55,6 +55,10 @@ from .documenter import Documenter
 
 if TYPE_CHECKING:
     from ..orchestrator import AgentOrchestrator
+    from .executor import AggregatedResults
+    from .scorer import RelevanceScorer, CompositeScorer
+    from .quality import QualityAssessor
+    from .reporter import Reporter
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,10 @@ CHECKPOINT_SEARCH_STRATEGY = "search_strategy"
 CHECKPOINT_INITIAL_RESULTS = "initial_results"
 CHECKPOINT_SCORING_COMPLETE = "scoring_complete"
 CHECKPOINT_QUALITY_ASSESSMENT = "quality_assessment"
+
+# Checkpoint display constants
+CHECKPOINT_TITLE_TRUNCATE_LENGTH = 80
+CHECKPOINT_SAMPLE_TITLES_COUNT = 10
 
 
 # =============================================================================
@@ -462,7 +470,10 @@ class SystematicReviewAgent(BaseAgent):
                 state={
                     "unique_papers": len(self._all_papers),
                     "total_before_dedup": search_results.total_before_dedup,
-                    "sample_titles": [p.title[:80] for p in self._all_papers[:10]],
+                    "sample_titles": [
+                        p.title[:CHECKPOINT_TITLE_TRUNCATE_LENGTH]
+                        for p in self._all_papers[:CHECKPOINT_SAMPLE_TITLES_COUNT]
+                    ],
                 },
                 interactive=interactive,
                 checkpoint_callback=checkpoint_callback,
@@ -1337,13 +1348,22 @@ class SystematicReviewAgent(BaseAgent):
         Continue review from after search strategy checkpoint.
 
         Executes: Search Execution → Initial Filtering → Scoring → Quality → Report
+
+        Args:
+            interactive: Whether to run in interactive mode
+            output_path: Optional path for saving results
+            checkpoint_callback: Optional callback for checkpoint decisions
+
+        Returns:
+            SystematicReviewResult with all papers and audit trail
         """
-        from .planner import Planner
+        from pathlib import Path
         from .executor import SearchExecutor
-        from .filters import InitialFilter, InclusionEvaluator
-        from .scorer import RelevanceScorer, CompositeScorer
-        from .quality import QualityAssessor
-        from .reporter import Reporter
+
+        # Extract output directory for checkpoint saving
+        output_dir: Optional[str] = None
+        if output_path:
+            output_dir = str(Path(output_path).expanduser().parent)
 
         # Initialize components
         executor = SearchExecutor(
@@ -1376,6 +1396,7 @@ class SystematicReviewAgent(BaseAgent):
             interactive=interactive,
             output_path=output_path,
             checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
         )
 
     def _continue_from_initial_filtering(
@@ -1513,16 +1534,27 @@ class SystematicReviewAgent(BaseAgent):
 
     def _continue_from_initial_results_checkpoint(
         self,
-        search_results,
+        search_results: "AggregatedResults",
         interactive: bool,
         output_path: Optional[str],
         checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+        output_dir: Optional[str] = None,
     ) -> SystematicReviewResult:
         """
         Common continuation path after search results are available.
 
         This is called when resuming from search_strategy checkpoint
         after search execution is complete.
+
+        Args:
+            search_results: Aggregated search results from executor
+            interactive: Whether to run in interactive mode
+            output_path: Optional path for saving results
+            checkpoint_callback: Optional callback for checkpoint decisions
+            output_dir: Optional directory for checkpoint file saving
+
+        Returns:
+            SystematicReviewResult with all papers and audit trail
         """
         # Checkpoint: Review initial results
         if not self._checkpoint(
@@ -1530,10 +1562,14 @@ class SystematicReviewAgent(BaseAgent):
             state={
                 "unique_papers": len(self._all_papers),
                 "total_before_dedup": search_results.total_before_dedup,
-                "sample_titles": [p.title[:80] for p in self._all_papers[:10]],
+                "sample_titles": [
+                    p.title[:CHECKPOINT_TITLE_TRUNCATE_LENGTH]
+                    for p in self._all_papers[:CHECKPOINT_SAMPLE_TITLES_COUNT]
+                ],
             },
             interactive=interactive,
             checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
         ):
             logger.info("Review aborted at initial results checkpoint")
             self.documenter.end_review()
@@ -1551,10 +1587,10 @@ class SystematicReviewAgent(BaseAgent):
     def _continue_from_scoring_phase(
         self,
         passed_filter: List[PaperData],
-        scorer,
-        quality_assessor,
-        composite_scorer,
-        reporter,
+        scorer: "RelevanceScorer",
+        quality_assessor: "QualityAssessor",
+        composite_scorer: "CompositeScorer",
+        reporter: "Reporter",
         total_considered: int,
         passed_initial_filter: int,
         interactive: bool,
@@ -1565,6 +1601,21 @@ class SystematicReviewAgent(BaseAgent):
         Continue from the scoring phase onwards.
 
         Executes: Relevance Scoring → Inclusion Evaluation → Quality Assessment → Report
+
+        Args:
+            passed_filter: Papers that passed initial filtering
+            scorer: RelevanceScorer instance for relevance assessment
+            quality_assessor: QualityAssessor instance for quality assessment
+            composite_scorer: CompositeScorer instance for final scoring
+            reporter: Reporter instance for output generation
+            total_considered: Total number of papers considered
+            passed_initial_filter: Number of papers that passed initial filter
+            interactive: Whether to run in interactive mode
+            output_path: Optional path for saving results
+            checkpoint_callback: Optional callback for checkpoint decisions
+
+        Returns:
+            SystematicReviewResult with all papers and audit trail
         """
         from .filters import InclusionEvaluator
 
