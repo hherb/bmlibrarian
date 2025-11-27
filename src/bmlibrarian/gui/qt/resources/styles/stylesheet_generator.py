@@ -150,6 +150,43 @@ class StylesheetGenerator:
             }}
         """
 
+    def text_edit_stylesheet(
+        self,
+        bg_color: str = "#FAFAFA",
+        text_color: str = "#212121",
+        border_color: str = "#E0E0E0",
+        focus_color: str = "#2196F3",
+        radius_key: str = 'radius_small',
+        padding_key: str = 'padding_small'
+    ) -> str:
+        """
+        Generate QPlainTextEdit/QTextEdit stylesheet with scaled dimensions.
+
+        Args:
+            bg_color: Background color
+            text_color: Text color
+            border_color: Border color
+            focus_color: Border color when focused
+            radius_key: Scale key for border radius
+            padding_key: Scale key for padding
+
+        Returns:
+            Formatted stylesheet string
+        """
+        s = self._s
+        return f"""
+            QPlainTextEdit, QTextEdit {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: {s[radius_key]}px;
+                padding: {s[padding_key]}px;
+            }}
+            QPlainTextEdit:focus, QTextEdit:focus {{
+                border: 1px solid {focus_color};
+            }}
+        """
+
     def drag_handle_stylesheet(
         self,
         color: str = "#888",
