@@ -35,5 +35,12 @@ ollama_models_params_context.csv
 
 # Data directory (temporary test data)
 data/
+
+#draft papers not for public review yet
 papers/
+
+# Benchmark test data (ground truth files - NOT ignored)
+!tests/benchmarks/data/
+# Benchmark results (generated during testing)
+tests/benchmarks/results/
 LONG_bmlibrarian_results_20251126_220515.json
