@@ -25,9 +25,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import pytest
+
+if TYPE_CHECKING:
+    from bmlibrarian.agents.systematic_review import SystematicReviewAgent
 
 from .benchmark_utils import (
     CochraneGroundTruth,
@@ -113,7 +116,7 @@ def load_all_ground_truths() -> List[CochraneGroundTruth]:
 # =============================================================================
 
 def run_benchmark(
-    agent,
+    agent: SystematicReviewAgent,
     ground_truth: CochraneGroundTruth,
     save_results: bool = True,
 ) -> BenchmarkResult:
