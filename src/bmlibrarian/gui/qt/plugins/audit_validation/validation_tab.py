@@ -21,8 +21,10 @@ from PySide6.QtWidgets import (
 from bmlibrarian.audit import (
     TargetType, ValidationStatus, Severity, ValidationCategory
 )
+from bmlibrarian.database import get_document_details
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import StylesheetGenerator
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+from bmlibrarian.gui.qt.widgets.document_view_widget import DocumentViewWidget, DocumentViewData
 
 from .data_manager import (
     AuditValidationDataManager,
@@ -114,6 +116,10 @@ class ValidationTabWidget(QWidget):
         right_panel = self._create_detail_panel()
         splitter.addWidget(right_panel)
 
+        # Connect tab change signal AFTER detail panel is created
+        # (detail panel creates category_combo which is accessed in _on_tab_changed)
+        self.item_tabs.currentChanged.connect(self._on_tab_changed)
+
         # Set initial splitter sizes using ratios (30% list, 70% detail)
         total_width = self.scale.get('control_width_xlarge', 1000)
         left_size = (total_width * SPLITTER_LEFT_RATIO) // 100
@@ -158,7 +164,8 @@ class ValidationTabWidget(QWidget):
 
         # Tab widget for different item types
         self.item_tabs = QTabWidget()
-        self.item_tabs.currentChanged.connect(self._on_tab_changed)
+        # Note: currentChanged signal is connected later in _setup_ui()
+        # after detail panel is created, to avoid accessing uninitialized widgets
 
         # Create tabs for each target type
         self.query_list = QListWidget()
@@ -198,28 +205,73 @@ class ValidationTabWidget(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Item detail area (scrollable)
-        detail_scroll = QScrollArea()
-        detail_scroll.setWidgetResizable(True)
-        detail_scroll.setFrameShape(QFrame.NoFrame)
-
-        self.detail_widget = QWidget()
-        self.detail_layout = QVBoxLayout(self.detail_widget)
-        self.detail_layout.setContentsMargins(
-            self.scale['padding_small'], 0, self.scale['padding_small'], 0
-        )
-
-        # Placeholder for item details
-        self.detail_content = QLabel("Select an item to view details")
-        self.detail_content.setAlignment(Qt.AlignCenter)
-        self.detail_content.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+        # Placeholder shown when no item selected
+        self.placeholder_label = QLabel("Select an item to view details")
+        self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
             font_size_key='font_medium', color="#999"
         ))
-        self.detail_layout.addWidget(self.detail_content)
-        self.detail_layout.addStretch()
+        layout.addWidget(self.placeholder_label)
 
-        detail_scroll.setWidget(self.detail_widget)
-        layout.addWidget(detail_scroll, 1)
+        # Main detail container (hidden until item selected)
+        self.detail_container = QWidget()
+        detail_container_layout = QVBoxLayout(self.detail_container)
+        detail_container_layout.setContentsMargins(0, 0, 0, 0)
+        detail_container_layout.setSpacing(self.scale['spacing_small'])
+
+        # Audit item info section (collapsible header with key info)
+        self.audit_info_group = QGroupBox("Audit Item Info")
+        self.audit_info_group.setStyleSheet(self.stylesheet_gen.custom("""
+            QGroupBox {{
+                font-size: {font_small}pt;
+                font-weight: bold;
+                border: 1px solid #CCC;
+                border-radius: {radius_small}px;
+                margin-top: {spacing_small}px;
+                padding: {padding_small}px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {padding_small}px;
+            }}
+        """))
+        audit_info_layout = QVBoxLayout(self.audit_info_group)
+        audit_info_layout.setContentsMargins(
+            self.scale['padding_small'], self.scale['padding_small'],
+            self.scale['padding_small'], self.scale['padding_small']
+        )
+
+        # Labels for audit item fields (reused, not recreated)
+        self.audit_header_label = QLabel()
+        self.audit_header_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+            font_size_key='font_medium', bold=True
+        ))
+        audit_info_layout.addWidget(self.audit_header_label)
+
+        self.audit_details_label = QLabel()
+        self.audit_details_label.setWordWrap(True)
+        self.audit_details_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+            font_size_key='font_small'
+        ))
+        audit_info_layout.addWidget(self.audit_details_label)
+
+        # AI reasoning section (shown for scores/citations)
+        self.reasoning_label = QLabel()
+        self.reasoning_label.setWordWrap(True)
+        self.reasoning_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+            font_size_key='font_small', color="#666"
+        ))
+        self.reasoning_label.hide()
+        audit_info_layout.addWidget(self.reasoning_label)
+
+        detail_container_layout.addWidget(self.audit_info_group)
+
+        # Document viewer widget (with tabs for Metadata, PDF, Full Text)
+        self.document_viewer = DocumentViewWidget()
+        detail_container_layout.addWidget(self.document_viewer, 1)
+
+        self.detail_container.hide()
+        layout.addWidget(self.detail_container, 1)
 
         # Validation controls panel
         validation_panel = self._create_validation_controls()
@@ -565,13 +617,11 @@ class ValidationTabWidget(QWidget):
 
     def _display_item_details(self, item: object) -> None:
         """Display details for the selected item."""
-        # Clear existing content
-        while self.detail_layout.count() > 0:
-            child = self.detail_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        # Show the detail container, hide placeholder
+        self.placeholder_label.hide()
+        self.detail_container.show()
 
-        # Create detail content based on item type
+        # Display audit item info based on type
         if isinstance(item, QueryAuditItem):
             self._display_query_details(item)
         elif isinstance(item, ScoreAuditItem):
@@ -583,170 +633,157 @@ class ValidationTabWidget(QWidget):
         elif isinstance(item, CounterfactualAuditItem):
             self._display_counterfactual_details(item)
 
-        self.detail_layout.addStretch()
+    def _load_document_into_viewer(self, document_id: int) -> None:
+        """Load a document into the document viewer widget."""
+        try:
+            doc_data = get_document_details(document_id)
+            if doc_data:
+                view_data = DocumentViewData(
+                    document_id=doc_data.get('id'),
+                    title=doc_data.get('title', ''),
+                    authors=doc_data.get('authors'),
+                    journal=doc_data.get('journal'),
+                    year=doc_data.get('year'),
+                    pmid=doc_data.get('pmid'),
+                    doi=doc_data.get('doi'),
+                    abstract=doc_data.get('abstract'),
+                    full_text=doc_data.get('full_text'),
+                    pdf_path=doc_data.get('pdf_filename'),
+                    pdf_url=doc_data.get('pdf_url'),
+                    publication_date=doc_data.get('publication_date')
+                )
+                self.document_viewer.set_document(view_data)
+                self.document_viewer.show()
+            else:
+                self.document_viewer.hide()
+                logger.warning(f"Document {document_id} not found")
+        except Exception as e:
+            logger.error(f"Error loading document {document_id}: {e}")
+            self.document_viewer.hide()
 
     def _display_query_details(self, item: QueryAuditItem) -> None:
         """Display query audit item details."""
-        self._add_detail_header(f"Generated Query #{item.query_id}")
+        self.audit_header_label.setText(f"Generated Query #{item.query_id}")
 
+        details = []
         if item.evaluator_name:
-            self._add_detail_field("Evaluator", item.evaluator_name)
-
-        self._add_detail_field("Human Edited", "Yes" if item.human_edited else "No")
-        self._add_detail_field("Documents Found", str(item.documents_found_count or 0))
-        self._add_detail_field("Created", item.created_at.strftime("%Y-%m-%d %H:%M"))
-
-        self._add_detail_section("Generated Query")
-        self._add_detail_text(item.query_text)
+            details.append(f"Evaluator: {item.evaluator_name}")
+        details.append(f"Human Edited: {'Yes' if item.human_edited else 'No'}")
+        details.append(f"Documents Found: {item.documents_found_count or 0}")
+        details.append(f"Created: {item.created_at.strftime('%Y-%m-%d %H:%M')}")
+        details.append(f"\nGenerated Query:\n{item.query_text}")
 
         if item.human_edited and item.original_ai_query:
-            self._add_detail_section("Original AI Query")
-            self._add_detail_text(item.original_ai_query)
+            details.append(f"\nOriginal AI Query:\n{item.original_ai_query}")
+
+        self.audit_details_label.setText("\n".join(details))
+        self.reasoning_label.hide()
+
+        # No document for queries
+        self.document_viewer.hide()
 
     def _display_score_details(self, item: ScoreAuditItem) -> None:
         """Display score audit item details."""
-        self._add_detail_header(f"Document Score #{item.scoring_id}")
+        self.audit_header_label.setText(f"Document Score #{item.scoring_id}")
 
-        self._add_detail_field("Relevance Score", f"{item.relevance_score}/5")
-        self._add_detail_field("Evaluator", item.evaluator_name)
-        self._add_detail_field("Scored At", item.scored_at.strftime("%Y-%m-%d %H:%M"))
+        details = [
+            f"Relevance Score: {item.relevance_score}/5",
+            f"Evaluator: {item.evaluator_name}",
+            f"Scored At: {item.scored_at.strftime('%Y-%m-%d %H:%M')}"
+        ]
+        self.audit_details_label.setText("\n".join(details))
 
-        if item.document_title:
-            self._add_detail_section("Document")
-            self._add_detail_field("Title", item.document_title)
-            if item.document_authors:
-                self._add_detail_field("Authors", item.document_authors[:100])
-            if item.document_year:
-                self._add_detail_field("Year", str(item.document_year))
-
+        # Show AI reasoning if available
         if item.reasoning:
-            self._add_detail_section("AI Reasoning")
-            self._add_detail_text(item.reasoning)
+            self.reasoning_label.setText(f"AI Reasoning: {item.reasoning}")
+            self.reasoning_label.show()
+        else:
+            self.reasoning_label.hide()
 
-        if item.document_abstract:
-            self._add_detail_section("Abstract")
-            self._add_detail_text(item.document_abstract)
+        # Load document into viewer
+        if item.document_id:
+            self._load_document_into_viewer(item.document_id)
+        else:
+            self.document_viewer.hide()
 
     def _display_citation_details(self, item: CitationAuditItem) -> None:
         """Display citation audit item details."""
-        self._add_detail_header(f"Extracted Citation #{item.citation_id}")
+        self.audit_header_label.setText(f"Extracted Citation #{item.citation_id}")
 
-        self._add_detail_field("Evaluator", item.evaluator_name)
+        details = [f"Evaluator: {item.evaluator_name}"]
         if item.relevance_confidence:
-            self._add_detail_field("Confidence", f"{item.relevance_confidence:.2f}")
+            details.append(f"Confidence: {item.relevance_confidence:.2f}")
         if item.human_review_status:
-            self._add_detail_field("Review Status", item.human_review_status)
-        self._add_detail_field("Extracted At", item.extracted_at.strftime("%Y-%m-%d %H:%M"))
+            details.append(f"Review Status: {item.human_review_status}")
+        details.append(f"Extracted At: {item.extracted_at.strftime('%Y-%m-%d %H:%M')}")
+        details.append(f"\nExtracted Passage:\n{item.passage}")
+        details.append(f"\nAI Summary:\n{item.summary}")
 
-        if item.document_title:
-            self._add_detail_section("Source Document")
-            self._add_detail_field("Title", item.document_title)
-            if item.document_authors:
-                self._add_detail_field("Authors", item.document_authors[:100])
+        self.audit_details_label.setText("\n".join(details))
+        self.reasoning_label.hide()
 
-        self._add_detail_section("Extracted Passage")
-        self._add_detail_text(item.passage)
-
-        self._add_detail_section("AI Summary")
-        self._add_detail_text(item.summary)
+        # Load source document into viewer
+        if item.document_id:
+            self._load_document_into_viewer(item.document_id)
+        else:
+            self.document_viewer.hide()
 
     def _display_report_details(self, item: ReportAuditItem) -> None:
         """Display report audit item details."""
-        self._add_detail_header(f"Generated Report #{item.report_id}")
+        self.audit_header_label.setText(f"Generated Report #{item.report_id}")
 
-        self._add_detail_field("Report Type", item.report_type.title())
+        details = [
+            f"Report Type: {item.report_type.title()}",
+        ]
         if item.evaluator_name:
-            self._add_detail_field("Evaluator", item.evaluator_name)
-        self._add_detail_field("Citations", str(item.citation_count or 0))
-        self._add_detail_field("Human Edited", "Yes" if item.human_edited else "No")
-        self._add_detail_field("Final Version", "Yes" if item.is_final else "No")
-        self._add_detail_field("Generated At", item.generated_at.strftime("%Y-%m-%d %H:%M"))
+            details.append(f"Evaluator: {item.evaluator_name}")
+        details.extend([
+            f"Citations: {item.citation_count or 0}",
+            f"Human Edited: {'Yes' if item.human_edited else 'No'}",
+            f"Final Version: {'Yes' if item.is_final else 'No'}",
+            f"Generated At: {item.generated_at.strftime('%Y-%m-%d %H:%M')}",
+            f"\nReport Content:\n{item.report_text}"
+        ])
 
-        self._add_detail_section("Report Content")
-        # Display full report text - no truncation per golden rules
-        self._add_detail_text(item.report_text)
+        self.audit_details_label.setText("\n".join(details))
+        self.reasoning_label.hide()
+
+        # No document for reports
+        self.document_viewer.hide()
 
     def _display_counterfactual_details(self, item: CounterfactualAuditItem) -> None:
         """Display counterfactual question details."""
-        self._add_detail_header(f"Counterfactual Question #{item.question_id}")
+        self.audit_header_label.setText(f"Counterfactual Question #{item.question_id}")
 
+        details = []
         if item.priority:
-            self._add_detail_field("Priority", item.priority.upper())
+            details.append(f"Priority: {item.priority.upper()}")
         if item.documents_found_count is not None:
-            self._add_detail_field("Documents Found", str(item.documents_found_count))
-
-        self._add_detail_section("Question")
-        self._add_detail_text(item.question_text)
+            details.append(f"Documents Found: {item.documents_found_count}")
+        details.append(f"\nQuestion:\n{item.question_text}")
 
         if item.target_claim:
-            self._add_detail_section("Target Claim")
-            self._add_detail_text(item.target_claim)
-
+            details.append(f"\nTarget Claim:\n{item.target_claim}")
         if item.query_generated:
-            self._add_detail_section("Generated Query")
-            self._add_detail_text(item.query_generated)
+            details.append(f"\nGenerated Query:\n{item.query_generated}")
 
-    def _add_detail_header(self, text: str) -> None:
-        """Add a header to the detail display."""
-        label = QLabel(text)
-        label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
-            font_size_key='font_large', bold=True
-        ))
-        self.detail_layout.addWidget(label)
+        self.audit_details_label.setText("\n".join(details))
+        self.reasoning_label.hide()
 
-    def _add_detail_section(self, text: str) -> None:
-        """Add a section header to the detail display."""
-        label = QLabel(text)
-        label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
-            font_size_key='font_medium', bold=True, color="#444"
-        ))
-        label.setContentsMargins(0, self.scale['spacing_medium'], 0, 0)
-        self.detail_layout.addWidget(label)
-
-    def _add_detail_field(self, name: str, value: str) -> None:
-        """Add a field-value pair to the detail display."""
-        layout = QHBoxLayout()
-        name_label = QLabel(f"{name}:")
-        name_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
-            font_size_key='font_normal', bold=True
-        ))
-        name_label.setFixedWidth(self.scale['control_width_small'])
-        layout.addWidget(name_label)
-
-        value_label = QLabel(value)
-        value_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
-            font_size_key='font_normal'
-        ))
-        value_label.setWordWrap(True)
-        layout.addWidget(value_label, 1)
-
-        self.detail_layout.addLayout(layout)
-
-    def _add_detail_text(self, text: str) -> None:
-        """Add a text block to the detail display."""
-        text_edit = QTextEdit()
-        text_edit.setPlainText(text)
-        text_edit.setReadOnly(True)
-        text_edit.setMaximumHeight(self.scale['control_height_xlarge'] * 4)
-        text_edit.setStyleSheet(self.stylesheet_gen.text_edit_stylesheet(
-            bg_color="#F5F5F5"
-        ))
-        self.detail_layout.addWidget(text_edit)
+        # No document for counterfactuals
+        self.document_viewer.hide()
 
     def _clear_detail_display(self) -> None:
         """Clear the detail display area."""
-        while self.detail_layout.count() > 0:
-            child = self.detail_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        # Hide detail container, show placeholder
+        self.detail_container.hide()
+        self.placeholder_label.show()
 
-        placeholder = QLabel("Select an item to view details")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet(self.stylesheet_gen.label_stylesheet(
-            font_size_key='font_medium', color="#999"
-        ))
-        self.detail_layout.addWidget(placeholder)
-        self.detail_layout.addStretch()
+        # Clear the labels
+        self.audit_header_label.setText("")
+        self.audit_details_label.setText("")
+        self.reasoning_label.setText("")
+        self.reasoning_label.hide()
 
         self.current_item = None
         self.save_btn.setEnabled(False)

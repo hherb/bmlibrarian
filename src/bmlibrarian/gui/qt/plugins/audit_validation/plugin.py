@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QWidget, QTabWidget, QVBoxLayout, QMessageBox
 
 import psycopg
 
-from bmlibrarian.database import DatabaseManager
+from bmlibrarian.database import DatabaseManager, PersistentConnection
 from bmlibrarian.config import BMLibrarianConfig
 
 from .data_manager import AuditValidationDataManager
@@ -35,6 +35,7 @@ class AuditValidationPlugin:
     def __init__(self):
         """Initialize the plugin."""
         self.db_manager: Optional[DatabaseManager] = None
+        self._persistent_conn: Optional[PersistentConnection] = None
         self.conn: Optional[psycopg.Connection] = None
         self.data_manager: Optional[AuditValidationDataManager] = None
         self.main_widget: Optional[QWidget] = None
@@ -67,8 +68,11 @@ class AuditValidationPlugin:
                 self.conn = conn
             else:
                 # Use DatabaseManager for connection (golden rule #5)
+                # For GUI plugins that need long-lived connections, we acquire
+                # a persistent connection from the pool
                 self.db_manager = DatabaseManager()
-                self.conn = self.db_manager.conn
+                self._persistent_conn = self.db_manager.acquire_persistent_connection()
+                self.conn = self._persistent_conn.connection
 
             self.data_manager = AuditValidationDataManager(self.conn)
             logger.info("Audit Validation plugin initialized successfully")
@@ -131,13 +135,25 @@ class AuditValidationPlugin:
 
     def cleanup(self) -> None:
         """Clean up plugin resources."""
+        # First, release the persistent connection back to the pool
+        if self._persistent_conn:
+            try:
+                self._persistent_conn.release()
+                self._persistent_conn = None
+                self.conn = None
+                logger.info("Audit Validation plugin persistent connection released")
+            except Exception as e:
+                logger.error(f"Error releasing persistent connection: {e}")
+
+        # Then close the database manager (which closes the pool)
         if self.db_manager:
             try:
                 self.db_manager.close()
-                logger.info("Audit Validation plugin connection closed")
+                logger.info("Audit Validation plugin database manager closed")
             except Exception as e:
-                logger.error(f"Error closing connection: {e}")
+                logger.error(f"Error closing database manager: {e}")
         elif self.conn and not self.conn.closed:
+            # Only close connection directly if it was passed in externally
             try:
                 self.conn.close()
                 logger.info("Audit Validation plugin connection closed")

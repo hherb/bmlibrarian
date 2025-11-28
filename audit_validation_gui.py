@@ -22,6 +22,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QInputDialog
 from PySide6.QtCore import Qt
+from psycopg.rows import dict_row
 
 from bmlibrarian.database import DatabaseManager
 from bmlibrarian.config import BMLibrarianConfig
@@ -118,11 +119,13 @@ class AuditValidationMainWindow(QMainWindow):
         try:
             # Use DatabaseManager for connection (golden rule #5)
             db_manager = DatabaseManager()
-            row = db_manager.execute_query(
-                "SELECT id FROM public.users WHERE username = %s",
-                (self.reviewer_name,),
-                fetch_one=True
-            )
+            with db_manager.get_connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT id FROM public.users WHERE username = %s",
+                        (self.reviewer_name,)
+                    )
+                    row = cur.fetchone()
             if row:
                 self.reviewer_id = row['id']
                 logger.info(f"Found reviewer ID: {self.reviewer_id}")
