@@ -88,6 +88,9 @@ class CitationEditorWidget(QWidget):
         self._connect_signals()
         self._setup_autosave()
 
+        # Load most recent document on startup
+        self._load_most_recent_document()
+
     def _setup_ui(self) -> None:
         """Set up the user interface."""
         s = self.scale
@@ -379,11 +382,11 @@ class CitationEditorWidget(QWidget):
         doc_id = doc_data.get('id') or doc_data.get('document_id')
         if doc_id:
             label = self._citation_manager.generate_label(doc_id)
-            self.editor.insert_citation(doc_id, label)
+            self._insert_citation_with_reference(doc_id, label)
 
     def _on_insert_citation(self, document_id: int, label: str) -> None:
         """Handle citation insertion."""
-        self.editor.insert_citation(document_id, label)
+        self._insert_citation_with_reference(document_id, label)
         self.editor.setFocus()
 
     def _on_insert_shortcut(self) -> None:
@@ -391,7 +394,28 @@ class CitationEditorWidget(QWidget):
         doc_id = self.document_panel.get_current_document_id()
         if doc_id:
             label = self._citation_manager.generate_label(doc_id)
-            self.editor.insert_citation(doc_id, label)
+            self._insert_citation_with_reference(doc_id, label)
+
+    def _insert_citation_with_reference(self, document_id: int, label: str) -> None:
+        """
+        Insert citation and add to References section if new.
+
+        If the citation is for a document not already cited, the reference
+        is automatically appended to the ## References section.
+
+        Args:
+            document_id: Database document ID
+            label: Human-readable citation label
+        """
+        # Check if this is a new citation before inserting
+        is_new = not self._citation_manager.is_citation_already_used(document_id)
+
+        # Insert the citation marker at cursor
+        self.editor.insert_citation(document_id, label)
+
+        # If this is a new citation, add to References section
+        if is_new:
+            self._add_reference_entry(document_id)
 
     def _on_back_to_search(self) -> None:
         """Handle back to search button."""
@@ -487,7 +511,8 @@ class CitationEditorWidget(QWidget):
 
     def _on_format_citations(self) -> None:
         """Format citations with reference list."""
-        text = self.editor.toPlainText()
+        # Strip existing References section before formatting
+        text = self._strip_references_section(self.editor.toPlainText())
         formatted = self._citation_manager.format_full_document(text)
 
         # Show in preview
@@ -514,9 +539,12 @@ class CitationEditorWidget(QWidget):
 
         if file_path:
             try:
-                formatted = self._citation_manager.format_full_document(
-                    self.editor.toPlainText()
-                )
+                # Get text and remove existing References section
+                text = self._strip_references_section(self.editor.toPlainText())
+
+                # Format with numbered citations and proper reference list
+                formatted = self._citation_manager.format_full_document(text)
+
                 Path(file_path).write_text(formatted, encoding='utf-8')
                 self.document_exported.emit(file_path)
                 QMessageBox.information(
@@ -555,9 +583,9 @@ class CitationEditorWidget(QWidget):
         """Copy formatted document to clipboard."""
         from PySide6.QtWidgets import QApplication
 
-        formatted = self._citation_manager.format_full_document(
-            self.editor.toPlainText()
-        )
+        # Strip existing References section before formatting
+        text = self._strip_references_section(self.editor.toPlainText())
+        formatted = self._citation_manager.format_full_document(text)
         QApplication.clipboard().setText(formatted)
 
     def _copy_raw(self) -> None:
@@ -658,3 +686,118 @@ class CitationEditorWidget(QWidget):
         self.search_panel.set_search_query(query)
         self.search_panel.search(query)
         self.right_tabs.setCurrentIndex(0)
+
+    def _load_most_recent_document(self) -> None:
+        """
+        Load the most recently edited document on startup.
+
+        This allows users to continue where they left off without
+        needing to manually open their previous work.
+        """
+        try:
+            document = self._document_store.get_most_recent_document()
+            if document:
+                self._document = document
+                self.editor.setPlainText(document.content)
+                self.title_input.setText(document.title)
+                self._has_unsaved_changes = False
+                self._update_unsaved_indicator()
+
+                # Update citation manager with loaded content
+                self._citation_manager.update_text(document.content)
+
+                # Update word count
+                words = len(document.content.split())
+                self.word_label.setText(f"Words: {words:,}")
+
+                logger.info(f"Loaded most recent document: {document.id} - {document.title}")
+            else:
+                logger.debug("No existing documents found, starting with blank document")
+        except Exception as e:
+            # Don't fail startup if we can't load - just log and continue with blank
+            logger.warning(f"Could not load most recent document: {e}")
+
+    def _add_reference_entry(self, document_id: int) -> None:
+        """
+        Add a reference entry to the References section.
+
+        If no References section exists, one is created at the end of the document.
+        The reference entry is appended as a bullet point.
+
+        Args:
+            document_id: Database document ID
+        """
+        import re
+
+        text = self.editor.toPlainText()
+        reference_entry = self._citation_manager.generate_reference_entry(document_id)
+
+        # Find the References section
+        references_pattern = r'^## References\s*$'
+        match = re.search(references_pattern, text, re.MULTILINE)
+
+        if match:
+            # References section exists - find where to append
+            # Look for the end of the references section (next heading or end of doc)
+            section_start = match.end()
+
+            # Find the next heading (## or higher) after References
+            next_heading = re.search(r'^##?\s+\w', text[section_start:], re.MULTILINE)
+
+            if next_heading:
+                # Insert before the next heading
+                insert_position = section_start + next_heading.start()
+                # Insert with proper spacing
+                new_text = text[:insert_position].rstrip() + "\n" + reference_entry + "\n\n" + text[insert_position:]
+            else:
+                # Append to end of document
+                new_text = text.rstrip() + "\n" + reference_entry + "\n"
+        else:
+            # No References section - create one at the end
+            new_text = text.rstrip() + "\n\n## References\n\n" + reference_entry + "\n"
+
+        # Update editor without triggering cursor position changes
+        cursor = self.editor.textCursor()
+        cursor_pos = cursor.position()
+
+        self.editor.setPlainText(new_text)
+
+        # Restore cursor position (may have shifted slightly)
+        cursor = self.editor.textCursor()
+        cursor.setPosition(min(cursor_pos, len(new_text)))
+        self.editor.setTextCursor(cursor)
+
+    def _strip_references_section(self, text: str) -> str:
+        """
+        Remove the ## References section from text for export formatting.
+
+        The reference builder will regenerate a properly numbered
+        reference list during export.
+
+        Args:
+            text: Document text with ## References section
+
+        Returns:
+            Text with References section removed
+        """
+        import re
+
+        # Find the References section
+        references_pattern = r'^## References\s*$'
+        match = re.search(references_pattern, text, re.MULTILINE)
+
+        if not match:
+            return text
+
+        section_start = match.start()
+
+        # Find the next heading (## or higher) after References
+        next_heading = re.search(r'^##?\s+\w', text[match.end():], re.MULTILINE)
+
+        if next_heading:
+            # Remove only the References section
+            section_end = match.end() + next_heading.start()
+            return text[:section_start].rstrip() + "\n\n" + text[section_end:].lstrip()
+        else:
+            # References is at the end - remove to end of document
+            return text[:section_start].rstrip()

@@ -481,6 +481,60 @@ class DocumentStore:
 
         return row is not None
 
+    def get_most_recent_document(
+        self,
+        user_id: Optional[int] = None
+    ) -> Optional[WritingDocument]:
+        """
+        Get the most recently updated document.
+
+        Args:
+            user_id: Optional filter by user
+
+        Returns:
+            Most recent WritingDocument or None if no documents exist
+        """
+        db = self._get_db_manager()
+
+        with db.get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    cur.execute(
+                        """
+                        SELECT id, title, content, metadata, created_at, updated_at, user_id
+                        FROM writing.documents
+                        WHERE user_id = %s
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                        """,
+                        (user_id,)
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, title, content, metadata, created_at, updated_at, user_id
+                        FROM writing.documents
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                        """
+                    )
+                row = cur.fetchone()
+
+        if not row:
+            return None
+
+        metadata = row[3] if isinstance(row[3], dict) else json.loads(row[3] or '{}')
+
+        return WritingDocument(
+            id=row[0],
+            title=row[1],
+            content=row[2],
+            metadata=metadata,
+            created_at=row[4],
+            updated_at=row[5],
+            user_id=row[6]
+        )
+
     def search_documents(
         self,
         query: str,

@@ -301,3 +301,54 @@ class CitationManager(QObject):
                 return citation
 
         return None
+
+    def is_citation_already_used(self, document_id: int) -> bool:
+        """
+        Check if a citation for a document is already in the text.
+
+        Args:
+            document_id: Database document ID
+
+        Returns:
+            True if citation already exists
+        """
+        existing_ids = self._parser.get_unique_document_ids(self._current_text)
+        return document_id in existing_ids
+
+    def generate_reference_entry(self, document_id: int) -> str:
+        """
+        Generate a formatted reference entry for a document.
+
+        Uses the current citation style to format the reference.
+        The reference is not numbered (numbers are assigned during export).
+
+        Args:
+            document_id: Database document ID
+
+        Returns:
+            Formatted reference string (e.g., "- Smith J, et al. Title...")
+        """
+        preview = self._builder.get_citation_preview(document_id)
+
+        # Build a simple reference line without numbering
+        parts = []
+
+        authors = preview.get('authors', 'Unknown')
+        if authors:
+            parts.append(authors + ".")
+
+        title = preview.get('title', 'Untitled')
+        if title:
+            if not title.endswith('.'):
+                title += '.'
+            parts.append(title)
+
+        journal = preview.get('journal', '')
+        year = preview.get('year', '')
+        if journal or year:
+            journal_part = f"*{journal}*" if journal else ""
+            if year:
+                journal_part += f" {year}." if journal_part else f"{year}."
+            parts.append(journal_part)
+
+        return "- " + " ".join(parts)
