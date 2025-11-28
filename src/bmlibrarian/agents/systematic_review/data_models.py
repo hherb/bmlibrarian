@@ -823,11 +823,14 @@ class PaperData:
                 # Fall back to simple split
                 authors = [a.strip() for a in authors.split(",") if a.strip()]
 
+        # Extract year from multiple possible sources
+        year = cls._extract_year_from_row(row)
+
         return cls(
             document_id=row.get("id") or row.get("document_id"),
             title=row.get("title", ""),
             authors=authors,
-            year=row.get("year") or row.get("publication_year", 0),
+            year=year,
             journal=row.get("journal") or row.get("journal_name"),
             abstract=row.get("abstract"),
             doi=row.get("doi"),
@@ -837,6 +840,58 @@ class PaperData:
             pdf_path=row.get("pdf_path") or row.get("local_pdf_path"),
             source=row.get("source") or row.get("data_source"),
         )
+
+    @staticmethod
+    def _extract_year_from_row(row: Dict[str, Any]) -> int:
+        """
+        Extract publication year from database row.
+
+        Tries multiple fields in order of preference:
+        1. 'year' - if SQL already extracted it via EXTRACT(YEAR FROM ...)
+        2. 'publication_year' - legacy field name
+        3. 'publication_date' - date object or string to extract year from
+
+        Args:
+            row: Database row as dictionary
+
+        Returns:
+            Publication year as integer, or 0 if not found
+        """
+        # Try 'year' field first (pre-extracted by SQL query)
+        year_val = row.get("year")
+        if year_val is not None and isinstance(year_val, int) and year_val > 0:
+            return year_val
+
+        # Try 'publication_year' (legacy field)
+        pub_year = row.get("publication_year")
+        if pub_year is not None and isinstance(pub_year, int) and pub_year > 0:
+            return pub_year
+
+        # Try extracting from 'publication_date'
+        pub_date = row.get("publication_date")
+        if pub_date is not None:
+            # Handle datetime.date or datetime.datetime objects
+            if hasattr(pub_date, 'year'):
+                year = pub_date.year
+                if 1900 <= year <= 2100:  # Sanity check
+                    return year
+
+            # Handle string format (YYYY-MM-DD or YYYY)
+            if isinstance(pub_date, str) and pub_date.strip():
+                try:
+                    date_str = pub_date.strip()
+                    if '-' in date_str:
+                        year_str = date_str.split('-')[0]
+                    else:
+                        year_str = date_str[:4]
+                    year = int(year_str)
+                    if 1900 <= year <= 2100:  # Sanity check
+                        return year
+                except (ValueError, IndexError):
+                    pass
+
+        # Fallback to 0 (unknown year)
+        return 0
 
 
 @dataclass

@@ -60,11 +60,11 @@ REPORT_FORMAT_VERSION = "1.0.0"
 
 # Display length limits for report formatting
 # These control truncation of text fields in tables and summaries
-MAX_QUERY_TEXT_DISPLAY_LENGTH = 50  # Max chars for query text in search strategy tables
-MAX_PAPERS_PER_EXCLUSION_STAGE = 20  # Max papers shown per exclusion stage in markdown
-MAX_TITLE_DISPLAY_LENGTH_EXCLUDED = 50  # Max chars for title in excluded papers tables
-MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN = 40  # Max chars for title in uncertain papers tables
-MAX_RATIONALE_DISPLAY_LENGTH = 30  # Max chars for rationale notes in tables
+# Note: Per the golden rules, we never truncate LISTS without explicit user request
+# These are for TEXT field truncation only (e.g., long titles in table cells)
+MAX_QUERY_TEXT_DISPLAY_LENGTH = 100  # Max chars for query text in search strategy tables
+MAX_TITLE_DISPLAY_LENGTH_TABLE = 80  # Max chars for title in table cells
+MAX_RATIONALE_DISPLAY_LENGTH_TABLE = 60  # Max chars for rationale in table cells
 
 # Markdown formatting
 MD_H1 = "#"
@@ -721,7 +721,10 @@ class Reporter:
     def _format_excluded_papers_section(
         self, excluded_papers: List[Dict[str, Any]]
     ) -> List[str]:
-        """Format excluded papers section."""
+        """Format excluded papers section.
+
+        Note: Per the golden rules, we show ALL papers - no truncation.
+        """
         lines = [
             f"{MD_H2} Excluded Papers ({len(excluded_papers)})",
             "",
@@ -741,17 +744,17 @@ class Reporter:
             lines.append("| Title | Year | Reason |")
             lines.append("|-------|------|--------|")
 
-            for paper in papers[:MAX_PAPERS_PER_EXCLUSION_STAGE]:
+            # Show ALL papers - no truncation per golden rules
+            for paper in papers:
                 raw_title = paper.get("title", "Unknown")
-                title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_EXCLUDED]
-                if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_EXCLUDED:
+                # Truncate only the text field for table display, not the list
+                title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_TABLE]
+                if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_TABLE:
                     title += "..."
                 year = paper.get("year", "N/A")
-                reasons = "; ".join(paper.get("exclusion_reasons", [])[:2])
+                # Show all exclusion reasons, joined by semicolon
+                reasons = "; ".join(paper.get("exclusion_reasons", []))
                 lines.append(f"| {title} | {year} | {reasons} |")
-
-            if len(papers) > MAX_PAPERS_PER_EXCLUSION_STAGE:
-                lines.append(f"| *... and {len(papers) - MAX_PAPERS_PER_EXCLUSION_STAGE} more* | | |")
 
             lines.append("")
 
@@ -760,7 +763,10 @@ class Reporter:
     def _format_uncertain_papers_section(
         self, uncertain_papers: List[Dict[str, Any]]
     ) -> List[str]:
-        """Format uncertain papers section."""
+        """Format uncertain papers section.
+
+        Note: Per the golden rules, we show ALL papers - no truncation.
+        """
         lines = [
             f"{MD_H2} Papers Requiring Human Review ({len(uncertain_papers)})",
             "",
@@ -770,15 +776,20 @@ class Reporter:
             "|-------|------|-----------------|-------|",
         ]
 
+        # Show ALL papers - no truncation per golden rules
         for paper in uncertain_papers:
             raw_title = paper.get("title", "Unknown")
-            title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN]
-            if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_UNCERTAIN:
+            # Truncate only the text field for table display, not the list
+            title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_TABLE]
+            if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_TABLE:
                 title += "..."
             year = paper.get("year", "N/A")
             score = paper.get("relevance_score", "N/A")
             raw_rationale = paper.get("rationale", "")
-            rationale = raw_rationale[:MAX_RATIONALE_DISPLAY_LENGTH]
+            # Truncate rationale for table display
+            rationale = raw_rationale[:MAX_RATIONALE_DISPLAY_LENGTH_TABLE]
+            if len(raw_rationale) > MAX_RATIONALE_DISPLAY_LENGTH_TABLE:
+                rationale += "..."
             lines.append(f"| {title} | {year} | {score} | {rationale} |")
 
         lines.append("")
