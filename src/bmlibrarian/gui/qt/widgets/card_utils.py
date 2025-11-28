@@ -306,3 +306,28 @@ def format_relevance_score(score: Optional[float], max_score: float = 5.0) -> st
         return ""
 
     return f"Relevance Score: {score:.1f}/{max_score:.0f}"
+
+
+def format_similarity_score(score: Optional[float]) -> str:
+    """
+    Format semantic similarity score for display.
+
+    Similarity scores are in 0-1 range, displayed as percentage.
+
+    Args:
+        score: Similarity score value (0.0 to 1.0)
+
+    Returns:
+        Formatted similarity string
+
+    Examples:
+        >>> format_similarity_score(0.85)
+        'Similarity: 85%'
+        >>> format_similarity_score(None)
+        ''
+    """
+    if score is None:
+        return ""
+
+    percentage = score * 100
+    return f"Similarity: {percentage:.0f}%"

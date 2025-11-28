@@ -19,6 +19,7 @@ from .card_utils import (
     format_journal_year,
     format_document_ids,
     format_relevance_score,
+    format_similarity_score,
     html_escape
 )
 from ..core.document_receiver_registry import DocumentReceiverRegistry
@@ -110,12 +111,21 @@ class DocumentCard(QFrame):
             journal_label.setObjectName("journal")
             layout.addWidget(journal_label)
 
-        # Relevance score (if available)
-        score_text = format_relevance_score(self.document_data.get("relevance_score"))
-        if score_text:
-            score_label = QLabel(score_text)
-            score_label.setObjectName("score")
-            layout.addWidget(score_label)
+        # Similarity score (if available, from semantic search)
+        similarity = self.document_data.get("similarity")
+        if similarity is not None:
+            sim_text = format_similarity_score(similarity)
+            if sim_text:
+                sim_label = QLabel(sim_text)
+                sim_label.setObjectName("score")
+                layout.addWidget(sim_label)
+        else:
+            # Relevance score (if available, from scoring agent)
+            score_text = format_relevance_score(self.document_data.get("relevance_score"))
+            if score_text:
+                score_label = QLabel(score_text)
+                score_label.setObjectName("score")
+                layout.addWidget(score_label)
 
         # PMID/DOI
         ids_text = format_document_ids(

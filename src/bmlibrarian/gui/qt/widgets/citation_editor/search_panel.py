@@ -307,23 +307,74 @@ class CitationSearchPanel(QWidget):
         """
         Handle search results.
 
+        Deduplicates by document ID and sorts by similarity score (highest first).
+
         Args:
             results: List of document dictionaries
         """
         self.progress_bar.hide()
         self.search_btn.setEnabled(True)
 
-        self._search_results = results
-        self._display_results(results)
+        # Deduplicate by document ID, keeping highest similarity
+        deduped = self._deduplicate_results(results)
+
+        self._search_results = deduped
+        self._display_results(deduped)
 
         # Update label
-        count = len(results)
+        count = len(deduped)
+        original_count = len(results)
         if count == 0:
             self.results_label.setText("No results found")
         elif count == 1:
             self.results_label.setText("1 result found")
+        elif count < original_count:
+            self.results_label.setText(f"{count} unique results (from {original_count})")
         else:
             self.results_label.setText(f"{count} results found")
+
+    def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Deduplicate results by document ID, keeping highest similarity score.
+
+        Args:
+            results: List of document dictionaries
+
+        Returns:
+            Deduplicated list sorted by similarity (highest first)
+        """
+        if not results:
+            return results
+
+        # Track best result for each document ID
+        best_by_id: Dict[int, Dict[str, Any]] = {}
+
+        for result in results:
+            doc_id = result.get('id') or result.get('document_id')
+            if doc_id is None:
+                continue
+
+            # Get similarity score (semantic) or relevance_score (keyword)
+            score = result.get('similarity') or result.get('relevance_score') or 0
+
+            if doc_id not in best_by_id:
+                best_by_id[doc_id] = result
+            else:
+                existing_score = (
+                    best_by_id[doc_id].get('similarity') or
+                    best_by_id[doc_id].get('relevance_score') or 0
+                )
+                if score > existing_score:
+                    best_by_id[doc_id] = result
+
+        # Sort by similarity/relevance score (highest first)
+        deduped = list(best_by_id.values())
+        deduped.sort(
+            key=lambda x: x.get('similarity') or x.get('relevance_score') or 0,
+            reverse=True
+        )
+
+        return deduped
 
     def _on_search_error(self, error: str) -> None:
         """

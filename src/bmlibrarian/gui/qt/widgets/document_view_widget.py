@@ -22,7 +22,7 @@ from PySide6.QtGui import QFont
 
 from ..resources.styles import get_font_scale, StylesheetGenerator
 from .markdown_viewer import MarkdownViewer
-from .pdf_viewer import PDFViewerWidget
+from .pdf_text_viewer import PDFTextViewerWidget
 
 logger = logging.getLogger(__name__)
 
@@ -386,8 +386,8 @@ class PDFViewerTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # PDF viewer widget (includes navigation and zoom controls)
-        self.pdf_viewer = PDFViewerWidget()
+        # PDF text viewer widget with text selection support
+        self.pdf_viewer = PDFTextViewerWidget()
         layout.addWidget(self.pdf_viewer)
 
         # Placeholder for when no PDF is loaded
