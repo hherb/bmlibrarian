@@ -1292,12 +1292,30 @@ class SystematicReviewAgent(BaseAgent):
         """
         from bmlibrarian.database import fetch_documents_by_ids
 
+        # Validate this is a proper checkpoint file (not a final report)
+        checkpoint_type = checkpoint_data.get("checkpoint_type")
+        if not checkpoint_type:
+            # This might be a final report JSON, not a checkpoint file
+            if "metadata" in checkpoint_data and "search_strategy" in checkpoint_data:
+                raise ValueError(
+                    "This appears to be a final report file, not a checkpoint file. "
+                    "Please select a checkpoint file (e.g., *_search_strategy.json "
+                    "or *_initial_results.json) to resume from."
+                )
+            raise ValueError(
+                "Invalid checkpoint file: missing 'checkpoint_type' field. "
+                "Please select a valid checkpoint file."
+            )
+
         # Restore criteria
         criteria_data = checkpoint_data.get("criteria")
         if criteria_data:
             self._criteria = SearchCriteria.from_dict(criteria_data)
         else:
-            raise ValueError("Checkpoint missing required 'criteria' data")
+            raise ValueError(
+                f"Checkpoint missing required 'criteria' data. "
+                f"Checkpoint type: {checkpoint_type}"
+            )
 
         # Restore weights
         weights_data = checkpoint_data.get("weights")

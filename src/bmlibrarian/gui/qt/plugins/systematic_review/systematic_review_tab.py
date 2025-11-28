@@ -46,6 +46,7 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
     StylesheetGenerator,
 )
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale, scale_px
+from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,8 @@ class SystematicReviewTabWidget(QWidget):
         super().__init__(parent)
         self._worker: Optional[ReviewWorker] = None
         self._current_checkpoint_path: Optional[str] = None
-        self._review_directory: Path = Path.home() / "systematic_reviews"
+        # Use the same default directory as the agent config
+        self._review_directory: Path = Path(DEFAULT_OUTPUT_DIR).expanduser()
 
         self._setup_ui()
         self._connect_signals()
@@ -568,7 +570,17 @@ class SystematicReviewTabWidget(QWidget):
                 with open(checkpoint_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                checkpoint_type = data.get("checkpoint_type", "unknown")
+                checkpoint_type = data.get("checkpoint_type")
+
+                # Skip files that aren't valid checkpoint files
+                # (e.g., final report JSONs, PRISMA files, etc.)
+                if checkpoint_type not in CHECKPOINT_TYPES:
+                    logger.debug(
+                        f"Skipping non-checkpoint file: {checkpoint_path.name} "
+                        f"(type: {checkpoint_type})"
+                    )
+                    continue
+
                 timestamp = data.get("timestamp", "unknown")
                 review_id = data.get("review_id", "unknown")[:8]
 
