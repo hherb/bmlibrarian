@@ -428,6 +428,35 @@ def build_criteria_from_args(args: argparse.Namespace) -> SearchCriteria:
     )
 
 
+def apply_weight_overrides(
+    weights: ScoringWeights, args: argparse.Namespace
+) -> ScoringWeights:
+    """
+    Apply command-line weight overrides to existing weights.
+
+    Creates a new ScoringWeights instance with any command-line specified
+    weight values overriding the base weights. Only relevance_weight and
+    quality_weight can be overridden via CLI.
+
+    Args:
+        weights: Base ScoringWeights to override
+        args: Parsed arguments with potential weight overrides
+
+    Returns:
+        New ScoringWeights with overrides applied, or original if no overrides
+    """
+    overrides: Dict[str, float] = {}
+
+    if args.relevance_weight is not None:
+        overrides["relevance"] = args.relevance_weight
+    if args.quality_weight is not None:
+        overrides["study_quality"] = args.quality_weight
+
+    if overrides:
+        return ScoringWeights(**{**weights.to_dict(), **overrides})
+    return weights
+
+
 def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
     """
     Build ScoringWeights from command-line arguments.
@@ -450,32 +479,7 @@ def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
     # If weights file specified, load from file (highest priority)
     if args.weights_file:
         weights = load_weights_from_file(args.weights_file)
-
-        # Override with command-line args if provided
-        if args.relevance_weight is not None:
-            weights = ScoringWeights(
-                relevance=args.relevance_weight,
-                study_quality=weights.study_quality,
-                methodological_rigor=weights.methodological_rigor,
-                sample_size=weights.sample_size,
-                recency=weights.recency,
-                replication_status=weights.replication_status,
-                paper_weight=weights.paper_weight,
-                source_reliability=weights.source_reliability,
-            )
-        if args.quality_weight is not None:
-            weights = ScoringWeights(
-                relevance=weights.relevance,
-                study_quality=args.quality_weight,
-                methodological_rigor=weights.methodological_rigor,
-                sample_size=weights.sample_size,
-                recency=weights.recency,
-                replication_status=weights.replication_status,
-                paper_weight=weights.paper_weight,
-                source_reliability=weights.source_reliability,
-            )
-
-        return weights
+        return apply_weight_overrides(weights, args)
 
     # Check for weight preset
     preset = getattr(args, "weight_preset", "balanced")
@@ -498,30 +502,7 @@ def build_weights_from_args(args: argparse.Namespace) -> ScoringWeights:
         )
 
     # Apply command-line overrides if provided
-    if args.relevance_weight is not None:
-        weights = ScoringWeights(
-            relevance=args.relevance_weight,
-            study_quality=weights.study_quality,
-            methodological_rigor=weights.methodological_rigor,
-            sample_size=weights.sample_size,
-            recency=weights.recency,
-            replication_status=weights.replication_status,
-            paper_weight=weights.paper_weight,
-            source_reliability=weights.source_reliability,
-        )
-    if args.quality_weight is not None:
-        weights = ScoringWeights(
-            relevance=weights.relevance,
-            study_quality=args.quality_weight,
-            methodological_rigor=weights.methodological_rigor,
-            sample_size=weights.sample_size,
-            recency=weights.recency,
-            replication_status=weights.replication_status,
-            paper_weight=weights.paper_weight,
-            source_reliability=weights.source_reliability,
-        )
-
-    return weights
+    return apply_weight_overrides(weights, args)
 
 
 def get_output_dir(args: argparse.Namespace, config: SystematicReviewConfig) -> Path:

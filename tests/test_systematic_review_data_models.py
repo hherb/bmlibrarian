@@ -316,6 +316,19 @@ class TestScoringWeights:
         assert weights.paper_weight == DEFAULT_WEIGHT_PAPER_WEIGHT
         assert weights.source_reliability == DEFAULT_WEIGHT_SOURCE_RELIABILITY
 
+    def test_all_presets_valid(self) -> None:
+        """Test all weight presets are mathematically valid (sum to 1.0)."""
+        presets = [
+            ("balanced", ScoringWeights()),
+            ("cochrane_focused", ScoringWeights.cochrane_focused()),
+            ("practical_focused", ScoringWeights.practical_focused()),
+        ]
+        for preset_name, preset in presets:
+            assert preset.validate(), (
+                f"Preset '{preset_name}' weights don't sum to 1.0: "
+                f"sum={sum(preset.to_dict().values()):.4f}"
+            )
+
 
 # =============================================================================
 # PaperData Tests
