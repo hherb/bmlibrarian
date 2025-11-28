@@ -32,7 +32,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtCore import Qt
+
+
+class SystematicReviewMainWindow(QMainWindow):
+    """Main window with proper cleanup handling for worker threads."""
+
+    def __init__(self) -> None:
+        """Initialize the main window."""
+        super().__init__()
+        self._tab_widget = None
+
+    def set_tab_widget(self, tab_widget) -> None:
+        """Set the tab widget reference for cleanup."""
+        self._tab_widget = tab_widget
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Handle window close event with proper cleanup."""
+        if self._tab_widget is not None:
+            self._tab_widget.cleanup()
+        super().closeEvent(event)
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -84,8 +104,8 @@ def main() -> int:
         logger.error(f"Failed to import GUI components: {e}")
         return 1
 
-    # Create main window
-    window = QMainWindow()
+    # Create main window with cleanup handling
+    window = SystematicReviewMainWindow()
     window.setWindowTitle("BMLibrarian - Systematic Review")
     window.resize(1200, 800)
 
@@ -95,6 +115,7 @@ def main() -> int:
     layout.setContentsMargins(0, 0, 0, 0)
 
     tab_widget = SystematicReviewTabWidget(parent=central_widget)
+    window.set_tab_widget(tab_widget)
 
     # Set the review directory
     tab_widget.review_dir_edit.setText(str(review_dir))
