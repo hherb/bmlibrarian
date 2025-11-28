@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
     StylesheetGenerator,
 )
-from bmlibrarian.gui.qt.resources.styles.dpi_scale import DPIScale
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale, scale_px
 
 logger = logging.getLogger(__name__)
 
@@ -251,8 +251,9 @@ class SystematicReviewTabWidget(QWidget):
     def _setup_ui(self) -> None:
         """Set up the user interface."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(*DPIScale.margins(8, 8, 8, 8))
-        layout.setSpacing(DPIScale.scale(8))
+        scaled_margin = scale_px(8)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        layout.setSpacing(scale_px(8))
 
         # Main splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -266,7 +267,7 @@ class SystematicReviewTabWidget(QWidget):
         splitter.addWidget(right_panel)
 
         # Set initial splitter sizes (40% left, 60% right)
-        splitter.setSizes([DPIScale.scale(400), DPIScale.scale(600)])
+        splitter.setSizes([scale_px(400), scale_px(600)])
 
         layout.addWidget(splitter)
 
@@ -275,7 +276,7 @@ class SystematicReviewTabWidget(QWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(DPIScale.scale(8))
+        layout.setSpacing(scale_px(8))
 
         # Tab widget for New Review vs Resume
         tab_widget = QTabWidget()
@@ -300,7 +301,7 @@ class SystematicReviewTabWidget(QWidget):
         """Create the new review input widget."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(DPIScale.scale(6))
+        layout.setSpacing(scale_px(6))
 
         # Research question
         layout.addWidget(QLabel("Research Question:"))
@@ -309,7 +310,7 @@ class SystematicReviewTabWidget(QWidget):
             "Enter your research question...\n"
             "e.g., What is the efficacy of metformin for type 2 diabetes?"
         )
-        self.research_question_edit.setMaximumHeight(DPIScale.scale(100))
+        self.research_question_edit.setMaximumHeight(scale_px(100))
         layout.addWidget(self.research_question_edit)
 
         # Purpose
@@ -329,7 +330,7 @@ class SystematicReviewTabWidget(QWidget):
             "Randomized controlled trials\n"
             "Published after 2015"
         )
-        self.inclusion_edit.setMaximumHeight(DPIScale.scale(80))
+        self.inclusion_edit.setMaximumHeight(scale_px(80))
         layout.addWidget(self.inclusion_edit)
 
         # Exclusion criteria
@@ -340,7 +341,7 @@ class SystematicReviewTabWidget(QWidget):
             "Case reports\n"
             "Non-English language"
         )
-        self.exclusion_edit.setMaximumHeight(DPIScale.scale(80))
+        self.exclusion_edit.setMaximumHeight(scale_px(80))
         layout.addWidget(self.exclusion_edit)
 
         # Output directory
@@ -372,7 +373,7 @@ class SystematicReviewTabWidget(QWidget):
         """Create the checkpoint resume widget."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setSpacing(DPIScale.scale(6))
+        layout.setSpacing(scale_px(6))
 
         # Directory selection
         dir_layout = QHBoxLayout()
@@ -462,7 +463,7 @@ class SystematicReviewTabWidget(QWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(DPIScale.scale(8))
+        layout.setSpacing(scale_px(8))
 
         # Progress section
         progress_group = QGroupBox("Progress")
