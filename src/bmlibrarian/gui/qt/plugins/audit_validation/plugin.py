@@ -7,13 +7,13 @@ Registers the audit validation tab with the Qt plugin system.
 import logging
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget, QTabWidget, QVBoxLayout, QMessageBox
+from PySide6.QtWidgets import QWidget, QTabWidget, QVBoxLayout, QLabel
 
 import psycopg
 
 from bmlibrarian.database import DatabaseManager, PersistentConnection
-from bmlibrarian.config import BMLibrarianConfig
 
+from ...plugins.base_tab import BaseTabPlugin, TabPluginMetadata
 from .data_manager import AuditValidationDataManager
 from .validation_tab import ValidationTabWidget
 from .statistics_widget import StatisticsWidget
@@ -21,7 +21,7 @@ from .statistics_widget import StatisticsWidget
 logger = logging.getLogger(__name__)
 
 
-class AuditValidationPlugin:
+class AuditValidationPlugin(BaseTabPlugin):
     """
     Plugin for the Audit Trail Validation GUI.
 
@@ -29,18 +29,34 @@ class AuditValidationPlugin:
     automated evaluations in the audit trail.
     """
 
-    PLUGIN_NAME = "Audit Validation"
-    PLUGIN_DESCRIPTION = "Validate audit trail items for benchmarking and fine-tuning"
-
     def __init__(self):
         """Initialize the plugin."""
+        super().__init__()
         self.db_manager: Optional[DatabaseManager] = None
         self._persistent_conn: Optional[PersistentConnection] = None
         self.conn: Optional[psycopg.Connection] = None
         self.data_manager: Optional[AuditValidationDataManager] = None
         self.main_widget: Optional[QWidget] = None
+        self.validation_tab: Optional[ValidationTabWidget] = None
+        self.statistics_tab: Optional[StatisticsWidget] = None
         self.reviewer_id: Optional[int] = None
         self.reviewer_name: str = "Anonymous"
+
+    def get_metadata(self) -> TabPluginMetadata:
+        """
+        Return plugin metadata.
+
+        Returns:
+            TabPluginMetadata describing this plugin
+        """
+        return TabPluginMetadata(
+            plugin_id="audit_validation",
+            display_name="Audit Validation",
+            description="Validate audit trail items for benchmarking and fine-tuning",
+            version="1.0.0",
+            icon=None,
+            requires=[]
+        )
 
     def set_reviewer(self, reviewer_id: Optional[int], reviewer_name: str) -> None:
         """
@@ -53,33 +69,27 @@ class AuditValidationPlugin:
         self.reviewer_id = reviewer_id
         self.reviewer_name = reviewer_name
 
-    def initialize(self, conn: Optional[psycopg.Connection] = None) -> bool:
+    def _initialize_database(self) -> bool:
         """
-        Initialize the plugin with database connection.
-
-        Args:
-            conn: Optional existing database connection
+        Initialize the database connection.
 
         Returns:
             True if initialization successful, False otherwise
         """
         try:
-            if conn:
-                self.conn = conn
-            else:
-                # Use DatabaseManager for connection (golden rule #5)
-                # For GUI plugins that need long-lived connections, we acquire
-                # a persistent connection from the pool
-                self.db_manager = DatabaseManager()
-                self._persistent_conn = self.db_manager.acquire_persistent_connection()
-                self.conn = self._persistent_conn.connection
+            # Use DatabaseManager for connection (golden rule #5)
+            # For GUI plugins that need long-lived connections, we acquire
+            # a persistent connection from the pool
+            self.db_manager = DatabaseManager()
+            self._persistent_conn = self.db_manager.acquire_persistent_connection()
+            self.conn = self._persistent_conn.connection
 
             self.data_manager = AuditValidationDataManager(self.conn)
-            logger.info("Audit Validation plugin initialized successfully")
+            logger.info("Audit Validation plugin database initialized successfully")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize Audit Validation plugin: {e}")
+            logger.error(f"Failed to initialize Audit Validation plugin database: {e}")
             return False
 
     def create_widget(self, parent: Optional[QWidget] = None) -> QWidget:
@@ -92,14 +102,18 @@ class AuditValidationPlugin:
         Returns:
             The main plugin widget
         """
+        # Initialize database if not already done
         if self.data_manager is None:
-            error_widget = QWidget(parent)
-            layout = QVBoxLayout(error_widget)
-            layout.addWidget(QMessageBox.critical(
-                error_widget, "Error",
-                "Plugin not initialized. Please check database connection."
-            ))
-            return error_widget
+            if not self._initialize_database():
+                # Return error widget if database initialization fails
+                error_widget = QWidget(parent)
+                layout = QVBoxLayout(error_widget)
+                error_label = QLabel(
+                    "Failed to initialize Audit Validation plugin.\n"
+                    "Please check database connection."
+                )
+                layout.addWidget(error_label)
+                return error_widget
 
         self.main_widget = QWidget(parent)
         layout = QVBoxLayout(self.main_widget)
@@ -109,32 +123,53 @@ class AuditValidationPlugin:
         tabs = QTabWidget()
 
         # Validation tab
-        validation_tab = ValidationTabWidget(
+        self.validation_tab = ValidationTabWidget(
             data_manager=self.data_manager,
             reviewer_id=self.reviewer_id,
             reviewer_name=self.reviewer_name,
             parent=self.main_widget
         )
-        tabs.addTab(validation_tab, "Review Items")
+        tabs.addTab(self.validation_tab, "Review Items")
 
         # Statistics tab
-        statistics_tab = StatisticsWidget(
+        self.statistics_tab = StatisticsWidget(
             data_manager=self.data_manager,
             parent=self.main_widget
         )
-        tabs.addTab(statistics_tab, "Statistics")
+        tabs.addTab(self.statistics_tab, "Statistics")
 
         # Connect signals
-        validation_tab.validation_saved.connect(
-            lambda *args: statistics_tab.refresh()
+        self.validation_tab.validation_saved.connect(
+            lambda *args: self.statistics_tab.refresh()
         )
 
         layout.addWidget(tabs)
 
+        self._widget = self.main_widget
         return self.main_widget
+
+    def on_tab_activated(self):
+        """Called when this tab becomes active."""
+        self._is_active = True
+        self.status_changed.emit("Audit Validation tab activated")
+
+        # Refresh statistics when tab is activated
+        if self.statistics_tab:
+            self.statistics_tab.refresh()
+
+    def on_tab_deactivated(self):
+        """Called when this tab is deactivated."""
+        self._is_active = False
 
     def cleanup(self) -> None:
         """Clean up plugin resources."""
+        # Disconnect validation tab signal if connected
+        if self.validation_tab:
+            try:
+                self.validation_tab.validation_saved.disconnect()
+            except RuntimeError:
+                pass  # Already disconnected
+
         # First, release the persistent connection back to the pool
         if self._persistent_conn:
             try:
@@ -149,23 +184,20 @@ class AuditValidationPlugin:
         if self.db_manager:
             try:
                 self.db_manager.close()
+                self.db_manager = None
                 logger.info("Audit Validation plugin database manager closed")
             except Exception as e:
                 logger.error(f"Error closing database manager: {e}")
-        elif self.conn and not self.conn.closed:
-            # Only close connection directly if it was passed in externally
-            try:
-                self.conn.close()
-                logger.info("Audit Validation plugin connection closed")
-            except Exception as e:
-                logger.error(f"Error closing connection: {e}")
 
-    @classmethod
-    def get_plugin_info(cls) -> dict:
-        """Get plugin information for registration."""
-        return {
-            'name': cls.PLUGIN_NAME,
-            'description': cls.PLUGIN_DESCRIPTION,
-            'version': '1.0.0',
-            'author': 'BMLibrarian'
-        }
+        # Call parent cleanup to handle base plugin signals
+        super().cleanup()
+
+
+def create_plugin() -> BaseTabPlugin:
+    """
+    Plugin factory function.
+
+    Returns:
+        AuditValidationPlugin instance
+    """
+    return AuditValidationPlugin()
