@@ -10,7 +10,6 @@ from typing import Optional
 from PySide6.QtWidgets import QWidget, QTabWidget, QVBoxLayout, QMessageBox
 
 import psycopg
-from psycopg.rows import dict_row
 
 from bmlibrarian.database import DatabaseManager
 from bmlibrarian.config import BMLibrarianConfig
@@ -35,6 +34,7 @@ class AuditValidationPlugin:
 
     def __init__(self):
         """Initialize the plugin."""
+        self.db_manager: Optional[DatabaseManager] = None
         self.conn: Optional[psycopg.Connection] = None
         self.data_manager: Optional[AuditValidationDataManager] = None
         self.main_widget: Optional[QWidget] = None
@@ -66,16 +66,9 @@ class AuditValidationPlugin:
             if conn:
                 self.conn = conn
             else:
-                # Create new connection from config
-                config = BMLibrarianConfig()
-                db_config = config.get_database_config()
-                self.conn = psycopg.connect(
-                    host=db_config.get('host', 'localhost'),
-                    port=db_config.get('port', 5432),
-                    dbname=db_config.get('database', 'knowledgebase'),
-                    user=db_config.get('user', ''),
-                    password=db_config.get('password', '')
-                )
+                # Use DatabaseManager for connection (golden rule #5)
+                self.db_manager = DatabaseManager()
+                self.conn = self.db_manager.conn
 
             self.data_manager = AuditValidationDataManager(self.conn)
             logger.info("Audit Validation plugin initialized successfully")
@@ -138,7 +131,13 @@ class AuditValidationPlugin:
 
     def cleanup(self) -> None:
         """Clean up plugin resources."""
-        if self.conn and not self.conn.closed:
+        if self.db_manager:
+            try:
+                self.db_manager.close()
+                logger.info("Audit Validation plugin connection closed")
+            except Exception as e:
+                logger.error(f"Error closing connection: {e}")
+        elif self.conn and not self.conn.closed:
             try:
                 self.conn.close()
                 logger.info("Audit Validation plugin connection closed")

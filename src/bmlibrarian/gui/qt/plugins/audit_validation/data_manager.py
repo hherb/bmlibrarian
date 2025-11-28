@@ -287,6 +287,11 @@ class AuditValidationDataManager:
 
         Returns:
             List of ScoreAuditItem records
+
+        Note:
+            Document metadata is fetched via JOIN for bulk efficiency rather than
+            individual get_document_details() calls (golden rule #18 exception
+            for performance in data layer bulk operations).
         """
         query = """
             SELECT
@@ -351,6 +356,11 @@ class AuditValidationDataManager:
 
         Returns:
             List of CitationAuditItem records
+
+        Note:
+            Document metadata is fetched via JOIN for bulk efficiency rather than
+            individual get_document_details() calls (golden rule #18 exception
+            for performance in data layer bulk operations).
         """
         query = """
             SELECT

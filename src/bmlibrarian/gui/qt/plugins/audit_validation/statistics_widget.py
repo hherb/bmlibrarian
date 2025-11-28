@@ -126,14 +126,14 @@ class StatisticsWidget(QWidget):
         ])
         self.stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.stats_table.setAlternatingRowColors(True)
-        self.stats_table.setStyleSheet("""
-            QTableWidget {
+        self.stats_table.setStyleSheet(self.stylesheet_gen.custom("""
+            QTableWidget {{
                 gridline-color: #DDD;
-            }
-            QTableWidget::item {
-                padding: 8px;
-            }
-        """)
+            }}
+            QTableWidget::item {{
+                padding: {padding_small}px;
+            }}
+        """))
         stats_layout.addWidget(self.stats_table)
 
         content_layout.addWidget(self.stats_group)
@@ -202,38 +202,41 @@ class StatisticsWidget(QWidget):
         self.summary_layout.addStretch()
 
     def _create_summary_card(self, title: str, value: str, color: str) -> QFrame:
-        """Create a summary card widget."""
+        """
+        Create a summary card widget.
+
+        Args:
+            title: Card title text
+            value: Card value text
+            color: Background color for the card
+
+        Returns:
+            QFrame widget with styled content
+        """
         card = QFrame()
-        card.setStyleSheet(f"""
+        card.setStyleSheet(self.stylesheet_gen.custom("""
             QFrame {{
-                background-color: {color};
-                border-radius: {self.scale['radius_medium']}px;
-                padding: {self.scale['padding_medium']}px;
+                background-color: {bg_color};
+                border-radius: {radius_medium}px;
+                padding: {padding_medium}px;
             }}
-        """)
+        """.replace("{bg_color}", color)))
         card.setMinimumWidth(self.scale['control_width_small'])
         card.setMaximumWidth(self.scale['control_width_medium'])
 
         layout = QVBoxLayout(card)
 
         value_label = QLabel(value)
-        value_label.setStyleSheet(f"""
-            QLabel {{
-                color: white;
-                font-size: {self.scale['font_xlarge']}pt;
-                font-weight: bold;
-            }}
-        """)
+        value_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+            font_size_key='font_xlarge', bold=True, color="white"
+        ))
         value_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(value_label)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"""
-            QLabel {{
-                color: rgba(255, 255, 255, 0.9);
-                font-size: {self.scale['font_small']}pt;
-            }}
-        """)
+        title_label.setStyleSheet(self.stylesheet_gen.label_stylesheet(
+            font_size_key='font_small', color="rgba(255, 255, 255, 0.9)"
+        ))
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 

@@ -23,11 +23,13 @@ from typing import Optional
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QInputDialog
 from PySide6.QtCore import Qt
 
-import psycopg
-from psycopg.rows import dict_row
-
+from bmlibrarian.database import DatabaseManager
 from bmlibrarian.config import BMLibrarianConfig
 from bmlibrarian.gui.qt.plugins.audit_validation.plugin import AuditValidationPlugin
+
+# Window size constants - avoiding magic numbers
+DEFAULT_WINDOW_WIDTH = 1200
+DEFAULT_WINDOW_HEIGHT = 800
 
 # Configure logging
 logging.basicConfig(
@@ -64,15 +66,15 @@ class AuditValidationMainWindow(QMainWindow):
     def _setup_window(self) -> None:
         """Set up the main window properties."""
         self.setWindowTitle("Audit Trail Validation - BMLibrarian")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 
         # Center on screen
         screen = QApplication.primaryScreen().geometry()
         self.setGeometry(
-            (screen.width() - 1200) // 2,
-            (screen.height() - 800) // 2,
-            1200,
-            800
+            (screen.width() - DEFAULT_WINDOW_WIDTH) // 2,
+            (screen.height() - DEFAULT_WINDOW_HEIGHT) // 2,
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT
         )
 
     def _initialize_plugin(self) -> None:
@@ -112,32 +114,26 @@ class AuditValidationMainWindow(QMainWindow):
 
     def _lookup_reviewer(self) -> None:
         """Look up or create reviewer in the database."""
+        db_manager = None
         try:
-            config = BMLibrarianConfig()
-            db_config = config.get_database_config()
-
-            with psycopg.connect(
-                host=db_config.get('host', 'localhost'),
-                port=db_config.get('port', 5432),
-                dbname=db_config.get('database', 'knowledgebase'),
-                user=db_config.get('user', ''),
-                password=db_config.get('password', '')
-            ) as conn:
-                with conn.cursor(row_factory=dict_row) as cur:
-                    # Try to find existing user
-                    cur.execute(
-                        "SELECT id FROM public.users WHERE username = %s",
-                        (self.reviewer_name,)
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        self.reviewer_id = row['id']
-                        logger.info(f"Found reviewer ID: {self.reviewer_id}")
-                    else:
-                        logger.info(f"Reviewer '{self.reviewer_name}' not found in users table")
+            # Use DatabaseManager for connection (golden rule #5)
+            db_manager = DatabaseManager()
+            row = db_manager.execute_query(
+                "SELECT id FROM public.users WHERE username = %s",
+                (self.reviewer_name,),
+                fetch_one=True
+            )
+            if row:
+                self.reviewer_id = row['id']
+                logger.info(f"Found reviewer ID: {self.reviewer_id}")
+            else:
+                logger.info(f"Reviewer '{self.reviewer_name}' not found in users table")
 
         except Exception as e:
             logger.warning(f"Could not look up reviewer: {e}")
+        finally:
+            if db_manager:
+                db_manager.close()
 
     def closeEvent(self, event) -> None:
         """Handle window close event."""

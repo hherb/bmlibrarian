@@ -36,6 +36,12 @@ from .data_manager import (
 
 logger = logging.getLogger(__name__)
 
+# UI Constants - avoiding magic numbers
+SPLITTER_LEFT_RATIO = 30  # Percentage for left panel
+SPLITTER_RIGHT_RATIO = 70  # Percentage for right panel
+REVIEW_TIMER_INTERVAL_MS = 1000  # Timer update interval in milliseconds
+MAX_DISPLAY_TEXT_LENGTH = 50  # Max chars for list item text preview
+
 
 class ValidationTabWidget(QWidget):
     """
@@ -108,8 +114,11 @@ class ValidationTabWidget(QWidget):
         right_panel = self._create_detail_panel()
         splitter.addWidget(right_panel)
 
-        # Set initial splitter sizes (30% list, 70% detail)
-        splitter.setSizes([300, 700])
+        # Set initial splitter sizes using ratios (30% list, 70% detail)
+        total_width = self.scale.get('control_width_xlarge', 1000)
+        left_size = (total_width * SPLITTER_LEFT_RATIO) // 100
+        right_size = (total_width * SPLITTER_RIGHT_RATIO) // 100
+        splitter.setSizes([left_size, right_size])
         main_layout.addWidget(splitter, 1)
 
     def _create_top_bar(self) -> QWidget:
@@ -447,7 +456,8 @@ class ValidationTabWidget(QWidget):
         self.query_list.clear()
         for item in items:
             status_icon = self._get_validation_icon(item.validation)
-            text = f"{status_icon} Query #{item.query_id}: {item.query_text[:50]}..."
+            preview = item.query_text[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} Query #{item.query_id}: {preview}..."
             list_item = QListWidgetItem(text)
             list_item.setData(Qt.UserRole, item)
             self.query_list.addItem(list_item)
@@ -457,7 +467,7 @@ class ValidationTabWidget(QWidget):
         self.score_list.clear()
         for item in items:
             status_icon = self._get_validation_icon(item.validation)
-            title = (item.document_title or 'Untitled')[:40]
+            title = (item.document_title or 'Untitled')[:MAX_DISPLAY_TEXT_LENGTH]
             text = f"{status_icon} Score {item.relevance_score}/5: {title}..."
             list_item = QListWidgetItem(text)
             list_item.setData(Qt.UserRole, item)
@@ -468,7 +478,8 @@ class ValidationTabWidget(QWidget):
         self.citation_list.clear()
         for item in items:
             status_icon = self._get_validation_icon(item.validation)
-            text = f"{status_icon} {item.summary[:50]}..."
+            preview = item.summary[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} {preview}..."
             list_item = QListWidgetItem(text)
             list_item.setData(Qt.UserRole, item)
             self.citation_list.addItem(list_item)
@@ -490,7 +501,8 @@ class ValidationTabWidget(QWidget):
         for item in items:
             status_icon = self._get_validation_icon(item.validation)
             priority = f"[{item.priority.upper()}] " if item.priority else ""
-            text = f"{status_icon} {priority}{item.question_text[:50]}..."
+            preview = item.question_text[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} {priority}{preview}..."
             list_item = QListWidgetItem(text)
             list_item.setData(Qt.UserRole, item)
             self.counterfactual_list.addItem(list_item)
@@ -536,7 +548,7 @@ class ValidationTabWidget(QWidget):
 
         # Start review timer
         self.review_start_time = datetime.now()
-        self.review_timer.start(1000)
+        self.review_timer.start(REVIEW_TIMER_INTERVAL_MS)
 
         # Display item details
         self._display_item_details(item)
@@ -651,7 +663,8 @@ class ValidationTabWidget(QWidget):
         self._add_detail_field("Generated At", item.generated_at.strftime("%Y-%m-%d %H:%M"))
 
         self._add_detail_section("Report Content")
-        self._add_detail_text(item.report_text[:2000] + "..." if len(item.report_text) > 2000 else item.report_text)
+        # Display full report text - no truncation per golden rules
+        self._add_detail_text(item.report_text)
 
     def _display_counterfactual_details(self, item: CounterfactualAuditItem) -> None:
         """Display counterfactual question details."""
