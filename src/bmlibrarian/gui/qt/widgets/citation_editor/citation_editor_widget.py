@@ -31,6 +31,7 @@ from bmlibrarian.writing import (
     DocumentStore, WritingDocument, CitationStyle,
     AUTOSAVE_INTERVAL_SECONDS, MAX_VERSIONS
 )
+from bmlibrarian.exporters import PDFExporter, PDFExportError
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,8 @@ class CitationEditorWidget(QWidget):
         self.export_btn.setToolTip("Export document")
 
         export_menu = QMenu(self.export_btn)
+        export_menu.addAction("PDF (formatted)", self._export_pdf)
+        export_menu.addSeparator()
         export_menu.addAction("Markdown (formatted)", self._export_formatted)
         export_menu.addAction("Markdown (raw)", self._export_raw)
         export_menu.addSeparator()
@@ -578,6 +581,54 @@ class CitationEditorWidget(QWidget):
                 )
             except Exception as e:
                 QMessageBox.critical(self, "Export Error", str(e))
+
+    def _export_pdf(self) -> None:
+        """Export document as PDF with formatted citations."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PDF Document",
+            f"{self._document.title}.pdf",
+            "PDF Files (*.pdf)"
+        )
+
+        if file_path:
+            try:
+                # Get text and remove existing References section
+                text = self._strip_references_section(self.editor.toPlainText())
+
+                # Format with numbered citations and proper reference list
+                formatted = self._citation_manager.format_full_document(text)
+
+                # Export to PDF
+                exporter = PDFExporter()
+                exporter.markdown_to_pdf(
+                    markdown_content=formatted,
+                    output_path=Path(file_path),
+                    metadata={
+                        'title': self._document.title,
+                        'author': 'BMLibrarian',
+                        'subject': 'Academic Writing'
+                    }
+                )
+
+                self.document_exported.emit(file_path)
+                QMessageBox.information(
+                    self,
+                    "Export Complete",
+                    f"PDF exported to:\n{file_path}"
+                )
+            except PDFExportError as e:
+                QMessageBox.critical(
+                    self,
+                    "PDF Export Error",
+                    f"Failed to export PDF:\n{str(e)}"
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Export Error",
+                    f"Unexpected error:\n{str(e)}"
+                )
 
     def _copy_formatted(self) -> None:
         """Copy formatted document to clipboard."""
