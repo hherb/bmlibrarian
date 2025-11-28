@@ -72,6 +72,7 @@ import ftplib
 import gzip
 import logging
 import os
+import platform
 import re
 import socket
 import sqlite3
@@ -82,6 +83,20 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QThread, Signal, Qt
+
+
+def _get_system_font_family() -> str:
+    """Get the appropriate system font family for the current platform."""
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        return "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif"
+    elif system == "Windows":
+        return "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif"
+    else:  # Linux and others
+        return "'Ubuntu', 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif"
+
+
+FONT_FAMILY = _get_system_font_family()
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QProgressBar, QMessageBox,
@@ -897,16 +912,16 @@ class PubMedAbstractTester(QMainWindow):
 
         self.abstract_display = QTextEdit()
         self.abstract_display.setReadOnly(True)
-        self.abstract_display.setStyleSheet("""
-            QTextEdit {
-                font-family: 'Segoe UI', 'Arial', sans-serif;
+        self.abstract_display.setStyleSheet(f"""
+            QTextEdit {{
+                font-family: {FONT_FAMILY};
                 font-size: 11pt;
                 line-height: 1.6;
                 padding: 10px;
                 background-color: #f9f9f9;
                 border: 1px solid #ddd;
                 border-radius: 4px;
-            }
+            }}
         """)
         # Enable Markdown rendering
         self.abstract_display.setAcceptRichText(True)

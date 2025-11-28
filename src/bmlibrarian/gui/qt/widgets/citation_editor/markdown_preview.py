@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QTextBrowser, QWidget, QToolTip
 from PySide6.QtCore import Signal, QPoint, Qt, QEvent
 from PySide6.QtGui import QFont, QTextCursor
 
-from ...resources.styles import get_font_scale
+from ...resources.styles import get_font_scale, FONT_FAMILY
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class CitationMarkdownPreview(QTextBrowser):
             <meta charset="utf-8">
             <style>
                 body {{
-                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-family: {FONT_FAMILY};
                     font-size: {s['font_small']}pt;
                     line-height: 1.6;
                     color: #333;

@@ -21,7 +21,7 @@ import markdown
 from bmlibrarian.agents import DocumentInterrogationAgent, ProcessingMode
 from bmlibrarian.config import get_config
 from ...widgets import DocumentViewWidget, DocumentViewData
-from ...resources.styles import get_font_scale
+from ...resources.styles import get_font_scale, FONT_FAMILY
 from ...core.document_receiver import IDocumentReceiver
 from ...core.document_processor import (
     DocumentProcessor,
@@ -281,7 +281,7 @@ class ChatBubble(QFrame):
         <head>
             <style>
                 body {{
-                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-family: {FONT_FAMILY};
                     font-size: {font_size}pt;
                     line-height: 1.5;
                     color: {text_color};

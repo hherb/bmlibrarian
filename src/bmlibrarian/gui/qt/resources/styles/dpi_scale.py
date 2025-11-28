@@ -5,9 +5,33 @@ Provides centralized font-relative dimension calculation based on system
 default font to ensure consistent, readable UI across all display densities.
 """
 
+import platform
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont, QFontMetrics
 from typing import Dict
+
+
+def get_system_font_family() -> str:
+    """
+    Get the appropriate system font family for the current platform.
+
+    Returns a CSS font-family string with proper fallbacks for each OS.
+
+    Returns:
+        str: CSS font-family value with platform-appropriate fonts and fallbacks
+    """
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        return "-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif"
+    elif system == "Windows":
+        return "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif"
+    else:  # Linux and others
+        return "'Ubuntu', 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif"
+
+
+# Cross-platform font family constant for use in stylesheets
+FONT_FAMILY = get_system_font_family()
 
 
 class FontScale:

@@ -23,6 +23,8 @@ from .dpi_scale import (
     get_font_scale,
     get_scale_value,
     scale_px,
+    get_system_font_family,
+    FONT_FAMILY,
 )
 
 from .stylesheet_generator import (
@@ -53,6 +55,8 @@ __all__ = [
     'get_font_scale',
     'get_scale_value',
     'scale_px',
+    'get_system_font_family',
+    'FONT_FAMILY',
 
     # Stylesheet generation
     'StylesheetGenerator',

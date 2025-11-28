@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QTextBrowser, QWidget, QVBoxLayout
 from PySide6.QtCore import Qt, Signal
 from typing import Optional
 
-from ..resources.styles import get_font_scale
+from ..resources.styles import get_font_scale, FONT_FAMILY
 
 
 class MarkdownViewer(QTextBrowser):
@@ -60,7 +60,7 @@ class MarkdownViewer(QTextBrowser):
         QTextBrowser {{
             background-color: white;
             color: #333;
-            font-family: 'Segoe UI', Arial, sans-serif;
+            font-family: {FONT_FAMILY};
             font-size: {s['font_small']}pt;
             padding: {s['padding_medium']}px;
         }}
@@ -109,7 +109,7 @@ class MarkdownViewer(QTextBrowser):
             <meta charset="utf-8">
             <style>
                 body {{
-                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-family: {FONT_FAMILY};
                     font-size: {s['font_small']}pt;
                     line-height: 1.6;
                     color: #333;
