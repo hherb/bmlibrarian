@@ -32,6 +32,16 @@ class PostgreSQLFactCheckerDB(AbstractFactCheckerDB):
         self.db = BaseFactCheckerDB()
         logger.info("PostgreSQL database initialized")
 
+    @property
+    def db_manager(self):
+        """
+        Provide access to the underlying database manager.
+
+        This property delegates to the wrapped FactCheckerDB's db_manager,
+        allowing direct database access when needed (e.g., for custom queries).
+        """
+        return self.db.db_manager
+
     def get_all_statements_with_evaluations(self) -> List[Dict[str, Any]]:
         """
         Get all statements with their latest AI evaluations and evidence.
