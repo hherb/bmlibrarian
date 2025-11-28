@@ -68,6 +68,9 @@ CHECKPOINT_TYPE_DISPLAY_NAMES = {
     "quality_assessment": "Quality Assessment Complete",
 }
 
+# Worker thread constants
+WORKER_CLEANUP_TIMEOUT_MS = 5000  # Timeout in milliseconds for worker cleanup
+
 
 # =============================================================================
 # Worker Thread for Background Operations
@@ -263,7 +266,7 @@ class SystematicReviewTabWidget(QWidget):
         splitter.addWidget(right_panel)
 
         # Set initial splitter sizes (40% left, 60% right)
-        splitter.setSizes([400, 600])
+        splitter.setSizes([DPIScale.scale(400), DPIScale.scale(600)])
 
         layout.addWidget(splitter)
 
@@ -924,4 +927,4 @@ class SystematicReviewTabWidget(QWidget):
         """Cleanup resources."""
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
-            self._worker.wait(5000)  # Wait up to 5 seconds
+            self._worker.wait(WORKER_CLEANUP_TIMEOUT_MS)
