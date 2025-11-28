@@ -1657,9 +1657,29 @@ class SystematicReviewAgent(BaseAgent):
             sp for sp in self._scored_papers
             if sp.relevance_score >= relevance_threshold
         ]
+        below_threshold = [
+            sp for sp in self._scored_papers
+            if sp.relevance_score < relevance_threshold
+        ]
 
         passed_relevance = len(relevant_papers)
         logger.info(f"{passed_relevance} papers passed relevance threshold ({relevance_threshold})")
+
+        # Checkpoint: Review scoring results
+        if not self._checkpoint(
+            checkpoint_type=CHECKPOINT_SCORING_COMPLETE,
+            state={
+                "total_scored": len(self._scored_papers),
+                "above_threshold": len(relevant_papers),
+                "below_threshold": len(below_threshold),
+                "average_score": scoring_result.average_score,
+            },
+            interactive=interactive,
+            checkpoint_callback=checkpoint_callback,
+        ):
+            logger.info("Review aborted at scoring checkpoint")
+            self.documenter.end_review()
+            return self._build_empty_result(criteria, weights, "Aborted at scoring")
 
         # Phase 5: Quality Assessment
         self.documenter.set_phase("quality_assessment")
@@ -1670,15 +1690,18 @@ class SystematicReviewAgent(BaseAgent):
             input_summary=f"Assessing quality of {len(relevant_papers)} papers",
             decision_rationale="Evaluating study quality for final ranking",
         ) as timer:
-            assessment_result = quality_assessor.assess_batch(
-                scored_papers=relevant_papers,
-                research_question=criteria.research_question,
-            )
+            assessment_result = quality_assessor.assess_batch(relevant_papers)
             self._assessed_papers = assessment_result.assessed_papers
 
             timer.set_output(
-                f"Assessed {len(assessment_result.assessed_papers)} papers"
+                f"Assessed {len(assessment_result.assessed_papers)} papers, "
+                f"failed: {len(assessment_result.failed_papers)}"
             )
+            timer.add_metrics({
+                "papers_assessed": len(assessment_result.assessed_papers),
+                "failed_assessment": len(assessment_result.failed_papers),
+                **assessment_result.assessment_statistics,
+            })
 
         # Phase 6: Composite Scoring
         with self.documenter.log_step_with_timer(
