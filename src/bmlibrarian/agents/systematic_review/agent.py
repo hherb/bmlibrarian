@@ -570,6 +570,7 @@ class SystematicReviewAgent(BaseAgent):
                 },
                 interactive=interactive,
                 checkpoint_callback=checkpoint_callback,
+                output_dir=output_dir,
             ):
                 logger.info("Review aborted at scoring checkpoint")
                 self.documenter.end_review()
@@ -608,6 +609,7 @@ class SystematicReviewAgent(BaseAgent):
                 },
                 interactive=interactive,
                 checkpoint_callback=checkpoint_callback,
+                output_dir=output_dir,
             ):
                 logger.info("Review aborted at quality assessment checkpoint")
                 self.documenter.end_review()
@@ -1422,11 +1424,18 @@ class SystematicReviewAgent(BaseAgent):
         interactive: bool,
         output_path: Optional[str],
         checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+        output_dir: Optional[str] = None,
     ) -> SystematicReviewResult:
         """
         Continue review from after initial results checkpoint.
 
         Executes: Initial Filtering → Scoring → Quality → Report
+
+        Args:
+            interactive: Whether to run in interactive mode
+            output_path: Optional path for saving results
+            checkpoint_callback: Optional callback for checkpoint decisions
+            output_dir: Optional directory for checkpoint file saving
         """
         from .filters import InitialFilter, InclusionEvaluator
         from .scorer import RelevanceScorer, CompositeScorer
@@ -1502,6 +1511,7 @@ class SystematicReviewAgent(BaseAgent):
             interactive=interactive,
             output_path=output_path,
             checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
         )
 
     def _continue_from_quality_assessment(
@@ -1600,6 +1610,7 @@ class SystematicReviewAgent(BaseAgent):
             interactive=interactive,
             output_path=output_path,
             checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
         )
 
     def _continue_from_scoring_phase(
@@ -1614,6 +1625,7 @@ class SystematicReviewAgent(BaseAgent):
         interactive: bool,
         output_path: Optional[str],
         checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+        output_dir: Optional[str] = None,
     ) -> SystematicReviewResult:
         """
         Continue from the scoring phase onwards.
@@ -1631,6 +1643,7 @@ class SystematicReviewAgent(BaseAgent):
             interactive: Whether to run in interactive mode
             output_path: Optional path for saving results
             checkpoint_callback: Optional callback for checkpoint decisions
+            output_dir: Optional directory for checkpoint file saving
 
         Returns:
             SystematicReviewResult with all papers and audit trail
@@ -1694,6 +1707,7 @@ class SystematicReviewAgent(BaseAgent):
             },
             interactive=interactive,
             checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
         ):
             logger.info("Review aborted at scoring checkpoint")
             self.documenter.end_review()
@@ -1721,6 +1735,23 @@ class SystematicReviewAgent(BaseAgent):
                 **assessment_result.assessment_statistics,
             })
 
+        # Checkpoint: Review quality assessment results
+        if not self._checkpoint(
+            checkpoint_type=CHECKPOINT_QUALITY_ASSESSMENT,
+            state={
+                "papers_assessed": len(assessment_result.assessed_papers),
+                "failed_assessment": len(assessment_result.failed_papers),
+                "study_assessments": assessment_result.assessment_statistics.get("study_assessments", 0),
+                "weight_assessments": assessment_result.assessment_statistics.get("weight_assessments", 0),
+            },
+            interactive=interactive,
+            checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
+        ):
+            logger.info("Review aborted at quality assessment checkpoint")
+            self.documenter.end_review()
+            return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
+
         # Phase 6: Composite Scoring
         with self.documenter.log_step_with_timer(
             action=ACTION_CALCULATE_COMPOSITE,
@@ -1729,7 +1760,7 @@ class SystematicReviewAgent(BaseAgent):
             decision_rationale="Combining all scores for final ranking",
         ) as timer:
             for assessed in self._assessed_papers:
-                assessed.composite_score = composite_scorer.calculate(assessed)
+                assessed.composite_score = composite_scorer.score(assessed)
 
             # Sort by composite score
             self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)

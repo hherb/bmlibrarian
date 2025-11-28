@@ -109,6 +109,10 @@ class SuitabilityAssessment:
     document_id: str
     document_title: str
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
 
 @dataclass
 class PRISMA2020Assessment:
