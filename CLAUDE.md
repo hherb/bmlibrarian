@@ -137,6 +137,10 @@ Since this project uses `uv` for package management:
   - `uv run python migrate_config_to_db.py --user alice --config ~/.bmlibrarian/config.json` - Migrate JSON config to user database settings
   - `uv run python migrate_config_to_db.py --defaults --config config.json` - Set default settings (admin)
   - `uv run python migrate_config_to_db.py --export --user alice -o backup.json` - Export user settings to JSON
+  - `uv run python export_to_pdf.py report.md -o report.pdf` - Export markdown to PDF with default settings
+  - `uv run python export_to_pdf.py report.md -o report.pdf --title "Research" --author "Dr. Smith"` - Export with custom metadata
+  - `uv run python export_to_pdf.py report.md -o report.pdf --research-report --citation-count 45` - Export as BMLibrarian research report
+  - `uv run python export_to_pdf.py report.md -o report.pdf --a4 --font-size 12` - Export with A4 format and custom font size
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
@@ -271,6 +275,85 @@ if result.success:
 ### Documentation
 - **User Guide**: `doc/users/pdf_download_guide.md` - Complete usage guide
 - **Browser Downloader**: `doc/users/BROWSER_DOWNLOADER.md` - Browser-based download details
+
+## PDF Export System
+
+BMLibrarian includes a professional PDF export system for converting markdown-formatted research reports to publication-quality PDF documents.
+
+### Key Features
+- **Pure Python**: Uses ReportLab (BSD-licensed, free for redistribution)
+- **Cross-Platform**: Works on all major operating systems without system dependencies
+- **Professional Quality**: Publication-ready documents with proper formatting
+- **Full Markdown Support**: Headings, lists, tables, code blocks, links, emphasis
+- **Custom Styling**: Configurable fonts, colors, page sizes, and margins
+- **Page Management**: Automatic page numbers, headers, footers, and timestamps
+
+### Quick Start
+
+```python
+from pathlib import Path
+from bmlibrarian.exporters import PDFExporter
+
+# Create exporter with default settings
+exporter = PDFExporter()
+
+# Export markdown report to PDF
+exporter.export_report(
+    report_content=final_report,  # Markdown-formatted report
+    output_path=Path("research_report.pdf"),
+    research_question="What are the cardiovascular benefits of exercise?",
+    citation_count=45,
+    document_count=128
+)
+```
+
+### Command-Line Tool
+
+```bash
+# Basic export
+uv run python export_to_pdf.py report.md -o report.pdf
+
+# With metadata and A4 format
+uv run python export_to_pdf.py report.md -o report.pdf \
+    --title "Research Report" \
+    --author "Dr. Smith" \
+    --a4 --font-size 12
+
+# Research report format with metadata
+uv run python export_to_pdf.py report.md -o report.pdf \
+    --research-report \
+    --citation-count 45 \
+    --document-count 128
+```
+
+### Configuration Options
+
+```python
+from bmlibrarian.exporters import PDFExportConfig
+from reportlab.lib.pagesizes import A4
+
+config = PDFExportConfig(
+    page_size=A4,  # or letter (default)
+    base_font_size=12,
+    heading_color=(0.1, 0.1, 0.3),  # RGB
+    include_page_numbers=True,
+    include_timestamp=True,
+    include_header=True
+)
+
+exporter = PDFExporter(config)
+```
+
+### Dependencies
+- **reportlab** (BSD License): Core PDF generation
+- **markdown** (BSD License): Markdown parsing
+- **Pygments** (BSD License): Syntax highlighting
+
+All dependencies are free for commercial use and redistribution with no licensing fees.
+
+### Documentation
+- **User Guide**: `doc/users/pdf_export_guide.md` - Complete usage guide with examples
+- **API Reference**: See `src/bmlibrarian/exporters/pdf_exporter.py` for full API documentation
 
 ## Architecture
 
@@ -444,6 +527,9 @@ bmlibrarian/
 │   ├── embeddings/            # Document embedding generation
 │   │   ├── __init__.py        # Embeddings module exports
 │   │   └── document_embedder.py # Document embedder (uses Ollama)
+│   ├── exporters/             # Export functionality (PDF, HTML, etc.)
+│   │   ├── __init__.py        # Exporters module exports
+│   │   └── pdf_exporter.py    # Markdown to PDF exporter using ReportLab
 │   ├── pdf_processor/         # PDF processing and segmentation for biomedical publications
 │   │   ├── __init__.py        # PDF processor module exports
 │   │   ├── models.py          # Data models (TextBlock, Section, Document, SectionType)
@@ -596,6 +682,7 @@ bmlibrarian/
 ├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
 ├── migrate_config_to_db.py    # Settings migration CLI
+├── export_to_pdf.py           # Markdown to PDF export CLI tool
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
 ├── setup_wizard.py            # PySide6 setup wizard
 ├── baseline_schema.sql        # Base PostgreSQL schema definition
