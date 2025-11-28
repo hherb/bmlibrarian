@@ -67,15 +67,24 @@ class PDFExportConfig:
     show_confidence_indicators: bool = True
     highlight_citations: bool = True
 
+    # Font sizes for headers/footers (avoid magic numbers)
+    header_footer_font_size: int = 9
+    timestamp_font_size: int = 8
+
+    # Table styling constants (avoid magic numbers)
+    table_header_font_size: int = 10
+    table_header_padding: int = 12
+
 
 class MarkdownHTMLParser(HTMLParser):
     """
     Parse HTML generated from markdown and convert to ReportLab flowables
     """
 
-    def __init__(self, styles: Dict[str, ParagraphStyle]):
+    def __init__(self, styles: Dict[str, ParagraphStyle], config: PDFExportConfig):
         super().__init__()
         self.styles = styles
+        self.config = config
         self.flowables: List[Any] = []
         self.current_text: List[str] = []
         self.current_style = 'Normal'
@@ -220,8 +229,8 @@ class MarkdownHTMLParser(HTMLParser):
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('FONTSIZE', (0, 0), (-1, 0), self.config.table_header_font_size),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), self.config.table_header_padding),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ]))
@@ -259,7 +268,7 @@ class NumberedCanvas(canvas.Canvas):
         # Footer with page numbers
         if self.config.include_footer and self.config.include_page_numbers:
             footer_text = f"Page {page_num} of {num_pages}"
-            self.setFont('Helvetica', 9)
+            self.setFont('Helvetica', self.config.header_footer_font_size)
             self.setFillColorRGB(0.5, 0.5, 0.5)
             self.drawRightString(
                 letter[0] - self.config.margin_right,
@@ -269,18 +278,18 @@ class NumberedCanvas(canvas.Canvas):
 
         # Header with title
         if self.config.include_header and self.config.title and page_num > 1:
-            self.setFont('Helvetica-Oblique', 9)
+            self.setFont('Helvetica-Oblique', self.config.header_footer_font_size)
             self.setFillColorRGB(0.5, 0.5, 0.5)
             self.drawString(
                 self.config.margin_left,
                 letter[1] - self.config.margin_top / 2,
-                self.config.title[:80]  # Truncate long titles
+                self.config.title
             )
 
         # Timestamp in footer
         if self.config.include_timestamp and page_num == num_pages:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.setFont('Helvetica', 8)
+            self.setFont('Helvetica', self.config.timestamp_font_size)
             self.setFillColorRGB(0.6, 0.6, 0.6)
             self.drawString(
                 self.config.margin_left,
@@ -416,7 +425,18 @@ class PDFExporter:
 
         Raises:
             PDFExportError: If PDF generation fails
+            ValueError: If input validation fails
         """
+        # Validate inputs (golden rule #1: never trust user input)
+        if not isinstance(markdown_content, str):
+            raise ValueError("markdown_content must be a string")
+
+        if not isinstance(output_path, Path):
+            try:
+                output_path = Path(output_path)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid output_path: {e}") from e
+
         try:
             # Update config with metadata
             if metadata:
@@ -484,7 +504,7 @@ class PDFExporter:
         )
 
         # Parse HTML and convert to ReportLab flowables
-        parser = MarkdownHTMLParser(self.styles)
+        parser = MarkdownHTMLParser(self.styles, self.config)
         parser.feed(html_content)
 
         # Add parsed content to story
