@@ -146,6 +146,9 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
   - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
   - `uv run python fact_checker_review_gui.py --user alice --db-file review_package.db` - Review with SQLite package (no PostgreSQL needed)
+  - `uv run python audit_validation_gui.py` - Audit trail validation GUI for human review of automated evaluations
+  - `uv run python audit_validation_gui.py --user alice` - Launch with specified reviewer name
+  - `uv run python audit_validation_gui.py --user alice --incremental` - Show only unvalidated items
 - **Fact-Checker Distribution Tools** (for inter-rater reliability analysis):
   - `uv run python scripts/export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
   - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
