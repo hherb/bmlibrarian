@@ -37,8 +37,8 @@ class PDFExportError(Exception):
 class PDFExportConfig:
     """Configuration for PDF export"""
 
-    # Page settings
-    page_size: tuple = field(default=letter)  # letter or A4
+    # Page settings (A4 default for international standard, user-configurable)
+    page_size: tuple = field(default=A4)  # A4 (international) or letter (US)
     margin_left: float = field(default=0.75 * inch)
     margin_right: float = field(default=0.75 * inch)
     margin_top: float = field(default=1.0 * inch)
@@ -270,8 +270,9 @@ class NumberedCanvas(canvas.Canvas):
             footer_text = f"Page {page_num} of {num_pages}"
             self.setFont('Helvetica', self.config.header_footer_font_size)
             self.setFillColorRGB(0.5, 0.5, 0.5)
+            # Use actual page width from canvas, not hardcoded letter size
             self.drawRightString(
-                letter[0] - self.config.margin_right,
+                self._pagesize[0] - self.config.margin_right,
                 self.config.margin_bottom / 2,
                 footer_text
             )
@@ -280,9 +281,10 @@ class NumberedCanvas(canvas.Canvas):
         if self.config.include_header and self.config.title and page_num > 1:
             self.setFont('Helvetica-Oblique', self.config.header_footer_font_size)
             self.setFillColorRGB(0.5, 0.5, 0.5)
+            # Use actual page height from canvas, not hardcoded letter size
             self.drawString(
                 self.config.margin_left,
-                letter[1] - self.config.margin_top / 2,
+                self._pagesize[1] - self.config.margin_top / 2,
                 self.config.title
             )
 
