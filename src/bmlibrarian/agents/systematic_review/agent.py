@@ -1421,7 +1421,7 @@ class SystematicReviewAgent(BaseAgent):
         # Initialize remaining components
         initial_filter = InitialFilter(
             criteria=criteria,
-            config=self.config,
+            callback=self.callback,
         )
 
         scorer = RelevanceScorer(
