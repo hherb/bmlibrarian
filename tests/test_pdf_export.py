@@ -280,6 +280,11 @@ WHERE year > 2020;
         assert result.parent.exists()
         assert result.stat().st_size > 0
 
+    def test_default_page_size_is_a4(self):
+        """Test that default page size is A4 (international standard)"""
+        config = PDFExportConfig()
+        assert config.page_size == A4, "Default page size should be A4"
+
     def test_letter_vs_a4_page_size(self, basic_markdown, temp_output_dir):
         """Test different page sizes"""
         # Letter size
