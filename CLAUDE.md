@@ -128,6 +128,11 @@ Since this project uses `uv` for package management:
   - `uv run python paper_checker_cli.py --pmid 12345678 23456789` - Check abstracts by PMID from database
   - `uv run python paper_checker_cli.py abstracts.json --quick` - Quick test mode (max 5 abstracts)
   - `uv run python paper_checker_cli.py abstracts.json --continue-on-error` - Continue processing on failures
+  - `uv run python model_benchmark_cli.py benchmark "research question" --models gpt-oss:20b medgemma4B_it_q8:latest` - Benchmark document scoring models
+  - `uv run python model_benchmark_cli.py benchmark "question" --models gpt-oss:20b --authoritative gpt-oss:120B -o results.json` - Benchmark with custom authoritative model and export
+  - `uv run python model_benchmark_cli.py history` - View benchmark run history
+  - `uv run python model_benchmark_cli.py show --run-id 5` - View specific benchmark run details
+  - `uv run python model_benchmark_cli.py compare --run-id 5` - Compare score distributions between models
   - `uv run python migrate_config_to_db.py --interactive` - Interactive settings migration wizard
   - `uv run python migrate_config_to_db.py --user alice --config ~/.bmlibrarian/config.json` - Migrate JSON config to user database settings
   - `uv run python migrate_config_to_db.py --defaults --config config.json` - Set default settings (admin)
@@ -141,6 +146,9 @@ Since this project uses `uv` for package management:
   - `uv run python fact_checker_review_gui.py --user alice --incremental` - Incremental mode (only show unannotated statements)
   - `uv run python fact_checker_review_gui.py --user bob --blind` - Blind mode (hide AI/original annotations for unbiased review)
   - `uv run python fact_checker_review_gui.py --user alice --db-file review_package.db` - Review with SQLite package (no PostgreSQL needed)
+  - `uv run python audit_validation_gui.py` - Audit trail validation GUI for human review of automated evaluations
+  - `uv run python audit_validation_gui.py --user alice` - Launch with specified reviewer name
+  - `uv run python audit_validation_gui.py --user alice --incremental` - Show only unvalidated items
 - **Fact-Checker Distribution Tools** (for inter-rater reliability analysis):
   - `uv run python scripts/export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
   - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
@@ -444,6 +452,11 @@ bmlibrarian/
 │   │   ├── data_types.py      # Type-safe dataclasses (PDFSource, DiscoveryResult, etc.)
 │   │   ├── resolvers.py       # Source resolvers (PMC, Unpaywall, DOI, OpenAthens)
 │   │   └── full_text_finder.py # Discovery orchestrator
+│   ├── benchmarking/          # Model benchmarking system
+│   │   ├── __init__.py        # Benchmarking module exports
+│   │   ├── data_types.py      # Type-safe dataclasses (BenchmarkRun, AlignmentMetrics, etc.)
+│   │   ├── database.py        # Database operations (benchmarking schema)
+│   │   └── runner.py          # BenchmarkRunner orchestration
 │   └── cli/                   # Modular CLI architecture
 │       ├── __init__.py        # CLI module exports
 │       ├── config.py          # Configuration management
@@ -573,6 +586,7 @@ bmlibrarian/
 ├── fact_checker_review_gui.py # Human review and annotation GUI for fact-checking results
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
 ├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
+├── model_benchmark_cli.py     # Model benchmarking CLI for evaluating document scoring models
 ├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)

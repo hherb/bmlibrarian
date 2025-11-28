@@ -55,6 +55,27 @@ All AI processing happens locally on your hardware:
 ## What's New 🎉
 
 **Latest Features (11/2025):**
+
+### 🔬 Systematic Literature Review Agent
+
+A complete systematic review automation system with human oversight and audit trails. Conducts AI-assisted literature reviews following PRISMA 2020 guidelines with configurable search strategies, quality assessment, and composite scoring.
+
+```bash
+# Run a systematic review
+python systematic_review_cli.py --question "Effect of statins on CVD prevention" \
+    --include "RCTs" "Human studies" --exclude "Animal studies"
+```
+
+**Key Capabilities:**
+- **Multi-strategy search**: Semantic, keyword, hybrid, and HyDE queries with PICO analysis
+- **8-phase workflow**: Search planning → Execution → Filtering → Scoring → Quality → Composite → Classification → Reporting
+- **Human checkpoints**: Interactive mode pauses at key decision points for human review
+- **Quality assessment**: Integrates StudyAssessmentAgent, PaperWeightAssessmentAgent, PICOAgent, and PRISMA2020Agent
+- **Complete audit trail**: Full reproducibility with JSON, Markdown, CSV, and PRISMA flow diagram outputs
+- **Configurable weights**: Customize relevance, quality, recency, and source reliability weights
+
+#### Systematic Review Workflow Diagram
+
 ```mermaid
 flowchart TB
     subgraph User["User Input"]
@@ -197,6 +218,40 @@ flowchart TB
     class CHK1,CHK2,CHK3,CHK4 checkpoint
     class D1,D1A,D1B,D1C audit
 ```
+
+### ✅ Audit Trail Validation GUI
+
+A human review interface for validating automated evaluations in the systematic review audit trail. Enables benchmarking AI accuracy and collecting training data for model improvement.
+
+```bash
+# Launch audit validation GUI
+uv run python audit_validation_gui.py --user alice
+
+# Incremental mode (show only unvalidated items)
+uv run python audit_validation_gui.py --user alice --incremental
+```
+
+**Key Features:**
+- **Tab-per-step organization**: Separate tabs for Queries, Scores, Citations, Reports, and Counterfactuals
+- **Validation statuses**: Mark items as Validated, Incorrect, Uncertain, or Needs Review
+- **Error categorization**: 25+ predefined error categories organized by target type
+- **Statistics dashboard**: Track validation rates, error distributions, and reviewer performance
+- **Multi-reviewer support**: Enable inter-rater reliability studies with per-reviewer tracking
+- **Time tracking**: Monitor review time per item for benchmarking
+
+### ✍️ Citation-Aware Writing Editor
+
+A markdown editor with integrated citation management for academic writing. Search and cite references from your literature database while writing manuscripts and systematic review reports.
+
+**Key Features:**
+- **Citation markers**: Insert citations with `[@id:12345:Smith2023]` format
+- **Semantic search**: Find references using natural language queries
+- **Multiple styles**: Vancouver, APA, Harvard, and Chicago citation formats
+- **Autosave with history**: Automatic saves with version history
+- **Export with references**: Generate formatted documents with proper reference lists
+- **Database persistence**: Documents stored in PostgreSQL for reliable storage
+
+### Other Recent Features
 
 - 📊 **Paper Weight Assessment**: Evaluate research papers across five quality dimensions (study design, sample size, methodology, bias risk, replication)
 - 🔬 **PICO Extraction**: Automatically extract Population, Intervention, Comparison, and Outcome for systematic reviews
@@ -1104,6 +1159,9 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[Citation Guide](doc/users/citation_guide.md)** - Citation extraction and formatting
 - **[Reporting Guide](doc/users/reporting_guide.md)** - Report generation and export
 - **[Counterfactual Guide](doc/users/counterfactual_guide.md)** - Contradictory evidence analysis
+- **[Systematic Review Guide](doc/users/systematic_review_guide.md)** - Complete systematic literature review workflow
+- **[Audit Validation Guide](doc/users/audit_validation_guide.md)** - Human validation of audit trail items
+- **[Writing Plugin Guide](doc/users/writing_plugin_guide.md)** - Citation-aware markdown editor
 - **[Workflow Guide](doc/users/workflow_guide.md)** - Workflow orchestration system
 - **[Migration System](doc/users/migration_system.md)** - Database migration system
 - **[Troubleshooting](doc/users/troubleshooting.md)** - Common issues and solutions
@@ -1121,6 +1179,8 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[Full-Text Discovery System](doc/developers/full_text_discovery_system.md)** - PDF discovery architecture
 - **[Document Card Factory](doc/developers/document_card_factory_system.md)** - GUI document card system
 - **[Multi-Model Architecture](doc/developers/multi_model_architecture.md)** - Multi-model query generation
+- **[Audit Validation System](doc/developers/audit_validation_system.md)** - Human validation architecture
+- **[Writing System](doc/developers/writing_system.md)** - Citation-aware editor internals
 
 ## Development
 
