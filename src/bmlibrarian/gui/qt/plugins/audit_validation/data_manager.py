@@ -569,6 +569,23 @@ class AuditValidationDataManager:
         """Get validation categories."""
         return self.validation_tracker.get_categories(target_type)
 
+    def get_validation(
+        self,
+        target_type: TargetType,
+        target_id: int
+    ) -> Optional[HumanValidation]:
+        """
+        Get validation record for a specific target.
+
+        Args:
+            target_type: Type of the target item
+            target_id: ID of the target record
+
+        Returns:
+            HumanValidation or None if not found
+        """
+        return self.validation_tracker.get_validation(target_type, target_id)
+
     def get_validation_statistics(self) -> Dict[str, Any]:
         """
         Get comprehensive validation statistics for display.

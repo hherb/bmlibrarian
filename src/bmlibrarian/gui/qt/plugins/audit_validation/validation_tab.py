@@ -898,6 +898,13 @@ class ValidationTabWidget(QWidget):
                 category_ids=category_ids
             )
 
+            # Update the item's validation to reflect the saved state
+            new_validation = self.data_manager.get_validation(target_type, target_id)
+            if self.current_item and new_validation:
+                self.current_item.validation = new_validation
+                # Update the list widget item text to show the validation icon
+                self._update_current_list_item_text()
+
             self.status_message.emit(f"Validation saved for {target_type.value} #{target_id}")
             self.validation_saved.emit(target_type.value, target_id, selected_status.value)
 
@@ -964,3 +971,43 @@ class ValidationTabWidget(QWidget):
             4: self.counterfactual_list
         }
         return list_map.get(tab_index)
+
+    def _update_current_list_item_text(self) -> None:
+        """Update the currently selected list item's text to reflect validation status."""
+        if self.current_item is None:
+            return
+
+        current_list = self._get_current_list_widget()
+        if current_list is None:
+            return
+
+        list_item = current_list.currentItem()
+        if list_item is None:
+            return
+
+        # Get the new validation icon
+        validation = getattr(self.current_item, 'validation', None)
+        status_icon = self._get_validation_icon(validation)
+
+        # Generate updated text based on item type
+        item = self.current_item
+        if isinstance(item, QueryAuditItem):
+            preview = item.query_text[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} Query #{item.query_id}: {preview}..."
+        elif isinstance(item, ScoreAuditItem):
+            title = (item.document_title or 'Untitled')[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} Score {item.relevance_score}/5: {title}..."
+        elif isinstance(item, CitationAuditItem):
+            preview = item.summary[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} {preview}..."
+        elif isinstance(item, ReportAuditItem):
+            final_mark = "[FINAL] " if item.is_final else ""
+            text = f"{status_icon} {final_mark}{item.report_type.title()} ({item.citation_count or 0} citations)"
+        elif isinstance(item, CounterfactualAuditItem):
+            priority = f"[{item.priority.upper()}] " if item.priority else ""
+            preview = item.question_text[:MAX_DISPLAY_TEXT_LENGTH]
+            text = f"{status_icon} {priority}{preview}..."
+        else:
+            return
+
+        list_item.setText(text)
