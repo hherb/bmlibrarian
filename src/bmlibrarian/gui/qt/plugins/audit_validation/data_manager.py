@@ -306,7 +306,7 @@ class AuditValidationDataManager:
                 ds.scored_at,
                 d.title as document_title,
                 d.authors as document_authors,
-                d.year as document_year,
+                EXTRACT(YEAR FROM d.publication_date)::INTEGER as document_year,
                 d.abstract as document_abstract
             FROM audit.document_scores ds
             LEFT JOIN public.evaluators e ON ds.evaluator_id = e.id

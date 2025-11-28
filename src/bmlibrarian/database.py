@@ -209,6 +209,73 @@ class DatabaseManager:
             self._pool.close()
             self._pool = None
 
+    def acquire_persistent_connection(self) -> 'PersistentConnection':
+        """
+        Acquire a persistent connection from the pool for long-lived use cases.
+
+        This method is for exceptional cases like GUI plugins that need to maintain
+        a connection across multiple operations. The returned PersistentConnection
+        must be explicitly released when done.
+
+        For most use cases, prefer get_connection() context manager instead.
+
+        Returns:
+            PersistentConnection object that must be released when done.
+
+        Raises:
+            RuntimeError: If the pool is not initialized.
+
+        Example:
+            persistent = db_manager.acquire_persistent_connection()
+            try:
+                conn = persistent.connection
+                # Use conn for multiple operations...
+            finally:
+                persistent.release()
+        """
+        if not self._pool:
+            raise RuntimeError("Database pool not initialized")
+
+        return PersistentConnection(self._pool)
+
+
+class PersistentConnection:
+    """
+    Wrapper for a persistent connection acquired from the pool.
+
+    This class manages a connection that is held outside the normal
+    context manager pattern. The connection MUST be released when done.
+    """
+
+    def __init__(self, pool: ConnectionPool):
+        """
+        Acquire a connection from the pool.
+
+        Args:
+            pool: The connection pool to acquire from.
+        """
+        self._pool = pool
+        self._context = pool.connection()
+        self._connection: Optional[psycopg.Connection] = self._context.__enter__()
+
+    @property
+    def connection(self) -> psycopg.Connection:
+        """Get the underlying psycopg connection."""
+        if self._connection is None:
+            raise RuntimeError("Connection has been released")
+        return self._connection
+
+    def release(self) -> None:
+        """Release the connection back to the pool."""
+        if self._context:
+            try:
+                self._context.__exit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error releasing persistent connection: {e}")
+            finally:
+                self._context = None
+                self._connection = None
+
 
 # Global database manager instance
 _db_manager = None
