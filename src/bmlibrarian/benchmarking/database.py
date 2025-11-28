@@ -21,6 +21,7 @@ from .data_types import (
     BenchmarkStatus,
     BenchmarkSummary,
     SEMANTIC_THRESHOLD,
+    DEFAULT_DOCUMENT_LIMIT,
 )
 
 
@@ -607,7 +608,7 @@ class BenchmarkDatabase:
         self,
         question_text: str,
         threshold: float = SEMANTIC_THRESHOLD,
-        limit: int = 100
+        limit: int = DEFAULT_DOCUMENT_LIMIT
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search for documents matching a question.

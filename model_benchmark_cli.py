@@ -48,6 +48,7 @@ from src.bmlibrarian.benchmarking import (
     BEST_REASONING_MODEL,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
+    DEFAULT_OLLAMA_HOST,
 )
 
 
@@ -428,8 +429,8 @@ Examples:
     bench_parser.add_argument(
         '--ollama-host',
         type=str,
-        default='http://localhost:11434',
-        help='Ollama server URL (default: http://localhost:11434)'
+        default=DEFAULT_OLLAMA_HOST,
+        help=f'Ollama server URL (default: {DEFAULT_OLLAMA_HOST})'
     )
     bench_parser.add_argument(
         '--user',

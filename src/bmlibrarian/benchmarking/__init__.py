@@ -36,6 +36,10 @@ from .data_types import (
     BEST_REASONING_MODEL,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_DOCUMENT_LIMIT,
+    MIN_SCORE,
+    MAX_SCORE,
 )
 
 from .database import BenchmarkDatabase
@@ -57,6 +61,10 @@ __all__ = [
     "BEST_REASONING_MODEL",
     "DEFAULT_TEMPERATURE",
     "DEFAULT_TOP_P",
+    "DEFAULT_OLLAMA_HOST",
+    "DEFAULT_DOCUMENT_LIMIT",
+    "MIN_SCORE",
+    "MAX_SCORE",
     # Database
     "BenchmarkDatabase",
     # Runner

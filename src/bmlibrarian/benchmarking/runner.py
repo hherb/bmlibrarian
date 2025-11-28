@@ -28,6 +28,8 @@ from .data_types import (
     BEST_REASONING_MODEL,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_DOCUMENT_LIMIT,
 )
 from .database import BenchmarkDatabase
 
@@ -46,7 +48,7 @@ class BenchmarkRunner:
     def __init__(
         self,
         conn: psycopg.Connection,
-        ollama_host: str = "http://localhost:11434",
+        ollama_host: str = DEFAULT_OLLAMA_HOST,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float = DEFAULT_TOP_P,
         authoritative_model: str = BEST_REASONING_MODEL,
@@ -197,7 +199,18 @@ class BenchmarkRunner:
 
         Returns:
             BenchmarkRun with all results
+
+        Raises:
+            ValueError: If question_text is empty or models list is empty
         """
+        # Input validation
+        if not question_text or not question_text.strip():
+            raise ValueError("question_text cannot be empty")
+        if not models:
+            raise ValueError("models list cannot be empty")
+        if max_documents is not None and max_documents < 1:
+            raise ValueError("max_documents must be positive if specified")
+
         started_at = datetime.now()
         self._report_progress("Starting benchmark...")
 
@@ -213,7 +226,7 @@ class BenchmarkRunner:
         documents = self.db.semantic_search(
             question_text=question_text,
             threshold=self.semantic_threshold,
-            limit=max_documents or 100
+            limit=max_documents or DEFAULT_DOCUMENT_LIMIT
         )
 
         if not documents:

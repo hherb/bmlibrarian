@@ -7,8 +7,19 @@ including scoring results, alignment metrics, and benchmark summaries.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Final
 from enum import Enum
+
+
+# Constants for benchmarking - defined at module level for use in defaults
+SEMANTIC_THRESHOLD: Final[float] = 0.5
+BEST_REASONING_MODEL: Final[str] = "gpt-oss:120B"
+DEFAULT_TEMPERATURE: Final[float] = 0.1
+DEFAULT_TOP_P: Final[float] = 0.9
+DEFAULT_OLLAMA_HOST: Final[str] = "http://localhost:11434"
+DEFAULT_DOCUMENT_LIMIT: Final[int] = 100
+MIN_SCORE: Final[int] = 0
+MAX_SCORE: Final[int] = 5
 
 
 class BenchmarkStatus(Enum):
@@ -23,10 +34,10 @@ class BenchmarkStatus(Enum):
 class EvaluatorConfig:
     """Configuration for a model evaluator."""
     model_name: str
-    temperature: float = 0.1
-    top_p: float = 0.9
+    temperature: float = DEFAULT_TEMPERATURE
+    top_p: float = DEFAULT_TOP_P
     is_authoritative: bool = False
-    ollama_host: str = "http://localhost:11434"
+    ollama_host: str = DEFAULT_OLLAMA_HOST
     evaluator_id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -42,13 +53,26 @@ class EvaluatorConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EvaluatorConfig":
-        """Create from dictionary."""
+        """
+        Create from dictionary.
+
+        Args:
+            data: Dictionary with evaluator configuration
+
+        Returns:
+            EvaluatorConfig instance
+
+        Raises:
+            KeyError: If required 'model_name' key is missing
+        """
+        if "model_name" not in data:
+            raise KeyError("Required key 'model_name' missing from data")
         return cls(
             model_name=data["model_name"],
-            temperature=data.get("temperature", 0.1),
-            top_p=data.get("top_p", 0.9),
+            temperature=data.get("temperature", DEFAULT_TEMPERATURE),
+            top_p=data.get("top_p", DEFAULT_TOP_P),
             is_authoritative=data.get("is_authoritative", False),
-            ollama_host=data.get("ollama_host", "http://localhost:11434"),
+            ollama_host=data.get("ollama_host", DEFAULT_OLLAMA_HOST),
             evaluator_id=data.get("evaluator_id")
         )
 
@@ -199,10 +223,3 @@ class BenchmarkSummary:
             "fastest_model_avg_time_ms": self.fastest_model_avg_time_ms,
             "rankings": self.rankings
         }
-
-
-# Constants for benchmarking
-SEMANTIC_THRESHOLD: float = 0.5
-BEST_REASONING_MODEL: str = "gpt-oss:120B"
-DEFAULT_TEMPERATURE: float = 0.1
-DEFAULT_TOP_P: float = 0.9
