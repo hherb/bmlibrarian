@@ -7,17 +7,17 @@ Convert markdown files to professional PDF documents using ReportLab.
 Usage:
     uv run python export_to_pdf.py report.md -o report.pdf
     uv run python export_to_pdf.py report.md -o report.pdf --title "Research Report"
-    uv run python export_to_pdf.py report.md -o report.pdf --title "Study" --author "Dr. Smith" --a4
+    uv run python export_to_pdf.py report.md -o report.pdf --title "Study" --author "Dr. Smith" --letter
 
 Examples:
-    # Basic export
+    # Basic export (uses A4 paper size by default - international standard)
     uv run python export_to_pdf.py my_report.md -o output.pdf
 
     # With custom title and author
     uv run python export_to_pdf.py research.md -o research.pdf --title "COVID-19 Study" --author "Research Team"
 
-    # Use A4 paper size with larger font
-    uv run python export_to_pdf.py report.md -o report.pdf --a4 --font-size 12
+    # Use US Letter paper size with larger font
+    uv run python export_to_pdf.py report.md -o report.pdf --letter --font-size 12
 
     # From BMLibrarian research report
     uv run python export_to_pdf.py reports/cardiovascular_2025.md -o cardiovascular.pdf --research-report
@@ -41,7 +41,7 @@ def main():
 Examples:
   %(prog)s report.md -o report.pdf
   %(prog)s report.md -o report.pdf --title "Research Report" --author "Dr. Smith"
-  %(prog)s report.md -o report.pdf --a4 --font-size 12
+  %(prog)s report.md -o report.pdf --letter --font-size 12
   %(prog)s report.md -o report.pdf --research-report
         """
     )
@@ -80,9 +80,9 @@ Examples:
 
     # Page settings
     parser.add_argument(
-        '--a4',
+        '--letter',
         action='store_true',
-        help='Use A4 paper size instead of Letter'
+        help='Use US Letter paper size instead of A4 (international default)'
     )
     parser.add_argument(
         '--font-size',
@@ -151,7 +151,7 @@ Examples:
 
     # Configure exporter
     config = PDFExportConfig(
-        page_size=A4 if args.a4 else letter,
+        page_size=letter if args.letter else A4,
         base_font_size=args.font_size,
         title=args.title,
         author=args.author,

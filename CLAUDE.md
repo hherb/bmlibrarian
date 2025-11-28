@@ -140,7 +140,7 @@ Since this project uses `uv` for package management:
   - `uv run python export_to_pdf.py report.md -o report.pdf` - Export markdown to PDF with default settings
   - `uv run python export_to_pdf.py report.md -o report.pdf --title "Research" --author "Dr. Smith"` - Export with custom metadata
   - `uv run python export_to_pdf.py report.md -o report.pdf --research-report --citation-count 45` - Export as BMLibrarian research report
-  - `uv run python export_to_pdf.py report.md -o report.pdf --a4 --font-size 12` - Export with A4 format and custom font size
+  - `uv run python export_to_pdf.py report.md -o report.pdf --letter --font-size 12` - Export with US Letter format and custom font size
 - **GUI Applications**:
   - `uv run python setup_wizard.py` - PySide6 setup wizard for initial database configuration and data import
   - `uv run python bmlibrarian_research_gui.py` - Desktop research application with visual workflow progress and report preview
@@ -310,14 +310,14 @@ exporter.export_report(
 ### Command-Line Tool
 
 ```bash
-# Basic export
+# Basic export (uses A4 paper size by default - international standard)
 uv run python export_to_pdf.py report.md -o report.pdf
 
-# With metadata and A4 format
+# With metadata and US Letter format
 uv run python export_to_pdf.py report.md -o report.pdf \
     --title "Research Report" \
     --author "Dr. Smith" \
-    --a4 --font-size 12
+    --letter --font-size 12
 
 # Research report format with metadata
 uv run python export_to_pdf.py report.md -o report.pdf \

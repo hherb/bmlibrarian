@@ -106,7 +106,7 @@ exporter = PDFExporter(config)
 ### Available Configuration Options
 
 #### Page Settings
-- `page_size`: `letter` (default) or `A4`
+- `page_size`: `A4` (default, international standard) or `letter` (US)
 - `margin_left`, `margin_right`, `margin_top`, `margin_bottom`: Margins in inches
 - Default margins: 0.75" left/right, 1.0" top, 0.75" bottom
 
@@ -275,7 +275,7 @@ def main():
     parser.add_argument('--title', help='Document title')
     parser.add_argument('--author', default='BMLibrarian', help='Author name')
     parser.add_argument('--font-size', type=int, default=11, help='Base font size')
-    parser.add_argument('--a4', action='store_true', help='Use A4 instead of Letter')
+    parser.add_argument('--letter', action='store_true', help='Use US Letter instead of A4 (default)')
 
     args = parser.parse_args()
 
@@ -284,7 +284,7 @@ def main():
 
     # Configure exporter
     config = PDFExportConfig(
-        page_size=A4 if args.a4 else letter,
+        page_size=letter if args.letter else A4,
         base_font_size=args.font_size,
         title=args.title
     )
