@@ -1770,8 +1770,8 @@ class SystematicReviewAgent(BaseAgent):
             )
 
         # Determine final inclusion
-        final_included = [ap for ap in self._assessed_papers if ap.include_in_review]
-        final_excluded = [ap for ap in self._assessed_papers if not ap.include_in_review]
+        final_included = [ap for ap in self._assessed_papers if ap.is_included]
+        final_excluded = [ap for ap in self._assessed_papers if not ap.is_included]
 
         # Build statistics
         stats = ReviewStatistics(
