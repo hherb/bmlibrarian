@@ -1245,6 +1245,11 @@ class SystematicReviewAgent(BaseAgent):
             }
         )
 
+        # Extract output directory for checkpoint saving during resume
+        output_dir: Optional[str] = None
+        if output_path:
+            output_dir = str(Path(output_path).expanduser().parent)
+
         # Continue from the appropriate phase based on checkpoint type
         try:
             if checkpoint_type == CHECKPOINT_SEARCH_STRATEGY:
@@ -1260,6 +1265,7 @@ class SystematicReviewAgent(BaseAgent):
                     interactive=interactive,
                     output_path=output_path,
                     checkpoint_callback=checkpoint_callback,
+                    output_dir=output_dir,
                 )
             elif checkpoint_type == CHECKPOINT_SCORING_COMPLETE:
                 # Resume from quality assessment (Phase 5)
