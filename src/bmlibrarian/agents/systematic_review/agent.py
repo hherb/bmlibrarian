@@ -1815,6 +1815,9 @@ class SystematicReviewAgent(BaseAgent):
 
             if output_path:
                 reporter.generate_json_report(result, output_path)
+                # Also generate markdown report
+                md_path = output_path.replace(".json", ".md") if output_path.endswith(".json") else output_path + ".md"
+                reporter.generate_markdown_report(result, md_path)
 
             timer.set_output(f"Report generated with {len(final_included)} papers")
 

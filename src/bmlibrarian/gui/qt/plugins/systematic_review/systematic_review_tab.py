@@ -917,19 +917,20 @@ class SystematicReviewTabWidget(QWidget):
         if file_path:
             try:
                 from bmlibrarian.agents.systematic_review.reporter import Reporter
+                from bmlibrarian.agents.systematic_review.data_models import (
+                    SystematicReviewResult,
+                )
 
-                # Note: This is a simplified export - full implementation would
-                # use Reporter.generate_markdown_report()
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(f"# Systematic Review Results\n\n")
-                    stats = self._last_result.get("statistics", {})
-                    f.write(f"## Summary\n\n")
-                    f.write(f"- Total Considered: {stats.get('total_considered', 0)}\n")
-                    f.write(f"- Final Included: {stats.get('final_included', 0)}\n")
-                    f.write(f"- Final Excluded: {stats.get('final_excluded', 0)}\n")
+                # Convert dict back to SystematicReviewResult for proper formatting
+                result = SystematicReviewResult.from_dict(self._last_result)
+
+                # Create reporter and generate full markdown report
+                reporter = Reporter(documenter=None, criteria=None, weights=None)
+                reporter.generate_markdown_report(result, file_path)
 
                 self.status_message.emit(f"Exported to {file_path}")
             except Exception as e:
+                logger.error(f"Failed to export markdown: {e}", exc_info=True)
                 QMessageBox.critical(
                     self,
                     "Export Error",
