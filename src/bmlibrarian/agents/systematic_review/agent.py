@@ -1796,16 +1796,15 @@ class SystematicReviewAgent(BaseAgent):
             input_summary=f"Generating report for {len(final_included)} included papers",
             decision_rationale="Creating final systematic review output",
         ) as timer:
-            result = SystematicReviewResult(
-                review_id=self.documenter.review_id,
-                criteria=criteria,
-                weights=weights,
-                statistics=stats,
+            # Build result using reporter (excluded papers need ScoredPaper, not AssessedPaper)
+            excluded_scored = [ap.scored_paper for ap in final_excluded]
+            result = reporter.build_json_result(
                 included_papers=final_included,
-                excluded_papers=final_excluded,
+                excluded_papers=excluded_scored,
                 uncertain_papers=[],
                 search_plan=self._search_plan,
-                audit_trail=self.documenter.generate_process_log(),
+                executed_queries=self._executed_queries,
+                statistics=stats,
             )
 
             if output_path:
