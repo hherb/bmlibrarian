@@ -619,16 +619,8 @@ class QualityAssessor:
             start_time = time.time()
             agent = self._get_study_agent()
 
-            # Use full text without truncation (Golden Rule #14)
-            text = document.get("abstract", "")
-
-            result = agent.assess_study(
-                abstract=text,
-                title=document.get("title", ""),
-                document_id=str(document_id),
-                pmid=document.get("pmid"),
-                doi=document.get("doi"),
-            )
+            # assess_study expects a document dict with 'abstract' key
+            result = agent.assess_study(document=document)
 
             result_dict = result.to_dict()
             execution_time_ms = int((time.time() - start_time) * 1000)
