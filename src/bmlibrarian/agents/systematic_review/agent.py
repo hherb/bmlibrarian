@@ -1145,8 +1145,16 @@ class SystematicReviewAgent(BaseAgent):
                 # Paper IDs (full data re-fetched on resume)
                 "paper_document_ids": [p.document_id for p in self._all_papers],
                 "paper_count": len(self._all_papers),
-                # Scored papers if available
-                "scored_paper_ids": [sp.paper.document_id for sp in self._scored_papers],
+                # Scored papers if available (full data for scoring_complete checkpoint)
+                "scored_papers": [
+                    {
+                        "document_id": sp.paper.document_id,
+                        "relevance_score": sp.relevance_score,
+                        "relevance_rationale": sp.relevance_rationale,
+                        "inclusion_decision": sp.inclusion_decision.to_dict(),
+                    }
+                    for sp in self._scored_papers
+                ],
                 # Excluded paper tracking for comprehensive reporting
                 "rejected_initial_filter": [
                     {"document_id": paper.document_id, "reason": reason}
@@ -1405,8 +1413,52 @@ class SystematicReviewAgent(BaseAgent):
 
             logger.info(f"Restored {len(self._rejected_initial_filter)} papers rejected in initial filter")
 
-        # Note: below_threshold_paper_ids are restored after scoring is redone
-        # (they need scored paper objects, not just document IDs)
+        # Restore scored papers if available (for scoring_complete checkpoint)
+        scored_papers_data = checkpoint_data.get("scored_papers", [])
+        if scored_papers_data:
+            # First, ensure we have paper_lookup from all_papers
+            if not hasattr(self, '_all_papers') or not self._all_papers:
+                # Re-fetch papers if needed
+                paper_ids = checkpoint_data.get("paper_document_ids", [])
+                if paper_ids:
+                    from bmlibrarian.database import fetch_documents_by_ids
+                    documents = fetch_documents_by_ids(set(paper_ids))
+                    self._all_papers = []
+                    for doc in documents:
+                        try:
+                            paper = PaperData.from_database_row(doc)
+                            self._all_papers.append(paper)
+                        except Exception as e:
+                            logger.warning(f"Failed to restore paper {doc.get('id')}: {e}")
+
+            paper_lookup = {p.document_id: p for p in self._all_papers}
+            self._scored_papers = []
+            self._below_threshold_papers = []
+
+            relevance_threshold = self.config.relevance_threshold
+
+            for sp_data in scored_papers_data:
+                doc_id = sp_data.get("document_id")
+                if doc_id not in paper_lookup:
+                    logger.warning(f"Scored paper {doc_id} not found in paper lookup, skipping")
+                    continue
+
+                paper = paper_lookup[doc_id]
+                inclusion_decision = InclusionDecision.from_dict(sp_data.get("inclusion_decision", {}))
+
+                scored_paper = ScoredPaper(
+                    paper=paper,
+                    relevance_score=sp_data.get("relevance_score", 0.0),
+                    relevance_rationale=sp_data.get("relevance_rationale", ""),
+                    inclusion_decision=inclusion_decision,
+                )
+                self._scored_papers.append(scored_paper)
+
+                # Also restore below_threshold_papers
+                if scored_paper.relevance_score < relevance_threshold:
+                    self._below_threshold_papers.append(scored_paper)
+
+            logger.info(f"Restored {len(self._scored_papers)} scored papers")
 
     def _continue_from_search_execution(
         self,
@@ -1575,14 +1627,23 @@ class SystematicReviewAgent(BaseAgent):
         """
         Continue review from after scoring checkpoint.
 
-        Executes: Quality Assessment → Report
+        Executes: Quality Assessment → Composite Scoring → Report
+
+        This resumes from the scoring_complete checkpoint where we have
+        scored papers already restored from the checkpoint file.
         """
+        from pathlib import Path
         from .scorer import CompositeScorer
         from .quality import QualityAssessor
         from .reporter import Reporter
 
         criteria = self._criteria
         weights = self._weights
+
+        # Extract output directory for checkpoint saving
+        output_dir: Optional[str] = None
+        if output_path:
+            output_dir = str(Path(output_path).expanduser().parent)
 
         quality_assessor = QualityAssessor(
             config=self.config,
@@ -1598,19 +1659,150 @@ class SystematicReviewAgent(BaseAgent):
             weights=weights,
         )
 
-        # Continue from quality assessment phase
+        # Calculate statistics from restored state
+        total_considered = len(self._all_papers)
+        passed_initial_filter = total_considered - len(self._rejected_initial_filter)
+
+        # Get papers above relevance threshold from restored scored papers
+        relevance_threshold = self.config.relevance_threshold
+        relevant_papers = [
+            sp for sp in self._scored_papers
+            if sp.relevance_score >= relevance_threshold
+        ]
+        passed_relevance = len(relevant_papers)
+
+        logger.info(
+            f"Resuming from scoring_complete: {len(self._scored_papers)} scored papers, "
+            f"{passed_relevance} above threshold"
+        )
+
+        # Phase 5: Quality Assessment
         self.documenter.set_phase("quality_assessment")
 
-        # This is a simplified implementation - full implementation would
-        # restore scored papers and continue from there
-        logger.warning("Resume from scoring_complete checkpoint is experimental")
+        with self.documenter.log_step_with_timer(
+            action=ACTION_ASSESS_QUALITY,
+            tool="QualityAssessor",
+            input_summary=f"Assessing quality of {len(relevant_papers)} papers (resumed from checkpoint)",
+            decision_rationale="Continuing from scoring_complete checkpoint",
+        ) as timer:
+            quality_result = quality_assessor.assess_batch(relevant_papers)
+            self._assessed_papers = quality_result.assessed_papers
 
-        # Build empty result for now
-        return self._build_empty_result(
-            criteria,
-            weights,
-            "Resume from scoring_complete not fully implemented"
+            timer.set_output(
+                f"Assessed {len(quality_result.assessed_papers)} papers, "
+                f"failed: {len(quality_result.failed_papers)}"
+            )
+            timer.add_metrics({
+                "papers_assessed": len(quality_result.assessed_papers),
+                "failed_assessment": len(quality_result.failed_papers),
+                **quality_result.assessment_statistics,
+            })
+
+        # Checkpoint: Review quality assessment results
+        if not self._checkpoint(
+            checkpoint_type=CHECKPOINT_QUALITY_ASSESSMENT,
+            state={
+                "papers_assessed": len(quality_result.assessed_papers),
+                "failed_assessment": len(quality_result.failed_papers),
+                "study_assessments": quality_result.assessment_statistics.get("study_assessments", 0),
+                "weight_assessments": quality_result.assessment_statistics.get("weight_assessments", 0),
+            },
+            interactive=interactive,
+            checkpoint_callback=checkpoint_callback,
+            output_dir=output_dir,
+        ):
+            logger.info("Review aborted at quality assessment checkpoint")
+            self.documenter.end_review()
+            return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
+
+        # Phase 6: Composite Scoring
+        with self.documenter.log_step_with_timer(
+            action=ACTION_CALCULATE_COMPOSITE,
+            tool="CompositeScorer",
+            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            decision_rationale="Combining all scores for final ranking",
+        ) as timer:
+            for assessed in self._assessed_papers:
+                assessed.composite_score = composite_scorer.score(assessed)
+
+            # Sort by composite score
+            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+
+            timer.set_output(
+                f"Ranked {len(self._assessed_papers)} papers by composite score"
+            )
+
+        # Determine final inclusion
+        final_included = [ap for ap in self._assessed_papers if ap.is_included]
+        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
+
+        # =================================================================
+        # Collect ALL excluded papers for comprehensive reporting
+        # =================================================================
+        all_excluded_papers: List[ScoredPaper] = []
+
+        # 1. Papers rejected in initial filter
+        for paper, reason in self._rejected_initial_filter:
+            all_excluded_papers.append(ScoredPaper(
+                paper=paper,
+                relevance_score=0.0,
+                relevance_rationale=reason,
+                inclusion_decision=InclusionDecision.create_excluded(
+                    stage=ExclusionStage.INITIAL_FILTER,
+                    reasons=[reason],
+                    rationale=reason,
+                ),
+            ))
+
+        # 2. Papers below relevance threshold
+        all_excluded_papers.extend(self._below_threshold_papers)
+
+        # 3. Papers that failed quality gate
+        for ap in final_excluded_assessed:
+            all_excluded_papers.append(ap.scored_paper)
+
+        # Build statistics with accurate counts
+        stats = ReviewStatistics(
+            total_considered=total_considered,
+            passed_initial_filter=passed_initial_filter,
+            passed_relevance_threshold=passed_relevance,
+            passed_quality_gate=len(self._assessed_papers),
+            final_included=len(final_included),
+            final_excluded=len(all_excluded_papers),
+            uncertain_for_review=0,
+            processing_time_seconds=self.documenter.get_duration(),
+            total_llm_calls=self.documenter._total_llm_calls,
+            total_tokens_used=self.documenter._total_tokens,
         )
+
+        # Phase 7: Report Generation
+        self.documenter.set_phase("reporting")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_GENERATE_REPORT,
+            tool="Reporter",
+            input_summary=f"Generating report for {len(final_included)} included, {len(all_excluded_papers)} excluded papers",
+            decision_rationale="Creating final systematic review output",
+        ) as timer:
+            result = reporter.build_json_result(
+                included_papers=final_included,
+                excluded_papers=all_excluded_papers,
+                uncertain_papers=[],
+                search_plan=self._search_plan,
+                executed_queries=self._executed_queries,
+                statistics=stats,
+            )
+
+            if output_path:
+                reporter.generate_json_report(result, output_path)
+                # Also generate markdown report
+                md_path = output_path.replace(".json", ".md") if output_path.endswith(".json") else output_path + ".md"
+                reporter.generate_markdown_report(result, md_path)
+
+            timer.set_output(f"Report generated with {len(final_included)} included papers")
+
+        self.documenter.end_review()
+        return result
 
     def _continue_from_initial_results_checkpoint(
         self,
