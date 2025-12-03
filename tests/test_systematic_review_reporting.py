@@ -113,10 +113,11 @@ def sample_scored_paper(sample_paper: PaperData) -> ScoredPaper:
         relevance_score=4.5,
         relevance_rationale="Directly addresses statin efficacy for CVD prevention",
         inclusion_decision=InclusionDecision.create_included(
+            stage=ExclusionStage.QUALITY_GATE,
             rationale="Meets all inclusion criteria",
             criteria_matched=["Human studies", "Statin intervention"],
         ),
-        query_ids_matched=["semantic_001", "keyword_002"],
+        search_provenance=["semantic_001", "keyword_002"],
     )
 
 
@@ -697,7 +698,11 @@ class TestEdgeCases:
             paper=paper,
             relevance_score=4.0,
             relevance_rationale="Test",
-            inclusion_decision=InclusionDecision.create_included(rationale="Test"),
+            inclusion_decision=InclusionDecision.create_included(
+                stage=ExclusionStage.QUALITY_GATE,
+                rationale="Test",
+                criteria_matched=[],
+            ),
         )
 
         assessed = AssessedPaper(

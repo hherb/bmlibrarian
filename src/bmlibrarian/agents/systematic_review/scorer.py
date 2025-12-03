@@ -735,6 +735,9 @@ class CompositeScorer:
         """
         Filter papers by quality threshold.
 
+        Updates inclusion decision for both passed and failed papers to ensure
+        the rationale reflects the final decision (not the initial screening).
+
         Args:
             papers: Papers to filter (must have composite_score set)
             threshold: Minimum composite score for inclusion
@@ -752,9 +755,18 @@ class CompositeScorer:
                 paper.composite_score = score
 
             if score >= threshold:
+                # Update inclusion decision to reflect final inclusion
+                # This overwrites any previous screening rationale to avoid
+                # contradictory messages like "excluded because... " for included papers
+                paper.scored_paper.inclusion_decision = InclusionDecision.create_included(
+                    stage=ExclusionStage.QUALITY_GATE,
+                    rationale=self._build_inclusion_rationale(paper, score, threshold),
+                    criteria_matched=paper.scored_paper.inclusion_decision.criteria_matched or [],
+                    confidence=min(1.0, score / 10.0),  # Higher score = higher confidence
+                )
                 passed.append(paper)
             else:
-                # Update inclusion decision
+                # Update inclusion decision for exclusion
                 paper.scored_paper.inclusion_decision = InclusionDecision.create_excluded(
                     stage=ExclusionStage.QUALITY_GATE,
                     reasons=[f"Below quality threshold ({score:.2f} < {threshold})"],
@@ -769,6 +781,50 @@ class CompositeScorer:
         )
 
         return passed, failed
+
+    def _build_inclusion_rationale(
+        self,
+        paper: AssessedPaper,
+        score: float,
+        threshold: float,
+    ) -> str:
+        """
+        Build a meaningful inclusion rationale for papers passing quality gate.
+
+        Args:
+            paper: The assessed paper
+            score: Composite score
+            threshold: Quality threshold
+
+        Returns:
+            Human-readable rationale string
+        """
+        parts = []
+
+        # Start with overall score
+        parts.append(f"Composite score {score:.2f} exceeds threshold {threshold:.1f}.")
+
+        # Add relevance info
+        relevance = paper.scored_paper.relevance_score
+        parts.append(f"Relevance score: {relevance:.1f}/5.")
+
+        # Add study type info if available
+        if paper.study_assessment:
+            study_type = paper.study_assessment.get("study_type", "")
+            if study_type:
+                parts.append(f"Study type: {study_type}.")
+
+            quality = paper.study_assessment.get("quality_score", 0)
+            if quality > 0:
+                parts.append(f"Study quality: {quality:.1f}/10.")
+
+        # Add paper weight info if available
+        if paper.paper_weight:
+            weight = paper.paper_weight.get("composite_score", 0)
+            if weight > 0:
+                parts.append(f"Paper weight: {weight:.1f}/10.")
+
+        return " ".join(parts)
 
     # =========================================================================
     # Score Extraction Helpers

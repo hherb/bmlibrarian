@@ -100,18 +100,24 @@ Inclusion Criteria: {inclusion_criteria}
 Exclusion Criteria: {exclusion_criteria}
 
 Generate diverse queries that:
-1. Use different phrasings of key concepts
-2. Include relevant synonyms and related terms
-3. Vary between specific and broader terms
-4. Consider different perspectives on the research question
+1. Use SPECIFIC drug names, not just drug classes (e.g., "ibuprofen" instead of just "NSAIDs")
+2. Include medical abbreviations and their spelled-out forms (e.g., both "UTI" and "urinary tract infection")
+3. Combine intervention terms with condition terms (e.g., "ibuprofen urinary tract infection")
+4. Include study type terms for hybrid queries (e.g., "randomized controlled trial", "RCT")
+5. Use synonyms for medical conditions (e.g., "cystitis" for UTI, "lower urinary tract infection")
+
+IMPORTANT for hybrid queries:
+- Use PostgreSQL tsquery boolean format: term1 & term2 | term3
+- Group related terms with parentheses: (term1 | term2) & (term3 | term4)
+- Use wildcards sparingly: term:* for prefix matching
 
 Return a JSON array of query objects:
 [
     {{
-        "query_text": "the search query",
-        "query_type": "semantic|keyword|hybrid",
-        "purpose": "what this query aims to find",
-        "expected_coverage": "what aspect of the research question it addresses"
+        "query_text": "the search query in appropriate format",
+        "query_type": "hybrid",
+        "purpose": "why this query will find relevant papers",
+        "expected_coverage": "what types of papers this will find"
     }}
 ]
 
@@ -619,10 +625,15 @@ class Planner:
         criteria: SearchCriteria,
         pico: PICOComponents,
     ) -> List[PlannedQuery]:
-        """Generate hybrid search queries (semantic + keyword combined)."""
+        """
+        Generate hybrid search queries (semantic + keyword combined).
+
+        Creates targeted queries using specific drug names and conditions
+        for better literature retrieval.
+        """
         queries = []
 
-        # Create hybrid query combining semantic and keyword elements
+        # Create primary hybrid query from research question
         queries.append(PlannedQuery(
             query_id=f"hybrid_{uuid.uuid4().hex[:8]}",
             query_text=criteria.research_question,
@@ -633,7 +644,175 @@ class Planner:
             estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
         ))
 
+        # Generate targeted queries with specific drug names
+        targeted_queries = self._generate_targeted_drug_queries(
+            criteria.research_question, pico
+        )
+        queries.extend(targeted_queries)
+
+        # Generate PICO-based hybrid queries if applicable
+        if pico.is_clinical and pico.intervention:
+            pico_hybrid_query = self._build_pico_hybrid_query(pico)
+            if pico_hybrid_query:
+                queries.append(PlannedQuery(
+                    query_id=f"hybrid_pico_{uuid.uuid4().hex[:8]}",
+                    query_text=pico_hybrid_query,
+                    query_type=QueryType.HYBRID,
+                    purpose="PICO-based hybrid search",
+                    expected_coverage="Clinical studies matching PICO components",
+                    priority=8,
+                    estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
+                ))
+
         return queries
+
+    def _generate_targeted_drug_queries(
+        self,
+        question: str,
+        pico: PICOComponents,
+    ) -> List[PlannedQuery]:
+        """
+        Generate targeted queries with specific drug names.
+
+        When drug classes are detected (e.g., NSAIDs), generates queries
+        with specific drug names for better coverage.
+
+        Args:
+            question: Research question
+            pico: PICO components
+
+        Returns:
+            List of targeted PlannedQuery objects
+        """
+        import re
+
+        queries = []
+        question_lower = question.lower()
+
+        # Drug class to specific drug name mappings
+        drug_class_mappings = {
+            'nsaid': {
+                'drugs': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen', 'indomethacin'],
+                'condition_terms': ['urinary', 'cystitis', 'uti', 'infection'],
+            },
+            'antibiotic': {
+                'drugs': ['amoxicillin', 'ciprofloxacin', 'trimethoprim', 'nitrofurantoin', 'fosfomycin'],
+                'condition_terms': ['urinary', 'cystitis', 'uti', 'infection'],
+            },
+            'statin': {
+                'drugs': ['atorvastatin', 'simvastatin', 'rosuvastatin', 'pravastatin'],
+                'condition_terms': ['cardiovascular', 'cholesterol', 'lipid'],
+            },
+            'ace inhibitor': {
+                'drugs': ['lisinopril', 'enalapril', 'ramipril', 'captopril'],
+                'condition_terms': ['hypertension', 'heart failure', 'blood pressure'],
+            },
+            'beta blocker': {
+                'drugs': ['metoprolol', 'atenolol', 'propranolol', 'carvedilol'],
+                'condition_terms': ['hypertension', 'heart', 'arrhythmia'],
+            },
+            'ppi': {
+                'drugs': ['omeprazole', 'pantoprazole', 'esomeprazole', 'lansoprazole'],
+                'condition_terms': ['reflux', 'gastric', 'ulcer', 'gerd'],
+            },
+            'ssri': {
+                'drugs': ['fluoxetine', 'sertraline', 'paroxetine', 'escitalopram'],
+                'condition_terms': ['depression', 'anxiety', 'mental health'],
+            },
+        }
+
+        # Detect drug classes in the question
+        for drug_class, mapping in drug_class_mappings.items():
+            # Check for drug class or its abbreviation
+            class_patterns = [
+                rf'\b{drug_class}s?\b',
+                rf'\bnon-?steroidal anti-?inflammatory\b' if drug_class == 'nsaid' else None,
+            ]
+            class_patterns = [p for p in class_patterns if p]
+
+            if any(re.search(p, question_lower) for p in class_patterns):
+                # Detect condition terms in question
+                condition_in_question = None
+                for term in mapping['condition_terms']:
+                    if term in question_lower:
+                        condition_in_question = term
+                        break
+
+                # Generate queries with top 2-3 specific drugs
+                for i, drug in enumerate(mapping['drugs'][:3]):
+                    if condition_in_question:
+                        # Combine drug with detected condition
+                        query_text = f"{drug} & {condition_in_question}"
+                        queries.append(PlannedQuery(
+                            query_id=f"hybrid_drug_{uuid.uuid4().hex[:8]}",
+                            query_text=query_text,
+                            query_type=QueryType.HYBRID,
+                            purpose=f"Specific drug query: {drug} + {condition_in_question}",
+                            expected_coverage=f"Studies on {drug} for {condition_in_question}",
+                            priority=9 + i,
+                            estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY // 2,
+                        ))
+
+                # Also generate OR query for multiple drugs
+                if condition_in_question:
+                    multi_drug_query = (
+                        f"({' | '.join(mapping['drugs'][:4])}) & {condition_in_question}"
+                    )
+                    queries.append(PlannedQuery(
+                        query_id=f"hybrid_drugs_or_{uuid.uuid4().hex[:8]}",
+                        query_text=multi_drug_query,
+                        query_type=QueryType.HYBRID,
+                        purpose=f"Multiple {drug_class.upper()}s + {condition_in_question}",
+                        expected_coverage=f"Studies on any {drug_class.upper()} for {condition_in_question}",
+                        priority=12,
+                        estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
+                    ))
+
+        return queries
+
+    def _build_pico_hybrid_query(self, pico: PICOComponents) -> Optional[str]:
+        """
+        Build a hybrid query from PICO components.
+
+        Args:
+            pico: PICO components
+
+        Returns:
+            Query string or None if insufficient components
+        """
+        parts = []
+
+        if pico.intervention:
+            # Extract key words from intervention
+            intervention_words = [
+                w for w in pico.intervention.lower().split()
+                if len(w) > 3 and w not in {'with', 'using', 'treatment', 'therapy'}
+            ]
+            if intervention_words:
+                parts.append(intervention_words[0])
+
+        if pico.population:
+            # Extract condition from population
+            population_words = [
+                w for w in pico.population.lower().split()
+                if len(w) > 3 and w not in {'with', 'patients', 'adults', 'people'}
+            ]
+            if population_words:
+                parts.append(population_words[0])
+
+        if pico.outcome:
+            # Extract outcome measure
+            outcome_words = [
+                w for w in pico.outcome.lower().split()
+                if len(w) > 3 and w not in {'rate', 'incidence', 'improvement'}
+            ]
+            if outcome_words:
+                parts.append(outcome_words[0])
+
+        if len(parts) >= 2:
+            return " & ".join(parts[:3])
+
+        return None
 
     def _generate_hyde_query(
         self,
@@ -783,14 +962,14 @@ class Planner:
         """
         Extract key biomedical terms from text.
 
-        Simple extraction based on word patterns. Could be enhanced with
-        NLP or thesaurus lookup.
+        Preserves compound medical terms (e.g., "non-steroidal anti-inflammatory")
+        and common abbreviations (e.g., "NSAIDs", "UTI").
 
         Args:
             text: Text to extract terms from
 
         Returns:
-            List of key terms
+            List of key terms suitable for tsquery
         """
         import re
 
@@ -805,14 +984,62 @@ class Planner:
             'before', 'after', 'above', 'below', 'to', 'and', 'but', 'or',
             'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
             'just', 'how', 'when', 'where', 'why', 'effect', 'effects',
-            'study', 'studies', 'research', 'evidence',
+            'study', 'studies', 'research', 'evidence', 'treating',
+            'symptomatic', 'adult', 'adults', 'women', 'men', 'patients',
         }
 
-        # Extract words
-        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-]{2,}\b', text.lower())
+        # Known compound terms that should be kept together (mapped to searchable forms)
+        compound_terms = {
+            'non-steroidal anti-inflammatory drug': 'NSAID',
+            'non-steroidal anti-inflammatory drugs': 'NSAIDs',
+            'nonsteroidal anti-inflammatory drug': 'NSAID',
+            'nonsteroidal anti-inflammatory drugs': 'NSAIDs',
+            'non‐steroidal anti‐inflammatory drug': 'NSAID',  # Unicode hyphen
+            'non‐steroidal anti‐inflammatory drugs': 'NSAIDs',
+            'urinary tract infection': 'UTI',
+            'urinary tract infections': 'UTI',
+            'randomized controlled trial': 'RCT',
+            'randomised controlled trial': 'RCT',
+            'randomized controlled trials': 'RCTs',
+            'randomised controlled trials': 'RCTs',
+        }
 
-        # Filter stop words and short words
-        terms = [w for w in words if w not in stop_words and len(w) > 2]
+        # Known abbreviations and their expansions (for synonym searching)
+        abbreviation_synonyms = {
+            'nsaid': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen'],
+            'nsaids': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen'],
+            'uti': ['cystitis', 'urinary'],
+            'utis': ['cystitis', 'urinary'],
+        }
+
+        terms = []
+        text_lower = text.lower()
+
+        # First, extract compound terms
+        for compound, abbreviation in compound_terms.items():
+            if compound in text_lower:
+                terms.append(abbreviation.lower())
+                # Remove the compound from text to avoid re-extracting words
+                text_lower = text_lower.replace(compound, '')
+
+        # Check for abbreviations and add their synonyms
+        for abbrev, synonyms in abbreviation_synonyms.items():
+            # Look for abbreviation as whole word
+            if re.search(rf'\b{abbrev}s?\b', text_lower):
+                terms.append(abbrev)
+                # Add first synonym for broader coverage
+                if synonyms:
+                    terms.append(synonyms[0])
+
+        # Extract remaining significant words
+        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-]{2,}\b', text_lower)
+
+        # Filter stop words and add to terms
+        for word in words:
+            if word not in stop_words and len(word) > 2:
+                # Skip if it's a partial compound term
+                if word not in {'non', 'steroidal', 'anti', 'inflammatory'}:
+                    terms.append(word)
 
         # Deduplicate while preserving order
         seen = set()

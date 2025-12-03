@@ -699,12 +699,17 @@ class Reporter:
             lines.append("")
 
             # Scores
-            lines.append(f"**Scores:**")
+            lines.append("**Scores:**")
             lines.append(f"{MD_BULLET} Relevance: {scores.get('relevance', 'N/A')}/5")
-            lines.append(f"{MD_BULLET} Composite: {scores.get('composite_score', 'N/A'):.2f}/10")
+            composite = scores.get('composite_score')
+            if composite is not None:
+                lines.append(f"{MD_BULLET} Composite: {composite:.2f}/10")
+            else:
+                lines.append(f"{MD_BULLET} Composite: N/A/10")
 
-            if scores.get("study_quality"):
-                lines.append(f"{MD_BULLET} Study Quality: {scores['study_quality']:.2f}/10")
+            study_quality = scores.get("study_quality")
+            if study_quality is not None:
+                lines.append(f"{MD_BULLET} Study Quality: {study_quality:.2f}/10")
 
             lines.append("")
 
@@ -1213,10 +1218,15 @@ class Reporter:
                 scores = paper.get("scores", {})
                 lines.append("**Scores:**")
                 lines.append(f"{MD_BULLET} Relevance: {scores.get('relevance', 'N/A')}/5")
-                lines.append(f"{MD_BULLET} Composite: {scores.get('composite_score', 'N/A'):.2f}/10")
+                composite = scores.get('composite_score')
+                if composite is not None:
+                    lines.append(f"{MD_BULLET} Composite: {composite:.2f}/10")
+                else:
+                    lines.append(f"{MD_BULLET} Composite: N/A/10")
 
-                if scores.get("study_quality"):
-                    lines.append(f"{MD_BULLET} Study Quality: {scores['study_quality']:.2f}/10")
+                study_quality = scores.get("study_quality")
+                if study_quality is not None:
+                    lines.append(f"{MD_BULLET} Study Quality: {study_quality:.2f}/10")
 
                 lines.append("")
 
