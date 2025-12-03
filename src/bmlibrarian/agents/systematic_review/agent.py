@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from ..base import BaseAgent, PerformanceMetrics
 
@@ -222,6 +222,9 @@ class SystematicReviewAgent(BaseAgent):
         self._all_papers: List[PaperData] = []
         self._scored_papers: List[ScoredPaper] = []
         self._assessed_papers: List[AssessedPaper] = []
+        # Track papers rejected at each stage for comprehensive reporting
+        self._rejected_initial_filter: List[Tuple[PaperData, str]] = []
+        self._below_threshold_papers: List[ScoredPaper] = []
 
         # Child agents (initialized lazily)
         self._query_agent = None
@@ -497,6 +500,8 @@ class SystematicReviewAgent(BaseAgent):
                 filter_result = initial_filter.filter_batch(self._all_papers)
                 passed_filter = filter_result.passed
                 rejected_filter = filter_result.rejected
+                # Store for comprehensive reporting
+                self._rejected_initial_filter = rejected_filter
 
                 timer.set_output(
                     f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
@@ -542,6 +547,8 @@ class SystematicReviewAgent(BaseAgent):
                 self._scored_papers,
                 threshold=self.config.relevance_threshold,
             )
+            # Store for comprehensive reporting
+            self._below_threshold_papers = below_threshold
 
             passed_relevance = len(above_threshold)
 
@@ -1140,6 +1147,14 @@ class SystematicReviewAgent(BaseAgent):
                 "paper_count": len(self._all_papers),
                 # Scored papers if available
                 "scored_paper_ids": [sp.paper.document_id for sp in self._scored_papers],
+                # Excluded paper tracking for comprehensive reporting
+                "rejected_initial_filter": [
+                    {"document_id": paper.document_id, "reason": reason}
+                    for paper, reason in self._rejected_initial_filter
+                ],
+                "below_threshold_paper_ids": [
+                    sp.paper.document_id for sp in self._below_threshold_papers
+                ],
                 # Documenter state
                 "documenter_phase": self.documenter._current_phase,
             }
@@ -1364,6 +1379,35 @@ class SystematicReviewAgent(BaseAgent):
                 missing = len(paper_ids) - len(self._all_papers)
                 logger.warning(f"{missing} papers could not be restored from database")
 
+        # Restore rejected initial filter papers
+        rejected_initial_data = checkpoint_data.get("rejected_initial_filter", [])
+        if rejected_initial_data:
+            # Create a lookup for papers by document_id
+            paper_lookup = {p.document_id: p for p in self._all_papers}
+            self._rejected_initial_filter = []
+
+            for item in rejected_initial_data:
+                doc_id = item.get("document_id")
+                reason = item.get("reason", "Unknown reason")
+
+                if doc_id in paper_lookup:
+                    self._rejected_initial_filter.append((paper_lookup[doc_id], reason))
+                else:
+                    # Need to re-fetch this paper from database
+                    try:
+                        from bmlibrarian.database import fetch_documents_by_ids
+                        docs = fetch_documents_by_ids({doc_id})
+                        if docs:
+                            paper = PaperData.from_database_row(docs[0])
+                            self._rejected_initial_filter.append((paper, reason))
+                    except Exception as e:
+                        logger.warning(f"Failed to restore rejected paper {doc_id}: {e}")
+
+            logger.info(f"Restored {len(self._rejected_initial_filter)} papers rejected in initial filter")
+
+        # Note: below_threshold_paper_ids are restored after scoring is redone
+        # (they need scored paper objects, not just document IDs)
+
     def _continue_from_search_execution(
         self,
         interactive: bool,
@@ -1493,6 +1537,8 @@ class SystematicReviewAgent(BaseAgent):
             filter_result = initial_filter.filter_batch(self._all_papers)
             passed_filter = filter_result.passed
             rejected_filter = filter_result.rejected
+            # Store for comprehensive reporting
+            self._rejected_initial_filter = rejected_filter
 
             timer.set_output(
                 f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
@@ -1698,6 +1744,8 @@ class SystematicReviewAgent(BaseAgent):
             sp for sp in self._scored_papers
             if sp.relevance_score < relevance_threshold
         ]
+        # Store for comprehensive reporting
+        self._below_threshold_papers = below_threshold
 
         passed_relevance = len(relevant_papers)
         logger.info(f"{passed_relevance} papers passed relevance threshold ({relevance_threshold})")
@@ -1777,16 +1825,41 @@ class SystematicReviewAgent(BaseAgent):
 
         # Determine final inclusion
         final_included = [ap for ap in self._assessed_papers if ap.is_included]
-        final_excluded = [ap for ap in self._assessed_papers if not ap.is_included]
+        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
 
-        # Build statistics
+        # =================================================================
+        # Collect ALL excluded papers for comprehensive reporting
+        # =================================================================
+        all_excluded_papers: List[ScoredPaper] = []
+
+        # 1. Papers rejected in initial filter (from checkpoint or current run)
+        for paper, reason in self._rejected_initial_filter:
+            all_excluded_papers.append(ScoredPaper(
+                paper=paper,
+                relevance_score=0.0,
+                relevance_rationale=reason,
+                inclusion_decision=InclusionDecision.create_excluded(
+                    stage=ExclusionStage.INITIAL_FILTER,
+                    reasons=[reason],
+                    rationale=reason,
+                ),
+            ))
+
+        # 2. Papers below relevance threshold
+        all_excluded_papers.extend(self._below_threshold_papers)
+
+        # 3. Papers that failed quality gate (from assessed papers)
+        for ap in final_excluded_assessed:
+            all_excluded_papers.append(ap.scored_paper)
+
+        # Build statistics with accurate counts
         stats = ReviewStatistics(
             total_considered=total_considered,
             passed_initial_filter=passed_initial_filter,
             passed_relevance_threshold=passed_relevance,
             passed_quality_gate=len(self._assessed_papers),
             final_included=len(final_included),
-            final_excluded=len(final_excluded),
+            final_excluded=len(all_excluded_papers),
             uncertain_for_review=0,
             processing_time_seconds=self.documenter.get_duration(),
             total_llm_calls=self.documenter._total_llm_calls,
@@ -1799,14 +1872,13 @@ class SystematicReviewAgent(BaseAgent):
         with self.documenter.log_step_with_timer(
             action=ACTION_GENERATE_REPORT,
             tool="Reporter",
-            input_summary=f"Generating report for {len(final_included)} included papers",
-            decision_rationale="Creating final systematic review output",
+            input_summary=f"Generating report for {len(final_included)} included, {len(all_excluded_papers)} excluded papers",
+            decision_rationale="Creating final systematic review output with comprehensive excluded paper tracking",
         ) as timer:
-            # Build result using reporter (excluded papers need ScoredPaper, not AssessedPaper)
-            excluded_scored = [ap.scored_paper for ap in final_excluded]
+            # Build result using reporter with ALL excluded papers
             result = reporter.build_json_result(
                 included_papers=final_included,
-                excluded_papers=excluded_scored,
+                excluded_papers=all_excluded_papers,
                 uncertain_papers=[],
                 search_plan=self._search_plan,
                 executed_queries=self._executed_queries,
@@ -2027,6 +2099,9 @@ class SystematicReviewAgent(BaseAgent):
         self._all_papers = []
         self._scored_papers = []
         self._assessed_papers = []
+        # Clear excluded paper tracking
+        self._rejected_initial_filter = []
+        self._below_threshold_papers = []
         self.documenter = Documenter()
         self.reset_metrics()
         logger.info("SystematicReviewAgent state reset")
