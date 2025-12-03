@@ -68,7 +68,8 @@ python systematic_review_cli.py --question "Effect of statins on CVD prevention"
 
 **Key Capabilities:**
 - **Multi-strategy search**: Semantic, keyword, hybrid, and HyDE queries with PICO analysis
-- **8-phase workflow**: Search planning → Execution → Filtering → Scoring → Quality → Composite → Classification → Reporting
+- **9-phase workflow**: Search planning → Execution → Filtering → Scoring → Quality → Composite → Classification → Evidence Synthesis → Reporting
+- **Evidence synthesis**: Extracts citations from included papers and synthesizes a narrative answer with key findings and evidence strength assessment
 - **Human checkpoints**: Interactive mode pauses at key decision points for human review
 - **Quality assessment**: Integrates StudyAssessmentAgent, PaperWeightAssessmentAgent, PICOAgent, and PRISMA2020Agent
 - **Complete audit trail**: Full reproducibility with JSON, Markdown, CSV, and PRISMA flow diagram outputs

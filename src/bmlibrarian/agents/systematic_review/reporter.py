@@ -66,6 +66,9 @@ MAX_QUERY_TEXT_DISPLAY_LENGTH = 100  # Max chars for query text in search strate
 MAX_TITLE_DISPLAY_LENGTH_TABLE = 80  # Max chars for title in table cells
 MAX_RATIONALE_DISPLAY_LENGTH_TABLE = 60  # Max chars for rationale in table cells
 
+# Author list formatting
+MAX_AUTHORS_BEFORE_ET_AL = 3  # Show "et al." when more than this many authors
+
 # Markdown formatting
 MD_H1 = "#"
 MD_H2 = "##"
@@ -749,7 +752,7 @@ class Reporter:
 
             # Format author string
             if isinstance(authors, list):
-                if len(authors) > 3:
+                if len(authors) > MAX_AUTHORS_BEFORE_ET_AL:
                     author_str = f"{authors[0]} et al."
                 elif authors:
                     author_str = ", ".join(authors)
@@ -862,8 +865,8 @@ class Reporter:
         for paper in included_papers:
             rank = paper.get("final_rank", "N/A")
             title = paper.get("title", "Unknown Title")
-            authors = ", ".join(paper.get("authors", [])[:3])
-            if len(paper.get("authors", [])) > 3:
+            authors = ", ".join(paper.get("authors", [])[:MAX_AUTHORS_BEFORE_ET_AL])
+            if len(paper.get("authors", [])) > MAX_AUTHORS_BEFORE_ET_AL:
                 authors += " et al."
             year = paper.get("year", "N/A")
             scores = paper.get("scores", {})
@@ -1371,8 +1374,8 @@ class Reporter:
             doc_id = paper.get("document_id")
             rank = paper.get("final_rank", "N/A")
             title = paper.get("title", "Unknown Title")
-            authors = ", ".join(paper.get("authors", [])[:3])
-            if len(paper.get("authors", [])) > 3:
+            authors = ", ".join(paper.get("authors", [])[:MAX_AUTHORS_BEFORE_ET_AL])
+            if len(paper.get("authors", [])) > MAX_AUTHORS_BEFORE_ET_AL:
                 authors += " et al."
             year = paper.get("year", "N/A")
 

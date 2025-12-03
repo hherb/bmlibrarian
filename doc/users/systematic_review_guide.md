@@ -150,7 +150,7 @@ python systematic_review_cli.py --question "..." --weights-file weights.json
 
 ## Workflow Phases
 
-The systematic review proceeds through eight phases:
+The systematic review proceeds through nine phases:
 
 ### 1. Search Planning
 
@@ -212,7 +212,33 @@ Papers are classified into three categories:
 - **Excluded**: Failed one or more criteria
 - **Uncertain**: Need human review
 
-### 8. Report Generation
+### 8. Evidence Synthesis (Optional)
+
+For included papers, the EvidenceSynthesizer extracts and synthesizes relevant evidence:
+
+- **Citation Extraction**: Uses CitationFinderAgent to extract key passages from each paper that directly address the research question
+- **Narrative Synthesis**: Generates a cohesive narrative answer using LLM-based synthesis
+- **Key Findings**: Identifies main findings with supporting citations
+- **Evidence Strength Assessment**: Rates overall evidence as Strong/Moderate/Limited/Insufficient
+- **Limitations Identification**: Notes gaps and limitations in the evidence
+
+This phase is enabled by default but can be disabled via configuration:
+
+```json
+{
+    "agents": {
+        "systematic_review": {
+            "enable_evidence_synthesis": true,
+            "synthesis_model": "gpt-oss:20b",
+            "citation_min_relevance": 0.7,
+            "max_citations_per_paper": 3,
+            "synthesis_temperature": 0.3
+        }
+    }
+}
+```
+
+### 9. Report Generation
 
 Creates comprehensive outputs:
 
@@ -275,7 +301,14 @@ Complete machine-readable output including:
 
 Human-readable report with:
 
-- Executive summary
+- **Evidence Synthesis** (if enabled):
+  - Answer to Research Question: Direct answer based on extracted evidence
+  - Evidence Strength: Overall assessment
+  - Synthesized Evidence: Narrative synthesis with inline citations
+  - Key Findings: Main findings with supporting studies
+  - Limitations: Identified gaps in evidence
+  - Supporting Citations: Full details of extracted passages
+- Executive summary (statistics)
 - Methodology description
 - Included papers with details
 - Excluded papers by stage
@@ -321,11 +354,26 @@ Add to `~/.bmlibrarian/config.json`:
             "run_study_assessment": true,
             "run_paper_weight": true,
             "run_pico_extraction": true,
-            "run_prisma_assessment": true
+            "run_prisma_assessment": true,
+            "enable_evidence_synthesis": true,
+            "synthesis_model": null,
+            "citation_min_relevance": 0.7,
+            "max_citations_per_paper": 3,
+            "synthesis_temperature": 0.3
         }
     }
 }
 ```
+
+### Evidence Synthesis Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enable_evidence_synthesis` | `true` | Enable/disable evidence synthesis phase |
+| `synthesis_model` | `null` | LLM for synthesis (uses main model if null) |
+| `citation_min_relevance` | `0.7` | Minimum citation relevance threshold (0-1) |
+| `max_citations_per_paper` | `3` | Maximum citations to extract per paper |
+| `synthesis_temperature` | `0.3` | LLM temperature for narrative synthesis |
 
 ### CLI Options
 
@@ -482,3 +530,5 @@ cat ./output/review_*.md
 - [Study Assessment Guide](study_assessment_guide.md) - Quality assessment
 - [PRISMA 2020 Guide](prisma2020_guide.md) - PRISMA compliance
 - [Multi-Model Query Guide](multi_model_query_guide.md) - Search strategies
+- [Citation Guide](citation_guide.md) - Citation extraction details
+- [Evidence Synthesis System](../developers/evidence_synthesis_system.md) - Technical details

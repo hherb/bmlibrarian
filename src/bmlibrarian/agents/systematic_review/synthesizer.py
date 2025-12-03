@@ -39,6 +39,18 @@ DEFAULT_CITATION_MIN_RELEVANCE = 0.7
 DEFAULT_MAX_CITATIONS_PER_PAPER = 3
 DEFAULT_SYNTHESIS_TEMPERATURE = 0.3
 
+# LLM generation settings
+SYNTHESIS_MAX_TOKENS = 2000
+
+# Formatting constants
+MAX_AUTHORS_BEFORE_ET_AL = 3
+FALLBACK_SUMMARY_MAX_LENGTH = 500
+FALLBACK_MAX_FINDINGS = 5
+
+# Evidence strength thresholds (based on citation count)
+EVIDENCE_STRENGTH_MODERATE_THRESHOLD = 5
+EVIDENCE_STRENGTH_LIMITED_THRESHOLD = 2
+
 
 # =============================================================================
 # Data Models
@@ -401,7 +413,7 @@ class EvidenceSynthesizer:
                 system=SYNTHESIS_SYSTEM_PROMPT,
                 options={
                     "temperature": self.temperature,
-                    "num_predict": 2000,
+                    "num_predict": SYNTHESIS_MAX_TOKENS,
                 },
             )
 
@@ -443,7 +455,7 @@ class EvidenceSynthesizer:
 
         for i, citation in enumerate(citations, 1):
             # Format author list
-            if len(citation.authors) > 3:
+            if len(citation.authors) > MAX_AUTHORS_BEFORE_ET_AL:
                 author_str = f"{citation.authors[0]} et al."
             else:
                 author_str = ", ".join(citation.authors)
@@ -486,7 +498,7 @@ class EvidenceSynthesizer:
             logger.warning(f"Failed to parse synthesis JSON: {e}")
             # Try to extract what we can
             return {
-                "executive_summary": response_text[:500] if response_text else "",
+                "executive_summary": response_text[:FALLBACK_SUMMARY_MAX_LENGTH] if response_text else "",
                 "evidence_narrative": response_text,
                 "key_findings": [],
                 "limitations": [],
@@ -515,7 +527,7 @@ class EvidenceSynthesizer:
         """Create a fallback synthesis when LLM synthesis fails."""
         # Create basic findings from citations
         key_findings = []
-        for citation in citations[:5]:  # Limit to first 5
+        for citation in citations[:FALLBACK_MAX_FINDINGS]:
             key_findings.append({
                 "finding": citation.summary,
                 "supporting_studies": [f"{citation.authors[0] if citation.authors else 'Unknown'} {citation.year}"],
@@ -523,9 +535,9 @@ class EvidenceSynthesizer:
             })
 
         # Assess evidence strength based on citation count
-        if len(citations) >= 5:
+        if len(citations) >= EVIDENCE_STRENGTH_MODERATE_THRESHOLD:
             strength = "Moderate"
-        elif len(citations) >= 2:
+        elif len(citations) >= EVIDENCE_STRENGTH_LIMITED_THRESHOLD:
             strength = "Limited"
         else:
             strength = "Insufficient"
