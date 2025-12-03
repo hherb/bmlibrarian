@@ -264,6 +264,7 @@ class Reporter:
         search_plan: Optional[SearchPlan] = None,
         executed_queries: Optional[List[ExecutedQuery]] = None,
         statistics: Optional[ReviewStatistics] = None,
+        evidence_synthesis: Optional[Any] = None,
     ) -> SystematicReviewResult:
         """
         Build a SystematicReviewResult from component data.
@@ -275,6 +276,7 @@ class Reporter:
             search_plan: Optional search plan used
             executed_queries: Optional list of executed queries
             statistics: Optional pre-computed statistics
+            evidence_synthesis: Optional EvidenceSynthesis with citations and narrative
 
         Returns:
             Complete SystematicReviewResult
@@ -305,6 +307,14 @@ class Reporter:
                 included_papers, excluded_papers, uncertain_papers
             )
 
+        # Convert evidence synthesis to dict if provided
+        evidence_synthesis_dict = None
+        if evidence_synthesis is not None:
+            if hasattr(evidence_synthesis, 'to_dict'):
+                evidence_synthesis_dict = evidence_synthesis.to_dict()
+            elif isinstance(evidence_synthesis, dict):
+                evidence_synthesis_dict = evidence_synthesis
+
         return SystematicReviewResult(
             metadata=metadata,
             search_strategy=search_strategy,
@@ -314,6 +324,7 @@ class Reporter:
             uncertain_papers=uncertain_dicts,
             process_log=process_log,
             statistics=statistics,
+            evidence_synthesis=evidence_synthesis_dict,
         )
 
     def _build_metadata(self) -> Dict[str, Any]:
@@ -512,7 +523,11 @@ class Reporter:
         # Metadata
         lines.extend(self._format_metadata_section(result.metadata))
 
-        # Executive Summary
+        # Evidence Synthesis (if available) - placed prominently after metadata
+        if result.evidence_synthesis:
+            lines.extend(self._format_evidence_synthesis_section(result.evidence_synthesis))
+
+        # Executive Summary (statistics)
         lines.extend(self._format_summary_section(result.statistics))
 
         # Search Strategy
@@ -598,6 +613,177 @@ class Reporter:
             f"**Processing Time:** {stats['processing_time_seconds']:.2f} seconds",
             "",
         ]
+
+        return lines
+
+    def _format_evidence_synthesis_section(
+        self, evidence_synthesis: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Format evidence synthesis section.
+
+        This section presents the synthesized findings from all included papers,
+        providing a direct answer to the research question with supporting citations.
+
+        Args:
+            evidence_synthesis: Dictionary containing synthesis data with keys:
+                - executive_summary: Brief answer to research question
+                - evidence_narrative: Full synthesized narrative
+                - key_findings: List of main findings with supporting studies
+                - evidence_strength: Overall evidence strength assessment
+                - limitations: Identified gaps and limitations
+                - citations: List of extracted citations
+                - citation_count: Total citations extracted
+                - paper_count: Number of papers with citations
+
+        Returns:
+            List of formatted markdown lines
+        """
+        lines = [
+            f"{MD_H2} Evidence Synthesis",
+            "",
+        ]
+
+        # Executive Summary - direct answer to research question
+        exec_summary = evidence_synthesis.get("executive_summary", "")
+        if exec_summary:
+            lines.append(f"{MD_H3} Answer to Research Question")
+            lines.append("")
+            lines.append(f"> {exec_summary}")
+            lines.append("")
+
+        # Evidence Strength Assessment
+        strength = evidence_synthesis.get("evidence_strength", "Not assessed")
+        lines.append(f"**Evidence Strength:** {strength}")
+        lines.append("")
+
+        # Citation statistics
+        citation_count = evidence_synthesis.get("citation_count", 0)
+        paper_count = evidence_synthesis.get("paper_count", 0)
+        lines.append(
+            f"*Based on {citation_count} citations extracted from "
+            f"{paper_count} included papers.*"
+        )
+        lines.append("")
+
+        # Evidence Narrative
+        narrative = evidence_synthesis.get("evidence_narrative", "")
+        if narrative:
+            lines.append(f"{MD_H3} Synthesized Evidence")
+            lines.append("")
+            lines.append(narrative)
+            lines.append("")
+
+        # Key Findings
+        key_findings = evidence_synthesis.get("key_findings", [])
+        if key_findings:
+            lines.append(f"{MD_H3} Key Findings")
+            lines.append("")
+
+            for i, finding in enumerate(key_findings, 1):
+                if isinstance(finding, dict):
+                    finding_text = finding.get("finding", "")
+                    supporting = finding.get("supporting_studies", [])
+                    strength = finding.get("strength", "")
+
+                    lines.append(f"**{i}. {finding_text}**")
+                    if supporting:
+                        studies_str = ", ".join(supporting)
+                        lines.append(f"   {MD_BULLET} Supporting studies: {studies_str}")
+                    if strength:
+                        lines.append(f"   {MD_BULLET} Evidence strength: {strength}")
+                    lines.append("")
+                else:
+                    # Handle simple string findings
+                    lines.append(f"{MD_BULLET} {finding}")
+
+            lines.append("")
+
+        # Limitations
+        limitations = evidence_synthesis.get("limitations", [])
+        if limitations:
+            lines.append(f"{MD_H3} Limitations")
+            lines.append("")
+            for limitation in limitations:
+                lines.append(f"{MD_BULLET} {limitation}")
+            lines.append("")
+
+        # Citations (supporting evidence)
+        citations = evidence_synthesis.get("citations", [])
+        if citations:
+            lines.extend(self._format_synthesis_citations(citations))
+
+        return lines
+
+    def _format_synthesis_citations(
+        self, citations: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Format extracted citations from evidence synthesis.
+
+        Args:
+            citations: List of citation dictionaries with keys:
+                - paper_title, authors, year, passage, summary, relevance_score
+                - pmid, doi (optional)
+
+        Returns:
+            List of formatted markdown lines
+        """
+        lines = [
+            f"{MD_H3} Supporting Citations",
+            "",
+            "The following passages were extracted as directly relevant "
+            "to the research question:",
+            "",
+        ]
+
+        for i, citation in enumerate(citations, 1):
+            title = citation.get("paper_title", "Unknown Title")
+            authors = citation.get("authors", [])
+            year = citation.get("year", "N/A")
+            passage = citation.get("passage", "")
+            summary = citation.get("summary", "")
+            relevance = citation.get("relevance_score", 0)
+            pmid = citation.get("pmid")
+            doi = citation.get("doi")
+
+            # Format author string
+            if isinstance(authors, list):
+                if len(authors) > 3:
+                    author_str = f"{authors[0]} et al."
+                elif authors:
+                    author_str = ", ".join(authors)
+                else:
+                    author_str = "Unknown"
+            else:
+                author_str = str(authors) if authors else "Unknown"
+
+            lines.append(f"{MD_H4} Citation {i}: {author_str} ({year})")
+            lines.append("")
+            lines.append(f"**Title:** {title}")
+
+            # Identifiers
+            if pmid:
+                lines.append(f"**PMID:** {pmid}")
+            if doi:
+                lines.append(f"**DOI:** {doi}")
+
+            lines.append(f"**Relevance Score:** {relevance:.2f}")
+            lines.append("")
+
+            # Key passage
+            if passage:
+                lines.append("**Key Passage:**")
+                lines.append(f"> {passage}")
+                lines.append("")
+
+            # Summary
+            if summary:
+                lines.append(f"**Summary:** {summary}")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("")
 
         return lines
 

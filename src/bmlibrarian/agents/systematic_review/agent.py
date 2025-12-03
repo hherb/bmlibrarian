@@ -695,6 +695,57 @@ class SystematicReviewAgent(BaseAgent):
             ]
 
             # =================================================================
+            # Phase 7a: Evidence Synthesis (Optional)
+            # =================================================================
+            evidence_synthesis = None
+            if self.config.enable_evidence_synthesis and included_papers:
+                self.documenter.set_phase("evidence_synthesis")
+
+                from .synthesizer import EvidenceSynthesizer
+
+                synthesizer = EvidenceSynthesizer(
+                    model=self.config.synthesis_model or self.config.model,
+                    citation_model=self.config.model,
+                    temperature=self.config.synthesis_temperature,
+                    citation_min_relevance=self.config.citation_min_relevance,
+                    max_citations_per_paper=self.config.max_citations_per_paper,
+                    progress_callback=self.callback,
+                )
+
+                with self.documenter.log_step_with_timer(
+                    action="synthesize_evidence",
+                    tool="EvidenceSynthesizer",
+                    input_summary=f"Synthesizing evidence from {len(included_papers)} included papers",
+                    decision_rationale="Extract citations and synthesize narrative answer to research question",
+                ) as timer:
+                    try:
+                        evidence_synthesis = synthesizer.synthesize(
+                            research_question=criteria.research_question,
+                            included_papers=included_papers,
+                        )
+
+                        synth_stats = synthesizer.get_statistics()
+                        timer.set_output(
+                            f"Extracted {synth_stats['citations_extracted']} citations, "
+                            f"evidence strength: {evidence_synthesis.evidence_strength}"
+                        )
+                        timer.add_metrics({
+                            "citations_extracted": synth_stats["citations_extracted"],
+                            "papers_with_citations": synth_stats["papers_processed"],
+                            "extraction_failures": synth_stats["extraction_failures"],
+                            "evidence_strength": evidence_synthesis.evidence_strength,
+                        })
+
+                        logger.info(
+                            f"Evidence synthesis complete: {synth_stats['citations_extracted']} citations, "
+                            f"strength={evidence_synthesis.evidence_strength}"
+                        )
+
+                    except Exception as e:
+                        logger.warning(f"Evidence synthesis failed, continuing without: {e}")
+                        timer.set_output(f"Evidence synthesis failed: {e}")
+
+            # =================================================================
             # Phase 8: Generate Report
             # =================================================================
             self.documenter.set_phase("reporting")
@@ -728,6 +779,7 @@ class SystematicReviewAgent(BaseAgent):
                     search_plan=self._search_plan,
                     executed_queries=self._executed_queries,
                     statistics=statistics,
+                    evidence_synthesis=evidence_synthesis,
                 )
 
                 timer.set_output(f"Report generated with {statistics.final_included} included papers")

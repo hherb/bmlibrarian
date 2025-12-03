@@ -1471,6 +1471,7 @@ class SystematicReviewResult:
         uncertain_papers: Papers needing human review
         process_log: Complete audit trail
         statistics: Summary statistics
+        evidence_synthesis: Optional evidence synthesis with citations and narrative
 
     Example:
         >>> result = SystematicReviewResult(...)
@@ -1485,6 +1486,7 @@ class SystematicReviewResult:
     uncertain_papers: List[Dict[str, Any]]
     process_log: List[Dict[str, Any]]
     statistics: ReviewStatistics
+    evidence_synthesis: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -1493,7 +1495,7 @@ class SystematicReviewResult:
         Returns:
             Dictionary representation
         """
-        return {
+        result = {
             "metadata": self.metadata,
             "search_strategy": self.search_strategy,
             "scoring_config": self.scoring_config,
@@ -1503,6 +1505,9 @@ class SystematicReviewResult:
             "process_log": self.process_log,
             "statistics": self.statistics.to_dict(),
         }
+        if self.evidence_synthesis:
+            result["evidence_synthesis"] = self.evidence_synthesis
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SystematicReviewResult":
@@ -1524,6 +1529,7 @@ class SystematicReviewResult:
             uncertain_papers=data.get("uncertain_papers", []),
             process_log=data["process_log"],
             statistics=ReviewStatistics.from_dict(data["statistics"]),
+            evidence_synthesis=data.get("evidence_synthesis"),
         )
 
     def to_json(self, indent: int = 2) -> str:

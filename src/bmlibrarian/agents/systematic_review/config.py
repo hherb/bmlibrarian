@@ -142,6 +142,13 @@ class SystematicReviewConfig:
     use_results_cache: bool = True
     force_recompute: bool = False  # Bypass cache and recompute assessments
 
+    # Evidence synthesis settings
+    enable_evidence_synthesis: bool = True
+    synthesis_model: Optional[str] = None  # Defaults to main model
+    citation_min_relevance: float = 0.7
+    max_citations_per_paper: int = 3
+    synthesis_temperature: float = 0.3
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert configuration to dictionary.
@@ -174,6 +181,11 @@ class SystematicReviewConfig:
             "run_prisma_assessment": self.run_prisma_assessment,
             "use_results_cache": self.use_results_cache,
             "force_recompute": self.force_recompute,
+            "enable_evidence_synthesis": self.enable_evidence_synthesis,
+            "synthesis_model": self.synthesis_model,
+            "citation_min_relevance": self.citation_min_relevance,
+            "max_citations_per_paper": self.max_citations_per_paper,
+            "synthesis_temperature": self.synthesis_temperature,
         }
 
     @classmethod
@@ -219,6 +231,11 @@ class SystematicReviewConfig:
             run_prisma_assessment=data.get("run_prisma_assessment", True),
             use_results_cache=data.get("use_results_cache", True),
             force_recompute=data.get("force_recompute", False),
+            enable_evidence_synthesis=data.get("enable_evidence_synthesis", True),
+            synthesis_model=data.get("synthesis_model"),
+            citation_min_relevance=data.get("citation_min_relevance", 0.7),
+            max_citations_per_paper=data.get("max_citations_per_paper", 3),
+            synthesis_temperature=data.get("synthesis_temperature", 0.3),
         )
 
     @classmethod
