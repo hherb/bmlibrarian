@@ -24,7 +24,9 @@ from .dpi_scale import (
     get_scale_value,
     scale_px,
     get_system_font_family,
+    get_monospace_font_family,
     FONT_FAMILY,
+    FONT_FAMILY_MONOSPACE,
 )
 
 from .stylesheet_generator import (
@@ -56,7 +58,9 @@ __all__ = [
     'get_scale_value',
     'scale_px',
     'get_system_font_family',
+    'get_monospace_font_family',
     'FONT_FAMILY',
+    'FONT_FAMILY_MONOSPACE',
 
     # Stylesheet generation
     'StylesheetGenerator',

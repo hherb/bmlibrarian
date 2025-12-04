@@ -45,8 +45,7 @@ from PySide6.QtWidgets import (
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
     StylesheetGenerator,
 )
-from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale, scale_px
-from bmlibrarian.gui.qt.resources.styles import FONT_FAMILY
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scale_px
 from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
 from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
 
@@ -728,17 +727,9 @@ class SystematicReviewTabWidget(QWidget):
             "JSON state will appear here as the review progresses..."
         )
 
-        # Apply monospace font styling
-        scale = get_font_scale()
-        self.details_text.setStyleSheet(f"""
-            QPlainTextEdit {{
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                font-size: {scale['font_small']}pt;
-                background-color: #f8f8f8;
-                color: #333;
-                padding: {scale['padding_small']}px;
-            }}
-        """)
+        # Apply monospace font styling using stylesheet generator
+        style_gen = StylesheetGenerator()
+        self.details_text.setStyleSheet(style_gen.code_text_stylesheet())
 
         details_layout.addWidget(self.details_text)
 

@@ -6,7 +6,7 @@ automatically scale based on system font settings.
 """
 
 from typing import Dict, Optional
-from .dpi_scale import FontScale, get_font_scale
+from .dpi_scale import FontScale, get_font_scale, FONT_FAMILY_MONOSPACE
 
 
 class StylesheetGenerator:
@@ -183,6 +183,49 @@ class StylesheetGenerator:
                 padding: {s[padding_key]}px;
             }}
             QPlainTextEdit:focus, QTextEdit:focus {{
+                border: 1px solid {focus_color};
+            }}
+        """
+
+    def code_text_stylesheet(
+        self,
+        bg_color: str = "#f8f8f8",
+        text_color: str = "#333",
+        border_color: str = "#E0E0E0",
+        focus_color: str = "#2196F3",
+        radius_key: str = 'radius_small',
+        padding_key: str = 'padding_small',
+        font_size_key: str = 'font_small'
+    ) -> str:
+        """
+        Generate monospace QPlainTextEdit stylesheet for code/JSON display.
+
+        Uses cross-platform monospace fonts for consistent appearance.
+
+        Args:
+            bg_color: Background color
+            text_color: Text color
+            border_color: Border color
+            focus_color: Border color when focused
+            radius_key: Scale key for border radius
+            padding_key: Scale key for padding
+            font_size_key: Scale key for font size
+
+        Returns:
+            Formatted stylesheet string with monospace font
+        """
+        s = self._s
+        return f"""
+            QPlainTextEdit {{
+                font-family: {FONT_FAMILY_MONOSPACE};
+                font-size: {s[font_size_key]}pt;
+                background-color: {bg_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: {s[radius_key]}px;
+                padding: {s[padding_key]}px;
+            }}
+            QPlainTextEdit:focus {{
                 border: 1px solid {focus_color};
             }}
         """
