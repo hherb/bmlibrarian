@@ -47,6 +47,7 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
 )
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale, scale_px
 from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
+from .report_preview_widget import ReportPreviewWidget
 
 logger = logging.getLogger(__name__)
 
@@ -503,16 +504,34 @@ class SystematicReviewTabWidget(QWidget):
 
         layout.addWidget(steps_group)
 
-        # Results summary
-        results_group = QGroupBox("Results Summary")
-        results_layout = QVBoxLayout(results_group)
+        # Results tab widget (Summary + Report Preview)
+        self.results_tab_widget = QTabWidget()
+
+        # Results summary tab
+        results_widget = self._create_results_summary_widget()
+        self.results_tab_widget.addTab(results_widget, "Results Summary")
+
+        # Report preview tab
+        self.report_preview = ReportPreviewWidget()
+        self.results_tab_widget.addTab(self.report_preview, "Report Preview")
+
+        layout.addWidget(self.results_tab_widget)
+
+        return panel
+
+    def _create_results_summary_widget(self) -> QWidget:
+        """Create the results summary widget with statistics and export buttons."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(scale_px(8), scale_px(8), scale_px(8), scale_px(8))
+        layout.setSpacing(scale_px(8))
 
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setPlaceholderText(
             "Results will be displayed here after the review completes..."
         )
-        results_layout.addWidget(self.results_text)
+        layout.addWidget(self.results_text)
 
         # Export buttons
         export_layout = QHBoxLayout()
@@ -529,11 +548,9 @@ class SystematicReviewTabWidget(QWidget):
 
         export_layout.addStretch()
 
-        results_layout.addLayout(export_layout)
+        layout.addLayout(export_layout)
 
-        layout.addWidget(results_group)
-
-        return panel
+        return widget
 
     def _connect_signals(self) -> None:
         """Connect internal signals."""
@@ -823,6 +840,12 @@ class SystematicReviewTabWidget(QWidget):
 
         # Store result for export
         self._last_result = result
+
+        # Update report preview
+        self.report_preview.set_report_from_result(result)
+
+        # Switch to report preview tab to show the generated report
+        self.results_tab_widget.setCurrentIndex(1)
 
         self.status_message.emit("Review complete!")
         self.refresh_checkpoints()  # Refresh to show new checkpoints

@@ -510,6 +510,33 @@ class Reporter:
 
         logger.info(f"Markdown report saved to: {output}")
 
+    def generate_markdown_string(
+        self,
+        result: SystematicReviewResult,
+        include_audit_trail: bool = True,
+        include_excluded: bool = True,
+    ) -> str:
+        """
+        Generate human-readable Markdown report as a string.
+
+        Creates a comprehensive, publication-ready report with:
+        - Executive summary
+        - Methodology description
+        - Results tables
+        - Optional audit trail
+
+        Args:
+            result: SystematicReviewResult to format
+            include_audit_trail: Whether to include full audit trail
+            include_excluded: Whether to include excluded papers list
+
+        Returns:
+            Markdown-formatted report string
+        """
+        return self._build_markdown_content(
+            result, include_audit_trail, include_excluded
+        )
+
     def _build_markdown_content(
         self,
         result: SystematicReviewResult,

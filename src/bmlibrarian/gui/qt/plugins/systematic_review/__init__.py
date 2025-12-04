@@ -7,7 +7,12 @@ Note: Imports are intentionally lazy to avoid circular imports when
 the plugin manager loads plugin.py directly via importlib.
 """
 
-__all__ = ["SystematicReviewPlugin", "create_plugin"]
+__all__ = [
+    "SystematicReviewPlugin",
+    "create_plugin",
+    "SystematicReviewTabWidget",
+    "ReportPreviewWidget",
+]
 
 
 def __getattr__(name: str):
@@ -18,4 +23,10 @@ def __getattr__(name: str):
     elif name == "create_plugin":
         from .plugin import create_plugin
         return create_plugin
+    elif name == "SystematicReviewTabWidget":
+        from .systematic_review_tab import SystematicReviewTabWidget
+        return SystematicReviewTabWidget
+    elif name == "ReportPreviewWidget":
+        from .report_preview_widget import ReportPreviewWidget
+        return ReportPreviewWidget
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
