@@ -34,6 +34,29 @@ def get_system_font_family() -> str:
 FONT_FAMILY = get_system_font_family()
 
 
+def get_monospace_font_family() -> str:
+    """
+    Get the appropriate monospace font family for the current platform.
+
+    Returns a CSS font-family string with proper fallbacks for each OS.
+
+    Returns:
+        str: CSS font-family value with platform-appropriate monospace fonts
+    """
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        return "'SF Mono', Menlo, Monaco, 'Courier New', monospace"
+    elif system == "Windows":
+        return "Consolas, 'Courier New', monospace"
+    else:  # Linux and others
+        return "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace"
+
+
+# Cross-platform monospace font family constant for use in stylesheets
+FONT_FAMILY_MONOSPACE = get_monospace_font_family()
+
+
 class FontScale:
     """
     Singleton class for DPI-aware font-relative scaling dimensions.
