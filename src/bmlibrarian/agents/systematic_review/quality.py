@@ -318,11 +318,11 @@ class QualityAssessor:
             host = get_ollama_host()
             agent_config = get_agent_config("paper_weight")
 
+            # Note: PaperWeightAssessmentAgent loads temperature/top_p from its own config
+            # and does not accept them as constructor parameters
             self._weight_agent = PaperWeightAssessmentAgent(
                 model=model,
                 host=host,
-                temperature=agent_config.get("temperature", 0.3),
-                top_p=agent_config.get("top_p", 0.9),
                 callback=self.callback,
                 orchestrator=self.orchestrator,
                 show_model_info=False,
@@ -800,8 +800,11 @@ class QualityAssessor:
             start_time = time.time()
             agent = self._get_prisma_agent()
 
-            result = agent.assess_document(
-                document_id=document_id,
+            # Use assess_prisma_compliance with full document dict
+            # skip_suitability_check=True since we already checked suitability
+            result = agent.assess_prisma_compliance(
+                document=document,
+                skip_suitability_check=True,
             )
 
             result_dict = result.to_dict()
