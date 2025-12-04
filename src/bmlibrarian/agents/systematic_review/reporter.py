@@ -76,6 +76,27 @@ MD_H3 = "###"
 MD_H4 = "####"
 MD_BULLET = "-"
 MD_CODE_FENCE = "```"
+MD_PIPE_REPLACEMENT = " OR "  # Replace pipe with readable OR for table cells
+
+
+def escape_table_cell(text: str) -> str:
+    """
+    Escape special characters in markdown table cell content.
+
+    Pipe characters '|' are used as cell delimiters in markdown tables.
+    When text content contains literal pipe characters (e.g., "A | B" meaning
+    "A or B"), they are replaced with " OR " to prevent the markdown renderer
+    from interpreting them as cell boundaries while maintaining readability.
+
+    Args:
+        text: Text to be placed in a table cell
+
+    Returns:
+        Text with pipe characters replaced with " OR "
+    """
+    if not text:
+        return text
+    return text.replace("|", MD_PIPE_REPLACEMENT)
 
 # CSV column names
 CSV_COLUMNS_INCLUDED = [
@@ -837,10 +858,11 @@ class Reporter:
             lines.append("|------|-------|---------|")
 
             for query in search_strategy["queries_planned"]:
-                q_type = query.get("query_type", "unknown")
+                q_type = escape_table_cell(query.get("query_type", "unknown"))
                 raw_text = query.get("query_text", "")
                 q_text = raw_text[:MAX_QUERY_TEXT_DISPLAY_LENGTH] + "..." if len(raw_text) > MAX_QUERY_TEXT_DISPLAY_LENGTH else raw_text
-                q_purpose = query.get("purpose", "")
+                q_text = escape_table_cell(q_text)
+                q_purpose = escape_table_cell(query.get("purpose", ""))
                 lines.append(f"| {q_type} | {q_text} | {q_purpose} |")
 
             lines.append("")
@@ -972,9 +994,11 @@ class Reporter:
                 title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_TABLE]
                 if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_TABLE:
                     title += "..."
+                title = escape_table_cell(title)
                 year = paper.get("year", "N/A")
                 # Show all exclusion reasons, joined by semicolon
                 reasons = "; ".join(paper.get("exclusion_reasons", []))
+                reasons = escape_table_cell(reasons)
                 lines.append(f"| {title} | {year} | {reasons} |")
 
             lines.append("")
@@ -1004,6 +1028,7 @@ class Reporter:
             title = raw_title[:MAX_TITLE_DISPLAY_LENGTH_TABLE]
             if len(raw_title) > MAX_TITLE_DISPLAY_LENGTH_TABLE:
                 title += "..."
+            title = escape_table_cell(title)
             year = paper.get("year", "N/A")
             score = paper.get("relevance_score", "N/A")
             raw_rationale = paper.get("rationale", "")
@@ -1011,6 +1036,7 @@ class Reporter:
             rationale = raw_rationale[:MAX_RATIONALE_DISPLAY_LENGTH_TABLE]
             if len(raw_rationale) > MAX_RATIONALE_DISPLAY_LENGTH_TABLE:
                 rationale += "..."
+            rationale = escape_table_cell(rationale)
             lines.append(f"| {title} | {year} | {score} | {rationale} |")
 
         lines.append("")
