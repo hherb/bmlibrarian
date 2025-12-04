@@ -392,10 +392,22 @@ class RelevanceScorer:
                 failed_papers.append((paper, str(e)))
 
             # Emit progress via callback system for GUI updates
-            self._call_callback(
-                "scoring_progress",
-                f"{i + 1}/{len(papers)} papers scored"
-            )
+            # Format: "X/Y | Score S/5 for <title>" - X/Y is parsed for progress bar
+            if scored_papers:
+                last_scored = scored_papers[-1]
+                title_truncated = last_scored.paper.title[:60]
+                if len(last_scored.paper.title) > 60:
+                    title_truncated += "..."
+                self._call_callback(
+                    "scoring_progress",
+                    f"{i + 1}/{len(papers)} | Score {last_scored.relevance_score:.1f}/5 for {title_truncated}"
+                )
+            else:
+                # Failed to score - still emit progress
+                self._call_callback(
+                    "scoring_progress",
+                    f"{i + 1}/{len(papers)} | Failed to score: {paper.title[:60]}"
+                )
 
             if progress_callback:
                 progress_callback(i + 1, len(papers))

@@ -235,9 +235,11 @@ class ReviewWorker(QThread):
             "scoring_completed": 65,
             "batch_scoring_completed": 70,
             "scoring_complete": 70,
+            "quality_assessment_started": 75,
             "quality_started": 75,
             "quality_progress": 80,
             "quality_complete": 85,
+            "quality_assessment_completed": 85,
             "reporting_started": 90,
             "reporting_complete": 95,
         }
@@ -288,14 +290,22 @@ class ReviewWorker(QThread):
         elif event == "scoring_started":
             return None  # Don't log individual paper scoring starts (too verbose)
         elif event == "scoring_progress":
-            return f"**[{timestamp}]** Scoring progress: {data}\n"
+            # Format: "X/Y | Score S/5 for <title>" - extract the meaningful part
+            if " | " in data:
+                _, info = data.split(" | ", 1)
+                return f"**[{timestamp}]** {info}\n"
+            return f"**[{timestamp}]** {data}\n"
         elif event == "batch_scoring_completed" or event == "scoring_complete":
             return f"**[{timestamp}]** ✓ Scoring complete: {data}\n\n---\n"
         elif event == "quality_started":
             return f"**[{timestamp}]** Starting quality assessment...\n"
         elif event == "quality_progress":
-            return f"**[{timestamp}]** Quality assessment: {data}\n"
-        elif event == "quality_complete":
+            # Format: "X/Y | Quality S/10 for <title>" - extract the meaningful part
+            if " | " in data:
+                _, info = data.split(" | ", 1)
+                return f"**[{timestamp}]** {info}\n"
+            return f"**[{timestamp}]** {data}\n"
+        elif event == "quality_complete" or event == "quality_assessment_completed":
             return f"**[{timestamp}]** ✓ Quality assessment complete: {data}\n\n---\n"
         elif event == "reporting_started":
             return f"**[{timestamp}]** Generating report...\n"

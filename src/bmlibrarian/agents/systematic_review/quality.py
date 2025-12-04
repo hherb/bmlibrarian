@@ -439,6 +439,24 @@ class QualityAssessor:
                 logger.error(f"Failed to assess paper {paper.paper.document_id}: {e}")
                 failed_papers.append((paper, str(e)))
 
+            # Emit progress via callback system for GUI updates
+            # Format: "X/Y | <title>" - X/Y is parsed for progress bar
+            title_truncated = paper.paper.title[:60]
+            if len(paper.paper.title) > 60:
+                title_truncated += "..."
+            if assessed_papers:
+                last_assessed = assessed_papers[-1]
+                quality_score = last_assessed.study_assessment.get("quality_score", "N/A")
+                self._call_callback(
+                    "quality_progress",
+                    f"{i + 1}/{len(papers)} | Quality {quality_score}/10 for {title_truncated}"
+                )
+            else:
+                self._call_callback(
+                    "quality_progress",
+                    f"{i + 1}/{len(papers)} | Failed: {title_truncated}"
+                )
+
             if progress_callback:
                 progress_callback(i + 1, len(papers))
 
