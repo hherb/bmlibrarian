@@ -45,7 +45,8 @@ from PySide6.QtWidgets import (
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
     StylesheetGenerator,
 )
-from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale, scale_px
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scale_px
+from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
 from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,13 @@ class ReviewWorker(QThread):
     """Worker thread for running systematic review operations."""
 
     progress_update = Signal(str, int)  # (message, percentage)
+    step_progress = Signal(str, int, int)  # (step_name, current, total)
+    activity_update = Signal(str)  # markdown activity log entry
+    state_update = Signal(dict)  # accumulated state JSON
     checkpoint_reached = Signal(str, dict)  # (checkpoint_type, state)
     step_completed = Signal(str, dict)  # (step_name, metrics)
     review_complete = Signal(dict)  # result data
+    report_update = Signal(str)  # markdown report content
     error_occurred = Signal(str)  # error message
 
     def __init__(
@@ -114,6 +119,12 @@ class ReviewWorker(QThread):
         self.config_overrides = config_overrides or {}
         self.output_path = output_path
         self._cancelled = False
+        # Accumulated state for Details tab
+        self._accumulated_state: Dict[str, Any] = {
+            "mode": mode,
+            "started_at": datetime.now().isoformat(),
+            "config_overrides": config_overrides or {},
+        }
 
     def cancel(self) -> None:
         """Cancel the running operation."""
@@ -195,7 +206,15 @@ class ReviewWorker(QThread):
             self.error_occurred.emit(str(e))
 
     def _progress_callback(self, event: str, data: str) -> None:
-        """Handle progress callbacks from the agent."""
+        """
+        Handle progress callbacks from the agent.
+
+        Emits multiple signals to update different UI components:
+        - progress_update: Overall progress bar
+        - activity_update: Activity log markdown entries
+        - step_progress: Per-step progress (current/total)
+        - state_update: Accumulated JSON state
+        """
         if self._cancelled:
             return
 
@@ -208,8 +227,10 @@ class ReviewWorker(QThread):
             "filtering_started": 45,
             "filtering_complete": 50,
             "scoring_started": 55,
+            "scoring_progress": 60,
             "scoring_complete": 70,
             "quality_started": 75,
+            "quality_progress": 80,
             "quality_complete": 85,
             "reporting_started": 90,
             "reporting_complete": 95,
@@ -217,6 +238,123 @@ class ReviewWorker(QThread):
 
         percentage = progress_map.get(event, 50)
         self.progress_update.emit(f"{event}: {data}", percentage)
+
+        # Generate activity log entries based on event type
+        activity_entry = self._format_activity_entry(event, data)
+        if activity_entry:
+            self.activity_update.emit(activity_entry)
+
+        # Update accumulated state based on event
+        self._update_accumulated_state(event, data)
+        self.state_update.emit(self._accumulated_state.copy())
+
+        # Parse step progress for specific events
+        self._emit_step_progress(event, data)
+
+    def _format_activity_entry(self, event: str, data: str) -> Optional[str]:
+        """
+        Format an activity log entry in markdown based on the event type.
+
+        Args:
+            event: The event name
+            data: The event data string
+
+        Returns:
+            Markdown-formatted activity entry, or None if not loggable
+        """
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Map events to readable activity entries
+        if event == "execution_started":
+            return f"**[{timestamp}]** Starting search execution...\n"
+        elif event == "query_started":
+            return f"**[{timestamp}]** Executing query: `{data[:100]}{'...' if len(data) > 100 else ''}`\n"
+        elif event == "query_completed":
+            return f"**[{timestamp}]** Query completed: {data}\n"
+        elif event == "execution_completed":
+            return f"**[{timestamp}]** ✓ Search execution completed: {data}\n\n---\n"
+        elif event == "filtering_started":
+            return f"**[{timestamp}]** Starting initial filtering...\n"
+        elif event == "filtering_complete":
+            return f"**[{timestamp}]** ✓ Filtering complete: {data}\n\n---\n"
+        elif event == "scoring_started":
+            return f"**[{timestamp}]** Starting relevance scoring...\n"
+        elif event == "scoring_progress":
+            return f"**[{timestamp}]** Scoring: {data}\n"
+        elif event == "scoring_complete":
+            return f"**[{timestamp}]** ✓ Scoring complete: {data}\n\n---\n"
+        elif event == "quality_started":
+            return f"**[{timestamp}]** Starting quality assessment...\n"
+        elif event == "quality_progress":
+            return f"**[{timestamp}]** Quality assessment: {data}\n"
+        elif event == "quality_complete":
+            return f"**[{timestamp}]** ✓ Quality assessment complete: {data}\n\n---\n"
+        elif event == "reporting_started":
+            return f"**[{timestamp}]** Generating report...\n"
+        elif event == "reporting_complete":
+            return f"**[{timestamp}]** ✓ Report generation complete\n\n---\n"
+
+        return None
+
+    def _update_accumulated_state(self, event: str, data: str) -> None:
+        """
+        Update the accumulated state dictionary based on events.
+
+        Args:
+            event: The event name
+            data: The event data string
+        """
+        if event == "query_completed":
+            if "queries" not in self._accumulated_state:
+                self._accumulated_state["queries"] = []
+            self._accumulated_state["queries"].append({
+                "timestamp": datetime.now().isoformat(),
+                "result": data,
+            })
+        elif event == "execution_completed":
+            self._accumulated_state["search_complete"] = True
+            self._accumulated_state["search_summary"] = data
+        elif event == "filtering_complete":
+            self._accumulated_state["filtering_complete"] = True
+            self._accumulated_state["filtering_summary"] = data
+        elif event == "scoring_complete":
+            self._accumulated_state["scoring_complete"] = True
+            self._accumulated_state["scoring_summary"] = data
+        elif event == "quality_complete":
+            self._accumulated_state["quality_complete"] = True
+            self._accumulated_state["quality_summary"] = data
+        elif event == "reporting_complete":
+            self._accumulated_state["reporting_complete"] = True
+
+        self._accumulated_state["last_event"] = event
+        self._accumulated_state["last_update"] = datetime.now().isoformat()
+
+    def _emit_step_progress(self, event: str, data: str) -> None:
+        """
+        Parse and emit step-specific progress for UI progress indicators.
+
+        Args:
+            event: The event name
+            data: The event data string (may contain "X/Y" format)
+        """
+        # Try to parse progress from data like "25/100 documents"
+        import re
+        match = re.search(r"(\d+)/(\d+)", data)
+        if match:
+            current = int(match.group(1))
+            total = int(match.group(2))
+
+            # Determine step name from event
+            if "scoring" in event:
+                step_name = "Relevance Scoring"
+            elif "quality" in event:
+                step_name = "Quality Assessment"
+            elif "filtering" in event:
+                step_name = "Initial Filtering"
+            else:
+                step_name = event.replace("_", " ").title()
+
+            self.step_progress.emit(step_name, current, total)
 
 
 # =============================================================================
@@ -246,6 +384,12 @@ class SystematicReviewTabWidget(QWidget):
         self._current_checkpoint_path: Optional[str] = None
         # Use the same default directory as the agent config
         self._review_directory: Path = Path(DEFAULT_OUTPUT_DIR).expanduser()
+
+        # State tracking for right panel tabs
+        self._activity_log: str = ""  # Accumulated markdown activity log
+        self._accumulated_state: Dict[str, Any] = {}  # JSON state for Details tab
+        self._report_content: str = ""  # Markdown report for Report tab
+        self._last_result: Optional[Dict[str, Any]] = None  # Final result for export
 
         self._setup_ui()
         self._connect_signals()
@@ -461,9 +605,48 @@ class SystematicReviewTabWidget(QWidget):
         return group
 
     def _create_right_panel(self) -> QWidget:
-        """Create the right panel with progress and results."""
+        """
+        Create the right panel with tabbed interface.
+
+        Contains three tabs:
+        - Results: Progress bars and activity log
+        - Details: JSON structure viewer
+        - Report: Formatted markdown report
+        """
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(scale_px(8))
+
+        # Tab widget for Results, Details, Report
+        self.right_tab_widget = QTabWidget()
+
+        # Tab 1: Results (progress + activity log)
+        results_tab = self._create_results_tab()
+        self.right_tab_widget.addTab(results_tab, "Results")
+
+        # Tab 2: Details (JSON viewer)
+        details_tab = self._create_details_tab()
+        self.right_tab_widget.addTab(details_tab, "Details")
+
+        # Tab 3: Report (markdown viewer)
+        report_tab = self._create_report_tab()
+        self.right_tab_widget.addTab(report_tab, "Report")
+
+        layout.addWidget(self.right_tab_widget)
+
+        return panel
+
+    def _create_results_tab(self) -> QWidget:
+        """
+        Create the Results tab with progress tracking and activity log.
+
+        Contains:
+        - Progress section at top with step-specific progress
+        - Scrollable markdown activity log below
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scale_px(8))
 
@@ -475,11 +658,24 @@ class SystematicReviewTabWidget(QWidget):
         self.status_label = QLabel("Ready to start")
         progress_layout.addWidget(self.status_label)
 
-        # Progress bar
+        # Overall progress bar
+        overall_label = QLabel("Overall Progress:")
+        progress_layout.addWidget(overall_label)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         progress_layout.addWidget(self.progress_bar)
+
+        # Step-specific progress bar
+        self.step_label = QLabel("Current Step:")
+        progress_layout.addWidget(self.step_label)
+
+        self.step_progress_bar = QProgressBar()
+        self.step_progress_bar.setRange(0, 100)
+        self.step_progress_bar.setValue(0)
+        self.step_progress_bar.setFormat("%v / %m")
+        progress_layout.addWidget(self.step_progress_bar)
 
         # Cancel button
         button_layout = QHBoxLayout()
@@ -494,25 +690,82 @@ class SystematicReviewTabWidget(QWidget):
 
         layout.addWidget(progress_group)
 
-        # Workflow steps display
-        steps_group = QGroupBox("Workflow Steps")
-        steps_layout = QVBoxLayout(steps_group)
+        # Activity log section
+        activity_group = QGroupBox("Activity Log")
+        activity_layout = QVBoxLayout(activity_group)
 
-        self.steps_list = QListWidget()
-        steps_layout.addWidget(self.steps_list)
-
-        layout.addWidget(steps_group)
-
-        # Results summary
-        results_group = QGroupBox("Results Summary")
-        results_layout = QVBoxLayout(results_group)
-
-        self.results_text = QTextEdit()
-        self.results_text.setReadOnly(True)
-        self.results_text.setPlaceholderText(
-            "Results will be displayed here after the review completes..."
+        self.activity_viewer = MarkdownViewer()
+        self.activity_viewer.set_markdown(
+            "*Waiting to start...*\n\n"
+            "Activity will be logged here as the review progresses."
         )
-        results_layout.addWidget(self.results_text)
+        activity_layout.addWidget(self.activity_viewer)
+
+        layout.addWidget(activity_group, stretch=1)
+
+        return widget
+
+    def _create_details_tab(self) -> QWidget:
+        """
+        Create the Details tab with JSON structure viewer.
+
+        Displays the accumulated state as pretty-printed JSON that
+        builds up as the review progresses.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(scale_px(8))
+
+        # JSON viewer
+        details_group = QGroupBox("Review State (JSON)")
+        details_layout = QVBoxLayout(details_group)
+
+        self.details_text = QPlainTextEdit()
+        self.details_text.setReadOnly(True)
+        self.details_text.setPlaceholderText(
+            "JSON state will appear here as the review progresses..."
+        )
+
+        # Apply monospace font styling using stylesheet generator
+        style_gen = StylesheetGenerator()
+        self.details_text.setStyleSheet(style_gen.code_text_stylesheet())
+
+        details_layout.addWidget(self.details_text)
+
+        layout.addWidget(details_group, stretch=1)
+
+        return widget
+
+    def _create_report_tab(self) -> QWidget:
+        """
+        Create the Report tab with markdown viewer and export buttons.
+
+        Displays the final formatted markdown report with export options.
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(scale_px(8))
+
+        # Report viewer
+        report_group = QGroupBox("Systematic Review Report")
+        report_layout = QVBoxLayout(report_group)
+
+        self.report_viewer = MarkdownViewer()
+        self.report_viewer.set_markdown(
+            "# Report\n\n"
+            "*The systematic review report will appear here when the review completes.*\n\n"
+            "The report includes:\n"
+            "- Executive summary\n"
+            "- Search strategy\n"
+            "- Included papers\n"
+            "- Quality assessments\n"
+            "- PRISMA flow diagram data"
+        )
+        report_layout.addWidget(self.report_viewer)
+
+        layout.addWidget(report_group, stretch=1)
 
         # Export buttons
         export_layout = QHBoxLayout()
@@ -529,11 +782,9 @@ class SystematicReviewTabWidget(QWidget):
 
         export_layout.addStretch()
 
-        results_layout.addLayout(export_layout)
+        layout.addLayout(export_layout)
 
-        layout.addWidget(results_group)
-
-        return panel
+        return widget
 
     def _connect_signals(self) -> None:
         """Connect internal signals."""
@@ -745,11 +996,35 @@ class SystematicReviewTabWidget(QWidget):
         self.export_json_btn.setEnabled(False)
         self.export_md_btn.setEnabled(False)
 
-        # Clear previous results
-        self.steps_list.clear()
-        self.results_text.clear()
+        # Reset state tracking
+        self._activity_log = ""
+        self._accumulated_state = {}
+        self._report_content = ""
+
+        # Reset progress bars
         self.progress_bar.setValue(0)
+        self.step_progress_bar.setValue(0)
+        self.step_progress_bar.setRange(0, 100)
+        self.step_label.setText("Current Step:")
         self.status_label.setText("Initializing...")
+
+        # Reset activity log
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        initial_log = f"# Systematic Review Started\n\n**Started at:** {timestamp}\n\n---\n\n"
+        self._activity_log = initial_log
+        self.activity_viewer.set_markdown(initial_log)
+
+        # Reset details view
+        self.details_text.clear()
+
+        # Reset report view
+        self.report_viewer.set_markdown(
+            "# Report\n\n"
+            "*Processing... The report will appear here when the review completes.*"
+        )
+
+        # Switch to Results tab
+        self.right_tab_widget.setCurrentIndex(0)
 
         # Create and start worker
         self._worker = ReviewWorker(
@@ -760,7 +1035,11 @@ class SystematicReviewTabWidget(QWidget):
             output_path=output_path,
         )
 
+        # Connect all signals
         self._worker.progress_update.connect(self._on_progress_update)
+        self._worker.step_progress.connect(self._on_step_progress)
+        self._worker.activity_update.connect(self._on_activity_update)
+        self._worker.state_update.connect(self._on_state_update)
         self._worker.checkpoint_reached.connect(self._on_checkpoint_reached)
         self._worker.step_completed.connect(self._on_step_completed)
         self._worker.review_complete.connect(self._on_review_complete)
@@ -782,50 +1061,201 @@ class SystematicReviewTabWidget(QWidget):
         self.progress_bar.setValue(percentage)
         self.status_message.emit(message)
 
+    @Slot(str, int, int)
+    def _on_step_progress(self, step_name: str, current: int, total: int) -> None:
+        """
+        Handle step-specific progress updates.
+
+        Updates the step progress bar with current/total values.
+
+        Args:
+            step_name: Name of the current step
+            current: Current progress count
+            total: Total count for this step
+        """
+        self.step_label.setText(f"Current Step: {step_name}")
+        self.step_progress_bar.setRange(0, total)
+        self.step_progress_bar.setValue(current)
+
+    @Slot(str)
+    def _on_activity_update(self, entry: str) -> None:
+        """
+        Handle activity log updates.
+
+        Appends the new entry to the activity log and updates the viewer.
+
+        Args:
+            entry: Markdown-formatted activity log entry
+        """
+        self._activity_log += entry
+        self.activity_viewer.set_markdown(self._activity_log)
+
+    @Slot(dict)
+    def _on_state_update(self, state: Dict) -> None:
+        """
+        Handle accumulated state updates.
+
+        Updates the Details tab with pretty-printed JSON.
+
+        Args:
+            state: Current accumulated state dictionary
+        """
+        self._accumulated_state = state
+        formatted_json = json.dumps(state, indent=2, ensure_ascii=False, default=str)
+        self.details_text.setPlainText(formatted_json)
+
     @Slot(str, dict)
     def _on_checkpoint_reached(self, checkpoint_type: str, state: Dict) -> None:
-        """Handle checkpoint reached signal."""
+        """
+        Handle checkpoint reached signal.
+
+        Adds a checkpoint entry to the activity log.
+
+        Args:
+            checkpoint_type: Type of checkpoint reached
+            state: Checkpoint state dictionary
+        """
         display_name = CHECKPOINT_TYPE_DISPLAY_NAMES.get(
             checkpoint_type, checkpoint_type
         )
-        self.steps_list.addItem(f"✓ {display_name}")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = f"**[{timestamp}]** ✅ **Checkpoint:** {display_name}\n\n"
+        self._activity_log += entry
+        self.activity_viewer.set_markdown(self._activity_log)
         self.status_message.emit(f"Checkpoint: {display_name}")
 
     @Slot(str, dict)
     def _on_step_completed(self, step_name: str, metrics: Dict) -> None:
-        """Handle step completed signal."""
-        self.steps_list.addItem(f"  - {step_name}")
+        """
+        Handle step completed signal.
+
+        Adds step completion to the activity log with metrics.
+
+        Args:
+            step_name: Name of the completed step
+            metrics: Step completion metrics
+        """
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        metrics_str = ", ".join(f"{k}: {v}" for k, v in metrics.items()) if metrics else "completed"
+        entry = f"**[{timestamp}]** Step completed: {step_name} ({metrics_str})\n"
+        self._activity_log += entry
+        self.activity_viewer.set_markdown(self._activity_log)
 
     @Slot(dict)
     def _on_review_complete(self, result: Dict) -> None:
-        """Handle review completion."""
+        """
+        Handle review completion.
+
+        Updates all three tabs with final results:
+        - Results: Final summary in activity log
+        - Details: Complete result JSON
+        - Report: Formatted markdown report
+        """
         self.progress_bar.setValue(100)
+        self.step_progress_bar.setValue(self.step_progress_bar.maximum())
         self.status_label.setText("Review complete!")
-
-        # Display results summary
-        stats = result.get("statistics", {})
-        summary_lines = [
-            "<h3>Review Complete</h3>",
-            f"<b>Total Considered:</b> {stats.get('total_considered', 0)}",
-            f"<b>Passed Initial Filter:</b> {stats.get('passed_initial_filter', 0)}",
-            f"<b>Passed Relevance:</b> {stats.get('passed_relevance_threshold', 0)}",
-            f"<b>Passed Quality:</b> {stats.get('passed_quality_gate', 0)}",
-            f"<b>Final Included:</b> {stats.get('final_included', 0)}",
-            f"<b>Final Excluded:</b> {stats.get('final_excluded', 0)}",
-            f"<b>Uncertain (Need Review):</b> {stats.get('uncertain_for_review', 0)}",
-            "",
-            f"<b>Processing Time:</b> {stats.get('processing_time_seconds', 0):.1f} seconds",
-        ]
-
-        self.results_text.setHtml("<br>".join(summary_lines))
-        self.export_json_btn.setEnabled(True)
-        self.export_md_btn.setEnabled(True)
 
         # Store result for export
         self._last_result = result
 
+        # Update activity log with summary
+        stats = result.get("statistics", {})
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        summary_entry = f"""
+---
+
+## ✅ Review Complete ({timestamp})
+
+| Metric | Count |
+|--------|-------|
+| Total Considered | {stats.get('total_considered', 0)} |
+| Passed Initial Filter | {stats.get('passed_initial_filter', 0)} |
+| Passed Relevance | {stats.get('passed_relevance_threshold', 0)} |
+| Passed Quality | {stats.get('passed_quality_gate', 0)} |
+| **Final Included** | **{stats.get('final_included', 0)}** |
+| Final Excluded | {stats.get('final_excluded', 0)} |
+| Uncertain (Need Review) | {stats.get('uncertain_for_review', 0)} |
+
+**Processing Time:** {stats.get('processing_time_seconds', 0):.1f} seconds
+"""
+        self._activity_log += summary_entry
+        self.activity_viewer.set_markdown(self._activity_log)
+
+        # Update details with complete result
+        formatted_json = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        self.details_text.setPlainText(formatted_json)
+
+        # Generate and display markdown report
+        self._generate_report_display(result)
+
+        # Enable export buttons
+        self.export_json_btn.setEnabled(True)
+        self.export_md_btn.setEnabled(True)
+
+        # Switch to Report tab
+        self.right_tab_widget.setCurrentIndex(2)
+
         self.status_message.emit("Review complete!")
         self.refresh_checkpoints()  # Refresh to show new checkpoints
+
+    def _generate_report_display(self, result: Dict) -> None:
+        """
+        Generate and display the markdown report in the Report tab.
+
+        Args:
+            result: The complete review result dictionary
+        """
+        try:
+            from bmlibrarian.agents.systematic_review.reporter import Reporter
+            from bmlibrarian.agents.systematic_review.data_models import (
+                SystematicReviewResult,
+            )
+
+            # Convert dict back to SystematicReviewResult
+            sr_result = SystematicReviewResult.from_dict(result)
+
+            # Create reporter and generate markdown content
+            reporter = Reporter(documenter=None, criteria=None, weights=None)
+
+            # Use the internal method to build markdown content
+            report_content = reporter._build_markdown_content(
+                sr_result,
+                include_audit_trail=False,  # Keep display concise
+                include_excluded=True,
+            )
+
+            self._report_content = report_content
+            self.report_viewer.set_markdown(report_content)
+
+        except Exception as e:
+            logger.error(f"Failed to generate report display: {e}", exc_info=True)
+            # Fallback to basic summary
+            stats = result.get("statistics", {})
+            fallback_report = f"""# Systematic Review Report
+
+## Summary
+
+The systematic review has been completed.
+
+### Statistics
+
+- **Total Papers Considered:** {stats.get('total_considered', 0)}
+- **Passed Initial Filter:** {stats.get('passed_initial_filter', 0)}
+- **Passed Relevance Threshold:** {stats.get('passed_relevance_threshold', 0)}
+- **Passed Quality Gate:** {stats.get('passed_quality_gate', 0)}
+- **Final Included:** {stats.get('final_included', 0)}
+- **Final Excluded:** {stats.get('final_excluded', 0)}
+
+### Processing Time
+
+{stats.get('processing_time_seconds', 0):.1f} seconds
+
+---
+
+*Note: Full report generation failed. Please use Export Markdown for the complete report.*
+"""
+            self._report_content = fallback_report
+            self.report_viewer.set_markdown(fallback_report)
 
     @Slot(str)
     def _on_error(self, error_message: str) -> None:
