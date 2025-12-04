@@ -1004,7 +1004,7 @@ class SystematicReviewTabWidget(QWidget):
         self.details_text.clear()
 
         # Reset report view
-        self.report_viewer.set_markdown(
+        self.report_preview.set_report(
             "# Report\n\n"
             "*Processing... The report will appear here when the review completes.*"
         )

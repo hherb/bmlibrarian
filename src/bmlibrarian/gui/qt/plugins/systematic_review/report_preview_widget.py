@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scale_px
+from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import StylesheetGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,11 @@ class ReportPreviewWidget(QWidget):
         header_layout.setContentsMargins(0, 0, 0, 0)
 
         title_label = QLabel("Report Preview")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        style_gen = StylesheetGenerator()
+        title_label.setStyleSheet(style_gen.label_stylesheet(
+            font_size_key='font_large',
+            bold=True
+        ))
         header_layout.addWidget(title_label)
 
         header_layout.addStretch()
@@ -102,10 +107,8 @@ class ReportPreviewWidget(QWidget):
         self.raw_view.setReadOnly(True)
         self.raw_view.setPlaceholderText(PLACEHOLDER_TEXT)
         self.raw_view.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        # Use monospace font for raw markdown
-        self.raw_view.setStyleSheet(
-            "QTextEdit { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; }"
-        )
+        # Use monospace font for raw markdown via stylesheet generator
+        self.raw_view.setStyleSheet(style_gen.code_text_stylesheet())
         self.tab_widget.addTab(self.raw_view, TAB_RAW)
 
         layout.addWidget(self.tab_widget)
