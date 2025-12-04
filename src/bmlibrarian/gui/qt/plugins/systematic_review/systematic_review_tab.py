@@ -227,8 +227,13 @@ class ReviewWorker(QThread):
             "execution_completed": 40,
             "filtering_started": 45,
             "filtering_complete": 50,
+            "batch_scoring_started": 55,
             "scoring_started": 55,
             "scoring_progress": 60,
+            "inclusion_evaluation_started": 60,
+            "inclusion_evaluation_completed": 60,
+            "scoring_completed": 65,
+            "batch_scoring_completed": 70,
             "scoring_complete": 70,
             "quality_started": 75,
             "quality_progress": 80,
@@ -278,11 +283,13 @@ class ReviewWorker(QThread):
             return f"**[{timestamp}]** Starting initial filtering...\n"
         elif event == "filtering_complete":
             return f"**[{timestamp}]** ✓ Filtering complete: {data}\n\n---\n"
+        elif event == "batch_scoring_started":
+            return f"**[{timestamp}]** Starting relevance scoring: {data}\n"
         elif event == "scoring_started":
-            return f"**[{timestamp}]** Starting relevance scoring...\n"
+            return None  # Don't log individual paper scoring starts (too verbose)
         elif event == "scoring_progress":
-            return f"**[{timestamp}]** Scoring: {data}\n"
-        elif event == "scoring_complete":
+            return f"**[{timestamp}]** Scoring progress: {data}\n"
+        elif event == "batch_scoring_completed" or event == "scoring_complete":
             return f"**[{timestamp}]** ✓ Scoring complete: {data}\n\n---\n"
         elif event == "quality_started":
             return f"**[{timestamp}]** Starting quality assessment...\n"
@@ -346,7 +353,7 @@ class ReviewWorker(QThread):
             total = int(match.group(2))
 
             # Determine step name from event
-            if "scoring" in event:
+            if "scoring" in event or "inclusion_evaluation" in event:
                 step_name = "Relevance Scoring"
             elif "quality" in event:
                 step_name = "Quality Assessment"

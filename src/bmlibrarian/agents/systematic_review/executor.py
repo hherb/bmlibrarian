@@ -264,7 +264,7 @@ class SearchExecutor:
         for i, query in enumerate(plan.queries):
             self._call_callback(
                 "query_started",
-                f"Query {i + 1}/{len(plan.queries)}: {query.query_type.value}"
+                f"{query.query_text}"
             )
 
             result = self._execute_single_query(

@@ -391,6 +391,12 @@ class RelevanceScorer:
                 logger.error(f"Failed to score paper {paper.document_id}: {e}")
                 failed_papers.append((paper, str(e)))
 
+            # Emit progress via callback system for GUI updates
+            self._call_callback(
+                "scoring_progress",
+                f"{i + 1}/{len(papers)} papers scored"
+            )
+
             if progress_callback:
                 progress_callback(i + 1, len(papers))
 
