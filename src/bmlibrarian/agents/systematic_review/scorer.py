@@ -20,7 +20,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .data_models import (
     SearchCriteria,
@@ -491,7 +491,7 @@ class RelevanceScorer:
         self,
         executed_queries: List[ExecutedQuery],
         scored_papers: List[ScoredPaper],
-        semantic_baseline_ids: set,
+        semantic_baseline_ids: Set[int],
         threshold: Optional[float] = None,
     ) -> QueryFeedback:
         """

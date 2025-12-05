@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, TypeAlias
+from typing import Any, Dict, List, Optional, Set, TypeAlias
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,9 @@ WEIGHT_SUM_TOLERANCE = 0.01  # Allow for floating point precision issues
 
 # Default limits
 DEFAULT_MAX_RESULTS = 500
+
+# Query feedback settings
+DEFAULT_MAX_FEEDBACK_EXAMPLES = 3  # Max good/bad query examples in LLM prompts
 
 # Default scoring weights (balanced profile - sum to 1.0)
 # These weights combine both Cochrane and BMLibrarian dimensions for comprehensive
@@ -790,7 +793,7 @@ class QueryFeedback:
     effective_queries: List[str] = field(default_factory=list)
     ineffective_queries: List[str] = field(default_factory=list)
     query_effectiveness_map: Dict[str, QueryEffectiveness] = field(default_factory=dict)
-    semantic_baseline_ids: set = field(default_factory=set)
+    semantic_baseline_ids: Set[int] = field(default_factory=set)
     total_queries_executed: int = 0
     total_effective_queries: int = 0
 
@@ -812,12 +815,16 @@ class QueryFeedback:
         else:
             self.ineffective_queries.append(effectiveness.query_text)
 
-    def get_example_prompt_text(self, max_examples: int = 3) -> str:
+    def get_example_prompt_text(
+        self,
+        max_examples: int = DEFAULT_MAX_FEEDBACK_EXAMPLES,
+    ) -> str:
         """
         Generate text for LLM prompt with good/bad query examples.
 
         Args:
             max_examples: Maximum examples of each type to include
+                         (default: DEFAULT_MAX_FEEDBACK_EXAMPLES)
 
         Returns:
             Formatted text for LLM prompt

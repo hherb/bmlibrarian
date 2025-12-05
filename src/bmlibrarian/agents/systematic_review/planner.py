@@ -54,6 +54,10 @@ MIN_QUERIES_PER_PLAN = 2
 MAX_QUERIES_PER_PLAN = 10
 DEFAULT_ESTIMATED_YIELD_PER_QUERY = 100
 
+# Query refinement settings
+MAX_EFFECTIVE_PATTERNS_TO_USE = 2  # Max effective queries to derive variations from
+MAX_KEY_TERMS_IN_OR_QUERY = 3  # Max terms to combine with OR operator
+
 # LLM prompts
 QUERY_GENERATION_SYSTEM_PROMPT = """You are an expert biomedical literature search strategist.
 Your task is to generate effective search queries for systematic literature reviews.
@@ -1021,11 +1025,11 @@ class Planner:
         # If we have effective queries, try generating variations
         if query_feedback.effective_queries and len(queries) < num_variations:
             # Take patterns from effective queries and create variations
-            for effective_query in query_feedback.effective_queries[:2]:
+            for effective_query in query_feedback.effective_queries[:MAX_EFFECTIVE_PATTERNS_TO_USE]:
                 key_terms = self._extract_key_terms(effective_query)
                 if len(key_terms) >= 2:
                     # Create OR variation
-                    or_query = " | ".join(key_terms[:3])
+                    or_query = " | ".join(key_terms[:MAX_KEY_TERMS_IN_OR_QUERY])
                     if or_query.lower() not in existing_texts:
                         queries.append(PlannedQuery(
                             query_id=f"refined_or_{uuid.uuid4().hex[:8]}",
