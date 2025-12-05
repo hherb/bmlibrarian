@@ -696,6 +696,179 @@ class ExecutedQuery:
         )
 
 
+@dataclass
+class QueryEffectiveness:
+    """
+    Tracks the effectiveness of a single query in finding relevant documents.
+
+    Used for query quality feedback to improve future query generation.
+
+    Attributes:
+        query_id: ID of the executed query
+        query_text: The actual query text
+        query_type: Type of query (semantic, keyword, hybrid, hyde)
+        documents_found: Total documents returned by query
+        documents_scored: Number of documents that were scored
+        documents_above_threshold: Documents with relevance score >= threshold
+        avg_relevance_score: Average relevance score of scored documents
+        overlap_with_semantic: Number of docs also found by semantic search
+        is_effective: Whether this query found any relevant documents
+    """
+
+    query_id: str
+    query_text: str
+    query_type: str
+    documents_found: int = 0
+    documents_scored: int = 0
+    documents_above_threshold: int = 0
+    avg_relevance_score: float = 0.0
+    overlap_with_semantic: int = 0
+    is_effective: bool = False
+
+    @property
+    def effectiveness_ratio(self) -> float:
+        """Ratio of relevant documents to total found."""
+        if self.documents_found == 0:
+            return 0.0
+        return self.documents_above_threshold / self.documents_found
+
+    @property
+    def overlap_ratio(self) -> float:
+        """Ratio of overlap with semantic results."""
+        if self.documents_found == 0:
+            return 0.0
+        return self.overlap_with_semantic / self.documents_found
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "query_id": self.query_id,
+            "query_text": self.query_text,
+            "query_type": self.query_type,
+            "documents_found": self.documents_found,
+            "documents_scored": self.documents_scored,
+            "documents_above_threshold": self.documents_above_threshold,
+            "avg_relevance_score": self.avg_relevance_score,
+            "overlap_with_semantic": self.overlap_with_semantic,
+            "is_effective": self.is_effective,
+            "effectiveness_ratio": self.effectiveness_ratio,
+            "overlap_ratio": self.overlap_ratio,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QueryEffectiveness":
+        """Create from dictionary."""
+        return cls(
+            query_id=data["query_id"],
+            query_text=data["query_text"],
+            query_type=data["query_type"],
+            documents_found=data.get("documents_found", 0),
+            documents_scored=data.get("documents_scored", 0),
+            documents_above_threshold=data.get("documents_above_threshold", 0),
+            avg_relevance_score=data.get("avg_relevance_score", 0.0),
+            overlap_with_semantic=data.get("overlap_with_semantic", 0),
+            is_effective=data.get("is_effective", False),
+        )
+
+
+@dataclass
+class QueryFeedback:
+    """
+    Aggregated feedback about query effectiveness for learning.
+
+    Provides good/bad examples for adaptive query generation.
+
+    Attributes:
+        effective_queries: List of query texts that found relevant documents
+        ineffective_queries: List of query texts that found no relevant docs
+        query_effectiveness_map: Map of query_id to QueryEffectiveness
+        semantic_baseline_ids: Document IDs found by semantic/HyDE search
+        total_queries_executed: Total queries run
+        total_effective_queries: Number of effective queries
+    """
+
+    effective_queries: List[str] = field(default_factory=list)
+    ineffective_queries: List[str] = field(default_factory=list)
+    query_effectiveness_map: Dict[str, QueryEffectiveness] = field(default_factory=dict)
+    semantic_baseline_ids: set = field(default_factory=set)
+    total_queries_executed: int = 0
+    total_effective_queries: int = 0
+
+    @property
+    def effective_ratio(self) -> float:
+        """Ratio of effective queries to total queries."""
+        if self.total_queries_executed == 0:
+            return 0.0
+        return self.total_effective_queries / self.total_queries_executed
+
+    def add_effectiveness(self, effectiveness: QueryEffectiveness) -> None:
+        """Add query effectiveness record and update aggregates."""
+        self.query_effectiveness_map[effectiveness.query_id] = effectiveness
+        self.total_queries_executed += 1
+
+        if effectiveness.is_effective:
+            self.effective_queries.append(effectiveness.query_text)
+            self.total_effective_queries += 1
+        else:
+            self.ineffective_queries.append(effectiveness.query_text)
+
+    def get_example_prompt_text(self, max_examples: int = 3) -> str:
+        """
+        Generate text for LLM prompt with good/bad query examples.
+
+        Args:
+            max_examples: Maximum examples of each type to include
+
+        Returns:
+            Formatted text for LLM prompt
+        """
+        lines = []
+
+        if self.effective_queries:
+            lines.append("EFFECTIVE query patterns (found relevant papers):")
+            for query in self.effective_queries[:max_examples]:
+                lines.append(f"  - \"{query}\"")
+
+        if self.ineffective_queries:
+            lines.append("\nINEFFECTIVE query patterns (found no relevant papers):")
+            for query in self.ineffective_queries[:max_examples]:
+                lines.append(f"  - \"{query}\"")
+
+        if lines:
+            lines.insert(0, "\nPrevious search feedback:")
+            lines.append("\nGenerate queries more like the EFFECTIVE patterns.")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "effective_queries": self.effective_queries,
+            "ineffective_queries": self.ineffective_queries,
+            "query_effectiveness_map": {
+                k: v.to_dict() for k, v in self.query_effectiveness_map.items()
+            },
+            "semantic_baseline_ids": list(self.semantic_baseline_ids),
+            "total_queries_executed": self.total_queries_executed,
+            "total_effective_queries": self.total_effective_queries,
+            "effective_ratio": self.effective_ratio,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QueryFeedback":
+        """Create from dictionary."""
+        instance = cls(
+            effective_queries=data.get("effective_queries", []),
+            ineffective_queries=data.get("ineffective_queries", []),
+            semantic_baseline_ids=set(data.get("semantic_baseline_ids", [])),
+            total_queries_executed=data.get("total_queries_executed", 0),
+            total_effective_queries=data.get("total_effective_queries", 0),
+        )
+        for query_id, eff_data in data.get("query_effectiveness_map", {}).items():
+            instance.query_effectiveness_map[query_id] = QueryEffectiveness.from_dict(eff_data)
+        return instance
+
+
 # =============================================================================
 # Paper Data Models
 # =============================================================================
