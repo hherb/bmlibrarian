@@ -50,12 +50,13 @@ from .data_models import (
     ExclusionStage,
     validate_search_criteria,
     validate_scoring_weights,
+    QueryFeedback,
 )
 from .documenter import Documenter
 
 if TYPE_CHECKING:
     from ..orchestrator import AgentOrchestrator
-    from .executor import AggregatedResults
+    from .executor import AggregatedResults, PhasedSearchResults
     from .scorer import RelevanceScorer, CompositeScorer
     from .quality import QualityAssessor
     from .reporter import Reporter
@@ -359,7 +360,7 @@ class SystematicReviewAgent(BaseAgent):
         try:
             # Import required components
             from .planner import Planner
-            from .executor import SearchExecutor
+            from .executor import SearchExecutor, PhasedSearchResults
             from .filters import InitialFilter, InclusionEvaluator
             from .scorer import RelevanceScorer, CompositeScorer
             from .quality import QualityAssessor
@@ -444,25 +445,59 @@ class SystematicReviewAgent(BaseAgent):
             # =================================================================
             self.documenter.set_phase("search_execution")
 
-            with self.documenter.log_step_with_timer(
-                action=ACTION_EXECUTE_SEARCH,
-                tool="SearchExecutor",
-                input_summary=f"Executing {len(self._search_plan.queries)} queries",
-                decision_rationale="Running all planned queries to find candidate papers",
-            ) as timer:
-                search_results = executor.execute_plan(self._search_plan)
-                self._executed_queries = search_results.executed_queries
-                self._all_papers = search_results.papers
+            # Choose search strategy based on configuration
+            if self.config.use_phased_search:
+                # Phased search: semantic/HyDE first, then keyword
+                with self.documenter.log_step_with_timer(
+                    action=ACTION_EXECUTE_SEARCH,
+                    tool="SearchExecutor (Phased)",
+                    input_summary=f"Executing {len(self._search_plan.queries)} queries in two phases",
+                    decision_rationale="Running phased search: semantic/HyDE first for baseline, then keyword",
+                ) as timer:
+                    phased_results = executor.execute_phased_plan(
+                        self._search_plan,
+                        max_phase2_no_overlap=self.config.max_phase2_no_overlap,
+                    )
+                    self._executed_queries = phased_results.executed_queries
+                    self._all_papers = phased_results.all_papers
+                    # Store phased results for query feedback
+                    self._phased_results = phased_results
+                    self._semantic_baseline_ids = phased_results.phase1_document_ids
 
-                timer.set_output(
-                    f"Found {search_results.count} unique papers "
-                    f"from {search_results.total_before_dedup} total"
-                )
-                timer.add_metrics({
-                    "total_papers_found": search_results.total_before_dedup,
-                    "unique_papers": search_results.count,
-                    "deduplication_rate": round(search_results.deduplication_rate * 100, 2),
-                })
+                    timer.set_output(
+                        f"Found {phased_results.total_count} unique papers "
+                        f"(Phase 1: {phased_results.phase1_count}, Phase 2 new: {phased_results.phase2_new_count})"
+                    )
+                    timer.add_metrics({
+                        "phase1_papers": phased_results.phase1_count,
+                        "phase2_new_papers": phased_results.phase2_new_count,
+                        "unique_papers": phased_results.total_count,
+                        "search_strategy": "phased",
+                    })
+            else:
+                # Standard search: all queries at once
+                with self.documenter.log_step_with_timer(
+                    action=ACTION_EXECUTE_SEARCH,
+                    tool="SearchExecutor",
+                    input_summary=f"Executing {len(self._search_plan.queries)} queries",
+                    decision_rationale="Running all planned queries to find candidate papers",
+                ) as timer:
+                    search_results = executor.execute_plan(self._search_plan)
+                    self._executed_queries = search_results.executed_queries
+                    self._all_papers = search_results.papers
+                    self._phased_results = None
+                    self._semantic_baseline_ids = set()
+
+                    timer.set_output(
+                        f"Found {search_results.count} unique papers "
+                        f"from {search_results.total_before_dedup} total"
+                    )
+                    timer.add_metrics({
+                        "total_papers_found": search_results.total_before_dedup,
+                        "unique_papers": search_results.count,
+                        "deduplication_rate": round(search_results.deduplication_rate * 100, 2),
+                        "search_strategy": "standard",
+                    })
 
             # Track statistics
             total_considered = len(self._all_papers)
@@ -565,6 +600,44 @@ class SystematicReviewAgent(BaseAgent):
                     "threshold": self.config.relevance_threshold,
                 }
             )
+
+            # =================================================================
+            # Phase 4b: Query Effectiveness Evaluation (if phased search used)
+            # =================================================================
+            self._query_feedback: Optional[QueryFeedback] = None
+
+            if self.config.use_phased_search and self.config.enable_query_feedback:
+                # Evaluate how effective each query was at finding relevant docs
+                query_feedback = scorer.evaluate_query_effectiveness(
+                    executed_queries=self._executed_queries,
+                    scored_papers=self._scored_papers,
+                    semantic_baseline_ids=self._semantic_baseline_ids,
+                    threshold=self.config.relevance_threshold,
+                )
+                self._query_feedback = query_feedback
+
+                # Log query effectiveness
+                self.documenter.log_step(
+                    action="evaluate_query_effectiveness",
+                    tool=None,
+                    input_summary=f"Evaluating {len(self._executed_queries)} queries",
+                    output_summary=f"{query_feedback.total_effective_queries}/{query_feedback.total_queries_executed} effective",
+                    decision_rationale="Tracking query effectiveness for feedback loop",
+                    metrics={
+                        "total_queries": query_feedback.total_queries_executed,
+                        "effective_queries": query_feedback.total_effective_queries,
+                        "effective_ratio": round(query_feedback.effective_ratio * 100, 2),
+                        "effective_patterns": len(query_feedback.effective_queries),
+                        "ineffective_patterns": len(query_feedback.ineffective_queries),
+                    }
+                )
+
+                # Log warning about ineffective queries
+                if query_feedback.ineffective_queries:
+                    logger.info(
+                        f"Identified {len(query_feedback.ineffective_queries)} ineffective queries "
+                        f"that will be used as negative examples for future query generation"
+                    )
 
             # Checkpoint: Review scoring results
             if not self._checkpoint(

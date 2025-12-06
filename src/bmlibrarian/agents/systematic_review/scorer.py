@@ -20,7 +20,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .data_models import (
     SearchCriteria,
@@ -33,6 +33,9 @@ from .data_models import (
     ExclusionStage,
     MIN_RELEVANCE_SCORE,
     MAX_RELEVANCE_SCORE,
+    QueryEffectiveness,
+    QueryFeedback,
+    ExecutedQuery,
 )
 from .config import (
     SystematicReviewConfig,
@@ -479,6 +482,97 @@ class RelevanceScorer:
         )
 
         return above_threshold, below_threshold
+
+    # =========================================================================
+    # Query Effectiveness Evaluation
+    # =========================================================================
+
+    def evaluate_query_effectiveness(
+        self,
+        executed_queries: List[ExecutedQuery],
+        scored_papers: List[ScoredPaper],
+        semantic_baseline_ids: Set[int],
+        threshold: Optional[float] = None,
+    ) -> QueryFeedback:
+        """
+        Evaluate how effective each query was at finding relevant documents.
+
+        Analyzes which queries found documents that scored above the relevance
+        threshold, and tracks overlap with semantic search baseline.
+
+        Args:
+            executed_queries: List of executed queries with document IDs
+            scored_papers: Papers that have been scored for relevance
+            semantic_baseline_ids: Document IDs from semantic/HyDE queries
+            threshold: Relevance threshold (uses config default if not provided)
+
+        Returns:
+            QueryFeedback with effectiveness metrics and good/bad examples
+        """
+        if threshold is None:
+            threshold = self._config.relevance_threshold
+
+        # Build lookup: document_id -> relevance_score
+        doc_scores: Dict[int, float] = {}
+        for paper in scored_papers:
+            doc_scores[paper.paper.document_id] = paper.relevance_score
+
+        # Create feedback object
+        feedback = QueryFeedback(semantic_baseline_ids=semantic_baseline_ids)
+
+        for eq in executed_queries:
+            query = eq.planned_query
+            doc_ids = set(eq.document_ids)
+
+            # Calculate metrics
+            docs_found = len(doc_ids)
+            docs_scored = sum(1 for d in doc_ids if d in doc_scores)
+
+            # Count documents above threshold
+            docs_above = sum(
+                1 for d in doc_ids
+                if d in doc_scores and doc_scores[d] >= threshold
+            )
+
+            # Calculate average score for scored documents
+            scores = [doc_scores[d] for d in doc_ids if d in doc_scores]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+
+            # Calculate overlap with semantic baseline
+            overlap = len(doc_ids & semantic_baseline_ids)
+
+            # Determine if query was effective
+            # A query is effective if it found at least one document above threshold
+            is_effective = docs_above > 0
+
+            effectiveness = QueryEffectiveness(
+                query_id=query.query_id,
+                query_text=query.query_text,
+                query_type=query.query_type.value if hasattr(query.query_type, 'value') else str(query.query_type),
+                documents_found=docs_found,
+                documents_scored=docs_scored,
+                documents_above_threshold=docs_above,
+                avg_relevance_score=avg_score,
+                overlap_with_semantic=overlap,
+                is_effective=is_effective,
+            )
+
+            feedback.add_effectiveness(effectiveness)
+
+            # Log warnings for problematic queries
+            if docs_found > 0 and overlap == 0 and docs_above == 0:
+                logger.warning(
+                    f"Query '{query.query_text}' found {docs_found} docs with "
+                    f"no Phase 1 overlap and no docs above threshold - likely ineffective"
+                )
+
+        logger.info(
+            f"Query effectiveness: {feedback.total_effective_queries}/"
+            f"{feedback.total_queries_executed} queries effective "
+            f"({feedback.effective_ratio * 100:.1f}%)"
+        )
+
+        return feedback
 
     # =========================================================================
     # Helper Methods

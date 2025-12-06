@@ -27,6 +27,8 @@ from .data_models import (
     ExecutedQuery,
     QueryType,
     PaperData,
+    QueryEffectiveness,
+    QueryFeedback,
 )
 from .config import (
     SystematicReviewConfig,
@@ -131,6 +133,65 @@ class AggregatedResults:
                 str(doc_id): sources
                 for doc_id, sources in self.paper_sources.items()
             },
+        }
+
+
+@dataclass
+class PhasedSearchResults:
+    """
+    Results from two-phase search execution.
+
+    Phase 1: Semantic/HyDE queries (high precision baseline)
+    Phase 2: Keyword queries (deduped against Phase 1)
+
+    Attributes:
+        phase1_papers: Papers found by semantic/HyDE queries
+        phase1_document_ids: Document IDs from Phase 1 (baseline set)
+        phase2_papers: Papers found by keyword queries (after deduplication)
+        phase2_new_ids: Document IDs from Phase 2 not in Phase 1
+        all_papers: Combined deduplicated papers
+        paper_sources: Which queries found each document
+        executed_queries: All executed query records
+        query_overlap_stats: Overlap statistics per keyword query
+        execution_time_seconds: Total execution time
+    """
+
+    phase1_papers: List[PaperData] = field(default_factory=list)
+    phase1_document_ids: Set[int] = field(default_factory=set)
+    phase2_papers: List[PaperData] = field(default_factory=list)
+    phase2_new_ids: Set[int] = field(default_factory=set)
+    all_papers: List[PaperData] = field(default_factory=list)
+    paper_sources: Dict[int, List[str]] = field(default_factory=dict)
+    executed_queries: List[ExecutedQuery] = field(default_factory=list)
+    query_overlap_stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    execution_time_seconds: float = 0.0
+
+    @property
+    def phase1_count(self) -> int:
+        """Number of papers from Phase 1."""
+        return len(self.phase1_papers)
+
+    @property
+    def phase2_new_count(self) -> int:
+        """Number of new papers from Phase 2 (not in Phase 1)."""
+        return len(self.phase2_new_ids)
+
+    @property
+    def total_count(self) -> int:
+        """Total unique papers found."""
+        return len(self.all_papers)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "phase1_count": self.phase1_count,
+            "phase1_document_ids": list(self.phase1_document_ids),
+            "phase2_new_count": self.phase2_new_count,
+            "phase2_new_ids": list(self.phase2_new_ids),
+            "total_count": self.total_count,
+            "execution_time_seconds": round(self.execution_time_seconds, 2),
+            "queries_executed": len(self.executed_queries),
+            "query_overlap_stats": self.query_overlap_stats,
         }
 
 
@@ -351,6 +412,212 @@ class SearchExecutor:
             use_pubmed=use_pubmed,
             use_medrxiv=use_medrxiv,
             use_others=use_others,
+        )
+
+    def execute_phased_plan(
+        self,
+        plan: SearchPlan,
+        use_pubmed: bool = True,
+        use_medrxiv: bool = True,
+        use_others: bool = True,
+        max_phase2_no_overlap: int = 10,
+    ) -> PhasedSearchResults:
+        """
+        Execute search plan in two phases for better relevance filtering.
+
+        Phase 1: Execute semantic and HyDE queries first to establish a
+                 high-quality baseline set of documents.
+
+        Phase 2: Execute keyword queries, comparing results against Phase 1.
+                 Queries with no overlap and no high-scoring results can be
+                 flagged as ineffective.
+
+        Args:
+            plan: SearchPlan containing queries to execute
+            use_pubmed: Include PubMed sources
+            use_medrxiv: Include medRxiv sources
+            use_others: Include other sources
+            max_phase2_no_overlap: For keyword queries with no Phase 1 overlap,
+                                   only fetch this many documents for scoring
+
+        Returns:
+            PhasedSearchResults with separated phase results and overlap stats
+        """
+        self._call_callback("phased_execution_started", f"Executing phased search")
+        start_time = time.time()
+
+        # Separate queries by type
+        phase1_types = {QueryType.SEMANTIC, QueryType.HYDE, QueryType.HYBRID}
+        phase2_types = {QueryType.KEYWORD}
+
+        phase1_queries = [q for q in plan.queries if q.query_type in phase1_types]
+        phase2_queries = [q for q in plan.queries if q.query_type in phase2_types]
+
+        logger.info(
+            f"Phased execution: {len(phase1_queries)} Phase 1 queries, "
+            f"{len(phase2_queries)} Phase 2 queries"
+        )
+
+        # Track all results
+        all_document_ids: Set[int] = set()
+        paper_sources: Dict[int, List[str]] = {}
+        executed_queries: List[ExecutedQuery] = []
+        query_overlap_stats: Dict[str, Dict[str, Any]] = {}
+
+        # =====================================================================
+        # Phase 1: Semantic/HyDE queries (baseline)
+        # =====================================================================
+        self._call_callback("phase1_started", f"Phase 1: {len(phase1_queries)} semantic/HyDE queries")
+
+        phase1_document_ids: Set[int] = set()
+
+        for query in phase1_queries:
+            self._call_callback("query_started", f"{query.query_text}")
+
+            result = self._execute_single_query(
+                query,
+                use_pubmed=use_pubmed,
+                use_medrxiv=use_medrxiv,
+                use_others=use_others,
+            )
+
+            # Track Phase 1 document IDs (baseline)
+            phase1_document_ids.update(result.document_ids)
+
+            # Track which queries found which documents
+            for doc_id in result.document_ids:
+                if doc_id not in paper_sources:
+                    paper_sources[doc_id] = []
+                paper_sources[doc_id].append(query.query_id)
+
+            all_document_ids.update(result.document_ids)
+
+            executed_queries.append(ExecutedQuery(
+                planned_query=query,
+                document_ids=list(result.document_ids),
+                execution_time_seconds=result.execution_time_seconds,
+                actual_results=result.count,
+                error=result.error_message if not result.success else None,
+            ))
+
+            self._call_callback(
+                "query_completed",
+                f"Found {result.count} docs"
+            )
+
+        # Fetch Phase 1 paper data
+        phase1_papers = self._fetch_paper_data(phase1_document_ids)
+
+        self._call_callback(
+            "phase1_completed",
+            f"Phase 1 complete: {len(phase1_document_ids)} unique documents"
+        )
+
+        # =====================================================================
+        # Phase 2: Keyword queries (compare against baseline)
+        # =====================================================================
+        self._call_callback("phase2_started", f"Phase 2: {len(phase2_queries)} keyword queries")
+
+        phase2_new_ids: Set[int] = set()
+
+        for query in phase2_queries:
+            self._call_callback("query_started", f"{query.query_text}")
+
+            result = self._execute_single_query(
+                query,
+                use_pubmed=use_pubmed,
+                use_medrxiv=use_medrxiv,
+                use_others=use_others,
+            )
+
+            # Calculate overlap with Phase 1
+            overlap_ids = result.document_ids & phase1_document_ids
+            new_ids = result.document_ids - phase1_document_ids
+            overlap_ratio = len(overlap_ids) / len(result.document_ids) if result.document_ids else 0.0
+
+            # Store overlap statistics
+            query_overlap_stats[query.query_id] = {
+                "query_text": query.query_text,
+                "total_found": len(result.document_ids),
+                "overlap_with_phase1": len(overlap_ids),
+                "new_documents": len(new_ids),
+                "overlap_ratio": overlap_ratio,
+                "has_overlap": len(overlap_ids) > 0,
+            }
+
+            # For queries with no overlap, we may want to limit how many we add
+            # This implements the "only analyze top 10" for no-overlap queries
+            if len(overlap_ids) == 0 and len(new_ids) > max_phase2_no_overlap:
+                # Limit new IDs to avoid processing too many irrelevant documents
+                # The caller can score these and determine if query is useful
+                limited_new_ids = set(list(new_ids)[:max_phase2_no_overlap])
+                query_overlap_stats[query.query_id]["limited_to"] = max_phase2_no_overlap
+                query_overlap_stats[query.query_id]["warning"] = "No Phase 1 overlap - limited results"
+                logger.info(
+                    f"Query '{query.query_text}' has no Phase 1 overlap, "
+                    f"limiting to {max_phase2_no_overlap} documents for scoring"
+                )
+                new_ids = limited_new_ids
+
+            # Track new Phase 2 documents
+            phase2_new_ids.update(new_ids)
+
+            # Track sources for all documents
+            for doc_id in result.document_ids:
+                if doc_id not in paper_sources:
+                    paper_sources[doc_id] = []
+                paper_sources[doc_id].append(query.query_id)
+
+            # Only add new IDs not already in Phase 1
+            all_document_ids.update(new_ids)
+
+            executed_queries.append(ExecutedQuery(
+                planned_query=query,
+                document_ids=list(result.document_ids),
+                execution_time_seconds=result.execution_time_seconds,
+                actual_results=result.count,
+                error=result.error_message if not result.success else None,
+            ))
+
+            self._call_callback(
+                "query_completed",
+                f"Found {result.count} docs ({len(overlap_ids)} overlap, {len(new_ids)} new)"
+            )
+
+        # Fetch Phase 2 paper data (only new documents)
+        phase2_papers = self._fetch_paper_data(phase2_new_ids)
+
+        self._call_callback(
+            "phase2_completed",
+            f"Phase 2 complete: {len(phase2_new_ids)} new documents"
+        )
+
+        # Combine all papers
+        all_papers = self._fetch_paper_data(all_document_ids)
+
+        execution_time = time.time() - start_time
+
+        self._call_callback(
+            "phased_execution_completed",
+            f"Total: {len(all_papers)} unique papers in {execution_time:.2f}s"
+        )
+
+        logger.info(
+            f"Phased search complete: {len(phase1_document_ids)} Phase 1, "
+            f"{len(phase2_new_ids)} new Phase 2, {len(all_papers)} total "
+            f"({execution_time:.2f}s)"
+        )
+
+        return PhasedSearchResults(
+            phase1_papers=phase1_papers,
+            phase1_document_ids=phase1_document_ids,
+            phase2_papers=phase2_papers,
+            phase2_new_ids=phase2_new_ids,
+            all_papers=all_papers,
+            paper_sources=paper_sources,
+            executed_queries=executed_queries,
+            query_overlap_stats=query_overlap_stats,
+            execution_time_seconds=execution_time,
         )
 
     # =========================================================================

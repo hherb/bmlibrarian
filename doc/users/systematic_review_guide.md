@@ -359,7 +359,10 @@ Add to `~/.bmlibrarian/config.json`:
             "synthesis_model": null,
             "citation_min_relevance": 0.7,
             "max_citations_per_paper": 3,
-            "synthesis_temperature": 0.3
+            "synthesis_temperature": 0.3,
+            "use_phased_search": true,
+            "max_phase2_no_overlap": 10,
+            "enable_query_feedback": true
         }
     }
 }
@@ -374,6 +377,24 @@ Add to `~/.bmlibrarian/config.json`:
 | `citation_min_relevance` | `0.7` | Minimum citation relevance threshold (0-1) |
 | `max_citations_per_paper` | `3` | Maximum citations to extract per paper |
 | `synthesis_temperature` | `0.3` | LLM temperature for narrative synthesis |
+
+### Phased Search Configuration
+
+The systematic review agent uses a two-phase search strategy by default to reduce irrelevant document processing:
+
+- **Phase 1**: Semantic and HyDE queries establish a high-quality baseline
+- **Phase 2**: Keyword queries run against the baseline with overlap tracking
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `use_phased_search` | `true` | Enable two-phase search strategy |
+| `max_phase2_no_overlap` | `10` | Max documents to score from keyword queries with no Phase 1 overlap |
+| `enable_query_feedback` | `true` | Track query effectiveness for adaptive query generation |
+
+When `enable_query_feedback` is enabled, the system:
+- Tracks which queries found documents scoring above the relevance threshold
+- Identifies "effective" vs "ineffective" query patterns
+- Uses these patterns as examples to improve future LLM-generated queries
 
 ### CLI Options
 
