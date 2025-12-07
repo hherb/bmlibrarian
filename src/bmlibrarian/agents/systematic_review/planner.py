@@ -30,6 +30,7 @@ from .data_models import (
     SearchPlan,
     QueryType,
     StudyTypeFilter,
+    QueryFeedback,
 )
 from .config import (
     SystematicReviewConfig,
@@ -52,6 +53,10 @@ DEFAULT_QUERY_VARIATIONS = 3
 MIN_QUERIES_PER_PLAN = 2
 MAX_QUERIES_PER_PLAN = 10
 DEFAULT_ESTIMATED_YIELD_PER_QUERY = 100
+
+# Query refinement settings
+MAX_EFFECTIVE_PATTERNS_TO_USE = 2  # Max effective queries to derive variations from
+MAX_KEY_TERMS_IN_OR_QUERY = 3  # Max terms to combine with OR operator
 
 # LLM prompts
 QUERY_GENERATION_SYSTEM_PROMPT = """You are an expert biomedical literature search strategist.
@@ -100,11 +105,16 @@ Inclusion Criteria: {inclusion_criteria}
 Exclusion Criteria: {exclusion_criteria}
 
 Generate diverse queries that:
-1. Use SPECIFIC drug names, not just drug classes (e.g., "ibuprofen" instead of just "NSAIDs")
-2. Include medical abbreviations and their spelled-out forms (e.g., both "UTI" and "urinary tract infection")
-3. Combine intervention terms with condition terms (e.g., "ibuprofen urinary tract infection")
-4. Include study type terms for hybrid queries (e.g., "randomized controlled trial", "RCT")
-5. Use synonyms for medical conditions (e.g., "cystitis" for UTI, "lower urinary tract infection")
+1. Use SPECIFIC terms from the research question - do NOT introduce unrelated drug names or conditions
+2. Include medical abbreviations and their spelled-out forms relevant to the question
+3. Combine intervention terms with condition terms ONLY if both appear in the research question
+4. Include study type terms for hybrid queries (e.g., "randomized controlled trial", "RCT", "meta-analysis")
+5. Use synonyms for medical conditions mentioned in the question
+
+CRITICAL: Only generate queries directly relevant to the research question. Do NOT add:
+- Drug names not mentioned in or implied by the question
+- Medical conditions not related to the research question
+- Generic examples unrelated to the specific topic
 
 IMPORTANT for hybrid queries:
 - Use PostgreSQL tsquery boolean format: term1 & term2 | term3
@@ -674,15 +684,16 @@ class Planner:
         """
         Generate targeted queries with specific drug names.
 
-        When drug classes are detected (e.g., NSAIDs), generates queries
-        with specific drug names for better coverage.
+        CONSERVATIVE: Only generates specific drug queries when a drug class
+        is explicitly mentioned in the research question. Does NOT expand
+        based on condition terms alone.
 
         Args:
             question: Research question
             pico: PICO components
 
         Returns:
-            List of targeted PlannedQuery objects
+            List of targeted PlannedQuery objects (may be empty)
         """
         import re
 
@@ -690,83 +701,75 @@ class Planner:
         question_lower = question.lower()
 
         # Drug class to specific drug name mappings
+        # Only trigger when the drug CLASS itself is mentioned
         drug_class_mappings = {
             'nsaid': {
+                'patterns': [r'\bnsaids?\b', r'\bnon-?steroidal anti-?inflammatory\b'],
                 'drugs': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen', 'indomethacin'],
-                'condition_terms': ['urinary', 'cystitis', 'uti', 'infection'],
             },
             'antibiotic': {
+                'patterns': [r'\bantibiotics?\b', r'\bantimicrobials?\b'],
                 'drugs': ['amoxicillin', 'ciprofloxacin', 'trimethoprim', 'nitrofurantoin', 'fosfomycin'],
-                'condition_terms': ['urinary', 'cystitis', 'uti', 'infection'],
             },
             'statin': {
+                'patterns': [r'\bstatins?\b', r'\bhmg-?coa reductase inhibitors?\b'],
                 'drugs': ['atorvastatin', 'simvastatin', 'rosuvastatin', 'pravastatin'],
-                'condition_terms': ['cardiovascular', 'cholesterol', 'lipid'],
             },
             'ace inhibitor': {
+                'patterns': [r'\bace inhibitors?\b', r'\bangiotensin[- ]converting enzyme inhibitors?\b'],
                 'drugs': ['lisinopril', 'enalapril', 'ramipril', 'captopril'],
-                'condition_terms': ['hypertension', 'heart failure', 'blood pressure'],
             },
             'beta blocker': {
+                'patterns': [r'\bbeta[- ]?blockers?\b', r'\bβ[- ]?blockers?\b'],
                 'drugs': ['metoprolol', 'atenolol', 'propranolol', 'carvedilol'],
-                'condition_terms': ['hypertension', 'heart', 'arrhythmia'],
             },
             'ppi': {
+                'patterns': [r'\bppis?\b', r'\bproton pump inhibitors?\b'],
                 'drugs': ['omeprazole', 'pantoprazole', 'esomeprazole', 'lansoprazole'],
-                'condition_terms': ['reflux', 'gastric', 'ulcer', 'gerd'],
             },
             'ssri': {
+                'patterns': [r'\bssris?\b', r'\bselective serotonin reuptake inhibitors?\b'],
                 'drugs': ['fluoxetine', 'sertraline', 'paroxetine', 'escitalopram'],
-                'condition_terms': ['depression', 'anxiety', 'mental health'],
             },
         }
 
-        # Detect drug classes in the question
+        # Only expand drug classes that are EXPLICITLY mentioned in the question
         for drug_class, mapping in drug_class_mappings.items():
-            # Check for drug class or its abbreviation
-            class_patterns = [
-                rf'\b{drug_class}s?\b',
-                rf'\bnon-?steroidal anti-?inflammatory\b' if drug_class == 'nsaid' else None,
-            ]
-            class_patterns = [p for p in class_patterns if p]
+            # Check for explicit drug class mention
+            class_found = any(
+                re.search(pattern, question_lower, re.IGNORECASE)
+                for pattern in mapping['patterns']
+            )
 
-            if any(re.search(p, question_lower) for p in class_patterns):
-                # Detect condition terms in question
-                condition_in_question = None
-                for term in mapping['condition_terms']:
-                    if term in question_lower:
-                        condition_in_question = term
-                        break
+            if not class_found:
+                continue  # Skip - drug class not mentioned
 
-                # Generate queries with top 2-3 specific drugs
-                for i, drug in enumerate(mapping['drugs'][:3]):
-                    if condition_in_question:
-                        # Combine drug with detected condition
-                        query_text = f"{drug} & {condition_in_question}"
-                        queries.append(PlannedQuery(
-                            query_id=f"hybrid_drug_{uuid.uuid4().hex[:8]}",
-                            query_text=query_text,
-                            query_type=QueryType.HYBRID,
-                            purpose=f"Specific drug query: {drug} + {condition_in_question}",
-                            expected_coverage=f"Studies on {drug} for {condition_in_question}",
-                            priority=9 + i,
-                            estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY // 2,
-                        ))
+            logger.debug(f"Drug class '{drug_class}' detected in question, generating specific drug queries")
 
-                # Also generate OR query for multiple drugs
-                if condition_in_question:
-                    multi_drug_query = (
-                        f"({' | '.join(mapping['drugs'][:4])}) & {condition_in_question}"
-                    )
-                    queries.append(PlannedQuery(
-                        query_id=f"hybrid_drugs_or_{uuid.uuid4().hex[:8]}",
-                        query_text=multi_drug_query,
-                        query_type=QueryType.HYBRID,
-                        purpose=f"Multiple {drug_class.upper()}s + {condition_in_question}",
-                        expected_coverage=f"Studies on any {drug_class.upper()} for {condition_in_question}",
-                        priority=12,
-                        estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
-                    ))
+            # Generate single-drug queries for top 3 specific drugs
+            for i, drug in enumerate(mapping['drugs'][:3]):
+                query_text = f"{drug}"
+                queries.append(PlannedQuery(
+                    query_id=f"hybrid_drug_{uuid.uuid4().hex[:8]}",
+                    query_text=query_text,
+                    query_type=QueryType.HYBRID,
+                    purpose=f"Specific drug query: {drug} (from {drug_class})",
+                    expected_coverage=f"Studies specifically mentioning {drug}",
+                    priority=9 + i,
+                    estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY // 2,
+                ))
+
+            # Generate OR query for multiple drugs from this class
+            multi_drug_query = f"({' | '.join(mapping['drugs'][:4])})"
+            queries.append(PlannedQuery(
+                query_id=f"hybrid_drugs_or_{uuid.uuid4().hex[:8]}",
+                query_text=multi_drug_query,
+                query_type=QueryType.HYBRID,
+                purpose=f"Multiple {drug_class.upper()} drugs combined",
+                expected_coverage=f"Studies on any {drug_class.upper()} drug",
+                priority=12,
+                estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
+            ))
 
         return queries
 
@@ -833,13 +836,19 @@ class Planner:
         self,
         criteria: SearchCriteria,
         num_variations: int = 3,
+        query_feedback: Optional[QueryFeedback] = None,
     ) -> List[PlannedQuery]:
         """
         Generate query variations using LLM.
 
+        When query_feedback is provided, includes examples of effective and
+        ineffective queries from previous search iterations to guide the LLM
+        toward generating better queries.
+
         Args:
             criteria: Search criteria
             num_variations: Number of variations to generate
+            query_feedback: Optional feedback from previous query effectiveness
 
         Returns:
             List of PlannedQuery objects
@@ -851,6 +860,15 @@ class Planner:
             inclusion_criteria=", ".join(criteria.inclusion_criteria),
             exclusion_criteria=", ".join(criteria.exclusion_criteria) if criteria.exclusion_criteria else "None",
         )
+
+        # Add feedback examples if available
+        if query_feedback and (query_feedback.effective_queries or query_feedback.ineffective_queries):
+            feedback_text = query_feedback.get_example_prompt_text(max_examples=3)
+            prompt = prompt + "\n\n" + feedback_text
+            logger.info(
+                f"LLM query generation with feedback: {len(query_feedback.effective_queries)} effective, "
+                f"{len(query_feedback.ineffective_queries)} ineffective examples"
+            )
 
         try:
             response = ollama.generate(
@@ -954,6 +972,92 @@ class Planner:
 
         return queries[:num_variations]
 
+    def generate_refined_queries(
+        self,
+        criteria: SearchCriteria,
+        query_feedback: QueryFeedback,
+        num_variations: int = 3,
+    ) -> List[PlannedQuery]:
+        """
+        Generate refined queries using feedback from previous search iterations.
+
+        Uses the effectiveness data to generate better queries by:
+        1. Learning from patterns of effective queries
+        2. Avoiding patterns that produced no relevant results
+        3. Focusing on query types that worked well
+
+        Args:
+            criteria: Original search criteria
+            query_feedback: Feedback from previous query effectiveness evaluation
+            num_variations: Number of new queries to generate
+
+        Returns:
+            List of PlannedQuery objects informed by feedback
+        """
+        self._call_callback(
+            "refinement_started",
+            f"Generating {num_variations} refined queries using feedback"
+        )
+
+        queries: List[PlannedQuery] = []
+
+        # Get existing query texts to avoid duplicates
+        existing_texts = set(
+            eff.query_text.lower()
+            for eff in query_feedback.query_effectiveness_map.values()
+        )
+
+        # Generate feedback-aware LLM queries
+        try:
+            llm_queries = self._generate_query_variations_llm(
+                criteria,
+                num_variations=num_variations,
+                query_feedback=query_feedback,
+            )
+            # Filter out duplicates
+            for q in llm_queries:
+                if q.query_text.lower() not in existing_texts:
+                    queries.append(q)
+                    existing_texts.add(q.query_text.lower())
+        except Exception as e:
+            logger.warning(f"Feedback-aware LLM query generation failed: {e}")
+
+        # If we have effective queries, try generating variations
+        if query_feedback.effective_queries and len(queries) < num_variations:
+            # Take patterns from effective queries and create variations
+            for effective_query in query_feedback.effective_queries[:MAX_EFFECTIVE_PATTERNS_TO_USE]:
+                key_terms = self._extract_key_terms(effective_query)
+                if len(key_terms) >= 2:
+                    # Create OR variation
+                    or_query = " | ".join(key_terms[:MAX_KEY_TERMS_IN_OR_QUERY])
+                    if or_query.lower() not in existing_texts:
+                        queries.append(PlannedQuery(
+                            query_id=f"refined_or_{uuid.uuid4().hex[:8]}",
+                            query_text=or_query,
+                            query_type=QueryType.KEYWORD,
+                            purpose=f"OR variation of effective query",
+                            expected_coverage="Broader coverage using effective terms",
+                            priority=13,
+                            estimated_results=DEFAULT_ESTIMATED_YIELD_PER_QUERY,
+                        ))
+                        existing_texts.add(or_query.lower())
+
+                if len(queries) >= num_variations:
+                    break
+
+        self._call_callback(
+            "refinement_completed",
+            f"Generated {len(queries)} refined queries"
+        )
+
+        logger.info(
+            f"Generated {len(queries)} refined queries "
+            f"(feedback: {len(query_feedback.effective_queries)} effective, "
+            f"{len(query_feedback.ineffective_queries)} ineffective examples)"
+        )
+
+        return queries[:num_variations]
+
     # =========================================================================
     # Helper Methods
     # =========================================================================
@@ -1004,13 +1108,11 @@ class Planner:
             'randomised controlled trials': 'RCTs',
         }
 
-        # Known abbreviations and their expansions (for synonym searching)
-        abbreviation_synonyms = {
-            'nsaid': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen'],
-            'nsaids': ['ibuprofen', 'naproxen', 'diclofenac', 'ketoprofen'],
-            'uti': ['cystitis', 'urinary'],
-            'utis': ['cystitis', 'urinary'],
-        }
+        # Known abbreviations - we keep the abbreviation but do NOT auto-expand
+        # to specific drug names as that can introduce irrelevant terms.
+        # Drug-specific expansion is handled by _generate_targeted_drug_queries
+        # only when the drug class is explicitly mentioned.
+        known_abbreviations = {'nsaid', 'nsaids', 'uti', 'utis', 'rct', 'rcts'}
 
         terms = []
         text_lower = text.lower()
@@ -1022,14 +1124,13 @@ class Planner:
                 # Remove the compound from text to avoid re-extracting words
                 text_lower = text_lower.replace(compound, '')
 
-        # Check for abbreviations and add their synonyms
-        for abbrev, synonyms in abbreviation_synonyms.items():
+        # Check for known abbreviations (but do NOT expand to synonyms)
+        for abbrev in known_abbreviations:
             # Look for abbreviation as whole word
-            if re.search(rf'\b{abbrev}s?\b', text_lower):
+            if re.search(rf'\b{abbrev}\b', text_lower):
                 terms.append(abbrev)
-                # Add first synonym for broader coverage
-                if synonyms:
-                    terms.append(synonyms[0])
+                # NOTE: We intentionally do NOT add drug synonyms here
+                # Drug expansion is handled separately in _generate_targeted_drug_queries
 
         # Extract remaining significant words
         words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-]{2,}\b', text_lower)
