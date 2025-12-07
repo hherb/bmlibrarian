@@ -149,6 +149,13 @@ class SystematicReviewConfig:
     max_citations_per_paper: int = 3
     synthesis_temperature: float = 0.3
 
+    # Phased search settings
+    # When enabled, semantic/HyDE queries run first, followed by keyword queries
+    # Keyword queries with no overlap to semantic results are limited
+    use_phased_search: bool = True  # Enable two-phase search strategy
+    max_phase2_no_overlap: int = 10  # Max docs to score from no-overlap keyword queries
+    enable_query_feedback: bool = True  # Use query effectiveness to improve future queries
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert configuration to dictionary.
@@ -186,6 +193,9 @@ class SystematicReviewConfig:
             "citation_min_relevance": self.citation_min_relevance,
             "max_citations_per_paper": self.max_citations_per_paper,
             "synthesis_temperature": self.synthesis_temperature,
+            "use_phased_search": self.use_phased_search,
+            "max_phase2_no_overlap": self.max_phase2_no_overlap,
+            "enable_query_feedback": self.enable_query_feedback,
         }
 
     @classmethod
@@ -236,6 +246,9 @@ class SystematicReviewConfig:
             citation_min_relevance=data.get("citation_min_relevance", 0.7),
             max_citations_per_paper=data.get("max_citations_per_paper", 3),
             synthesis_temperature=data.get("synthesis_temperature", 0.3),
+            use_phased_search=data.get("use_phased_search", True),
+            max_phase2_no_overlap=data.get("max_phase2_no_overlap", 10),
+            enable_query_feedback=data.get("enable_query_feedback", True),
         )
 
     @classmethod
