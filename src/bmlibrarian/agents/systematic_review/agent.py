@@ -1422,6 +1422,13 @@ class SystematicReviewAgent(BaseAgent):
                     output_path=output_path,
                     checkpoint_callback=checkpoint_callback,
                 )
+            elif checkpoint_type == CHECKPOINT_QUALITY_ASSESSMENT:
+                # Resume from composite scoring (Phase 6)
+                return self._continue_from_composite_scoring(
+                    interactive=interactive,
+                    output_path=output_path,
+                    checkpoint_callback=checkpoint_callback,
+                )
             else:
                 raise ValueError(f"Unknown checkpoint type: {checkpoint_type}")
 
@@ -1892,6 +1899,192 @@ class SystematicReviewAgent(BaseAgent):
         # NOTE: passed_quality_gate should be final_included, not len(_assessed_papers)
         # _assessed_papers = all papers that were quality assessed
         # final_included = papers that actually passed the quality threshold
+        stats = ReviewStatistics(
+            total_considered=total_considered,
+            passed_initial_filter=passed_initial_filter,
+            passed_relevance_threshold=passed_relevance,
+            passed_quality_gate=len(final_included),
+            final_included=len(final_included),
+            final_excluded=len(all_excluded_papers),
+            uncertain_for_review=0,
+            processing_time_seconds=self.documenter.get_duration(),
+            total_llm_calls=self.documenter._total_llm_calls,
+            total_tokens_used=self.documenter._total_tokens,
+        )
+
+        # =================================================================
+        # Phase 6a: Evidence Synthesis (Optional)
+        # =================================================================
+        evidence_synthesis = None
+        if self.config.enable_evidence_synthesis and final_included:
+            self.documenter.set_phase("evidence_synthesis")
+
+            from .synthesizer import EvidenceSynthesizer
+
+            synthesizer = EvidenceSynthesizer(
+                model=self.config.synthesis_model or self.config.model,
+                citation_model=self.config.model,
+                temperature=self.config.synthesis_temperature,
+                citation_min_relevance=self.config.citation_min_relevance,
+                max_citations_per_paper=self.config.max_citations_per_paper,
+                progress_callback=self.callback,
+            )
+
+            with self.documenter.log_step_with_timer(
+                action="synthesize_evidence",
+                tool="EvidenceSynthesizer",
+                input_summary=f"Synthesizing evidence from {len(final_included)} included papers",
+                decision_rationale="Extract citations and synthesize narrative answer to research question",
+            ) as timer:
+                try:
+                    evidence_synthesis = synthesizer.synthesize(
+                        research_question=criteria.research_question,
+                        included_papers=final_included,
+                    )
+
+                    synth_stats = synthesizer.get_statistics()
+                    timer.set_output(
+                        f"Extracted {synth_stats['citations_extracted']} citations, "
+                        f"evidence strength: {evidence_synthesis.evidence_strength}"
+                    )
+                    timer.add_metrics({
+                        "citations_extracted": synth_stats["citations_extracted"],
+                        "papers_with_citations": synth_stats["papers_processed"],
+                        "extraction_failures": synth_stats["extraction_failures"],
+                        "evidence_strength": evidence_synthesis.evidence_strength,
+                    })
+
+                    logger.info(
+                        f"Evidence synthesis complete: {synth_stats['citations_extracted']} citations, "
+                        f"strength={evidence_synthesis.evidence_strength}"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"Evidence synthesis failed, continuing without: {e}")
+                    timer.set_output(f"Evidence synthesis failed: {e}")
+
+        # Phase 7: Report Generation
+        self.documenter.set_phase("reporting")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_GENERATE_REPORT,
+            tool="Reporter",
+            input_summary=f"Generating report for {len(final_included)} included, {len(all_excluded_papers)} excluded papers",
+            decision_rationale="Creating final systematic review output",
+        ) as timer:
+            result = reporter.build_json_result(
+                included_papers=final_included,
+                excluded_papers=all_excluded_papers,
+                uncertain_papers=[],
+                search_plan=self._search_plan,
+                executed_queries=self._executed_queries,
+                statistics=stats,
+                evidence_synthesis=evidence_synthesis,
+            )
+
+            if output_path:
+                reporter.generate_json_report(result, output_path)
+                # Also generate markdown report
+                md_path = output_path.replace(".json", ".md") if output_path.endswith(".json") else output_path + ".md"
+                reporter.generate_markdown_report(result, md_path)
+
+            timer.set_output(f"Report generated with {len(final_included)} included papers")
+
+        self.documenter.end_review()
+        return result
+
+    def _continue_from_composite_scoring(
+        self,
+        interactive: bool,
+        output_path: Optional[str],
+        checkpoint_callback: Optional[Callable[[str, Dict], bool]],
+    ) -> SystematicReviewResult:
+        """
+        Continue review from after quality assessment checkpoint.
+
+        Executes: Composite Scoring → Evidence Synthesis → Report
+
+        This resumes from the quality_assessment checkpoint where we have
+        assessed papers already restored from the checkpoint file.
+        """
+        from pathlib import Path
+        from .scorer import CompositeScorer
+        from .reporter import Reporter
+
+        criteria = self._criteria
+        weights = self._weights
+
+        # Extract output directory for checkpoint saving
+        output_dir: Optional[str] = None
+        if output_path:
+            output_dir = str(Path(output_path).expanduser().parent)
+
+        composite_scorer = CompositeScorer(weights=weights)
+
+        reporter = Reporter(
+            documenter=self.documenter,
+            criteria=criteria,
+            weights=weights,
+        )
+
+        # Get counts from restored state
+        total_considered = len(self._all_papers) + len(self._rejected_initial_filter)
+        passed_initial_filter = len(self._all_papers)
+        passed_relevance = len(self._scored_papers) if self._scored_papers else len(self._assessed_papers)
+
+        # =================================================================
+        # Phase 6: Composite Scoring
+        # =================================================================
+        self.documenter.set_phase("ranking")
+
+        with self.documenter.log_step_with_timer(
+            action=ACTION_CALCULATE_COMPOSITE,
+            tool="CompositeScorer",
+            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            decision_rationale="Combining all scores for final ranking",
+        ) as timer:
+            for assessed in self._assessed_papers:
+                assessed.composite_score = composite_scorer.score(assessed)
+
+            # Sort by composite score and assign ranks
+            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(self._assessed_papers):
+                paper.final_rank = i + 1
+
+            timer.set_output(
+                f"Ranked {len(self._assessed_papers)} papers by composite score"
+            )
+
+        # Determine final inclusion
+        final_included = [ap for ap in self._assessed_papers if ap.is_included]
+        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
+
+        # =================================================================
+        # Collect ALL excluded papers for comprehensive reporting
+        # =================================================================
+        all_excluded_papers: List[ScoredPaper] = []
+
+        # 1. Papers rejected in initial filter
+        for paper, reason in self._rejected_initial_filter:
+            all_excluded_papers.append(ScoredPaper(
+                paper=paper,
+                relevance_score=0.0,
+                relevance_rationale=reason,
+                inclusion_decision=InclusionDecision.create_excluded(
+                    stage=ExclusionStage.INITIAL_FILTER,
+                    reasons=[reason],
+                    rationale=reason,
+                ),
+            ))
+
+        # 2. Papers below relevance threshold
+        all_excluded_papers.extend(self._below_threshold_papers)
+
+        # 3. Papers that failed quality gate
+        for ap in final_excluded_assessed:
+            all_excluded_papers.append(ap.scored_paper)
+
+        # Build statistics with accurate counts
         stats = ReviewStatistics(
             total_considered=total_considered,
             passed_initial_filter=passed_initial_filter,
