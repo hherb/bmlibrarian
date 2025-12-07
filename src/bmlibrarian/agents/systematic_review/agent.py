@@ -1288,6 +1288,10 @@ class SystematicReviewAgent(BaseAgent):
                 "below_threshold_paper_ids": [
                     sp.paper.document_id for sp in self._below_threshold_papers
                 ],
+                # Assessed papers if available (for quality_assessment checkpoint)
+                "assessed_papers": [
+                    ap.to_dict() for ap in self._assessed_papers
+                ] if self._assessed_papers else [],
                 # Documenter state
                 "documenter_phase": self.documenter._current_phase,
             }
@@ -1591,6 +1595,20 @@ class SystematicReviewAgent(BaseAgent):
                     self._below_threshold_papers.append(scored_paper)
 
             logger.info(f"Restored {len(self._scored_papers)} scored papers")
+
+        # Restore assessed papers if available (for quality_assessment checkpoint)
+        assessed_papers_data = checkpoint_data.get("assessed_papers", [])
+        if assessed_papers_data:
+            self._assessed_papers = []
+
+            for ap_data in assessed_papers_data:
+                try:
+                    assessed_paper = AssessedPaper.from_dict(ap_data)
+                    self._assessed_papers.append(assessed_paper)
+                except Exception as e:
+                    logger.warning(f"Failed to restore assessed paper: {e}")
+
+            logger.info(f"Restored {len(self._assessed_papers)} assessed papers")
 
     def _continue_from_search_execution(
         self,
