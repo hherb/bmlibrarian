@@ -1814,11 +1814,14 @@ class SystematicReviewAgent(BaseAgent):
             all_excluded_papers.append(ap.scored_paper)
 
         # Build statistics with accurate counts
+        # NOTE: passed_quality_gate should be final_included, not len(_assessed_papers)
+        # _assessed_papers = all papers that were quality assessed
+        # final_included = papers that actually passed the quality threshold
         stats = ReviewStatistics(
             total_considered=total_considered,
             passed_initial_filter=passed_initial_filter,
             passed_relevance_threshold=passed_relevance,
-            passed_quality_gate=len(self._assessed_papers),
+            passed_quality_gate=len(final_included),
             final_included=len(final_included),
             final_excluded=len(all_excluded_papers),
             uncertain_for_review=0,
@@ -2097,11 +2100,14 @@ class SystematicReviewAgent(BaseAgent):
             all_excluded_papers.append(ap.scored_paper)
 
         # Build statistics with accurate counts
+        # NOTE: passed_quality_gate should be final_included, not len(_assessed_papers)
+        # _assessed_papers = all papers that were quality assessed
+        # final_included = papers that actually passed the quality threshold
         stats = ReviewStatistics(
             total_considered=total_considered,
             passed_initial_filter=passed_initial_filter,
             passed_relevance_threshold=passed_relevance,
-            passed_quality_gate=len(self._assessed_papers),
+            passed_quality_gate=len(final_included),
             final_included=len(final_included),
             final_excluded=len(all_excluded_papers),
             uncertain_for_review=0,
