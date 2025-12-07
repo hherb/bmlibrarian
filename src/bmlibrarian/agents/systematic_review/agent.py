@@ -1850,8 +1850,10 @@ class SystematicReviewAgent(BaseAgent):
             for assessed in self._assessed_papers:
                 assessed.composite_score = composite_scorer.score(assessed)
 
-            # Sort by composite score
+            # Sort by composite score and assign ranks
             self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(self._assessed_papers):
+                paper.final_rank = i + 1
 
             timer.set_output(
                 f"Ranked {len(self._assessed_papers)} papers by composite score"
@@ -2188,8 +2190,10 @@ class SystematicReviewAgent(BaseAgent):
             for assessed in self._assessed_papers:
                 assessed.composite_score = composite_scorer.score(assessed)
 
-            # Sort by composite score
+            # Sort by composite score and assign ranks
             self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(self._assessed_papers):
+                paper.final_rank = i + 1
 
             timer.set_output(
                 f"Ranked {len(self._assessed_papers)} papers by composite score"
