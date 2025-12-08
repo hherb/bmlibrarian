@@ -48,6 +48,7 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scale_px
 from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
 from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
+from bmlibrarian.database import get_db_manager, DatabaseManager
 from .report_preview_widget import ReportPreviewWidget
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ class ReviewWorker(QThread):
 
     def __init__(
         self,
+        db_manager: DatabaseManager,
         mode: str,  # "new" or "resume"
         checkpoint_path: Optional[str] = None,
         criteria_dict: Optional[Dict[str, Any]] = None,
@@ -105,6 +107,7 @@ class ReviewWorker(QThread):
         Initialize the review worker.
 
         Args:
+            db_manager: DatabaseManager instance for database access
             mode: "new" for new review, "resume" for checkpoint resume
             checkpoint_path: Path to checkpoint file (for resume)
             criteria_dict: Search criteria dictionary (for new review)
@@ -113,6 +116,7 @@ class ReviewWorker(QThread):
             output_path: Path to save output files
         """
         super().__init__()
+        self.db_manager = db_manager
         self.mode = mode
         self.checkpoint_path = checkpoint_path
         self.criteria_dict = criteria_dict
@@ -158,6 +162,7 @@ class ReviewWorker(QThread):
 
             # Initialize agent with callback
             agent = SystematicReviewAgent(
+                db_manager=self.db_manager,
                 config=config,
                 callback=self._progress_callback,
             )
@@ -1030,7 +1035,9 @@ class SystematicReviewTabWidget(QWidget):
         self.right_tab_widget.setCurrentIndex(0)
 
         # Create and start worker
+        db_manager = get_db_manager()
         self._worker = ReviewWorker(
+            db_manager=db_manager,
             mode=mode,
             checkpoint_path=checkpoint_path,
             criteria_dict=criteria_dict,
