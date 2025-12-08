@@ -510,8 +510,10 @@ class QualityAssessor:
             paper: Scored paper to assess
 
         Returns:
-            AssessedPaper with all quality assessments
+            AssessedPaper with all quality assessments (includes processing_time_ms)
         """
+        start_time = time.time()
+
         self._call_callback(
             "assessing_paper",
             f"{paper.paper.title[:50]}..."
@@ -588,12 +590,16 @@ class QualityAssessor:
         else:
             logger.debug(f"Skipping PRISMA assessment for document {document['id']} (disabled in config)")
 
+        # Calculate processing time in milliseconds
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
         return AssessedPaper(
             scored_paper=paper,
             study_assessment=study_assessment,
             paper_weight=paper_weight,
             pico_components=pico_components,
             prisma_assessment=prisma_assessment,
+            processing_time_ms=processing_time_ms,
         )
 
     # =========================================================================

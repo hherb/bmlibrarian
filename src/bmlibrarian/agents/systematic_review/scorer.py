@@ -318,11 +318,15 @@ class RelevanceScorer:
                     threshold=self._config.relevance_threshold,
                 )
 
+            # Convert execution time to milliseconds
+            processing_time_ms = int(execution_time * 1000)
+
             scored_paper = ScoredPaper(
                 paper=paper,
                 relevance_score=relevance_score,
                 relevance_rationale=rationale,
                 inclusion_decision=inclusion_decision,
+                processing_time_ms=processing_time_ms,
             )
 
             self._call_callback(

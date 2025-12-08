@@ -1226,6 +1226,7 @@ class ScoredPaper:
     inclusion_decision: InclusionDecision
     relevant_citations: Optional[List[Dict[str, Any]]] = None
     search_provenance: Optional[List[str]] = None  # query_ids
+    processing_time_ms: Optional[int] = None  # Time taken to score this paper
 
     @property
     def is_included(self) -> bool:
@@ -1256,6 +1257,7 @@ class ScoredPaper:
             "inclusion_decision": self.inclusion_decision.to_dict(),
             "relevant_citations": self.relevant_citations,
             "search_provenance": self.search_provenance,
+            "processing_time_ms": self.processing_time_ms,
         }
 
     @classmethod
@@ -1276,6 +1278,7 @@ class ScoredPaper:
             inclusion_decision=InclusionDecision.from_dict(data["inclusion_decision"]),
             relevant_citations=data.get("relevant_citations"),
             search_provenance=data.get("search_provenance"),
+            processing_time_ms=data.get("processing_time_ms"),
         )
 
 
@@ -1304,6 +1307,7 @@ class AssessedPaper:
     prisma_assessment: Optional[Dict[str, Any]] = None
     composite_score: Optional[float] = None
     final_rank: Optional[int] = None
+    processing_time_ms: Optional[int] = None  # Time taken to assess this paper
 
     @property
     def document_id(self) -> int:
@@ -1335,6 +1339,7 @@ class AssessedPaper:
             "prisma_assessment": self.prisma_assessment,
             "composite_score": self.composite_score,
             "final_rank": self.final_rank,
+            "processing_time_ms": self.processing_time_ms,
         }
 
     @classmethod
@@ -1356,6 +1361,7 @@ class AssessedPaper:
             prisma_assessment=data.get("prisma_assessment"),
             composite_score=data.get("composite_score"),
             final_rank=data.get("final_rank"),
+            processing_time_ms=data.get("processing_time_ms"),
         )
 
 

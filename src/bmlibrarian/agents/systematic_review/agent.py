@@ -301,14 +301,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
     def _save_scored_paper(
         self,
         scored_paper: ScoredPaper,
-        processing_time_ms: Optional[int] = None,
     ) -> int:
         """
         Save a scored paper to the evaluation store.
 
         Args:
-            scored_paper: The scored paper to save.
-            processing_time_ms: Optional processing time in milliseconds.
+            scored_paper: The scored paper to save (includes processing_time_ms).
 
         Returns:
             The evaluation ID.
@@ -340,7 +338,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 f"Saving scored paper: run_id={self._evaluation_run.run_id}, "
                 f"doc_id={scored_paper.paper.document_id}, "
                 f"score={scored_paper.relevance_score}, "
-                f"evaluator_id={self._evaluator_id}"
+                f"evaluator_id={self._evaluator_id}, "
+                f"processing_time_ms={scored_paper.processing_time_ms}"
             )
             eval_id = self._evaluation_store.save_evaluation(
                 run_id=self._evaluation_run.run_id,
@@ -350,7 +349,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 primary_score=float(scored_paper.relevance_score),
                 evaluator_id=self._evaluator_id,
                 reasoning=scored_paper.relevance_rationale,
-                processing_time_ms=processing_time_ms,
+                processing_time_ms=scored_paper.processing_time_ms,
             )
             logger.info(f"Saved scored paper: eval_id={eval_id}")
             return eval_id
@@ -364,14 +363,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
     def _save_assessed_paper(
         self,
         assessed_paper: AssessedPaper,
-        processing_time_ms: Optional[int] = None,
     ) -> int:
         """
         Save an assessed paper to the evaluation store.
 
         Args:
-            assessed_paper: The assessed paper to save.
-            processing_time_ms: Optional processing time in milliseconds.
+            assessed_paper: The assessed paper to save (includes processing_time_ms).
 
         Returns:
             The evaluation ID.
@@ -395,6 +392,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             evaluation_data["pico_components"] = assessed_paper.pico_components
 
         try:
+            logger.info(
+                f"Saving assessed paper: run_id={self._evaluation_run.run_id}, "
+                f"doc_id={assessed_paper.scored_paper.paper.document_id}, "
+                f"composite_score={assessed_paper.composite_score}, "
+                f"processing_time_ms={assessed_paper.processing_time_ms}"
+            )
             return self._evaluation_store.save_evaluation(
                 run_id=self._evaluation_run.run_id,
                 document_id=assessed_paper.scored_paper.paper.document_id,
@@ -402,7 +405,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 evaluation_data=evaluation_data,
                 primary_score=float(assessed_paper.composite_score) if assessed_paper.composite_score else None,
                 evaluator_id=self._evaluator_id,
-                processing_time_ms=processing_time_ms,
+                processing_time_ms=assessed_paper.processing_time_ms,
             )
         except Exception as e:
             doc_id = assessed_paper.scored_paper.paper.document_id
