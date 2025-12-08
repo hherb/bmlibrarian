@@ -534,18 +534,24 @@ class EvaluationStore:
                         reasoning,
                         int(processing_time_ms) if processing_time_ms is not None else None
                     ))
-                    evaluation_id = cur.fetchone()[0]
+                    result = cur.fetchone()
+                    if result is None:
+                        raise RuntimeError(
+                            f"save_evaluation function returned NULL for run={run_id}, doc={document_id}"
+                        )
+                    evaluation_id = result[0]
                 conn.commit()
+                logger.info(
+                    f"Committed evaluation to database: run={run_id}, doc={document_id}, "
+                    f"eval_id={evaluation_id}, type={eval_type_str}, score={primary_score}"
+                )
         except Exception as e:
             logger.error(
-                f"Failed to save evaluation for run={run_id}, doc={document_id}: {e}"
+                f"Failed to save evaluation for run={run_id}, doc={document_id}: {e}",
+                exc_info=True
             )
             raise RuntimeError(f"Database error saving evaluation: {e}") from e
 
-        logger.debug(
-            f"Saved evaluation: run={run_id}, doc={document_id}, "
-            f"type={eval_type_str}, score={primary_score}"
-        )
         return evaluation_id
 
     def save_evaluations_batch(
