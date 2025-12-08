@@ -285,6 +285,11 @@ from .cochrane_assessor import (
     CochraneAssessmentAgent,
 )
 
+# EvaluationStore integration (Phase 2 migration)
+from .evaluation_mixin import (
+    EvaluationStoreMixin,
+)
+
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
@@ -436,4 +441,6 @@ __all__ = [
     "get_cochrane_css",
     # Cochrane Assessment Agent
     "CochraneAssessmentAgent",
+    # EvaluationStore Integration
+    "EvaluationStoreMixin",
 ]
