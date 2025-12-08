@@ -763,6 +763,10 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             }
         )
 
+        # Start evaluation run for database-backed tracking
+        # This enables saving evaluations and checking for cached results
+        self._start_evaluation_run(documents_total=0)  # Will be updated after search
+
         # =====================================================================
         # Phase 5: Complete Workflow Implementation
         # =====================================================================
@@ -976,31 +980,60 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             # =================================================================
             self.documenter.set_phase("relevance_scoring")
 
+            # Check for already-evaluated documents to avoid redundant LLM calls
+            from bmlibrarian.evaluations import EvaluationType
+            all_doc_ids = [p.document_id for p in passed_filter]
+            already_evaluated_ids = set(
+                self._evaluation_store.get_evaluated_document_ids(
+                    run_id=self._evaluation_run.run_id,
+                    evaluation_type=EvaluationType.RELEVANCE_SCORE,
+                )
+            )
+            papers_to_score = [p for p in passed_filter if p.document_id not in already_evaluated_ids]
+            cached_count = len(passed_filter) - len(papers_to_score)
+
+            if cached_count > 0:
+                logger.info(
+                    f"Found {cached_count} already-evaluated documents, "
+                    f"scoring {len(papers_to_score)} new documents"
+                )
+
             with self.documenter.log_step_with_timer(
                 action=ACTION_SCORE_RELEVANCE,
                 tool="RelevanceScorer",
-                input_summary=f"Scoring {len(passed_filter)} papers for relevance",
+                input_summary=f"Scoring {len(papers_to_score)} papers for relevance ({cached_count} cached)",
                 decision_rationale="Assessing relevance to research question using LLM",
             ) as timer:
-                scoring_result = scorer.score_batch(
-                    papers=passed_filter,
-                    evaluate_inclusion=True,
-                    paper_sources=paper_sources,
-                )
+                if papers_to_score:
+                    scoring_result = scorer.score_batch(
+                        papers=papers_to_score,
+                        evaluate_inclusion=True,
+                        paper_sources=paper_sources,
+                    )
 
-                # Save scored papers to database
-                for sp in scoring_result.scored_papers:
-                    self._save_scored_paper(sp)
+                    # Save scored papers to database immediately after each batch
+                    for sp in scoring_result.scored_papers:
+                        self._save_scored_paper(sp)
 
-                timer.set_output(
-                    f"Scored {len(scoring_result.scored_papers)} papers, "
-                    f"avg score: {scoring_result.average_score:.2f}"
-                )
-                timer.add_metrics({
-                    "papers_scored": len(scoring_result.scored_papers),
-                    "average_score": round(scoring_result.average_score, 2),
-                    "failed_scoring": len(scoring_result.failed_papers),
-                })
+                    timer.set_output(
+                        f"Scored {len(scoring_result.scored_papers)} papers, "
+                        f"avg score: {scoring_result.average_score:.2f} "
+                        f"({cached_count} cached)"
+                    )
+                    timer.add_metrics({
+                        "papers_scored": len(scoring_result.scored_papers),
+                        "papers_cached": cached_count,
+                        "average_score": round(scoring_result.average_score, 2),
+                        "failed_scoring": len(scoring_result.failed_papers),
+                    })
+                else:
+                    timer.set_output(f"All {cached_count} papers already evaluated (cached)")
+                    timer.add_metrics({
+                        "papers_scored": 0,
+                        "papers_cached": cached_count,
+                        "average_score": 0.0,
+                        "failed_scoring": 0,
+                    })
 
             # Apply relevance threshold using database query
             scored_papers = self.get_scored_papers()
