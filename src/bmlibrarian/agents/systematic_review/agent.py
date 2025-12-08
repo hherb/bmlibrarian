@@ -245,19 +245,28 @@ class SystematicReviewAgent(BaseAgent):
         logger.info(f"SystematicReviewAgent v{AGENT_VERSION} initialized")
 
     def _init_evaluation_store(self) -> None:
-        """Initialize the EvaluationStore and register evaluator."""
-        from bmlibrarian.evaluations import EvaluationStore, RunType
+        """
+        Initialize the EvaluationStore and register evaluator.
 
-        self._evaluation_store: "EvaluationStore" = EvaluationStore(self._db_manager)
-        self._evaluation_run: Optional["EvaluationRun"] = None
+        Raises:
+            RuntimeError: If evaluation store initialization fails.
+        """
+        from bmlibrarian.evaluations import EvaluationStore
 
-        # Register this agent's model as an evaluator
-        self._evaluator_id = self._evaluation_store.evaluator_registry.get_or_create_model_evaluator(
-            model_name=self.config.model,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-        )
-        logger.debug(f"Registered evaluator: id={self._evaluator_id}")
+        try:
+            self._evaluation_store: "EvaluationStore" = EvaluationStore(self._db_manager)
+            self._evaluation_run: Optional["EvaluationRun"] = None
+
+            # Register this agent's model as an evaluator
+            self._evaluator_id = self._evaluation_store.evaluator_registry.get_or_create_model_evaluator(
+                model_name=self.config.model,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+            )
+            logger.debug(f"Registered evaluator: id={self._evaluator_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize evaluation store: {e}")
+            raise RuntimeError(f"Evaluation store initialization failed: {e}") from e
 
     # =========================================================================
     # BaseAgent Implementation
@@ -343,6 +352,10 @@ class SystematicReviewAgent(BaseAgent):
 
         Returns:
             The evaluation ID.
+
+        Raises:
+            ValueError: If no active evaluation run exists.
+            RuntimeError: If saving to database fails.
         """
         from bmlibrarian.evaluations import EvaluationType
 
@@ -362,16 +375,22 @@ class SystematicReviewAgent(BaseAgent):
         if scored_paper.relevant_citations:
             evaluation_data["citation_count"] = len(scored_paper.relevant_citations)
 
-        return self._evaluation_store.save_evaluation(
-            run_id=self._evaluation_run.run_id,
-            document_id=scored_paper.paper.document_id,
-            evaluation_type=EvaluationType.RELEVANCE_SCORE,
-            evaluation_data=evaluation_data,
-            primary_score=float(scored_paper.relevance_score),
-            evaluator_id=self._evaluator_id,
-            reasoning=scored_paper.relevance_rationale,
-            processing_time_ms=processing_time_ms,
-        )
+        try:
+            return self._evaluation_store.save_evaluation(
+                run_id=self._evaluation_run.run_id,
+                document_id=scored_paper.paper.document_id,
+                evaluation_type=EvaluationType.RELEVANCE_SCORE,
+                evaluation_data=evaluation_data,
+                primary_score=float(scored_paper.relevance_score),
+                evaluator_id=self._evaluator_id,
+                reasoning=scored_paper.relevance_rationale,
+                processing_time_ms=processing_time_ms,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to save scored paper document_id={scored_paper.paper.document_id}: {e}"
+            )
+            raise RuntimeError(f"Failed to save scored paper: {e}") from e
 
     def _save_assessed_paper(
         self,
@@ -387,6 +406,10 @@ class SystematicReviewAgent(BaseAgent):
 
         Returns:
             The evaluation ID.
+
+        Raises:
+            ValueError: If no active evaluation run exists.
+            RuntimeError: If saving to database fails.
         """
         from bmlibrarian.evaluations import EvaluationType
 
@@ -402,15 +425,20 @@ class SystematicReviewAgent(BaseAgent):
         if assessed_paper.pico_components:
             evaluation_data["pico_components"] = assessed_paper.pico_components
 
-        return self._evaluation_store.save_evaluation(
-            run_id=self._evaluation_run.run_id,
-            document_id=assessed_paper.scored_paper.paper.document_id,
-            evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
-            evaluation_data=evaluation_data,
-            primary_score=float(assessed_paper.composite_score) if assessed_paper.composite_score else None,
-            evaluator_id=self._evaluator_id,
-            processing_time_ms=processing_time_ms,
-        )
+        try:
+            return self._evaluation_store.save_evaluation(
+                run_id=self._evaluation_run.run_id,
+                document_id=assessed_paper.scored_paper.paper.document_id,
+                evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
+                evaluation_data=evaluation_data,
+                primary_score=float(assessed_paper.composite_score) if assessed_paper.composite_score else None,
+                evaluator_id=self._evaluator_id,
+                processing_time_ms=processing_time_ms,
+            )
+        except Exception as e:
+            doc_id = assessed_paper.scored_paper.paper.document_id
+            logger.error(f"Failed to save assessed paper document_id={doc_id}: {e}")
+            raise RuntimeError(f"Failed to save assessed paper: {e}") from e
 
     def get_scored_papers(
         self,
@@ -3042,9 +3070,9 @@ class SystematicReviewAgent(BaseAgent):
         Clears all papers, scores, and creates new documenter.
         Does not reset configuration.
         """
-        # Complete any existing evaluation run
+        # Complete any existing evaluation run as aborted
         if self._evaluation_run:
-            self._complete_evaluation_run("aborted")
+            self._complete_evaluation_run(success=False, error_message="Review aborted by reset")
             self._evaluation_run = None
 
         self._criteria = None
