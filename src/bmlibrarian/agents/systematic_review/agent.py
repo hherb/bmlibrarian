@@ -382,7 +382,14 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         if not self._evaluation_run:
             raise ValueError("No active evaluation run")
 
+        # Extract study_design from study_assessment (required by schema)
+        study_design = assessed_paper.study_assessment.get(
+            "study_design",
+            assessed_paper.study_assessment.get("study_type", "unknown")
+        )
+
         evaluation_data = {
+            "study_design": study_design,
             "composite_score": assessed_paper.composite_score,
             "study_assessment": assessed_paper.study_assessment,
             "paper_weight": assessed_paper.paper_weight,
