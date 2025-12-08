@@ -14,10 +14,17 @@ Author: BMLibrarian
 Date: 2025-12-07
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
 from datetime import datetime
+
+from .schemas import PARAMETER_DECIMAL_PRECISION
+
+if TYPE_CHECKING:
+    from bmlibrarian.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +91,7 @@ class EvaluatorRegistry:
         info = registry.get_evaluator_info(evaluator_id)
     """
 
-    def __init__(self, db_manager: Any):
+    def __init__(self, db_manager: "DatabaseManager"):
         """
         Initialize the evaluator registry.
 
@@ -92,7 +99,7 @@ class EvaluatorRegistry:
             db_manager: DatabaseManager instance for database access
         """
         self.db = db_manager
-        self._cache: Dict[Tuple, int] = {}
+        self._cache: Dict[Tuple[Any, ...], int] = {}
         self._info_cache: Dict[int, EvaluatorInfo] = {}
 
     def _normalize_parameters(
@@ -113,8 +120,8 @@ class EvaluatorRegistry:
             Normalized parameters dict
         """
         params = {
-            "temperature": round(temperature, 4),
-            "top_p": round(top_p, 4),
+            "temperature": round(temperature, PARAMETER_DECIMAL_PRECISION),
+            "top_p": round(top_p, PARAMETER_DECIMAL_PRECISION),
         }
         if extra_params:
             # Filter out temperature and top_p from extra_params to avoid duplicates
@@ -179,8 +186,8 @@ class EvaluatorRegistry:
             Evaluator ID from public.evaluators
         """
         # Normalize for consistent cache keys
-        temperature = round(temperature, 4)
-        top_p = round(top_p, 4)
+        temperature = round(temperature, PARAMETER_DECIMAL_PRECISION)
+        top_p = round(top_p, PARAMETER_DECIMAL_PRECISION)
         cache_key = ("model", model_name, temperature, top_p, prompt)
 
         if cache_key in self._cache:
@@ -253,6 +260,9 @@ class EvaluatorRegistry:
 
         Returns:
             EvaluatorInfo or None if not found
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         if evaluator_id in self._info_cache:
             return self._info_cache[evaluator_id]
@@ -264,10 +274,14 @@ class EvaluatorRegistry:
             WHERE id = %s
         """
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (evaluator_id,))
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (evaluator_id,))
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to get evaluator info for id={evaluator_id}: {e}")
+            raise RuntimeError(f"Database error getting evaluator info: {e}") from e
 
         if row is None:
             return None
@@ -304,6 +318,9 @@ class EvaluatorRegistry:
 
         Returns:
             Evaluator ID if found, None otherwise
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         # Build query to match parameters within JSONB
         if prompt is None:
@@ -327,10 +344,14 @@ class EvaluatorRegistry:
             """
             params = (model_name, temperature, top_p, prompt)
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to find model evaluator for {model_name}: {e}")
+            raise RuntimeError(f"Database error finding model evaluator: {e}") from e
 
         return row[0] if row else None
 
@@ -343,6 +364,9 @@ class EvaluatorRegistry:
 
         Returns:
             Evaluator ID if found, None otherwise
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         query = """
             SELECT id FROM public.evaluators
@@ -350,10 +374,14 @@ class EvaluatorRegistry:
             LIMIT 1
         """
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (user_id,))
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (user_id,))
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to find human evaluator for user_id={user_id}: {e}")
+            raise RuntimeError(f"Database error finding human evaluator: {e}") from e
 
         return row[0] if row else None
 
@@ -377,6 +405,9 @@ class EvaluatorRegistry:
 
         Returns:
             New evaluator ID
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         import json
 
@@ -388,11 +419,15 @@ class EvaluatorRegistry:
 
         params_json = json.dumps(parameters) if parameters else None
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (name, user_id, model_id, params_json, prompt))
-                evaluator_id = cur.fetchone()[0]
-            conn.commit()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (name, user_id, model_id, params_json, prompt))
+                    evaluator_id = cur.fetchone()[0]
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to create evaluator '{name}': {e}")
+            raise RuntimeError(f"Database error creating evaluator: {e}") from e
 
         return evaluator_id
 
@@ -405,13 +440,20 @@ class EvaluatorRegistry:
 
         Returns:
             Username or None if not found
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         query = "SELECT username FROM public.users WHERE id = %s"
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (user_id,))
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (user_id,))
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to lookup username for user_id={user_id}: {e}")
+            raise RuntimeError(f"Database error looking up username: {e}") from e
 
         return row[0] if row else None
 
@@ -428,6 +470,9 @@ class EvaluatorRegistry:
 
         Returns:
             Number of evaluators loaded
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         query = """
             SELECT id, name, user_id, model_id, parameters, prompt,
@@ -436,33 +481,37 @@ class EvaluatorRegistry:
         """
 
         count = 0
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query)
-                for row in cur:
-                    info = EvaluatorInfo(
-                        id=row[0],
-                        name=row[1],
-                        user_id=row[2],
-                        model_id=row[3],
-                        parameters=row[4],
-                        prompt=row[5],
-                        created_at=row[6],
-                        updated_at=row[7]
-                    )
-                    self._info_cache[info.id] = info
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    for row in cur:
+                        info = EvaluatorInfo(
+                            id=row[0],
+                            name=row[1],
+                            user_id=row[2],
+                            model_id=row[3],
+                            parameters=row[4],
+                            prompt=row[5],
+                            created_at=row[6],
+                            updated_at=row[7]
+                        )
+                        self._info_cache[info.id] = info
 
-                    # Also populate the lookup cache
-                    if info.is_model and info.parameters:
-                        temp = info.get_temperature()
-                        top_p = info.get_top_p()
-                        cache_key = ("model", info.model_id, temp, top_p, info.prompt)
-                        self._cache[cache_key] = info.id
-                    elif info.is_human:
-                        cache_key = ("human", info.user_id)
-                        self._cache[cache_key] = info.id
+                        # Also populate the lookup cache
+                        if info.is_model and info.parameters:
+                            temp = info.get_temperature()
+                            top_p = info.get_top_p()
+                            cache_key = ("model", info.model_id, temp, top_p, info.prompt)
+                            self._cache[cache_key] = info.id
+                        elif info.is_human:
+                            cache_key = ("human", info.user_id)
+                            self._cache[cache_key] = info.id
 
-                    count += 1
+                        count += 1
+        except Exception as e:
+            logger.error(f"Failed to preload evaluator cache: {e}")
+            raise RuntimeError(f"Database error preloading evaluator cache: {e}") from e
 
         logger.debug(f"Preloaded {count} evaluators into cache")
         return count

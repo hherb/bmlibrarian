@@ -17,6 +17,27 @@ from typing import TypedDict, Optional, List, Dict, Any
 from enum import Enum
 
 
+# ============================================================================
+# Constants for score ranges and precision
+# ============================================================================
+
+# Decimal precision for rounding parameters (temperature, top_p, etc.)
+PARAMETER_DECIMAL_PRECISION: int = 4
+
+# Score ranges for different evaluation types
+RELEVANCE_SCORE_MIN: float = 1.0
+RELEVANCE_SCORE_MAX: float = 5.0
+QUALITY_SCORE_MIN: float = 0.0
+QUALITY_SCORE_MAX: float = 100.0
+PAPER_WEIGHT_MIN: float = 0.0
+PAPER_WEIGHT_MAX: float = 10.0
+CONFIDENCE_MIN: float = 0.0
+CONFIDENCE_MAX: float = 1.0
+
+# Default threshold for "above threshold" queries
+DEFAULT_RELEVANCE_THRESHOLD: float = 3.0
+
+
 class EvaluationType(Enum):
     """Evaluation types supported by the unified evaluation system."""
     RELEVANCE_SCORE = "relevance_score"

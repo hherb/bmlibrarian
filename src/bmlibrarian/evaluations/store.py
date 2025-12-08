@@ -15,17 +15,22 @@ Author: BMLibrarian
 Date: 2025-12-07
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from .schemas import (
     EvaluationType, RunType, RunStatus, CheckpointType, UserDecision,
-    validate_evaluation_data, extract_primary_score
+    validate_evaluation_data, extract_primary_score, DEFAULT_RELEVANCE_THRESHOLD
 )
 from .evaluator_registry import EvaluatorRegistry, EvaluatorInfo
+
+if TYPE_CHECKING:
+    from bmlibrarian.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +139,7 @@ class EvaluationStore:
         store.complete_run(run.run_id)
     """
 
-    def __init__(self, db_manager: Any):
+    def __init__(self, db_manager: "DatabaseManager"):
         """
         Initialize the evaluation store.
 
@@ -179,6 +184,9 @@ class EvaluationStore:
 
         Returns:
             Created EvaluationRun object
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         query = """
             INSERT INTO evaluations.evaluation_runs (
@@ -191,19 +199,23 @@ class EvaluationStore:
 
         config_json = json.dumps(config) if config else None
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (
-                    run_type.value if isinstance(run_type, RunType) else run_type,
-                    research_question,
-                    research_question_id,
-                    evaluator_id,
-                    config_json,
-                    session_id,
-                    documents_total
-                ))
-                row = cur.fetchone()
-            conn.commit()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (
+                        run_type.value if isinstance(run_type, RunType) else run_type,
+                        research_question,
+                        research_question_id,
+                        evaluator_id,
+                        config_json,
+                        session_id,
+                        documents_total
+                    ))
+                    row = cur.fetchone()
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to create evaluation run: {e}")
+            raise RuntimeError(f"Database error creating evaluation run: {e}") from e
 
         run = EvaluationRun(
             run_id=row[0],
@@ -234,6 +246,9 @@ class EvaluationStore:
 
         Returns:
             EvaluationRun or None if not found
+
+        Raises:
+            RuntimeError: If database operation fails
         """
         query = """
             SELECT run_id, run_type, research_question_id, research_question_text,
@@ -243,10 +258,14 @@ class EvaluationStore:
             WHERE run_id = %s
         """
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (run_id,))
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (run_id,))
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to get run id={run_id}: {e}")
+            raise RuntimeError(f"Database error getting run: {e}") from e
 
         if row is None:
             return None
@@ -466,6 +485,10 @@ class EvaluationStore:
 
         Returns:
             Evaluation ID (new or updated)
+
+        Raises:
+            ValueError: If evaluation_data fails validation
+            RuntimeError: If database operation fails
         """
         eval_type_str = (
             evaluation_type.value
@@ -489,21 +512,27 @@ class EvaluationStore:
             )
         """
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (
-                    run_id,
-                    document_id,
-                    eval_type_str,
-                    primary_score,
-                    json.dumps(evaluation_data),
-                    evaluator_id,
-                    confidence,
-                    reasoning,
-                    processing_time_ms
-                ))
-                evaluation_id = cur.fetchone()[0]
-            conn.commit()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (
+                        run_id,
+                        document_id,
+                        eval_type_str,
+                        primary_score,
+                        json.dumps(evaluation_data),
+                        evaluator_id,
+                        confidence,
+                        reasoning,
+                        processing_time_ms
+                    ))
+                    evaluation_id = cur.fetchone()[0]
+                conn.commit()
+        except Exception as e:
+            logger.error(
+                f"Failed to save evaluation for run={run_id}, doc={document_id}: {e}"
+            )
+            raise RuntimeError(f"Database error saving evaluation: {e}") from e
 
         logger.debug(
             f"Saved evaluation: run={run_id}, doc={document_id}, "
@@ -968,16 +997,28 @@ class EvaluationStore:
                     })
                 return results
 
-    def get_run_statistics(self, run_id: int) -> Dict[str, Any]:
+    def get_run_statistics(
+        self,
+        run_id: int,
+        score_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Get statistics for an evaluation run.
 
         Args:
             run_id: Run ID
+            score_threshold: Threshold for above_threshold_count (defaults to
+                DEFAULT_RELEVANCE_THRESHOLD from schemas.py)
 
         Returns:
             Dict with statistics
+
+        Raises:
+            RuntimeError: If database operation fails
         """
+        if score_threshold is None:
+            score_threshold = DEFAULT_RELEVANCE_THRESHOLD
+
         query = """
             SELECT
                 COUNT(*) as total_evaluations,
@@ -987,15 +1028,19 @@ class EvaluationStore:
                 MAX(primary_score) as max_score,
                 AVG(processing_time_ms) as avg_processing_time_ms,
                 SUM(processing_time_ms) as total_processing_time_ms,
-                COUNT(*) FILTER (WHERE primary_score >= 3) as above_threshold_count
+                COUNT(*) FILTER (WHERE primary_score >= %s) as above_threshold_count
             FROM evaluations.document_evaluations
             WHERE run_id = %s
         """
 
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (run_id,))
-                row = cur.fetchone()
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (score_threshold, run_id))
+                    row = cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to get run statistics for run_id={run_id}: {e}")
+            raise RuntimeError(f"Database error getting run statistics: {e}") from e
 
         return {
             "total_evaluations": row[0],
@@ -1006,4 +1051,5 @@ class EvaluationStore:
             "avg_processing_time_ms": float(row[5]) if row[5] else None,
             "total_processing_time_ms": row[6],
             "above_threshold_count": row[7],
+            "score_threshold": score_threshold,
         }
