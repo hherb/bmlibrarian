@@ -941,10 +941,10 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
                 # Try to convert, otherwise use default
                 try:
                     data[score_field] = float(value)
-                    type_repairs.append(f"{score_field}: converted {type(value).__name__} to float")
+                    type_repairs.append(f"{score_field}: converted '{value}' ({type(value).__name__}) to float")
                 except (ValueError, TypeError):
                     data[score_field] = DEFAULT_SCORE
-                    type_repairs.append(f"{score_field}: invalid type {type(value).__name__}, using default {DEFAULT_SCORE}")
+                    type_repairs.append(f"{score_field}: invalid value '{value}' ({type(value).__name__}), using default {DEFAULT_SCORE}")
             else:
                 # Check if score is in valid range (0.0-2.0), clamp if needed
                 score_value = float(data[score_field])
@@ -961,7 +961,7 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
             if not isinstance(value, str):
                 # Convert to string representation
                 data[explanation_field] = str(value) if value is not None else DEFAULT_EXPLANATION
-                type_repairs.append(f"{explanation_field}: converted {type(value).__name__} to str")
+                type_repairs.append(f"{explanation_field}: converted {type(value).__name__} '{value}' to str")
 
         # Validate and repair overall_confidence
         confidence = data.get('overall_confidence')
@@ -970,7 +970,7 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
                 data['overall_confidence'] = float(confidence)
             except (ValueError, TypeError):
                 data['overall_confidence'] = 0.3
-                type_repairs.append("overall_confidence: invalid type, using default 0.3")
+                type_repairs.append(f"overall_confidence: invalid value '{confidence}', using default 0.3")
         else:
             conf_value = float(confidence)
             if conf_value < 0.0:
