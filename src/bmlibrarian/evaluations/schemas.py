@@ -182,7 +182,7 @@ EVALUATION_SCHEMAS: Dict[str, Dict[str, Any]] = {
     EvaluationType.RELEVANCE_SCORE.value: {
         "required_fields": ["score"],
         "optional_fields": ["rationale", "inclusion_decision", "key_terms_matched", "relevance_factors"],
-        "score_range": (1, 5),
+        "score_range": (0, 5),  # 0 = irrelevant, must save to avoid re-scoring
         "typed_dict": RelevanceScoreData,
     },
     EvaluationType.QUALITY_ASSESSMENT.value: {
