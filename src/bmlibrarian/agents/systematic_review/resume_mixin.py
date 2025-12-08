@@ -471,6 +471,7 @@ class CheckpointResumeMixin:
         )
 
         scorer = RelevanceScorer(
+            research_question=criteria.research_question,
             config=self.config,
             criteria=criteria,
             callback=self.callback,
