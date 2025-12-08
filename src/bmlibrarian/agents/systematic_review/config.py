@@ -58,6 +58,10 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_CHECKPOINT_ENABLED = True
 DEFAULT_CHECKPOINT_DIR = "~/.bmlibrarian/checkpoints"
 
+# Checkpoint display constants (used for progress reporting)
+CHECKPOINT_TITLE_TRUNCATE_LENGTH = 80  # Max characters for paper title display
+CHECKPOINT_SAMPLE_TITLES_COUNT = 10     # Number of sample titles to show in checkpoint state
+
 # Output defaults
 DEFAULT_OUTPUT_DIR = "~/.bmlibrarian/systematic_reviews"
 

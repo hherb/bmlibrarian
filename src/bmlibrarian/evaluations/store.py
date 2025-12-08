@@ -786,6 +786,79 @@ class EvaluationStore:
                     ))
                 return results
 
+    def get_evaluations_for_multiple_types(
+        self,
+        run_id: int,
+        evaluation_types: List[EvaluationType],
+        min_score: Optional[float] = None,
+        order_by_score: bool = True,
+    ) -> Dict[str, List[DocumentEvaluation]]:
+        """
+        Get evaluations for multiple types in a single query.
+
+        This method is optimized to avoid N+1 query patterns when needing
+        both relevance scores and quality assessments (or other combinations).
+
+        Args:
+            run_id: Run ID
+            evaluation_types: List of evaluation types to fetch
+            min_score: Optional minimum score filter (applies to all types)
+            order_by_score: If True, order by primary_score descending
+
+        Returns:
+            Dictionary mapping evaluation_type string to list of DocumentEvaluation
+        """
+        if not evaluation_types:
+            return {}
+
+        # Convert to string values
+        type_strings = [
+            t.value if isinstance(t, EvaluationType) else t
+            for t in evaluation_types
+        ]
+
+        conditions = ["run_id = %s", "evaluation_type = ANY(%s)"]
+        params: List[Any] = [run_id, type_strings]
+
+        if min_score is not None:
+            conditions.append("primary_score >= %s")
+            params.append(min_score)
+
+        order_clause = "ORDER BY evaluation_type, primary_score DESC NULLS LAST" if order_by_score else "ORDER BY evaluation_type"
+
+        query = f"""
+            SELECT evaluation_id, run_id, document_id, evaluator_id,
+                   evaluation_type, primary_score, confidence, evaluation_data,
+                   reasoning, processing_time_ms, evaluated_at
+            FROM evaluations.document_evaluations
+            WHERE {' AND '.join(conditions)}
+            {order_clause}
+        """
+
+        # Initialize result dict with empty lists for all requested types
+        results: Dict[str, List[DocumentEvaluation]] = {t: [] for t in type_strings}
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                for row in cur.fetchall():
+                    eval_obj = DocumentEvaluation(
+                        evaluation_id=row[0],
+                        run_id=row[1],
+                        document_id=row[2],
+                        evaluator_id=row[3],
+                        evaluation_type=row[4],
+                        primary_score=float(row[5]) if row[5] else None,
+                        confidence=float(row[6]) if row[6] else None,
+                        evaluation_data=row[7],
+                        reasoning=row[8],
+                        processing_time_ms=row[9],
+                        evaluated_at=row[10],
+                    )
+                    results[row[4]].append(eval_obj)
+
+        return results
+
     # =========================================================================
     # Checkpoints
     # =========================================================================
