@@ -34,6 +34,8 @@ from .config import (
     SystematicReviewConfig,
     get_systematic_review_config,
     AGENT_TYPE,
+    CHECKPOINT_TITLE_TRUNCATE_LENGTH,
+    CHECKPOINT_SAMPLE_TITLES_COUNT,
 )
 from .data_models import (
     SearchCriteria,
@@ -98,9 +100,8 @@ CHECKPOINT_INITIAL_RESULTS = "initial_results"
 CHECKPOINT_SCORING_COMPLETE = "scoring_complete"
 CHECKPOINT_QUALITY_ASSESSMENT = "quality_assessment"
 
-# Checkpoint display constants
-CHECKPOINT_TITLE_TRUNCATE_LENGTH = 80
-CHECKPOINT_SAMPLE_TITLES_COUNT = 10
+# Note: CHECKPOINT_TITLE_TRUNCATE_LENGTH and CHECKPOINT_SAMPLE_TITLES_COUNT
+# are imported from config.py to avoid duplication
 
 
 # =============================================================================
@@ -462,6 +463,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self,
         min_score: Optional[float] = None,
         limit: Optional[int] = None,
+        _scored_papers_map: Optional[Dict[int, ScoredPaper]] = None,
     ) -> List[AssessedPaper]:
         """
         Get assessed papers from the evaluation store.
@@ -469,6 +471,10 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         Args:
             min_score: Optional minimum composite score filter.
             limit: Optional maximum number of results.
+            _scored_papers_map: Optional pre-fetched map of document_id -> ScoredPaper.
+                               Used internally to avoid N+1 query pattern when calling
+                               get_scored_and_assessed_papers(). Prefer using that method
+                               when you need both scored and assessed papers.
 
         Returns:
             List of AssessedPaper objects.
@@ -485,9 +491,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             limit=limit,
         )
 
-        # Get scored papers to build AssessedPaper objects
-        scored_papers = self.get_scored_papers()
-        scored_map = {sp.paper.document_id: sp for sp in scored_papers}
+        # Use provided map or fetch scored papers (causes additional query)
+        if _scored_papers_map is not None:
+            scored_map = _scored_papers_map
+        else:
+            scored_papers = self.get_scored_papers()
+            scored_map = {sp.paper.document_id: sp for sp in scored_papers}
 
         assessed_papers = []
         for eval_record in evaluations:
@@ -506,6 +515,101 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             assessed_papers.append(assessed_paper)
 
         return assessed_papers
+
+    def get_scored_and_assessed_papers(
+        self,
+        min_relevance_score: Optional[float] = None,
+        min_composite_score: Optional[float] = None,
+    ) -> Tuple[List[ScoredPaper], List[AssessedPaper]]:
+        """
+        Get both scored and assessed papers efficiently in a single database query.
+
+        This method avoids the N+1 query pattern by fetching both RELEVANCE_SCORE
+        and QUALITY_ASSESSMENT evaluations in a single query.
+
+        Args:
+            min_relevance_score: Optional minimum relevance score filter.
+            min_composite_score: Optional minimum composite score filter.
+
+        Returns:
+            Tuple of (scored_papers, assessed_papers).
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            return [], []
+
+        # Fetch both evaluation types in a single query
+        eval_map = self._evaluation_store.get_evaluations_for_multiple_types(
+            run_id=self._evaluation_run.run_id,
+            evaluation_types=[EvaluationType.RELEVANCE_SCORE, EvaluationType.QUALITY_ASSESSMENT],
+        )
+
+        # Build paper lookup map
+        paper_map = {p.document_id: p for p in self._all_papers}
+
+        # Build scored papers from relevance scores
+        relevance_evals = eval_map.get(EvaluationType.RELEVANCE_SCORE.value, [])
+        scored_papers = []
+        scored_map: Dict[int, ScoredPaper] = {}
+
+        for eval_record in relevance_evals:
+            # Apply min_relevance_score filter
+            if min_relevance_score is not None:
+                if eval_record.primary_score is None or eval_record.primary_score < min_relevance_score:
+                    continue
+
+            paper = paper_map.get(eval_record.document_id)
+            if not paper:
+                logger.warning(f"Paper not found for document_id={eval_record.document_id}")
+                continue
+
+            inclusion_status = InclusionStatus.PENDING
+            inclusion_rationale = None
+            if eval_record.evaluation_data.get("inclusion_decision"):
+                try:
+                    inclusion_status = InclusionStatus(eval_record.evaluation_data["inclusion_decision"])
+                except ValueError:
+                    pass
+                inclusion_rationale = eval_record.evaluation_data.get("inclusion_rationale")
+
+            scored_paper = ScoredPaper(
+                paper=paper,
+                relevance_score=eval_record.primary_score or 0.0,
+                relevance_rationale=eval_record.reasoning or "",
+                inclusion_decision=InclusionDecision(
+                    status=inclusion_status,
+                    rationale=inclusion_rationale,
+                ),
+            )
+            scored_papers.append(scored_paper)
+            scored_map[paper.document_id] = scored_paper
+
+        # Build assessed papers using the scored_map (avoids N+1)
+        quality_evals = eval_map.get(EvaluationType.QUALITY_ASSESSMENT.value, [])
+        assessed_papers = []
+
+        for eval_record in quality_evals:
+            # Apply min_composite_score filter
+            if min_composite_score is not None:
+                if eval_record.primary_score is None or eval_record.primary_score < min_composite_score:
+                    continue
+
+            scored_paper = scored_map.get(eval_record.document_id)
+            if not scored_paper:
+                logger.warning(f"ScoredPaper not found for document_id={eval_record.document_id}")
+                continue
+
+            assessed_paper = AssessedPaper(
+                scored_paper=scored_paper,
+                study_assessment=eval_record.evaluation_data.get("study_assessment", {}),
+                paper_weight=eval_record.evaluation_data.get("paper_weight", {}),
+                pico_components=eval_record.evaluation_data.get("pico_components"),
+                composite_score=eval_record.primary_score,
+            )
+            assessed_papers.append(assessed_paper)
+
+        return scored_papers, assessed_papers
 
     def get_below_threshold_papers(self) -> List[ScoredPaper]:
         """
@@ -1757,9 +1861,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         Returns:
             Dictionary with review statistics
         """
-        # Get counts from database
-        scored_papers = self.get_scored_papers()
-        assessed_papers = self.get_assessed_papers()
+        # Get counts from database using combined query to avoid N+1 pattern
+        scored_papers, assessed_papers = self.get_scored_and_assessed_papers()
 
         return {
             "review_id": self.documenter.review_id,

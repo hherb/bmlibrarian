@@ -18,6 +18,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+from .config import (
+    CHECKPOINT_TITLE_TRUNCATE_LENGTH,
+    CHECKPOINT_SAMPLE_TITLES_COUNT,
+)
 from .data_models import (
     SearchCriteria,
     ScoringWeights,
@@ -55,12 +59,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Agent version - should match agent.py
+# Agent version - should match agent.py AGENT_VERSION
 AGENT_VERSION = "1.0.0"
 
-# Checkpoint display constants
-CHECKPOINT_TITLE_TRUNCATE_LENGTH = 80
-CHECKPOINT_SAMPLE_TITLES_COUNT = 10
+# Note: CHECKPOINT_TITLE_TRUNCATE_LENGTH and CHECKPOINT_SAMPLE_TITLES_COUNT
+# are imported from config.py to avoid duplication
 
 
 class CheckpointResumeMixin:
@@ -357,8 +360,8 @@ class CheckpointResumeMixin:
             if self._evaluation_run:
                 # Resume the run
                 self._evaluation_store.resume_run(evaluation_run_id)
-                scored_papers = self.get_scored_papers()
-                assessed_papers = self.get_assessed_papers()
+                # Use combined query to avoid N+1 pattern
+                scored_papers, assessed_papers = self.get_scored_and_assessed_papers()
                 logger.info(
                     f"Restored evaluation run {evaluation_run_id}: "
                     f"{len(scored_papers)} scored, {len(assessed_papers)} assessed"
@@ -830,9 +833,8 @@ class CheckpointResumeMixin:
             weights=weights,
         )
 
-        # Get counts from restored state - use database queries
-        scored_papers = self.get_scored_papers()
-        assessed_papers = self.get_assessed_papers()
+        # Get counts from restored state - use combined query to avoid N+1 pattern
+        scored_papers, assessed_papers = self.get_scored_and_assessed_papers()
         total_considered = len(self._all_papers) + len(self._rejected_initial_filter)
         passed_initial_filter = len(self._all_papers)
         passed_relevance = len(scored_papers) if scored_papers else len(assessed_papers)
