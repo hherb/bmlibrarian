@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from .schemas import (
@@ -28,6 +28,18 @@ from .schemas import (
     validate_evaluation_data, extract_primary_score, DEFAULT_RELEVANCE_THRESHOLD
 )
 from .evaluator_registry import EvaluatorRegistry, EvaluatorInfo
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects."""
+
+    def default(self, obj: Any) -> Any:
+        """Convert datetime objects to ISO format strings."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
 
 if TYPE_CHECKING:
     from bmlibrarian.database import DatabaseManager
@@ -528,7 +540,7 @@ class EvaluationStore:
                         int(document_id),
                         eval_type_str,
                         float(primary_score) if primary_score is not None else None,
-                        json.dumps(evaluation_data),
+                        json.dumps(evaluation_data, cls=DateTimeEncoder),
                         int(evaluator_id) if evaluator_id is not None else None,
                         float(confidence) if confidence is not None else None,
                         reasoning,
