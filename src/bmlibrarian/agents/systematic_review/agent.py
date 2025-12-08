@@ -1595,28 +1595,13 @@ class SystematicReviewAgent(BaseAgent):
                 # Paper IDs (full data re-fetched on resume)
                 "paper_document_ids": [p.document_id for p in self._all_papers],
                 "paper_count": len(self._all_papers),
-                # Scored papers if available (full data for scoring_complete checkpoint)
-                "scored_papers": [
-                    {
-                        "document_id": sp.paper.document_id,
-                        "relevance_score": sp.relevance_score,
-                        "relevance_rationale": sp.relevance_rationale,
-                        "inclusion_decision": sp.inclusion_decision.to_dict(),
-                    }
-                    for sp in self._scored_papers
-                ],
+                # Evaluation run ID (scored/assessed papers stored in database)
+                "evaluation_run_id": self._evaluation_run.run_id if self._evaluation_run else None,
                 # Excluded paper tracking for comprehensive reporting
                 "rejected_initial_filter": [
                     {"document_id": paper.document_id, "reason": reason}
                     for paper, reason in self._rejected_initial_filter
                 ],
-                "below_threshold_paper_ids": [
-                    sp.paper.document_id for sp in self._below_threshold_papers
-                ],
-                # Assessed papers if available (for quality_assessment checkpoint)
-                "assessed_papers": [
-                    ap.to_dict() for ap in self._assessed_papers
-                ] if self._assessed_papers else [],
                 # Documenter state
                 "documenter_phase": self.documenter._current_phase,
             }
@@ -1892,48 +1877,24 @@ class SystematicReviewAgent(BaseAgent):
                         except Exception as e:
                             logger.warning(f"Failed to restore paper {doc.get('id')}: {e}")
 
-            paper_lookup = {p.document_id: p for p in self._all_papers}
-            self._scored_papers = []
-            self._below_threshold_papers = []
+            # Build paper lookup for later use
+            self._paper_lookup = {p.document_id: p for p in self._all_papers}
 
-            relevance_threshold = self.config.relevance_threshold
-
-            for sp_data in scored_papers_data:
-                doc_id = sp_data.get("document_id")
-                if doc_id not in paper_lookup:
-                    logger.warning(f"Scored paper {doc_id} not found in paper lookup, skipping")
-                    continue
-
-                paper = paper_lookup[doc_id]
-                inclusion_decision = InclusionDecision.from_dict(sp_data.get("inclusion_decision", {}))
-
-                scored_paper = ScoredPaper(
-                    paper=paper,
-                    relevance_score=sp_data.get("relevance_score", 0.0),
-                    relevance_rationale=sp_data.get("relevance_rationale", ""),
-                    inclusion_decision=inclusion_decision,
+        # Restore evaluation run from database
+        evaluation_run_id = checkpoint_data.get("evaluation_run_id")
+        if evaluation_run_id:
+            self._evaluation_run = self._evaluation_store.get_run(evaluation_run_id)
+            if self._evaluation_run:
+                # Resume the run
+                self._evaluation_store.resume_run(evaluation_run_id)
+                scored_papers = self.get_scored_papers()
+                assessed_papers = self.get_assessed_papers()
+                logger.info(
+                    f"Restored evaluation run {evaluation_run_id}: "
+                    f"{len(scored_papers)} scored, {len(assessed_papers)} assessed"
                 )
-                self._scored_papers.append(scored_paper)
-
-                # Also restore below_threshold_papers
-                if scored_paper.relevance_score < relevance_threshold:
-                    self._below_threshold_papers.append(scored_paper)
-
-            logger.info(f"Restored {len(self._scored_papers)} scored papers")
-
-        # Restore assessed papers if available (for quality_assessment checkpoint)
-        assessed_papers_data = checkpoint_data.get("assessed_papers", [])
-        if assessed_papers_data:
-            self._assessed_papers = []
-
-            for ap_data in assessed_papers_data:
-                try:
-                    assessed_paper = AssessedPaper.from_dict(ap_data)
-                    self._assessed_papers.append(assessed_paper)
-                except Exception as e:
-                    logger.warning(f"Failed to restore assessed paper: {e}")
-
-            logger.info(f"Restored {len(self._assessed_papers)} assessed papers")
+            else:
+                logger.warning(f"Evaluation run {evaluation_run_id} not found in database")
 
     def _continue_from_search_execution(
         self,
@@ -2138,16 +2099,17 @@ class SystematicReviewAgent(BaseAgent):
         total_considered = len(self._all_papers)
         passed_initial_filter = total_considered - len(self._rejected_initial_filter)
 
-        # Get papers above relevance threshold from restored scored papers
+        # Get papers above relevance threshold from database
         relevance_threshold = self.config.relevance_threshold
+        scored_papers = self.get_scored_papers()
         relevant_papers = [
-            sp for sp in self._scored_papers
+            sp for sp in scored_papers
             if sp.relevance_score >= relevance_threshold
         ]
         passed_relevance = len(relevant_papers)
 
         logger.info(
-            f"Resuming from scoring_complete: {len(self._scored_papers)} scored papers, "
+            f"Resuming from scoring_complete: {len(scored_papers)} scored papers, "
             f"{passed_relevance} above threshold"
         )
 
@@ -2161,7 +2123,10 @@ class SystematicReviewAgent(BaseAgent):
             decision_rationale="Continuing from scoring_complete checkpoint",
         ) as timer:
             quality_result = quality_assessor.assess_batch(relevant_papers)
-            self._assessed_papers = quality_result.assessed_papers
+
+            # Save assessed papers to database
+            for ap in quality_result.assessed_papers:
+                self._save_assessed_paper(ap)
 
             timer.set_output(
                 f"Assessed {len(quality_result.assessed_papers)} papers, "
@@ -2191,27 +2156,30 @@ class SystematicReviewAgent(BaseAgent):
             return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
 
         # Phase 6: Composite Scoring
+        # Get assessed papers from database
+        assessed_papers = self.get_assessed_papers()
+
         with self.documenter.log_step_with_timer(
             action=ACTION_CALCULATE_COMPOSITE,
             tool="CompositeScorer",
-            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            input_summary=f"Calculating composite scores for {len(assessed_papers)} papers",
             decision_rationale="Combining all scores for final ranking",
         ) as timer:
-            for assessed in self._assessed_papers:
+            for assessed in assessed_papers:
                 assessed.composite_score = composite_scorer.score(assessed)
 
             # Sort by composite score and assign ranks
-            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
-            for i, paper in enumerate(self._assessed_papers):
+            assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(assessed_papers):
                 paper.final_rank = i + 1
 
             timer.set_output(
-                f"Ranked {len(self._assessed_papers)} papers by composite score"
+                f"Ranked {len(assessed_papers)} papers by composite score"
             )
 
         # Determine final inclusion
-        final_included = [ap for ap in self._assessed_papers if ap.is_included]
-        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
+        final_included = [ap for ap in assessed_papers if ap.is_included]
+        final_excluded_assessed = [ap for ap in assessed_papers if not ap.is_included]
 
         # =================================================================
         # Collect ALL excluded papers for comprehensive reporting
@@ -2231,8 +2199,8 @@ class SystematicReviewAgent(BaseAgent):
                 ),
             ))
 
-        # 2. Papers below relevance threshold
-        all_excluded_papers.extend(self._below_threshold_papers)
+        # 2. Papers below relevance threshold from database
+        all_excluded_papers.extend(self.get_below_threshold_papers())
 
         # 3. Papers that failed quality gate
         for ap in final_excluded_assessed:
@@ -2370,10 +2338,12 @@ class SystematicReviewAgent(BaseAgent):
             weights=weights,
         )
 
-        # Get counts from restored state
+        # Get counts from restored state - use database queries
+        scored_papers = self.get_scored_papers()
+        assessed_papers = self.get_assessed_papers()
         total_considered = len(self._all_papers) + len(self._rejected_initial_filter)
         passed_initial_filter = len(self._all_papers)
-        passed_relevance = len(self._scored_papers) if self._scored_papers else len(self._assessed_papers)
+        passed_relevance = len(scored_papers) if scored_papers else len(assessed_papers)
 
         # =================================================================
         # Phase 6: Composite Scoring
@@ -2383,24 +2353,24 @@ class SystematicReviewAgent(BaseAgent):
         with self.documenter.log_step_with_timer(
             action=ACTION_CALCULATE_COMPOSITE,
             tool="CompositeScorer",
-            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            input_summary=f"Calculating composite scores for {len(assessed_papers)} papers",
             decision_rationale="Combining all scores for final ranking",
         ) as timer:
-            for assessed in self._assessed_papers:
+            for assessed in assessed_papers:
                 assessed.composite_score = composite_scorer.score(assessed)
 
             # Sort by composite score and assign ranks
-            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
-            for i, paper in enumerate(self._assessed_papers):
+            assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(assessed_papers):
                 paper.final_rank = i + 1
 
             timer.set_output(
-                f"Ranked {len(self._assessed_papers)} papers by composite score"
+                f"Ranked {len(assessed_papers)} papers by composite score"
             )
 
         # Determine final inclusion
-        final_included = [ap for ap in self._assessed_papers if ap.is_included]
-        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
+        final_included = [ap for ap in assessed_papers if ap.is_included]
+        final_excluded_assessed = [ap for ap in assessed_papers if not ap.is_included]
 
         # =================================================================
         # Collect ALL excluded papers for comprehensive reporting
@@ -2420,8 +2390,8 @@ class SystematicReviewAgent(BaseAgent):
                 ),
             ))
 
-        # 2. Papers below relevance threshold
-        all_excluded_papers.extend(self._below_threshold_papers)
+        # 2. Papers below relevance threshold from database
+        all_excluded_papers.extend(self.get_below_threshold_papers())
 
         # 3. Papers that failed quality gate
         for ap in final_excluded_assessed:
@@ -2632,7 +2602,11 @@ class SystematicReviewAgent(BaseAgent):
                 evaluate_inclusion=True,
                 paper_sources=paper_sources,
             )
-            self._scored_papers = scoring_result.scored_papers
+            scored_papers = scoring_result.scored_papers
+
+            # Save scored papers to database
+            for sp in scored_papers:
+                self._save_scored_paper(sp)
 
             timer.set_output(
                 f"Scored {len(scoring_result.scored_papers)} papers, "
@@ -2647,15 +2621,13 @@ class SystematicReviewAgent(BaseAgent):
         # Apply relevance threshold
         relevance_threshold = self.config.relevance_threshold
         relevant_papers = [
-            sp for sp in self._scored_papers
+            sp for sp in scored_papers
             if sp.relevance_score >= relevance_threshold
         ]
         below_threshold = [
-            sp for sp in self._scored_papers
+            sp for sp in scored_papers
             if sp.relevance_score < relevance_threshold
         ]
-        # Store for comprehensive reporting
-        self._below_threshold_papers = below_threshold
 
         passed_relevance = len(relevant_papers)
         logger.info(f"{passed_relevance} papers passed relevance threshold ({relevance_threshold})")
@@ -2664,7 +2636,7 @@ class SystematicReviewAgent(BaseAgent):
         if not self._checkpoint(
             checkpoint_type=CHECKPOINT_SCORING_COMPLETE,
             state={
-                "total_scored": len(self._scored_papers),
+                "total_scored": len(scored_papers),
                 "above_threshold": len(relevant_papers),
                 "below_threshold": len(below_threshold),
                 "average_score": scoring_result.average_score,
@@ -2687,7 +2659,10 @@ class SystematicReviewAgent(BaseAgent):
             decision_rationale="Evaluating study quality for final ranking",
         ) as timer:
             assessment_result = quality_assessor.assess_batch(relevant_papers)
-            self._assessed_papers = assessment_result.assessed_papers
+
+            # Save assessed papers to database
+            for ap in assessment_result.assessed_papers:
+                self._save_assessed_paper(ap)
 
             timer.set_output(
                 f"Assessed {len(assessment_result.assessed_papers)} papers, "
@@ -2717,27 +2692,30 @@ class SystematicReviewAgent(BaseAgent):
             return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
 
         # Phase 6: Composite Scoring
+        # Get assessed papers from database
+        assessed_papers = self.get_assessed_papers()
+
         with self.documenter.log_step_with_timer(
             action=ACTION_CALCULATE_COMPOSITE,
             tool="CompositeScorer",
-            input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+            input_summary=f"Calculating composite scores for {len(assessed_papers)} papers",
             decision_rationale="Combining all scores for final ranking",
         ) as timer:
-            for assessed in self._assessed_papers:
+            for assessed in assessed_papers:
                 assessed.composite_score = composite_scorer.score(assessed)
 
             # Sort by composite score and assign ranks
-            self._assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
-            for i, paper in enumerate(self._assessed_papers):
+            assessed_papers.sort(key=lambda x: x.composite_score, reverse=True)
+            for i, paper in enumerate(assessed_papers):
                 paper.final_rank = i + 1
 
             timer.set_output(
-                f"Ranked {len(self._assessed_papers)} papers by composite score"
+                f"Ranked {len(assessed_papers)} papers by composite score"
             )
 
         # Determine final inclusion
-        final_included = [ap for ap in self._assessed_papers if ap.is_included]
-        final_excluded_assessed = [ap for ap in self._assessed_papers if not ap.is_included]
+        final_included = [ap for ap in assessed_papers if ap.is_included]
+        final_excluded_assessed = [ap for ap in assessed_papers if not ap.is_included]
 
         # =================================================================
         # Collect ALL excluded papers for comprehensive reporting
@@ -2757,8 +2735,8 @@ class SystematicReviewAgent(BaseAgent):
                 ),
             ))
 
-        # 2. Papers below relevance threshold
-        all_excluded_papers.extend(self._below_threshold_papers)
+        # 2. Papers below relevance threshold from database
+        all_excluded_papers.extend(self.get_below_threshold_papers())
 
         # 3. Papers that failed quality gate (from assessed papers)
         for ap in final_excluded_assessed:
@@ -3009,11 +2987,16 @@ class SystematicReviewAgent(BaseAgent):
         Returns:
             Dictionary with review statistics
         """
+        # Get counts from database
+        scored_papers = self.get_scored_papers()
+        assessed_papers = self.get_assessed_papers()
+
         return {
             "review_id": self.documenter.review_id,
+            "evaluation_run_id": self._evaluation_run.run_id if self._evaluation_run else None,
             "papers_found": len(self._all_papers),
-            "papers_scored": len(self._scored_papers),
-            "papers_assessed": len(self._assessed_papers),
+            "papers_scored": len(scored_papers),
+            "papers_assessed": len(assessed_papers),
             "process_steps": len(self.documenter.steps),
             "checkpoints": len(self.documenter.checkpoints),
             "duration_seconds": self.documenter.get_duration(),
@@ -3059,16 +3042,18 @@ class SystematicReviewAgent(BaseAgent):
         Clears all papers, scores, and creates new documenter.
         Does not reset configuration.
         """
+        # Complete any existing evaluation run
+        if self._evaluation_run:
+            self._complete_evaluation_run("aborted")
+            self._evaluation_run = None
+
         self._criteria = None
         self._weights = None
         self._search_plan = None
         self._executed_queries = []
         self._all_papers = []
-        self._scored_papers = []
-        self._assessed_papers = []
-        # Clear excluded paper tracking
+        # Clear excluded paper tracking (initial filter results not in database)
         self._rejected_initial_filter = []
-        self._below_threshold_papers = []
         self.documenter = Documenter()
         self.reset_metrics()
         logger.info("SystematicReviewAgent state reset")
