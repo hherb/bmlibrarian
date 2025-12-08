@@ -392,6 +392,7 @@ class QualityAssessor:
         self,
         papers: List[ScoredPaper],
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        save_callback: Optional[Callable[["AssessedPaper"], None]] = None,
     ) -> QualityAssessmentResult:
         """
         Run quality assessments on all papers.
@@ -401,6 +402,10 @@ class QualityAssessor:
         Args:
             papers: List of scored papers to assess
             progress_callback: Optional callback(current, total) for progress
+            save_callback: Optional callback to save each assessed paper immediately.
+                          Called with each AssessedPaper right after evaluation.
+                          This ensures assessments are persisted even if the
+                          process is interrupted.
 
         Returns:
             QualityAssessmentResult with all assessed papers
@@ -425,6 +430,17 @@ class QualityAssessor:
         for i, paper in enumerate(papers):
             try:
                 assessed_paper = self._assess_single(paper)
+
+                # Save immediately after evaluation to persist progress
+                if save_callback:
+                    try:
+                        save_callback(assessed_paper)
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save assessed paper {paper.paper.document_id}: {save_error}"
+                        )
+                        # Continue - the paper was assessed successfully, just save failed
+
                 assessed_papers.append(assessed_paper)
 
                 # Update statistics

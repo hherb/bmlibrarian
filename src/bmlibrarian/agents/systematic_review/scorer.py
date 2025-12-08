@@ -356,6 +356,7 @@ class RelevanceScorer:
         evaluate_inclusion: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         paper_sources: Optional[Dict[int, List[str]]] = None,
+        save_callback: Optional[Callable[["ScoredPaper"], None]] = None,
     ) -> BatchScoringResult:
         """
         Score a batch of papers for relevance.
@@ -365,6 +366,10 @@ class RelevanceScorer:
             evaluate_inclusion: Whether to run inclusion/exclusion evaluation
             progress_callback: Optional callback(current, total) for progress
             paper_sources: Optional dict mapping document_id to query_ids
+            save_callback: Optional callback to save each scored paper immediately.
+                          Called with each ScoredPaper right after evaluation.
+                          This ensures evaluations are persisted even if the
+                          process is interrupted.
 
         Returns:
             BatchScoringResult with all scored papers
@@ -386,6 +391,16 @@ class RelevanceScorer:
                 # Add source provenance if available
                 if paper_sources and paper.document_id in paper_sources:
                     scored_paper.search_provenance = paper_sources[paper.document_id]
+
+                # Save immediately after evaluation to persist progress
+                if save_callback:
+                    try:
+                        save_callback(scored_paper)
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save scored paper {paper.document_id}: {save_error}"
+                        )
+                        # Continue - the paper was scored successfully, just save failed
 
                 scored_papers.append(scored_paper)
                 total_score += scored_paper.relevance_score

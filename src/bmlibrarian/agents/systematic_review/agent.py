@@ -1014,18 +1014,14 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 decision_rationale="Assessing relevance to research question using LLM",
             ) as timer:
                 if papers_to_score:
+                    # Pass save callback to persist each evaluation immediately
+                    # This ensures progress is saved even if the process is interrupted
                     scoring_result = scorer.score_batch(
                         papers=papers_to_score,
                         evaluate_inclusion=True,
                         paper_sources=paper_sources,
+                        save_callback=self._save_scored_paper,
                     )
-
-                    # Save scored papers to database immediately after each batch
-                    logger.info(f"Saving {len(scoring_result.scored_papers)} scored papers to database")
-                    for i, sp in enumerate(scoring_result.scored_papers):
-                        logger.debug(f"Saving scored paper {i+1}/{len(scoring_result.scored_papers)}: doc_id={sp.paper.document_id}")
-                        self._save_scored_paper(sp)
-                    logger.info(f"Finished saving {len(scoring_result.scored_papers)} scored papers")
 
                     timer.set_output(
                         f"Scored {len(scoring_result.scored_papers)} papers, "
@@ -1153,11 +1149,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 decision_rationale="Evaluating study quality and methodology",
             ) as timer:
                 if papers_to_assess:
-                    quality_result = quality_assessor.assess_batch(papers_to_assess)
-
-                    # Save assessed papers to database immediately
-                    for ap in quality_result.assessed_papers:
-                        self._save_assessed_paper(ap)
+                    # Pass save callback to persist each assessment immediately
+                    # This ensures progress is saved even if the process is interrupted
+                    quality_result = quality_assessor.assess_batch(
+                        papers_to_assess,
+                        save_callback=self._save_assessed_paper,
+                    )
 
                     timer.set_output(
                         f"Assessed {len(quality_result.assessed_papers)} papers, "
