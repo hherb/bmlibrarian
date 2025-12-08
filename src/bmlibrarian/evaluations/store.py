@@ -508,7 +508,15 @@ class EvaluationStore:
 
         query = """
             SELECT evaluations.save_evaluation(
-                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s::BIGINT,
+                %s::BIGINT,
+                %s::VARCHAR,
+                %s::NUMERIC,
+                %s::JSONB,
+                %s::INTEGER,
+                %s::NUMERIC,
+                %s::TEXT,
+                %s::INTEGER
             )
         """
 
@@ -516,15 +524,15 @@ class EvaluationStore:
             with self.db.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, (
-                        run_id,
-                        document_id,
+                        int(run_id),
+                        int(document_id),
                         eval_type_str,
-                        primary_score,
+                        float(primary_score) if primary_score is not None else None,
                         json.dumps(evaluation_data),
-                        evaluator_id,
-                        confidence,
+                        int(evaluator_id) if evaluator_id is not None else None,
+                        float(confidence) if confidence is not None else None,
                         reasoning,
-                        processing_time_ms
+                        int(processing_time_ms) if processing_time_ms is not None else None
                     ))
                     evaluation_id = cur.fetchone()[0]
                 conn.commit()
