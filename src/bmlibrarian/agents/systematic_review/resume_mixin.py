@@ -466,8 +466,8 @@ class CheckpointResumeMixin:
 
         # Initialize components
         initial_filter = InitialFilter(
-            config=self.config,
             criteria=criteria,
+            callback=self.callback,
         )
 
         scorer = RelevanceScorer(
