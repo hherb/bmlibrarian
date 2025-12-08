@@ -336,7 +336,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             evaluation_data["citation_count"] = len(scored_paper.relevant_citations)
 
         try:
-            return self._evaluation_store.save_evaluation(
+            logger.info(
+                f"Saving scored paper: run_id={self._evaluation_run.run_id}, "
+                f"doc_id={scored_paper.paper.document_id}, "
+                f"score={scored_paper.relevance_score}, "
+                f"evaluator_id={self._evaluator_id}"
+            )
+            eval_id = self._evaluation_store.save_evaluation(
                 run_id=self._evaluation_run.run_id,
                 document_id=scored_paper.paper.document_id,
                 evaluation_type=EvaluationType.RELEVANCE_SCORE,
@@ -346,9 +352,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 reasoning=scored_paper.relevance_rationale,
                 processing_time_ms=processing_time_ms,
             )
+            logger.info(f"Saved scored paper: eval_id={eval_id}")
+            return eval_id
         except Exception as e:
             logger.error(
-                f"Failed to save scored paper document_id={scored_paper.paper.document_id}: {e}"
+                f"Failed to save scored paper document_id={scored_paper.paper.document_id}: {e}",
+                exc_info=True
             )
             raise RuntimeError(f"Failed to save scored paper: {e}") from e
 
@@ -1012,8 +1021,11 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     )
 
                     # Save scored papers to database immediately after each batch
-                    for sp in scoring_result.scored_papers:
+                    logger.info(f"Saving {len(scoring_result.scored_papers)} scored papers to database")
+                    for i, sp in enumerate(scoring_result.scored_papers):
+                        logger.debug(f"Saving scored paper {i+1}/{len(scoring_result.scored_papers)}: doc_id={sp.paper.document_id}")
                         self._save_scored_paper(sp)
+                    logger.info(f"Finished saving {len(scoring_result.scored_papers)} scored papers")
 
                     timer.set_output(
                         f"Scored {len(scoring_result.scored_papers)} papers, "
