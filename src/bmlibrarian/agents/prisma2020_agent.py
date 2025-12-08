@@ -869,14 +869,19 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
 
     def _validate_assessment_data(self, data: Dict[str, Any], doc_id: str) -> bool:
         """
-        Validate that all required fields are present in assessment data with correct types.
+        Validate and repair assessment data, filling in missing fields with defaults.
+
+        This method validates the LLM response and ensures all required fields are present.
+        Missing fields are filled with sensible defaults (score=0.0, explanation indicating
+        incomplete LLM response) rather than failing completely. This allows the assessment
+        to proceed while clearly marking which items were not properly assessed.
 
         Args:
-            data: Parsed JSON data from LLM
+            data: Parsed JSON data from LLM (MODIFIED IN PLACE if fields are missing)
             doc_id: Document ID for error reporting
 
         Returns:
-            True if validation passes, False otherwise
+            True if validation passes (including after repair), False only for critical errors
         """
         required_score_fields = [
             'title_score', 'abstract_score', 'rationale_score', 'objectives_score',
@@ -893,72 +898,101 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
 
         required_explanation_fields = [f.replace('_score', '_explanation') for f in required_score_fields]
 
-        all_required = required_score_fields + required_explanation_fields + ['overall_confidence']
+        # Default values for missing fields
+        DEFAULT_SCORE = 0.0  # Worst case - not reported
+        DEFAULT_EXPLANATION = "[LLM RESPONSE INCOMPLETE] This field was not returned by the model."
 
-        # Check for missing fields
-        missing = [f for f in all_required if f not in data]
-        if missing:
-            logger.error(
-                f"Missing required PRISMA fields for document {doc_id}: "
-                f"{', '.join(missing)} ({len(missing)} fields missing). "
-                f"Got {len(data)} fields: {', '.join(sorted(data.keys())[:10])}{'...' if len(data) > 10 else ''}"
+        # Check for and fill missing fields
+        missing_scores = []
+        missing_explanations = []
+
+        for score_field in required_score_fields:
+            if score_field not in data:
+                data[score_field] = DEFAULT_SCORE
+                missing_scores.append(score_field)
+
+        for explanation_field in required_explanation_fields:
+            if explanation_field not in data:
+                data[explanation_field] = DEFAULT_EXPLANATION
+                missing_explanations.append(explanation_field)
+
+        if 'overall_confidence' not in data:
+            # Low confidence since response was incomplete
+            data['overall_confidence'] = 0.3
+            logger.warning(f"Document {doc_id}: Missing overall_confidence, defaulting to 0.3")
+
+        # Log filled-in fields as WARNING (not hiding the problem!)
+        if missing_scores or missing_explanations:
+            all_missing = missing_scores + missing_explanations
+            logger.warning(
+                f"Document {doc_id}: LLM response incomplete - {len(all_missing)} fields auto-filled with defaults. "
+                f"Missing fields: {', '.join(all_missing[:10])}{'...' if len(all_missing) > 10 else ''}. "
+                f"Assessment will continue with reduced confidence."
             )
-            self._assessment_stats['failed_assessments'] += 1
-            return False
+            self._assessment_stats['incomplete_responses'] = self._assessment_stats.get('incomplete_responses', 0) + 1
 
-        # Validate score field types and ranges
-        type_errors = []
-        range_errors = []
+        # Validate and repair score field types and ranges
+        type_repairs = []
+        range_repairs = []
         for score_field in required_score_fields:
             value = data[score_field]
             # Check if value is numeric
             if not isinstance(value, (int, float)):
-                type_errors.append(
-                    f"{score_field} (expected numeric, got {type(value).__name__})"
-                )
+                # Try to convert, otherwise use default
+                try:
+                    data[score_field] = float(value)
+                    type_repairs.append(f"{score_field}: converted {type(value).__name__} to float")
+                except (ValueError, TypeError):
+                    data[score_field] = DEFAULT_SCORE
+                    type_repairs.append(f"{score_field}: invalid type {type(value).__name__}, using default {DEFAULT_SCORE}")
             else:
-                # Check if score is in valid range (0.0-2.0)
-                if not (0.0 <= float(value) <= 2.0):
-                    range_errors.append(
-                        f"{score_field}={value} (must be between 0.0 and 2.0)"
-                    )
+                # Check if score is in valid range (0.0-2.0), clamp if needed
+                score_value = float(data[score_field])
+                if score_value < 0.0:
+                    data[score_field] = 0.0
+                    range_repairs.append(f"{score_field}={score_value} clamped to 0.0")
+                elif score_value > 2.0:
+                    data[score_field] = 2.0
+                    range_repairs.append(f"{score_field}={score_value} clamped to 2.0")
 
-        # Validate explanation field types
+        # Validate and repair explanation field types
         for explanation_field in required_explanation_fields:
             value = data[explanation_field]
             if not isinstance(value, str):
-                type_errors.append(
-                    f"{explanation_field} (expected str, got {type(value).__name__})"
-                )
+                # Convert to string representation
+                data[explanation_field] = str(value) if value is not None else DEFAULT_EXPLANATION
+                type_repairs.append(f"{explanation_field}: converted {type(value).__name__} to str")
 
-        # Validate overall_confidence
+        # Validate and repair overall_confidence
         confidence = data.get('overall_confidence')
         if not isinstance(confidence, (int, float)):
-            type_errors.append(
-                f"overall_confidence (expected numeric, got {type(confidence).__name__})"
-            )
-        elif not (0.0 <= float(confidence) <= 1.0):
-            range_errors.append(
-                f"overall_confidence={confidence} (must be between 0.0 and 1.0)"
+            try:
+                data['overall_confidence'] = float(confidence)
+            except (ValueError, TypeError):
+                data['overall_confidence'] = 0.3
+                type_repairs.append("overall_confidence: invalid type, using default 0.3")
+        else:
+            conf_value = float(confidence)
+            if conf_value < 0.0:
+                data['overall_confidence'] = 0.0
+                range_repairs.append(f"overall_confidence={conf_value} clamped to 0.0")
+            elif conf_value > 1.0:
+                data['overall_confidence'] = 1.0
+                range_repairs.append(f"overall_confidence={conf_value} clamped to 1.0")
+
+        # Log repairs as warnings
+        if type_repairs:
+            logger.warning(
+                f"Document {doc_id}: Type repairs applied: {', '.join(type_repairs)}"
             )
 
-        # Report validation errors
-        if type_errors:
-            logger.error(
-                f"Type validation errors for document {doc_id}: "
-                f"{', '.join(type_errors)}"
+        if range_repairs:
+            logger.warning(
+                f"Document {doc_id}: Range repairs applied: {', '.join(range_repairs)}"
             )
-            self._assessment_stats['failed_assessments'] += 1
-            return False
 
-        if range_errors:
-            logger.error(
-                f"Value range validation errors for document {doc_id}: "
-                f"{', '.join(range_errors)}"
-            )
-            self._assessment_stats['failed_assessments'] += 1
-            return False
-
+        # Always return True - we've repaired the data, not hidden the error
+        # The warnings above ensure issues are logged and visible
         return True
 
     def _extract_scores(self, data: Dict[str, Any]) -> List[float]:

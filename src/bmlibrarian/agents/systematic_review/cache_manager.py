@@ -21,7 +21,9 @@ import json
 import logging
 import time
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
+
+from bmlibrarian.evaluations.store import DateTimeEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +241,7 @@ class ResultsCacheManager:
                             assessed_at = NOW(),
                             execution_time_ms = EXCLUDED.execution_time_ms
                         """,
-                        (document_id, version_id, json.dumps(result), execution_time_ms)
+                        (document_id, version_id, json.dumps(result, cls=DateTimeEncoder), execution_time_ms)
                     )
                     conn.commit()
 
@@ -322,7 +324,7 @@ class ResultsCacheManager:
                             result.get('study_type'),
                             result.get('sample_size'),
                             result.get('extraction_confidence'),
-                            json.dumps(result),
+                            json.dumps(result, cls=DateTimeEncoder),
                             execution_time_ms
                         )
                     )
@@ -399,7 +401,7 @@ class ResultsCacheManager:
                             result.get('is_suitable', False),
                             result.get('overall_score'),
                             result.get('reporting_completeness'),
-                            json.dumps(result),
+                            json.dumps(result, cls=DateTimeEncoder),
                             execution_time_ms
                         )
                     )
@@ -484,7 +486,7 @@ class ResultsCacheManager:
                             result.get('confidence'),
                             result.get('rationale'),
                             result.get('study_type'),
-                            json.dumps(result),
+                            json.dumps(result, cls=DateTimeEncoder),
                             execution_time_ms
                         )
                     )
@@ -586,7 +588,7 @@ class ResultsCacheManager:
                         """,
                         (
                             document_id, version_id, paper_weight_assessment_id,
-                            composite_score, json.dumps(result), execution_time_ms
+                            composite_score, json.dumps(result, cls=DateTimeEncoder), execution_time_ms
                         )
                     )
                     conn.commit()
