@@ -668,8 +668,9 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                         relevance_rationale=eval_record.reasoning or "",
                         inclusion_decision=InclusionDecision(
                             status=InclusionStatus.EXCLUDED,
+                            stage=ExclusionStage.RELEVANCE_SCORING,
+                            reasons=["Below relevance threshold"],
                             rationale="Below relevance threshold",
-                            exclusion_stage=ExclusionStage.RELEVANCE_SCORING,
                         ),
                     )
                     below_threshold.append(scored_paper)

@@ -232,6 +232,7 @@ class ReviewWorker(QThread):
 
         # Parse event type to estimate progress
         progress_map = {
+            "checkpoint_restored": 10,
             "execution_started": 15,
             "query_started": 20,
             "query_completed": 30,
@@ -284,7 +285,15 @@ class ReviewWorker(QThread):
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Map events to readable activity entries
-        if event == "execution_started":
+        # Handle restored events (from checkpoint resume) with special formatting
+        if data.startswith("[RESTORED]"):
+            # Format restored events with a distinctive style
+            restored_data = data.replace("[RESTORED] ", "")
+            return f"**[{timestamp}]** 🔄 _{restored_data}_ (from checkpoint)\n"
+
+        if event == "checkpoint_restored":
+            return f"\n**[{timestamp}]** 📂 **Checkpoint Restored**\n{data}\n\n---\n"
+        elif event == "execution_started":
             return f"**[{timestamp}]** Starting search execution...\n"
         elif event == "query_started":
             return f"**[{timestamp}]** Executing query: `{data[:100]}{'...' if len(data) > 100 else ''}`\n"

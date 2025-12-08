@@ -180,6 +180,9 @@ class CheckpointResumeMixin:
             }
         )
 
+        # Emit progress callbacks to show restored state to UI
+        self._emit_restored_progress(checkpoint_type, checkpoint_data)
+
         # Extract output directory for checkpoint saving during resume
         output_dir: Optional[str] = None
         if output_path:
@@ -228,6 +231,99 @@ class CheckpointResumeMixin:
             logger.error(error_msg, exc_info=True)
             self.documenter.end_review()
             raise SystematicReviewError(error_msg) from e
+
+    def _emit_restored_progress(
+        self,
+        checkpoint_type: str,
+        checkpoint_data: Dict[str, Any],
+    ) -> None:
+        """
+        Emit progress callbacks to show the restored state from checkpoint.
+
+        This displays the progress that was completed before the checkpoint
+        was saved, giving the user visibility into the full review progress.
+
+        Args:
+            checkpoint_type: Type of checkpoint being resumed from.
+            checkpoint_data: The loaded checkpoint data.
+        """
+        if not self.callback:
+            return
+
+        # Get counts from restored state
+        total_papers = len(self._all_papers) + len(self._rejected_initial_filter)
+        rejected_initial = len(self._rejected_initial_filter)
+        passed_initial = len(self._all_papers)
+
+        # Get scored/assessed counts from evaluation run
+        scored_count = 0
+        assessed_count = 0
+        if self._evaluation_run:
+            scored_papers, assessed_papers = self.get_scored_and_assessed_papers()
+            scored_count = len(scored_papers)
+            assessed_count = len(assessed_papers)
+
+        # Emit summary of restored progress
+        self.callback(
+            "checkpoint_restored",
+            f"Resumed from {checkpoint_type} | {total_papers} papers found"
+        )
+
+        # Emit details about completed phases based on checkpoint type
+        if checkpoint_type in [
+            CHECKPOINT_INITIAL_RESULTS,
+            CHECKPOINT_SCORING_COMPLETE,
+            CHECKPOINT_QUALITY_ASSESSMENT,
+        ]:
+            # Search was completed
+            self.callback(
+                "execution_completed",
+                f"[RESTORED] Search completed: {total_papers} papers found"
+            )
+
+        if checkpoint_type in [
+            CHECKPOINT_SCORING_COMPLETE,
+            CHECKPOINT_QUALITY_ASSESSMENT,
+        ]:
+            # Initial filtering was completed
+            self.callback(
+                "filtering_complete",
+                f"[RESTORED] Initial filter: {passed_initial} passed, {rejected_initial} rejected"
+            )
+
+        if checkpoint_type == CHECKPOINT_SCORING_COMPLETE and scored_count > 0:
+            # Scoring was completed
+            self.callback(
+                "scoring_complete",
+                f"[RESTORED] Relevance scoring: {scored_count} papers scored"
+            )
+            # Also emit step progress for the scoring phase
+            self.callback(
+                "scoring_progress",
+                f"[RESTORED] {scored_count}/{passed_initial}"
+            )
+
+        if checkpoint_type == CHECKPOINT_QUALITY_ASSESSMENT and assessed_count > 0:
+            # Both scoring and quality assessment were completed
+            self.callback(
+                "scoring_complete",
+                f"[RESTORED] Relevance scoring: {scored_count} papers scored"
+            )
+            self.callback(
+                "quality_complete",
+                f"[RESTORED] Quality assessment: {assessed_count} papers assessed"
+            )
+            # Also emit step progress
+            self.callback(
+                "quality_progress",
+                f"[RESTORED] {assessed_count}/{scored_count}"
+            )
+
+        # Log what we're about to continue with
+        logger.info(
+            f"Restored progress: {total_papers} found, {passed_initial} passed initial filter, "
+            f"{scored_count} scored, {assessed_count} assessed"
+        )
 
     def _restore_state_from_checkpoint(
         self,
