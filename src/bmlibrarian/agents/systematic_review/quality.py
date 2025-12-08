@@ -732,10 +732,10 @@ class QualityAssessor:
             start_time = time.time()
             agent = self._get_weight_agent()
 
-            # Use agent's internal caching as well for performance
+            # Use agent's internal caching for performance (force_reassess=False)
             result = agent.assess_paper(
                 document_id=document_id,
-                use_cache=True,
+                force_reassess=False,
             )
 
             result_dict = result.to_dict()
