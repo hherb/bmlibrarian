@@ -856,8 +856,9 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             self.documenter.set_phase("search_execution")
 
             # Choose search strategy based on configuration
-            # Track total results before dedup for checkpoint state
+            # Track common variables for both search modes
             total_before_dedup = 0
+            paper_sources: Dict[int, List[str]] = {}
 
             if self.config.use_phased_search:
                 # Phased search: semantic/HyDE first, then keyword
@@ -876,6 +877,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     # Store phased results for query feedback
                     self._phased_results = phased_results
                     self._semantic_baseline_ids = phased_results.phase1_document_ids
+                    paper_sources = phased_results.paper_sources
 
                     # Calculate total before dedup from executed queries
                     total_before_dedup = sum(
@@ -906,6 +908,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     self._phased_results = None
                     self._semantic_baseline_ids = set()
                     total_before_dedup = search_results.total_before_dedup
+                    paper_sources = search_results.paper_sources
 
                     timer.set_output(
                         f"Found {search_results.count} unique papers "
@@ -982,7 +985,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 scoring_result = scorer.score_batch(
                     papers=passed_filter,
                     evaluate_inclusion=True,
-                    paper_sources=search_results.paper_sources,
+                    paper_sources=paper_sources,
                 )
 
                 # Save scored papers to database
