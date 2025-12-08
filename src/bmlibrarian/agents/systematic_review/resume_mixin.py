@@ -610,11 +610,10 @@ class CheckpointResumeMixin:
             input_summary=f"Assessing quality of {len(relevant_papers)} papers (resumed from checkpoint)",
             decision_rationale="Continuing from scoring_complete checkpoint",
         ) as timer:
-            quality_result = quality_assessor.assess_batch(relevant_papers)
-
-            # Save assessed papers to database
-            for ap in quality_result.assessed_papers:
-                self._save_assessed_paper(ap)
+            quality_result = quality_assessor.assess_batch(
+                relevant_papers,
+                save_callback=self._save_assessed_paper,  # Save immediately after each paper
+            )
 
             timer.set_output(
                 f"Assessed {len(quality_result.assessed_papers)} papers, "
@@ -1096,12 +1095,9 @@ class CheckpointResumeMixin:
                 papers=passed_filter,
                 evaluate_inclusion=True,
                 paper_sources=paper_sources,
+                save_callback=self._save_scored_paper,  # Save immediately after each paper
             )
             scored_papers = scoring_result.scored_papers
-
-            # Save scored papers to database
-            for sp in scored_papers:
-                self._save_scored_paper(sp)
 
             timer.set_output(
                 f"Scored {len(scoring_result.scored_papers)} papers, "
@@ -1153,11 +1149,10 @@ class CheckpointResumeMixin:
             input_summary=f"Assessing quality of {len(relevant_papers)} papers",
             decision_rationale="Evaluating study quality for final ranking",
         ) as timer:
-            assessment_result = quality_assessor.assess_batch(relevant_papers)
-
-            # Save assessed papers to database
-            for ap in assessment_result.assessed_papers:
-                self._save_assessed_paper(ap)
+            assessment_result = quality_assessor.assess_batch(
+                relevant_papers,
+                save_callback=self._save_assessed_paper,  # Save immediately after each paper
+            )
 
             timer.set_output(
                 f"Assessed {len(assessment_result.assessed_papers)} papers, "
