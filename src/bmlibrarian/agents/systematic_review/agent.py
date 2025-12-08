@@ -1118,27 +1118,53 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             # =================================================================
             self.documenter.set_phase("quality_assessment")
 
+            # Check for already-assessed documents to avoid redundant LLM calls
+            already_assessed_ids = set(
+                self._evaluation_store.get_evaluated_document_ids(
+                    run_id=self._evaluation_run.run_id,
+                    evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
+                )
+            )
+            papers_to_assess = [sp for sp in above_threshold if sp.paper.document_id not in already_assessed_ids]
+            cached_assessment_count = len(above_threshold) - len(papers_to_assess)
+
+            if cached_assessment_count > 0:
+                logger.info(
+                    f"Found {cached_assessment_count} already-assessed documents, "
+                    f"assessing {len(papers_to_assess)} new documents"
+                )
+
             with self.documenter.log_step_with_timer(
                 action=ACTION_ASSESS_QUALITY,
                 tool="QualityAssessor",
-                input_summary=f"Assessing quality of {len(above_threshold)} papers",
+                input_summary=f"Assessing quality of {len(papers_to_assess)} papers ({cached_assessment_count} cached)",
                 decision_rationale="Evaluating study quality and methodology",
             ) as timer:
-                quality_result = quality_assessor.assess_batch(above_threshold)
+                if papers_to_assess:
+                    quality_result = quality_assessor.assess_batch(papers_to_assess)
 
-                # Save assessed papers to database
-                for ap in quality_result.assessed_papers:
-                    self._save_assessed_paper(ap)
+                    # Save assessed papers to database immediately
+                    for ap in quality_result.assessed_papers:
+                        self._save_assessed_paper(ap)
 
-                timer.set_output(
-                    f"Assessed {len(quality_result.assessed_papers)} papers, "
-                    f"failed: {len(quality_result.failed_papers)}"
-                )
-                timer.add_metrics({
-                    "papers_assessed": len(quality_result.assessed_papers),
-                    "failed_assessment": len(quality_result.failed_papers),
-                    **quality_result.assessment_statistics,
-                })
+                    timer.set_output(
+                        f"Assessed {len(quality_result.assessed_papers)} papers, "
+                        f"failed: {len(quality_result.failed_papers)} "
+                        f"({cached_assessment_count} cached)"
+                    )
+                    timer.add_metrics({
+                        "papers_assessed": len(quality_result.assessed_papers),
+                        "papers_cached": cached_assessment_count,
+                        "failed_assessment": len(quality_result.failed_papers),
+                        **quality_result.assessment_statistics,
+                    })
+                else:
+                    timer.set_output(f"All {cached_assessment_count} papers already assessed (cached)")
+                    timer.add_metrics({
+                        "papers_assessed": 0,
+                        "papers_cached": cached_assessment_count,
+                        "failed_assessment": 0,
+                    })
 
             # Checkpoint: Review quality assessment
             assessed_papers = self.get_assessed_papers()
