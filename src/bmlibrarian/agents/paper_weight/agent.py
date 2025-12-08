@@ -573,6 +573,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
             # Step 1: Ensure embeddings exist if document has full_text
             # This enables semantic search for LLM-first extraction
+            # Full text documents MUST be properly chunked and embedded - no fallback to synthetic chunks
             if use_llm_extraction:
                 has_full_text = bool(document.get('full_text'))
                 if has_full_text:
@@ -583,7 +584,10 @@ class PaperWeightAssessmentAgent(BaseAgent):
                     if embeddings_ready:
                         logger.info(f"Document {document_id} embeddings ready for semantic search")
                     else:
-                        logger.info(f"Document {document_id} has full_text but embedding creation failed - will use synthetic chunks")
+                        raise ValueError(
+                            f"Document {document_id} has full_text but embedding creation failed. "
+                            "Full text documents must be properly chunked and embedded before assessment."
+                        )
 
             # Get config values
             hierarchy_config = self.config.get('study_type_hierarchy')

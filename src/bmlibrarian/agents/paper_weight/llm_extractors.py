@@ -191,22 +191,29 @@ def extract_study_type_llm(
         logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
         chunks = get_all_document_chunks(document_id, limit=5)
 
-    # If still no chunks, try using document full_text directly
+    # If still no chunks, try using abstract only (full_text should already be chunked)
+    # Synthetic chunks are ONLY allowed for abstract-only documents
     if not chunks and document:
         full_text = document.get('full_text') or ''
         abstract = document.get('abstract') or ''
-        text_to_use = full_text if len(full_text) > len(abstract) else abstract
 
-        if text_to_use:
-            # Create synthetic passages from beginning of text (usually contains methods)
+        # If document has full_text, it should have been chunked - don't use synthetic
+        if full_text and full_text.strip():
+            logger.warning(
+                f"Document {document_id} has full_text but no chunks found. "
+                "Full text documents should be chunked before assessment."
+            )
+            # Don't create synthetic chunks for full_text - assessment should fail upstream
+        elif abstract and abstract.strip():
+            # Abstract-only documents can use synthetic chunks
             chunk_size = 2000
             synthetic_chunks = []
-            for i in range(0, min(len(text_to_use), 10000), chunk_size):
-                chunk_text = text_to_use[i:i + chunk_size]
+            for i in range(0, min(len(abstract), 10000), chunk_size):
+                chunk_text = abstract[i:i + chunk_size]
                 if chunk_text.strip():
                     synthetic_chunks.append({'chunk_text': chunk_text})
             chunks = synthetic_chunks
-            logger.info(f"Using {len(chunks)} synthetic chunks for study type extraction")
+            logger.info(f"Using {len(chunks)} synthetic chunks from abstract for study type extraction")
 
     # If still no text available, return unknown
     if not chunks:
@@ -363,21 +370,29 @@ def extract_sample_size_llm(
         logger.info(f"No semantic search results for document {document_id}, falling back to positional chunks")
         chunks = get_all_document_chunks(document_id, limit=5)
 
-    # If still no chunks, try using document full_text directly
+    # If still no chunks, try using abstract only (full_text should already be chunked)
+    # Synthetic chunks are ONLY allowed for abstract-only documents
     if not chunks and document:
         full_text = document.get('full_text') or ''
         abstract = document.get('abstract') or ''
-        text_to_use = full_text if len(full_text) > len(abstract) else abstract
 
-        if text_to_use:
+        # If document has full_text, it should have been chunked - don't use synthetic
+        if full_text and full_text.strip():
+            logger.warning(
+                f"Document {document_id} has full_text but no chunks found. "
+                "Full text documents should be chunked before assessment."
+            )
+            # Don't create synthetic chunks for full_text - assessment should fail upstream
+        elif abstract and abstract.strip():
+            # Abstract-only documents can use synthetic chunks
             chunk_size = 2000
             synthetic_chunks = []
-            for i in range(0, min(len(text_to_use), 10000), chunk_size):
-                chunk_text = text_to_use[i:i + chunk_size]
+            for i in range(0, min(len(abstract), 10000), chunk_size):
+                chunk_text = abstract[i:i + chunk_size]
                 if chunk_text.strip():
                     synthetic_chunks.append({'chunk_text': chunk_text})
             chunks = synthetic_chunks
-            logger.info(f"Using {len(chunks)} synthetic chunks for sample size extraction")
+            logger.info(f"Using {len(chunks)} synthetic chunks from abstract for sample size extraction")
 
     # If still no text available, return zero score
     if not chunks:
