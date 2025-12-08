@@ -50,6 +50,18 @@ DEFAULT_MAX_RESULTS_PER_QUERY = 100
 DEFAULT_RELEVANCE_THRESHOLD = 2.5
 DEFAULT_QUALITY_THRESHOLD = 4.0
 
+# Default inclusion/exclusion criteria for new reviews
+DEFAULT_INCLUSION_CRITERIA = [
+    "Human studies",
+    "RCTs",
+    "Cohort studies",
+    "Systematic reviews",
+]
+DEFAULT_EXCLUSION_CRITERIA = [
+    "Animal studies",
+    "Case reports",
+]
+
 # Batch processing defaults
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_MAX_RETRIES = 3
@@ -460,6 +472,8 @@ DEFAULT_SYSTEMATIC_REVIEW_CONFIG: Dict[str, Any] = {
     "run_prisma_assessment": True,
     "use_results_cache": True,
     "force_recompute": False,
+    "default_inclusion_criteria": DEFAULT_INCLUSION_CRITERIA,
+    "default_exclusion_criteria": DEFAULT_EXCLUSION_CRITERIA,
     "scoring_weights": {
         "relevance": 0.30,
         "study_quality": 0.25,

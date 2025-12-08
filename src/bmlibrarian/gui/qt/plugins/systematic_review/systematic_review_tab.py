@@ -47,7 +47,13 @@ from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import (
 )
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scale_px
 from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
-from bmlibrarian.agents.systematic_review.config import DEFAULT_OUTPUT_DIR
+from bmlibrarian.agents.systematic_review.config import (
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_INCLUSION_CRITERIA,
+    DEFAULT_EXCLUSION_CRITERIA,
+    DEFAULT_RELEVANCE_THRESHOLD,
+    DEFAULT_QUALITY_THRESHOLD,
+)
 from bmlibrarian.database import get_db_manager, DatabaseManager
 from .report_preview_widget import ReportPreviewWidget
 
@@ -491,25 +497,17 @@ class SystematicReviewTabWidget(QWidget):
 
         layout.addLayout(form_layout)
 
-        # Inclusion criteria
+        # Inclusion criteria - pre-populated with defaults
         layout.addWidget(QLabel("Inclusion Criteria (one per line):"))
         self.inclusion_edit = QPlainTextEdit()
-        self.inclusion_edit.setPlaceholderText(
-            "Human studies\n"
-            "Randomized controlled trials\n"
-            "Published after 2015"
-        )
+        self.inclusion_edit.setPlainText("\n".join(DEFAULT_INCLUSION_CRITERIA))
         self.inclusion_edit.setMaximumHeight(scale_px(80))
         layout.addWidget(self.inclusion_edit)
 
-        # Exclusion criteria
+        # Exclusion criteria - pre-populated with defaults
         layout.addWidget(QLabel("Exclusion Criteria (one per line):"))
         self.exclusion_edit = QPlainTextEdit()
-        self.exclusion_edit.setPlaceholderText(
-            "Animal studies\n"
-            "Case reports\n"
-            "Non-English language"
-        )
+        self.exclusion_edit.setPlainText("\n".join(DEFAULT_EXCLUSION_CRITERIA))
         self.exclusion_edit.setMaximumHeight(scale_px(80))
         layout.addWidget(self.exclusion_edit)
 
@@ -595,23 +593,23 @@ class SystematicReviewTabWidget(QWidget):
         group = QGroupBox("Parameters (Adjustable Before Resume)")
         layout = QFormLayout(group)
 
-        # Relevance threshold
+        # Relevance threshold (1-5 scale as per agent scoring)
         self.relevance_threshold_spin = QDoubleSpinBox()
-        self.relevance_threshold_spin.setRange(0.0, 10.0)
+        self.relevance_threshold_spin.setRange(1.0, 5.0)
         self.relevance_threshold_spin.setSingleStep(0.5)
-        self.relevance_threshold_spin.setValue(3.0)
+        self.relevance_threshold_spin.setValue(DEFAULT_RELEVANCE_THRESHOLD)
         self.relevance_threshold_spin.setToolTip(
-            "Minimum relevance score for papers to be included"
+            "Minimum relevance score (1-5) for papers to be included"
         )
         layout.addRow("Relevance Threshold:", self.relevance_threshold_spin)
 
-        # Quality threshold
+        # Quality threshold (0-10 scale)
         self.quality_threshold_spin = QDoubleSpinBox()
         self.quality_threshold_spin.setRange(0.0, 10.0)
         self.quality_threshold_spin.setSingleStep(0.5)
-        self.quality_threshold_spin.setValue(5.0)
+        self.quality_threshold_spin.setValue(DEFAULT_QUALITY_THRESHOLD)
         self.quality_threshold_spin.setToolTip(
-            "Minimum quality score for final inclusion"
+            "Minimum quality score (0-10) for final inclusion"
         )
         layout.addRow("Quality Threshold:", self.quality_threshold_spin)
 
