@@ -1295,7 +1295,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     temperature=self.config.synthesis_temperature,
                     citation_min_relevance=self.config.citation_min_relevance,
                     max_citations_per_paper=self.config.max_citations_per_paper,
-                    progress_callback=self.callback,
+                    progress_callback=self._make_synthesis_callback(),
                 )
 
                 with self.documenter.log_step_with_timer(

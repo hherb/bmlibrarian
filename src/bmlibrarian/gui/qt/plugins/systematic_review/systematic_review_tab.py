@@ -252,6 +252,7 @@ class ReviewWorker(QThread):
             "quality_progress": 80,
             "quality_complete": 85,
             "quality_assessment_completed": 85,
+            "synthesis_progress": 87,
             "reporting_started": 90,
             "reporting_complete": 95,
         }
@@ -327,6 +328,12 @@ class ReviewWorker(QThread):
             return f"**[{timestamp}]** {data}\n"
         elif event == "quality_complete" or event == "quality_assessment_completed":
             return f"**[{timestamp}]** ✓ Quality assessment complete: {data}\n\n---\n"
+        elif event == "synthesis_progress":
+            # Format: "X/Y | message" - extract the meaningful part
+            if " | " in data:
+                _, info = data.split(" | ", 1)
+                return f"**[{timestamp}]** 📝 {info}\n"
+            return f"**[{timestamp}]** 📝 {data}\n"
         elif event == "reporting_started":
             return f"**[{timestamp}]** Generating report...\n"
         elif event == "reporting_complete":

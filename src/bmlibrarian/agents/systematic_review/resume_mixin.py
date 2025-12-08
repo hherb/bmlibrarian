@@ -97,6 +97,25 @@ class CheckpointResumeMixin:
         - get_below_threshold_papers(): Get below threshold papers
     """
 
+    def _make_synthesis_callback(self) -> Optional[Callable[[str, int, int], None]]:
+        """
+        Create a callback wrapper for EvidenceSynthesizer.
+
+        The synthesizer expects callback(message, current, total) but the agent
+        callback is callback(event, data). This wrapper converts between the two.
+
+        Returns:
+            Wrapped callback or None if no callback is set.
+        """
+        if not self.callback:
+            return None
+
+        def synthesis_callback(message: str, current: int, total: int) -> None:
+            # Convert to agent callback format: (event, data)
+            self.callback("synthesis_progress", f"{current}/{total} | {message}")
+
+        return synthesis_callback
+
     def run_review_from_checkpoint(
         self,
         checkpoint_path: str,
@@ -821,7 +840,7 @@ class CheckpointResumeMixin:
                 temperature=self.config.synthesis_temperature,
                 citation_min_relevance=self.config.citation_min_relevance,
                 max_citations_per_paper=self.config.max_citations_per_paper,
-                progress_callback=self.callback,
+                progress_callback=self._make_synthesis_callback(),
             )
 
             with self.documenter.log_step_with_timer(
@@ -1016,7 +1035,7 @@ class CheckpointResumeMixin:
                 temperature=self.config.synthesis_temperature,
                 citation_min_relevance=self.config.citation_min_relevance,
                 max_citations_per_paper=self.config.max_citations_per_paper,
-                progress_callback=self.callback,
+                progress_callback=self._make_synthesis_callback(),
             )
 
             with self.documenter.log_step_with_timer(
@@ -1360,7 +1379,7 @@ class CheckpointResumeMixin:
                 temperature=self.config.synthesis_temperature,
                 citation_min_relevance=self.config.citation_min_relevance,
                 max_citations_per_paper=self.config.max_citations_per_paper,
-                progress_callback=self.callback,
+                progress_callback=self._make_synthesis_callback(),
             )
 
             with self.documenter.log_step_with_timer(
