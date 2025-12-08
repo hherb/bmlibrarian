@@ -716,12 +716,20 @@ class EvaluationStore:
         )
 
         query = """
-            SELECT evaluations.get_unevaluated_documents(%s, %s, %s)
+            SELECT evaluations.get_unevaluated_documents(
+                %s::BIGINT,
+                %s::BIGINT[],
+                %s::VARCHAR
+            )
         """
 
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (run_id, document_ids, eval_type_str))
+                cur.execute(query, (
+                    int(run_id),
+                    [int(doc_id) for doc_id in document_ids],
+                    eval_type_str
+                ))
                 return [row[0] for row in cur.fetchall()]
 
     def get_evaluations_for_run(
@@ -893,7 +901,13 @@ class EvaluationStore:
             Checkpoint ID
         """
         query = """
-            SELECT evaluations.save_checkpoint(%s, %s, %s, %s, %s)
+            SELECT evaluations.save_checkpoint(
+                %s::BIGINT,
+                %s::VARCHAR,
+                %s::JSONB,
+                %s::VARCHAR,
+                %s::TEXT
+            )
         """
 
         cp_type_str = (
@@ -910,7 +924,7 @@ class EvaluationStore:
         with self.db.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, (
-                    run_id,
+                    int(run_id),
                     cp_type_str,
                     json.dumps(checkpoint_data or {}),
                     decision_str,
