@@ -101,6 +101,9 @@ DEFAULT_STUDY_TYPE_HIERARCHY = {
     'cohort_retrospective': 5.0,
     'case_control': 4.0,
     'cross_sectional': 3.0,
+    'scoping_review': 3.0,  # Scoping reviews (broader than systematic, less rigorous)
+    'narrative_review': 2.5,  # Non-systematic review articles (low evidence but valuable for background)
+    'expert_opinion': 2.0,  # Expert opinion, editorials, commentaries
     'case_series': 2.0,
     'case_report': 1.0
 }

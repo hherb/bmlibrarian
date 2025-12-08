@@ -76,6 +76,9 @@ VALID STUDY TYPES (in order of evidence strength):
 - cohort_retrospective: Paper IS a retrospective cohort study (looked back at records)
 - case_control: Paper IS a case-control study (compared cases to controls)
 - cross_sectional: Paper IS a cross-sectional study (snapshot in time)
+- scoping_review: Paper IS a scoping review (maps literature on a topic, less rigorous than systematic review)
+- narrative_review: Paper IS a narrative/traditional review article (summarizes literature without systematic methodology)
+- expert_opinion: Paper IS an expert opinion, editorial, commentary, or perspective piece
 - case_series: Paper IS a case series (multiple case reports)
 - case_report: Paper IS a single case report
 - unknown: Cannot determine study type from available text
@@ -88,11 +91,16 @@ KEY PHRASES TO LOOK FOR:
 - "meta-analysis" with pooled data → meta_analysis
 - "prospective cohort" → cohort_prospective
 - "retrospective cohort" or "retrospective analysis" → cohort_retrospective
+- "scoping review" → scoping_review
+- "narrative review" or "literature review" or "review article" (without systematic methods) → narrative_review
+- "editorial", "commentary", "perspective", "expert opinion" → expert_opinion
 
 IMPORTANT DISTINCTIONS:
 - A review article discussing RCTs is NOT an RCT
 - A paper citing systematic reviews is NOT a systematic review
 - Look for the paper's OWN methodology, not what it discusses
+- A narrative/traditional review summarizes literature WITHOUT systematic search methodology
+- A scoping review maps a broader topic but lacks the rigor of a systematic review
 
 Respond in JSON format:
 {{
