@@ -32,7 +32,19 @@ from .data_models import (
     InclusionStatus,
     ExclusionStage,
 )
-from .documenter import Documenter
+from .documenter import (
+    Documenter,
+    CHECKPOINT_SEARCH_STRATEGY,
+    CHECKPOINT_INITIAL_RESULTS,
+    CHECKPOINT_SCORING_COMPLETE,
+    CHECKPOINT_QUALITY_ASSESSMENT,
+    ACTION_EXECUTE_SEARCH,
+    ACTION_INITIAL_FILTER,
+    ACTION_SCORE_RELEVANCE,
+    ACTION_ASSESS_QUALITY,
+    ACTION_CALCULATE_COMPOSITE,
+    ACTION_GENERATE_REPORT,
+)
 from .exceptions import SystematicReviewError
 
 if TYPE_CHECKING:
@@ -43,26 +55,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Import constants from main module (will be set by agent)
+# Agent version - should match agent.py
 AGENT_VERSION = "1.0.0"
-
-# Checkpoint types
-CHECKPOINT_SEARCH_STRATEGY = "search_strategy"
-CHECKPOINT_INITIAL_RESULTS = "initial_results"
-CHECKPOINT_SCORING_COMPLETE = "scoring_complete"
-CHECKPOINT_QUALITY_ASSESSMENT = "quality_assessment"
 
 # Checkpoint display constants
 CHECKPOINT_TITLE_TRUNCATE_LENGTH = 80
 CHECKPOINT_SAMPLE_TITLES_COUNT = 10
-
-# Action names for audit trail
-ACTION_EXECUTE_SEARCH = "execute_search"
-ACTION_INITIAL_FILTER = "initial_filter"
-ACTION_SCORE_RELEVANCE = "score_relevance"
-ACTION_ASSESS_QUALITY = "assess_quality"
-ACTION_CALCULATE_COMPOSITE = "calculate_composite"
-ACTION_GENERATE_REPORT = "generate_report"
 
 
 class CheckpointResumeMixin:
