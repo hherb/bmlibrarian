@@ -464,8 +464,11 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 relevance_rationale=eval_record.reasoning or "",
                 inclusion_decision=InclusionDecision(
                     status=inclusion_status,
-                    rationale=inclusion_rationale,
+                    stage=ExclusionStage.RELEVANCE_SCORING,
+                    reasons=["Restored from database"],
+                    rationale=inclusion_rationale or "Restored from previous evaluation",
                 ),
+                processing_time_ms=eval_record.processing_time_ms,
             )
             scored_papers.append(scored_paper)
 
@@ -591,8 +594,11 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 relevance_rationale=eval_record.reasoning or "",
                 inclusion_decision=InclusionDecision(
                     status=inclusion_status,
-                    rationale=inclusion_rationale,
+                    stage=ExclusionStage.RELEVANCE_SCORING,
+                    reasons=["Restored from database"],
+                    rationale=inclusion_rationale or "Restored from previous evaluation",
                 ),
+                processing_time_ms=eval_record.processing_time_ms,
             )
             scored_papers.append(scored_paper)
             scored_map[paper.document_id] = scored_paper
