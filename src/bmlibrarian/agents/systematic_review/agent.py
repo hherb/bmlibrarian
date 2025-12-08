@@ -449,7 +449,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 logger.warning(f"Paper not found for document_id={eval_record.document_id}")
                 continue
 
-            inclusion_status = InclusionStatus.PENDING
+            inclusion_status = InclusionStatus.UNCERTAIN  # Default when no decision recorded
             inclusion_rationale = None
             if eval_record.evaluation_data.get("inclusion_decision"):
                 try:
@@ -576,7 +576,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 logger.warning(f"Paper not found for document_id={eval_record.document_id}")
                 continue
 
-            inclusion_status = InclusionStatus.PENDING
+            inclusion_status = InclusionStatus.UNCERTAIN  # Default when no decision recorded
             inclusion_rationale = None
             if eval_record.evaluation_data.get("inclusion_decision"):
                 try:
