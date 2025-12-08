@@ -192,7 +192,18 @@ def extract_study_type_llm(
         chunks = get_all_document_chunks(document_id, limit=5)
 
     # If still no chunks, try using abstract only (full_text should already be chunked)
-    # Synthetic chunks are ONLY allowed for abstract-only documents
+    #
+    # IMPORTANT: "Synthetic chunks" are NOT embedded - they bypass semantic search entirely.
+    # They are simply raw text segments passed directly to the LLM for extraction.
+    #
+    # This is acceptable for abstract-only documents because:
+    # - Abstracts are short (typically < 2000 chars), so no semantic search is needed
+    # - The entire abstract text is sent to the LLM for analysis
+    # - The LLM extracts study type/sample size directly from the raw text
+    #
+    # Full-text documents MUST have proper pre-computed chunks with embeddings stored
+    # in semantic.chunks table to enable semantic search for relevant passages.
+    #
     if not chunks and document:
         full_text = document.get('full_text') or ''
         abstract = document.get('abstract') or ''
@@ -205,7 +216,8 @@ def extract_study_type_llm(
             )
             # Don't create synthetic chunks for full_text - assessment should fail upstream
         elif abstract and abstract.strip():
-            # Abstract-only documents can use synthetic chunks
+            # Abstract-only documents: pass raw abstract text directly to LLM
+            # No embedding/semantic search needed - LLM reads the full abstract
             chunk_size = 2000
             synthetic_chunks = []
             for i in range(0, min(len(abstract), 10000), chunk_size):
@@ -371,7 +383,11 @@ def extract_sample_size_llm(
         chunks = get_all_document_chunks(document_id, limit=5)
 
     # If still no chunks, try using abstract only (full_text should already be chunked)
-    # Synthetic chunks are ONLY allowed for abstract-only documents
+    #
+    # IMPORTANT: "Synthetic chunks" are NOT embedded - they bypass semantic search entirely.
+    # They are simply raw text segments passed directly to the LLM for extraction.
+    # See extract_study_type_llm() for full explanation.
+    #
     if not chunks and document:
         full_text = document.get('full_text') or ''
         abstract = document.get('abstract') or ''
@@ -384,7 +400,8 @@ def extract_sample_size_llm(
             )
             # Don't create synthetic chunks for full_text - assessment should fail upstream
         elif abstract and abstract.strip():
-            # Abstract-only documents can use synthetic chunks
+            # Abstract-only documents: pass raw abstract text directly to LLM
+            # No embedding/semantic search needed - LLM reads the full abstract
             chunk_size = 2000
             synthetic_chunks = []
             for i in range(0, min(len(abstract), 10000), chunk_size):
