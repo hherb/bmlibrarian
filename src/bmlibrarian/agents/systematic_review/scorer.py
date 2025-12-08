@@ -402,9 +402,11 @@ class RelevanceScorer:
                         save_callback(scored_paper)
                     except Exception as save_error:
                         logger.error(
-                            f"Failed to save scored paper {paper.document_id}: {save_error}"
+                            f"Failed to save scored paper {paper.document_id}: {save_error}",
+                            exc_info=True
                         )
-                        # Continue - the paper was scored successfully, just save failed
+                        # Re-raise so caller knows save failed - data integrity is critical
+                        raise
 
                 scored_papers.append(scored_paper)
                 total_score += scored_paper.relevance_score

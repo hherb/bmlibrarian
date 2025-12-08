@@ -437,9 +437,11 @@ class QualityAssessor:
                         save_callback(assessed_paper)
                     except Exception as save_error:
                         logger.error(
-                            f"Failed to save assessed paper {paper.paper.document_id}: {save_error}"
+                            f"Failed to save assessed paper {paper.paper.document_id}: {save_error}",
+                            exc_info=True
                         )
-                        # Continue - the paper was assessed successfully, just save failed
+                        # Re-raise so caller knows save failed - data integrity is critical
+                        raise
 
                 assessed_papers.append(assessed_paper)
 
