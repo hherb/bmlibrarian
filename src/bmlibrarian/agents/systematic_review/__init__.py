@@ -98,9 +98,10 @@ Example:
         print(f"  - {paper['title']} (score: {paper['scores']['composite_score']})")
 """
 
-from .agent import (
-    SystematicReviewAgent,
-    # Exceptions
+from .agent import SystematicReviewAgent
+
+# Exceptions
+from .exceptions import (
     SystematicReviewError,
     SearchPlanningError,
     SearchExecutionError,
@@ -109,7 +110,12 @@ from .agent import (
     ReportGenerationError,
     LLMConnectionError,
     DatabaseConnectionError,
+    CheckpointError,
+    ResumeError,
 )
+
+# Resume mixin (for advanced usage)
+from .resume_mixin import CheckpointResumeMixin
 
 from .config import (
     SystematicReviewConfig,
@@ -288,6 +294,8 @@ from .cochrane_assessor import (
 __all__ = [
     # Main agent
     "SystematicReviewAgent",
+    # Mixin (for advanced usage)
+    "CheckpointResumeMixin",
     # Exceptions
     "SystematicReviewError",
     "SearchPlanningError",
@@ -297,6 +305,8 @@ __all__ = [
     "ReportGenerationError",
     "LLMConnectionError",
     "DatabaseConnectionError",
+    "CheckpointError",
+    "ResumeError",
     # Configuration
     "SystematicReviewConfig",
     "get_systematic_review_config",
