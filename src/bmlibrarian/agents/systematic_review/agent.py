@@ -60,6 +60,8 @@ if TYPE_CHECKING:
     from .scorer import RelevanceScorer, CompositeScorer
     from .quality import QualityAssessor
     from .reporter import Reporter
+    from bmlibrarian.database import DatabaseManager
+    from bmlibrarian.evaluations import EvaluationStore, EvaluationRun
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +186,7 @@ class SystematicReviewAgent(BaseAgent):
 
     def __init__(
         self,
+        db_manager: "DatabaseManager",
         config: Optional[SystematicReviewConfig] = None,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional["AgentOrchestrator"] = None,
@@ -193,6 +196,7 @@ class SystematicReviewAgent(BaseAgent):
         Initialize the SystematicReviewAgent.
 
         Args:
+            db_manager: DatabaseManager instance for database access.
             config: Optional configuration. If None, loads from BMLibrarian config.
             callback: Optional callback for progress updates.
             orchestrator: Optional orchestrator for queue-based processing.
@@ -215,17 +219,18 @@ class SystematicReviewAgent(BaseAgent):
         # Initialize documenter for audit trail
         self.documenter = Documenter()
 
+        # Database and evaluation store
+        self._db_manager = db_manager
+        self._init_evaluation_store()
+
         # Current review state (set when run_review is called)
         self._criteria: Optional[SearchCriteria] = None
         self._weights: Optional[ScoringWeights] = None
         self._search_plan: Optional[SearchPlan] = None
         self._executed_queries: List[ExecutedQuery] = []
         self._all_papers: List[PaperData] = []
-        self._scored_papers: List[ScoredPaper] = []
-        self._assessed_papers: List[AssessedPaper] = []
         # Track papers rejected at each stage for comprehensive reporting
         self._rejected_initial_filter: List[Tuple[PaperData, str]] = []
-        self._below_threshold_papers: List[ScoredPaper] = []
 
         # Child agents (initialized lazily)
         self._query_agent = None
@@ -238,6 +243,21 @@ class SystematicReviewAgent(BaseAgent):
         self._semantic_query_agent = None
 
         logger.info(f"SystematicReviewAgent v{AGENT_VERSION} initialized")
+
+    def _init_evaluation_store(self) -> None:
+        """Initialize the EvaluationStore and register evaluator."""
+        from bmlibrarian.evaluations import EvaluationStore, RunType
+
+        self._evaluation_store: "EvaluationStore" = EvaluationStore(self._db_manager)
+        self._evaluation_run: Optional["EvaluationRun"] = None
+
+        # Register this agent's model as an evaluator
+        self._evaluator_id = self._evaluation_store.evaluator_registry.get_or_create_model_evaluator(
+            model_name=self.config.model,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+        )
+        logger.debug(f"Registered evaluator: id={self._evaluator_id}")
 
     # =========================================================================
     # BaseAgent Implementation
@@ -265,6 +285,305 @@ class SystematicReviewAgent(BaseAgent):
     def weights(self) -> Optional[ScoringWeights]:
         """Get current scoring weights."""
         return self._weights
+
+    @property
+    def evaluation_run(self) -> Optional["EvaluationRun"]:
+        """Get the current evaluation run."""
+        return self._evaluation_run
+
+    # =========================================================================
+    # Evaluation Store Methods
+    # =========================================================================
+
+    def _start_evaluation_run(self, documents_total: int = 0) -> "EvaluationRun":
+        """
+        Start a new evaluation run for this review.
+
+        Args:
+            documents_total: Total number of documents to process.
+
+        Returns:
+            The created EvaluationRun.
+        """
+        from bmlibrarian.evaluations import RunType
+
+        if not self._criteria:
+            raise ValueError("Cannot start evaluation run without criteria")
+
+        config_snapshot = {
+            "model": self.config.model,
+            "temperature": self.config.temperature,
+            "top_p": self.config.top_p,
+            "relevance_threshold": self.config.relevance_threshold,
+            "weights": self._weights.to_dict() if self._weights else None,
+        }
+
+        self._evaluation_run = self._evaluation_store.create_run(
+            run_type=RunType.SYSTEMATIC_REVIEW,
+            research_question=self._criteria.research_question,
+            evaluator_id=self._evaluator_id,
+            config=config_snapshot,
+            documents_total=documents_total,
+        )
+
+        logger.info(f"Started evaluation run: id={self._evaluation_run.run_id}")
+        return self._evaluation_run
+
+    def _save_scored_paper(
+        self,
+        scored_paper: ScoredPaper,
+        processing_time_ms: Optional[int] = None,
+    ) -> int:
+        """
+        Save a scored paper to the evaluation store.
+
+        Args:
+            scored_paper: The scored paper to save.
+            processing_time_ms: Optional processing time in milliseconds.
+
+        Returns:
+            The evaluation ID.
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            raise ValueError("No active evaluation run")
+
+        evaluation_data = {
+            "score": scored_paper.relevance_score,
+            "rationale": scored_paper.relevance_rationale,
+        }
+
+        if scored_paper.inclusion_decision:
+            evaluation_data["inclusion_decision"] = scored_paper.inclusion_decision.status.value
+            if scored_paper.inclusion_decision.rationale:
+                evaluation_data["inclusion_rationale"] = scored_paper.inclusion_decision.rationale
+
+        if scored_paper.relevant_citations:
+            evaluation_data["citation_count"] = len(scored_paper.relevant_citations)
+
+        return self._evaluation_store.save_evaluation(
+            run_id=self._evaluation_run.run_id,
+            document_id=scored_paper.paper.document_id,
+            evaluation_type=EvaluationType.RELEVANCE_SCORE,
+            evaluation_data=evaluation_data,
+            primary_score=float(scored_paper.relevance_score),
+            evaluator_id=self._evaluator_id,
+            reasoning=scored_paper.relevance_rationale,
+            processing_time_ms=processing_time_ms,
+        )
+
+    def _save_assessed_paper(
+        self,
+        assessed_paper: AssessedPaper,
+        processing_time_ms: Optional[int] = None,
+    ) -> int:
+        """
+        Save an assessed paper to the evaluation store.
+
+        Args:
+            assessed_paper: The assessed paper to save.
+            processing_time_ms: Optional processing time in milliseconds.
+
+        Returns:
+            The evaluation ID.
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            raise ValueError("No active evaluation run")
+
+        evaluation_data = {
+            "composite_score": assessed_paper.composite_score,
+            "study_assessment": assessed_paper.study_assessment,
+            "paper_weight": assessed_paper.paper_weight,
+        }
+
+        if assessed_paper.pico_components:
+            evaluation_data["pico_components"] = assessed_paper.pico_components
+
+        return self._evaluation_store.save_evaluation(
+            run_id=self._evaluation_run.run_id,
+            document_id=assessed_paper.scored_paper.paper.document_id,
+            evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
+            evaluation_data=evaluation_data,
+            primary_score=float(assessed_paper.composite_score) if assessed_paper.composite_score else None,
+            evaluator_id=self._evaluator_id,
+            processing_time_ms=processing_time_ms,
+        )
+
+    def get_scored_papers(
+        self,
+        min_score: Optional[float] = None,
+        limit: Optional[int] = None,
+    ) -> List[ScoredPaper]:
+        """
+        Get scored papers from the evaluation store.
+
+        Args:
+            min_score: Optional minimum score filter.
+            limit: Optional maximum number of results.
+
+        Returns:
+            List of ScoredPaper objects.
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            return []
+
+        evaluations = self._evaluation_store.get_evaluations_for_run(
+            run_id=self._evaluation_run.run_id,
+            evaluation_type=EvaluationType.RELEVANCE_SCORE,
+            min_score=min_score,
+            limit=limit,
+        )
+
+        # Convert evaluations back to ScoredPaper objects
+        scored_papers = []
+        paper_map = {p.document_id: p for p in self._all_papers}
+
+        for eval_record in evaluations:
+            paper = paper_map.get(eval_record.document_id)
+            if not paper:
+                logger.warning(f"Paper not found for document_id={eval_record.document_id}")
+                continue
+
+            inclusion_status = InclusionStatus.PENDING
+            inclusion_rationale = None
+            if eval_record.evaluation_data.get("inclusion_decision"):
+                try:
+                    inclusion_status = InclusionStatus(eval_record.evaluation_data["inclusion_decision"])
+                except ValueError:
+                    pass
+                inclusion_rationale = eval_record.evaluation_data.get("inclusion_rationale")
+
+            scored_paper = ScoredPaper(
+                paper=paper,
+                relevance_score=eval_record.primary_score or 0.0,
+                relevance_rationale=eval_record.reasoning or "",
+                inclusion_decision=InclusionDecision(
+                    status=inclusion_status,
+                    rationale=inclusion_rationale,
+                ),
+            )
+            scored_papers.append(scored_paper)
+
+        return scored_papers
+
+    def get_assessed_papers(
+        self,
+        min_score: Optional[float] = None,
+        limit: Optional[int] = None,
+    ) -> List[AssessedPaper]:
+        """
+        Get assessed papers from the evaluation store.
+
+        Args:
+            min_score: Optional minimum composite score filter.
+            limit: Optional maximum number of results.
+
+        Returns:
+            List of AssessedPaper objects.
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            return []
+
+        evaluations = self._evaluation_store.get_evaluations_for_run(
+            run_id=self._evaluation_run.run_id,
+            evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
+            min_score=min_score,
+            limit=limit,
+        )
+
+        # Get scored papers to build AssessedPaper objects
+        scored_papers = self.get_scored_papers()
+        scored_map = {sp.paper.document_id: sp for sp in scored_papers}
+
+        assessed_papers = []
+        for eval_record in evaluations:
+            scored_paper = scored_map.get(eval_record.document_id)
+            if not scored_paper:
+                logger.warning(f"ScoredPaper not found for document_id={eval_record.document_id}")
+                continue
+
+            assessed_paper = AssessedPaper(
+                scored_paper=scored_paper,
+                study_assessment=eval_record.evaluation_data.get("study_assessment", {}),
+                paper_weight=eval_record.evaluation_data.get("paper_weight", {}),
+                pico_components=eval_record.evaluation_data.get("pico_components"),
+                composite_score=eval_record.primary_score,
+            )
+            assessed_papers.append(assessed_paper)
+
+        return assessed_papers
+
+    def get_below_threshold_papers(self) -> List[ScoredPaper]:
+        """
+        Get papers that scored below the relevance threshold.
+
+        Returns:
+            List of ScoredPaper objects below threshold.
+        """
+        from bmlibrarian.evaluations import EvaluationType
+
+        if not self._evaluation_run:
+            return []
+
+        # Get all scored papers and filter those below threshold
+        all_evaluations = self._evaluation_store.get_evaluations_for_run(
+            run_id=self._evaluation_run.run_id,
+            evaluation_type=EvaluationType.RELEVANCE_SCORE,
+        )
+
+        paper_map = {p.document_id: p for p in self._all_papers}
+        threshold = self.config.relevance_threshold
+
+        below_threshold = []
+        for eval_record in all_evaluations:
+            if eval_record.primary_score and eval_record.primary_score < threshold:
+                paper = paper_map.get(eval_record.document_id)
+                if paper:
+                    scored_paper = ScoredPaper(
+                        paper=paper,
+                        relevance_score=eval_record.primary_score,
+                        relevance_rationale=eval_record.reasoning or "",
+                        inclusion_decision=InclusionDecision(
+                            status=InclusionStatus.EXCLUDED,
+                            rationale="Below relevance threshold",
+                            exclusion_stage=ExclusionStage.RELEVANCE_SCORING,
+                        ),
+                    )
+                    below_threshold.append(scored_paper)
+
+        return below_threshold
+
+    def _complete_evaluation_run(
+        self,
+        success: bool = True,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """
+        Complete the current evaluation run.
+
+        Args:
+            success: Whether the run completed successfully.
+            error_message: Optional error message if failed.
+        """
+        from bmlibrarian.evaluations import RunStatus
+
+        if not self._evaluation_run:
+            return
+
+        status = RunStatus.COMPLETED if success else RunStatus.FAILED
+        self._evaluation_store.complete_run(
+            run_id=self._evaluation_run.run_id,
+            status=status,
+            error_message=error_message,
+        )
+        logger.info(f"Completed evaluation run: id={self._evaluation_run.run_id}, status={status.value}")
 
     # =========================================================================
     # Main Entry Point
@@ -565,7 +884,10 @@ class SystematicReviewAgent(BaseAgent):
                     evaluate_inclusion=True,
                     paper_sources=search_results.paper_sources,
                 )
-                self._scored_papers = scoring_result.scored_papers
+
+                # Save scored papers to database
+                for sp in scoring_result.scored_papers:
+                    self._save_scored_paper(sp)
 
                 timer.set_output(
                     f"Scored {len(scoring_result.scored_papers)} papers, "
@@ -577,13 +899,12 @@ class SystematicReviewAgent(BaseAgent):
                     "failed_scoring": len(scoring_result.failed_papers),
                 })
 
-            # Apply relevance threshold
+            # Apply relevance threshold using database query
+            scored_papers = self.get_scored_papers()
             above_threshold, below_threshold = scorer.apply_relevance_threshold(
-                self._scored_papers,
+                scored_papers,
                 threshold=self.config.relevance_threshold,
             )
-            # Store for comprehensive reporting
-            self._below_threshold_papers = below_threshold
 
             passed_relevance = len(above_threshold)
 
@@ -610,7 +931,7 @@ class SystematicReviewAgent(BaseAgent):
                 # Evaluate how effective each query was at finding relevant docs
                 query_feedback = scorer.evaluate_query_effectiveness(
                     executed_queries=self._executed_queries,
-                    scored_papers=self._scored_papers,
+                    scored_papers=scored_papers,  # Use already-fetched scored_papers
                     semantic_baseline_ids=self._semantic_baseline_ids,
                     threshold=self.config.relevance_threshold,
                 )
@@ -643,7 +964,7 @@ class SystematicReviewAgent(BaseAgent):
             if not self._checkpoint(
                 checkpoint_type=CHECKPOINT_SCORING_COMPLETE,
                 state={
-                    "total_scored": len(self._scored_papers),
+                    "total_scored": len(scored_papers),
                     "above_threshold": len(above_threshold),
                     "below_threshold": len(below_threshold),
                     "average_score": scoring_result.average_score,
@@ -668,7 +989,10 @@ class SystematicReviewAgent(BaseAgent):
                 decision_rationale="Evaluating study quality and methodology",
             ) as timer:
                 quality_result = quality_assessor.assess_batch(above_threshold)
-                self._assessed_papers = quality_result.assessed_papers
+
+                # Save assessed papers to database
+                for ap in quality_result.assessed_papers:
+                    self._save_assessed_paper(ap)
 
                 timer.set_output(
                     f"Assessed {len(quality_result.assessed_papers)} papers, "
@@ -681,10 +1005,11 @@ class SystematicReviewAgent(BaseAgent):
                 })
 
             # Checkpoint: Review quality assessment
+            assessed_papers = self.get_assessed_papers()
             if not self._checkpoint(
                 checkpoint_type=CHECKPOINT_QUALITY_ASSESSMENT,
                 state={
-                    "papers_assessed": len(self._assessed_papers),
+                    "papers_assessed": len(assessed_papers),
                     "assessment_stats": quality_result.assessment_statistics,
                 },
                 interactive=interactive,
@@ -703,10 +1028,10 @@ class SystematicReviewAgent(BaseAgent):
             with self.documenter.log_step_with_timer(
                 action=ACTION_CALCULATE_COMPOSITE,
                 tool="CompositeScorer",
-                input_summary=f"Calculating composite scores for {len(self._assessed_papers)} papers",
+                input_summary=f"Calculating composite scores for {len(assessed_papers)} papers",
                 decision_rationale="Combining scores using user-defined weights",
             ) as timer:
-                ranked_papers = composite_scorer.score_and_rank(self._assessed_papers)
+                ranked_papers = composite_scorer.score_and_rank(assessed_papers)
 
                 timer.set_output(f"Ranked {len(ranked_papers)} papers")
                 timer.add_metrics({
@@ -763,8 +1088,8 @@ class SystematicReviewAgent(BaseAgent):
 
             # Collect uncertain papers
             uncertain_papers = [
-                p for p in self._scored_papers
-                if p.inclusion_decision.status == InclusionStatus.UNCERTAIN
+                p for p in scored_papers
+                if p.inclusion_decision and p.inclusion_decision.status == InclusionStatus.UNCERTAIN
             ]
 
             # =================================================================
