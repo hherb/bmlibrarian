@@ -856,6 +856,9 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             self.documenter.set_phase("search_execution")
 
             # Choose search strategy based on configuration
+            # Track total results before dedup for checkpoint state
+            total_before_dedup = 0
+
             if self.config.use_phased_search:
                 # Phased search: semantic/HyDE first, then keyword
                 with self.documenter.log_step_with_timer(
@@ -873,6 +876,11 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     # Store phased results for query feedback
                     self._phased_results = phased_results
                     self._semantic_baseline_ids = phased_results.phase1_document_ids
+
+                    # Calculate total before dedup from executed queries
+                    total_before_dedup = sum(
+                        len(eq.document_ids) for eq in phased_results.executed_queries
+                    )
 
                     timer.set_output(
                         f"Found {phased_results.total_count} unique papers "
@@ -897,6 +905,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     self._all_papers = search_results.papers
                     self._phased_results = None
                     self._semantic_baseline_ids = set()
+                    total_before_dedup = search_results.total_before_dedup
 
                     timer.set_output(
                         f"Found {search_results.count} unique papers "
@@ -917,7 +926,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 checkpoint_type=CHECKPOINT_INITIAL_RESULTS,
                 state={
                     "unique_papers": len(self._all_papers),
-                    "total_before_dedup": search_results.total_before_dedup,
+                    "total_before_dedup": total_before_dedup,
                     "sample_titles": [
                         p.title[:CHECKPOINT_TITLE_TRUNCATE_LENGTH]
                         for p in self._all_papers[:CHECKPOINT_SAMPLE_TITLES_COUNT]
