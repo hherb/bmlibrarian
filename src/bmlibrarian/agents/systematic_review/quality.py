@@ -664,6 +664,10 @@ class QualityAssessor:
             # assess_study expects a document dict with 'abstract' key
             result = agent.assess_study(document=document)
 
+            if result is None:
+                logger.warning(f"Study assessment returned None for document {document_id}")
+                return None
+
             result_dict = result.to_dict()
             execution_time_ms = int((time.time() - start_time) * 1000)
 
@@ -737,6 +741,10 @@ class QualityAssessor:
                 document_id=document_id,
                 force_reassess=False,
             )
+
+            if result is None:
+                logger.warning(f"Paper weight assessment returned None for document {document_id}")
+                return None
 
             result_dict = result.to_dict()
             execution_time_ms = int((time.time() - start_time) * 1000)
@@ -848,6 +856,10 @@ class QualityAssessor:
                 document=document,
                 skip_suitability_check=True,
             )
+
+            if result is None:
+                logger.warning(f"PRISMA assessment returned None for document {document_id}")
+                return None
 
             result_dict = result.to_dict()
             execution_time_ms = int((time.time() - start_time) * 1000)
