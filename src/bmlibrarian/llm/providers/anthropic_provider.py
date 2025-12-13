@@ -18,11 +18,18 @@ from ..data_types import (
     GenerationParams,
     Provider,
 )
+from ..constants import (
+    DEFAULT_ANTHROPIC_MAX_TOKENS,
+    DEFAULT_REQUEST_TIMEOUT,
+)
 
 if TYPE_CHECKING:
     import anthropic
 
 logger = logging.getLogger(__name__)
+
+# Default Claude model (latest stable version)
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 
 
 class AnthropicProvider(LLMProvider):
@@ -40,9 +47,6 @@ class AnthropicProvider(LLMProvider):
         timeout: Request timeout in seconds
     """
 
-    DEFAULT_MAX_TOKENS = 4096
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
-
     # Known Anthropic models
     KNOWN_MODELS = [
         "claude-opus-4-20250514",
@@ -57,7 +61,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         """
         Initialize Anthropic provider.
@@ -145,7 +149,7 @@ class AnthropicProvider(LLMProvider):
             })
 
         # Build request kwargs
-        max_tokens = params.max_tokens or self.DEFAULT_MAX_TOKENS
+        max_tokens = params.max_tokens or DEFAULT_ANTHROPIC_MAX_TOKENS
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -279,7 +283,7 @@ class AnthropicProvider(LLMProvider):
 
     def get_default_model(self) -> Optional[str]:
         """Get the default Anthropic model."""
-        return self.DEFAULT_MODEL
+        return DEFAULT_ANTHROPIC_MODEL
 
     def supports_json_mode(self) -> bool:
         """

@@ -68,6 +68,16 @@ from .token_tracker import (
     reset_global_tracker,
 )
 
+# Constants
+from .constants import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_DELAY,
+)
+
 # Client
 from .client import (
     LLMClient,
@@ -104,6 +114,13 @@ __all__ = [
     "UsageSummary",
     "get_token_tracker",
     "reset_global_tracker",
+    # Constants
+    "DEFAULT_EMBEDDING_MODEL",
+    "DEFAULT_OLLAMA_HOST",
+    "DEFAULT_TEMPERATURE",
+    "DEFAULT_TOP_P",
+    "DEFAULT_MAX_RETRIES",
+    "DEFAULT_RETRY_DELAY",
     # Client (primary interface)
     "LLMClient",
     "get_llm_client",

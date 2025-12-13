@@ -38,6 +38,13 @@ from .model_resolver import parse_model_string
 from .token_tracker import get_token_tracker, TokenTracker
 from .providers import get_provider
 from .providers.base import LLMProvider
+from .constants import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_DELAY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +140,13 @@ class LLMClient:
         messages: list[LLMMessage],
         model: str,
         system_prompt: Optional[str] = None,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
+        temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float = DEFAULT_TOP_P,
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
         fallback_model: Optional[str] = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -267,13 +274,13 @@ class LLMClient:
         self,
         prompt: str,
         model: str,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
+        temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float = DEFAULT_TOP_P,
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
         fallback_model: Optional[str] = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delay: float = DEFAULT_RETRY_DELAY,
     ) -> LLMResponse:
         """
         Send a text generation request.
@@ -388,7 +395,7 @@ class LLMClient:
     def embed(
         self,
         text: str,
-        model: str = "snowflake-arctic-embed2:latest",
+        model: str = DEFAULT_EMBEDDING_MODEL,
     ) -> EmbeddingResponse:
         """
         Generate embeddings for text.

@@ -20,6 +20,11 @@ from ..data_types import (
     GenerationParams,
     Provider,
 )
+from ..constants import (
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_REQUEST_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +41,10 @@ class OllamaProvider(LLMProvider):
         timeout: Request timeout in seconds
     """
 
-    DEFAULT_HOST = "http://localhost:11434"
-    DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
-
     def __init__(
         self,
         host: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         """
         Initialize Ollama provider.
@@ -51,7 +53,7 @@ class OllamaProvider(LLMProvider):
             host: Ollama server URL (default: http://localhost:11434 or OLLAMA_HOST env var)
             timeout: Request timeout in seconds
         """
-        self.host = host or os.environ.get("OLLAMA_HOST", self.DEFAULT_HOST)
+        self.host = host or os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
         self.timeout = timeout
         self._client: Optional[ollama.Client] = None
 
@@ -221,7 +223,7 @@ class OllamaProvider(LLMProvider):
         Returns:
             EmbeddingResponse with embedding vector
         """
-        model = model or self.DEFAULT_EMBEDDING_MODEL
+        model = model or DEFAULT_EMBEDDING_MODEL
 
         try:
             response = self.client.embeddings(
