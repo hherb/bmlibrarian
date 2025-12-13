@@ -5,6 +5,9 @@ This module provides functionality to validate MeSH terms suggested by the LLM
 against the official NCBI MeSH vocabulary, expand terms with synonyms and
 narrower terms, and cache results for performance.
 
+The module now supports local PostgreSQL database lookup (mesh schema) with
+automatic fallback to NLM's public API when local data is unavailable.
+
 Example usage:
     from bmlibrarian.pubmed_search import MeSHLookup
 
@@ -19,6 +22,9 @@ Example usage:
     # Validate multiple terms
     results = lookup.validate_terms(["Exercise", "Invalid Term", "Diabetes"])
     valid_terms = [r for r in results if r.is_valid]
+
+    # Check if local database is available
+    print(f"Local DB: {lookup.is_local_db_available()}")
 """
 
 import logging
@@ -50,11 +56,13 @@ class MeSHLookup:
     """
     Service for validating and expanding MeSH terms.
 
-    Uses NCBI's MeSH database to validate terms suggested by the LLM,
-    find official descriptor names, and retrieve synonyms (entry terms)
-    for query expansion.
+    Uses the local PostgreSQL mesh database when available, with automatic
+    fallback to NCBI's MeSH API. Results are cached in SQLite for performance.
 
-    Includes SQLite caching to minimize API calls and improve performance.
+    The lookup order is:
+    1. Local PostgreSQL database (mesh schema) - if available
+    2. SQLite cache - for previously looked up terms
+    3. NLM API - for terms not in local DB or cache
     """
 
     # SQL for cache database schema
@@ -85,6 +93,7 @@ class MeSHLookup:
         cache_ttl_days: int = MESH_CACHE_TTL_DAYS,
         email: Optional[str] = None,
         api_key: Optional[str] = None,
+        use_local_db: bool = True,
     ) -> None:
         """
         Initialize MeSH lookup service.
@@ -94,11 +103,13 @@ class MeSHLookup:
             cache_ttl_days: Days before cache entries expire
             email: Email for NCBI API (recommended)
             api_key: NCBI API key for higher rate limits
+            use_local_db: Whether to check local PostgreSQL database first
         """
         self.cache_ttl_days = cache_ttl_days
         self.email = email
         self.api_key = api_key
         self.request_delay = REQUEST_DELAY_WITHOUT_KEY if not api_key else 0.1
+        self.use_local_db = use_local_db
 
         # Set up cache directory
         if cache_dir is None:
@@ -109,7 +120,120 @@ class MeSHLookup:
         self.cache_path = self.cache_dir / MESH_CACHE_FILENAME
         self._init_cache()
 
-        logger.info(f"MeSH lookup initialized with cache at {self.cache_path}")
+        # Initialize local database connection
+        self._db_manager = None
+        self._local_db_available = False
+        if use_local_db:
+            self._check_local_db()
+
+        db_status = "available" if self._local_db_available else "unavailable"
+        logger.info(
+            f"MeSH lookup initialized: local_db={db_status}, cache={self.cache_path}"
+        )
+
+    def _check_local_db(self) -> None:
+        """Check if local PostgreSQL mesh database is available."""
+        try:
+            from bmlibrarian.database import get_db_manager
+
+            self._db_manager = get_db_manager()
+
+            # Check if mesh schema exists and has data
+            with self._db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.schemata
+                            WHERE schema_name = 'mesh'
+                        )
+                        """
+                    )
+                    schema_exists = cur.fetchone()[0]
+
+                    if schema_exists:
+                        cur.execute("SELECT COUNT(*) FROM mesh.descriptors")
+                        count = cur.fetchone()[0]
+                        self._local_db_available = count > 0
+                        if self._local_db_available:
+                            logger.debug(f"Local MeSH database: {count:,} descriptors")
+                    else:
+                        logger.debug("MeSH schema not found in database")
+
+        except Exception as e:
+            logger.debug(f"Local MeSH database not available: {e}")
+            self._local_db_available = False
+
+    def is_local_db_available(self) -> bool:
+        """
+        Check if local PostgreSQL mesh database is available.
+
+        Returns:
+            True if local database has MeSH data
+        """
+        return self._local_db_available
+
+    def _lookup_local_db(self, term: str) -> Optional[MeSHTerm]:
+        """
+        Look up a term in the local PostgreSQL database.
+
+        Args:
+            term: Term to look up
+
+        Returns:
+            MeSHTerm if found, None otherwise
+        """
+        if not self._local_db_available or self._db_manager is None:
+            return None
+
+        try:
+            with self._db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT * FROM mesh.lookup_term(%s)",
+                        (term,),
+                    )
+                    rows = cur.fetchall()
+
+                    if not rows:
+                        return None
+
+                    # Use first result (exact match prioritized by the function)
+                    row = rows[0]
+                    descriptor_ui = row[0]
+                    descriptor_name = row[1]
+                    scope_note = row[5]
+
+                    # Get entry terms
+                    cur.execute(
+                        "SELECT term_text FROM mesh.get_entry_terms(%s)",
+                        (descriptor_ui,),
+                    )
+                    entry_terms = [r[0] for r in cur.fetchall()]
+
+                    # Get tree numbers
+                    cur.execute(
+                        """
+                        SELECT tree_number FROM mesh.tree_numbers tn
+                        JOIN mesh.descriptors d ON tn.descriptor_id = d.id
+                        WHERE d.descriptor_ui = %s
+                        """,
+                        (descriptor_ui,),
+                    )
+                    tree_numbers = [r[0] for r in cur.fetchall()]
+
+                    return MeSHTerm(
+                        descriptor_ui=descriptor_ui,
+                        descriptor_name=descriptor_name,
+                        tree_numbers=tree_numbers,
+                        entry_terms=entry_terms,
+                        scope_note=scope_note,
+                        is_valid=True,
+                    )
+
+        except Exception as e:
+            logger.warning(f"Local database lookup failed for '{term}': {e}")
+            return None
 
     def _init_cache(self) -> None:
         """Initialize the SQLite cache database."""
@@ -469,6 +593,11 @@ class MeSHLookup:
         If the term is an entry term (synonym), returns the official
         descriptor name.
 
+        Lookup order:
+        1. Local PostgreSQL database (mesh schema) - if available
+        2. SQLite cache - for previously looked up terms
+        3. NLM API - for terms not in local DB or cache
+
         Args:
             term: MeSH term to validate
             use_cache: Whether to use cached results
@@ -485,15 +614,22 @@ class MeSHLookup:
 
         normalized = term.strip()
 
-        # Check cache first
+        # 1. Check local PostgreSQL database first (fastest)
+        if self.use_local_db and self._local_db_available:
+            result = self._lookup_local_db(normalized)
+            if result is not None:
+                logger.debug(f"MeSH local DB hit: {normalized} -> {result.descriptor_name}")
+                return result
+
+        # 2. Check SQLite cache
         if use_cache:
             cached = self._get_from_cache(normalized)
             if cached is not None:
                 logger.debug(f"MeSH cache hit: {normalized} -> valid={cached.is_valid}")
                 return cached
 
-        # Look up via API
-        logger.debug(f"MeSH lookup: {normalized}")
+        # 3. Look up via API
+        logger.debug(f"MeSH API lookup: {normalized}")
         result = self._lookup_via_esearch(normalized)
 
         if result is None:
@@ -503,7 +639,7 @@ class MeSHLookup:
                 is_valid=False,
             )
 
-        # Cache the result
+        # Cache the API result
         if use_cache:
             self._save_to_cache(normalized, result)
 
