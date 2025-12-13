@@ -113,6 +113,13 @@ Since this project uses `uv` for package management:
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
+  - `uv run python mesh_import_cli.py import --year 2025` - Download and import MeSH vocabulary (~400MB with SCRs)
+  - `uv run python mesh_import_cli.py import --year 2025 --no-supplementary` - Import MeSH without SCRs (~180MB, faster)
+  - `uv run python mesh_import_cli.py status` - Show MeSH database statistics and local DB availability
+  - `uv run python mesh_import_cli.py lookup "heart attack"` - Look up a MeSH term (uses local DB if available)
+  - `uv run python mesh_import_cli.py search "cardio"` - Search MeSH by partial match
+  - `uv run python mesh_import_cli.py expand "MI"` - Expand term to all synonyms/entry terms
+  - `uv run python mesh_import_cli.py history` - Show MeSH import history
   - `uv run python pdf_import_cli.py file /path/to/paper.pdf` - Import single PDF with LLM-based metadata extraction and database matching
   - `uv run python pdf_import_cli.py directory /path/to/pdfs/` - Import directory of PDFs with intelligent matching
   - `uv run python pdf_import_cli.py directory /pdfs/ --recursive` - Import PDFs recursively from subdirectories

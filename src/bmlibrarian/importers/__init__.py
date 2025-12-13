@@ -1,10 +1,11 @@
 """
-Importers for external data sources (medRxiv, PubMed, etc.)
+Importers for external data sources (medRxiv, PubMed, MeSH, etc.)
 """
 
 from .medrxiv_importer import MedRxivImporter
 from .pubmed_importer import PubMedImporter
 from .pubmed_bulk_importer import PubMedBulkImporter
+from .mesh_importer import MeSHImporter, ImportStats as MeSHImportStats
 from .pdf_matcher import PDFMatcher, DocumentStatus, ExtractedIdentifiers
 from .pdf_converter import (
     PDFConverter,
@@ -22,6 +23,8 @@ __all__ = [
     'MedRxivImporter',
     'PubMedImporter',
     'PubMedBulkImporter',
+    'MeSHImporter',
+    'MeSHImportStats',
     'PDFMatcher',
     'DocumentStatus',
     'ExtractedIdentifiers',
