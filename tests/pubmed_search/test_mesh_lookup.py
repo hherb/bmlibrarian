@@ -233,3 +233,80 @@ class TestMeSHLookupStats:
             assert "invalid_terms_cached" in stats
             assert "cache_path" in stats
             assert "cache_ttl_days" in stats
+
+
+class TestMeSHLookupCacheCleanup:
+    """Tests for MeSH cache cleanup functionality."""
+
+    def test_cleanup_expired_cache_alias(self) -> None:
+        """Test that cleanup_expired_cache is an alias for clear_expired_cache."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+
+            # Both methods should exist and be callable
+            assert hasattr(lookup, "cleanup_expired_cache")
+            assert hasattr(lookup, "clear_expired_cache")
+            assert callable(lookup.cleanup_expired_cache)
+            assert callable(lookup.clear_expired_cache)
+
+    def test_cleanup_expired_cache_empty(self) -> None:
+        """Test cleanup with no expired entries."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lookup = MeSHLookup(cache_dir=Path(tmpdir))
+
+            # Add a fresh cache entry
+            term = MeSHTerm(
+                descriptor_ui="D015444",
+                descriptor_name="Exercise",
+                is_valid=True,
+            )
+            lookup._save_to_cache("exercise", term)
+
+            # Cleanup should remove 0 entries (nothing expired)
+            cleared = lookup.cleanup_expired_cache()
+            assert cleared == 0
+
+            # Entry should still be in cache
+            stats = lookup.get_cache_stats()
+            assert stats["cached_terms"] >= 1
+
+    def test_clear_expired_cache_with_expired_entries(self) -> None:
+        """Test clearing expired entries from cache."""
+        from datetime import datetime, timedelta
+        import sqlite3
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lookup = MeSHLookup(cache_dir=Path(tmpdir), cache_ttl_days=30)
+
+            # Add an entry directly with an old timestamp (expired)
+            old_date = (datetime.now() - timedelta(days=60)).isoformat()
+            with sqlite3.connect(lookup.cache_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO mesh_terms
+                    (descriptor_ui, descriptor_name, tree_numbers, entry_terms, scope_note, cached_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    ("D001234", "Old Term", "[]", "[]", None, old_date),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO mesh_name_lookup
+                    (search_name, descriptor_ui, is_valid, cached_at)
+                    VALUES (?, ?, 1, ?)
+                    """,
+                    ("old term", "D001234", old_date),
+                )
+
+            # Verify we have an expired entry
+            stats = lookup.get_cache_stats()
+            assert stats["expired_entries"] >= 1
+
+            # Clear expired entries
+            cleared = lookup.clear_expired_cache()
+            assert cleared >= 1
+
+            # Verify expired entries are gone
+            stats = lookup.get_cache_stats()
+            assert stats["expired_entries"] == 0

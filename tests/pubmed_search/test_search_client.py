@@ -8,8 +8,52 @@ import pytest
 from unittest.mock import patch, MagicMock
 import json
 
-from bmlibrarian.pubmed_search.search_client import PubMedSearchClient
+from bmlibrarian.pubmed_search.search_client import PubMedSearchClient, validate_email
 from bmlibrarian.pubmed_search.data_types import PubMedQuery, ArticleMetadata
+
+
+class TestEmailValidation:
+    """Tests for email validation function."""
+
+    def test_validate_email_valid_simple(self) -> None:
+        """Test validation of a simple valid email."""
+        assert validate_email("user@example.com") is True
+
+    def test_validate_email_valid_with_dots(self) -> None:
+        """Test validation of email with dots in local part."""
+        assert validate_email("user.name@example.com") is True
+
+    def test_validate_email_valid_with_subdomain(self) -> None:
+        """Test validation of email with subdomain."""
+        assert validate_email("user@mail.example.com") is True
+
+    def test_validate_email_valid_with_plus(self) -> None:
+        """Test validation of email with plus sign."""
+        assert validate_email("user+tag@example.com") is True
+
+    def test_validate_email_invalid_no_at(self) -> None:
+        """Test validation rejects email without @."""
+        assert validate_email("userexample.com") is False
+
+    def test_validate_email_invalid_no_domain(self) -> None:
+        """Test validation rejects email without domain."""
+        assert validate_email("user@") is False
+
+    def test_validate_email_invalid_no_tld(self) -> None:
+        """Test validation rejects email without TLD."""
+        assert validate_email("user@example") is False
+
+    def test_validate_email_empty_string(self) -> None:
+        """Test validation rejects empty string."""
+        assert validate_email("") is False
+
+    def test_validate_email_none_like(self) -> None:
+        """Test validation handles None-like values."""
+        assert validate_email("") is False
+
+    def test_validate_email_invalid_spaces(self) -> None:
+        """Test validation rejects email with spaces."""
+        assert validate_email("user name@example.com") is False
 
 
 class TestPubMedSearchClientInit:
@@ -30,6 +74,14 @@ class TestPubMedSearchClientInit:
         """Test initialization without API key sets slower rate limit."""
         client = PubMedSearchClient()
         assert client.request_delay == 0.34  # Slower without key
+
+    def test_init_with_invalid_email_logs_warning(self) -> None:
+        """Test initialization with invalid email logs warning."""
+        import logging
+        with patch.object(logging.getLogger("bmlibrarian.pubmed_search.search_client"), "warning") as mock_warning:
+            client = PubMedSearchClient(email="invalid-email")
+            mock_warning.assert_called_once()
+            assert "does not appear to be a valid email format" in mock_warning.call_args[0][0]
 
 
 class TestPubMedSearchClientSearch:

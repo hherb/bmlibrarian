@@ -81,7 +81,7 @@ from .constants import (
 # Core components
 from .mesh_lookup import MeSHLookup
 from .query_converter import QueryConverter
-from .search_client import PubMedSearchClient
+from .search_client import PubMedSearchClient, validate_email
 from .result_processor import ResultProcessor, SearchAndImportOrchestrator
 
 __all__ = [
@@ -108,4 +108,6 @@ __all__ = [
     "PubMedSearchClient",
     "ResultProcessor",
     "SearchAndImportOrchestrator",
+    # Utility functions
+    "validate_email",
 ]

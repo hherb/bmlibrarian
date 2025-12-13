@@ -34,6 +34,8 @@ from .constants import (
     DEFAULT_MAX_TOKENS,
     PUBLICATION_TYPE_FILTERS,
     SUBSET_FILTERS,
+    QUERY_LENGTH_WARNING_THRESHOLD,
+    MAX_QUERY_LENGTH,
 )
 from .data_types import (
     PubMedQuery,
@@ -299,6 +301,22 @@ class QueryConverter:
 
         # Generate warnings
         warnings = []
+
+        # Check query length and warn if approaching PubMed's limit
+        query_length = len(query_string)
+        if query_length > MAX_QUERY_LENGTH:
+            warnings.append(
+                f"Generated query exceeds PubMed's maximum length ({query_length} chars, "
+                f"limit is {MAX_QUERY_LENGTH}). Query will likely fail."
+            )
+            logger.error(f"Generated query exceeds maximum length: {query_length} > {MAX_QUERY_LENGTH}")
+        elif query_length > QUERY_LENGTH_WARNING_THRESHOLD:
+            warnings.append(
+                f"Generated query is very long ({query_length} chars) and may fail. "
+                f"Consider simplifying the search terms."
+            )
+            logger.warning(f"Generated query is very long: {query_length} chars (threshold: {QUERY_LENGTH_WARNING_THRESHOLD})")
+
         if mesh_terms_invalid:
             warnings.append(
                 f"Some MeSH terms could not be validated: {', '.join(mesh_terms_invalid)}"

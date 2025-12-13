@@ -22,6 +22,7 @@ Example usage:
 
 import logging
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from typing import Optional, List, Dict, Any, Callable, Generator
@@ -42,6 +43,7 @@ from .constants import (
     HISTORY_SERVER_THRESHOLD,
     ENV_NCBI_EMAIL,
     ENV_NCBI_API_KEY,
+    EMAIL_VALIDATION_PATTERN,
 )
 from .data_types import (
     PubMedQuery,
@@ -50,6 +52,27 @@ from .data_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Compiled regex pattern for email validation
+_EMAIL_PATTERN = re.compile(EMAIL_VALIDATION_PATTERN)
+
+
+def validate_email(email: str) -> bool:
+    """
+    Validate email format for NCBI API requirements.
+
+    NCBI requires a valid email address for identification purposes.
+    This validates the basic email format.
+
+    Args:
+        email: Email address to validate
+
+    Returns:
+        True if email format is valid, False otherwise
+    """
+    if not email:
+        return False
+    return bool(_EMAIL_PATTERN.match(email))
 
 
 class PubMedSearchClient:
@@ -81,6 +104,13 @@ class PubMedSearchClient:
         self.api_key = api_key or os.environ.get(ENV_NCBI_API_KEY, "")
         self.timeout = timeout
         self.max_retries = max_retries
+
+        # Validate email format if provided
+        if self.email and not validate_email(self.email):
+            logger.warning(
+                f"Email '{self.email}' does not appear to be a valid email format. "
+                "NCBI recommends providing a valid email for identification."
+            )
 
         # Rate limiting based on API key presence
         self.request_delay = REQUEST_DELAY_WITH_KEY if self.api_key else REQUEST_DELAY_WITHOUT_KEY
@@ -125,6 +155,45 @@ class PubMedSearchClient:
 
                 response.raise_for_status()
                 return response
+
+            except requests.exceptions.Timeout:
+                logger.warning(
+                    f"PubMed API timeout (attempt {attempt + 1}/{self.max_retries})"
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(delay)
+                    delay *= RETRY_BACKOFF_MULTIPLIER
+                else:
+                    logger.error(f"PubMed API request timed out after {self.max_retries} attempts")
+                    return None
+
+            except requests.exceptions.ConnectionError:
+                logger.warning(
+                    f"PubMed API connection error (attempt {attempt + 1}/{self.max_retries})"
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(delay)
+                    delay *= RETRY_BACKOFF_MULTIPLIER
+                else:
+                    logger.error(f"PubMed API connection failed after {self.max_retries} attempts")
+                    return None
+
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 429:
+                    logger.warning(
+                        f"Rate limited by PubMed (attempt {attempt + 1}/{self.max_retries})"
+                    )
+                else:
+                    status_code = e.response.status_code if e.response is not None else "unknown"
+                    logger.warning(
+                        f"PubMed API HTTP error {status_code} (attempt {attempt + 1}/{self.max_retries})"
+                    )
+                if attempt < self.max_retries - 1:
+                    time.sleep(delay)
+                    delay *= RETRY_BACKOFF_MULTIPLIER
+                else:
+                    logger.error(f"PubMed API HTTP error after {self.max_retries} attempts")
+                    return None
 
             except requests.exceptions.RequestException as e:
                 logger.warning(

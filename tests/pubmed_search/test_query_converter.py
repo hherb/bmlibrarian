@@ -249,3 +249,98 @@ class TestQueryConverterQueryBuilding:
                 )
 
                 assert "[Publication Type]" in query
+
+
+class TestQueryConverterWarnings:
+    """Tests for query converter warnings."""
+
+    @patch("bmlibrarian.pubmed_search.query_converter.get_llm_client")
+    @patch("bmlibrarian.pubmed_search.query_converter.MeSHLookup")
+    def test_long_query_warning(
+        self,
+        mock_mesh_class: MagicMock,
+        mock_client_func: MagicMock,
+    ) -> None:
+        """Test that very long queries generate warnings."""
+        from bmlibrarian.pubmed_search.constants import QUERY_LENGTH_WARNING_THRESHOLD
+
+        # Create a response with enough content to exceed the warning threshold
+        # Each concept generates roughly 200-400 chars, so we need many concepts
+        concepts_needed = (QUERY_LENGTH_WARNING_THRESHOLD // 150) + 10  # Extra margin
+        long_response = {
+            "concepts": [
+                {
+                    "name": f"Concept{i}",
+                    "mesh_terms": [f"Very Long MeSH Term Number {i} With Additional Words For Length"],
+                    "keywords": [f"keyword{i}", f"another_longer_keyword{i}", f"third_even_longer_keyword{i}"] * 5,
+                    "synonyms": [f"synonym{i}a_extended", f"synonym{i}b_extended"] * 3,
+                    "pico_role": None,
+                }
+                for i in range(concepts_needed)
+            ],
+            "suggested_filters": {},
+            "confidence": 0.8,
+            "notes": "Test long query",
+        }
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = json.dumps(long_response)
+        mock_client.chat.return_value = mock_response
+        mock_client_func.return_value = mock_client
+
+        mock_mesh = MagicMock()
+        mock_mesh.validate_term.return_value = MagicMock(is_valid=True)
+        mock_mesh_class.return_value = mock_mesh
+
+        converter = QueryConverter(validate_mesh=False, expand_keywords=False)
+        result = converter.convert("Test question for long query")
+
+        # Verify the query is actually long enough to trigger warning
+        query_length = len(result.primary_query.query_string)
+        assert query_length > QUERY_LENGTH_WARNING_THRESHOLD, (
+            f"Test setup error: query length {query_length} should exceed {QUERY_LENGTH_WARNING_THRESHOLD}"
+        )
+
+        # Check warning was generated
+        assert any("long" in w.lower() or "chars" in w.lower() for w in result.warnings), (
+            f"Expected warning about long query. Got warnings: {result.warnings}"
+        )
+
+    @patch("bmlibrarian.pubmed_search.query_converter.get_llm_client")
+    @patch("bmlibrarian.pubmed_search.query_converter.MeSHLookup")
+    def test_low_confidence_warning(
+        self,
+        mock_mesh_class: MagicMock,
+        mock_client_func: MagicMock,
+    ) -> None:
+        """Test that low confidence generates warning."""
+        low_confidence_response = {
+            "concepts": [
+                {
+                    "name": "Test",
+                    "mesh_terms": ["Test Term"],
+                    "keywords": ["test"],
+                    "synonyms": [],
+                    "pico_role": None,
+                }
+            ],
+            "suggested_filters": {},
+            "confidence": 0.4,  # Low confidence
+            "notes": "Low confidence test",
+        }
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = json.dumps(low_confidence_response)
+        mock_client.chat.return_value = mock_response
+        mock_client_func.return_value = mock_client
+
+        mock_mesh = MagicMock()
+        mock_mesh.validate_term.return_value = MagicMock(is_valid=True)
+        mock_mesh_class.return_value = mock_mesh
+
+        converter = QueryConverter(validate_mesh=False, expand_keywords=False)
+        result = converter.convert("Test question")
+
+        assert any("confidence" in w.lower() for w in result.warnings)

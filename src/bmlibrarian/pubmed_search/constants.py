@@ -82,6 +82,10 @@ SUBSET_FILTERS = {
 # Query validation
 MIN_QUERY_LENGTH = 3
 MAX_QUERY_LENGTH = 10000
+QUERY_LENGTH_WARNING_THRESHOLD = 8000  # Warn when query approaches PubMed's limit
+
+# Email validation pattern for NCBI API requirements
+EMAIL_VALIDATION_PATTERN = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 
 # Environment variable names
 ENV_NCBI_EMAIL = "NCBI_EMAIL"

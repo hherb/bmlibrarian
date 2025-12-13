@@ -559,6 +559,17 @@ class MeSHLookup:
             logger.info(f"Cleared {count} expired entries from MeSH cache")
             return count
 
+    def cleanup_expired_cache(self) -> int:
+        """
+        Remove expired cache entries and return count deleted.
+
+        This is an alias for clear_expired_cache() for API consistency.
+
+        Returns:
+            Number of entries deleted
+        """
+        return self.clear_expired_cache()
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get statistics about the cache.
