@@ -24,10 +24,10 @@ MeSH is a controlled vocabulary developed by the National Library of Medicine (N
 
 **Total estimated storage:** ~400 MB with SCRs, ~180 MB without
 
-**Download sizes (compressed XML):**
-- Descriptors: ~150 MB
-- Qualifiers: ~1 MB
-- Supplementary: ~200 MB
+**Download sizes (XML files):**
+- Descriptors: ~314 MB
+- Qualifiers: ~300 KB
+- Supplementary: ~240 MB
 
 ## Quick Start
 
@@ -313,6 +313,33 @@ Check network connectivity and try:
 uv run python mesh_import_cli.py import --year 2025 --download-dir ~/Downloads/mesh
 ```
 
+### "Not a gzipped file" Error
+
+If you see an error like `Not a gzipped file (b'<?' or b'\n\n')`, this indicates the downloaded file is HTML (likely an error page) instead of XML data. This was fixed in December 2025 - ensure you have the latest code.
+
+The importer downloads plain XML files from NLM at:
+```
+https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/desc{year}.xml
+```
+
+To verify downloads are working:
+```bash
+# Check a download URL returns correct content type
+curl -I "https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/desc2025.xml"
+# Should show: Content-Type: text/xml
+```
+
+### Downloaded Files Are Tiny (< 100KB)
+
+If downloaded files are very small (e.g., 16KB), they're likely HTML error pages. Delete them and re-run the import:
+```bash
+# Clean old downloads
+rm -rf ~/.bmlibrarian/downloads/mesh/*
+
+# Re-run import
+uv run python mesh_import_cli.py import --year 2025
+```
+
 ### Database Connection Issues
 
 Ensure PostgreSQL is running and credentials are configured:
@@ -341,4 +368,4 @@ SELECT indexname FROM pg_indexes WHERE schemaname = 'mesh';
 
 - [PubMed Search Lab](pubmed_search_lab_guide.md) - Uses MeSH for query conversion
 - [Query Converter](query_converter_guide.md) - Natural language to PubMed queries
-- [MeSH Architecture](../developers/mesh_architecture.md) - Technical documentation
+- [MeSH Import System](../developers/mesh_import_system.md) - Technical documentation
