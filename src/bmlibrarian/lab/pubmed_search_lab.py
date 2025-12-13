@@ -290,12 +290,12 @@ class ArticleCardWidget(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
-            s['layout_spacing_medium'],
-            s['layout_spacing_medium'],
-            s['layout_spacing_medium'],
-            s['layout_spacing_medium']
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium'],
+            s['spacing_medium']
         )
-        layout.setSpacing(s['layout_spacing_small'])
+        layout.setSpacing(s['spacing_small'])
 
         # Header row with title and expand button
         header_layout = QHBoxLayout()
@@ -303,7 +303,7 @@ class ArticleCardWidget(QFrame):
         # Title
         title_label = QLabel(self.article.title or "No title")
         title_label.setWordWrap(True)
-        title_label.setFont(QFont("", s['font_size_medium'], QFont.Bold))
+        title_label.setFont(QFont("", s['font_medium'], QFont.Bold))
         title_label.setStyleSheet("color: #1565C0;")  # Blue
         header_layout.addWidget(title_label, 1)
 
@@ -353,12 +353,12 @@ class ArticleCardWidget(QFrame):
         self.details_widget = QWidget()
         self.details_widget.setVisible(False)
         details_layout = QVBoxLayout(self.details_widget)
-        details_layout.setContentsMargins(0, s['layout_spacing_medium'], 0, 0)
+        details_layout.setContentsMargins(0, s['spacing_medium'], 0, 0)
 
         # Abstract
         if self.article.abstract:
             abstract_label = QLabel("Abstract:")
-            abstract_label.setFont(QFont("", s['font_size_small'], QFont.Bold))
+            abstract_label.setFont(QFont("", s['font_small'], QFont.Bold))
             details_layout.addWidget(abstract_label)
 
             abstract_text = QLabel(self.article.abstract)
@@ -369,7 +369,7 @@ class ArticleCardWidget(QFrame):
         # MeSH terms
         if self.article.mesh_terms:
             mesh_label = QLabel("MeSH Terms:")
-            mesh_label.setFont(QFont("", s['font_size_small'], QFont.Bold))
+            mesh_label.setFont(QFont("", s['font_small'], QFont.Bold))
             details_layout.addWidget(mesh_label)
 
             mesh_text = QLabel(", ".join(
@@ -382,7 +382,7 @@ class ArticleCardWidget(QFrame):
         # Keywords
         if self.article.keywords:
             kw_label = QLabel("Keywords:")
-            kw_label.setFont(QFont("", s['font_size_small'], QFont.Bold))
+            kw_label.setFont(QFont("", s['font_small'], QFont.Bold))
             details_layout.addWidget(kw_label)
 
             kw_text = QLabel(", ".join(
@@ -450,15 +450,15 @@ class PubMedSearchLabWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(
-            s['layout_spacing_large'],
-            s['layout_spacing_large'],
-            s['layout_spacing_large'],
-            s['layout_spacing_large']
+            s['spacing_large'],
+            s['spacing_large'],
+            s['spacing_large'],
+            s['spacing_large']
         )
 
         # Title
         title_label = QLabel("PubMed API Search Laboratory")
-        title_label.setFont(QFont("", s['font_size_xlarge'], QFont.Bold))
+        title_label.setFont(QFont("", s['font_xlarge'], QFont.Bold))
         title_label.setStyleSheet("color: #1565C0;")
         main_layout.addWidget(title_label)
 
@@ -469,7 +469,7 @@ class PubMedSearchLabWindow(QMainWindow):
         subtitle_label.setStyleSheet("color: #666;")
         main_layout.addWidget(subtitle_label)
 
-        main_layout.addSpacing(s['layout_spacing_medium'])
+        main_layout.addSpacing(s['spacing_medium'])
 
         # Search input section
         search_group = QGroupBox("Research Question")
@@ -498,7 +498,7 @@ class PubMedSearchLabWindow(QMainWindow):
         self.max_results_spin.setSingleStep(PubMedLabConstants.SEARCH_RESULTS_STEP)
         options_layout.addWidget(self.max_results_spin)
 
-        options_layout.addSpacing(s['layout_spacing_large'])
+        options_layout.addSpacing(s['spacing_large'])
 
         # Check existing checkbox
         self.check_existing_cb = QCheckBox("Check for existing documents")
@@ -612,7 +612,7 @@ class PubMedSearchLabWindow(QMainWindow):
         self.results_container = QWidget()
         self.results_layout = QVBoxLayout(self.results_container)
         self.results_layout.setAlignment(Qt.AlignTop)
-        self.results_layout.setSpacing(s['layout_spacing_medium'])
+        self.results_layout.setSpacing(s['spacing_medium'])
 
         scroll_area.setWidget(self.results_container)
         results_layout.addWidget(scroll_area, 1)
