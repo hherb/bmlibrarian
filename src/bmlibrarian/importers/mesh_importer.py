@@ -35,10 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 # NLM FTP/HTTPS URLs for MeSH data
-MESH_BASE_URL = "https://nlmpubs.nlm.nih.gov/projects/mesh/"
+# Note: MESH_FILES/xmlmesh/ contains the actual XML files, not {year}/xmlmesh/
+MESH_BASE_URL = "https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/"
 MESH_FTP_URL = "ftp://nlmpubs.nlm.nih.gov/online/mesh/"
 
-# File names
+# File names - download XML directly (server auto-decompresses .gz files)
 DESCRIPTOR_FILE = "desc{year}.xml"
 QUALIFIER_FILE = "qual{year}.xml"
 SUPPLEMENTARY_FILE = "supp{year}.xml"
@@ -217,6 +218,11 @@ class MeSHImporter:
         """
         Get download URL for a MeSH file.
 
+        NLM stores MeSH XML files at:
+        https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/
+
+        Files are named desc{year}.gz, qual{year}.gz, supp{year}.gz
+
         Args:
             year: MeSH year (e.g., 2025)
             file_type: 'descriptor', 'qualifier', or 'supplementary'
@@ -233,8 +239,8 @@ class MeSHImporter:
         else:
             raise ValueError(f"Unknown file type: {file_type}")
 
-        # Use HTTPS URL structure
-        return urljoin(MESH_BASE_URL, f"{year}/xmlmesh/{filename}.gz")
+        # Download XML files directly (server auto-decompresses .gz files anyway)
+        return urljoin(MESH_BASE_URL, filename)
 
     def download_mesh_files(
         self,
@@ -257,7 +263,7 @@ class MeSHImporter:
 
         # Download descriptors
         desc_url = self._get_download_url(year, "descriptor")
-        desc_path = self.download_dir / f"desc{year}.xml.gz"
+        desc_path = self.download_dir / f"desc{year}.xml"
         if self._download_file(
             desc_url,
             desc_path,
@@ -267,7 +273,7 @@ class MeSHImporter:
 
         # Download qualifiers
         qual_url = self._get_download_url(year, "qualifier")
-        qual_path = self.download_dir / f"qual{year}.xml.gz"
+        qual_path = self.download_dir / f"qual{year}.xml"
         if self._download_file(
             qual_url,
             qual_path,
@@ -278,7 +284,7 @@ class MeSHImporter:
         # Download supplementary concepts
         if include_supplementary:
             supp_url = self._get_download_url(year, "supplementary")
-            supp_path = self.download_dir / f"supp{year}.xml.gz"
+            supp_path = self.download_dir / f"supp{year}.xml"
             if self._download_file(
                 supp_url,
                 supp_path,
