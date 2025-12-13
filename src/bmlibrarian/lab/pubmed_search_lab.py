@@ -23,6 +23,8 @@ from PySide6.QtGui import QFont
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
+from psycopg import sql
+
 from bmlibrarian.config import get_config
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.constants import DefaultLimits
@@ -245,12 +247,13 @@ class PubMedSearchWorker(QThread):
 
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Check by PMID
-                    placeholders = ','.join(['%s'] * len(pmids))
-                    cur.execute(
-                        f"SELECT COUNT(*) FROM document WHERE pmid IN ({placeholders})",
-                        pmids
+                    # Check by PMID (external_id where source_id=1 is PubMed)
+                    query = sql.SQL(
+                        "SELECT COUNT(*) FROM document WHERE source_id = 1 AND external_id IN ({})"
+                    ).format(
+                        sql.SQL(',').join(sql.Placeholder() for _ in pmids)
                     )
+                    cur.execute(query, pmids)
                     result = cur.fetchone()
                     return result[0] if result else 0
 
