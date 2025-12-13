@@ -88,14 +88,16 @@ CREATE TABLE IF NOT EXISTS mesh.terms (
     sort_version TEXT,                    -- Sort key
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
-    -- Constraint for lexical tags
+    -- Constraint for lexical tags (MeSH 2025 values)
     CONSTRAINT chk_mesh_terms_lexical_tag
         CHECK (lexical_tag IS NULL OR lexical_tag IN (
             'ABB',   -- Abbreviation
             'ABX',   -- Embedded abbreviation
             'ACR',   -- Acronym
+            'ACX',   -- Embedded acronym
             'EPO',   -- Eponym
             'EQV',   -- Equivalent term
+            'HIST',  -- Historical term
             'LAB',   -- Lab number
             'NAM',   -- Proper name
             'NON',   -- None (standard term)
