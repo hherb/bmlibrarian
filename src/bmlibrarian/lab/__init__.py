@@ -22,6 +22,14 @@ try:
 except ImportError:
     PaperCheckerLabFlet = None
 
+# PubMed Search Lab - Qt-based
+try:
+    from .pubmed_search_lab import PubMedSearchLabWindow, run_pubmed_search_lab
+except ImportError:
+    # Qt not available
+    PubMedSearchLabWindow = None
+    run_pubmed_search_lab = None
+
 __all__ = [
     'QueryAgentLab',
     'CitationAgentLab',
@@ -29,4 +37,6 @@ __all__ = [
     'PaperCheckerLab',
     'PaperCheckerLabFlet',
     'ImporterTestLab',
+    'PubMedSearchLabWindow',
+    'run_pubmed_search_lab',
 ]
