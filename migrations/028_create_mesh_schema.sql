@@ -588,17 +588,19 @@ RETURNS TABLE(
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT 'descriptors'::TEXT, COUNT(*)::BIGINT FROM mesh.descriptors
-    UNION ALL
-    SELECT 'concepts', COUNT(*) FROM mesh.concepts
-    UNION ALL
-    SELECT 'terms', COUNT(*) FROM mesh.terms
-    UNION ALL
-    SELECT 'tree_numbers', COUNT(*) FROM mesh.tree_numbers
-    UNION ALL
-    SELECT 'qualifiers', COUNT(*) FROM mesh.qualifiers
-    UNION ALL
-    SELECT 'supplementary_concepts', COUNT(*) FROM mesh.supplementary_concepts
+    SELECT * FROM (
+        SELECT 'descriptors'::TEXT AS stat_name, COUNT(*)::BIGINT AS stat_value FROM mesh.descriptors
+        UNION ALL
+        SELECT 'concepts', COUNT(*) FROM mesh.concepts
+        UNION ALL
+        SELECT 'terms', COUNT(*) FROM mesh.terms
+        UNION ALL
+        SELECT 'tree_numbers', COUNT(*) FROM mesh.tree_numbers
+        UNION ALL
+        SELECT 'qualifiers', COUNT(*) FROM mesh.qualifiers
+        UNION ALL
+        SELECT 'supplementary_concepts', COUNT(*) FROM mesh.supplementary_concepts
+    ) stats
     ORDER BY stat_name;
 END;
 $$ LANGUAGE plpgsql STABLE;
