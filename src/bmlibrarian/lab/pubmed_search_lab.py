@@ -8,7 +8,7 @@ E-utilities API. Shows results as document cards without storing in database.
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Final
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
@@ -25,8 +25,37 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from bmlibrarian.config import get_config
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+from bmlibrarian.gui.qt.resources.constants import DefaultLimits
+from bmlibrarian.pubmed_search.constants import DEFAULT_MAX_RESULTS
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Lab-Specific Constants
+# =============================================================================
+
+class PubMedLabConstants:
+    """Constants specific to PubMed Search Lab."""
+
+    # Window dimensions (minimum)
+    MIN_WINDOW_WIDTH: Final[int] = 900
+    MIN_WINDOW_HEIGHT: Final[int] = 700
+
+    # Search options
+    MIN_SEARCH_RESULTS: Final[int] = 10
+    MAX_SEARCH_RESULTS: Final[int] = 1000
+    SEARCH_RESULTS_STEP: Final[int] = 50
+
+    # Display limits
+    QUERY_PREVIEW_CHARS: Final[int] = 100
+    MAX_MESH_TERMS_DISPLAY: Final[int] = 10
+    MAX_KEYWORDS_DISPLAY: Final[int] = 10
+    ERROR_MESSAGE_TRUNCATE: Final[int] = 50
+    DATE_YEAR_CHARS: Final[int] = 4
+
+    # Thread timeouts (milliseconds)
+    WORKER_ABORT_TIMEOUT_MS: Final[int] = 2000
 
 
 @dataclass
@@ -115,7 +144,7 @@ class PubMedSearchWorker(QThread):
 
             self.progress.emit(SearchProgress(
                 step="query_ready",
-                message=f"Query: {query.query_string[:100]}...",
+                message=f"Query: {query.query_string[:PubMedLabConstants.QUERY_PREVIEW_CHARS]}...",
                 percent=30
             ))
 
@@ -286,11 +315,12 @@ class ArticleCardWidget(QFrame):
 
         layout.addLayout(header_layout)
 
-        # Authors (truncated)
+        # Authors (truncated for display)
         if self.article.authors:
-            authors_text = ", ".join(self.article.authors[:3])
-            if len(self.article.authors) > 3:
-                authors_text += f" ... (+{len(self.article.authors) - 3} more)"
+            max_authors = DefaultLimits.MAX_AUTHORS_DISPLAY
+            authors_text = ", ".join(self.article.authors[:max_authors])
+            if len(self.article.authors) > max_authors:
+                authors_text += f" ... (+{len(self.article.authors) - max_authors} more)"
             authors_label = QLabel(authors_text)
             authors_label.setStyleSheet("color: #666;")
             layout.addWidget(authors_label)
@@ -300,7 +330,7 @@ class ArticleCardWidget(QFrame):
         if self.article.publication:
             meta_parts.append(self.article.publication)
         if self.article.publication_date:
-            meta_parts.append(str(self.article.publication_date)[:4])
+            meta_parts.append(str(self.article.publication_date)[:PubMedLabConstants.DATE_YEAR_CHARS])
         if meta_parts:
             meta_label = QLabel(" | ".join(meta_parts))
             meta_label.setStyleSheet("color: #888; font-style: italic;")
@@ -342,7 +372,9 @@ class ArticleCardWidget(QFrame):
             mesh_label.setFont(QFont("", s['font_size_small'], QFont.Bold))
             details_layout.addWidget(mesh_label)
 
-            mesh_text = QLabel(", ".join(self.article.mesh_terms[:10]))
+            mesh_text = QLabel(", ".join(
+                self.article.mesh_terms[:PubMedLabConstants.MAX_MESH_TERMS_DISPLAY]
+            ))
             mesh_text.setWordWrap(True)
             mesh_text.setStyleSheet("color: #666;")
             details_layout.addWidget(mesh_text)
@@ -353,7 +385,9 @@ class ArticleCardWidget(QFrame):
             kw_label.setFont(QFont("", s['font_size_small'], QFont.Bold))
             details_layout.addWidget(kw_label)
 
-            kw_text = QLabel(", ".join(self.article.keywords[:10]))
+            kw_text = QLabel(", ".join(
+                self.article.keywords[:PubMedLabConstants.MAX_KEYWORDS_DISPLAY]
+            ))
             kw_text.setWordWrap(True)
             kw_text.setStyleSheet("color: #666;")
             details_layout.addWidget(kw_text)
@@ -403,7 +437,10 @@ class PubMedSearchLabWindow(QMainWindow):
     def _setup_ui(self) -> None:
         """Set up the user interface."""
         self.setWindowTitle("PubMed Search Lab - BMLibrarian")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(
+            PubMedLabConstants.MIN_WINDOW_WIDTH,
+            PubMedLabConstants.MIN_WINDOW_HEIGHT
+        )
 
         # Get DPI-scaled values
         s = get_font_scale()
@@ -453,9 +490,12 @@ class PubMedSearchLabWindow(QMainWindow):
         # Max results
         options_layout.addWidget(QLabel("Max results:"))
         self.max_results_spin = QSpinBox()
-        self.max_results_spin.setRange(10, 1000)
-        self.max_results_spin.setValue(200)
-        self.max_results_spin.setSingleStep(50)
+        self.max_results_spin.setRange(
+            PubMedLabConstants.MIN_SEARCH_RESULTS,
+            PubMedLabConstants.MAX_SEARCH_RESULTS
+        )
+        self.max_results_spin.setValue(DEFAULT_MAX_RESULTS)
+        self.max_results_spin.setSingleStep(PubMedLabConstants.SEARCH_RESULTS_STEP)
         options_layout.addWidget(self.max_results_spin)
 
         options_layout.addSpacing(s['layout_spacing_large'])
@@ -661,7 +701,9 @@ class PubMedSearchLabWindow(QMainWindow):
             f"Search failed:\n\n{error_msg}"
         )
 
-        self.status_label.setText(f"Error: {error_msg[:50]}...")
+        self.status_label.setText(
+            f"Error: {error_msg[:PubMedLabConstants.ERROR_MESSAGE_TRUNCATE]}..."
+        )
 
     def _on_existing_count(self, existing: int, total: int) -> None:
         """Handle existing document count update."""
@@ -696,7 +738,7 @@ class PubMedSearchLabWindow(QMainWindow):
         """Handle window close."""
         if self.search_worker and self.search_worker.isRunning():
             self.search_worker.abort()
-            self.search_worker.wait(2000)
+            self.search_worker.wait(PubMedLabConstants.WORKER_ABORT_TIMEOUT_MS)
         super().closeEvent(event)
 
 
