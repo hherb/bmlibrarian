@@ -50,7 +50,6 @@ class PubMedLabConstants:
     SEARCH_RESULTS_STEP: Final[int] = 50
 
     # Display limits
-    QUERY_PREVIEW_CHARS: Final[int] = 100
     MAX_MESH_TERMS_DISPLAY: Final[int] = 10
     MAX_KEYWORDS_DISPLAY: Final[int] = 10
     ERROR_MESSAGE_TRUNCATE: Final[int] = 50
@@ -146,7 +145,7 @@ class PubMedSearchWorker(QThread):
 
             self.progress.emit(SearchProgress(
                 step="query_ready",
-                message=f"Query: {query.query_string[:PubMedLabConstants.QUERY_PREVIEW_CHARS]}...",
+                message=f"Query: {query.query_string}",
                 percent=30
             ))
 
@@ -581,7 +580,6 @@ class PubMedSearchLabWindow(QMainWindow):
 
         self.query_preview = QTextEdit()
         self.query_preview.setReadOnly(True)
-        self.query_preview.setMaximumHeight(80)
         self.query_preview.setStyleSheet("background-color: #f5f5f5;")
         query_layout.addWidget(self.query_preview)
 

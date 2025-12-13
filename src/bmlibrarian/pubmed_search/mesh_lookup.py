@@ -247,6 +247,12 @@ class MeSHLookup:
                     (normalized, datetime.now().isoformat()),
                 )
 
+    # Default headers for API requests (NLM requires proper User-Agent)
+    _DEFAULT_HEADERS: Dict[str, str] = {
+        "User-Agent": "BMLibrarian/1.0 (https://github.com/hherb/bmlibrarian; Python requests)",
+        "Accept": "application/json",
+    }
+
     def _make_request(
         self,
         url: str,
@@ -269,7 +275,12 @@ class MeSHLookup:
         for attempt in range(retries):
             try:
                 time.sleep(self.request_delay)  # Rate limiting
-                response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+                response = requests.get(
+                    url,
+                    params=params,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    headers=self._DEFAULT_HEADERS,
+                )
                 response.raise_for_status()
                 return response
             except requests.exceptions.RequestException as e:
@@ -288,7 +299,7 @@ class MeSHLookup:
         Look up a MeSH term via NCBI E-utilities esearch.
 
         This method searches the MeSH database to validate a term and
-        get its descriptor UI.
+        get its descriptor UI. Uses multiple search strategies for robustness.
 
         Args:
             term: Term to look up
@@ -296,11 +307,13 @@ class MeSHLookup:
         Returns:
             MeSHTerm if found, None otherwise
         """
+        # Strategy 1: Try exact match search in mesh database
+        # Use the term directly without field tags for MeSH database search
         params = {
             "db": "mesh",
-            "term": f'"{term}"[MeSH Terms]',
+            "term": f'"{term}"',
             "retmode": "json",
-            "retmax": 1,
+            "retmax": 5,
         }
 
         if self.email:
@@ -309,31 +322,95 @@ class MeSHLookup:
             params["api_key"] = self.api_key
 
         response = self._make_request(ESEARCH_URL, params)
+        if response:
+            try:
+                data = response.json()
+                result = data.get("esearchresult", {})
+                id_list = result.get("idlist", [])
+
+                if id_list:
+                    # Found a match - format descriptor UI
+                    descriptor_ui = f"D{id_list[0]}" if not id_list[0].startswith("D") else id_list[0]
+
+                    return MeSHTerm(
+                        descriptor_ui=descriptor_ui,
+                        descriptor_name=term,
+                        is_valid=True,
+                    )
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.debug(f"Error parsing MeSH esearch response: {e}")
+
+        # Strategy 2: Try NLM MeSH lookup API for descriptor matching
+        mesh_result = self._lookup_via_nlm_mesh_api(term)
+        if mesh_result:
+            return mesh_result
+
+        # Strategy 3: Try as entry term (synonym) with broader search
+        return self._lookup_as_entry_term(term)
+
+    def _lookup_via_nlm_mesh_api(self, term: str) -> Optional[MeSHTerm]:
+        """
+        Look up a MeSH term via NLM MeSH Browser API.
+
+        This API is specifically designed for MeSH term lookup and is more
+        reliable for validating descriptor names.
+
+        Args:
+            term: Term to look up
+
+        Returns:
+            MeSHTerm if found, None otherwise
+        """
+        # Use the MeSH lookup/descriptor endpoint
+        params = {
+            "label": term,
+            "match": "exact",
+            "limit": 5,
+        }
+
+        response = self._make_request(MESH_BROWSER_API_URL, params)
+        if not response:
+            # Try contains match if exact fails
+            params["match"] = "contains"
+            response = self._make_request(MESH_BROWSER_API_URL, params)
+
         if not response:
             return None
 
         try:
             data = response.json()
-            result = data.get("esearchresult", {})
-            id_list = result.get("idlist", [])
 
-            if not id_list:
-                # Term not found - try as entry term
-                return self._lookup_as_entry_term(term)
+            # Response is a list of matching descriptors
+            if isinstance(data, list) and len(data) > 0:
+                # Find exact match if possible
+                for item in data:
+                    label = item.get("label", "")
+                    if label.lower() == term.lower():
+                        resource = item.get("resource", "")
+                        # Extract descriptor UI from resource URI
+                        descriptor_ui = resource.split("/")[-1] if "/" in resource else ""
+                        return MeSHTerm(
+                            descriptor_ui=descriptor_ui,
+                            descriptor_name=label,
+                            is_valid=True,
+                        )
 
-            # Found a descriptor UI
-            descriptor_ui = f"D{id_list[0]}" if not id_list[0].startswith("D") else id_list[0]
+                # If no exact match, use first result
+                first = data[0]
+                resource = first.get("resource", "")
+                descriptor_ui = resource.split("/")[-1] if "/" in resource else ""
+                label = first.get("label", term)
 
-            # For now, return minimal info - could enhance with efetch
-            return MeSHTerm(
-                descriptor_ui=descriptor_ui,
-                descriptor_name=term,
-                is_valid=True,
-            )
+                return MeSHTerm(
+                    descriptor_ui=descriptor_ui,
+                    descriptor_name=label,
+                    is_valid=True,
+                )
 
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Error parsing MeSH esearch response: {e}")
-            return None
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            logger.debug(f"Error parsing NLM MeSH API response: {e}")
+
+        return None
 
     def _lookup_as_entry_term(self, term: str) -> Optional[MeSHTerm]:
         """

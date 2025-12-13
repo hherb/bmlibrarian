@@ -407,27 +407,44 @@ class QueryConverter:
         Returns:
             Parsed JSON dictionary or None
         """
+        def fix_json_string(s: str) -> str:
+            """Fix common JSON issues from LLM output."""
+            # Remove trailing commas before ] or }
+            s = re.sub(r',\s*]', ']', s)
+            s = re.sub(r',\s*}', '}', s)
+            return s
+
+        def try_parse(s: str) -> Optional[Dict[str, Any]]:
+            """Try parsing JSON with and without fixes."""
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                pass
+            # Try with fixes
+            try:
+                return json.loads(fix_json_string(s))
+            except json.JSONDecodeError:
+                pass
+            return None
+
         # Try direct parsing
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            pass
+        result = try_parse(response)
+        if result is not None:
+            return result
 
         # Try to extract JSON from markdown code blocks
         json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
         if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                pass
+            result = try_parse(json_match.group(1))
+            if result is not None:
+                return result
 
         # Try to find JSON object in response
         brace_match = re.search(r"\{.*\}", response, re.DOTALL)
         if brace_match:
-            try:
-                return json.loads(brace_match.group(0))
-            except json.JSONDecodeError:
-                pass
+            result = try_parse(brace_match.group(0))
+            if result is not None:
+                return result
 
         logger.error(f"Could not parse JSON from LLM response: {response[:200]}...")
         return None

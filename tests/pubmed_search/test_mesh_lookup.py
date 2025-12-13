@@ -70,8 +70,8 @@ class TestMeSHLookupValidation:
 
     @patch("bmlibrarian.pubmed_search.mesh_lookup.MeSHLookup._make_request")
     def test_validate_term_not_found(self, mock_request: MagicMock, lookup: MeSHLookup) -> None:
-        """Test validation when term not found."""
-        # Mock empty response
+        """Test validation when term not found by any strategy."""
+        # Mock empty response for all API calls (esearch, NLM API, entry term search)
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "esearchresult": {
@@ -83,6 +83,48 @@ class TestMeSHLookupValidation:
 
         result = lookup.validate_term("Not A Real Term XYZ123", use_cache=False)
         assert result.is_valid is False
+
+    @patch("bmlibrarian.pubmed_search.mesh_lookup.MeSHLookup._make_request")
+    def test_validate_term_via_nlm_api_fallback(self, mock_request: MagicMock, lookup: MeSHLookup) -> None:
+        """Test validation falls back to NLM MeSH API when esearch fails."""
+        # First call (esearch) returns empty, second call (NLM API) returns match
+        esearch_response = MagicMock()
+        esearch_response.json.return_value = {
+            "esearchresult": {"count": "0", "idlist": []}
+        }
+        nlm_response = MagicMock()
+        nlm_response.json.return_value = [
+            {
+                "resource": "http://id.nlm.nih.gov/mesh/D019586",
+                "label": "Intracranial Hypertension"
+            }
+        ]
+        mock_request.side_effect = [esearch_response, nlm_response]
+
+        result = lookup.validate_term("Intracranial Hypertension", use_cache=False)
+        assert result.is_valid is True
+        assert result.descriptor_ui == "D019586"
+        assert result.descriptor_name == "Intracranial Hypertension"
+
+    @patch("bmlibrarian.pubmed_search.mesh_lookup.MeSHLookup._make_request")
+    def test_validate_common_mesh_terms(self, mock_request: MagicMock, lookup: MeSHLookup) -> None:
+        """Test validation of commonly used MeSH terms."""
+        # Mock esearch finding the term
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "esearchresult": {"count": "1", "idlist": ["068956"]}
+        }
+        mock_request.return_value = mock_response
+
+        # These are real MeSH terms that should validate
+        terms_to_test = [
+            "Sensitivity and Specificity",
+            "Diagnostic Accuracy",
+        ]
+
+        for term in terms_to_test:
+            result = lookup.validate_term(term, use_cache=False)
+            assert result.is_valid is True, f"Expected {term} to be valid"
 
     @patch("bmlibrarian.pubmed_search.mesh_lookup.MeSHLookup._make_request")
     def test_validate_term_api_failure(self, mock_request: MagicMock, lookup: MeSHLookup) -> None:
