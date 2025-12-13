@@ -3,7 +3,7 @@
 1. **Never trust input from users, external data, network or file data**: Always validate and sanitize input. Never trust that it will be in the expected format or contain the expected data.
 2. **No magic numbers**: Always use constants or configuration for numbers. Never hardcode numbers. Always use named constants for numbers that are used in multiple places.
 3. **No hardcoded paths**: Always use constants or configuration for paths. Never hardcode paths. Always use named constants for paths that are used in multiple places.
-4. **All model communication happens through the python ollama library**: Never use raw HTTP requests to communicate with Ollama. Always use the `ollama` library.
+4. **All model communication happens through the LLM abstraction layer**: Use `bmlibrarian.llm.LLMClient` for all LLM interactions. For direct Ollama-only use cases, the `ollama` library is used internally by the abstraction layer. Never use raw HTTP requests.
 5. **All postgres database communication happens through the database manager**: Never use psycopg connection directly or modify the database structure/schema without proper migration.
 6. **All parameters must have type hints**: No exceptions.
 7. **All functions, methods, and classes must have docstrings**: No exceptions.
