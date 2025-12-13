@@ -27,7 +27,6 @@ from psycopg import sql
 
 from bmlibrarian.config import get_config
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
-from bmlibrarian.gui.qt.resources.constants import DefaultLimits
 from bmlibrarian.pubmed_search.constants import DEFAULT_MAX_RESULTS
 
 logger = logging.getLogger(__name__)
@@ -82,7 +81,7 @@ class PubMedSearchWorker(QThread):
     """
 
     progress = Signal(SearchProgress)
-    finished = Signal(list)  # List[ArticleMetadata]
+    finished = Signal(list, dict)  # List[ArticleMetadata], Dict[str, int] mapping PMID -> doc_id
     error = Signal(str)
     existing_count = Signal(int, int)  # (existing_count, total_fetched)
 
@@ -197,7 +196,7 @@ class PubMedSearchWorker(QThread):
                 return
 
             # Step 4: Check for existing documents if requested
-            existing_count = 0
+            existing_pmid_to_docid: Dict[str, int] = {}
             if self.check_existing and articles:
                 self.progress.emit(SearchProgress(
                     step="check_existing",
@@ -206,34 +205,35 @@ class PubMedSearchWorker(QThread):
                 ))
 
                 try:
-                    existing_count = self._count_existing_documents(articles)
+                    existing_pmid_to_docid = self._get_existing_pmids(articles)
                 except Exception as e:
                     logger.warning(f"Failed to check existing documents: {e}")
 
-                self.existing_count.emit(existing_count, len(articles))
+                self.existing_count.emit(len(existing_pmid_to_docid), len(articles))
 
             # Complete
+            new_count = len(articles) - len(existing_pmid_to_docid)
             self.progress.emit(SearchProgress(
                 step="complete",
-                message=f"Retrieved {len(articles)} articles ({existing_count} already in database)",
+                message=f"Retrieved {len(articles)} articles ({new_count} new, {len(existing_pmid_to_docid)} already in database)",
                 percent=100
             ))
 
-            self.finished.emit(articles)
+            self.finished.emit(articles, existing_pmid_to_docid)
 
         except Exception as e:
             logger.exception("PubMed search failed")
             self.error.emit(str(e))
 
-    def _count_existing_documents(self, articles: List) -> int:
+    def _get_existing_pmids(self, articles: List) -> Dict[str, int]:
         """
-        Count how many articles already exist in the local database.
+        Get PMIDs of articles that already exist in the local database.
 
         Args:
             articles: List of ArticleMetadata objects
 
         Returns:
-            Count of existing documents
+            Dictionary mapping PMIDs to document IDs
         """
         try:
             from bmlibrarian.database import get_db_manager
@@ -242,177 +242,251 @@ class PubMedSearchWorker(QThread):
             pmids = [a.pmid for a in articles if a.pmid]
 
             if not pmids:
-                return 0
+                return {}
 
             with db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Check by PMID (external_id where source_id=1 is PubMed)
+                    # Get existing PMIDs and their doc IDs (source_id=1 is PubMed)
                     query = sql.SQL(
-                        "SELECT COUNT(*) FROM document WHERE source_id = 1 AND external_id IN ({})"
+                        "SELECT external_id, id FROM document WHERE source_id = 1 AND external_id IN ({})"
                     ).format(
                         sql.SQL(',').join(sql.Placeholder() for _ in pmids)
                     )
                     cur.execute(query, pmids)
-                    result = cur.fetchone()
-                    return result[0] if result else 0
+                    results = cur.fetchall()
+                    return {row[0]: row[1] for row in results}
 
         except Exception as e:
             logger.warning(f"Database check failed: {e}")
-            return 0
+            return {}
 
 
 class ArticleCardWidget(QFrame):
     """
-    A card widget displaying article metadata.
+    A card widget displaying PubMed article metadata.
 
-    Shows title, authors, journal, year, abstract preview, and identifiers.
-    Similar to CollapsibleDocumentCard but for PubMed articles (not database documents).
+    Uses CollapsibleDocumentCard for consistent display with scrollable abstract.
+    Shows Import button for new articles (not yet in database).
+    Shows PDF buttons for existing articles in the database.
+
+    Signals:
+        import_requested: Emitted when user clicks Import button with article data
     """
 
-    def __init__(self, article: Any, parent: Optional[QWidget] = None):
+    import_requested = Signal(object)  # Emits ArticleMetadata
+
+    def __init__(
+        self,
+        article: Any,
+        is_new: bool = True,
+        doc_id: Optional[int] = None,
+        parent: Optional[QWidget] = None
+    ):
         """
         Initialize article card.
 
         Args:
-            article: ArticleMetadata object
+            article: ArticleMetadata object from PubMed API
+            is_new: Whether this article is NOT in the local database (highlighted if True)
+            doc_id: Database document ID if article exists in database
             parent: Parent widget
         """
         super().__init__(parent)
         self.article = article
-        self._expanded = False
+        self.is_new = is_new
+        self.doc_id = doc_id
         self._setup_ui()
+
+    def _article_to_document_dict(self) -> Dict[str, Any]:
+        """
+        Convert ArticleMetadata to document dictionary for CollapsibleDocumentCard.
+
+        Returns:
+            Dictionary compatible with CollapsibleDocumentCard
+        """
+        # Extract year from publication_date
+        year = None
+        if self.article.publication_date:
+            try:
+                year = int(str(self.article.publication_date)[:4])
+            except (ValueError, TypeError):
+                pass
+
+        return {
+            'id': self.doc_id,  # Database ID if exists
+            'title': self.article.title or "No title",
+            'abstract': self.article.abstract or "",
+            'authors': self.article.authors or [],
+            'journal': self.article.publication,
+            'year': year,
+            'pmid': self.article.pmid,
+            'doi': self.article.doi,
+            'pmc_id': self.article.pmc_id,
+            'mesh_terms': self.article.mesh_terms or [],
+            'keywords': self.article.keywords or [],
+        }
 
     def _setup_ui(self) -> None:
         """Set up the user interface."""
-        self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        self.setLineWidth(1)
+        from bmlibrarian.gui.qt.widgets.collapsible_document_card import CollapsibleDocumentCard
 
-        # Get DPI-scaled values
-        s = get_font_scale()
+        self.setFrameStyle(QFrame.Shape.NoFrame)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            s['spacing_medium'],
-            s['spacing_medium'],
-            s['spacing_medium'],
-            s['spacing_medium']
-        )
-        layout.setSpacing(s['spacing_small'])
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Header row with title and expand button
-        header_layout = QHBoxLayout()
+        # Create CollapsibleDocumentCard with article data
+        doc_dict = self._article_to_document_dict()
+        self.document_card = CollapsibleDocumentCard(doc_dict)
+        layout.addWidget(self.document_card)
 
-        # Title
-        title_label = QLabel(self.article.title or "No title")
-        title_label.setWordWrap(True)
-        title_label.setFont(QFont("", s['font_medium'], QFont.Bold))
-        title_label.setStyleSheet("color: #1565C0;")  # Blue
-        header_layout.addWidget(title_label, 1)
+        # Add Import button for new articles (in the card's details section)
+        if self.is_new:
+            self.import_btn = QPushButton("Import to Database")
+            self.import_btn.setStyleSheet(
+                "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; "
+                "padding: 6px 12px; border-radius: 4px; border: none; }"
+                "QPushButton:hover { background-color: #388E3C; }"
+                "QPushButton:pressed { background-color: #2E7D32; }"
+                "QPushButton:disabled { background-color: #A5D6A7; color: #666; }"
+            )
+            self.import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.import_btn.clicked.connect(self._on_import_clicked)
+            # Add to the document card's details layout
+            self.document_card.details_layout.addWidget(self.import_btn)
+        else:
+            # For existing articles, add PDF buttons
+            self._add_pdf_buttons()
 
-        # Expand/collapse button
-        self.expand_btn = QPushButton("Show details")
-        self.expand_btn.setFixedWidth(s['control_width_small'])
-        self.expand_btn.clicked.connect(self._toggle_expanded)
-        header_layout.addWidget(self.expand_btn)
+        # Apply container styling - highlight new articles with green left border
+        if self.is_new:
+            self.setStyleSheet("""
+                ArticleCardWidget {
+                    background-color: #F1F8E9;
+                    border-left: 4px solid #4CAF50;
+                    margin-bottom: 4px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                ArticleCardWidget {
+                    background-color: transparent;
+                    margin-bottom: 4px;
+                }
+            """)
 
-        layout.addLayout(header_layout)
+    def _on_import_clicked(self) -> None:
+        """Handle import button click."""
+        self.import_btn.setEnabled(False)
+        self.import_btn.setText("Importing...")
+        self.import_requested.emit(self.article)
 
-        # Authors (truncated for display)
-        if self.article.authors:
-            max_authors = DefaultLimits.MAX_AUTHORS_DISPLAY
-            authors_text = ", ".join(self.article.authors[:max_authors])
-            if len(self.article.authors) > max_authors:
-                authors_text += f" ... (+{len(self.article.authors) - max_authors} more)"
-            authors_label = QLabel(authors_text)
-            authors_label.setStyleSheet("color: #666;")
-            layout.addWidget(authors_label)
+    def _add_pdf_buttons(self) -> None:
+        """Add PDF buttons for existing articles using QtDocumentCardFactory."""
+        if not self.doc_id:
+            return
 
-        # Journal and year
-        meta_parts = []
-        if self.article.publication:
-            meta_parts.append(self.article.publication)
-        if self.article.publication_date:
-            meta_parts.append(str(self.article.publication_date)[:PubMedLabConstants.DATE_YEAR_CHARS])
-        if meta_parts:
-            meta_label = QLabel(" | ".join(meta_parts))
-            meta_label.setStyleSheet("color: #888; font-style: italic;")
-            layout.addWidget(meta_label)
+        try:
+            from bmlibrarian.gui.qt.qt_document_card_factory import QtDocumentCardFactory
+            from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
+            from bmlibrarian.utils.pdf_manager import PDFManager
+            from bmlibrarian.config import get_config
 
-        # Identifiers row
-        id_parts = []
-        if self.article.pmid:
-            id_parts.append(f"PMID: {self.article.pmid}")
-        if self.article.doi:
-            id_parts.append(f"DOI: {self.article.doi}")
-        if self.article.pmc_id:
-            id_parts.append(f"PMC: {self.article.pmc_id}")
-        if id_parts:
-            id_label = QLabel(" | ".join(id_parts))
-            id_label.setStyleSheet("color: #999; font-size: 11px;")
-            layout.addWidget(id_label)
+            config = get_config()
 
-        # Expandable details section
-        self.details_widget = QWidget()
-        self.details_widget.setVisible(False)
-        details_layout = QVBoxLayout(self.details_widget)
-        details_layout.setContentsMargins(0, s['spacing_medium'], 0, 0)
+            # Create PDF manager and factory
+            pdf_manager = PDFManager()
+            unpaywall_email = config.get('unpaywall_email') if config else None
+            factory = QtDocumentCardFactory(
+                pdf_manager=pdf_manager,
+                base_pdf_dir=pdf_manager.base_dir,
+                use_discovery=True,
+                unpaywall_email=str(unpaywall_email) if unpaywall_email else None
+            )
 
-        # Abstract
-        if self.article.abstract:
-            abstract_label = QLabel("Abstract:")
-            abstract_label.setFont(QFont("", s['font_small'], QFont.Bold))
-            details_layout.addWidget(abstract_label)
+            # Get document details from database for PDF path
+            doc_details = self._get_document_details()
 
-            abstract_text = QLabel(self.article.abstract)
-            abstract_text.setWordWrap(True)
-            abstract_text.setStyleSheet("color: #333; background-color: #f9f9f9; padding: 8px; border-radius: 4px;")
-            details_layout.addWidget(abstract_text)
+            # Extract year from publication_date
+            year = None
+            if self.article.publication_date:
+                try:
+                    year = int(str(self.article.publication_date)[:4])
+                except (ValueError, TypeError):
+                    pass
 
-        # MeSH terms
-        if self.article.mesh_terms:
-            mesh_label = QLabel("MeSH Terms:")
-            mesh_label.setFont(QFont("", s['font_small'], QFont.Bold))
-            details_layout.addWidget(mesh_label)
+            # Create card data for PDF button
+            card_data = DocumentCardData(
+                doc_id=self.doc_id,
+                title=self.article.title or "No title",
+                authors=self.article.authors or [],
+                year=year,
+                doi=self.article.doi,
+                pmid=self.article.pmid,
+                pdf_path=doc_details.get('pdf_path') if doc_details else None,
+                pdf_filename=doc_details.get('pdf_filename') if doc_details else None,
+                pdf_url=None,  # PubMed doesn't provide direct PDF URLs
+                context=CardContext.LITERATURE,
+                show_pdf_button=True
+            )
 
-            mesh_text = QLabel(", ".join(
-                self.article.mesh_terms[:PubMedLabConstants.MAX_MESH_TERMS_DISPLAY]
-            ))
-            mesh_text.setWordWrap(True)
-            mesh_text.setStyleSheet("color: #666;")
-            details_layout.addWidget(mesh_text)
+            # Create PDF button widget
+            pdf_button_widget = factory._create_pdf_button_for_card(card_data)
+            if pdf_button_widget:
+                self.document_card.details_layout.addWidget(pdf_button_widget)
 
-        # Keywords
-        if self.article.keywords:
-            kw_label = QLabel("Keywords:")
-            kw_label.setFont(QFont("", s['font_small'], QFont.Bold))
-            details_layout.addWidget(kw_label)
+        except Exception as e:
+            logger.warning(f"Failed to add PDF buttons for article {self.doc_id}: {e}")
 
-            kw_text = QLabel(", ".join(
-                self.article.keywords[:PubMedLabConstants.MAX_KEYWORDS_DISPLAY]
-            ))
-            kw_text.setWordWrap(True)
-            kw_text.setStyleSheet("color: #666;")
-            details_layout.addWidget(kw_text)
+    def _get_document_details(self) -> Optional[Dict[str, Any]]:
+        """
+        Get document details from database for PDF path lookup.
 
-        layout.addWidget(self.details_widget)
+        Returns:
+            Dictionary with pdf_filename and pdf_path, or None if not found
+        """
+        if not self.doc_id:
+            return None
 
-        # Styling
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pdf_filename FROM document WHERE id = %s",
+                        (self.doc_id,)
+                    )
+                    result = cur.fetchone()
+                    if result and result[0]:
+                        return {'pdf_filename': result[0]}
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to get document details for {self.doc_id}: {e}")
+            return None
+
+    def mark_imported(self, doc_id: int) -> None:
+        """
+        Mark this article as successfully imported.
+
+        Args:
+            doc_id: The database ID assigned to the imported document
+        """
+        self.is_new = False
+        if hasattr(self, 'import_btn'):
+            self.import_btn.setText(f"Imported (ID: {doc_id})")
+            self.import_btn.setStyleSheet(
+                "QPushButton { background-color: #81C784; color: white; "
+                "padding: 8px 16px; border-radius: 4px; border: none; }"
+            )
+        # Update styling to remove green highlight
         self.setStyleSheet("""
             ArticleCardWidget {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-            ArticleCardWidget:hover {
-                border-color: #2196F3;
+                background-color: transparent;
             }
         """)
-
-    def _toggle_expanded(self) -> None:
-        """Toggle the expanded state."""
-        self._expanded = not self._expanded
-        self.details_widget.setVisible(self._expanded)
-        self.expand_btn.setText("Hide details" if self._expanded else "Show details")
 
 
 class PubMedSearchLabWindow(QMainWindow):
@@ -477,13 +551,13 @@ class PubMedSearchLabWindow(QMainWindow):
         search_group = QGroupBox("Research Question")
         search_layout = QVBoxLayout(search_group)
 
-        # Question input
+        # Question input - compact single line entry
         self.question_input = QTextEdit()
         self.question_input.setPlaceholderText(
-            "Enter your research question in natural language...\n\n"
-            "Example: What are the cardiovascular benefits of exercise in elderly patients?"
+            "Enter your research question (e.g., What are the cardiovascular benefits of exercise?)"
         )
-        self.question_input.setMaximumHeight(100)
+        self.question_input.setMaximumHeight(s['control_height_large'])  # ~40px, compact
+        self.question_input.setMinimumHeight(s['control_height_large'])
         search_layout.addWidget(self.question_input)
 
         # Options row
@@ -574,14 +648,22 @@ class PubMedSearchLabWindow(QMainWindow):
 
         main_layout.addWidget(self.status_widget)
 
-        # Query preview section
-        self.query_group = QGroupBox("Generated PubMed Query")
+        # Query preview section - collapsible, initially collapsed
+        self.query_group = QGroupBox("Generated PubMed Query (click to expand)")
+        self.query_group.setCheckable(True)
+        self.query_group.setChecked(False)  # Start collapsed
         query_layout = QVBoxLayout(self.query_group)
+        query_layout.setContentsMargins(s['spacing_small'], 0, s['spacing_small'], s['spacing_small'])
 
         self.query_preview = QTextEdit()
         self.query_preview.setReadOnly(True)
         self.query_preview.setStyleSheet("background-color: #f5f5f5;")
+        self.query_preview.setMaximumHeight(s['control_height_xlarge'] * 2)  # Limit height
+        self.query_preview.setVisible(False)  # Hidden when collapsed
         query_layout.addWidget(self.query_preview)
+
+        # Connect checkbox to toggle visibility
+        self.query_group.toggled.connect(self._on_query_group_toggled)
 
         self.query_group.setVisible(False)
         main_layout.addWidget(self.query_group)
@@ -624,6 +706,14 @@ class PubMedSearchLabWindow(QMainWindow):
         """Set up signal connections."""
         self.search_btn.clicked.connect(self._on_search_clicked)
         self.clear_btn.clicked.connect(self._clear_results)
+
+    def _on_query_group_toggled(self, checked: bool) -> None:
+        """Handle query group checkbox toggle."""
+        self.query_preview.setVisible(checked)
+        if checked:
+            self.query_group.setTitle("Generated PubMed Query (click to collapse)")
+        else:
+            self.query_group.setTitle("Generated PubMed Query (click to expand)")
 
     def _on_search_clicked(self) -> None:
         """Handle search button click."""
@@ -671,25 +761,41 @@ class PubMedSearchLabWindow(QMainWindow):
             self.query_preview.setPlainText(progress.message.replace("Query: ", ""))
             self.query_group.setVisible(True)
 
-    def _on_search_finished(self, articles: List) -> None:
+    def _on_search_finished(self, articles: List, existing_pmid_to_docid: Dict[str, int]) -> None:
         """Handle search completion."""
         self.search_btn.setEnabled(True)
         self.progress_widget.setVisible(False)
         self.current_articles = articles
 
+        # Count new vs existing
+        new_count = sum(1 for a in articles if a.pmid not in existing_pmid_to_docid)
+
         # Update results count
-        self.results_count_label.setText(f"{len(articles)} articles found")
+        self.results_count_label.setText(
+            f"{len(articles)} articles found ({new_count} new)"
+        )
         self.clear_btn.setEnabled(len(articles) > 0)
 
-        # Add article cards
-        for article in articles:
-            card = ArticleCardWidget(article)
+        # Add article cards - new articles first, then existing
+        new_articles = [a for a in articles if a.pmid not in existing_pmid_to_docid]
+        existing_articles = [a for a in articles if a.pmid in existing_pmid_to_docid]
+
+        for article in new_articles:
+            card = ArticleCardWidget(article, is_new=True)
+            card.import_requested.connect(self._on_import_requested)
+            self.results_layout.addWidget(card)
+
+        for article in existing_articles:
+            doc_id = existing_pmid_to_docid.get(article.pmid)
+            card = ArticleCardWidget(article, is_new=False, doc_id=doc_id)
             self.results_layout.addWidget(card)
 
         # Add stretch at the end
         self.results_layout.addStretch()
 
-        self.status_label.setText(f"Search complete. Retrieved {len(articles)} articles.")
+        self.status_label.setText(
+            f"Search complete. {new_count} new articles, {len(existing_pmid_to_docid)} already in database."
+        )
 
     def _on_search_error(self, error_msg: str) -> None:
         """Handle search error."""
@@ -720,6 +826,108 @@ class PubMedSearchLabWindow(QMainWindow):
                 "padding: 4px 12px; border-radius: 4px;"
             )
             self.existing_label.setVisible(True)
+
+    def _on_import_requested(self, article: Any) -> None:
+        """
+        Handle import request for a PubMed article.
+
+        Args:
+            article: ArticleMetadata object to import
+        """
+        try:
+            from bmlibrarian.importers.pubmed_importer import PubMedImporter
+
+            self.status_label.setText(f"Importing PMID {article.pmid}...")
+
+            # Create importer and import by PMID
+            importer = PubMedImporter()
+            result = importer.import_by_pmids([article.pmid])
+
+            if result.get('imported', 0) > 0:
+                # Look up the document ID that was just created
+                doc_id = self._get_doc_id_by_pmid(article.pmid)
+                if doc_id is not None:
+                    self.status_label.setText(f"Imported PMID {article.pmid} as document {doc_id}")
+
+                    # Find the card widget and mark it as imported
+                    for i in range(self.results_layout.count()):
+                        item = self.results_layout.itemAt(i)
+                        if item and item.widget():
+                            card = item.widget()
+                            if isinstance(card, ArticleCardWidget) and card.article.pmid == article.pmid:
+                                card.mark_imported(doc_id)
+                                break
+                else:
+                    self.status_label.setText(f"Imported PMID {article.pmid} but could not retrieve ID")
+            else:
+                self.status_label.setText(f"PMID {article.pmid} may already exist in database")
+                # Check if it already exists
+                doc_id = self._get_doc_id_by_pmid(article.pmid)
+                if doc_id:
+                    for i in range(self.results_layout.count()):
+                        item = self.results_layout.itemAt(i)
+                        if item and item.widget():
+                            card = item.widget()
+                            if isinstance(card, ArticleCardWidget) and card.article.pmid == article.pmid:
+                                card.mark_imported(doc_id)
+                                break
+                else:
+                    # Re-enable the import button
+                    self._reset_import_button(article.pmid)
+
+        except Exception as e:
+            logger.exception(f"Failed to import article PMID {article.pmid}")
+            self.status_label.setText(f"Error importing: {str(e)[:50]}...")
+            self._reset_import_button(article.pmid)
+
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Failed to import article:\n\n{str(e)}"
+            )
+
+    def _get_doc_id_by_pmid(self, pmid: str) -> Optional[int]:
+        """
+        Look up document ID by PMID.
+
+        Args:
+            pmid: PubMed ID
+
+        Returns:
+            Document ID or None if not found
+        """
+        try:
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM document WHERE source_id = 1 AND external_id = %s",
+                        (pmid,)
+                    )
+                    result = cur.fetchone()
+                    return result[0] if result else None
+        except Exception as e:
+            logger.warning(f"Failed to look up document by PMID {pmid}: {e}")
+            return None
+
+    def _reset_import_button(self, pmid: str) -> None:
+        """
+        Reset the import button for an article to its original state.
+
+        Args:
+            pmid: PubMed ID of the article
+        """
+        for i in range(self.results_layout.count()):
+            item = self.results_layout.itemAt(i)
+            if item and item.widget():
+                card = item.widget()
+                if isinstance(card, ArticleCardWidget) and card.article.pmid == pmid:
+                    if hasattr(card, 'import_btn'):
+                        card.import_btn.setEnabled(True)
+                        card.import_btn.setText("Import to Database")
+                    break
 
     def _clear_results(self) -> None:
         """Clear all results."""

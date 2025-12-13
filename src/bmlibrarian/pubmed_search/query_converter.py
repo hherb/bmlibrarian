@@ -66,11 +66,12 @@ Instructions:
    - OR between synonyms and alternatives within a concept
    - AND between different concepts
    - Proper parentheses for grouping
-4. Consider adding appropriate filters if the question suggests them:
-   - Publication types: Clinical Trial, Meta-Analysis, Systematic Review, RCT
-   - Date ranges if topic is time-sensitive
-   - Humans filter for clinical questions
-   - Language filters if relevant
+4. Be CONSERVATIVE with filters - only add filters when clearly appropriate:
+   - publication_types: Leave EMPTY [] for most searches to maximize results. Only filter if the question explicitly asks for specific study types (e.g., "find meta-analyses about...")
+   - humans_only: true for clinical questions about patients
+   - has_abstract: true is generally safe
+   - language: usually null unless specifically needed
+   - date_range: usually null unless topic is time-sensitive
 
 IMPORTANT: Output ONLY valid JSON, no other text. Use this exact format:
 {{
@@ -84,11 +85,11 @@ IMPORTANT: Output ONLY valid JSON, no other text. Use this exact format:
     }}
   ],
   "suggested_filters": {{
-    "publication_types": ["Clinical Trial", "Meta-Analysis"],
-    "date_range": {{"start_year": 2020, "end_year": null}},
+    "publication_types": [],
+    "date_range": null,
     "humans_only": true,
     "has_abstract": true,
-    "language": "english"
+    "language": null
   }},
   "confidence": 0.85,
   "notes": "Brief explanation of query strategy"
