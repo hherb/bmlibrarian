@@ -52,6 +52,47 @@ class PDFButtonColorsDark:
     TEXT_COLOR: Final[str] = "white"
 
 
+# Import Button Colors
+class ImportButtonColors:
+    """Colors for import button states."""
+    BG: Final[str] = "#4CAF50"  # Green - Import to database
+    BG_HOVER: Final[str] = "#388E3C"  # Darker green
+    BG_PRESSED: Final[str] = "#2E7D32"  # Even darker green
+    BG_DISABLED: Final[str] = "#A5D6A7"  # Light green - disabled
+    BG_SUCCESS: Final[str] = "#81C784"  # Medium green - imported successfully
+    TEXT_COLOR: Final[str] = "white"
+    TEXT_DISABLED: Final[str] = "#666666"
+
+
+# New Article Card Colors
+class NewArticleColors:
+    """Colors for highlighting new articles not yet in database."""
+    BG: Final[str] = "#F1F8E9"  # Very light green background
+    BORDER: Final[str] = "#4CAF50"  # Green left border
+
+
+# Search Button Colors (Primary action buttons)
+class SearchButtonColors:
+    """Colors for primary search/action buttons."""
+    BG: Final[str] = "#2196F3"  # Blue - Primary action
+    BG_HOVER: Final[str] = "#1976D2"  # Darker blue
+    BG_PRESSED: Final[str] = "#1565C0"  # Even darker blue
+    BG_DISABLED: Final[str] = "#BDBDBD"  # Gray - Disabled
+    TEXT_COLOR: Final[str] = "white"
+
+
+# Status Label Colors
+class StatusColors:
+    """Colors for status labels and indicators."""
+    INFO: Final[str] = "#666666"  # Gray - Informational
+    SUCCESS_TEXT: Final[str] = "#4CAF50"  # Green text
+    SUCCESS_BG: Final[str] = "#E8F5E9"  # Light green background
+    INFO_TEXT: Final[str] = "#2196F3"  # Blue text
+    INFO_BG: Final[str] = "#E3F2FD"  # Light blue background
+    TITLE: Final[str] = "#1565C0"  # Blue - Title/header
+    PREVIEW_BG: Final[str] = "#F5F5F5"  # Light gray - Preview/readonly areas
+
+
 # Score Colors
 class ScoreColors:
     """Colors for document relevance scores."""
@@ -131,7 +172,7 @@ class DefaultLimits:
     ABSTRACT_MAX_LENGTH: Final[int] = 500  # Maximum abstract length before truncation
     MAX_VISIBLE_LINES: Final[int] = 10  # Max lines before scrollable overflow
     AI_REASONING_MAX_LINES: Final[int] = 10  # Max visible lines for AI reasoning
-    ABSTRACT_MAX_LINES: Final[int] = 10  # Max visible lines for abstract
+    ABSTRACT_MAX_LINES: Final[int] = 12  # Max visible lines for abstract
 
 
 # ============================================================================

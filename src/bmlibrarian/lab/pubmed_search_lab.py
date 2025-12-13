@@ -27,6 +27,12 @@ from psycopg import sql
 
 from bmlibrarian.config import get_config
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
+from bmlibrarian.gui.qt.resources.constants import (
+    ImportButtonColors,
+    NewArticleColors,
+    SearchButtonColors,
+    StatusColors,
+)
 from bmlibrarian.pubmed_search.constants import DEFAULT_MAX_RESULTS
 
 logger = logging.getLogger(__name__)
@@ -332,6 +338,9 @@ class ArticleCardWidget(QFrame):
 
         self.setFrameStyle(QFrame.Shape.NoFrame)
 
+        # Get DPI-scaled values
+        s = get_font_scale()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -344,13 +353,26 @@ class ArticleCardWidget(QFrame):
         # Add Import button for new articles (in the card's details section)
         if self.is_new:
             self.import_btn = QPushButton("Import to Database")
-            self.import_btn.setStyleSheet(
-                "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; "
-                "padding: 6px 12px; border-radius: 4px; border: none; }"
-                "QPushButton:hover { background-color: #388E3C; }"
-                "QPushButton:pressed { background-color: #2E7D32; }"
-                "QPushButton:disabled { background-color: #A5D6A7; color: #666; }"
-            )
+            self.import_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ImportButtonColors.BG};
+                    color: {ImportButtonColors.TEXT_COLOR};
+                    font-weight: bold;
+                    padding: {s['padding_tiny']}px {s['padding_small']}px;
+                    border-radius: {s['radius_small']}px;
+                    border: none;
+                }}
+                QPushButton:hover {{
+                    background-color: {ImportButtonColors.BG_HOVER};
+                }}
+                QPushButton:pressed {{
+                    background-color: {ImportButtonColors.BG_PRESSED};
+                }}
+                QPushButton:disabled {{
+                    background-color: {ImportButtonColors.BG_DISABLED};
+                    color: {ImportButtonColors.TEXT_DISABLED};
+                }}
+            """)
             self.import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.import_btn.clicked.connect(self._on_import_clicked)
             # Add to the document card's details layout
@@ -360,20 +382,32 @@ class ArticleCardWidget(QFrame):
             self._add_pdf_buttons()
 
         # Apply container styling - highlight new articles with green left border
+        self._apply_card_styling()
+
+    def _apply_card_styling(self) -> None:
+        """
+        Apply styling to the card container based on new/existing status.
+
+        Uses centralized color constants for consistency.
+        """
+        s = get_font_scale()
+
         if self.is_new:
-            self.setStyleSheet("""
-                ArticleCardWidget {
-                    background-color: #F1F8E9;
-                    border-left: 4px solid #4CAF50;
-                    margin-bottom: 4px;
-                }
+            # Highlight new articles with green background and left border
+            self.setStyleSheet(f"""
+                ArticleCardWidget {{
+                    background-color: {NewArticleColors.BG};
+                    border-left: {s['border_width_medium']}px solid {NewArticleColors.BORDER};
+                    margin-bottom: {s['spacing_tiny']}px;
+                }}
             """)
         else:
-            self.setStyleSheet("""
-                ArticleCardWidget {
+            # Existing articles have transparent background
+            self.setStyleSheet(f"""
+                ArticleCardWidget {{
                     background-color: transparent;
-                    margin-bottom: 4px;
-                }
+                    margin-bottom: {s['spacing_tiny']}px;
+                }}
             """)
 
     def _on_import_clicked(self) -> None:
@@ -443,26 +477,18 @@ class ArticleCardWidget(QFrame):
         """
         Get document details from database for PDF path lookup.
 
+        Uses the canonical get_document_details() function from the database module
+        per golden rule 18.
+
         Returns:
-            Dictionary with pdf_filename and pdf_path, or None if not found
+            Dictionary with document details including pdf_filename, or None if not found
         """
         if not self.doc_id:
             return None
 
         try:
-            from bmlibrarian.database import get_db_manager
-            db_manager = get_db_manager()
-
-            with db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT pdf_filename FROM document WHERE id = %s",
-                        (self.doc_id,)
-                    )
-                    result = cur.fetchone()
-                    if result and result[0]:
-                        return {'pdf_filename': result[0]}
-            return None
+            from bmlibrarian.database import get_document_details
+            return get_document_details(self.doc_id)
         except Exception as e:
             logger.warning(f"Failed to get document details for {self.doc_id}: {e}")
             return None
@@ -475,18 +501,27 @@ class ArticleCardWidget(QFrame):
             doc_id: The database ID assigned to the imported document
         """
         self.is_new = False
+        self.doc_id = doc_id  # Store the doc_id for PDF buttons
+
+        s = get_font_scale()
+
         if hasattr(self, 'import_btn'):
             self.import_btn.setText(f"Imported (ID: {doc_id})")
-            self.import_btn.setStyleSheet(
-                "QPushButton { background-color: #81C784; color: white; "
-                "padding: 8px 16px; border-radius: 4px; border: none; }"
-            )
+            self.import_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ImportButtonColors.BG_SUCCESS};
+                    color: {ImportButtonColors.TEXT_COLOR};
+                    padding: {s['padding_tiny']}px {s['padding_small']}px;
+                    border-radius: {s['radius_small']}px;
+                    border: none;
+                }}
+            """)
+
+        # Add PDF buttons now that we have a doc_id
+        self._add_pdf_buttons()
+
         # Update styling to remove green highlight
-        self.setStyleSheet("""
-            ArticleCardWidget {
-                background-color: transparent;
-            }
-        """)
+        self._apply_card_styling()
 
 
 class PubMedSearchLabWindow(QMainWindow):
@@ -535,14 +570,14 @@ class PubMedSearchLabWindow(QMainWindow):
         # Title
         title_label = QLabel("PubMed API Search Laboratory")
         title_label.setFont(QFont("", s['font_xlarge'], QFont.Bold))
-        title_label.setStyleSheet("color: #1565C0;")
+        title_label.setStyleSheet(f"color: {StatusColors.TITLE};")
         main_layout.addWidget(title_label)
 
         subtitle_label = QLabel(
             "Search PubMed directly via NCBI E-utilities API. "
             "Results are displayed without storing in the database."
         )
-        subtitle_label.setStyleSheet("color: #666;")
+        subtitle_label.setStyleSheet(f"color: {StatusColors.INFO};")
         main_layout.addWidget(subtitle_label)
 
         main_layout.addSpacing(s['spacing_medium'])
@@ -588,24 +623,24 @@ class PubMedSearchLabWindow(QMainWindow):
 
         # Search button
         self.search_btn = QPushButton("Search PubMed")
-        self.search_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                padding: 8px 24px;
+        self.search_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {SearchButtonColors.BG};
+                color: {SearchButtonColors.TEXT_COLOR};
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
                 border: none;
-                border-radius: 4px;
+                border-radius: {s['radius_small']}px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #1565C0;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {SearchButtonColors.BG_HOVER};
+            }}
+            QPushButton:pressed {{
+                background-color: {SearchButtonColors.BG_PRESSED};
+            }}
+            QPushButton:disabled {{
+                background-color: {SearchButtonColors.BG_DISABLED};
+            }}
         """)
         options_layout.addWidget(self.search_btn)
 
@@ -618,7 +653,7 @@ class PubMedSearchLabWindow(QMainWindow):
         progress_layout.setContentsMargins(0, 0, 0, 0)
 
         self.progress_label = QLabel("Ready")
-        self.progress_label.setStyleSheet("color: #666;")
+        self.progress_label.setStyleSheet(f"color: {StatusColors.INFO};")
         progress_layout.addWidget(self.progress_label)
 
         self.progress_bar = QProgressBar()
@@ -635,13 +670,15 @@ class PubMedSearchLabWindow(QMainWindow):
         status_layout.setContentsMargins(0, 0, 0, 0)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.status_label.setStyleSheet(f"color: {StatusColors.INFO}; font-style: italic;")
         status_layout.addWidget(self.status_label, 1)
 
         self.existing_label = QLabel("")
         self.existing_label.setStyleSheet(
-            "color: #4CAF50; font-weight: bold; background-color: #E8F5E9; "
-            "padding: 4px 12px; border-radius: 4px;"
+            f"color: {StatusColors.SUCCESS_TEXT}; font-weight: bold; "
+            f"background-color: {StatusColors.SUCCESS_BG}; "
+            f"padding: {s['padding_tiny']}px {s['padding_small']}px; "
+            f"border-radius: {s['radius_small']}px;"
         )
         self.existing_label.setVisible(False)
         status_layout.addWidget(self.existing_label)
@@ -657,7 +694,7 @@ class PubMedSearchLabWindow(QMainWindow):
 
         self.query_preview = QTextEdit()
         self.query_preview.setReadOnly(True)
-        self.query_preview.setStyleSheet("background-color: #f5f5f5;")
+        self.query_preview.setStyleSheet(f"background-color: {StatusColors.PREVIEW_BG};")
         self.query_preview.setMaximumHeight(s['control_height_xlarge'] * 2)  # Limit height
         self.query_preview.setVisible(False)  # Hidden when collapsed
         query_layout.addWidget(self.query_preview)
@@ -675,7 +712,7 @@ class PubMedSearchLabWindow(QMainWindow):
         # Results header
         results_header = QHBoxLayout()
         self.results_count_label = QLabel("No results yet")
-        self.results_count_label.setStyleSheet("color: #666;")
+        self.results_count_label.setStyleSheet(f"color: {StatusColors.INFO};")
         results_header.addWidget(self.results_count_label)
 
         results_header.addStretch()
@@ -814,6 +851,8 @@ class PubMedSearchLabWindow(QMainWindow):
 
     def _on_existing_count(self, existing: int, total: int) -> None:
         """Handle existing document count update."""
+        s = get_font_scale()
+
         if existing > 0:
             self.existing_label.setText(
                 f"{existing}/{total} already in database"
@@ -822,8 +861,10 @@ class PubMedSearchLabWindow(QMainWindow):
         else:
             self.existing_label.setText("All articles are new")
             self.existing_label.setStyleSheet(
-                "color: #2196F3; font-weight: bold; background-color: #E3F2FD; "
-                "padding: 4px 12px; border-radius: 4px;"
+                f"color: {StatusColors.INFO_TEXT}; font-weight: bold; "
+                f"background-color: {StatusColors.INFO_BG}; "
+                f"padding: {s['padding_tiny']}px {s['padding_small']}px; "
+                f"border-radius: {s['radius_small']}px;"
             )
             self.existing_label.setVisible(True)
 
