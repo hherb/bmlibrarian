@@ -21,10 +21,11 @@ import gzip
 import logging
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Iterator, Callable
+from typing import Optional, List, Dict, Any, Iterator, Callable, IO
 from urllib.parse import urljoin
 import requests
 
@@ -435,6 +436,24 @@ class MeSHImporter:
             return child.text.strip()
         return None
 
+    @contextmanager
+    def _open_xml_file(self, file_path: Path) -> Iterator[IO[bytes]]:
+        """
+        Open an XML file (gzipped or plain) using context manager.
+
+        Args:
+            file_path: Path to XML or XML.gz file
+
+        Yields:
+            File handle for reading
+        """
+        if file_path.suffix == ".gz":
+            with gzip.open(file_path, "rb") as f:
+                yield f
+        else:
+            with open(file_path, "rb") as f:
+                yield f
+
     def _iter_xml_records(
         self,
         file_path: Path,
@@ -443,7 +462,8 @@ class MeSHImporter:
         """
         Iterate over XML records in a (possibly gzipped) file.
 
-        Uses iterparse for memory-efficient streaming.
+        Uses iterparse for memory-efficient streaming with proper resource
+        management via context managers.
 
         Args:
             file_path: Path to XML or XML.gz file
@@ -452,21 +472,13 @@ class MeSHImporter:
         Yields:
             XML elements for each record
         """
-        # Open file (gzipped or plain)
-        if file_path.suffix == ".gz":
-            f = gzip.open(file_path, "rb")
-        else:
-            f = open(file_path, "rb")
-
-        try:
+        with self._open_xml_file(file_path) as f:
             context = ET.iterparse(f, events=("end",))
             for event, elem in context:
                 if elem.tag == record_tag:
                     yield elem
                     # Clear element to save memory
                     elem.clear()
-        finally:
-            f.close()
 
     def _store_descriptor(
         self,

@@ -46,6 +46,7 @@ from .constants import (
     MESH_CACHE_FILENAME,
     MESH_CACHE_TTL_DAYS,
     REQUEST_DELAY_WITHOUT_KEY,
+    MESH_DESCRIPTOR_PREFIX,
 )
 from .data_types import MeSHTerm
 
@@ -453,8 +454,12 @@ class MeSHLookup:
                 id_list = result.get("idlist", [])
 
                 if id_list:
-                    # Found a match - format descriptor UI
-                    descriptor_ui = f"D{id_list[0]}" if not id_list[0].startswith("D") else id_list[0]
+                    # Found a match - format descriptor UI with standard prefix
+                    descriptor_ui = (
+                        f"{MESH_DESCRIPTOR_PREFIX}{id_list[0]}"
+                        if not id_list[0].startswith(MESH_DESCRIPTOR_PREFIX)
+                        else id_list[0]
+                    )
 
                     return MeSHTerm(
                         descriptor_ui=descriptor_ui,
@@ -571,8 +576,12 @@ class MeSHLookup:
             if not id_list:
                 return None
 
-            # Found potential matches
-            descriptor_ui = f"D{id_list[0]}" if not id_list[0].startswith("D") else id_list[0]
+            # Found potential matches - format with standard prefix
+            descriptor_ui = (
+                f"{MESH_DESCRIPTOR_PREFIX}{id_list[0]}"
+                if not id_list[0].startswith(MESH_DESCRIPTOR_PREFIX)
+                else id_list[0]
+            )
 
             return MeSHTerm(
                 descriptor_ui=descriptor_ui,

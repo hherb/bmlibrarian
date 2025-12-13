@@ -37,6 +37,9 @@ RETRY_BACKOFF_MULTIPLIER = 2.0
 MESH_CACHE_FILENAME = "mesh_cache.db"
 MESH_CACHE_TTL_DAYS = 30
 
+# MeSH descriptor identifier prefix (e.g., D001234 for descriptor UI)
+MESH_DESCRIPTOR_PREFIX = "D"
+
 # LLM configuration
 DEFAULT_QUERY_MODEL = "gpt-oss:20b"
 DEFAULT_TEMPERATURE = 0.1

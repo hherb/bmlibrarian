@@ -56,6 +56,7 @@ try:
         RETRY_BACKOFF_MULTIPLIER,
         REQUEST_DELAY_WITHOUT_KEY,
         MESH_CACHE_TTL_DAYS as CACHE_TTL_DAYS,
+        MESH_DESCRIPTOR_PREFIX,
     )
 except ImportError:
     # Fallback constants if pubmed_search not available
@@ -68,6 +69,7 @@ except ImportError:
     RETRY_BACKOFF_MULTIPLIER = 2
     REQUEST_DELAY_WITHOUT_KEY = 0.34
     CACHE_TTL_DAYS = 30
+    MESH_DESCRIPTOR_PREFIX = "D"
 
 # Cache settings (specific to this module)
 DEFAULT_CACHE_DIR = Path.home() / ".bmlibrarian" / "cache"
@@ -235,6 +237,16 @@ class MeSHService:
         """
         Save a result to cache.
 
+        Thread safety note: SQLite handles concurrent writes using database-level
+        locking. The default timeout (5 seconds) allows waiting for locks. For
+        high-concurrency scenarios with many writers, consider:
+        1. Using WAL mode: PRAGMA journal_mode=WAL
+        2. Increasing timeout: sqlite3.connect(..., timeout=30)
+        3. Using a connection pool for very heavy workloads
+
+        Current usage pattern (single writer, multiple readers during lookup
+        operations) is safe with default SQLite behavior.
+
         Args:
             result: MeSHResult to cache
         """
@@ -263,6 +275,12 @@ class MeSHService:
         """
         Look up a term in the local PostgreSQL database.
 
+        Note on SQL security: This method uses parameterized queries (%s placeholders)
+        with psycopg's built-in parameter binding. The stored function mesh.lookup_term()
+        receives the term as a properly escaped parameter, not as raw SQL. The function
+        itself uses PostgreSQL's type system and internal query execution which prevents
+        SQL injection. See: https://www.psycopg.org/psycopg3/docs/basic/params.html
+
         Args:
             term: Term to look up
 
@@ -275,6 +293,7 @@ class MeSHService:
         try:
             with self._db_manager.get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Parameterized query - term is bound as a parameter, not interpolated
                     cur.execute(
                         "SELECT * FROM mesh.lookup_term(%s)",
                         (term,),
@@ -471,7 +490,12 @@ class MeSHService:
             id_list = result.get("idlist", [])
 
             if id_list:
-                descriptor_ui = f"D{id_list[0]}" if not id_list[0].startswith("D") else id_list[0]
+                # Format descriptor UI with standard prefix
+                descriptor_ui = (
+                    f"{MESH_DESCRIPTOR_PREFIX}{id_list[0]}"
+                    if not id_list[0].startswith(MESH_DESCRIPTOR_PREFIX)
+                    else id_list[0]
+                )
 
                 return MeSHResult(
                     found=True,
