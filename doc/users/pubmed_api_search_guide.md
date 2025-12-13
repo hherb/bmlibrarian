@@ -313,6 +313,32 @@ SELECT * FROM get_pubmed_api_search_stats();
 - Check rate limiting (wait if hitting limits)
 - Try with API key for higher rate limit
 
+## GUI: PubMed Search Lab
+
+For users who prefer a graphical interface, BMLibrarian provides the PubMed Search Lab:
+
+```bash
+uv run python scripts/pubmed_search_lab.py
+```
+
+The PubMed Search Lab provides:
+
+- **Question Input**: Enter your research question in natural language
+- **Search Options**: Configure max results and whether to check for existing documents
+- **Query Preview**: See the generated PubMed query before results are displayed
+- **Results Display**: View retrieved articles as expandable cards showing:
+  - Title, authors, journal, and year
+  - PMID, DOI, and PMC identifiers
+  - Abstract (expandable)
+  - MeSH terms and keywords
+- **Existing Document Feedback**: Shows how many results already exist in your local database
+- **No Database Storage**: Results are displayed for review only, not automatically imported
+
+This is useful for:
+- Previewing search results before importing
+- Testing query quality
+- Quick literature exploration without database modifications
+
 ## See Also
 
 - [PubMed API Search Architecture](../developers/pubmed_api_search_system.md)

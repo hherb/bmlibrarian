@@ -167,6 +167,7 @@ Since this project uses `uv` for package management:
   - `uv run python scripts/prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
   - `uv run python scripts/paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
   - `uv run python scripts/paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
+  - `uv run python scripts/pubmed_search_lab.py` - Interactive PubMed Search laboratory (PySide6/Qt) for searching PubMed API without local database storage
 - **PDF Processing Tools**:
   - `uv run python examples/pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python tests/test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
