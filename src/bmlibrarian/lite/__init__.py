@@ -65,6 +65,19 @@ from .agents import (
     LiteInterrogationAgent,
 )
 
+# GUI imports are optional (require PySide6)
+try:
+    from .gui import (
+        LiteMainWindow,
+        run_lite_app,
+        SystematicReviewTab,
+        DocumentInterrogationTab,
+        SettingsDialog,
+    )
+    _GUI_AVAILABLE = True
+except ImportError:
+    _GUI_AVAILABLE = False
+
 __all__ = [
     # Configuration
     "LiteConfig",
@@ -101,4 +114,16 @@ __all__ = [
     "LiteCitationAgent",
     "LiteReportingAgent",
     "LiteInterrogationAgent",
+    # GUI (optional, requires PySide6)
+    "_GUI_AVAILABLE",
 ]
+
+# Add GUI exports if available
+if _GUI_AVAILABLE:
+    __all__.extend([
+        "LiteMainWindow",
+        "run_lite_app",
+        "SystematicReviewTab",
+        "DocumentInterrogationTab",
+        "SettingsDialog",
+    ])
