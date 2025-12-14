@@ -34,6 +34,10 @@ from PySide6.QtCore import Qt
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
+# Constants for dialog dimensions
+IDENTIFIER_DIALOG_MIN_WIDTH = 400  # Minimum width for identifier input dialog
+WRONG_PDF_DIALOG_MIN_WIDTH = 450  # Minimum width for wrong PDF dialog
+
 
 class IdentifierInputDialog(QDialog):
     """
@@ -58,7 +62,7 @@ class IdentifierInputDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("Fetch PDF - Enter Identifier")
-        self.setMinimumWidth(scaled(400))
+        self.setMinimumWidth(scaled(IDENTIFIER_DIALOG_MIN_WIDTH))
 
         self._doi: Optional[str] = None
         self._pmid: Optional[str] = None
@@ -146,7 +150,7 @@ class WrongPDFDialog(QDialog):
         self._action: Optional[str] = None
 
         self.setWindowTitle("Wrong PDF - Actions")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(scaled(WRONG_PDF_DIALOG_MIN_WIDTH))
 
         self._setup_ui()
 

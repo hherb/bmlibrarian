@@ -62,6 +62,11 @@ from .citation_loader import (
 
 logger = logging.getLogger(__name__)
 
+# Constants for layout proportions
+DOCUMENT_PANE_WIDTH = 600  # Initial width proportion for document viewer
+CHAT_PANE_WIDTH = 400  # Initial width proportion for chat interface
+PROGRESS_DIALOG_MIN_WIDTH = 350  # Minimum width for progress dialog
+
 
 class DocumentInterrogationTab(QWidget):
     """
@@ -163,7 +168,7 @@ class DocumentInterrogationTab(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._create_document_pane())
         splitter.addWidget(self._create_chat_pane())
-        splitter.setSizes([600, 400])
+        splitter.setSizes([DOCUMENT_PANE_WIDTH, CHAT_PANE_WIDTH])
         return splitter
 
     def _create_document_pane(self) -> QWidget:
@@ -445,7 +450,7 @@ class DocumentInterrogationTab(QWidget):
         dialog.setLabelText("Initializing...")
         dialog.setMinimum(0)
         dialog.setMaximum(0)
-        dialog.setMinimumWidth(scaled(350))
+        dialog.setMinimumWidth(scaled(PROGRESS_DIALOG_MIN_WIDTH))
         dialog.setAutoClose(True)
         dialog.setAutoReset(True)
         dialog.setCancelButtonText("Cancel")

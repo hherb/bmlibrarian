@@ -29,6 +29,11 @@ from PySide6.QtCore import Qt
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import FONT_FAMILY
 
+# Constants for chat bubble styling
+BUBBLE_RADIUS_MIN = 20  # Minimum bubble corner radius in scaled pixels
+BUBBLE_RADIUS_MULTIPLIER = 1.8  # Multiplier for bubble radius from scale
+BROWSER_HEIGHT_MARGIN = 8  # Extra margin for text browser height to prevent clipping
+
 
 def generate_markdown_html(
     text: str,
@@ -215,7 +220,7 @@ class ChatBubble(QFrame):
         self.is_user = is_user
 
         # Get scaled dimensions - use larger radius for rounded corners
-        radius = max(20, int(scale['bubble_radius'] * 1.8))
+        radius = max(BUBBLE_RADIUS_MIN, int(scale['bubble_radius'] * BUBBLE_RADIUS_MULTIPLIER))
 
         # Allow bubble to expand horizontally based on content
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -291,4 +296,4 @@ class ChatBubble(QFrame):
         if hasattr(self, '_message_browser') and self._message_browser:
             doc_height = self._message_browser.document().size().height()
             # Add small margin to prevent clipping
-            self._message_browser.setFixedHeight(int(doc_height) + 8)
+            self._message_browser.setFixedHeight(int(doc_height) + BROWSER_HEIGHT_MARGIN)
