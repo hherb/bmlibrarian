@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
-from bmlibrarian.gui.qt.resources.stylesheet_generator import StylesheetGenerator
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import StylesheetGenerator
 
 from ..config import LiteConfig
 from ..storage import LiteStorage

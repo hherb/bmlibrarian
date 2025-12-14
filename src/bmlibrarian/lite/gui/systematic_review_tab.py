@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, QThread
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
 from ..config import LiteConfig
 from ..storage import LiteStorage

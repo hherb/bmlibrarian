@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
 )
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
 from ..config import LiteConfig
 from ..embeddings import LiteEmbedder

@@ -232,3 +232,7 @@ def scale_px(pixels: int) -> int:
     actual_height = font_scale['base_line_height']
     scale_factor = actual_height / baseline_height
     return max(1, int(pixels * scale_factor))
+
+
+# Convenience alias for more intuitive naming
+scaled = scale_px
