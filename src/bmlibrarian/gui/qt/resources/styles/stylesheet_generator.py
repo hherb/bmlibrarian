@@ -323,6 +323,135 @@ class StylesheetGenerator:
         """
         return template.format(**self._s)
 
+    def generate(self) -> str:
+        """
+        Generate a complete application stylesheet.
+
+        Combines common styles for buttons, inputs, labels, and other
+        widgets into a single stylesheet suitable for application-wide use.
+
+        Returns:
+            Complete stylesheet string for the application
+        """
+        s = self._s
+        return f"""
+            /* Base application styles */
+            QMainWindow, QWidget {{
+                font-size: {s['font_normal']}pt;
+            }}
+
+            /* Buttons */
+            QPushButton {{
+                background-color: #2196F3;
+                color: white;
+                border-radius: {s['radius_small']}px;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
+                font-size: {s['font_normal']}pt;
+                font-weight: bold;
+                border: none;
+            }}
+            QPushButton:hover {{
+                background-color: #1976D2;
+            }}
+            QPushButton:pressed {{
+                background-color: #0D47A1;
+            }}
+            QPushButton:disabled {{
+                background-color: #BDBDBD;
+                color: #757575;
+            }}
+
+            /* Text inputs */
+            QLineEdit, QTextEdit, QPlainTextEdit {{
+                border: 1px solid #BDBDBD;
+                border-radius: {s['radius_small']}px;
+                padding: {s['padding_small']}px;
+                font-size: {s['font_normal']}pt;
+                background-color: white;
+            }}
+            QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+                border: 1px solid #2196F3;
+            }}
+
+            /* Labels */
+            QLabel {{
+                font-size: {s['font_normal']}pt;
+            }}
+
+            /* Group boxes */
+            QGroupBox {{
+                font-weight: bold;
+                font-size: {s['font_normal']}pt;
+                border: 1px solid #E0E0E0;
+                border-radius: {s['radius_small']}px;
+                margin-top: {s['spacing_large']}px;
+                padding-top: {s['padding_medium']}px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {s['padding_medium']}px;
+                padding: 0 {s['padding_small']}px;
+            }}
+
+            /* Combo boxes */
+            QComboBox {{
+                font-size: {s['font_normal']}pt;
+                padding: {s['padding_small']}px;
+                border: 1px solid #BDBDBD;
+                border-radius: {s['radius_small']}px;
+            }}
+
+            /* Spin boxes */
+            QSpinBox, QDoubleSpinBox {{
+                font-size: {s['font_normal']}pt;
+                padding: {s['padding_small']}px;
+                border: 1px solid #BDBDBD;
+                border-radius: {s['radius_small']}px;
+            }}
+
+            /* Progress bars */
+            QProgressBar {{
+                border: 1px solid #BDBDBD;
+                border-radius: {s['radius_small']}px;
+                text-align: center;
+                font-size: {s['font_small']}pt;
+            }}
+            QProgressBar::chunk {{
+                background-color: #2196F3;
+                border-radius: {s['radius_small']}px;
+            }}
+
+            /* Tab widgets */
+            QTabWidget::pane {{
+                border: 1px solid #E0E0E0;
+                border-radius: {s['radius_small']}px;
+            }}
+            QTabBar::tab {{
+                font-size: {s['font_normal']}pt;
+                padding: {s['padding_small']}px {s['padding_medium']}px;
+                border: 1px solid #E0E0E0;
+                border-bottom: none;
+                border-top-left-radius: {s['radius_small']}px;
+                border-top-right-radius: {s['radius_small']}px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: white;
+            }}
+            QTabBar::tab:!selected {{
+                background-color: #F5F5F5;
+            }}
+
+            /* Scroll areas */
+            QScrollArea {{
+                border: none;
+            }}
+
+            /* Status bar */
+            QStatusBar {{
+                font-size: {s['font_small']}pt;
+            }}
+        """
+
 
 # Convenience functions for common stylesheet patterns
 
