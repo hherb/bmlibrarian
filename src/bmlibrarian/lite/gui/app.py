@@ -18,11 +18,13 @@ from PySide6.QtWidgets import (
     QWidget,
     QStatusBar,
     QPushButton,
+    QLabel,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import StylesheetGenerator
+from bmlibrarian.llm.token_tracker import get_token_tracker
 
 from ..config import LiteConfig
 from ..storage import LiteStorage
@@ -31,6 +33,9 @@ from .document_interrogation_tab import DocumentInterrogationTab
 from .settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
+
+# Update interval for token usage display (milliseconds)
+TOKEN_USAGE_UPDATE_INTERVAL_MS = 1000
 
 
 class LiteMainWindow(QMainWindow):
@@ -69,8 +74,13 @@ class LiteMainWindow(QMainWindow):
 
         self.storage = LiteStorage(self.config)
 
+        # Token tracker for usage display
+        self._token_tracker = get_token_tracker()
+        self._last_token_count = 0
+
         self._setup_ui()
         self._apply_styles()
+        self._setup_token_tracking()
 
         logger.info("BMLibrarian Lite initialized")
 
@@ -114,6 +124,13 @@ class LiteMainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+        # Token usage label in status bar (permanent, left of settings)
+        self.token_usage_label = QLabel("Tokens: 0 | Cost: $0.0000")
+        self.token_usage_label.setToolTip(
+            "Cumulative token usage and estimated cost for this session"
+        )
+        self.status_bar.addPermanentWidget(self.token_usage_label)
+
         # Settings button in status bar
         settings_btn = QPushButton("Settings")
         settings_btn.clicked.connect(self._show_settings)
@@ -142,6 +159,40 @@ class LiteMainWindow(QMainWindow):
             timeout: Timeout in milliseconds (0 = permanent)
         """
         self.status_bar.showMessage(message, timeout)
+
+    def _setup_token_tracking(self) -> None:
+        """Set up periodic token usage updates."""
+        self._token_timer = QTimer(self)
+        self._token_timer.timeout.connect(self._update_token_usage)
+        self._token_timer.start(TOKEN_USAGE_UPDATE_INTERVAL_MS)
+        # Initial update
+        self._update_token_usage()
+
+    def _update_token_usage(self) -> None:
+        """
+        Update the token usage display in the status bar.
+
+        Only updates when there's new usage to minimize UI updates.
+        """
+        summary = self._token_tracker.get_summary()
+        current_tokens = summary.total_tokens
+
+        # Only update UI if tokens have changed
+        if current_tokens != self._last_token_count:
+            self._last_token_count = current_tokens
+            cost = summary.total_cost_usd
+            self.token_usage_label.setText(
+                f"Tokens: {current_tokens:,} | Cost: ${cost:.4f}"
+            )
+
+    def update_token_display(self) -> None:
+        """
+        Force an immediate update of the token usage display.
+
+        Call this method after LLM operations to immediately reflect
+        new token usage without waiting for the timer.
+        """
+        self._update_token_usage()
 
 
 def run_lite_app() -> int:
