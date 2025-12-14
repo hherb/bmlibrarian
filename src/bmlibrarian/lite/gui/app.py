@@ -7,8 +7,13 @@ A lightweight version of BMLibrarian with two tabs:
 """
 
 import logging
+import os
 import sys
 from typing import Optional
+
+# Suppress tokenizers parallelism warning when forking for Qt threads
+# This must be set before importing any HuggingFace/FastEmbed modules
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from PySide6.QtWidgets import (
     QApplication,

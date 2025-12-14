@@ -40,9 +40,14 @@ First-time setup:
 
 import argparse
 import json
+import os
 import sys
 import logging
 from pathlib import Path
+
+# Suppress tokenizers parallelism warning when forking for Qt threads
+# This must be set before importing any HuggingFace/FastEmbed modules
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # Add src to path if running from source
 src_path = Path(__file__).parent / "src"
