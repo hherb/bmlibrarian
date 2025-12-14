@@ -27,6 +27,8 @@ from .constants import (
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_MAX_TOKENS,
     SQLITE_DATABASE_NAME,
+    MIN_CHUNK_SIZE,
+    EMBEDDING_MODEL_SPECS,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,3 +308,106 @@ class LiteConfig:
             logger.debug(f"Loaded environment from {env_file}")
         except Exception as e:
             logger.warning(f"Failed to load .env file: {e}")
+
+    def validate(self) -> list[str]:
+        """
+        Validate configuration values.
+
+        Checks all configuration parameters for valid ranges and formats.
+        Returns a list of error messages if any validation fails.
+
+        Returns:
+            List of validation error messages (empty if all valid)
+
+        Example:
+            config = LiteConfig.load()
+            errors = config.validate()
+            if errors:
+                for error in errors:
+                    print(f"Config error: {error}")
+                raise ConfigurationError(f"Invalid configuration: {errors}")
+        """
+        errors: list[str] = []
+
+        # Email validation
+        if self.pubmed.email and "@" not in self.pubmed.email:
+            errors.append("Invalid email format for PubMed configuration")
+
+        # LLM temperature range (0.0 to 1.0)
+        if not 0.0 <= self.llm.temperature <= 1.0:
+            errors.append(
+                f"LLM temperature must be between 0.0 and 1.0, got {self.llm.temperature}"
+            )
+
+        # LLM max tokens (must be positive)
+        if self.llm.max_tokens < 1:
+            errors.append(
+                f"LLM max_tokens must be a positive integer, got {self.llm.max_tokens}"
+            )
+
+        # LLM provider validation
+        valid_providers = ["anthropic", "openai", "ollama"]
+        if self.llm.provider not in valid_providers:
+            errors.append(
+                f"LLM provider must be one of {valid_providers}, got '{self.llm.provider}'"
+            )
+
+        # Embedding model validation
+        if self.embeddings.model not in EMBEDDING_MODEL_SPECS:
+            valid_models = list(EMBEDDING_MODEL_SPECS.keys())
+            errors.append(
+                f"Embedding model must be one of {valid_models}, got '{self.embeddings.model}'"
+            )
+
+        # Chunk size validation
+        if self.search.chunk_size < MIN_CHUNK_SIZE:
+            errors.append(
+                f"Chunk size must be >= {MIN_CHUNK_SIZE}, got {self.search.chunk_size}"
+            )
+
+        # Chunk overlap validation
+        if self.search.chunk_overlap < 0:
+            errors.append(
+                f"Chunk overlap must be >= 0, got {self.search.chunk_overlap}"
+            )
+
+        if self.search.chunk_overlap >= self.search.chunk_size:
+            errors.append(
+                f"Chunk overlap ({self.search.chunk_overlap}) must be less than "
+                f"chunk size ({self.search.chunk_size})"
+            )
+
+        # Similarity threshold validation (0.0 to 1.0)
+        if not 0.0 <= self.search.similarity_threshold <= 1.0:
+            errors.append(
+                f"Similarity threshold must be between 0.0 and 1.0, "
+                f"got {self.search.similarity_threshold}"
+            )
+
+        # Max results validation
+        if self.search.max_results < 1:
+            errors.append(
+                f"Max results must be a positive integer, got {self.search.max_results}"
+            )
+
+        # Data directory validation
+        if not self.storage.data_dir:
+            errors.append("Data directory path cannot be empty")
+
+        return errors
+
+    def is_valid(self) -> bool:
+        """
+        Check if configuration is valid.
+
+        Convenience method that returns True if no validation errors.
+
+        Returns:
+            True if configuration is valid, False otherwise
+
+        Example:
+            if not config.is_valid():
+                print("Configuration is invalid, using defaults")
+                config = LiteConfig()
+        """
+        return len(self.validate()) == 0

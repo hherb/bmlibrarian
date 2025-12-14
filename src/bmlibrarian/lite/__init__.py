@@ -56,6 +56,23 @@ from .chunking import (
     chunk_document_for_interrogation,
     estimate_chunk_count,
 )
+from .exceptions import (
+    LiteError,
+    LiteStorageError,
+    ChromaDBError,
+    SQLiteError,
+    EmbeddingError,
+    ConfigurationError,
+    NetworkError,
+    LLMError,
+    RetryExhaustedError,
+)
+from .utils import (
+    retry_with_backoff,
+    MetricsCollector,
+    get_metrics,
+    reset_metrics,
+)
 from .agents import (
     LiteBaseAgent,
     LiteSearchAgent,
@@ -107,6 +124,21 @@ __all__ = [
     "chunk_text",
     "chunk_document_for_interrogation",
     "estimate_chunk_count",
+    # Exceptions
+    "LiteError",
+    "LiteStorageError",
+    "ChromaDBError",
+    "SQLiteError",
+    "EmbeddingError",
+    "ConfigurationError",
+    "NetworkError",
+    "LLMError",
+    "RetryExhaustedError",
+    # Utilities
+    "retry_with_backoff",
+    "MetricsCollector",
+    "get_metrics",
+    "reset_metrics",
     # Agents
     "LiteBaseAgent",
     "LiteSearchAgent",

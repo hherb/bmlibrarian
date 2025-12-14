@@ -136,3 +136,19 @@ DEFAULT_MIN_SCORE = 3
 # Score range
 SCORE_MIN = 1
 SCORE_MAX = 5
+
+# =============================================================================
+# Network Retry Settings
+# =============================================================================
+
+# Maximum number of retry attempts for network operations
+DEFAULT_MAX_RETRIES = 3
+
+# Initial delay between retries in seconds
+DEFAULT_RETRY_BASE_DELAY = 1.0
+
+# Maximum delay between retries in seconds
+DEFAULT_RETRY_MAX_DELAY = 10.0
+
+# Exponential backoff multiplier
+DEFAULT_RETRY_EXPONENTIAL_BASE = 2.0
