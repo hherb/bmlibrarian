@@ -1236,3 +1236,254 @@ class DocumentInterrogationTab(QWidget):
                 "Save Error",
                 f"Failed to save conversation:\n{str(e)}"
             )
+
+    def load_from_citation(self, citation: 'Citation') -> None:
+        """
+        Load a document from a citation object.
+
+        Attempts to:
+        1. Try PDF discovery (PMC, Unpaywall, DOI) to get full text
+        2. Fall back to displaying the abstract if PDF is unavailable
+
+        Args:
+            citation: Citation object containing document metadata
+        """
+        from ..data_models import Citation
+
+        doc = citation.document
+        title = doc.title or "Untitled Document"
+
+        self.progress_label.setText("Fetching document...")
+        self.progress_label.setVisible(True)
+
+        # Clear any previous document
+        self._clear_document()
+
+        # Try to get full text via PDF discovery
+        pdf_text = self._try_pdf_discovery(doc)
+
+        if pdf_text:
+            # Successfully got PDF text
+            text = pdf_text
+            source_type = "Full Text (PDF)"
+        else:
+            # Fall back to abstract
+            text = self._format_abstract_as_document(doc, citation)
+            source_type = "Abstract"
+
+        if not text.strip():
+            self.doc_label.setText("Error: No content available")
+            self.progress_label.setVisible(False)
+            QMessageBox.warning(
+                self,
+                "No Content",
+                f"No text content available for:\n{title}"
+            )
+            return
+
+        try:
+            # Load into agent for Q&A
+            self._agent.load_document(text, title=title)
+
+            # Display in the full text tab
+            self.document_view.fulltext_tab.set_content(text)
+            self.document_view.tab_widget.setCurrentIndex(1)  # Switch to full text tab
+            self.document_view._current_text = text
+            self.document_view._current_title = title
+
+            self.doc_label.setText(f"Loaded: {title[:50]}... ({source_type})")
+            self.doc_label.setStyleSheet(f"""
+                QLabel {{
+                    color: #000;
+                    font-weight: bold;
+                    font-size: {self.scale['font_small']}pt;
+                }}
+            """)
+            self._document_loaded = True
+            self.send_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self.progress_label.setVisible(False)
+
+            # Add confirmation to chat with citation context
+            self._add_chat_bubble(
+                f"Document loaded: **{title}**\n\n"
+                f"Source: {source_type}\n\n"
+                f"**Relevant passage from this document:**\n"
+                f"> {citation.passage[:500]}{'...' if len(citation.passage) > 500 else ''}\n\n"
+                f"You can now ask questions about this document.",
+                is_user=False
+            )
+
+            self.status_message.emit(f"Loaded: {title}")
+            logger.info(f"Loaded document from citation: {doc.id}")
+
+        except Exception as e:
+            logger.exception("Failed to load document from citation")
+            self.doc_label.setText(f"Error: {str(e)}")
+            self.progress_label.setVisible(False)
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to load document:\n{str(e)}"
+            )
+
+    def _try_pdf_discovery(self, doc: 'LiteDocument') -> Optional[str]:
+        """
+        Try to discover and download PDF for the document.
+
+        Uses the BMLibrarian PDF discovery system to find and download
+        the full text from PMC, Unpaywall, or DOI.
+
+        Args:
+            doc: LiteDocument with identifiers (DOI, PMID, PMC ID)
+
+        Returns:
+            Extracted text from PDF, or None if unavailable
+        """
+        from ..data_models import LiteDocument
+
+        try:
+            from bmlibrarian.discovery import (
+                FullTextFinder,
+                DocumentIdentifiers,
+            )
+            import tempfile
+
+            # Build identifiers from document metadata
+            identifiers = DocumentIdentifiers(
+                doi=doc.doi,
+                pmid=doc.pmid,
+                pmc_id=doc.pmc_id,
+            )
+
+            # Skip if no identifiers
+            if not identifiers.doi and not identifiers.pmid and not identifiers.pmc_id:
+                logger.debug("No identifiers available for PDF discovery")
+                return None
+
+            self.progress_label.setText("Searching for full text PDF...")
+
+            # Create finder with Unpaywall email from config if available
+            unpaywall_email = getattr(self.config, 'unpaywall_email', None)
+            finder = FullTextFinder(unpaywall_email=unpaywall_email)
+
+            # Try to discover sources
+            discovery_result = finder.discover(identifiers)
+
+            if not discovery_result.best_source:
+                logger.info(f"No PDF source found for {doc.id}")
+                return None
+
+            self.progress_label.setText("Downloading PDF...")
+
+            # Download to temp file
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+
+            download_result = finder.discover_and_download(
+                identifiers,
+                output_path=tmp_path,
+                use_browser_fallback=True,
+            )
+
+            if not download_result.success:
+                logger.info(f"PDF download failed: {download_result.error}")
+                tmp_path.unlink(missing_ok=True)
+                return None
+
+            # Extract text from PDF
+            self.progress_label.setText("Extracting text from PDF...")
+
+            import fitz
+            pdf_doc = fitz.open(str(tmp_path))
+            text_parts = []
+            for page in pdf_doc:
+                text_parts.append(page.get_text())
+            pdf_doc.close()
+
+            # Clean up temp file
+            tmp_path.unlink(missing_ok=True)
+
+            text = "\n\n".join(text_parts)
+
+            if text.strip():
+                logger.info(f"Successfully extracted {len(text)} chars from PDF")
+                return text
+            else:
+                logger.warning("PDF extracted but contained no text")
+                return None
+
+        except ImportError as e:
+            logger.debug(f"PDF discovery not available: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"PDF discovery failed: {e}")
+            return None
+
+    def _format_abstract_as_document(
+        self, doc: 'LiteDocument', citation: 'Citation'
+    ) -> str:
+        """
+        Format abstract and citation as a readable document.
+
+        Creates a structured document from the abstract and metadata
+        when full text is not available.
+
+        Args:
+            doc: LiteDocument with metadata
+            citation: Citation with extracted passage
+
+        Returns:
+            Formatted document text
+        """
+        from ..data_models import LiteDocument, Citation
+
+        parts = []
+
+        # Title
+        parts.append(f"# {doc.title}")
+        parts.append("")
+
+        # Authors and publication info
+        if doc.authors:
+            parts.append(f"**Authors:** {doc.formatted_authors}")
+        if doc.journal:
+            parts.append(f"**Journal:** {doc.journal}")
+        if doc.year:
+            parts.append(f"**Year:** {doc.year}")
+        if doc.doi:
+            parts.append(f"**DOI:** {doc.doi}")
+        if doc.pmid:
+            parts.append(f"**PMID:** {doc.pmid}")
+
+        parts.append("")
+
+        # Abstract
+        parts.append("## Abstract")
+        parts.append("")
+        parts.append(doc.abstract or "No abstract available.")
+        parts.append("")
+
+        # Relevant passage from citation
+        if citation.passage:
+            parts.append("## Relevant Passage")
+            parts.append("")
+            parts.append(f"> {citation.passage}")
+            parts.append("")
+
+        # Context if available
+        if citation.context:
+            parts.append("## Context")
+            parts.append("")
+            parts.append(citation.context)
+            parts.append("")
+
+        # Note about limited content
+        parts.append("---")
+        parts.append("")
+        parts.append(
+            "*Note: Full text was not available. This document contains only "
+            "the abstract and citation information.*"
+        )
+
+        return "\n".join(parts)

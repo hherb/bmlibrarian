@@ -7,16 +7,21 @@ Provides a complete workflow for literature review:
 3. Score documents for relevance
 4. Extract citations
 5. Generate report
+
+Citations in the report are clickable and open the document
+in the Document Interrogation tab for detailed Q&A.
 """
 
 import logging
-from typing import Optional, List, Any
+import re
+from typing import Optional, List, Any, Dict
 
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QTextEdit,
+    QTextBrowser,
     QPushButton,
     QLabel,
     QProgressBar,
@@ -24,7 +29,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QFileDialog,
 )
-from PySide6.QtCore import Signal, QThread
+from PySide6.QtCore import Signal, QThread, QUrl
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
@@ -172,13 +177,19 @@ class SystematicReviewTab(QWidget):
     - Entering research question
     - Configuring search parameters
     - Executing search and scoring workflow
-    - Viewing generated report
+    - Viewing generated report with clickable citations
     - Exporting report
 
     Attributes:
         config: Lite configuration
         storage: Storage layer
+
+    Signals:
+        document_requested: Emitted when user clicks a citation (document_id)
     """
+
+    # Emitted when user clicks a citation link in the report
+    document_requested = Signal(str)  # document_id
 
     def __init__(
         self,
@@ -199,6 +210,9 @@ class SystematicReviewTab(QWidget):
         self.storage = storage
         self._worker: Optional[WorkflowWorker] = None
         self._current_report: str = ""
+
+        # Store citations by document ID for later access
+        self._citations_by_doc_id: Dict[str, Citation] = {}
 
         self._setup_ui()
 
@@ -274,15 +288,19 @@ class SystematicReviewTab(QWidget):
         results_group = QGroupBox("Report")
         results_layout = QVBoxLayout(results_group)
 
-        self.report_view = QTextEdit()
+        # Use QTextBrowser for clickable links
+        self.report_view = QTextBrowser()
         self.report_view.setReadOnly(True)
+        self.report_view.setOpenExternalLinks(False)  # Handle links ourselves
+        self.report_view.anchorClicked.connect(self._on_citation_clicked)
         self.report_view.setPlaceholderText(
             "Report will appear here after running the review...\n\n"
             "The workflow will:\n"
             "1. Search PubMed for relevant articles\n"
             "2. Score each document for relevance\n"
             "3. Extract key passages as citations\n"
-            "4. Generate a comprehensive report"
+            "4. Generate a comprehensive report\n\n"
+            "Click on any citation to open the document for detailed Q&A."
         )
         results_layout.addWidget(self.report_view)
 
@@ -357,8 +375,13 @@ class SystematicReviewTab(QWidget):
             scored = result
             self.progress_label.setText(f"Scored {len(scored)} relevant documents")
         elif step == "citations":
-            citations = result
+            citations: List[Citation] = result
             self.progress_label.setText(f"Extracted {len(citations)} citations")
+            # Store citations by document ID for later retrieval
+            self._citations_by_doc_id.clear()
+            for citation in citations:
+                doc_id = citation.document.id
+                self._citations_by_doc_id[doc_id] = citation
 
     def _on_error(self, step: str, message: str) -> None:
         """Handle workflow errors."""
@@ -369,11 +392,168 @@ class SystematicReviewTab(QWidget):
     def _on_finished(self, report: str) -> None:
         """Handle workflow completion."""
         self._current_report = report
-        self.report_view.setMarkdown(report)
-        self.progress_label.setText("Complete")
+
+        # Convert markdown to HTML with clickable citations
+        html_report = self._make_citations_clickable(report)
+        self.report_view.setHtml(html_report)
+
+        self.progress_label.setText("Complete - Click citations to view documents")
         self.progress_bar.setValue(100)
         self.export_btn.setEnabled(bool(report))
         self._reset_ui()
+
+    def _make_citations_clickable(self, markdown_report: str) -> str:
+        """
+        Convert markdown report to HTML with clickable citation links.
+
+        Finds citation patterns like [Author et al., 2023] and makes them
+        clickable links that open the document in the interrogation tab.
+
+        Args:
+            markdown_report: Original markdown report
+
+        Returns:
+            HTML with clickable citation links
+        """
+        import markdown
+
+        # First convert markdown to HTML
+        md = markdown.Markdown(extensions=['extra', 'nl2br', 'sane_lists'])
+        html = md.convert(markdown_report)
+
+        # Find citation patterns and replace with links
+        # Pattern matches: [Author et al., 2023] or [Smith J, 2022]
+        citation_pattern = r'\[([A-Za-z][^,\[\]]+(?:,\s*\d{4})?)\]'
+
+        def replace_citation(match: re.Match) -> str:
+            citation_text = match.group(1)
+            # Try to find matching document
+            doc_id = self._find_document_by_citation(citation_text)
+            if doc_id:
+                # Make it a clickable link
+                return f'<a href="bmlibrarian://doc/{doc_id}" style="color: #2196F3; text-decoration: underline; cursor: pointer;">[{citation_text}]</a>'
+            return match.group(0)
+
+        html = re.sub(citation_pattern, replace_citation, html)
+
+        # Wrap in basic HTML structure with styling
+        styled_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                    font-size: 14px;
+                    line-height: 1.6;
+                    color: #333;
+                    padding: 8px;
+                }}
+                h1, h2, h3 {{ color: #1a1a1a; }}
+                h1 {{ font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }}
+                h2 {{ font-size: 1.3em; }}
+                h3 {{ font-size: 1.1em; }}
+                blockquote {{
+                    border-left: 3px solid #2196F3;
+                    padding-left: 1em;
+                    margin-left: 0;
+                    color: #555;
+                    background-color: #f8f9fa;
+                }}
+                a {{
+                    color: #2196F3;
+                    text-decoration: none;
+                }}
+                a:hover {{
+                    text-decoration: underline;
+                }}
+                ul, ol {{ padding-left: 1.5em; }}
+                code {{
+                    background-color: #f0f0f0;
+                    padding: 2px 4px;
+                    border-radius: 3px;
+                }}
+            </style>
+        </head>
+        <body>
+        {html}
+        </body>
+        </html>
+        """
+        return styled_html
+
+    def _find_document_by_citation(self, citation_text: str) -> Optional[str]:
+        """
+        Find document ID from citation text.
+
+        Tries to match citation text like "Smith et al., 2023" against
+        stored citations.
+
+        Args:
+            citation_text: Citation text to match
+
+        Returns:
+            Document ID if found, None otherwise
+        """
+        citation_lower = citation_text.lower()
+
+        for doc_id, citation in self._citations_by_doc_id.items():
+            doc = citation.document
+            # Check if citation matches author and year
+            formatted_authors = doc.formatted_authors.lower()
+
+            # Extract year from citation text
+            year_match = re.search(r'(\d{4})', citation_text)
+            citation_year = year_match.group(1) if year_match else None
+
+            # Check if first author name appears in citation
+            if doc.authors:
+                first_author_last = doc.authors[0].split()[-1].lower()
+                if first_author_last in citation_lower:
+                    # Check year if present
+                    if citation_year:
+                        if doc.year and str(doc.year) == citation_year:
+                            return doc_id
+                    else:
+                        return doc_id
+
+            # Also try matching formatted author string
+            if formatted_authors.split(',')[0] in citation_lower:
+                if citation_year:
+                    if doc.year and str(doc.year) == citation_year:
+                        return doc_id
+                else:
+                    return doc_id
+
+        return None
+
+    def _on_citation_clicked(self, url: QUrl) -> None:
+        """
+        Handle citation link click.
+
+        Args:
+            url: Clicked URL (bmlibrarian://doc/{doc_id})
+        """
+        if url.scheme() == "bmlibrarian" and url.host() == "doc":
+            doc_id = url.path().lstrip('/')
+            logger.info(f"Citation clicked: {doc_id}")
+            self.document_requested.emit(doc_id)
+        elif url.scheme() in ("http", "https"):
+            # Open external links in browser
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(url)
+
+    def get_citation(self, doc_id: str) -> Optional[Citation]:
+        """
+        Get citation by document ID.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            Citation if found, None otherwise
+        """
+        return self._citations_by_doc_id.get(doc_id)
 
     def _reset_ui(self) -> None:
         """Reset UI to ready state."""

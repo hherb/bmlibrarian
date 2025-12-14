@@ -119,6 +119,11 @@ class LiteMainWindow(QMainWindow):
         )
         self.tab_widget.addTab(self.interrogation_tab, "Document Interrogation")
 
+        # Connect citation click signal to load document in interrogation tab
+        self.systematic_review_tab.document_requested.connect(
+            self._on_document_requested
+        )
+
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -193,6 +198,34 @@ class LiteMainWindow(QMainWindow):
         new token usage without waiting for the timer.
         """
         self._update_token_usage()
+
+    def _on_document_requested(self, doc_id: str) -> None:
+        """
+        Handle document request from citation click.
+
+        Switches to the Document Interrogation tab and loads
+        the requested document for Q&A.
+
+        Args:
+            doc_id: Document ID from the citation
+        """
+        # Get the citation from the systematic review tab
+        citation = self.systematic_review_tab.get_citation(doc_id)
+
+        if not citation:
+            logger.warning(f"Citation not found for doc_id: {doc_id}")
+            self.status_bar.showMessage(f"Document not found: {doc_id}", 5000)
+            return
+
+        # Switch to interrogation tab
+        self.tab_widget.setCurrentWidget(self.interrogation_tab)
+
+        # Load the document
+        self.interrogation_tab.load_from_citation(citation)
+
+        self.status_bar.showMessage(
+            f"Loading document: {citation.document.title[:50]}...", 3000
+        )
 
 
 def run_lite_app() -> int:
