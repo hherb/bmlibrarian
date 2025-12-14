@@ -10,7 +10,6 @@ from typing import Optional, Callable
 
 from bmlibrarian.pubmed_search import (
     PubMedSearchClient,
-    QueryConverter,
     PubMedQuery,
     ArticleMetadata,
 )
@@ -18,6 +17,7 @@ from ..storage import LiteStorage
 from ..config import LiteConfig
 from ..data_models import LiteDocument, DocumentSource, SearchSession
 from ..chroma_embeddings import create_embedding_function, FastEmbedFunction
+from ..query_converter import LiteQueryConverter
 from .base import LiteBaseAgent
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,8 @@ class LiteSearchAgent(LiteBaseAgent):
             api_key=self.config.pubmed.api_key,
         )
 
-        # Initialize query converter with our LLM client
-        self._query_converter = QueryConverter(
+        # Initialize lite query converter (simplified, focused queries)
+        self._query_converter = LiteQueryConverter(
             llm_client=self.llm_client,
             model=self._get_model(),
         )
@@ -85,8 +85,8 @@ class LiteSearchAgent(LiteBaseAgent):
         """
         Convert a natural language question to a PubMed query.
 
-        Uses LLM to parse the question and generate an optimized
-        PubMed query with MeSH terms and boolean operators.
+        Uses LLM to parse the question and generate a focused
+        PubMed query with key MeSH terms and keywords.
 
         Args:
             question: Natural language research question
@@ -96,10 +96,10 @@ class LiteSearchAgent(LiteBaseAgent):
         """
         logger.info(f"Converting question to PubMed query: {question[:100]}...")
 
-        result = self._query_converter.convert(question)
+        query = self._query_converter.convert(question)
 
-        logger.debug(f"Generated query: {result.primary_query.query_string}")
-        return result.primary_query
+        logger.debug(f"Generated query: {query.query_string}")
+        return query
 
     def search(
         self,
