@@ -77,7 +77,8 @@ class BrowserDownloader:
         url: str,
         save_path: Path,
         wait_for_cloudflare: bool = True,
-        max_wait: int = 30
+        max_wait: int = 30,
+        expected_doi: Optional[str] = None
     ) -> Dict[str, Any]:
         """Download a PDF using browser automation.
 
@@ -86,6 +87,8 @@ class BrowserDownloader:
             save_path: Path to save the PDF
             wait_for_cloudflare: Wait for Cloudflare verification to complete
             max_wait: Maximum seconds to wait for verification (default: 30)
+            expected_doi: If provided, validate embedded PDF URLs contain this DOI
+                         to prevent downloading wrong papers from related article sections
 
         Returns:
             Dictionary with download result:
@@ -247,21 +250,31 @@ class BrowserDownloader:
                 # Make PDF URL absolute if relative
                 from urllib.parse import urljoin
                 pdf_url_abs = urljoin(url, pdf_src)
-                logger.info(f"Downloading from embedded viewer: {pdf_url_abs}")
 
-                try:
-                    response = await page.goto(pdf_url_abs, timeout=self.timeout)
-                    pdf_content = await response.body()
+                # CRITICAL: Validate embedded PDF URL matches expected DOI
+                # This prevents downloading wrong papers from "related articles" sections
+                if expected_doi and not self._url_matches_doi(pdf_url_abs, expected_doi):
+                    logger.warning(
+                        f"Embedded PDF URL does not match expected DOI {expected_doi}: {pdf_url_abs}"
+                    )
+                    logger.info("Skipping embedded PDF to avoid downloading wrong document")
+                    pdf_src = None  # Skip this embedded PDF
+                else:
+                    logger.info(f"Downloading from embedded viewer: {pdf_url_abs}")
 
-                    if pdf_content and pdf_content[:4] == b'%PDF':
-                        save_path.write_bytes(pdf_content)
-                        return {
-                            'status': 'success',
-                            'path': str(save_path),
-                            'size': len(pdf_content)
-                        }
-                except Exception as e:
-                    logger.warning(f"Failed to download from embedded src: {e}")
+                    try:
+                        response = await page.goto(pdf_url_abs, timeout=self.timeout)
+                        pdf_content = await response.body()
+
+                        if pdf_content and pdf_content[:4] == b'%PDF':
+                            save_path.write_bytes(pdf_content)
+                            return {
+                                'status': 'success',
+                                'path': str(save_path),
+                                'size': len(pdf_content)
+                            }
+                    except Exception as e:
+                        logger.warning(f"Failed to download from embedded src: {e}")
 
             # Look for download link or button (common on journal sites)
             download_link = await self._find_download_link(page)
@@ -540,6 +553,50 @@ class BrowserDownloader:
 
         logger.warning(f"Cloudflare verification timeout after {max_wait}s")
 
+    def _url_matches_doi(self, url: str, expected_doi: str) -> bool:
+        """Check if a URL contains or references the expected DOI.
+
+        This helps prevent downloading wrong papers from "related articles"
+        or "recommended reading" sections on publisher pages.
+
+        Args:
+            url: URL to check (e.g., embedded PDF URL)
+            expected_doi: DOI we're looking for (e.g., "10.1234/xyz.123")
+
+        Returns:
+            True if URL appears to reference the expected DOI, False otherwise
+        """
+        from urllib.parse import unquote
+
+        # Normalize for comparison
+        url_lower = unquote(url).lower()
+        doi_lower = expected_doi.lower()
+
+        # Direct DOI match (URL contains the DOI)
+        # DOI format: 10.prefix/suffix - check both with and without URL encoding
+        if doi_lower in url_lower:
+            return True
+
+        # Check URL-encoded version (slashes become %2F)
+        doi_encoded = doi_lower.replace('/', '%2f')
+        if doi_encoded in url_lower:
+            return True
+
+        # Check with underscores (some sites use underscores instead of slashes)
+        doi_underscore = doi_lower.replace('/', '_')
+        if doi_underscore in url_lower:
+            return True
+
+        # Extract DOI suffix (part after the prefix) for partial matching
+        # e.g., from "10.1038/nature12373" extract "nature12373"
+        if '/' in expected_doi:
+            doi_suffix = expected_doi.split('/', 1)[1].lower()
+            # Only match if suffix is reasonably unique (>6 chars)
+            if len(doi_suffix) > 6 and doi_suffix in url_lower:
+                return True
+
+        return False
+
     async def _find_download_link(self, page) -> Optional[str]:
         """Find download link on the page (more aggressive than _find_pdf_link).
 
@@ -627,7 +684,8 @@ def download_pdf_with_browser(
     url: str,
     save_path: Path,
     headless: bool = True,
-    timeout: int = 60000
+    timeout: int = 60000,
+    expected_doi: Optional[str] = None
 ) -> Dict[str, Any]:
     """Synchronous wrapper for browser-based PDF download.
 
@@ -636,13 +694,15 @@ def download_pdf_with_browser(
         save_path: Path to save the PDF
         headless: Run browser in headless mode
         timeout: Timeout in milliseconds
+        expected_doi: If provided, validate embedded PDF URLs contain this DOI
+                     to prevent downloading wrong papers from related article sections
 
     Returns:
         Dictionary with download result
     """
     async def _download():
         async with BrowserDownloader(headless=headless, timeout=timeout) as downloader:
-            return await downloader.download_pdf(url, save_path)
+            return await downloader.download_pdf(url, save_path, expected_doi=expected_doi)
 
     return asyncio.run(_download())
 

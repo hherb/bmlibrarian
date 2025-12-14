@@ -274,7 +274,8 @@ class FullTextFinder:
                 sources=discovery.sources,
                 output_path=output_path,
                 headless=browser_headless,
-                timeout=browser_timeout
+                timeout=browser_timeout,
+                expected_doi=identifiers.doi  # Pass DOI for validation
             )
 
             if result.success:
@@ -309,7 +310,8 @@ class FullTextFinder:
         sources: List[PDFSource],
         output_path: Path,
         headless: bool = DEFAULT_BROWSER_HEADLESS,
-        timeout: int = DEFAULT_BROWSER_TIMEOUT_MS
+        timeout: int = DEFAULT_BROWSER_TIMEOUT_MS,
+        expected_doi: Optional[str] = None
     ) -> DownloadResult:
         """Download PDF using browser automation.
 
@@ -321,6 +323,8 @@ class FullTextFinder:
             output_path: Path to save the PDF
             headless: Run browser in headless mode
             timeout: Browser operation timeout in ms
+            expected_doi: If provided, validate embedded PDF URLs contain this DOI
+                         to prevent downloading wrong papers from related article sections
 
         Returns:
             DownloadResult with download status
@@ -355,7 +359,8 @@ class FullTextFinder:
                     url=source.url,
                     save_path=output_path,
                     headless=headless,
-                    timeout=timeout
+                    timeout=timeout,
+                    expected_doi=expected_doi
                 )
 
                 if result.get('status') == 'success':

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressDialog,
+    QDialog,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 
@@ -91,15 +92,18 @@ class PDFDiscoveryWorker(QThread):
     Background worker for PDF discovery and download.
 
     Discovers PDF sources and downloads to year-based folder structure.
+    Includes verification to detect when wrong PDF is downloaded.
 
     Signals:
         progress: Emitted with (stage, status) during download
         finished: Emitted with file_path when download succeeds
+        verification_warning: Emitted with (file_path, warning_message) on verification mismatch
         error: Emitted with error message on failure
     """
 
     progress = Signal(str, str)  # stage, status
     finished = Signal(str)  # file_path on success
+    verification_warning = Signal(str, str)  # file_path, warning_message
     error = Signal(str)  # error message
 
     def __init__(
@@ -125,7 +129,7 @@ class PDFDiscoveryWorker(QThread):
         self._cancelled = False
 
     def run(self) -> None:
-        """Execute PDF discovery and download."""
+        """Execute PDF discovery and download with verification."""
         try:
             from bmlibrarian.discovery import download_pdf_for_document
 
@@ -138,14 +142,38 @@ class PDFDiscoveryWorker(QThread):
                 output_dir=self.output_dir,
                 unpaywall_email=self.unpaywall_email,
                 progress_callback=progress_callback,
-                verify_content=False,  # Skip verification for Lite version
+                verify_content=True,  # Enable verification to detect wrong PDFs
+                delete_on_mismatch=False,  # Keep file but warn user
             )
 
             if self._cancelled:
                 return
 
             if result.success and result.file_path:
-                self.finished.emit(result.file_path)
+                # Check if verification detected a mismatch
+                if result.verified is False:
+                    # Build warning message with details
+                    warnings = result.verification_warnings or []
+                    warning_parts = []
+
+                    if result.extracted_doi and self.doc_dict.get('doi'):
+                        warning_parts.append(
+                            f"Expected DOI: {self.doc_dict['doi']}, "
+                            f"Found: {result.extracted_doi}"
+                        )
+                    if result.extracted_title:
+                        warning_parts.append(f"PDF title: {result.extracted_title[:80]}...")
+
+                    warning_msg = "PDF verification FAILED - wrong document may have been downloaded.\n"
+                    if warning_parts:
+                        warning_msg += "\n".join(warning_parts)
+                    elif warnings:
+                        warning_msg += "; ".join(warnings)
+
+                    logger.warning(f"PDF mismatch detected: {warning_msg}")
+                    self.verification_warning.emit(result.file_path, warning_msg)
+                else:
+                    self.finished.emit(result.file_path)
             else:
                 self.error.emit(result.error_message or "Unknown error")
 
@@ -790,6 +818,28 @@ class DocumentInterrogationTab(QWidget):
         """)
         layout.addWidget(self.clear_btn)
 
+        # Wrong PDF button - for handling incorrectly downloaded PDFs
+        self.wrong_pdf_btn = QPushButton("Wrong PDF")
+        self.wrong_pdf_btn.clicked.connect(self._handle_wrong_pdf)
+        self.wrong_pdf_btn.setEnabled(False)
+        self.wrong_pdf_btn.setVisible(False)  # Only show when PDF is loaded
+        self.wrong_pdf_btn.setFixedHeight(s['control_height_medium'])
+        self.wrong_pdf_btn.setToolTip(
+            "Report that this PDF is wrong - delete or reassign it"
+        )
+        self.wrong_pdf_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_tiny']}px {s['padding_medium']}px;
+                font-size: {s['font_small']}pt;
+                background-color: #FFE4E1;
+                color: #8B0000;
+            }}
+            QPushButton:hover {{
+                background-color: #FFB6C1;
+            }}
+        """)
+        layout.addWidget(self.wrong_pdf_btn)
+
         return widget
 
     def _create_split_pane(self) -> QSplitter:
@@ -1171,6 +1221,8 @@ class DocumentInterrogationTab(QWidget):
         self._current_pdf_path = None  # Clear PDF path
         self.send_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
+        self.wrong_pdf_btn.setEnabled(False)
+        self.wrong_pdf_btn.setVisible(False)
         self._clear_chat()
 
     def _clear_chat(self) -> None:
@@ -1587,6 +1639,7 @@ class DocumentInterrogationTab(QWidget):
         )
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(self._on_pdf_discovery_finished)
+        self._pdf_worker.verification_warning.connect(self._on_pdf_verification_warning)
         self._pdf_worker.error.connect(self._on_pdf_discovery_error)
         self._pdf_worker.start()
 
@@ -1639,6 +1692,42 @@ class DocumentInterrogationTab(QWidget):
         """Handle user cancelling PDF discovery."""
         self._cancel_pdf_discovery()
         logger.info("PDF discovery cancelled by user")
+        self._load_abstract_and_complete(self._pending_citation)
+
+    def _on_pdf_verification_warning(self, file_path: str, warning_message: str) -> None:
+        """
+        Handle PDF verification warning - wrong document may have been downloaded.
+
+        Shows a warning dialog to the user and falls back to abstract.
+        The mismatched PDF is kept for inspection but not loaded.
+
+        Args:
+            file_path: Path to the mismatched PDF file
+            warning_message: Description of the mismatch
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+
+        # Log the issue
+        logger.warning(f"PDF verification failed for {file_path}: {warning_message}")
+
+        # Show warning to user
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "PDF Verification Failed",
+            f"The downloaded PDF does not match the expected document.\n\n"
+            f"{warning_message}\n\n"
+            f"The file has been saved to:\n{file_path}\n\n"
+            f"Falling back to abstract view.",
+            QMessageBox.StandardButton.Ok
+        )
+
+        # Fall back to abstract
         self._load_abstract_and_complete(self._pending_citation)
 
     def _load_pdf_and_complete(
@@ -1770,6 +1859,14 @@ class DocumentInterrogationTab(QWidget):
         self.send_btn.setEnabled(True)
         self.clear_btn.setEnabled(True)
         self.progress_label.setVisible(False)
+
+        # Show Wrong PDF button only when a PDF is loaded (not abstract)
+        if self._current_pdf_path is not None:
+            self.wrong_pdf_btn.setEnabled(True)
+            self.wrong_pdf_btn.setVisible(True)
+        else:
+            self.wrong_pdf_btn.setEnabled(False)
+            self.wrong_pdf_btn.setVisible(False)
 
         # Add confirmation to chat with citation context
         self._add_chat_bubble(
@@ -2059,6 +2156,7 @@ class DocumentInterrogationTab(QWidget):
         )
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(self._on_fetch_finished)
+        self._pdf_worker.verification_warning.connect(self._on_fetch_verification_warning)
         self._pdf_worker.error.connect(self._on_fetch_error)
         self._pdf_worker.start()
 
@@ -2102,6 +2200,37 @@ class DocumentInterrogationTab(QWidget):
         """Handle user cancelling PDF fetch."""
         self._cancel_pdf_discovery()
         logger.info("PDF fetch cancelled by user")
+
+    def _on_fetch_verification_warning(self, file_path: str, warning_message: str) -> None:
+        """
+        Handle PDF verification warning during fetch - wrong document may have been downloaded.
+
+        Shows a warning dialog to the user. The mismatched PDF is kept for inspection.
+
+        Args:
+            file_path: Path to the mismatched PDF file
+            warning_message: Description of the mismatch
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+
+        # Log the issue
+        logger.warning(f"PDF verification failed for fetch {file_path}: {warning_message}")
+
+        # Show warning to user
+        QMessageBox.warning(
+            self,
+            "PDF Verification Failed",
+            f"The downloaded PDF does not match the expected document.\n\n"
+            f"{warning_message}\n\n"
+            f"The file has been saved to:\n{file_path}\n\n"
+            "Please verify the PDF manually before use.",
+            QMessageBox.StandardButton.Ok
+        )
 
     def _load_fetched_pdf(self, file_path: str) -> None:
         """
@@ -2172,6 +2301,10 @@ class DocumentInterrogationTab(QWidget):
             self.send_btn.setEnabled(True)
             self.clear_btn.setEnabled(True)
 
+            # Show Wrong PDF button since this is a PDF
+            self.wrong_pdf_btn.setEnabled(True)
+            self.wrong_pdf_btn.setVisible(True)
+
             self._add_chat_bubble(
                 f"Document loaded: **{display_title}**\n\n"
                 f"Source: PDF Discovery\n\n"
@@ -2189,3 +2322,235 @@ class DocumentInterrogationTab(QWidget):
                 "Error",
                 f"Failed to load PDF:\n{str(e)}"
             )
+
+    def _handle_wrong_pdf(self) -> None:
+        """
+        Handle the 'Wrong PDF' button click.
+
+        Shows a dialog allowing the user to:
+        - Delete the incorrect PDF file
+        - Clear the current view and extracted text
+        - Optionally try to fetch the correct PDF again
+        """
+        if not self._current_pdf_path:
+            QMessageBox.warning(
+                self,
+                "No PDF Loaded",
+                "No PDF file is currently loaded."
+            )
+            return
+
+        pdf_path = self._current_pdf_path
+
+        # Create custom dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Wrong PDF - Actions")
+        dialog.setMinimumWidth(450)
+
+        layout = QVBoxLayout(dialog)
+        s = self.scale
+
+        # Info section
+        info_label = QLabel(
+            f"<b>Current PDF:</b><br>"
+            f"<code>{pdf_path}</code><br><br>"
+            f"This PDF appears to be incorrect. Choose an action below:"
+        )
+        info_label.setWordWrap(True)
+        info_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(info_label)
+
+        layout.addSpacing(s['spacing_medium'])
+
+        # Action buttons
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(s['spacing_small'])
+
+        # Delete and clear button
+        delete_btn = QPushButton("Delete PDF and Clear View")
+        delete_btn.setToolTip(
+            "Delete the PDF file from disk and clear the document view"
+        )
+        delete_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_small']}px;
+                background-color: #FFCCCB;
+            }}
+            QPushButton:hover {{
+                background-color: #FF9999;
+            }}
+        """)
+        btn_layout.addWidget(delete_btn)
+
+        # Delete and retry button
+        retry_btn = QPushButton("Delete PDF and Try Again")
+        retry_btn.setToolTip(
+            "Delete the PDF file and attempt to fetch the correct one"
+        )
+        retry_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_small']}px;
+                background-color: #FFE4B5;
+            }}
+            QPushButton:hover {{
+                background-color: #FFD700;
+            }}
+        """)
+        btn_layout.addWidget(retry_btn)
+
+        # Keep file but clear view
+        clear_only_btn = QPushButton("Clear View Only (Keep File)")
+        clear_only_btn.setToolTip(
+            "Clear the document view but keep the PDF file for manual inspection"
+        )
+        clear_only_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_small']}px;
+            }}
+        """)
+        btn_layout.addWidget(clear_only_btn)
+
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: {s['padding_small']}px;
+            }}
+        """)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+        # Store result - use list to allow mutation in nested function
+        result: list[Optional[str]] = [None]
+
+        def on_delete() -> None:
+            result[0] = 'delete'
+            dialog.accept()
+
+        def on_retry() -> None:
+            result[0] = 'retry'
+            dialog.accept()
+
+        def on_clear_only() -> None:
+            result[0] = 'clear_only'
+            dialog.accept()
+
+        delete_btn.clicked.connect(on_delete)
+        retry_btn.clicked.connect(on_retry)
+        clear_only_btn.clicked.connect(on_clear_only)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        action = result[0]
+        doc_metadata = self._current_doc_metadata
+
+        if action == 'delete':
+            self._delete_wrong_pdf(pdf_path)
+            self._clear_document()
+            self._add_chat_bubble(
+                "The incorrect PDF has been deleted and the view cleared.",
+                is_user=False
+            )
+
+        elif action == 'retry':
+            self._delete_wrong_pdf(pdf_path)
+            self._clear_document()
+
+            # Try to fetch again if we have metadata
+            if doc_metadata:
+                self._add_chat_bubble(
+                    "The incorrect PDF has been deleted. Attempting to fetch the correct PDF...",
+                    is_user=False
+                )
+                # Use the fetch workflow
+                self._do_pdf_discovery(
+                    doi=doc_metadata.get('doi'),
+                    pmid=doc_metadata.get('pmid'),
+                    pmcid=doc_metadata.get('pmcid'),
+                    title=doc_metadata.get('title')
+                )
+            else:
+                self._add_chat_bubble(
+                    "The incorrect PDF has been deleted. "
+                    "No document metadata available for retry - use the Fetch PDF button manually.",
+                    is_user=False
+                )
+
+        elif action == 'clear_only':
+            self._clear_document()
+            self._add_chat_bubble(
+                f"View cleared. The PDF file has been kept at:\n`{pdf_path}`",
+                is_user=False
+            )
+
+    def _delete_wrong_pdf(self, pdf_path: Path) -> bool:
+        """
+        Delete an incorrect PDF file and clean up related data.
+
+        Args:
+            pdf_path: Path to the PDF file to delete
+
+        Returns:
+            True if deletion was successful, False otherwise
+        """
+        try:
+            if pdf_path.exists():
+                pdf_path.unlink()
+                logger.info(f"Deleted wrong PDF: {pdf_path}")
+
+                # Also try to clean up related files
+                # (e.g., extracted text, chunks in ChromaDB, etc.)
+                self._cleanup_pdf_artifacts(pdf_path)
+
+                return True
+            else:
+                logger.warning(f"PDF file not found for deletion: {pdf_path}")
+                return False
+
+        except Exception as e:
+            logger.exception(f"Failed to delete PDF: {pdf_path}")
+            QMessageBox.warning(
+                self,
+                "Deletion Failed",
+                f"Could not delete PDF file:\n{str(e)}"
+            )
+            return False
+
+    def _cleanup_pdf_artifacts(self, pdf_path: Path) -> None:
+        """
+        Clean up artifacts related to a PDF file.
+
+        This includes:
+        - Extracted text chunks from ChromaDB
+        - Any cached metadata
+
+        Args:
+            pdf_path: Path to the PDF that was deleted
+        """
+        try:
+            # If we have a storage instance, try to clean up chunks
+            if hasattr(self, 'storage') and self.storage:
+                # Get document ID if available
+                doc_id = None
+                if self._current_doc_metadata:
+                    doc_id = self._current_doc_metadata.get('id')
+
+                if doc_id:
+                    # Try to delete chunks associated with this document
+                    try:
+                        # Get the chunks collection and delete by source_id
+                        chunks_collection = self.storage.get_chunks_collection()
+                        chunks_collection.delete(
+                            where={"source_id": str(doc_id)}
+                        )
+                        logger.info(f"Deleted chunks for document ID: {doc_id}")
+                    except Exception as e:
+                        logger.warning(f"Could not delete chunks for {doc_id}: {e}")
+
+            logger.info(f"Cleaned up artifacts for: {pdf_path}")
+
+        except Exception as e:
+            logger.warning(f"Error cleaning up PDF artifacts: {e}")
