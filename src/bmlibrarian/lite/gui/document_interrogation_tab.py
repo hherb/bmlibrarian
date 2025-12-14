@@ -605,6 +605,7 @@ class DocumentInterrogationTab(QWidget):
         self._agent = LiteInterrogationAgent(config=config, storage=storage)
         self._worker: Optional[AnswerWorker] = None
         self._document_loaded = False
+        self._current_doc_metadata: Optional[dict] = None  # For PDF discovery
 
         # Get DPI-aware font-relative scaling dimensions
         self.scale = get_font_scale()
@@ -1086,6 +1087,7 @@ class DocumentInterrogationTab(QWidget):
             }}
         """)
         self._document_loaded = False
+        self._current_doc_metadata = None  # Clear metadata
         self.send_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
         self._clear_chat()
@@ -1279,6 +1281,14 @@ class DocumentInterrogationTab(QWidget):
         # Clear any previous document
         self._clear_document()
 
+        # Store document metadata for PDF discovery button
+        self._current_doc_metadata = {
+            'doi': doc.doi,
+            'pmid': doc.pmid,
+            'pmc_id': doc.pmc_id,
+            'title': doc.title,
+        }
+
         # Try to get full text via PDF discovery
         pdf_text = self._try_pdf_discovery(doc)
 
@@ -1373,11 +1383,11 @@ class DocumentInterrogationTab(QWidget):
             identifiers = DocumentIdentifiers(
                 doi=doc.doi,
                 pmid=doc.pmid,
-                pmc_id=doc.pmc_id,
+                pmcid=doc.pmc_id,  # Note: DocumentIdentifiers uses pmcid
             )
 
             # Skip if no identifiers
-            if not identifiers.doi and not identifiers.pmid and not identifiers.pmc_id:
+            if not identifiers.doi and not identifiers.pmid and not identifiers.pmcid:
                 logger.debug("No identifiers available for PDF discovery")
                 return None
 
@@ -1510,54 +1520,84 @@ class DocumentInterrogationTab(QWidget):
 
     def _fetch_pdf_from_identifier(self) -> None:
         """
-        Show dialog to fetch PDF from DOI/PMID/PMC ID using PDF discovery.
+        Fetch PDF using DOI/PMID from stored document metadata.
 
-        Opens a dialog for the user to enter an identifier, then attempts
-        to discover and download the PDF.
+        If no metadata is available, prompts user to enter identifiers.
+        Uses the existing PDF discovery system.
         """
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
+        # Check if we have identifiers from current document context
+        doi = None
+        pmid = None
+        pmcid = None
+        title = None
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Fetch PDF from Identifier")
-        dialog.setMinimumWidth(scaled(400))
+        if hasattr(self, '_current_doc_metadata') and self._current_doc_metadata:
+            doi = self._current_doc_metadata.get('doi')
+            pmid = self._current_doc_metadata.get('pmid')
+            pmcid = self._current_doc_metadata.get('pmc_id')
+            title = self._current_doc_metadata.get('title')
 
-        form_layout = QFormLayout(dialog)
+        # If no identifiers, ask user
+        if not doi and not pmid and not pmcid:
+            from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLineEdit
 
-        doi_input = QLineEdit()
-        doi_input.setPlaceholderText("e.g., 10.1038/nature12373")
-        form_layout.addRow("DOI:", doi_input)
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Fetch PDF - Enter Identifier")
+            dialog.setMinimumWidth(scaled(400))
 
-        pmid_input = QLineEdit()
-        pmid_input.setPlaceholderText("e.g., 12345678")
-        form_layout.addRow("PMID:", pmid_input)
+            form_layout = QFormLayout(dialog)
 
-        pmc_input = QLineEdit()
-        pmc_input.setPlaceholderText("e.g., PMC1234567")
-        form_layout.addRow("PMC ID:", pmc_input)
+            doi_input = QLineEdit()
+            doi_input.setPlaceholderText("e.g., 10.1038/nature12373")
+            form_layout.addRow("DOI:", doi_input)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form_layout.addRow(buttons)
+            pmid_input = QLineEdit()
+            pmid_input.setPlaceholderText("e.g., 12345678")
+            form_layout.addRow("PMID:", pmid_input)
 
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        doi = doi_input.text().strip() or None
-        pmid = pmid_input.text().strip() or None
-        pmc_id = pmc_input.text().strip() or None
-
-        if not doi and not pmid and not pmc_id:
-            QMessageBox.warning(
-                self,
-                "No Identifier",
-                "Please enter at least one identifier (DOI, PMID, or PMC ID)."
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
             )
-            return
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            form_layout.addRow(buttons)
 
-        # Show progress
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            doi = doi_input.text().strip() or None
+            pmid = pmid_input.text().strip() or None
+
+            if not doi and not pmid:
+                QMessageBox.warning(
+                    self,
+                    "No Identifier",
+                    "Please enter a DOI or PMID."
+                )
+                return
+
+        # Perform PDF discovery
+        self._do_pdf_discovery(doi=doi, pmid=pmid, pmcid=pmcid, title=title)
+
+    def _do_pdf_discovery(
+        self,
+        doi: Optional[str] = None,
+        pmid: Optional[str] = None,
+        pmcid: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Execute PDF discovery and load the result.
+
+        Args:
+            doi: Digital Object Identifier
+            pmid: PubMed ID
+            pmcid: PubMed Central ID
+            title: Document title for display
+
+        Returns:
+            Extracted text if successful, None otherwise
+        """
         self.progress_label.setText("Searching for PDF...")
         self.progress_label.setVisible(True)
 
@@ -1567,19 +1607,16 @@ class DocumentInterrogationTab(QWidget):
                 DocumentIdentifiers,
             )
             import tempfile
-            from pathlib import Path
 
             identifiers = DocumentIdentifiers(
                 doi=doi,
                 pmid=pmid,
-                pmc_id=pmc_id,
+                pmcid=pmcid,
             )
 
-            # Get Unpaywall email from config if available
             unpaywall_email = getattr(self.config, 'unpaywall_email', None)
             finder = FullTextFinder(unpaywall_email=unpaywall_email)
 
-            # Try discovery
             self.progress_label.setText("Discovering PDF sources...")
             discovery_result = finder.discover(identifiers)
 
@@ -1588,14 +1625,13 @@ class DocumentInterrogationTab(QWidget):
                 QMessageBox.information(
                     self,
                     "No PDF Found",
-                    "Could not find a PDF source for the given identifier(s).\n\n"
-                    "Try using a different identifier or load a local PDF instead."
+                    "Could not find a PDF source.\n\n"
+                    "The document will use abstract only."
                 )
-                return
+                return None
 
             self.progress_label.setText("Downloading PDF...")
 
-            # Download to temp file
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
                 tmp_path = Path(tmp.name)
 
@@ -1613,9 +1649,8 @@ class DocumentInterrogationTab(QWidget):
                     "Download Failed",
                     f"Failed to download PDF: {download_result.error}"
                 )
-                return
+                return None
 
-            # Extract text from PDF
             self.progress_label.setText("Extracting text from PDF...")
 
             import fitz
@@ -1625,7 +1660,6 @@ class DocumentInterrogationTab(QWidget):
                 text_parts.append(page.get_text())
             pdf_doc.close()
 
-            # Clean up temp file after loading
             text = "\n\n".join(text_parts)
 
             if not text.strip():
@@ -1634,25 +1668,24 @@ class DocumentInterrogationTab(QWidget):
                 QMessageBox.warning(
                     self,
                     "Empty PDF",
-                    "The PDF was downloaded but contained no extractable text."
+                    "PDF contained no extractable text."
                 )
-                return
+                return None
 
-            # Load into document viewer
+            # Load into viewer
+            display_title = title or f"PDF ({doi or pmid or pmcid})"
+
             self.document_view.fulltext_tab.set_content(text)
-            self.document_view.tab_widget.setCurrentIndex(1)  # Switch to full text tab
+            self.document_view.tab_widget.setCurrentIndex(1)
             self.document_view._current_text = text
-            self.document_view._current_title = f"PDF from {doi or pmid or pmc_id}"
+            self.document_view._current_title = display_title
 
-            # Load PDF into PDF tab as well for visual viewing
             if self.document_view.pdf_tab.load_pdf(str(tmp_path)):
-                self.document_view.tab_widget.setCurrentIndex(0)  # Switch to PDF tab
+                self.document_view.tab_widget.setCurrentIndex(0)
 
-            # Load into agent for Q&A
-            title = f"Document ({doi or pmid or pmc_id})"
-            self._agent.load_document(text, title=title)
+            self._agent.load_document(text, title=display_title)
 
-            self.doc_label.setText(f"Loaded: {title}")
+            self.doc_label.setText(f"Loaded: {display_title[:50]}...")
             self.doc_label.setStyleSheet(f"""
                 QLabel {{
                     color: #000;
@@ -1665,27 +1698,22 @@ class DocumentInterrogationTab(QWidget):
             self.clear_btn.setEnabled(True)
             self.progress_label.setVisible(False)
 
-            # Add confirmation to chat
             self._add_chat_bubble(
-                f"Document loaded: **{title}**\n\n"
+                f"Document loaded: **{display_title}**\n\n"
                 f"Source: PDF Discovery ({discovery_result.best_source.source_type.value})\n\n"
                 f"You can now ask questions about this document.",
                 is_user=False
             )
 
-            self.status_message.emit(f"Loaded PDF for {doi or pmid or pmc_id}")
-            logger.info(f"Fetched PDF via discovery for {doi or pmid or pmc_id}")
+            self.status_message.emit(f"Loaded: {display_title}")
+            logger.info(f"Fetched PDF via discovery for {doi or pmid or pmcid}")
 
-            # Keep temp file for PDF tab
-            # Note: In a production app, you'd want to manage temp files better
+            return text
 
         except ImportError as e:
             self.progress_label.setVisible(False)
-            QMessageBox.critical(
-                self,
-                "Module Not Found",
-                f"PDF discovery requires additional dependencies:\n{e}"
-            )
+            logger.warning(f"PDF discovery not available: {e}")
+            return None
         except Exception as e:
             self.progress_label.setVisible(False)
             logger.exception("PDF discovery failed")
@@ -1694,3 +1722,4 @@ class DocumentInterrogationTab(QWidget):
                 "Error",
                 f"Failed to fetch PDF:\n{str(e)}"
             )
+            return None
