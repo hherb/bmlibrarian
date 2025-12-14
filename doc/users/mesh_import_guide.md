@@ -63,8 +63,8 @@ uv run python mesh_import_cli.py lookup "heart attack"
 # Search by partial match
 uv run python mesh_import_cli.py search "cardio"
 
-# Expand term to all synonyms
-uv run python mesh_import_cli.py expand "MI"
+# Expand term to all synonyms (use MeSH terms, not abbreviations)
+uv run python mesh_import_cli.py expand "Heart Attack"
 ```
 
 ## CLI Commands
@@ -130,6 +130,8 @@ uv run python mesh_import_cli.py expand "term"
 
 Expand a term to all synonyms/entry terms.
 
+**Important:** The expand command requires exact matches on MeSH entry terms. See [Clinical Abbreviations](#clinical-abbreviations-not-in-mesh) below for details on what terms are supported.
+
 ### Clear Cache Command
 
 ```bash
@@ -159,8 +161,8 @@ if result.found:
     print(f"Source: {result.source}")  # local_database, nlm_api, or cache
     print(f"Entry terms: {result.entry_terms}")
 
-# Expand term to all synonyms
-terms = service.expand("MI")
+# Expand term to all synonyms (use MeSH terms, not clinical abbreviations)
+terms = service.expand("Heart Attack")
 print(f"Synonyms: {terms}")
 
 # Search by partial match
@@ -278,6 +280,69 @@ SELECT * FROM mesh.expand_term('MI');
 -- Get database statistics
 SELECT * FROM mesh.get_statistics();
 ```
+
+## Clinical Abbreviations Not in MeSH
+
+MeSH is a **controlled vocabulary** that uses standardized medical terminology, not clinical shorthand. Common medical abbreviations used in clinical practice are generally **not included** as MeSH entry terms.
+
+### Abbreviations That Won't Work
+
+| Abbreviation | Full Term | Why It's Not in MeSH |
+|--------------|-----------|---------------------|
+| MI | Myocardial Infarction | Clinical shorthand |
+| AMI | Acute Myocardial Infarction | Clinical shorthand |
+| ONSD | Optic Nerve Sheath Diameter | Measurement technique, not disease |
+| CHF | Congestive Heart Failure | Clinical shorthand |
+| COPD | Chronic Obstructive Pulmonary Disease | *Actually in MeSH as "COPD"* |
+| HTN | Hypertension | Clinical shorthand |
+| DM | Diabetes Mellitus | Clinical shorthand |
+| CVA | Cerebrovascular Accident | Clinical shorthand |
+| DVT | Deep Vein Thrombosis | Clinical shorthand |
+| PE | Pulmonary Embolism | Clinical shorthand |
+
+### What MeSH Does Include
+
+MeSH includes:
+- **Preferred terms**: Official descriptor names (e.g., "Myocardial Infarction")
+- **Entry terms**: Synonyms and alternate names (e.g., "Heart Attack")
+- **Some abbreviations**: Only those officially recognized in the vocabulary (e.g., "DNA", "RNA", "AIDS", "COPD", "ECG")
+
+### Workarounds
+
+1. **Use the full term or a known synonym:**
+   ```bash
+   # Instead of "MI", use:
+   uv run python mesh_import_cli.py expand "Heart Attack"
+   uv run python mesh_import_cli.py expand "Myocardial Infarction"
+   ```
+
+2. **Use the search command to find related terms:**
+   ```bash
+   # Find terms containing "infarct"
+   uv run python mesh_import_cli.py search "infarct"
+   ```
+
+3. **Look up the full term first, then expand:**
+   ```bash
+   # Find the descriptor
+   uv run python mesh_import_cli.py lookup "Myocardial Infarction"
+   # Then expand it
+   uv run python mesh_import_cli.py expand "Myocardial Infarction"
+   ```
+
+### Checking What Abbreviations Exist
+
+To see what abbreviations MeSH actually contains:
+```sql
+-- Find short uppercase terms marked as abbreviations or acronyms
+SELECT term_text, lexical_tag
+FROM mesh.terms
+WHERE term_text ~ '^[A-Z]{2,5}$'
+  AND lexical_tag IN ('ABB', 'ACR')
+ORDER BY term_text;
+```
+
+Common abbreviations that *are* in MeSH include: AIDS, ADP, AMP, ATP, DNA, RNA, ECG, EKG, ELISA, GABA, HPLC, and others primarily from biochemistry and laboratory science.
 
 ## Lookup Behavior
 
