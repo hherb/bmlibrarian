@@ -316,6 +316,9 @@ class LiteStorage:
                 "journal": document.journal or "",
                 "doi": document.doi or "",
                 "pmid": document.pmid or "",
+                "pmc_id": document.pmc_id or "",
+                "url": document.url or "",
+                "mesh_terms": json.dumps(document.mesh_terms),
                 "source": document.source.value,
             }
             # Add custom metadata
@@ -375,6 +378,9 @@ class LiteStorage:
                     "journal": doc.journal or "",
                     "doi": doc.doi or "",
                     "pmid": doc.pmid or "",
+                    "pmc_id": doc.pmc_id or "",
+                    "url": doc.url or "",
+                    "mesh_terms": json.dumps(doc.mesh_terms),
                     "source": doc.source.value,
                 }
                 metadatas.append(metadata)
@@ -432,6 +438,9 @@ class LiteStorage:
                 journal=metadata.get("journal") or None,
                 doi=metadata.get("doi") or None,
                 pmid=metadata.get("pmid") or None,
+                pmc_id=metadata.get("pmc_id") or None,
+                url=metadata.get("url") or None,
+                mesh_terms=json.loads(metadata.get("mesh_terms", "[]")),
                 source=DocumentSource(metadata.get("source", "pubmed")),
             )
         except Exception as e:
@@ -485,6 +494,9 @@ class LiteStorage:
                     journal=metadata.get("journal") or None,
                     doi=metadata.get("doi") or None,
                     pmid=metadata.get("pmid") or None,
+                    pmc_id=metadata.get("pmc_id") or None,
+                    url=metadata.get("url") or None,
+                    mesh_terms=json.loads(metadata.get("mesh_terms", "[]")),
                     source=DocumentSource(metadata.get("source", "pubmed")),
                 ))
 
@@ -547,6 +559,9 @@ class LiteStorage:
                     journal=metadata.get("journal") or None,
                     doi=metadata.get("doi") or None,
                     pmid=metadata.get("pmid") or None,
+                    pmc_id=metadata.get("pmc_id") or None,
+                    url=metadata.get("url") or None,
+                    mesh_terms=json.loads(metadata.get("mesh_terms", "[]")),
                     source=DocumentSource(metadata.get("source", "pubmed")),
                 ))
 

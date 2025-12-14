@@ -27,6 +27,21 @@ class LiteDocument:
 
     Stores essential document metadata and abstract text.
     Used for both PubMed articles and local documents.
+
+    Attributes:
+        id: Unique identifier (e.g., "pmid-12345" or UUID)
+        title: Document title
+        abstract: Document abstract text
+        authors: List of author names
+        year: Publication year
+        journal: Journal name
+        doi: Digital Object Identifier
+        pmid: PubMed ID
+        pmc_id: PubMed Central ID (for open access articles)
+        url: URL to the article
+        mesh_terms: MeSH terms associated with the article
+        source: Source of the document (PubMed, local PDF, etc.)
+        metadata: Additional custom metadata
     """
 
     id: str  # Unique identifier (e.g., "pmid-12345" or UUID)
@@ -37,6 +52,9 @@ class LiteDocument:
     journal: Optional[str] = None
     doi: Optional[str] = None
     pmid: Optional[str] = None
+    pmc_id: Optional[str] = None
+    url: Optional[str] = None
+    mesh_terms: list[str] = field(default_factory=list)
     source: DocumentSource = DocumentSource.PUBMED
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -86,6 +104,9 @@ class LiteDocument:
             "journal": self.journal,
             "doi": self.doi,
             "pmid": self.pmid,
+            "pmc_id": self.pmc_id,
+            "url": self.url,
+            "mesh_terms": self.mesh_terms,
             "source": self.source.value,
             "metadata": self.metadata,
         }
@@ -110,6 +131,9 @@ class LiteDocument:
             journal=data.get("journal"),
             doi=data.get("doi"),
             pmid=data.get("pmid"),
+            pmc_id=data.get("pmc_id"),
+            url=data.get("url"),
+            mesh_terms=data.get("mesh_terms", []),
             source=DocumentSource(data.get("source", "pubmed")),
             metadata=data.get("metadata", {}),
         )
