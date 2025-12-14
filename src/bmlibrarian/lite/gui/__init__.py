@@ -22,12 +22,12 @@ Usage:
 
 from .app import LiteMainWindow, run_lite_app
 from .systematic_review_tab import SystematicReviewTab, WorkflowWorker
-from .document_interrogation_tab import (
-    DocumentInterrogationTab,
-    ChatBubble,
-    LiteDocumentViewWidget,
-    AnswerWorker,
-)
+from .document_interrogation_tab import DocumentInterrogationTab
+from .workers import AnswerWorker, PDFDiscoveryWorker
+from .chat_widgets import ChatBubble
+from .document_viewer import LiteDocumentViewWidget, PDFViewerTab, FullTextTab
+from .dialogs import WrongPDFDialog, IdentifierInputDialog
+from .citation_loader import build_doc_metadata, build_abstract_text
 from .settings_dialog import SettingsDialog
 
 __all__ = [
@@ -40,9 +40,17 @@ __all__ = [
     # Workers
     "WorkflowWorker",
     "AnswerWorker",
+    "PDFDiscoveryWorker",
     # Widgets
     "ChatBubble",
     "LiteDocumentViewWidget",
+    "PDFViewerTab",
+    "FullTextTab",
     # Dialogs
     "SettingsDialog",
+    "WrongPDFDialog",
+    "IdentifierInputDialog",
+    # Utilities
+    "build_doc_metadata",
+    "build_abstract_text",
 ]

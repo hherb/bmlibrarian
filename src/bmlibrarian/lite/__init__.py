@@ -73,6 +73,18 @@ from .utils import (
     get_metrics,
     reset_metrics,
 )
+from .pdf_utils import (
+    get_pdf_base_dir,
+    generate_pdf_path,
+    find_existing_pdf,
+    format_abstract_as_document,
+    extract_pdf_text,
+)
+from .conversation_export import (
+    export_conversation_to_json,
+    export_conversation_to_markdown,
+    create_conversation_message,
+)
 from .agents import (
     LiteBaseAgent,
     LiteSearchAgent,
@@ -139,6 +151,16 @@ __all__ = [
     "MetricsCollector",
     "get_metrics",
     "reset_metrics",
+    # PDF utilities
+    "get_pdf_base_dir",
+    "generate_pdf_path",
+    "find_existing_pdf",
+    "format_abstract_as_document",
+    "extract_pdf_text",
+    # Conversation export
+    "export_conversation_to_json",
+    "export_conversation_to_markdown",
+    "create_conversation_message",
     # Agents
     "LiteBaseAgent",
     "LiteSearchAgent",
