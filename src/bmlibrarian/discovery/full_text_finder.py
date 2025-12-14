@@ -243,8 +243,16 @@ class FullTextFinder:
 
         last_error = None
         verification_failed_sources: List[PDFSource] = []  # Track sources that failed verification
+        wrong_dois_found: set[str] = set()  # Track DOIs of wrong PDFs to avoid re-downloading
+        failed_source_types: set[str] = set()  # Track source types that failed (e.g., 'pmc')
 
         for source in discovery.sources:
+            # Skip if this source type already failed verification
+            # (e.g., if pmc failed, skip pmc_package since they serve the same wrong file)
+            source_type_base = source.source_type.value.split('_')[0]  # 'pmc_package' -> 'pmc'
+            if source_type_base in failed_source_types:
+                logger.info(f"Skipping {source.source_type.value} - {source_type_base} sources already failed verification")
+                continue
             result = self._download_from_source(
                 source=source,
                 output_path=output_path,
@@ -268,6 +276,17 @@ class FullTextFinder:
                             f"Verification failed for {source.source_type.value}, trying next source..."
                         )
                         verification_failed_sources.append(source)
+
+                        # Track the source type base (e.g., 'pmc' for both 'pmc' and 'pmc_package')
+                        # so we don't try other variants of the same source
+                        source_type_base = source.source_type.value.split('_')[0]
+                        failed_source_types.add(source_type_base)
+
+                        # Track the wrong DOI if found, to avoid re-downloading same wrong PDF
+                        if result.extracted_doi:
+                            wrong_dois_found.add(result.extracted_doi.lower())
+                            logger.info(f"Marking DOI {result.extracted_doi} as wrong PDF to avoid re-download")
+
                         last_error = f"Verification failed: {'; '.join(result.verification_warnings or [])}"
                         continue  # Try next source
 
@@ -277,8 +296,12 @@ class FullTextFinder:
             logger.debug(f"HTTP download failed from {source.source_type.value}: {result.error_message}")
 
         # All HTTP attempts failed - try browser fallback
-        # Exclude sources that already failed verification
-        browser_sources = [s for s in discovery.sources if s not in verification_failed_sources]
+        # Exclude sources that already failed verification or whose source type failed
+        browser_sources = [
+            s for s in discovery.sources
+            if s not in verification_failed_sources
+            and s.source_type.value.split('_')[0] not in failed_source_types
+        ]
 
         if use_browser_fallback and browser_sources:
             if progress_callback:
