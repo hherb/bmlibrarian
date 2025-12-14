@@ -223,168 +223,76 @@ class BrowserDownloader:
                 logger.info("Checking for Cloudflare verification...")
                 await self._wait_for_cloudflare(page, max_wait)
 
-            # Check for embedded PDF viewer (embed, object, or iframe)
-            pdf_src = None
+            # STEP 1: Collect ALL PDF candidates from the page
+            pdf_candidates = await self._collect_all_pdf_candidates(page, url)
+            logger.info(f"Found {len(pdf_candidates)} PDF candidate(s) on page")
 
-            # Try multiple selectors for embedded PDFs
-            selectors = [
-                'embed[type="application/pdf"]',
-                'object[type="application/pdf"]',
-                'iframe[src*=".pdf"]',
-                'embed[src*=".pdf"]',
-                'object[data*=".pdf"]'
-            ]
-
-            for selector in selectors:
-                element = await page.query_selector(selector)
-                if element:
-                    # Try both 'src' and 'data' attributes
-                    pdf_src = await element.get_attribute('src') or await element.get_attribute('data')
-                    if pdf_src and pdf_src != 'about:blank':  # Skip useless about:blank
-                        logger.info(f"Found embedded PDF via {selector}: {pdf_src}")
-                        break
-                    else:
-                        pdf_src = None  # Reset if about:blank
-
-            if pdf_src:
-                # Make PDF URL absolute if relative
-                from urllib.parse import urljoin
-                pdf_url_abs = urljoin(url, pdf_src)
-
-                # CRITICAL: Validate embedded PDF URL matches expected DOI
-                # This prevents downloading wrong papers from "related articles" sections
-                if expected_doi and not self._url_matches_doi(pdf_url_abs, expected_doi):
-                    logger.warning(
-                        f"Embedded PDF URL does not match expected DOI {expected_doi}: {pdf_url_abs}"
-                    )
-                    logger.info("Skipping embedded PDF to avoid downloading wrong document")
-                    pdf_src = None  # Skip this embedded PDF
-                else:
-                    logger.info(f"Downloading from embedded viewer: {pdf_url_abs}")
-
-                    try:
-                        response = await page.goto(pdf_url_abs, timeout=self.timeout)
-                        pdf_content = await response.body()
-
-                        if pdf_content and pdf_content[:4] == b'%PDF':
-                            save_path.write_bytes(pdf_content)
-                            return {
-                                'status': 'success',
-                                'path': str(save_path),
-                                'size': len(pdf_content)
-                            }
-                    except Exception as e:
-                        logger.warning(f"Failed to download from embedded src: {e}")
-
-            # Look for download link or button (common on journal sites)
-            download_link = await self._find_download_link(page)
-            if download_link:
-                logger.info(f"Found download link: {download_link}")
-                try:
-                    # Try to download via the link
-                    async with page.expect_download(timeout=15000) as download_info:
-                        # Click the link or navigate to it
-                        if download_link.startswith('http'):
-                            await page.goto(download_link, timeout=self.timeout)
-                        else:
-                            button = await page.query_selector(f'a[href*="download"], button:has-text("Download")')
-                            if button:
-                                await button.click()
-
-                    download = await download_info.value
-                    await download.save_as(save_path)
+            if not pdf_candidates:
+                # Check if page content is already a PDF
+                content = await page.content()
+                if content.startswith('%PDF'):
+                    logger.info("PDF content detected in page")
+                    save_path.write_text(content)
                     return {
                         'status': 'success',
                         'path': str(save_path),
-                        'size': save_path.stat().st_size
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to download via link: {e}")
-
-            # Check if page is now showing a PDF
-            current_url = page.url
-            if current_url.lower().endswith('.pdf'):
-                logger.info("PDF URL detected, attempting download...")
-
-                # Try to intercept the PDF download via CDP
-                try:
-                    client = await page.context.new_cdp_session(page)
-                    await client.send('Page.setDownloadBehavior', {
-                        'behavior': 'allow',
-                        'downloadPath': str(save_path.parent)
-                    })
-                except Exception as e:
-                    logger.debug(f"Could not set download behavior: {e}")
-
-                # Wait a bit for PDF to load
-                await asyncio.sleep(2)
-
-                # Try to get the PDF content from the page
-                pdf_content = await page.content()
-
-                # Check if it's actually PDF content (binary)
-                if pdf_content and pdf_content.strip().startswith('%PDF'):
-                    logger.info("PDF content found in page source")
-                    save_path.write_bytes(pdf_content.encode('latin-1'))
-                    return {
-                        'status': 'success',
-                        'path': str(save_path),
-                        'size': len(pdf_content)
+                        'size': len(content)
                     }
 
-                # Try fetching as binary
-                response_binary = await page.evaluate('''async () => {
-                    const response = await fetch(window.location.href);
-                    const buffer = await response.arrayBuffer();
-                    const bytes = new Uint8Array(buffer);
-                    return Array.from(bytes);
-                }''')
-
-                if response_binary:
-                    pdf_bytes = bytes(response_binary)
-                    if pdf_bytes[:4] == b'%PDF':
-                        logger.info("PDF retrieved via fetch API")
-                        save_path.write_bytes(pdf_bytes)
-                        return {
-                            'status': 'success',
-                            'path': str(save_path),
-                            'size': len(pdf_bytes)
-                        }
-
-                logger.warning("URL ends with .pdf but could not retrieve PDF content")
-
-            # Look for PDF download link
-            pdf_link = await self._find_pdf_link(page)
-            if pdf_link:
-                logger.info(f"Found PDF link: {pdf_link}")
-
-                # Set up download handler
-                async with page.expect_download(timeout=self.timeout) as download_info:
-                    await page.goto(pdf_link, timeout=self.timeout)
-
-                download = await download_info.value
-                await download.save_as(save_path)
-
                 return {
-                    'status': 'success',
-                    'path': str(save_path),
-                    'size': save_path.stat().st_size
+                    'status': 'failed',
+                    'error': 'No PDF candidates found on page',
+                    'doi_rejected_count': 0
                 }
 
-            # Try to get PDF from current page content
-            content = await page.content()
-            if content.startswith('%PDF'):
-                logger.info("PDF content detected in page")
-                save_path.write_text(content)
-                return {
-                    'status': 'success',
-                    'path': str(save_path),
-                    'size': len(content)
-                }
+            # STEP 2: Score and rank candidates based on DOI match and URL patterns
+            ranked_candidates = self._rank_pdf_candidates(
+                pdf_candidates, expected_doi, url
+            )
+
+            logger.info(f"Ranked {len(ranked_candidates)} PDF candidate(s):")
+            for i, (candidate_url, score, source) in enumerate(ranked_candidates[:5]):
+                logger.info(f"  {i+1}. Score {score}: [{source}] {candidate_url[:80]}...")
+
+            # STEP 3: Try candidates in order until one works
+            doi_matched_count = sum(1 for _, score, _ in ranked_candidates if score >= 100)
+            doi_rejected_count = len(ranked_candidates) - doi_matched_count
+
+            for candidate_url, score, source in ranked_candidates:
+                # If we have a DOI and this candidate doesn't match, skip it
+                # UNLESS there are no DOI-matching candidates at all
+                if expected_doi and score < 100 and doi_matched_count > 0:
+                    logger.debug(f"Skipping non-DOI-matching candidate: {candidate_url}")
+                    continue
+
+                logger.info(f"Trying PDF candidate (score={score}, source={source}): {candidate_url}")
+
+                result = await self._try_download_pdf_candidate(
+                    page, candidate_url, save_path, source
+                )
+
+                if result and result.get('status') == 'success':
+                    return result
+
+            # All candidates failed
+            if doi_rejected_count > 0 and expected_doi and doi_matched_count == 0:
+                error_msg = (
+                    f"Found {len(ranked_candidates)} PDF(s) on page but none matched "
+                    f"expected DOI {expected_doi}. "
+                    f"This paper may be paywalled or require institutional access."
+                )
+            elif len(ranked_candidates) > 0:
+                error_msg = (
+                    f"Found {len(ranked_candidates)} PDF candidate(s) but all download "
+                    f"attempts failed"
+                )
+            else:
+                error_msg = 'Could not find PDF content on page'
 
             return {
                 'status': 'failed',
-                'error': 'Could not find PDF content on page'
+                'error': error_msg,
+                'doi_rejected_count': doi_rejected_count
             }
 
         except Exception as e:
@@ -597,14 +505,353 @@ class BrowserDownloader:
 
         return False
 
-    async def _find_download_link(self, page) -> Optional[str]:
+    async def _collect_all_pdf_candidates(
+        self,
+        page,
+        base_url: str
+    ) -> list[tuple[str, str]]:
+        """Collect ALL PDF candidates from the page.
+
+        Gathers PDF URLs from multiple sources:
+        - Embedded PDF viewers (embed, object, iframe)
+        - Download links and buttons
+        - Direct PDF links
+        - Meta tags and canonical links
+
+        Args:
+            page: Playwright page object
+            base_url: Base URL for resolving relative URLs
+
+        Returns:
+            List of (url, source_type) tuples where source_type describes
+            where the URL was found (e.g., 'embedded', 'download_link', 'pdf_link')
+        """
+        from urllib.parse import urljoin
+
+        candidates: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+
+        def add_candidate(url: str, source: str) -> None:
+            """Add a candidate URL if not already seen."""
+            if url and url != 'about:blank' and url not in seen_urls:
+                # Make URL absolute
+                abs_url = urljoin(base_url, url)
+                if abs_url not in seen_urls:
+                    seen_urls.add(abs_url)
+                    candidates.append((abs_url, source))
+
+        # 1. Check embedded PDF viewers
+        selectors = [
+            ('embed[type="application/pdf"]', 'embedded_pdf'),
+            ('object[type="application/pdf"]', 'embedded_object'),
+            ('iframe[src*=".pdf"]', 'embedded_iframe'),
+            ('embed[src*=".pdf"]', 'embedded_src'),
+            ('object[data*=".pdf"]', 'embedded_data'),
+        ]
+
+        for selector, source in selectors:
+            try:
+                elements = await page.query_selector_all(selector)
+                for element in elements:
+                    src = await element.get_attribute('src')
+                    data = await element.get_attribute('data')
+                    if src:
+                        add_candidate(src, source)
+                    if data:
+                        add_candidate(data, source)
+            except Exception as e:
+                logger.debug(f"Error checking selector {selector}: {e}")
+
+        # 2. Collect all PDF-related links from the page
+        try:
+            all_links = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const links = Array.from(document.querySelectorAll('a[href]'));
+
+                    for (const link of links) {
+                        const href = link.href;
+                        const text = (link.textContent || '').toLowerCase().trim();
+                        const title = (link.getAttribute('title') || '').toLowerCase();
+                        const className = (link.className || '').toLowerCase();
+                        const id = (link.id || '').toLowerCase();
+
+                        // Categorize the link
+                        let category = null;
+
+                        // Direct PDF links (highest priority)
+                        if (href.toLowerCase().includes('.pdf')) {
+                            category = 'pdf_link';
+                        }
+                        // Download links
+                        else if (
+                            text.includes('download') ||
+                            title.includes('download') ||
+                            className.includes('download') ||
+                            id.includes('download') ||
+                            href.toLowerCase().includes('download')
+                        ) {
+                            category = 'download_link';
+                        }
+                        // Full text / PDF text links
+                        else if (
+                            text.includes('full text') ||
+                            text.includes('fulltext') ||
+                            text.includes('pdf') ||
+                            text === 'pdf' ||
+                            title.includes('pdf') ||
+                            title.includes('full text')
+                        ) {
+                            category = 'fulltext_link';
+                        }
+                        // View article links
+                        else if (
+                            text.includes('view') && (text.includes('article') || text.includes('paper')) ||
+                            className.includes('article') ||
+                            href.includes('/article/') ||
+                            href.includes('/pdf/')
+                        ) {
+                            category = 'article_link';
+                        }
+
+                        if (category) {
+                            results.push({
+                                href: href,
+                                category: category,
+                                text: text.substring(0, 100),
+                                title: title.substring(0, 100)
+                            });
+                        }
+                    }
+
+                    return results;
+                }
+            """)
+
+            for link_info in all_links:
+                add_candidate(link_info['href'], link_info['category'])
+
+        except Exception as e:
+            logger.debug(f"Error collecting links: {e}")
+
+        # 3. Check meta tags for PDF URLs
+        try:
+            meta_pdf = await page.evaluate("""
+                () => {
+                    const results = [];
+
+                    // Check citation_pdf_url meta tag
+                    const citationPdf = document.querySelector('meta[name="citation_pdf_url"]');
+                    if (citationPdf) {
+                        results.push({href: citationPdf.content, category: 'meta_citation_pdf'});
+                    }
+
+                    // Check DC.identifier with PDF
+                    const dcId = document.querySelectorAll('meta[name="DC.identifier"]');
+                    dcId.forEach(meta => {
+                        if (meta.content && meta.content.toLowerCase().includes('.pdf')) {
+                            results.push({href: meta.content, category: 'meta_dc_identifier'});
+                        }
+                    });
+
+                    // Check og:url if it's a PDF
+                    const ogUrl = document.querySelector('meta[property="og:url"]');
+                    if (ogUrl && ogUrl.content && ogUrl.content.toLowerCase().includes('.pdf')) {
+                        results.push({href: ogUrl.content, category: 'meta_og_url'});
+                    }
+
+                    return results;
+                }
+            """)
+
+            for meta_info in meta_pdf:
+                add_candidate(meta_info['href'], meta_info['category'])
+
+        except Exception as e:
+            logger.debug(f"Error checking meta tags: {e}")
+
+        return candidates
+
+    def _rank_pdf_candidates(
+        self,
+        candidates: list[tuple[str, str]],
+        expected_doi: Optional[str],
+        page_url: str
+    ) -> list[tuple[str, int, str]]:
+        """Score and rank PDF candidates.
+
+        Higher scores indicate better matches. Scoring criteria:
+        - DOI match in URL: +100 points (highest priority)
+        - Same domain as page URL: +20 points
+        - Source type bonuses: meta_citation_pdf (+30), embedded (+25), etc.
+        - URL contains 'pdf': +10 points
+        - URL contains 'download': +5 points
+
+        Args:
+            candidates: List of (url, source_type) tuples
+            expected_doi: DOI to match against (if known)
+            page_url: Original page URL for domain comparison
+
+        Returns:
+            List of (url, score, source_type) tuples, sorted by score descending
+        """
+        from urllib.parse import urlparse
+
+        page_domain = urlparse(page_url).netloc.lower()
+
+        scored: list[tuple[str, int, str]] = []
+
+        # Source type priority scores
+        source_scores = {
+            'meta_citation_pdf': 30,  # Most reliable - publisher's own PDF link
+            'embedded_pdf': 25,
+            'embedded_object': 25,
+            'embedded_iframe': 20,
+            'embedded_src': 20,
+            'embedded_data': 20,
+            'pdf_link': 15,
+            'download_link': 10,
+            'fulltext_link': 8,
+            'article_link': 5,
+            'meta_dc_identifier': 5,
+            'meta_og_url': 3,
+        }
+
+        for url, source in candidates:
+            score = 0
+            url_lower = url.lower()
+
+            # DOI match is the strongest signal
+            if expected_doi and self._url_matches_doi(url, expected_doi):
+                score += 100
+
+            # Same domain bonus
+            candidate_domain = urlparse(url).netloc.lower()
+            if candidate_domain == page_domain:
+                score += 20
+
+            # Source type bonus
+            score += source_scores.get(source, 0)
+
+            # URL pattern bonuses
+            if '.pdf' in url_lower:
+                score += 10
+            if 'download' in url_lower:
+                score += 5
+            if 'fulltext' in url_lower or 'full-text' in url_lower:
+                score += 5
+
+            # Penalties for likely wrong documents
+            if 'supplement' in url_lower or 'supporting' in url_lower:
+                score -= 15  # Supplementary materials
+            if 'related' in url_lower or 'recommend' in url_lower:
+                score -= 30  # Related articles
+            if 'advertisement' in url_lower or 'banner' in url_lower:
+                score -= 50  # Ads
+
+            scored.append((url, score, source))
+
+        # Sort by score descending
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        return scored
+
+    async def _try_download_pdf_candidate(
+        self,
+        page,
+        candidate_url: str,
+        save_path: Path,
+        source: str
+    ) -> Optional[Dict[str, Any]]:
+        """Try to download a PDF from a candidate URL.
+
+        Args:
+            page: Playwright page object
+            candidate_url: URL to download from
+            save_path: Path to save the PDF
+            source: Source type for logging
+
+        Returns:
+            Success result dict if downloaded, None if failed
+        """
+        try:
+            # Try direct navigation first
+            response = await page.goto(candidate_url, timeout=self.timeout, wait_until='load')
+
+            if response:
+                content_type = response.headers.get('content-type', '').lower()
+
+                # Direct PDF response
+                if 'application/pdf' in content_type:
+                    pdf_content = await response.body()
+                    if pdf_content and pdf_content[:4] == b'%PDF':
+                        save_path.write_bytes(pdf_content)
+                        logger.info(f"Downloaded PDF from {source}: {len(pdf_content)} bytes")
+                        return {
+                            'status': 'success',
+                            'path': str(save_path),
+                            'size': len(pdf_content)
+                        }
+
+            # Wait for download to trigger
+            await asyncio.sleep(1)
+
+            # Try fetching as binary
+            try:
+                response_binary = await page.evaluate('''async () => {
+                    try {
+                        const response = await fetch(window.location.href);
+                        const buffer = await response.arrayBuffer();
+                        const bytes = new Uint8Array(buffer);
+                        return Array.from(bytes.slice(0, 50000));  // Limit to first 50KB for check
+                    } catch (e) {
+                        return null;
+                    }
+                }''')
+
+                if response_binary:
+                    # Check if it's a PDF
+                    header = bytes(response_binary[:4]) if len(response_binary) >= 4 else b''
+                    if header == b'%PDF':
+                        # Fetch full content
+                        full_binary = await page.evaluate('''async () => {
+                            const response = await fetch(window.location.href);
+                            const buffer = await response.arrayBuffer();
+                            const bytes = new Uint8Array(buffer);
+                            return Array.from(bytes);
+                        }''')
+
+                        if full_binary:
+                            pdf_bytes = bytes(full_binary)
+                            save_path.write_bytes(pdf_bytes)
+                            logger.info(f"Downloaded PDF via fetch from {source}: {len(pdf_bytes)} bytes")
+                            return {
+                                'status': 'success',
+                                'path': str(save_path),
+                                'size': len(pdf_bytes)
+                            }
+            except Exception as fetch_error:
+                logger.debug(f"Fetch attempt failed: {fetch_error}")
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to download from {candidate_url}: {e}")
+            return None
+
+    async def _find_download_link(
+        self,
+        page,
+        expected_doi: Optional[str] = None
+    ) -> tuple[Optional[str], int]:
         """Find download link on the page (more aggressive than _find_pdf_link).
 
         Args:
             page: Playwright page object
+            expected_doi: If provided, only return links that match this DOI
 
         Returns:
-            Download URL if found, None otherwise
+            Tuple of (Download URL if found, count of DOI-rejected links)
         """
         try:
             # Look for explicit download links
@@ -626,27 +873,52 @@ class BrowserDownloader:
             """)
 
             if download_links and len(download_links) > 0:
-                # Prefer links with .pdf in them
+                # If we have an expected DOI, filter links to only those matching it
+                if expected_doi:
+                    matching_links = [
+                        link for link in download_links
+                        if self._url_matches_doi(link, expected_doi)
+                    ]
+                    rejected_count = len(download_links) - len(matching_links)
+                    if matching_links:
+                        # Prefer links with .pdf in them
+                        for link in matching_links:
+                            if '.pdf' in link.lower():
+                                return link, rejected_count
+                        return matching_links[0], rejected_count
+                    else:
+                        logger.warning(
+                            f"Found {len(download_links)} download links but none match "
+                            f"expected DOI {expected_doi}"
+                        )
+                        return None, rejected_count
+
+                # No DOI validation - prefer links with .pdf in them
                 for link in download_links:
                     if '.pdf' in link.lower():
-                        return link
+                        return link, 0
                 # Otherwise return first download link
-                return download_links[0]
+                return download_links[0], 0
 
-            return None
+            return None, 0
 
         except Exception as e:
             logger.warning(f"Error finding download link: {e}")
-            return None
+            return None, 0
 
-    async def _find_pdf_link(self, page) -> Optional[str]:
+    async def _find_pdf_link(
+        self,
+        page,
+        expected_doi: Optional[str] = None
+    ) -> tuple[Optional[str], int]:
         """Find PDF download link on the page.
 
         Args:
             page: Playwright page object
+            expected_doi: If provided, only return links that match this DOI
 
         Returns:
-            PDF URL if found, None otherwise
+            Tuple of (PDF URL if found, count of DOI-rejected links)
         """
         try:
             # Look for links with .pdf extension
@@ -661,7 +933,22 @@ class BrowserDownloader:
             """)
 
             if pdf_links and len(pdf_links) > 0:
-                return pdf_links[0]
+                # If we have an expected DOI, filter links to only those matching it
+                if expected_doi:
+                    matching_links = [
+                        link for link in pdf_links
+                        if self._url_matches_doi(link, expected_doi)
+                    ]
+                    rejected_count = len(pdf_links) - len(matching_links)
+                    if matching_links:
+                        return matching_links[0], rejected_count
+                    else:
+                        logger.warning(
+                            f"Found {len(pdf_links)} PDF links but none match "
+                            f"expected DOI {expected_doi}"
+                        )
+                        return None, rejected_count
+                return pdf_links[0], 0
 
             # Look for download buttons
             download_button = await page.query_selector(
@@ -671,13 +958,20 @@ class BrowserDownloader:
             if download_button:
                 href = await download_button.get_attribute('href')
                 if href:
-                    return href
+                    # Validate against expected DOI if provided
+                    if expected_doi and not self._url_matches_doi(href, expected_doi):
+                        logger.warning(
+                            f"Download button href {href} does not match "
+                            f"expected DOI {expected_doi}"
+                        )
+                        return None, 1
+                    return href, 0
 
-            return None
+            return None, 0
 
         except Exception as e:
             logger.warning(f"Error finding PDF link: {e}")
-            return None
+            return None, 0
 
 
 def download_pdf_with_browser(
