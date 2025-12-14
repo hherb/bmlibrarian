@@ -152,3 +152,19 @@ DEFAULT_RETRY_MAX_DELAY = 10.0
 
 # Exponential backoff multiplier
 DEFAULT_RETRY_EXPONENTIAL_BASE = 2.0
+
+# Jitter factor for retry delays (0.0 to 1.0)
+# Adds randomness to prevent thundering herd effects
+DEFAULT_RETRY_JITTER_FACTOR = 0.2
+
+# =============================================================================
+# Security Settings
+# =============================================================================
+
+# File permissions for configuration files (owner read/write only)
+# 0o600 = -rw------- (only owner can read/write)
+CONFIG_FILE_PERMISSIONS = 0o600
+
+# Directory permissions for configuration directories
+# 0o700 = drwx------ (only owner can access)
+CONFIG_DIR_PERMISSIONS = 0o700

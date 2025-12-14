@@ -23,6 +23,8 @@ Usage:
 
 import functools
 import logging
+import random
+import threading
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -34,6 +36,7 @@ from .constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_RETRY_BASE_DELAY,
     DEFAULT_RETRY_MAX_DELAY,
+    DEFAULT_RETRY_JITTER_FACTOR,
 )
 from .exceptions import NetworkError, RetryExhaustedError
 
@@ -47,11 +50,45 @@ T = TypeVar("T")
 # =============================================================================
 
 
+def _calculate_delay_with_jitter(
+    base_delay: float,
+    attempt: int,
+    exponential_base: float,
+    max_delay: float,
+    jitter_factor: float,
+) -> float:
+    """
+    Calculate retry delay with exponential backoff and jitter.
+
+    Jitter adds randomness to prevent thundering herd effects when
+    multiple clients retry simultaneously after a failure.
+
+    Args:
+        base_delay: Initial delay in seconds
+        attempt: Current attempt number (0-indexed)
+        exponential_base: Multiplier for delay increase
+        max_delay: Maximum delay cap
+        jitter_factor: Amount of randomness (0.0 to 1.0)
+
+    Returns:
+        Calculated delay in seconds with jitter applied
+    """
+    # Calculate base exponential delay
+    delay = min(base_delay * (exponential_base ** attempt), max_delay)
+
+    # Apply jitter: delay * (1 - jitter_factor) to delay * (1 + jitter_factor)
+    jitter_range = delay * jitter_factor
+    jitter = random.uniform(-jitter_range, jitter_range)
+
+    return max(0.0, delay + jitter)
+
+
 def retry_with_backoff(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_RETRY_BASE_DELAY,
     max_delay: float = DEFAULT_RETRY_MAX_DELAY,
     exponential_base: float = 2.0,
+    jitter_factor: float = DEFAULT_RETRY_JITTER_FACTOR,
     retryable_exceptions: tuple[type[Exception], ...] = (
         ConnectionError,
         TimeoutError,
@@ -60,17 +97,22 @@ def retry_with_backoff(
     on_retry: Callable[[int, Exception, float], None] | None = None,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
-    Decorator for retrying operations with exponential backoff.
+    Decorator for retrying operations with exponential backoff and jitter.
 
     Automatically retries failed operations with increasing delays between
     attempts. Useful for network operations that may fail due to transient
     issues.
+
+    Jitter is applied to prevent thundering herd effects when multiple
+    clients retry simultaneously after a shared failure (e.g., server restart).
 
     Args:
         max_retries: Maximum number of retry attempts (default: 3)
         base_delay: Initial delay in seconds (default: 1.0)
         max_delay: Maximum delay between retries (default: 10.0)
         exponential_base: Multiplier for delay increase (default: 2.0)
+        jitter_factor: Amount of randomness to add to delays (default: 0.2)
+                      Value of 0.2 means delay varies by +/- 20%
         retryable_exceptions: Tuple of exceptions that trigger retry
         on_retry: Optional callback called on each retry (attempt, error, delay)
 
@@ -93,6 +135,11 @@ def retry_with_backoff(
         @retry_with_backoff(max_retries=5, on_retry=log_retry)
         def fetch_with_logging():
             ...
+
+        # Disable jitter for deterministic behavior in tests
+        @retry_with_backoff(jitter_factor=0.0)
+        def fetch_deterministic():
+            ...
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(func)
@@ -106,10 +153,13 @@ def retry_with_backoff(
                     last_exception = e
 
                     if attempt < max_retries:
-                        # Calculate delay with exponential backoff
-                        delay = min(
-                            base_delay * (exponential_base ** attempt),
-                            max_delay
+                        # Calculate delay with exponential backoff and jitter
+                        delay = _calculate_delay_with_jitter(
+                            base_delay=base_delay,
+                            attempt=attempt,
+                            exponential_base=exponential_base,
+                            max_delay=max_delay,
+                            jitter_factor=jitter_factor,
                         )
 
                         logger.warning(
@@ -143,6 +193,7 @@ def retry_async_with_backoff(
     base_delay: float = DEFAULT_RETRY_BASE_DELAY,
     max_delay: float = DEFAULT_RETRY_MAX_DELAY,
     exponential_base: float = 2.0,
+    jitter_factor: float = DEFAULT_RETRY_JITTER_FACTOR,
     retryable_exceptions: tuple[type[Exception], ...] = (
         ConnectionError,
         TimeoutError,
@@ -153,6 +204,15 @@ def retry_async_with_backoff(
     Async version of retry_with_backoff decorator.
 
     Same functionality as retry_with_backoff but for async functions.
+    Includes jitter to prevent thundering herd effects.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+        base_delay: Initial delay in seconds (default: 1.0)
+        max_delay: Maximum delay between retries (default: 10.0)
+        exponential_base: Multiplier for delay increase (default: 2.0)
+        jitter_factor: Amount of randomness to add to delays (default: 0.2)
+        retryable_exceptions: Tuple of exceptions that trigger retry
 
     Example:
         @retry_async_with_backoff(max_retries=3)
@@ -175,9 +235,13 @@ def retry_async_with_backoff(
                     last_exception = e
 
                     if attempt < max_retries:
-                        delay = min(
-                            base_delay * (exponential_base ** attempt),
-                            max_delay
+                        # Calculate delay with exponential backoff and jitter
+                        delay = _calculate_delay_with_jitter(
+                            base_delay=base_delay,
+                            attempt=attempt,
+                            exponential_base=exponential_base,
+                            max_delay=max_delay,
+                            jitter_factor=jitter_factor,
                         )
 
                         logger.warning(
@@ -267,10 +331,16 @@ class MetricStats:
 
 class MetricsCollector:
     """
-    Collects and reports performance metrics.
+    Thread-safe metrics collector for performance monitoring.
 
     Provides timing measurements, counters, and statistics for
-    monitoring application performance.
+    monitoring application performance. All operations are thread-safe,
+    making it suitable for use in multi-threaded or concurrent applications.
+
+    Thread Safety:
+        All public methods are protected by a reentrant lock, ensuring
+        safe access from multiple threads. The lock is reentrant to allow
+        nested timer contexts without deadlocking.
 
     Usage:
         metrics = MetricsCollector()
@@ -308,10 +378,30 @@ class MetricsCollector:
 
         # Report
         print(metrics.summary())
+
+    Thread-safe example:
+        import threading
+
+        metrics = MetricsCollector()
+
+        def worker(worker_id: int):
+            with metrics.timer(f"worker_{worker_id}"):
+                # Do work
+                metrics.increment("tasks_completed")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        print(metrics.get_counter("tasks_completed"))  # 10
     """
 
     def __init__(self) -> None:
-        """Initialize the metrics collector."""
+        """Initialize the thread-safe metrics collector."""
+        # Use RLock for reentrant locking (allows nested timer contexts)
+        self._lock = threading.RLock()
         self._timers: dict[str, MetricStats] = defaultdict(MetricStats)
         self._counters: dict[str, int] = defaultdict(int)
         self._values: dict[str, MetricStats] = defaultdict(MetricStats)
@@ -322,6 +412,8 @@ class MetricsCollector:
     def timer(self, name: str) -> Generator[TimingMetric, None, None]:
         """
         Context manager for timing operations.
+
+        Thread-safe: Uses internal locking for concurrent access.
 
         Args:
             name: Name of the operation being timed
@@ -334,14 +426,18 @@ class MetricsCollector:
                 embeddings = embed(texts)
         """
         metric = TimingMetric(name=name, start_time=time.perf_counter())
-        self._active_timers[name] = metric
+
+        with self._lock:
+            self._active_timers[name] = metric
 
         try:
             yield metric
         finally:
             duration = metric.stop()
-            self._timers[name].add(duration)
-            del self._active_timers[name]
+            with self._lock:
+                self._timers[name].add(duration)
+                if name in self._active_timers:
+                    del self._active_timers[name]
 
             logger.debug(f"[METRICS] {name}: {duration:.3f}s")
 
@@ -349,19 +445,23 @@ class MetricsCollector:
         """
         Start a named timer manually.
 
+        Thread-safe: Uses internal locking for concurrent access.
         Use stop_timer() to end the timing.
 
         Args:
             name: Name of the timer
         """
-        self._active_timers[name] = TimingMetric(
-            name=name,
-            start_time=time.perf_counter()
-        )
+        with self._lock:
+            self._active_timers[name] = TimingMetric(
+                name=name,
+                start_time=time.perf_counter()
+            )
 
     def stop_timer(self, name: str) -> float:
         """
         Stop a named timer and record the duration.
+
+        Thread-safe: Uses internal locking for concurrent access.
 
         Args:
             name: Name of the timer
@@ -372,13 +472,14 @@ class MetricsCollector:
         Raises:
             KeyError: If timer was not started
         """
-        if name not in self._active_timers:
-            raise KeyError(f"Timer '{name}' was not started")
+        with self._lock:
+            if name not in self._active_timers:
+                raise KeyError(f"Timer '{name}' was not started")
 
-        metric = self._active_timers[name]
-        duration = metric.stop()
-        self._timers[name].add(duration)
-        del self._active_timers[name]
+            metric = self._active_timers[name]
+            duration = metric.stop()
+            self._timers[name].add(duration)
+            del self._active_timers[name]
 
         logger.debug(f"[METRICS] {name}: {duration:.3f}s")
         return duration
@@ -386,6 +487,8 @@ class MetricsCollector:
     def increment(self, name: str, value: int = 1) -> None:
         """
         Increment a counter.
+
+        Thread-safe: Uses internal locking for concurrent access.
 
         Args:
             name: Counter name
@@ -395,22 +498,29 @@ class MetricsCollector:
             metrics.increment("documents_processed")
             metrics.increment("api_calls", 3)
         """
-        self._counters[name] += value
-        logger.debug(f"[METRICS] {name} += {value} (total: {self._counters[name]})")
+        with self._lock:
+            self._counters[name] += value
+            current = self._counters[name]
+        logger.debug(f"[METRICS] {name} += {value} (total: {current})")
 
     def decrement(self, name: str, value: int = 1) -> None:
         """
         Decrement a counter.
 
+        Thread-safe: Uses internal locking for concurrent access.
+
         Args:
             name: Counter name
             value: Amount to decrement (default: 1)
         """
-        self._counters[name] -= value
+        with self._lock:
+            self._counters[name] -= value
 
     def record(self, name: str, value: float) -> None:
         """
         Record a numerical value for statistics.
+
+        Thread-safe: Uses internal locking for concurrent access.
 
         Args:
             name: Metric name
@@ -420,28 +530,47 @@ class MetricsCollector:
             metrics.record("relevance_score", 4.5)
             metrics.record("embedding_dimension", 384)
         """
-        self._values[name].add(value)
+        with self._lock:
+            self._values[name].add(value)
         logger.debug(f"[METRICS] {name} = {value}")
 
     def get_counter(self, name: str) -> int:
-        """Get current counter value."""
-        return self._counters.get(name, 0)
+        """
+        Get current counter value.
+
+        Thread-safe: Uses internal locking for concurrent access.
+        """
+        with self._lock:
+            return self._counters.get(name, 0)
 
     def get_timer_stats(self, name: str) -> dict[str, Any] | None:
-        """Get statistics for a timer."""
-        if name in self._timers:
-            return self._timers[name].to_dict()
-        return None
+        """
+        Get statistics for a timer.
+
+        Thread-safe: Uses internal locking for concurrent access.
+        """
+        with self._lock:
+            if name in self._timers:
+                return self._timers[name].to_dict()
+            return None
 
     def get_value_stats(self, name: str) -> dict[str, Any] | None:
-        """Get statistics for a recorded value."""
-        if name in self._values:
-            return self._values[name].to_dict()
-        return None
+        """
+        Get statistics for a recorded value.
+
+        Thread-safe: Uses internal locking for concurrent access.
+        """
+        with self._lock:
+            if name in self._values:
+                return self._values[name].to_dict()
+            return None
 
     def get_statistics(self) -> dict[str, Any]:
         """
         Get all collected statistics.
+
+        Thread-safe: Uses internal locking for concurrent access.
+        Returns a snapshot of current statistics.
 
         Returns:
             Dictionary with all metrics organized by type
@@ -455,16 +584,19 @@ class MetricsCollector:
             #     'duration_seconds': 45.2
             # }
         """
-        return {
-            "timers": {k: v.to_dict() for k, v in self._timers.items()},
-            "counters": dict(self._counters),
-            "values": {k: v.to_dict() for k, v in self._values.items()},
-            "duration_seconds": (datetime.now() - self._start_time).total_seconds(),
-        }
+        with self._lock:
+            return {
+                "timers": {k: v.to_dict() for k, v in self._timers.items()},
+                "counters": dict(self._counters),
+                "values": {k: v.to_dict() for k, v in self._values.items()},
+                "duration_seconds": (datetime.now() - self._start_time).total_seconds(),
+            }
 
     def summary(self) -> str:
         """
         Generate a human-readable summary.
+
+        Thread-safe: Uses internal locking for concurrent access.
 
         Returns:
             Formatted string with all metrics
@@ -478,49 +610,55 @@ class MetricsCollector:
             #   documents_processed: 150
             # ...
         """
-        lines = ["=== Performance Metrics ==="]
+        with self._lock:
+            lines = ["=== Performance Metrics ==="]
 
-        # Timers
-        if self._timers:
-            lines.append("\nTimers:")
-            for name, stats in sorted(self._timers.items()):
-                lines.append(
-                    f"  {name}: {stats.count} calls, "
-                    f"mean={stats.mean:.3f}s, "
-                    f"min={stats.min_value:.3f}s, "
-                    f"max={stats.max_value:.3f}s"
-                )
+            # Timers
+            if self._timers:
+                lines.append("\nTimers:")
+                for name, stats in sorted(self._timers.items()):
+                    lines.append(
+                        f"  {name}: {stats.count} calls, "
+                        f"mean={stats.mean:.3f}s, "
+                        f"min={stats.min_value:.3f}s, "
+                        f"max={stats.max_value:.3f}s"
+                    )
 
-        # Counters
-        if self._counters:
-            lines.append("\nCounters:")
-            for name, value in sorted(self._counters.items()):
-                lines.append(f"  {name}: {value}")
+            # Counters
+            if self._counters:
+                lines.append("\nCounters:")
+                for name, value in sorted(self._counters.items()):
+                    lines.append(f"  {name}: {value}")
 
-        # Values
-        if self._values:
-            lines.append("\nRecorded Values:")
-            for name, stats in sorted(self._values.items()):
-                lines.append(
-                    f"  {name}: {stats.count} samples, "
-                    f"mean={stats.mean:.3f}, "
-                    f"min={stats.min_value:.3f}, "
-                    f"max={stats.max_value:.3f}"
-                )
+            # Values
+            if self._values:
+                lines.append("\nRecorded Values:")
+                for name, stats in sorted(self._values.items()):
+                    lines.append(
+                        f"  {name}: {stats.count} samples, "
+                        f"mean={stats.mean:.3f}, "
+                        f"min={stats.min_value:.3f}, "
+                        f"max={stats.max_value:.3f}"
+                    )
 
-        # Duration
-        duration = (datetime.now() - self._start_time).total_seconds()
-        lines.append(f"\nTotal Duration: {duration:.1f}s")
+            # Duration
+            duration = (datetime.now() - self._start_time).total_seconds()
+            lines.append(f"\nTotal Duration: {duration:.1f}s")
 
-        return "\n".join(lines)
+            return "\n".join(lines)
 
     def reset(self) -> None:
-        """Reset all metrics."""
-        self._timers.clear()
-        self._counters.clear()
-        self._values.clear()
-        self._active_timers.clear()
-        self._start_time = datetime.now()
+        """
+        Reset all metrics.
+
+        Thread-safe: Uses internal locking for concurrent access.
+        """
+        with self._lock:
+            self._timers.clear()
+            self._counters.clear()
+            self._values.clear()
+            self._active_timers.clear()
+            self._start_time = datetime.now()
 
 
 # Global metrics instance for convenience

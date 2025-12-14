@@ -11,11 +11,15 @@ All paths are resolved relative to the data directory.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Any
+import hashlib
 import json
 import logging
 import os
+import stat
 
 from .constants import (
+    CONFIG_DIR_PERMISSIONS,
+    CONFIG_FILE_PERMISSIONS,
     DEFAULT_DATA_DIR,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_CHUNK_SIZE,
@@ -127,6 +131,11 @@ class LiteConfig:
         # Modify and save
         config.llm.model = "claude-3-haiku-20240307"
         config.save()
+
+    Validation Caching:
+        Validation results are cached based on a hash of configuration values.
+        The cache is automatically invalidated when configuration changes.
+        Use invalidate_validation_cache() to force re-validation.
     """
 
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -134,6 +143,11 @@ class LiteConfig:
     pubmed: PubMedConfig = field(default_factory=PubMedConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+
+    # Validation cache (not serialized)
+    _validation_cache: dict[str, list[str]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "LiteConfig":
@@ -257,6 +271,9 @@ class LiteConfig:
         """
         Save configuration to file.
 
+        The configuration file is saved with restricted permissions (600)
+        to protect sensitive data like API keys.
+
         Args:
             config_path: Optional path to save to.
                         If None, saves to data_dir/config.json
@@ -264,12 +281,24 @@ class LiteConfig:
         if config_path is None:
             config_path = self.storage.data_dir / "config.json"
 
-        # Ensure directory exists
+        # Ensure directory exists with secure permissions
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Write config
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2)
+
+        # Set secure file permissions (owner read/write only)
+        # This protects API keys and other sensitive configuration
+        try:
+            os.chmod(config_path, CONFIG_FILE_PERMISSIONS)
+            logger.debug(f"Set file permissions to {oct(CONFIG_FILE_PERMISSIONS)} for {config_path}")
+        except OSError as e:
+            # Log but don't fail - permissions may not be settable on all filesystems
+            logger.warning(f"Could not set file permissions for {config_path}: {e}")
+
+        # Invalidate validation cache after save
+        self._validation_cache.clear()
 
         logger.info(f"Configuration saved to {config_path}")
 
@@ -309,12 +338,38 @@ class LiteConfig:
         except Exception as e:
             logger.warning(f"Failed to load .env file: {e}")
 
+    def _compute_config_hash(self) -> str:
+        """
+        Compute a hash of the current configuration values.
+
+        Used for validation caching - the cache is invalidated when
+        the configuration changes.
+
+        Returns:
+            MD5 hash of the configuration dictionary
+        """
+        config_str = json.dumps(self.to_dict(), sort_keys=True)
+        return hashlib.md5(config_str.encode()).hexdigest()
+
+    def invalidate_validation_cache(self) -> None:
+        """
+        Manually invalidate the validation cache.
+
+        Call this method to force re-validation on the next validate() call.
+        The cache is also automatically invalidated when save() is called.
+        """
+        self._validation_cache.clear()
+        logger.debug("Validation cache invalidated")
+
     def validate(self) -> list[str]:
         """
         Validate configuration values.
 
         Checks all configuration parameters for valid ranges and formats.
         Returns a list of error messages if any validation fails.
+
+        Validation results are cached based on configuration values.
+        The cache is automatically invalidated when configuration changes.
 
         Returns:
             List of validation error messages (empty if all valid)
@@ -327,6 +382,12 @@ class LiteConfig:
                     print(f"Config error: {error}")
                 raise ConfigurationError(f"Invalid configuration: {errors}")
         """
+        # Check cache first
+        config_hash = self._compute_config_hash()
+        if config_hash in self._validation_cache:
+            logger.debug("Returning cached validation result")
+            return self._validation_cache[config_hash]
+
         errors: list[str] = []
 
         # Email validation
@@ -393,6 +454,10 @@ class LiteConfig:
         # Data directory validation
         if not self.storage.data_dir:
             errors.append("Data directory path cannot be empty")
+
+        # Cache the result
+        self._validation_cache[config_hash] = errors
+        logger.debug(f"Cached validation result for config hash {config_hash[:8]}...")
 
         return errors
 
