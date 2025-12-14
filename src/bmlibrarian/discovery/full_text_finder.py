@@ -242,6 +242,8 @@ class FullTextFinder:
             progress_callback("download", "starting")
 
         last_error = None
+        verification_failed_sources: List[PDFSource] = []  # Track sources that failed verification
+
         for source in discovery.sources:
             result = self._download_from_source(
                 source=source,
@@ -257,8 +259,17 @@ class FullTextFinder:
                 # Verify content if requested
                 if verify_content:
                     result = self._verify_downloaded_pdf(
-                        result, identifiers, delete_on_mismatch, progress_callback
+                        result, identifiers, delete_on_mismatch=True, progress_callback=progress_callback
                     )
+
+                    # If verification failed, try next source instead of returning
+                    if result.verified is False:
+                        logger.warning(
+                            f"Verification failed for {source.source_type.value}, trying next source..."
+                        )
+                        verification_failed_sources.append(source)
+                        last_error = f"Verification failed: {'; '.join(result.verification_warnings or [])}"
+                        continue  # Try next source
 
                 return result
 
@@ -266,12 +277,15 @@ class FullTextFinder:
             logger.debug(f"HTTP download failed from {source.source_type.value}: {result.error_message}")
 
         # All HTTP attempts failed - try browser fallback
-        if use_browser_fallback and discovery.sources:
+        # Exclude sources that already failed verification
+        browser_sources = [s for s in discovery.sources if s not in verification_failed_sources]
+
+        if use_browser_fallback and browser_sources:
             if progress_callback:
                 progress_callback("browser_download", "starting")
 
             result = self._download_with_browser(
-                sources=discovery.sources,
+                sources=browser_sources,
                 output_path=output_path,
                 headless=browser_headless,
                 timeout=browser_timeout,
@@ -286,23 +300,44 @@ class FullTextFinder:
                 # Verify content if requested
                 if verify_content:
                     result = self._verify_downloaded_pdf(
-                        result, identifiers, delete_on_mismatch, progress_callback
+                        result, identifiers, delete_on_mismatch=True, progress_callback=progress_callback
                     )
 
-                return result
+                    # If verification failed, don't return success
+                    if result.verified is False:
+                        logger.warning(
+                            f"Browser download verification failed"
+                        )
+                        last_error = f"Verification failed: {'; '.join(result.verification_warnings or [])}"
+                    else:
+                        return result
+                else:
+                    return result
 
-            last_error = result.error_message
-            logger.debug(f"Browser download failed: {result.error_message}")
+            else:
+                last_error = result.error_message
+                logger.debug(f"Browser download failed: {result.error_message}")
 
         # All sources and methods failed
         if progress_callback:
             progress_callback("download", "failed")
 
+        # Build informative error message
+        total_sources = len(discovery.sources)
+        verification_failures = len(verification_failed_sources)
+        if verification_failures > 0:
+            error_msg = (
+                f"Tried {total_sources} source(s): {verification_failures} downloaded but "
+                f"failed verification (wrong PDF). Last error: {last_error}"
+            )
+        else:
+            error_msg = f"All {total_sources} sources failed. Last error: {last_error}"
+
         return DownloadResult(
             success=False,
-            error_message=f"All {len(discovery.sources)} sources failed. Last error: {last_error}",
+            error_message=error_msg,
             duration_ms=(time.time() - start_time) * 1000,
-            attempts=len(discovery.sources)
+            attempts=total_sources
         )
 
     def _download_with_browser(
