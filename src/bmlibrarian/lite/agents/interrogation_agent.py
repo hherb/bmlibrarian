@@ -17,6 +17,9 @@ from .base import LiteBaseAgent
 
 logger = logging.getLogger(__name__)
 
+# Default number of context chunks to retrieve
+DEFAULT_CONTEXT_CHUNKS = 10
+
 # System prompt for document Q&A
 INTERROGATION_SYSTEM_PROMPT = """You are a helpful research assistant answering questions about a document.
 
@@ -29,6 +32,26 @@ Guidelines:
 6. Do not make up information not present in the provided context
 
 Important: Your answers must be grounded in the document content provided. If the context is insufficient to answer the question, say "The provided context does not contain information about this topic." """
+
+# System prompt for query expansion
+QUERY_EXPANSION_PROMPT = """Given a user's question about a document, generate 2-3 alternative phrasings or related search terms that would help find relevant content.
+
+Return ONLY the alternative queries, one per line. Do not include explanations or numbering.
+
+Examples:
+Question: "What are the exclusion criteria?"
+Alternative queries:
+studies were excluded
+exclusion of articles
+not included in the review
+eligibility criteria
+
+Question: "What methods were used?"
+Alternative queries:
+methodology
+study design
+research approach
+data collection"""
 
 
 class LiteInterrogationAgent(LiteBaseAgent):
@@ -138,19 +161,56 @@ class LiteInterrogationAgent(LiteBaseAgent):
         logger.info(f"Loaded document '{title}' with {len(chunks)} chunks")
         return self._current_document_id
 
+    def _expand_query(self, question: str) -> list[str]:
+        """
+        Generate alternative query phrasings using LLM.
+
+        Args:
+            question: Original question
+
+        Returns:
+            List of alternative queries (including original)
+        """
+        try:
+            messages = [
+                self._create_system_message(QUERY_EXPANSION_PROMPT),
+                self._create_user_message(f"Question: {question}"),
+            ]
+
+            response = self._chat(messages, temperature=0.3, max_tokens=200)
+
+            # Parse response into list of queries
+            alternatives = [
+                line.strip()
+                for line in response.strip().split('\n')
+                if line.strip() and not line.strip().startswith(('Alternative', '-', '*', '•'))
+            ]
+
+            # Return original + alternatives
+            return [question] + alternatives[:3]
+
+        except Exception as e:
+            logger.warning(f"Query expansion failed: {e}")
+            return [question]
+
     def ask(
         self,
         question: str,
         document_id: Optional[str] = None,
-        n_context_chunks: int = 5,
+        n_context_chunks: int = DEFAULT_CONTEXT_CHUNKS,
+        use_query_expansion: bool = True,
     ) -> tuple[str, list[str]]:
         """
         Ask a question about the loaded document.
 
+        Uses multi-query retrieval with query expansion for better coverage,
+        then deduplicates and orders chunks by document position.
+
         Args:
             question: Question to ask
             document_id: Optional document ID (uses current if not provided)
-            n_context_chunks: Number of context chunks to retrieve
+            n_context_chunks: Number of context chunks to retrieve per query
+            use_query_expansion: Whether to use LLM query expansion
 
         Returns:
             Tuple of (answer, list of source passages)
@@ -162,25 +222,47 @@ class LiteInterrogationAgent(LiteBaseAgent):
         if not doc_id:
             raise ValueError("No document loaded. Call load_document() first.")
 
-        # Retrieve relevant chunks
         collection = self.storage.get_chunks_collection(self.embed_fn)
 
-        results = collection.query(
-            query_texts=[question],
-            n_results=n_context_chunks,
-            where={"document_id": doc_id},
-            include=["documents", "metadatas"],
-        )
+        # Get queries (original + expansions)
+        if use_query_expansion:
+            queries = self._expand_query(question)
+            logger.debug(f"Expanded queries: {queries}")
+        else:
+            queries = [question]
 
-        if not results["documents"][0]:
+        # Collect chunks from all queries
+        seen_chunk_ids: set[str] = set()
+        chunks_with_metadata: list[tuple[str, dict]] = []
+
+        for query in queries:
+            results = collection.query(
+                query_texts=[query],
+                n_results=n_context_chunks,
+                where={"document_id": doc_id},
+                include=["documents", "metadatas"],
+            )
+
+            if results["documents"][0]:
+                for i, chunk_text in enumerate(results["documents"][0]):
+                    chunk_id = results["ids"][0][i]
+                    if chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(chunk_id)
+                        metadata = results["metadatas"][0][i]
+                        chunks_with_metadata.append((chunk_text, metadata))
+
+        if not chunks_with_metadata:
             return "No relevant content found in the document.", []
 
-        # Build context from retrieved chunks
-        context_chunks = results["documents"][0]
+        # Sort chunks by their position in the document for coherent reading
+        chunks_with_metadata.sort(key=lambda x: x[1].get("chunk_index", 0))
+
+        # Build context from deduplicated, ordered chunks
+        context_chunks = [chunk for chunk, _ in chunks_with_metadata]
         context = "\n\n---\n\n".join(context_chunks)
 
         # Generate answer
-        user_prompt = f"""Context from the document:
+        user_prompt = f"""Context from the document (ordered by position):
 
 {context}
 

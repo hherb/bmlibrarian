@@ -22,7 +22,12 @@ Usage:
 
 from .app import LiteMainWindow, run_lite_app
 from .systematic_review_tab import SystematicReviewTab, WorkflowWorker
-from .document_interrogation_tab import DocumentInterrogationTab, ChatMessage
+from .document_interrogation_tab import (
+    DocumentInterrogationTab,
+    ChatBubble,
+    LiteDocumentViewWidget,
+    AnswerWorker,
+)
 from .settings_dialog import SettingsDialog
 
 __all__ = [
@@ -34,8 +39,10 @@ __all__ = [
     "DocumentInterrogationTab",
     # Workers
     "WorkflowWorker",
+    "AnswerWorker",
     # Widgets
-    "ChatMessage",
+    "ChatBubble",
+    "LiteDocumentViewWidget",
     # Dialogs
     "SettingsDialog",
 ]
