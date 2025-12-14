@@ -460,8 +460,9 @@ class SystematicReviewTab(QWidget):
         """
         Convert markdown report to HTML with clickable citation links.
 
-        Finds citation patterns like [Author et al., 2023] and makes them
-        clickable links that open the document in the interrogation tab.
+        Handles two citation formats:
+        1. New format: [Author et al., 2023](docid:pmid-12345) - document ID in link
+        2. Legacy format: [Author et al., 2023] - uses fuzzy matching (fallback)
 
         Args:
             markdown_report: Original markdown report
@@ -471,24 +472,40 @@ class SystematicReviewTab(QWidget):
         """
         import markdown
 
-        # First convert markdown to HTML
-        md = markdown.Markdown(extensions=['extra', 'nl2br', 'sane_lists'])
-        html = md.convert(markdown_report)
+        # Step 1: Convert docid: links to bmlibrarian:// links BEFORE markdown processing
+        # Pattern matches: [Author et al., 2023](docid:pmid-12345)
+        docid_pattern = r'\[([^\]]+)\]\(docid:([^)]+)\)'
 
-        # Find citation patterns and replace with links
-        # Pattern matches: [Author et al., 2023] or [Smith J, 2022]
-        citation_pattern = r'\[([A-Za-z][^,\[\]]+(?:,\s*\d{4})?)\]'
-
-        def replace_citation(match: re.Match) -> str:
+        def replace_docid_link(match: re.Match) -> str:
             citation_text = match.group(1)
-            # Try to find matching document
+            doc_id = match.group(2)
+            # Validate doc_id exists in our citations
+            if doc_id in self._citations_by_doc_id:
+                return f'[{citation_text}](bmlibrarian://doc/{doc_id})'
+            # Fallback: keep as plain text if doc_id not found
+            logger.warning(f"Document ID '{doc_id}' not found in citations")
+            return f'[{citation_text}]'
+
+        processed_markdown = re.sub(docid_pattern, replace_docid_link, markdown_report)
+
+        # Step 2: Convert markdown to HTML
+        md = markdown.Markdown(extensions=['extra', 'nl2br', 'sane_lists'])
+        html = md.convert(processed_markdown)
+
+        # Step 3: Handle legacy citations that don't have docid links (fallback)
+        # Pattern matches: [Author et al., 2023] or [Smith J, 2022] that aren't already links
+        # This regex looks for brackets NOT followed by ( which would indicate a link
+        legacy_pattern = r'\[([A-Za-z][^,\[\]]+(?:,\s*\d{4})?)\](?!\()'
+
+        def replace_legacy_citation(match: re.Match) -> str:
+            citation_text = match.group(1)
+            # Try to find matching document using fuzzy matching
             doc_id = self._find_document_by_citation(citation_text)
             if doc_id:
-                # Make it a clickable link
                 return f'<a href="bmlibrarian://doc/{doc_id}" style="color: #2196F3; text-decoration: underline; cursor: pointer;">[{citation_text}]</a>'
             return match.group(0)
 
-        html = re.sub(citation_pattern, replace_citation, html)
+        html = re.sub(legacy_pattern, replace_legacy_citation, html)
 
         # Wrap in basic HTML structure with styling
         styled_html = f"""
@@ -538,13 +555,17 @@ class SystematicReviewTab(QWidget):
 
     def _find_document_by_citation(self, citation_text: str) -> Optional[str]:
         """
-        Find document ID from citation text.
+        Find document ID from citation text using fuzzy matching.
+
+        This is a LEGACY FALLBACK method for reports that don't use the new
+        docid: link format. Prefer using document IDs directly via the
+        [Author, Year](docid:ID) format for reliable citation tracking.
 
         Tries to match citation text like "Smith et al., 2023" against
-        stored citations.
+        stored citations by comparing author names and years.
 
         Args:
-            citation_text: Citation text to match
+            citation_text: Citation text to match (e.g., "Smith et al., 2023")
 
         Returns:
             Document ID if found, None otherwise

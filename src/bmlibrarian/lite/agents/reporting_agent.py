@@ -18,7 +18,10 @@ REPORTING_SYSTEM_PROMPT = """You are a medical research report writer. Your task
 
 Guidelines:
 1. Write in clear, professional medical prose
-2. Cite sources using [Author, Year] format in the text
+2. Cite sources using EXACTLY this markdown link format: [Author et al., Year](docid:DOCUMENT_ID)
+   - The DOCUMENT_ID is provided in each source (e.g., "pmid-12345")
+   - Example: [Smith et al., 2023](docid:pmid-12345)
+   - You MUST use the exact document ID provided - never make up IDs
 3. Organize findings by themes or topics, not by source
 4. Include specific data and findings when available
 5. Note any conflicting or contrasting evidence
@@ -30,7 +33,8 @@ Structure your report with:
 - Body paragraphs organized thematically
 - A conclusion summarizing key findings
 
-Do NOT simply list sources - synthesize the information into a flowing narrative."""
+Do NOT simply list sources - synthesize the information into a flowing narrative.
+IMPORTANT: Every citation MUST use the markdown link format [Author, Year](docid:ID) with the exact document ID provided."""
 
 
 class LiteReportingAgent(LiteBaseAgent):
@@ -73,7 +77,14 @@ Evidence from {len(citations)} source passages:
 
 {formatted_citations}
 
-Write a comprehensive research summary that synthesizes this evidence to answer the research question. Include proper citations in [Author, Year] format throughout the text."""
+Write a comprehensive research summary that synthesizes this evidence to answer the research question.
+
+CITATION FORMAT REQUIREMENT: Use markdown links with the Document ID for EVERY citation:
+[Author et al., Year](docid:DOCUMENT_ID)
+
+Example: If citing source [1] with Document ID "pmid-12345", write: [Smith et al., 2023](docid:pmid-12345)
+
+This format is MANDATORY - do not use plain [Author, Year] citations."""
 
         messages = [
             self._create_system_message(REPORTING_SYSTEM_PROMPT),
@@ -173,16 +184,19 @@ No relevant evidence was found in the searched literature. This may indicate:
         """
         Format citations for the LLM prompt.
 
+        Includes document IDs so the LLM can create proper citation links.
+
         Args:
             citations: List of citations
 
         Returns:
-            Formatted string with numbered citations
+            Formatted string with numbered citations including document IDs
         """
         formatted = []
         for i, citation in enumerate(citations, 1):
             doc = citation.document
             formatted.append(f"""[{i}] {doc.formatted_authors} ({doc.year or 'n.d.'})
+Document ID: {doc.id}
 Title: {doc.title}
 Journal: {doc.journal or 'Unknown'}
 Passage: "{citation.passage}"
