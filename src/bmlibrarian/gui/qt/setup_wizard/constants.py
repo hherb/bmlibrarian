@@ -35,11 +35,19 @@ WIZARD_HEIGHT_RATIO = 0.8  # Wizard height as ratio of width
 
 # Progress percentages for quick test import
 PROGRESS_MEDRXIV_START = 10
-PROGRESS_PUBMED_START = 50
+PROGRESS_PUBMED_START = 40
+PROGRESS_MESH_START = 70
 PROGRESS_COMPLETE = 100
 
 # Required PostgreSQL extensions
 REQUIRED_EXTENSIONS = ["vector", "plpython3u", "pg_trgm"]
+
+# MeSH import settings
+MESH_DEFAULT_YEAR = 2025
+MESH_MIN_YEAR = 2020
+MESH_MAX_YEAR = 2030
+MESH_ESTIMATED_SIZE_MB = 400  # Approximate download size with SCRs
+MESH_ESTIMATED_SIZE_NO_SCR_MB = 180  # Without supplementary concepts
 
 # Color constants for status messages (HTML colors)
 COLOR_ERROR = "#D32F2F"

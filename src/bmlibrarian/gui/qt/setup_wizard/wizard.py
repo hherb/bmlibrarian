@@ -43,10 +43,11 @@ class SetupWizard(QWizard):
     PAGE_DB_INSTRUCTIONS = 1
     PAGE_DB_CONFIG = 2
     PAGE_DB_SETUP = 3
-    PAGE_IMPORT_OPTIONS = 4
-    PAGE_IMPORT_PROGRESS = 5
-    PAGE_DOCUMENT_BROWSER = 6
-    PAGE_COMPLETE = 7
+    PAGE_API_KEYS = 4
+    PAGE_IMPORT_OPTIONS = 5
+    PAGE_IMPORT_PROGRESS = 6
+    PAGE_DOCUMENT_BROWSER = 7
+    PAGE_COMPLETE = 8
 
     def __init__(self, parent: Optional[object] = None):
         """
@@ -72,14 +73,19 @@ class SetupWizard(QWizard):
             "ncbi_email": "",
             "ncbi_api_key": "",
             "ollama_host": "http://localhost:11434",
+            # Optional API keys
+            "anthropic_api_key": "",
+            "openai_api_key": "",
         }
 
         # Import results tracking
         self._import_results = {
             "medrxiv_success": False,
             "pubmed_success": False,
+            "mesh_success": False,
             "medrxiv_stats": {},
             "pubmed_stats": {},
+            "mesh_stats": {},
         }
 
         self._setup_ui()
@@ -119,6 +125,7 @@ class SetupWizard(QWizard):
             DatabaseInstructionsPage,
             DatabaseConfigPage,
             DatabaseSetupPage,
+            APIKeysPage,
             ImportOptionsPage,
             ImportProgressPage,
             DocumentBrowserPage,
@@ -130,6 +137,7 @@ class SetupWizard(QWizard):
         self.setPage(self.PAGE_DB_INSTRUCTIONS, DatabaseInstructionsPage(self))
         self.setPage(self.PAGE_DB_CONFIG, DatabaseConfigPage(self))
         self.setPage(self.PAGE_DB_SETUP, DatabaseSetupPage(self))
+        self.setPage(self.PAGE_API_KEYS, APIKeysPage(self))
         self.setPage(self.PAGE_IMPORT_OPTIONS, ImportOptionsPage(self))
         self.setPage(self.PAGE_IMPORT_PROGRESS, ImportProgressPage(self))
         self.setPage(self.PAGE_DOCUMENT_BROWSER, DocumentBrowserPage(self))
