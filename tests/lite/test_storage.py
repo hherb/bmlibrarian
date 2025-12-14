@@ -8,8 +8,26 @@ from pathlib import Path
 import pytest
 
 from bmlibrarian.lite.config import LiteConfig, StorageConfig
+from bmlibrarian.lite.constants import DEFAULT_EMBEDDING_MODEL
 from bmlibrarian.lite.data_models import DocumentSource, LiteDocument
 from bmlibrarian.lite.storage import LiteStorage
+
+
+def _can_load_embedding_model() -> bool:
+    """Check if the embedding model can be loaded."""
+    try:
+        from fastembed import TextEmbedding
+        TextEmbedding(model_name=DEFAULT_EMBEDDING_MODEL)
+        return True
+    except Exception:
+        return False
+
+
+# Marker for tests that require embedding model
+requires_embedding = pytest.mark.skipif(
+    not _can_load_embedding_model(),
+    reason="Embedding model not available (network may be restricted)",
+)
 
 
 @pytest.fixture
@@ -59,6 +77,7 @@ class TestLiteStorageInitialization:
         assert config.storage.cache_dir.exists()
 
 
+@requires_embedding
 class TestDocumentOperations:
     """Tests for document CRUD operations."""
 
@@ -304,6 +323,7 @@ class TestCacheOperations:
 class TestUtilityMethods:
     """Tests for utility methods."""
 
+    @requires_embedding
     def test_get_statistics(self, temp_storage: LiteStorage) -> None:
         """Test getting storage statistics."""
         # Add some data
@@ -328,6 +348,7 @@ class TestUtilityMethods:
         with pytest.raises(ValueError, match="confirm=True"):
             temp_storage.clear_all()
 
+    @requires_embedding
     def test_clear_all_with_confirmation(self, temp_storage: LiteStorage) -> None:
         """Test clearing all data with confirmation."""
         # Add some data

@@ -45,6 +45,17 @@ from .data_models import (
     InterrogationSession,
 )
 from .storage import LiteStorage
+from .embeddings import LiteEmbedder
+from .chroma_embeddings import (
+    FastEmbedFunction,
+    create_embedding_function,
+    get_default_embedding_function,
+)
+from .chunking import (
+    chunk_text,
+    chunk_document_for_interrogation,
+    estimate_chunk_count,
+)
 
 __all__ = [
     # Configuration
@@ -66,4 +77,13 @@ __all__ = [
     "InterrogationSession",
     # Storage
     "LiteStorage",
+    # Embeddings
+    "LiteEmbedder",
+    "FastEmbedFunction",
+    "create_embedding_function",
+    "get_default_embedding_function",
+    # Chunking
+    "chunk_text",
+    "chunk_document_for_interrogation",
+    "estimate_chunk_count",
 ]
