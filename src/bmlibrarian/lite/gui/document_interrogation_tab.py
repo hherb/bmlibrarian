@@ -1290,7 +1290,7 @@ class DocumentInterrogationTab(QWidget):
         }
 
         # Try to get full text via PDF discovery
-        pdf_text = self._try_pdf_discovery(doc)
+        pdf_text, pdf_path = self._try_pdf_discovery(doc)
 
         if pdf_text:
             # Successfully got PDF text
@@ -1300,6 +1300,7 @@ class DocumentInterrogationTab(QWidget):
             # Fall back to abstract
             text = self._format_abstract_as_document(doc, citation)
             source_type = "Abstract"
+            pdf_path = None
 
         if not text.strip():
             self.doc_label.setText("Error: No content available")
@@ -1317,9 +1318,20 @@ class DocumentInterrogationTab(QWidget):
 
             # Display in the full text tab
             self.document_view.fulltext_tab.set_content(text)
-            self.document_view.tab_widget.setCurrentIndex(1)  # Switch to full text tab
             self.document_view._current_text = text
             self.document_view._current_title = title
+
+            # If we have a PDF, load it into the PDF viewer
+            if pdf_path and pdf_path.exists():
+                if self.document_view.pdf_tab.load_pdf(str(pdf_path)):
+                    # Switch to PDF tab
+                    self.document_view.tab_widget.setCurrentIndex(0)
+                else:
+                    # PDF load failed, show full text tab
+                    self.document_view.tab_widget.setCurrentIndex(1)
+            else:
+                # No PDF, show full text tab
+                self.document_view.tab_widget.setCurrentIndex(1)
 
             self.doc_label.setText(f"Loaded: {title[:50]}... ({source_type})")
             self.doc_label.setStyleSheet(f"""
@@ -1357,7 +1369,7 @@ class DocumentInterrogationTab(QWidget):
                 f"Failed to load document:\n{str(e)}"
             )
 
-    def _try_pdf_discovery(self, doc: 'LiteDocument') -> Optional[str]:
+    def _try_pdf_discovery(self, doc: 'LiteDocument') -> tuple[Optional[str], Optional[Path]]:
         """
         Try to discover and download PDF for the document.
 
@@ -1368,7 +1380,7 @@ class DocumentInterrogationTab(QWidget):
             doc: LiteDocument with identifiers (DOI, PMID, PMC ID)
 
         Returns:
-            Extracted text from PDF, or None if unavailable
+            Tuple of (extracted_text, pdf_path) - both None if unavailable
         """
         from ..data_models import LiteDocument
 
@@ -1389,7 +1401,7 @@ class DocumentInterrogationTab(QWidget):
             # Skip if no identifiers
             if not identifiers.doi and not identifiers.pmid and not identifiers.pmcid:
                 logger.debug("No identifiers available for PDF discovery")
-                return None
+                return None, None
 
             self.progress_label.setText("Searching for full text PDF...")
 
@@ -1402,7 +1414,7 @@ class DocumentInterrogationTab(QWidget):
 
             if not discovery_result.best_source:
                 logger.info(f"No PDF source found for {doc.id}")
-                return None
+                return None, None
 
             self.progress_label.setText("Downloading PDF...")
 
@@ -1419,7 +1431,7 @@ class DocumentInterrogationTab(QWidget):
             if not download_result.success:
                 logger.info(f"PDF download failed: {download_result.error}")
                 tmp_path.unlink(missing_ok=True)
-                return None
+                return None, None
 
             # Extract text from PDF
             self.progress_label.setText("Extracting text from PDF...")
@@ -1431,24 +1443,23 @@ class DocumentInterrogationTab(QWidget):
                 text_parts.append(page.get_text())
             pdf_doc.close()
 
-            # Clean up temp file
-            tmp_path.unlink(missing_ok=True)
-
             text = "\n\n".join(text_parts)
 
             if text.strip():
                 logger.info(f"Successfully extracted {len(text)} chars from PDF")
-                return text
+                # Return text AND path - don't delete the temp file yet
+                return text, tmp_path
             else:
                 logger.warning("PDF extracted but contained no text")
-                return None
+                tmp_path.unlink(missing_ok=True)
+                return None, None
 
         except ImportError as e:
             logger.debug(f"PDF discovery not available: {e}")
-            return None
+            return None, None
         except Exception as e:
             logger.warning(f"PDF discovery failed: {e}")
-            return None
+            return None, None
 
     def _format_abstract_as_document(
         self, doc: 'LiteDocument', citation: 'Citation'
