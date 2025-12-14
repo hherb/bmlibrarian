@@ -13,9 +13,10 @@ Features:
 
 import logging
 import markdown
+import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QMenu,
     QMessageBox,
+    QProgressDialog,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 
@@ -82,6 +84,79 @@ class AnswerWorker(QThread):
         except Exception as e:
             logger.exception("Answer generation error")
             self.error.emit(str(e))
+
+
+class PDFDiscoveryWorker(QThread):
+    """
+    Background worker for PDF discovery and download.
+
+    Discovers PDF sources and downloads to year-based folder structure.
+
+    Signals:
+        progress: Emitted with (stage, status) during download
+        finished: Emitted with file_path when download succeeds
+        error: Emitted with error message on failure
+    """
+
+    progress = Signal(str, str)  # stage, status
+    finished = Signal(str)  # file_path on success
+    error = Signal(str)  # error message
+
+    def __init__(
+        self,
+        doc_dict: Dict[str, Any],
+        output_dir: Path,
+        unpaywall_email: Optional[str] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initialize PDF discovery worker.
+
+        Args:
+            doc_dict: Document dictionary with doi, pmid, title, year, etc.
+            output_dir: Base directory for PDF storage (year subdirs created)
+            unpaywall_email: Email for Unpaywall API
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.doc_dict = doc_dict
+        self.output_dir = output_dir
+        self.unpaywall_email = unpaywall_email
+        self._cancelled = False
+
+    def run(self) -> None:
+        """Execute PDF discovery and download."""
+        try:
+            from bmlibrarian.discovery import download_pdf_for_document
+
+            def progress_callback(stage: str, status: str) -> None:
+                if not self._cancelled:
+                    self.progress.emit(stage, status)
+
+            result = download_pdf_for_document(
+                document=self.doc_dict,
+                output_dir=self.output_dir,
+                unpaywall_email=self.unpaywall_email,
+                progress_callback=progress_callback,
+                verify_content=False,  # Skip verification for Lite version
+            )
+
+            if self._cancelled:
+                return
+
+            if result.success and result.file_path:
+                self.finished.emit(result.file_path)
+            else:
+                self.error.emit(result.error_message or "Unknown error")
+
+        except Exception as e:
+            logger.exception("PDF discovery failed")
+            if not self._cancelled:
+                self.error.emit(str(e))
+
+    def cancel(self) -> None:
+        """Request cancellation of the operation."""
+        self._cancelled = True
 
 
 class ChatBubble(QFrame):
@@ -604,8 +679,13 @@ class DocumentInterrogationTab(QWidget):
         self.storage = storage
         self._agent = LiteInterrogationAgent(config=config, storage=storage)
         self._worker: Optional[AnswerWorker] = None
+        self._pdf_worker: Optional[PDFDiscoveryWorker] = None
+        self._pdf_progress_dialog: Optional[QProgressDialog] = None
         self._document_loaded = False
         self._current_doc_metadata: Optional[dict] = None  # For PDF discovery
+        self._current_pdf_path: Optional[Path] = None  # Track local PDF path
+        self._pending_citation: Optional['Citation'] = None  # For async completion
+        self._pending_fetch_title: Optional[str] = None  # For fetch button
 
         # Get DPI-aware font-relative scaling dimensions
         self.scale = get_font_scale()
@@ -1088,6 +1168,7 @@ class DocumentInterrogationTab(QWidget):
         """)
         self._document_loaded = False
         self._current_doc_metadata = None  # Clear metadata
+        self._current_pdf_path = None  # Clear PDF path
         self.send_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
         self._clear_chat()
@@ -1259,13 +1340,186 @@ class DocumentInterrogationTab(QWidget):
                 f"Failed to save conversation:\n{str(e)}"
             )
 
+    # -------------------------------------------------------------------------
+    # PDF Discovery and Archiving Helpers
+    # -------------------------------------------------------------------------
+
+    def _get_pdf_base_dir(self) -> Path:
+        """
+        Get the base directory for PDF storage.
+
+        Uses PDF_BASE_DIR environment variable or defaults to ~/knowledgebase/pdf.
+
+        Returns:
+            Path to PDF base directory
+        """
+        pdf_base = os.environ.get('PDF_BASE_DIR')
+        if pdf_base:
+            return Path(pdf_base).expanduser()
+        return Path.home() / 'knowledgebase' / 'pdf'
+
+    def _generate_pdf_path(self, doc_dict: Dict[str, Any]) -> Path:
+        """
+        Generate the standard PDF path for a document.
+
+        Uses year-based folder structure with DOI-based or ID-based filename.
+
+        Args:
+            doc_dict: Document dictionary with doi, year, id, etc.
+
+        Returns:
+            Path where PDF should be stored
+        """
+        base_dir = self._get_pdf_base_dir()
+
+        # Extract year for subdirectory
+        year = doc_dict.get('year')
+        if not year:
+            pub_date = doc_dict.get('publication_date')
+            if pub_date:
+                if isinstance(pub_date, str) and len(pub_date) >= 4:
+                    try:
+                        year = int(pub_date[:4])
+                    except ValueError:
+                        year = None
+
+        year_dir = str(year) if year else 'unknown'
+        output_dir = base_dir / year_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename from DOI or document ID
+        doi = doc_dict.get('doi')
+        if doi:
+            # DOI-based filename (replace slashes)
+            safe_doi = doi.replace('/', '_').replace('\\', '_')
+            filename = f"{safe_doi}.pdf"
+        else:
+            # Document ID-based filename
+            doc_id = doc_dict.get('id', 'unknown')
+            filename = f"doc_{doc_id}.pdf"
+
+        return output_dir / filename
+
+    def _find_existing_pdf(self, doc_dict: Dict[str, Any]) -> Optional[Path]:
+        """
+        Check if a PDF already exists locally for this document.
+
+        Searches both the expected path and year-based subdirectories.
+
+        Args:
+            doc_dict: Document dictionary with doi, year, id, etc.
+
+        Returns:
+            Path to existing PDF if found, None otherwise
+        """
+        # First check expected path
+        expected_path = self._generate_pdf_path(doc_dict)
+        if expected_path.exists():
+            logger.info(f"Found existing PDF at: {expected_path}")
+            return expected_path
+
+        # Also check by DOI in all year directories
+        doi = doc_dict.get('doi')
+        if doi:
+            base_dir = self._get_pdf_base_dir()
+            safe_doi = doi.replace('/', '_').replace('\\', '_')
+            filename = f"{safe_doi}.pdf"
+
+            # Search all year directories
+            if base_dir.exists():
+                for year_dir in base_dir.iterdir():
+                    if year_dir.is_dir():
+                        pdf_path = year_dir / filename
+                        if pdf_path.exists():
+                            logger.info(f"Found existing PDF at: {pdf_path}")
+                            return pdf_path
+
+        return None
+
+    def _create_progress_dialog(self, title: str) -> QProgressDialog:
+        """
+        Create a progress dialog for PDF operations.
+
+        Args:
+            title: Dialog title
+
+        Returns:
+            Configured QProgressDialog
+        """
+        dialog = QProgressDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText("Initializing...")
+        dialog.setMinimum(0)
+        dialog.setMaximum(0)  # Indeterminate progress
+        dialog.setMinimumWidth(scaled(350))
+        dialog.setAutoClose(True)
+        dialog.setAutoReset(True)
+        dialog.setCancelButtonText("Cancel")
+        return dialog
+
+    def _update_progress_dialog(self, stage: str, status: str) -> None:
+        """
+        Update the progress dialog with current stage information.
+
+        Args:
+            stage: Current stage (discovery, download, browser_download, etc.)
+            status: Current status (starting, found, success, failed, etc.)
+        """
+        if not self._pdf_progress_dialog:
+            return
+
+        # Map stages and statuses to user-friendly messages
+        stage_messages = {
+            'discovery': {
+                'starting': "Searching for PDF sources...",
+                'resolving': "Checking PDF sources...",
+                'found': "Found PDF source!",
+                'found_oa': "Found open access PDF!",
+                'not_found': "No PDF sources found",
+                'error': "Error searching for PDF",
+            },
+            'download': {
+                'starting': "Downloading PDF...",
+                'success': "Download complete!",
+                'failed': "Download failed",
+            },
+            'browser_download': {
+                'starting': "Downloading PDF (browser mode)...",
+                'success': "Download complete!",
+                'failed': "Browser download failed",
+            },
+            'verification': {
+                'starting': "Verifying PDF content...",
+                'success': "Verification complete",
+                'mismatch': "Content verification failed",
+                'skipped': "Verification skipped",
+                'error': "Verification error",
+            },
+        }
+
+        # Get appropriate message
+        message = stage_messages.get(stage, {}).get(
+            status, f"{stage.replace('_', ' ').title()}: {status}"
+        )
+        self._pdf_progress_dialog.setLabelText(message)
+
+    def _cancel_pdf_discovery(self) -> None:
+        """Cancel any running PDF discovery operation."""
+        if self._pdf_worker:
+            self._pdf_worker.cancel()
+            self._pdf_worker = None
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
     def load_from_citation(self, citation: 'Citation') -> None:
         """
         Load a document from a citation object.
 
-        Attempts to:
-        1. Try PDF discovery (PMC, Unpaywall, DOI) to get full text
-        2. Fall back to displaying the abstract if PDF is unavailable
+        Uses a non-blocking approach:
+        1. Check for existing local PDF first
+        2. If not found, start background PDF discovery
+        3. Fall back to abstract while waiting / if PDF unavailable
 
         Args:
             citation: Citation object containing document metadata
@@ -1275,36 +1529,191 @@ class DocumentInterrogationTab(QWidget):
         doc = citation.document
         title = doc.title or "Untitled Document"
 
-        self.progress_label.setText("Fetching document...")
-        self.progress_label.setVisible(True)
-
         # Clear any previous document
         self._clear_document()
 
-        # Store document metadata for PDF discovery button
+        # Store document metadata for PDF discovery button and background download
         self._current_doc_metadata = {
+            'id': doc.id,
             'doi': doc.doi,
             'pmid': doc.pmid,
-            'pmc_id': doc.pmc_id,
+            'pmcid': doc.pmc_id,  # Use correct field name for discovery
+            'pmc_id': doc.pmc_id,  # Keep original for backwards compat
             'title': doc.title,
+            'year': doc.year,
         }
 
-        # Try to get full text via PDF discovery
-        pdf_text, pdf_path = self._try_pdf_discovery(doc)
+        # Store citation for use in completion handlers
+        self._pending_citation = citation
 
-        if pdf_text:
-            # Successfully got PDF text
-            text = pdf_text
-            source_type = "Full Text (PDF)"
+        # First, check if PDF already exists locally
+        existing_pdf = self._find_existing_pdf(self._current_doc_metadata)
+        if existing_pdf:
+            # Load existing PDF directly
+            self._load_pdf_and_complete(existing_pdf, citation, "Full Text (PDF - cached)")
+            return
+
+        # Check if we have identifiers for discovery
+        if not doc.doi and not doc.pmid and not doc.pmc_id:
+            # No identifiers - just load abstract
+            self._load_abstract_and_complete(citation)
+            return
+
+        # Start background PDF discovery with progress dialog
+        self._start_pdf_discovery(citation)
+
+    def _start_pdf_discovery(self, citation: 'Citation') -> None:
+        """
+        Start PDF discovery in background thread with progress dialog.
+
+        Args:
+            citation: Citation object for document to fetch
+        """
+        # Create progress dialog
+        self._pdf_progress_dialog = self._create_progress_dialog("Fetching PDF")
+        self._pdf_progress_dialog.canceled.connect(self._on_pdf_discovery_cancelled)
+        self._pdf_progress_dialog.show()
+
+        # Get configuration
+        unpaywall_email = getattr(self.config, 'unpaywall_email', None)
+        output_dir = self._get_pdf_base_dir()
+
+        # Create worker
+        self._pdf_worker = PDFDiscoveryWorker(
+            doc_dict=self._current_doc_metadata,
+            output_dir=output_dir,
+            unpaywall_email=unpaywall_email,
+            parent=self,
+        )
+        self._pdf_worker.progress.connect(self._update_progress_dialog)
+        self._pdf_worker.finished.connect(self._on_pdf_discovery_finished)
+        self._pdf_worker.error.connect(self._on_pdf_discovery_error)
+        self._pdf_worker.start()
+
+    def _on_pdf_discovery_finished(self, file_path: str) -> None:
+        """
+        Handle successful PDF discovery completion.
+
+        Args:
+            file_path: Path to downloaded PDF file
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+
+        # Load the PDF
+        pdf_path = Path(file_path)
+        if pdf_path.exists():
+            self._load_pdf_and_complete(
+                pdf_path,
+                self._pending_citation,
+                "Full Text (PDF)"
+            )
         else:
-            # Fall back to abstract
-            text = self._format_abstract_as_document(doc, citation)
-            source_type = "Abstract"
-            pdf_path = None
+            logger.error(f"Downloaded PDF not found at: {file_path}")
+            self._load_abstract_and_complete(self._pending_citation)
+
+    def _on_pdf_discovery_error(self, error_message: str) -> None:
+        """
+        Handle PDF discovery error.
+
+        Falls back to loading abstract.
+
+        Args:
+            error_message: Error description
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+
+        logger.info(f"PDF discovery failed, using abstract: {error_message}")
+        self._load_abstract_and_complete(self._pending_citation)
+
+    def _on_pdf_discovery_cancelled(self) -> None:
+        """Handle user cancelling PDF discovery."""
+        self._cancel_pdf_discovery()
+        logger.info("PDF discovery cancelled by user")
+        self._load_abstract_and_complete(self._pending_citation)
+
+    def _load_pdf_and_complete(
+        self,
+        pdf_path: Path,
+        citation: 'Citation',
+        source_type: str,
+    ) -> None:
+        """
+        Load a PDF file and complete the document loading process.
+
+        Args:
+            pdf_path: Path to PDF file
+            citation: Citation object
+            source_type: Description of source for display
+        """
+        doc = citation.document
+        title = doc.title or "Untitled Document"
+
+        try:
+            # Extract text from PDF
+            import fitz
+            pdf_doc = fitz.open(str(pdf_path))
+            text_parts = []
+            for page in pdf_doc:
+                text_parts.append(page.get_text())
+            pdf_doc.close()
+
+            text = "\n\n".join(text_parts)
+
+            if not text.strip():
+                logger.warning("PDF contained no text, falling back to abstract")
+                self._load_abstract_and_complete(citation)
+                return
+
+            # Store PDF path
+            self._current_pdf_path = pdf_path
+
+            # Load into agent for Q&A
+            self._agent.load_document(text, title=title)
+
+            # Display in the full text tab
+            self.document_view.fulltext_tab.set_content(text)
+            self.document_view._current_text = text
+            self.document_view._current_title = title
+
+            # Load PDF into viewer
+            if self.document_view.pdf_tab.load_pdf(str(pdf_path)):
+                # Switch to PDF tab
+                self.document_view.tab_widget.setCurrentIndex(0)
+            else:
+                # PDF load failed, show full text tab
+                self.document_view.tab_widget.setCurrentIndex(1)
+
+            self._finalize_document_load(title, source_type, citation)
+
+        except Exception as e:
+            logger.exception("Failed to load PDF")
+            self._load_abstract_and_complete(citation)
+
+    def _load_abstract_and_complete(self, citation: 'Citation') -> None:
+        """
+        Load document abstract and complete the loading process.
+
+        Args:
+            citation: Citation object
+        """
+        doc = citation.document
+        title = doc.title or "Untitled Document"
+        source_type = "Abstract"
+
+        text = self._format_abstract_as_document(doc, citation)
 
         if not text.strip():
             self.doc_label.setText("Error: No content available")
-            self.progress_label.setVisible(False)
             QMessageBox.warning(
                 self,
                 "No Content",
@@ -1321,53 +1730,59 @@ class DocumentInterrogationTab(QWidget):
             self.document_view._current_text = text
             self.document_view._current_title = title
 
-            # If we have a PDF, load it into the PDF viewer
-            if pdf_path and pdf_path.exists():
-                if self.document_view.pdf_tab.load_pdf(str(pdf_path)):
-                    # Switch to PDF tab
-                    self.document_view.tab_widget.setCurrentIndex(0)
-                else:
-                    # PDF load failed, show full text tab
-                    self.document_view.tab_widget.setCurrentIndex(1)
-            else:
-                # No PDF, show full text tab
-                self.document_view.tab_widget.setCurrentIndex(1)
+            # Switch to full text tab (no PDF)
+            self.document_view.tab_widget.setCurrentIndex(1)
 
-            self.doc_label.setText(f"Loaded: {title[:50]}... ({source_type})")
-            self.doc_label.setStyleSheet(f"""
-                QLabel {{
-                    color: #000;
-                    font-weight: bold;
-                    font-size: {self.scale['font_small']}pt;
-                }}
-            """)
-            self._document_loaded = True
-            self.send_btn.setEnabled(True)
-            self.clear_btn.setEnabled(True)
-            self.progress_label.setVisible(False)
-
-            # Add confirmation to chat with citation context
-            self._add_chat_bubble(
-                f"Document loaded: **{title}**\n\n"
-                f"Source: {source_type}\n\n"
-                f"**Relevant passage from this document:**\n"
-                f"> {citation.passage[:500]}{'...' if len(citation.passage) > 500 else ''}\n\n"
-                f"You can now ask questions about this document.",
-                is_user=False
-            )
-
-            self.status_message.emit(f"Loaded: {title}")
-            logger.info(f"Loaded document from citation: {doc.id}")
+            self._finalize_document_load(title, source_type, citation)
 
         except Exception as e:
-            logger.exception("Failed to load document from citation")
+            logger.exception("Failed to load abstract")
             self.doc_label.setText(f"Error: {str(e)}")
-            self.progress_label.setVisible(False)
             QMessageBox.critical(
                 self,
                 "Error",
                 f"Failed to load document:\n{str(e)}"
             )
+
+    def _finalize_document_load(
+        self,
+        title: str,
+        source_type: str,
+        citation: 'Citation',
+    ) -> None:
+        """
+        Finalize document loading - update UI state and add chat message.
+
+        Args:
+            title: Document title
+            source_type: Source description
+            citation: Citation object
+        """
+        self.doc_label.setText(f"Loaded: {title[:50]}... ({source_type})")
+        self.doc_label.setStyleSheet(f"""
+            QLabel {{
+                color: #000;
+                font-weight: bold;
+                font-size: {self.scale['font_small']}pt;
+            }}
+        """)
+        self._document_loaded = True
+        self.send_btn.setEnabled(True)
+        self.clear_btn.setEnabled(True)
+        self.progress_label.setVisible(False)
+
+        # Add confirmation to chat with citation context
+        self._add_chat_bubble(
+            f"Document loaded: **{title}**\n\n"
+            f"Source: {source_type}\n\n"
+            f"**Relevant passage from this document:**\n"
+            f"> {citation.passage[:500]}{'...' if len(citation.passage) > 500 else ''}\n\n"
+            f"You can now ask questions about this document.",
+            is_user=False
+        )
+
+        self.status_message.emit(f"Loaded: {title}")
+        logger.info(f"Loaded document: {title[:50]}... ({source_type})")
 
     def _try_pdf_discovery(self, doc: 'LiteDocument') -> tuple[Optional[str], Optional[Path]]:
         """
@@ -1596,76 +2011,118 @@ class DocumentInterrogationTab(QWidget):
         pmid: Optional[str] = None,
         pmcid: Optional[str] = None,
         title: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> None:
         """
-        Execute PDF discovery and load the result.
+        Execute PDF discovery in background thread with progress dialog.
+
+        Uses non-blocking background thread for PDF discovery and download.
 
         Args:
             doi: Digital Object Identifier
             pmid: PubMed ID
             pmcid: PubMed Central ID
             title: Document title for display
-
-        Returns:
-            Extracted text if successful, None otherwise
         """
-        self.progress_label.setText("Searching for PDF...")
-        self.progress_label.setVisible(True)
+        # Create document metadata dict for the worker
+        doc_dict = {
+            'doi': doi,
+            'pmid': pmid,
+            'pmcid': pmcid,
+            'title': title,
+        }
+
+        # Store metadata for completion handlers
+        self._current_doc_metadata = doc_dict
+        self._pending_fetch_title = title or f"PDF ({doi or pmid or pmcid})"
+
+        # First check for existing PDF
+        existing_pdf = self._find_existing_pdf(doc_dict)
+        if existing_pdf:
+            self._load_fetched_pdf(str(existing_pdf))
+            return
+
+        # Create progress dialog
+        self._pdf_progress_dialog = self._create_progress_dialog("Fetching PDF")
+        self._pdf_progress_dialog.canceled.connect(self._on_fetch_cancelled)
+        self._pdf_progress_dialog.show()
+
+        # Get configuration
+        unpaywall_email = getattr(self.config, 'unpaywall_email', None)
+        output_dir = self._get_pdf_base_dir()
+
+        # Create worker
+        self._pdf_worker = PDFDiscoveryWorker(
+            doc_dict=doc_dict,
+            output_dir=output_dir,
+            unpaywall_email=unpaywall_email,
+            parent=self,
+        )
+        self._pdf_worker.progress.connect(self._update_progress_dialog)
+        self._pdf_worker.finished.connect(self._on_fetch_finished)
+        self._pdf_worker.error.connect(self._on_fetch_error)
+        self._pdf_worker.start()
+
+    def _on_fetch_finished(self, file_path: str) -> None:
+        """
+        Handle successful PDF fetch completion.
+
+        Args:
+            file_path: Path to downloaded PDF file
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+        self._load_fetched_pdf(file_path)
+
+    def _on_fetch_error(self, error_message: str) -> None:
+        """
+        Handle PDF fetch error.
+
+        Args:
+            error_message: Error description
+        """
+        # Close progress dialog
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
+        self._pdf_worker = None
+
+        QMessageBox.warning(
+            self,
+            "PDF Fetch Failed",
+            f"Could not download PDF:\n{error_message}\n\n"
+            "You can try again or use the document with abstract only."
+        )
+
+    def _on_fetch_cancelled(self) -> None:
+        """Handle user cancelling PDF fetch."""
+        self._cancel_pdf_discovery()
+        logger.info("PDF fetch cancelled by user")
+
+    def _load_fetched_pdf(self, file_path: str) -> None:
+        """
+        Load a fetched PDF into the viewer.
+
+        Args:
+            file_path: Path to PDF file
+        """
+        pdf_path = Path(file_path)
+        if not pdf_path.exists():
+            QMessageBox.warning(
+                self,
+                "File Not Found",
+                f"PDF file not found at:\n{file_path}"
+            )
+            return
 
         try:
-            from bmlibrarian.discovery import (
-                FullTextFinder,
-                DocumentIdentifiers,
-            )
-            import tempfile
-
-            identifiers = DocumentIdentifiers(
-                doi=doi,
-                pmid=pmid,
-                pmcid=pmcid,
-            )
-
-            unpaywall_email = getattr(self.config, 'unpaywall_email', None)
-            finder = FullTextFinder(unpaywall_email=unpaywall_email)
-
-            self.progress_label.setText("Discovering PDF sources...")
-            discovery_result = finder.discover(identifiers)
-
-            if not discovery_result.best_source:
-                self.progress_label.setVisible(False)
-                QMessageBox.information(
-                    self,
-                    "No PDF Found",
-                    "Could not find a PDF source.\n\n"
-                    "The document will use abstract only."
-                )
-                return None
-
-            self.progress_label.setText("Downloading PDF...")
-
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-
-            download_result = finder.discover_and_download(
-                identifiers,
-                output_path=tmp_path,
-                use_browser_fallback=True,
-            )
-
-            if not download_result.success:
-                self.progress_label.setVisible(False)
-                tmp_path.unlink(missing_ok=True)
-                QMessageBox.warning(
-                    self,
-                    "Download Failed",
-                    f"Failed to download PDF: {download_result.error}"
-                )
-                return None
-
-            self.progress_label.setText("Extracting text from PDF...")
-
+            # Extract text from PDF
             import fitz
-            pdf_doc = fitz.open(str(tmp_path))
+            pdf_doc = fitz.open(str(pdf_path))
             text_parts = []
             for page in pdf_doc:
                 text_parts.append(page.get_text())
@@ -1674,28 +2131,35 @@ class DocumentInterrogationTab(QWidget):
             text = "\n\n".join(text_parts)
 
             if not text.strip():
-                self.progress_label.setVisible(False)
-                tmp_path.unlink(missing_ok=True)
                 QMessageBox.warning(
                     self,
                     "Empty PDF",
                     "PDF contained no extractable text."
                 )
-                return None
+                return
+
+            # Get display title
+            display_title = getattr(self, '_pending_fetch_title', None)
+            if not display_title:
+                display_title = pdf_path.stem
+
+            # Store PDF path
+            self._current_pdf_path = pdf_path
 
             # Load into viewer
-            display_title = title or f"PDF ({doi or pmid or pmcid})"
-
             self.document_view.fulltext_tab.set_content(text)
-            self.document_view.tab_widget.setCurrentIndex(1)
             self.document_view._current_text = text
             self.document_view._current_title = display_title
 
-            if self.document_view.pdf_tab.load_pdf(str(tmp_path)):
+            if self.document_view.pdf_tab.load_pdf(str(pdf_path)):
                 self.document_view.tab_widget.setCurrentIndex(0)
+            else:
+                self.document_view.tab_widget.setCurrentIndex(1)
 
+            # Load into agent for Q&A
             self._agent.load_document(text, title=display_title)
 
+            # Update UI state
             self.doc_label.setText(f"Loaded: {display_title[:50]}...")
             self.doc_label.setStyleSheet(f"""
                 QLabel {{
@@ -1707,30 +2171,21 @@ class DocumentInterrogationTab(QWidget):
             self._document_loaded = True
             self.send_btn.setEnabled(True)
             self.clear_btn.setEnabled(True)
-            self.progress_label.setVisible(False)
 
             self._add_chat_bubble(
                 f"Document loaded: **{display_title}**\n\n"
-                f"Source: PDF Discovery ({discovery_result.best_source.source_type.value})\n\n"
+                f"Source: PDF Discovery\n\n"
                 f"You can now ask questions about this document.",
                 is_user=False
             )
 
             self.status_message.emit(f"Loaded: {display_title}")
-            logger.info(f"Fetched PDF via discovery for {doi or pmid or pmcid}")
+            logger.info(f"Loaded PDF from: {pdf_path}")
 
-            return text
-
-        except ImportError as e:
-            self.progress_label.setVisible(False)
-            logger.warning(f"PDF discovery not available: {e}")
-            return None
         except Exception as e:
-            self.progress_label.setVisible(False)
-            logger.exception("PDF discovery failed")
+            logger.exception("Failed to load fetched PDF")
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Failed to fetch PDF:\n{str(e)}"
+                f"Failed to load PDF:\n{str(e)}"
             )
-            return None
