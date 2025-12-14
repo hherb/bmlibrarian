@@ -56,6 +56,14 @@ from .chunking import (
     chunk_document_for_interrogation,
     estimate_chunk_count,
 )
+from .agents import (
+    LiteBaseAgent,
+    LiteSearchAgent,
+    LiteScoringAgent,
+    LiteCitationAgent,
+    LiteReportingAgent,
+    LiteInterrogationAgent,
+)
 
 __all__ = [
     # Configuration
@@ -86,4 +94,11 @@ __all__ = [
     "chunk_text",
     "chunk_document_for_interrogation",
     "estimate_chunk_count",
+    # Agents
+    "LiteBaseAgent",
+    "LiteSearchAgent",
+    "LiteScoringAgent",
+    "LiteCitationAgent",
+    "LiteReportingAgent",
+    "LiteInterrogationAgent",
 ]
