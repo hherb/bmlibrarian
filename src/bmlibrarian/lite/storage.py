@@ -41,6 +41,7 @@ from .data_models import (
     ReviewCheckpoint,
     SearchSession,
 )
+from .exceptions import ChromaDBError, SQLiteError, LiteStorageError
 
 logger = logging.getLogger(__name__)
 
@@ -84,24 +85,42 @@ class LiteStorage:
 
         Returns:
             ChromaDB PersistentClient
+
+        Raises:
+            ChromaDBError: If ChromaDB initialization fails
         """
-        settings = ChromaSettings(
-            anonymized_telemetry=False,
-            allow_reset=True,
-        )
-        client = chromadb.PersistentClient(
-            path=str(self._storage_config.chroma_dir),
-            settings=settings,
-        )
-        logger.debug(f"ChromaDB initialized at {self._storage_config.chroma_dir}")
-        return client
+        try:
+            settings = ChromaSettings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+            )
+            client = chromadb.PersistentClient(
+                path=str(self._storage_config.chroma_dir),
+                settings=settings,
+            )
+            logger.debug(f"ChromaDB initialized at {self._storage_config.chroma_dir}")
+            return client
+        except Exception as e:
+            raise ChromaDBError(
+                f"Failed to initialize ChromaDB at {self._storage_config.chroma_dir}: {e}"
+            ) from e
 
     def _init_sqlite(self) -> None:
-        """Initialize SQLite database with schema."""
-        with self._sqlite_connection() as conn:
-            conn.executescript(self._get_sqlite_schema())
-            conn.commit()
-        logger.debug(f"SQLite initialized at {self._storage_config.sqlite_path}")
+        """
+        Initialize SQLite database with schema.
+
+        Raises:
+            SQLiteError: If SQLite initialization fails
+        """
+        try:
+            with self._sqlite_connection() as conn:
+                conn.executescript(self._get_sqlite_schema())
+                conn.commit()
+            logger.debug(f"SQLite initialized at {self._storage_config.sqlite_path}")
+        except sqlite3.Error as e:
+            raise SQLiteError(
+                f"Failed to initialize SQLite at {self._storage_config.sqlite_path}: {e}"
+            ) from e
 
     @contextmanager
     def _sqlite_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -270,31 +289,50 @@ class LiteStorage:
 
         Returns:
             Document ID
+
+        Raises:
+            ChromaDBError: If ChromaDB upsert fails
+
+        Example:
+            from bmlibrarian.lite.chroma_embeddings import create_embedding_function
+
+            embed_fn = create_embedding_function()
+            doc = LiteDocument(
+                id="pmid-12345",
+                title="Example Study",
+                abstract="This study examines...",
+                authors=["Smith J", "Jones A"],
+                year=2023,
+            )
+            doc_id = storage.add_document(doc, embedding_function=embed_fn)
         """
-        collection = self.get_documents_collection(embedding_function)
+        try:
+            collection = self.get_documents_collection(embedding_function)
 
-        metadata = {
-            "title": document.title,
-            "authors": json.dumps(document.authors),
-            "year": document.year or 0,
-            "journal": document.journal or "",
-            "doi": document.doi or "",
-            "pmid": document.pmid or "",
-            "source": document.source.value,
-        }
-        # Add custom metadata
-        for key, value in document.metadata.items():
-            if isinstance(value, (str, int, float, bool)):
-                metadata[key] = value
+            metadata = {
+                "title": document.title,
+                "authors": json.dumps(document.authors),
+                "year": document.year or 0,
+                "journal": document.journal or "",
+                "doi": document.doi or "",
+                "pmid": document.pmid or "",
+                "source": document.source.value,
+            }
+            # Add custom metadata
+            for key, value in document.metadata.items():
+                if isinstance(value, (str, int, float, bool)):
+                    metadata[key] = value
 
-        collection.upsert(
-            ids=[document.id],
-            documents=[document.abstract],
-            metadatas=[metadata],
-        )
+            collection.upsert(
+                ids=[document.id],
+                documents=[document.abstract],
+                metadatas=[metadata],
+            )
 
-        logger.debug(f"Added document {document.id} to storage")
-        return document.id
+            logger.debug(f"Added document {document.id} to storage")
+            return document.id
+        except Exception as e:
+            raise ChromaDBError(f"Failed to add document {document.id}: {e}") from e
 
     def add_documents(
         self,
@@ -310,32 +348,43 @@ class LiteStorage:
 
         Returns:
             List of document IDs
+
+        Raises:
+            ChromaDBError: If ChromaDB upsert fails
+
+        Example:
+            docs = [doc1, doc2, doc3]
+            ids = storage.add_documents(docs, embedding_function=embed_fn)
+            print(f"Added {len(ids)} documents")
         """
         if not documents:
             return []
 
-        collection = self.get_documents_collection(embedding_function)
+        try:
+            collection = self.get_documents_collection(embedding_function)
 
-        ids = [doc.id for doc in documents]
-        texts = [doc.abstract for doc in documents]
-        metadatas = []
+            ids = [doc.id for doc in documents]
+            texts = [doc.abstract for doc in documents]
+            metadatas = []
 
-        for doc in documents:
-            metadata = {
-                "title": doc.title,
-                "authors": json.dumps(doc.authors),
-                "year": doc.year or 0,
-                "journal": doc.journal or "",
-                "doi": doc.doi or "",
-                "pmid": doc.pmid or "",
-                "source": doc.source.value,
-            }
-            metadatas.append(metadata)
+            for doc in documents:
+                metadata = {
+                    "title": doc.title,
+                    "authors": json.dumps(doc.authors),
+                    "year": doc.year or 0,
+                    "journal": doc.journal or "",
+                    "doi": doc.doi or "",
+                    "pmid": doc.pmid or "",
+                    "source": doc.source.value,
+                }
+                metadatas.append(metadata)
 
-        collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
+            collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
 
-        logger.info(f"Added {len(documents)} documents to storage")
-        return ids
+            logger.info(f"Added {len(documents)} documents to storage")
+            return ids
+        except Exception as e:
+            raise ChromaDBError(f"Failed to add {len(documents)} documents: {e}") from e
 
     def get_document(
         self,
@@ -351,10 +400,20 @@ class LiteStorage:
 
         Returns:
             Document if found, None otherwise
-        """
-        collection = self.get_documents_collection(embedding_function)
 
+        Raises:
+            ChromaDBError: If ChromaDB query fails (not for missing documents)
+
+        Example:
+            doc = storage.get_document("pmid-12345678", embed_fn)
+            if doc:
+                print(f"Found: {doc.title}")
+            else:
+                print("Document not found")
+        """
         try:
+            collection = self.get_documents_collection(embedding_function)
+
             result = collection.get(
                 ids=[document_id],
                 include=["documents", "metadatas"],
@@ -377,7 +436,7 @@ class LiteStorage:
             )
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
-            return None
+            raise ChromaDBError(f"Failed to get document {document_id}: {e}") from e
 
     def get_documents(
         self,
@@ -393,13 +452,22 @@ class LiteStorage:
 
         Returns:
             List of found documents (may be fewer than requested)
+
+        Raises:
+            ChromaDBError: If ChromaDB query fails
+
+        Example:
+            ids = ["pmid-123", "pmid-456", "pmid-789"]
+            docs = storage.get_documents(ids, embed_fn)
+            for doc in docs:
+                print(f"{doc.id}: {doc.title}")
         """
         if not document_ids:
             return []
 
-        collection = self.get_documents_collection(embedding_function)
-
         try:
+            collection = self.get_documents_collection(embedding_function)
+
             result = collection.get(
                 ids=document_ids,
                 include=["documents", "metadatas"],
@@ -423,7 +491,7 @@ class LiteStorage:
             return documents
         except Exception as e:
             logger.error(f"Failed to get documents: {e}")
-            return []
+            raise ChromaDBError(f"Failed to get {len(document_ids)} documents: {e}") from e
 
     def search_documents(
         self,
@@ -434,38 +502,57 @@ class LiteStorage:
         """
         Search documents by semantic similarity.
 
+        Uses ChromaDB's built-in vector search to find documents
+        with abstracts most similar to the query text.
+
         Args:
-            query: Search query
+            query: Search query (natural language)
             n_results: Maximum number of results
             embedding_function: Optional embedding function
 
         Returns:
-            List of matching documents
+            List of matching documents ordered by similarity
+
+        Raises:
+            ChromaDBError: If ChromaDB query fails
+
+        Example:
+            # Find documents about heart disease
+            results = storage.search_documents(
+                query="cardiovascular disease treatment",
+                n_results=10,
+                embedding_function=embed_fn
+            )
+            for doc in results:
+                print(f"[{doc.year}] {doc.title}")
         """
-        collection = self.get_documents_collection(embedding_function)
+        try:
+            collection = self.get_documents_collection(embedding_function)
 
-        results = collection.query(
-            query_texts=[query],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"],
-        )
+            results = collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
 
-        documents = []
-        for i, doc_id in enumerate(results["ids"][0]):
-            metadata = results["metadatas"][0][i]
-            documents.append(LiteDocument(
-                id=doc_id,
-                title=metadata.get("title", ""),
-                abstract=results["documents"][0][i],
-                authors=json.loads(metadata.get("authors", "[]")),
-                year=metadata.get("year") or None,
-                journal=metadata.get("journal") or None,
-                doi=metadata.get("doi") or None,
-                pmid=metadata.get("pmid") or None,
-                source=DocumentSource(metadata.get("source", "pubmed")),
-            ))
+            documents = []
+            for i, doc_id in enumerate(results["ids"][0]):
+                metadata = results["metadatas"][0][i]
+                documents.append(LiteDocument(
+                    id=doc_id,
+                    title=metadata.get("title", ""),
+                    abstract=results["documents"][0][i],
+                    authors=json.loads(metadata.get("authors", "[]")),
+                    year=metadata.get("year") or None,
+                    journal=metadata.get("journal") or None,
+                    doi=metadata.get("doi") or None,
+                    pmid=metadata.get("pmid") or None,
+                    source=DocumentSource(metadata.get("source", "pubmed")),
+                ))
 
-        return documents
+            return documents
+        except Exception as e:
+            raise ChromaDBError(f"Semantic search failed for query: {e}") from e
 
     def delete_document(
         self,
@@ -506,6 +593,8 @@ class LiteStorage:
         """
         Create a new search session.
 
+        Records a PubMed search for history and reproducibility.
+
         Args:
             query: PubMed query string
             natural_language_query: Original natural language query
@@ -514,36 +603,50 @@ class LiteStorage:
 
         Returns:
             Created search session
+
+        Raises:
+            SQLiteError: If database insert fails
+
+        Example:
+            session = storage.create_search_session(
+                query="diabetes[MeSH] AND treatment",
+                natural_language_query="How is diabetes treated?",
+                document_count=42,
+            )
+            print(f"Session ID: {session.id}")
         """
         session_id = str(uuid.uuid4())
         now = datetime.now()
 
-        with self._sqlite_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO search_sessions
-                (id, query, natural_language_query, created_at, document_count, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    query,
-                    natural_language_query,
-                    now,
-                    document_count,
-                    json.dumps(metadata or {}),
-                ),
-            )
-            conn.commit()
+        try:
+            with self._sqlite_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO search_sessions
+                    (id, query, natural_language_query, created_at, document_count, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        query,
+                        natural_language_query,
+                        now,
+                        document_count,
+                        json.dumps(metadata or {}),
+                    ),
+                )
+                conn.commit()
 
-        return SearchSession(
-            id=session_id,
-            query=query,
-            natural_language_query=natural_language_query,
-            created_at=now,
-            document_count=document_count,
-            metadata=metadata or {},
-        )
+            return SearchSession(
+                id=session_id,
+                query=query,
+                natural_language_query=natural_language_query,
+                created_at=now,
+                document_count=document_count,
+                metadata=metadata or {},
+            )
+        except sqlite3.Error as e:
+            raise SQLiteError(f"Failed to create search session: {e}") from e
 
     def get_search_sessions(self, limit: int = 50) -> list[SearchSession]:
         """
@@ -626,42 +729,59 @@ class LiteStorage:
         """
         Create a new review checkpoint.
 
+        Creates a checkpoint to track systematic review progress.
+        Use update_checkpoint() to update step and data.
+
         Args:
             research_question: The research question
             metadata: Optional metadata
 
         Returns:
             Created checkpoint
+
+        Raises:
+            SQLiteError: If database insert fails
+
+        Example:
+            checkpoint = storage.create_checkpoint(
+                research_question="What are the effects of exercise on depression?"
+            )
+            print(f"Checkpoint ID: {checkpoint.id}")
+            # Later: update progress
+            storage.update_checkpoint(checkpoint.id, step="scoring")
         """
         checkpoint_id = str(uuid.uuid4())
         now = datetime.now()
 
-        with self._sqlite_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO review_checkpoints
-                (id, research_question, created_at, updated_at, step, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    checkpoint_id,
-                    research_question,
-                    now,
-                    now,
-                    "start",
-                    json.dumps(metadata or {}),
-                ),
-            )
-            conn.commit()
+        try:
+            with self._sqlite_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO review_checkpoints
+                    (id, research_question, created_at, updated_at, step, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        checkpoint_id,
+                        research_question,
+                        now,
+                        now,
+                        "start",
+                        json.dumps(metadata or {}),
+                    ),
+                )
+                conn.commit()
 
-        return ReviewCheckpoint(
-            id=checkpoint_id,
-            research_question=research_question,
-            created_at=now,
-            updated_at=now,
-            step="start",
-            metadata=metadata or {},
-        )
+            return ReviewCheckpoint(
+                id=checkpoint_id,
+                research_question=research_question,
+                created_at=now,
+                updated_at=now,
+                step="start",
+                metadata=metadata or {},
+            )
+        except sqlite3.Error as e:
+            raise SQLiteError(f"Failed to create checkpoint: {e}") from e
 
     def update_checkpoint(
         self,
