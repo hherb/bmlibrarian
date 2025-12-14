@@ -156,7 +156,7 @@ class LiteSearchAgent(LiteBaseAgent):
             progress_callback(f"Fetching details for {len(search_result.pmids)} articles...")
 
         # Fetch article details
-        articles = self._search_client.fetch_details(search_result.pmids)
+        articles = self._search_client.fetch_articles(search_result.pmids)
         logger.info(f"Fetched {len(articles)} article details")
 
         # Convert to LiteDocuments
@@ -228,7 +228,7 @@ class LiteSearchAgent(LiteBaseAgent):
             progress_callback(f"Fetching details for {len(search_result.pmids)} articles...")
 
         # Fetch article details
-        articles = self._search_client.fetch_details(search_result.pmids)
+        articles = self._search_client.fetch_articles(search_result.pmids)
 
         # Convert and store
         documents = self._articles_to_documents(articles)
