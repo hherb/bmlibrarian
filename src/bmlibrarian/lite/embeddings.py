@@ -149,11 +149,12 @@ class LiteEmbedder:
         if not texts:
             return []
 
-        # FastEmbed returns a generator, convert to list
+        # FastEmbed returns a generator of numpy arrays, convert to list of Python floats
+        # ChromaDB requires standard Python floats, not np.float32
         embeddings = list(self._model.embed(texts))
 
         logger.debug(f"Generated {len(embeddings)} embeddings")
-        return [list(emb) for emb in embeddings]
+        return [[float(x) for x in emb] for emb in embeddings]
 
     def embed_single(self, text: str) -> list[float]:
         """
@@ -198,7 +199,7 @@ class LiteEmbedder:
             ...     process(embedding)
         """
         for embedding in self._model.embed(texts):
-            yield list(embedding)
+            yield [float(x) for x in embedding]
 
     @classmethod
     def list_supported_models(cls) -> list[str]:
