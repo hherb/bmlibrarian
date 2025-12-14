@@ -44,6 +44,7 @@ from .constants import (
     ENV_NCBI_EMAIL,
     ENV_NCBI_API_KEY,
     EMAIL_VALIDATION_PATTERN,
+    URL_LENGTH_POST_THRESHOLD,
 )
 from .data_types import (
     PubMedQuery,
@@ -251,7 +252,14 @@ class PubMedSearchClient:
             params["usehistory"] = "y"
             params["retmax"] = 0  # Just get count and WebEnv
 
-        response = self._make_request(ESEARCH_URL, params)
+        # Use POST for long queries to avoid HTTP 414 (URI Too Long) errors
+        # Estimate URL length based on query string length
+        query_length = len(query.query_string)
+        method = "POST" if query_length > URL_LENGTH_POST_THRESHOLD else "GET"
+        if method == "POST":
+            logger.debug(f"Using POST method for long query ({query_length} chars)")
+
+        response = self._make_request(ESEARCH_URL, params, method=method)
 
         if not response:
             return SearchResult(
@@ -392,7 +400,11 @@ class PubMedSearchClient:
         params["retmax"] = 0
         params["rettype"] = "count"
 
-        response = self._make_request(ESEARCH_URL, params)
+        # Use POST for long queries to avoid HTTP 414 (URI Too Long) errors
+        query_length = len(query.query_string)
+        method = "POST" if query_length > URL_LENGTH_POST_THRESHOLD else "GET"
+
+        response = self._make_request(ESEARCH_URL, params, method=method)
         if not response:
             return 0
 

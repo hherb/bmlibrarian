@@ -87,6 +87,11 @@ MIN_QUERY_LENGTH = 3
 MAX_QUERY_LENGTH = 10000
 QUERY_LENGTH_WARNING_THRESHOLD = 8000  # Warn when query approaches PubMed's limit
 
+# URL length threshold for automatic POST fallback
+# Most servers/browsers limit URLs to ~8000 characters, PubMed API has similar limits
+# Using 2000 as a safe threshold to trigger POST before hitting 414 errors
+URL_LENGTH_POST_THRESHOLD = 2000
+
 # Email validation pattern for NCBI API requirements
 EMAIL_VALIDATION_PATTERN = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 
