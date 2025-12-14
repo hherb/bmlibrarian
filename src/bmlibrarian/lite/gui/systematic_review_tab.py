@@ -10,10 +10,15 @@ Provides a complete workflow for literature review:
 
 Citations in the report are clickable and open the document
 in the Document Interrogation tab for detailed Q&A.
+
+Reports are automatically saved to ~/bmlibrarian_reports/ with audit trail data.
 """
 
+import json
 import logging
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Any, Dict
 
 from PySide6.QtWidgets import (
@@ -28,6 +33,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QSpinBox,
     QFileDialog,
+    QMessageBox,
 )
 from PySide6.QtCore import Signal, QThread, QUrl
 
@@ -42,6 +48,9 @@ from ..agents import (
     LiteCitationAgent,
     LiteReportingAgent,
 )
+
+# Directory for auto-saved reports
+REPORTS_DIR = Path.home() / "bmlibrarian_reports"
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +187,7 @@ class SystematicReviewTab(QWidget):
     - Configuring search parameters
     - Executing search and scoring workflow
     - Viewing generated report with clickable citations
-    - Exporting report
+    - Exporting report with full audit trail
 
     Attributes:
         config: Lite configuration
@@ -210,9 +219,19 @@ class SystematicReviewTab(QWidget):
         self.storage = storage
         self._worker: Optional[WorkflowWorker] = None
         self._current_report: str = ""
+        self._current_question: str = ""
 
         # Store citations by document ID for later access
         self._citations_by_doc_id: Dict[str, Citation] = {}
+
+        # Audit trail data - stored during workflow execution
+        self._documents_found: List[LiteDocument] = []
+        self._scored_documents: List[ScoredDocument] = []
+        self._all_citations: List[Citation] = []
+        self._current_report_path: Optional[Path] = None
+
+        # Ensure reports directory exists
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
         self._setup_ui()
 
@@ -292,6 +311,7 @@ class SystematicReviewTab(QWidget):
         self.report_view = QTextBrowser()
         self.report_view.setReadOnly(True)
         self.report_view.setOpenExternalLinks(False)  # Handle links ourselves
+        self.report_view.setOpenLinks(False)  # Prevent navigation that clears content
         self.report_view.anchorClicked.connect(self._on_citation_clicked)
         self.report_view.setPlaceholderText(
             "Report will appear here after running the review...\n\n"
@@ -304,17 +324,33 @@ class SystematicReviewTab(QWidget):
         )
         results_layout.addWidget(self.report_view)
 
-        # Export button
-        export_layout = QHBoxLayout()
-        export_layout.addStretch()
+        # Button row
+        button_layout = QHBoxLayout()
+
+        # Load Report button
+        self.load_btn = QPushButton("Load Report")
+        self.load_btn.clicked.connect(self._load_report)
+        self.load_btn.setToolTip("Load a previously saved report")
+        button_layout.addWidget(self.load_btn)
+
+        # Audit Trail button
+        self.audit_btn = QPushButton("Audit Trail")
+        self.audit_btn.setEnabled(False)
+        self.audit_btn.clicked.connect(self._show_audit_trail)
+        self.audit_btn.setToolTip(
+            "View which documents were found, scored, and used for citations"
+        )
+        button_layout.addWidget(self.audit_btn)
+
+        button_layout.addStretch()
 
         self.export_btn = QPushButton("Export Report")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_report)
         self.export_btn.setToolTip("Save report to file")
-        export_layout.addWidget(self.export_btn)
+        button_layout.addWidget(self.export_btn)
 
-        results_layout.addLayout(export_layout)
+        results_layout.addLayout(button_layout)
         layout.addWidget(results_group, stretch=1)
 
     def _run_workflow(self) -> None:
@@ -324,10 +360,20 @@ class SystematicReviewTab(QWidget):
             self.progress_label.setText("Please enter a research question")
             return
 
+        # Store question for audit trail
+        self._current_question = question
+
+        # Clear previous audit data
+        self._documents_found = []
+        self._scored_documents = []
+        self._all_citations = []
+        self._current_report_path = None
+
         # Update UI state
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.export_btn.setEnabled(False)
+        self.audit_btn.setEnabled(False)
         self.report_view.clear()
         self.progress_bar.setValue(0)
         self._current_report = ""
@@ -369,13 +415,16 @@ class SystematicReviewTab(QWidget):
     def _on_step_complete(self, step: str, result: Any) -> None:
         """Handle step completion from worker."""
         if step == "search":
-            docs = result
+            docs: List[LiteDocument] = result
+            self._documents_found = docs
             self.progress_label.setText(f"Found {len(docs)} documents")
         elif step == "scoring":
-            scored = result
+            scored: List[ScoredDocument] = result
+            self._scored_documents = scored
             self.progress_label.setText(f"Scored {len(scored)} relevant documents")
         elif step == "citations":
             citations: List[Citation] = result
+            self._all_citations = citations
             self.progress_label.setText(f"Extracted {len(citations)} citations")
             # Store citations by document ID for later retrieval
             self._citations_by_doc_id.clear()
@@ -400,7 +449,12 @@ class SystematicReviewTab(QWidget):
         self.progress_label.setText("Complete - Click citations to view documents")
         self.progress_bar.setValue(100)
         self.export_btn.setEnabled(bool(report))
+        self.audit_btn.setEnabled(bool(self._scored_documents))
         self._reset_ui()
+
+        # Auto-save the report with audit trail
+        if report and not report.startswith(("No documents", "Workflow cancelled")):
+            self._auto_save_report()
 
     def _make_citations_clickable(self, markdown_report: str) -> str:
         """
@@ -580,3 +634,306 @@ class SystematicReviewTab(QWidget):
                 self.progress_label.setText(f"Report exported to {file_path}")
             except Exception as e:
                 self.progress_label.setText(f"Export failed: {e}")
+
+    def _auto_save_report(self) -> None:
+        """
+        Auto-save report with audit trail to ~/bmlibrarian_reports/.
+
+        Creates two files:
+        - {timestamp}_report.md: The markdown report
+        - {timestamp}_audit.json: Full audit trail with documents, scores, citations
+        """
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_question = re.sub(r'[^\w\s-]', '', self._current_question)[:50].strip()
+            safe_question = re.sub(r'\s+', '_', safe_question)
+
+            report_path = REPORTS_DIR / f"{timestamp}_{safe_question}_report.md"
+            audit_path = REPORTS_DIR / f"{timestamp}_{safe_question}_audit.json"
+
+            # Save the markdown report
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(self._current_report)
+
+            # Build audit trail
+            audit_data = {
+                "metadata": {
+                    "timestamp": datetime.now().isoformat(),
+                    "research_question": self._current_question,
+                    "report_file": str(report_path),
+                },
+                "workflow_summary": {
+                    "documents_searched": len(self._documents_found),
+                    "documents_scored_relevant": len(self._scored_documents),
+                    "documents_rejected": len(self._documents_found) - len(self._scored_documents),
+                    "citations_extracted": len(self._all_citations),
+                },
+                "documents_found": [
+                    {
+                        "id": doc.id,
+                        "title": doc.title,
+                        "authors": doc.authors,
+                        "year": doc.year,
+                        "journal": doc.journal,
+                        "pmid": doc.pmid,
+                        "doi": doc.doi,
+                    }
+                    for doc in self._documents_found
+                ],
+                "scored_documents": [
+                    {
+                        "id": sd.document.id,
+                        "title": sd.document.title,
+                        "score": sd.score,
+                        "explanation": sd.explanation,
+                        "is_relevant": sd.is_relevant,
+                    }
+                    for sd in self._scored_documents
+                ],
+                "rejected_documents": [
+                    {
+                        "id": doc.id,
+                        "title": doc.title,
+                        "reason": "Score below minimum threshold",
+                    }
+                    for doc in self._documents_found
+                    if doc.id not in {sd.document.id for sd in self._scored_documents}
+                ],
+                "citations": [
+                    {
+                        "document_id": c.document.id,
+                        "document_title": c.document.title,
+                        "document_abstract": c.document.abstract,
+                        "document_authors": c.document.authors,
+                        "document_year": c.document.year,
+                        "document_journal": c.document.journal,
+                        "document_doi": c.document.doi,
+                        "document_pmid": c.document.pmid,
+                        "document_pmc_id": c.document.pmc_id,
+                        "passage": c.passage,
+                        "relevance_score": c.relevance_score,
+                        "context": c.context,
+                    }
+                    for c in self._all_citations
+                ],
+            }
+
+            with open(audit_path, "w", encoding="utf-8") as f:
+                json.dump(audit_data, f, indent=2, ensure_ascii=False)
+
+            self._current_report_path = report_path
+            logger.info(f"Auto-saved report to {report_path}")
+
+        except Exception as e:
+            logger.warning(f"Failed to auto-save report: {e}")
+
+    def _load_report(self) -> None:
+        """Load a previously saved report with its audit trail."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Report",
+            str(REPORTS_DIR),
+            "Markdown (*.md);;All Files (*)",
+        )
+
+        if not file_path:
+            return
+
+        path = Path(file_path)
+        if not path.exists():
+            QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
+            return
+
+        try:
+            # Load the markdown report
+            report = path.read_text(encoding="utf-8")
+            self._current_report = report
+
+            # Try to load the accompanying audit file
+            audit_path = path.with_name(path.name.replace("_report.md", "_audit.json"))
+            if audit_path.exists():
+                with open(audit_path, "r", encoding="utf-8") as f:
+                    audit_data = json.load(f)
+
+                # Restore research question
+                self._current_question = audit_data.get("metadata", {}).get(
+                    "research_question", ""
+                )
+                self.question_input.setPlainText(self._current_question)
+
+                # Restore citations for clickable links
+                self._citations_by_doc_id.clear()
+                for cit_data in audit_data.get("citations", []):
+                    # Reconstruct LiteDocument with full metadata
+                    doc = LiteDocument(
+                        id=cit_data["document_id"],
+                        title=cit_data["document_title"],
+                        abstract=cit_data.get("document_abstract", ""),
+                        authors=cit_data.get("document_authors", []),
+                        year=cit_data.get("document_year"),
+                        journal=cit_data.get("document_journal"),
+                        doi=cit_data.get("document_doi"),
+                        pmid=cit_data.get("document_pmid"),
+                        pmc_id=cit_data.get("document_pmc_id"),
+                    )
+                    citation = Citation(
+                        document=doc,
+                        passage=cit_data["passage"],
+                        relevance_score=cit_data["relevance_score"],
+                        context=cit_data.get("context", ""),
+                    )
+                    self._citations_by_doc_id[doc.id] = citation
+
+                # Enable audit button if we have audit data
+                self.audit_btn.setEnabled(True)
+                self._current_report_path = path
+
+                # Store audit data for viewing
+                self._loaded_audit_data = audit_data
+
+                self.progress_label.setText(
+                    f"Loaded report with {len(self._citations_by_doc_id)} citations"
+                )
+            else:
+                self.progress_label.setText("Loaded report (no audit trail found)")
+
+            # Display the report
+            html_report = self._make_citations_clickable(report)
+            self.report_view.setHtml(html_report)
+            self.export_btn.setEnabled(True)
+
+        except Exception as e:
+            logger.exception("Failed to load report")
+            QMessageBox.critical(self, "Load Error", f"Failed to load report:\n{e}")
+
+    def _show_audit_trail(self) -> None:
+        """Show the audit trail dialog with workflow details."""
+        # Build audit content from current data or loaded data
+        if hasattr(self, '_loaded_audit_data') and self._loaded_audit_data:
+            audit_data = self._loaded_audit_data
+        else:
+            audit_data = {
+                "metadata": {
+                    "research_question": self._current_question,
+                },
+                "workflow_summary": {
+                    "documents_searched": len(self._documents_found),
+                    "documents_scored_relevant": len(self._scored_documents),
+                    "documents_rejected": len(self._documents_found) - len(self._scored_documents),
+                    "citations_extracted": len(self._all_citations),
+                },
+                "scored_documents": [
+                    {
+                        "id": sd.document.id,
+                        "title": sd.document.title,
+                        "score": sd.score,
+                        "explanation": sd.explanation,
+                    }
+                    for sd in self._scored_documents
+                ],
+                "rejected_documents": [
+                    {
+                        "id": doc.id,
+                        "title": doc.title,
+                    }
+                    for doc in self._documents_found
+                    if doc.id not in {sd.document.id for sd in self._scored_documents}
+                ],
+                "citations": [
+                    {
+                        "document_title": c.document.title,
+                        "passage": c.passage[:200] + "..." if len(c.passage) > 200 else c.passage,
+                        "relevance_score": c.relevance_score,
+                    }
+                    for c in self._all_citations
+                ],
+            }
+
+        # Create formatted markdown for the audit trail
+        lines = [
+            "# Audit Trail",
+            "",
+            f"**Research Question:** {audit_data['metadata']['research_question']}",
+            "",
+            "## Summary",
+            "",
+            f"- Documents searched: {audit_data['workflow_summary']['documents_searched']}",
+            f"- Documents scored as relevant: {audit_data['workflow_summary']['documents_scored_relevant']}",
+            f"- Documents rejected: {audit_data['workflow_summary']['documents_rejected']}",
+            f"- Citations extracted: {audit_data['workflow_summary']['citations_extracted']}",
+            "",
+            "## Relevant Documents (with scores)",
+            "",
+        ]
+
+        for sd in audit_data.get("scored_documents", []):
+            lines.append(f"### {sd['title']}")
+            lines.append(f"- **Score:** {sd['score']}/5")
+            lines.append(f"- **ID:** {sd['id']}")
+            if sd.get('explanation'):
+                lines.append(f"- **Explanation:** {sd['explanation']}")
+            lines.append("")
+
+        lines.append("## Rejected Documents")
+        lines.append("")
+
+        rejected = audit_data.get("rejected_documents", [])
+        if rejected:
+            for rd in rejected[:20]:  # Limit to first 20
+                lines.append(f"- {rd['title']}")
+            if len(rejected) > 20:
+                lines.append(f"- ... and {len(rejected) - 20} more")
+        else:
+            lines.append("*No documents were rejected*")
+
+        lines.append("")
+        lines.append("## Citations Extracted")
+        lines.append("")
+
+        for i, cit in enumerate(audit_data.get("citations", []), 1):
+            lines.append(f"### Citation {i}: {cit['document_title']}")
+            lines.append(f"> {cit['passage']}")
+            lines.append("")
+
+        audit_text = "\n".join(lines)
+
+        # Show in a dialog
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Audit Trail")
+        dialog.resize(scaled(600), scaled(500))
+
+        layout = QVBoxLayout(dialog)
+
+        audit_view = QTextBrowser()
+        audit_view.setOpenExternalLinks(False)
+
+        # Convert to HTML for nicer display
+        import markdown as md
+        html = md.markdown(audit_text, extensions=['extra', 'nl2br'])
+        audit_view.setHtml(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                       font-size: 13px; line-height: 1.5; padding: 10px; }}
+                h1 {{ color: #1a1a1a; font-size: 1.4em; border-bottom: 1px solid #eee; }}
+                h2 {{ color: #333; font-size: 1.2em; }}
+                h3 {{ color: #444; font-size: 1.05em; }}
+                blockquote {{ border-left: 3px solid #2196F3; padding-left: 10px;
+                             color: #555; background: #f9f9f9; margin: 5px 0; }}
+                ul {{ padding-left: 20px; }}
+            </style>
+        </head>
+        <body>{html}</body>
+        </html>
+        """)
+        layout.addWidget(audit_view)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.exec()
