@@ -385,6 +385,17 @@ class PMCPackageDownloader:
         result = ExtractedPackage(package_contents=[])
 
         try:
+            # Validate gzip magic bytes before attempting extraction
+            # Gzip files start with 0x1f 0x8b
+            if len(tar_data) < 2 or tar_data[:2] != b'\x1f\x8b':
+                # Check if it's an HTML error page
+                if tar_data[:100].lower().find(b'<!doctype') >= 0 or tar_data[:100].lower().find(b'<html') >= 0:
+                    result.error_message = "Server returned HTML error page instead of tar.gz file"
+                else:
+                    result.error_message = f"Downloaded data is not a valid gzip file (got magic bytes: {tar_data[:2].hex() if tar_data else 'empty'})"
+                logger.error(result.error_message)
+                return result
+
             # Open tar.gz from memory
             tar_buffer = io.BytesIO(tar_data)
             with tarfile.open(fileobj=tar_buffer, mode='r:gz') as tar:
