@@ -93,12 +93,26 @@ class FullTextFinder:
         if 'direct_url' not in self.skip_resolvers:
             self.resolvers.append(DirectURLResolver(timeout=timeout))
 
-        # OpenAthens - last resort for paywalled content
+        # OpenAthens proxy - only use if it's actually a proxy URL, not the auth portal
+        # my.openathens.net is an authentication service, not a proxy
+        # EZProxy URLs typically contain 'ezproxy' or 'proxy' and can proxy URLs
         if 'openathens' not in self.skip_resolvers and openathens_proxy_url:
-            self.resolvers.append(OpenAthensResolver(
-                proxy_base_url=openathens_proxy_url,
-                timeout=timeout
-            ))
+            is_auth_portal = 'my.openathens.net' in openathens_proxy_url.lower()
+            is_proxy_url = any(x in openathens_proxy_url.lower() for x in ['ezproxy', 'proxy.'])
+
+            if is_proxy_url and not is_auth_portal:
+                # This is a real proxy URL (e.g., EZProxy), add the resolver
+                self.resolvers.append(OpenAthensResolver(
+                    proxy_base_url=openathens_proxy_url,
+                    timeout=timeout
+                ))
+            elif is_auth_portal:
+                # This is just the auth portal - don't try to use it as a proxy
+                # Cookie-based authentication will be used instead (via openathens_auth)
+                logger.info(
+                    "OpenAthens auth portal detected (not a proxy). "
+                    "Authenticated cookies will be used for downloads."
+                )
 
         # HTTP session for downloads
         self.session = requests.Session()
@@ -411,6 +425,15 @@ class FullTextFinder:
                 duration_ms=(time.time() - start_time) * 1000
             )
 
+        # Prepare OpenAthens cookies/user_agent for browser injection if authenticated
+        browser_cookies = None
+        browser_user_agent = None
+        if self.openathens_auth and self.openathens_auth.is_authenticated():
+            browser_cookies = self.openathens_auth.get_cookies()
+            browser_user_agent = self.openathens_auth.get_user_agent()
+            if browser_cookies:
+                logger.info(f"Browser download will use {len(browser_cookies)} OpenAthens cookies")
+
         # Try each source URL with browser download (skip FTP URLs - browsers can't handle them)
         last_error = None
         for source in sources:
@@ -427,7 +450,9 @@ class FullTextFinder:
                     save_path=output_path,
                     headless=headless,
                     timeout=timeout,
-                    expected_doi=expected_doi
+                    expected_doi=expected_doi,
+                    cookies=browser_cookies,
+                    user_agent=browser_user_agent
                 )
 
                 if result.get('status') == 'success':

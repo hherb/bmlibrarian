@@ -78,7 +78,9 @@ class BrowserDownloader:
         save_path: Path,
         wait_for_cloudflare: bool = True,
         max_wait: int = 30,
-        expected_doi: Optional[str] = None
+        expected_doi: Optional[str] = None,
+        cookies: Optional[list] = None,
+        user_agent: Optional[str] = None
     ) -> Dict[str, Any]:
         """Download a PDF using browser automation.
 
@@ -89,6 +91,9 @@ class BrowserDownloader:
             max_wait: Maximum seconds to wait for verification (default: 30)
             expected_doi: If provided, validate embedded PDF URLs contain this DOI
                          to prevent downloading wrong papers from related article sections
+            cookies: Optional list of cookie dicts to inject (e.g., from OpenAthens session)
+                    Each dict should have 'name', 'value', 'domain' keys
+            user_agent: Optional custom user agent string (e.g., from OpenAthens session)
 
         Returns:
             Dictionary with download result:
@@ -107,18 +112,28 @@ class BrowserDownloader:
         page = None
 
         try:
+            # Use custom user agent if provided (e.g., from OpenAthens session)
+            effective_user_agent = user_agent or (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/131.0.0.0 Safari/537.36'
+            )
+
             # Create browser context with realistic settings
             context = await self.browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                          'AppleWebKit/537.36 (KHTML, like Gecko) '
-                          'Chrome/131.0.0.0 Safari/537.36',
+                user_agent=effective_user_agent,
                 locale='en-US',
                 timezone_id='America/New_York',
                 permissions=['notifications'],
                 color_scheme='light',
                 accept_downloads=True
             )
+
+            # Inject cookies if provided (e.g., from OpenAthens authentication)
+            if cookies:
+                logger.info(f"Injecting {len(cookies)} authentication cookies")
+                await context.add_cookies(cookies)
 
             # Add stealth scripts to context
             await context.add_init_script("""
@@ -979,7 +994,9 @@ def download_pdf_with_browser(
     save_path: Path,
     headless: bool = True,
     timeout: int = 60000,
-    expected_doi: Optional[str] = None
+    expected_doi: Optional[str] = None,
+    cookies: Optional[list] = None,
+    user_agent: Optional[str] = None
 ) -> Dict[str, Any]:
     """Synchronous wrapper for browser-based PDF download.
 
@@ -990,13 +1007,20 @@ def download_pdf_with_browser(
         timeout: Timeout in milliseconds
         expected_doi: If provided, validate embedded PDF URLs contain this DOI
                      to prevent downloading wrong papers from related article sections
+        cookies: Optional list of cookie dicts to inject (e.g., from OpenAthens session)
+        user_agent: Optional custom user agent string
 
     Returns:
         Dictionary with download result
     """
     async def _download():
         async with BrowserDownloader(headless=headless, timeout=timeout) as downloader:
-            return await downloader.download_pdf(url, save_path, expected_doi=expected_doi)
+            return await downloader.download_pdf(
+                url, save_path,
+                expected_doi=expected_doi,
+                cookies=cookies,
+                user_agent=user_agent
+            )
 
     return asyncio.run(_download())
 

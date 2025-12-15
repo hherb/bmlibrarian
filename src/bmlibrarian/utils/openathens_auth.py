@@ -51,12 +51,26 @@ class OpenAthensConfig:
         self.session_cache_ttl = session_cache_ttl
 
         # Cookie patterns for different authentication systems
+        # Includes OpenAthens, SAML, Shibboleth, CAS, and common SSO patterns
         self.auth_cookie_patterns = [
             r'openathens.*session',
             r'_saml_.*',
             r'shib.*session',
             r'shibsession.*',
-            r'_shibstate_.*'
+            r'_shibstate_.*',
+            # Additional SSO/SAML patterns
+            r'SimpleSAML.*',
+            r'JSESSIONID',
+            r'iPlanetDirectoryPro',
+            r'SSESS.*',
+            r'CASTGC',  # CAS ticket granting cookie
+            r'TGC',  # CAS/SSO ticket granting cookie
+            r'mod_auth_openidc.*',
+            r'AMUAI',
+            r'openam.*',  # OpenAM/ForgeRock
+            r'.*_sso_.*',
+            r'.*sso.*session',
+            r'am.*cookie',
         ]
 
     def _validate_url(self, url: str) -> str:
@@ -243,16 +257,21 @@ class OpenAthensAuth:
         except (IOError, OSError) as e:
             logger.error(f"Failed to save session: {e}")
 
-    def _detect_auth_success(self, cookies: List[Dict]) -> bool:
-        """Detect successful authentication from cookies.
+    def _detect_auth_success(self, cookies: List[Dict], current_url: str = "") -> bool:
+        """Detect successful authentication from cookies or URL change.
 
         Args:
             cookies: List of cookie dictionaries
+            current_url: Current page URL (for detecting SSO completion)
 
         Returns:
             True if authentication cookies detected, False otherwise
         """
         cookie_names = [c['name'] for c in cookies]
+
+        # Log all cookies for debugging (useful for adding new SSO patterns)
+        if cookie_names:
+            logger.debug(f"Current cookies ({len(cookie_names)}): {cookie_names}")
 
         # Check each cookie pattern
         for pattern in self.config.auth_cookie_patterns:
@@ -260,6 +279,39 @@ class OpenAthensAuth:
                 if re.search(pattern, name, re.IGNORECASE):
                     logger.info(f"Authentication cookie detected: {name}")
                     return True
+
+        # Fallback: Check if we've completed SSO and returned to a resource page
+        # We need to be careful here - just changing domains doesn't mean we're authenticated
+        # (e.g., redirecting from OpenAthens to SSO login page)
+        if current_url:
+            current_parsed = urlparse(current_url)
+
+            # SSO login pages typically have these patterns in the URL
+            sso_login_indicators = [
+                '/login', '/signin', '/auth', '/sso', '/saml',
+                '/openam', '/adfs', '/cas', 'passiveLogin',
+                'login.microsoftonline', 'accounts.google',
+            ]
+
+            # Check if we're still on a login page (not authenticated yet)
+            current_url_lower = current_url.lower()
+            is_login_page = any(indicator in current_url_lower for indicator in sso_login_indicators)
+
+            if is_login_page:
+                logger.debug(f"Still on login page: {current_url}")
+                return False
+
+            # If we have a lot of cookies (>5) and we're NOT on a login page,
+            # that's a strong indicator of successful authentication
+            has_many_cookies = len(cookies) >= 5
+
+            if has_many_cookies and not is_login_page:
+                logger.info(
+                    f"SSO completion detected: {len(cookies)} cookies, "
+                    f"not on login page: {current_url}"
+                )
+                logger.info(f"Cookies: {cookie_names}")
+                return True
 
         logger.debug(f"No authentication cookies found. Present cookies: {cookie_names}")
         return False
@@ -400,6 +452,7 @@ class OpenAthensAuth:
             # Wait for user to complete login
             # Poll for authentication cookies
             logger.info("Waiting for authentication to complete...")
+            logger.info("Please complete your institutional login in the browser window.")
             auth_success = False
             start_time = asyncio.get_event_loop().time()
             max_wait_time = 300  # 5 minutes max
@@ -407,8 +460,9 @@ class OpenAthensAuth:
             while (asyncio.get_event_loop().time() - start_time) < max_wait_time:
                 try:
                     cookies = await context.cookies()
+                    current_url = page.url
 
-                    if self._detect_auth_success(cookies):
+                    if self._detect_auth_success(cookies, current_url):
                         auth_success = True
                         logger.info("Authentication successful!")
                         break

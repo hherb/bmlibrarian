@@ -13,6 +13,7 @@ import os
 from typing import Optional
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QVBoxLayout,
     QFormLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QMessageBox,
     QSpinBox,
 )
 
@@ -175,6 +177,43 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(api_group)
 
+        # OpenAthens settings
+        openathens_group = QGroupBox("OpenAthens Institutional Access")
+        openathens_layout = QFormLayout(openathens_group)
+
+        self.openathens_enabled = QCheckBox("Enable OpenAthens authentication")
+        self.openathens_enabled.setToolTip(
+            "Enable institutional access to paywalled PDFs via OpenAthens"
+        )
+        self.openathens_enabled.stateChanged.connect(self._on_openathens_enabled_changed)
+        openathens_layout.addRow(self.openathens_enabled)
+
+        self.openathens_url_input = QLineEdit()
+        self.openathens_url_input.setPlaceholderText("https://my.openathens.net/?passiveLogin=false")
+        self.openathens_url_input.setToolTip(
+            "Your institution's OpenAthens login URL (must start with https://)"
+        )
+        openathens_layout.addRow("Institution URL:", self.openathens_url_input)
+
+        self.openathens_session_age = QSpinBox()
+        self.openathens_session_age.setRange(1, 168)  # 1 hour to 1 week
+        self.openathens_session_age.setValue(24)
+        self.openathens_session_age.setSuffix(" hours")
+        self.openathens_session_age.setToolTip(
+            "Maximum session age before re-authentication required"
+        )
+        openathens_layout.addRow("Session Max Age:", self.openathens_session_age)
+
+        openathens_note = QLabel(
+            "<small>OpenAthens allows access to paywalled content through "
+            "your institution's subscription. Find your login URL on your "
+            "library's website.</small>"
+        )
+        openathens_note.setWordWrap(True)
+        openathens_layout.addRow(openathens_note)
+
+        layout.addWidget(openathens_group)
+
         # Buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
@@ -207,6 +246,13 @@ class SettingsDialog(QDialog):
         if self.config.pubmed.api_key:
             self.api_key_input.setText(self.config.pubmed.api_key)
 
+        # OpenAthens
+        self.openathens_enabled.setChecked(self.config.openathens.enabled)
+        self.openathens_url_input.setText(self.config.openathens.institution_url)
+        self.openathens_session_age.setValue(self.config.openathens.session_max_age_hours)
+        # Update field enabled state
+        self._on_openathens_enabled_changed()
+
     def _save_config(self) -> None:
         """Save configuration and close dialog."""
         # Update config object
@@ -219,6 +265,21 @@ class SettingsDialog(QDialog):
         self.config.pubmed.email = self.email_input.text().strip()
         api_key = self.api_key_input.text().strip()
         self.config.pubmed.api_key = api_key if api_key else None
+
+        # OpenAthens - validate URL before saving
+        openathens_url = self.openathens_url_input.text().strip()
+        if self.openathens_enabled.isChecked() and openathens_url:
+            if not openathens_url.startswith("https://"):
+                QMessageBox.warning(
+                    self,
+                    "Invalid URL",
+                    "OpenAthens institution URL must start with https:// for security."
+                )
+                return
+
+        self.config.openathens.enabled = self.openathens_enabled.isChecked()
+        self.config.openathens.institution_url = openathens_url
+        self.config.openathens.session_max_age_hours = self.openathens_session_age.value()
 
         # Save to file
         self.config.save()
@@ -273,3 +334,9 @@ class SettingsDialog(QDialog):
 
         # Also set in current environment
         os.environ[key] = value
+
+    def _on_openathens_enabled_changed(self) -> None:
+        """Handle OpenAthens enabled checkbox state change."""
+        enabled = self.openathens_enabled.isChecked()
+        self.openathens_url_input.setEnabled(enabled)
+        self.openathens_session_age.setEnabled(enabled)
