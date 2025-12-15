@@ -52,7 +52,11 @@ class OpenAthensConfig:
 
         # Cookie patterns for different authentication systems
         # These patterns indicate SUCCESSFUL authentication, not just session start
-        # IMPORTANT: Avoid generic patterns like JSESSIONID which are set before login
+        # IMPORTANT: Avoid generic patterns which are set before login completes:
+        # - JSESSIONID: Java session cookie, set on page load
+        # - amlbcookie: ForgeRock/OpenAM load balancer cookie, set on page load
+        # - iPlanetDirectoryPro: Can be set early in some configurations
+        # - TGC: CAS ticket granting cookie can be set early
         self.auth_cookie_patterns = [
             # OpenAthens-specific (set after successful auth)
             r'openathens.*session',
@@ -64,16 +68,11 @@ class OpenAthensConfig:
             # Shibboleth session cookies (set after IdP authentication)
             r'_shibsession_',
             r'shibsession.*',
-            # SimpleSAML auth state
+            # SimpleSAML auth state (set after successful auth)
             r'SimpleSAMLAuthToken',
-            # CAS ticket granting cookies (set after login)
-            r'CASTGC',
-            # OpenID Connect tokens
+            # OpenID Connect tokens (set after successful auth)
             r'mod_auth_openidc_session',
             r'oidc.*token',
-            # ForgeRock/OpenAM session (after auth)
-            r'iPlanetDirectoryPro',
-            r'amlbcookie',
         ]
 
     def _validate_url(self, url: str) -> str:
