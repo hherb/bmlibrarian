@@ -51,26 +51,29 @@ class OpenAthensConfig:
         self.session_cache_ttl = session_cache_ttl
 
         # Cookie patterns for different authentication systems
-        # Includes OpenAthens, SAML, Shibboleth, CAS, and common SSO patterns
+        # These patterns indicate SUCCESSFUL authentication, not just session start
+        # IMPORTANT: Avoid generic patterns like JSESSIONID which are set before login
         self.auth_cookie_patterns = [
+            # OpenAthens-specific (set after successful auth)
             r'openathens.*session',
-            r'_saml_.*',
-            r'shib.*session',
+            r'oatoken',
+            r'oasession',
+            # SAML assertion cookies (set after successful SAML response)
+            r'_saml_idp',
+            r'saml.*token',
+            # Shibboleth session cookies (set after IdP authentication)
+            r'_shibsession_',
             r'shibsession.*',
-            r'_shibstate_.*',
-            # Additional SSO/SAML patterns
-            r'SimpleSAML.*',
-            r'JSESSIONID',
+            # SimpleSAML auth state
+            r'SimpleSAMLAuthToken',
+            # CAS ticket granting cookies (set after login)
+            r'CASTGC',
+            # OpenID Connect tokens
+            r'mod_auth_openidc_session',
+            r'oidc.*token',
+            # ForgeRock/OpenAM session (after auth)
             r'iPlanetDirectoryPro',
-            r'SSESS.*',
-            r'CASTGC',  # CAS ticket granting cookie
-            r'TGC',  # CAS/SSO ticket granting cookie
-            r'mod_auth_openidc.*',
-            r'AMUAI',
-            r'openam.*',  # OpenAM/ForgeRock
-            r'.*_sso_.*',
-            r'.*sso.*session',
-            r'am.*cookie',
+            r'amlbcookie',
         ]
 
     def _validate_url(self, url: str) -> str:
