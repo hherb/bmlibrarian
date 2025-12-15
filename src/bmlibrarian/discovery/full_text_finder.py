@@ -224,9 +224,13 @@ class FullTextFinder:
         if progress_callback:
             progress_callback("discovery", "starting")
 
+        # When verification is enabled, don't stop on first OA - we need fallback sources
+        # in case the first source fails verification (e.g., PMC has wrong PDF)
+        stop_early = self.prefer_open_access and not verify_content
+
         discovery = self.discover(
             identifiers,
-            stop_on_first_oa=self.prefer_open_access,
+            stop_on_first_oa=stop_early,
             progress_callback=progress_callback
         )
 
