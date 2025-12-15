@@ -4,9 +4,10 @@ Dialog widgets for BMLibrarian Lite Document Interrogation.
 Provides reusable dialog components:
 - WrongPDFDialog: Dialog for handling incorrect PDF files
 - IdentifierInputDialog: Dialog for entering DOI/PMID identifiers
+- OpenAthensPromptDialog: Dialog prompting for OpenAthens authentication
 
 Usage:
-    from bmlibrarian.lite.gui.dialogs import WrongPDFDialog, IdentifierInputDialog
+    from bmlibrarian.lite.gui.dialogs import WrongPDFDialog, IdentifierInputDialog, OpenAthensPromptDialog
 
     # Wrong PDF dialog
     dialog = WrongPDFDialog(pdf_path, scale, parent)
@@ -15,6 +16,10 @@ Usage:
     # Identifier input dialog
     dialog = IdentifierInputDialog(parent)
     doi, pmid = dialog.get_identifiers()
+
+    # OpenAthens prompt dialog
+    dialog = OpenAthensPromptDialog(article_url, parent)
+    action = dialog.get_action()
 """
 
 from pathlib import Path
@@ -37,6 +42,8 @@ from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 # Constants for dialog dimensions
 IDENTIFIER_DIALOG_MIN_WIDTH = 400  # Minimum width for identifier input dialog
 WRONG_PDF_DIALOG_MIN_WIDTH = 450  # Minimum width for wrong PDF dialog
+OPENATHENS_DIALOG_MIN_WIDTH = 500  # Minimum width for OpenAthens dialog
+OPENATHENS_SETUP_DIALOG_MIN_WIDTH = 450  # Minimum width for setup dialog
 
 
 class IdentifierInputDialog(QDialog):
@@ -222,4 +229,253 @@ class WrongPDFDialog(QDialog):
         """
         if self.exec() == QDialog.DialogCode.Accepted:
             return self._action
+        return None
+
+
+class OpenAthensPromptDialog(QDialog):
+    """
+    Dialog prompting user to authenticate via OpenAthens for paywalled content.
+
+    Shown when PDF discovery fails and OpenAthens institutional access is available.
+
+    Provides options to:
+    - Login via OpenAthens and retry the download
+    - Skip OpenAthens and use abstract only
+    - Configure OpenAthens settings
+    - Cancel
+
+    Example:
+        dialog = OpenAthensPromptDialog(article_url, parent)
+        action = dialog.get_action()
+        if action == 'authenticate':
+            # Start OpenAthens authentication
+            pass
+    """
+
+    # Action constants
+    ACTION_AUTHENTICATE = 'authenticate'
+    ACTION_SKIP = 'skip'
+    ACTION_CONFIGURE = 'configure'
+    ACTION_CANCEL = None
+
+    def __init__(
+        self,
+        article_url: str,
+        is_configured: bool = False,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initialize the OpenAthens prompt dialog.
+
+        Args:
+            article_url: URL of the paywalled article
+            is_configured: Whether OpenAthens is already configured
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.article_url = article_url
+        self.is_configured = is_configured
+        self._action: Optional[str] = None
+
+        self.setWindowTitle("Institutional Access Available")
+        self.setMinimumWidth(scaled(OPENATHENS_DIALOG_MIN_WIDTH))
+
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the dialog UI."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(scaled(12))
+
+        # Info section
+        info_text = (
+            "<b>This article may be available through your institution.</b><br><br>"
+            "The PDF could not be downloaded from open access sources. "
+            "However, you may have access through your institution via OpenAthens.<br><br>"
+            f"<b>Article:</b> <a href='{self.article_url}'>{self.article_url[:60]}{'...' if len(self.article_url) > 60 else ''}</a>"
+        )
+        info_label = QLabel(info_text)
+        info_label.setWordWrap(True)
+        info_label.setTextFormat(Qt.TextFormat.RichText)
+        info_label.setOpenExternalLinks(True)
+        layout.addWidget(info_label)
+
+        # Action buttons
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(scaled(8))
+
+        if self.is_configured:
+            # OpenAthens is configured - show login button
+            login_btn = QPushButton("🔐 Login via OpenAthens")
+            login_btn.setToolTip("Open browser to complete institutional login, then retry download")
+            login_btn.setStyleSheet(f"""
+                QPushButton {{
+                    padding: {scaled(10)}px;
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{ background-color: #45a049; }}
+            """)
+            login_btn.clicked.connect(lambda: self._set_action(self.ACTION_AUTHENTICATE))
+            btn_layout.addWidget(login_btn)
+        else:
+            # OpenAthens not configured - show setup button
+            setup_btn = QPushButton("⚙️ Configure OpenAthens")
+            setup_btn.setToolTip("Set up OpenAthens institutional access")
+            setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    padding: {scaled(10)}px;
+                    background-color: #2196F3;
+                    color: white;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{ background-color: #1976D2; }}
+            """)
+            setup_btn.clicked.connect(lambda: self._set_action(self.ACTION_CONFIGURE))
+            btn_layout.addWidget(setup_btn)
+
+        # Skip button
+        skip_btn = QPushButton("Skip - Use Abstract Only")
+        skip_btn.setToolTip("Continue without the full PDF, using only the abstract")
+        skip_btn.setStyleSheet(f"QPushButton {{ padding: {scaled(8)}px; }}")
+        skip_btn.clicked.connect(lambda: self._set_action(self.ACTION_SKIP))
+        btn_layout.addWidget(skip_btn)
+
+        # Cancel button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(f"QPushButton {{ padding: {scaled(8)}px; }}")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _set_action(self, action: str) -> None:
+        """Set the selected action and accept the dialog."""
+        self._action = action
+        self.accept()
+
+    def get_action(self) -> Optional[str]:
+        """
+        Show dialog and get the selected action.
+
+        Returns:
+            Action string ('authenticate', 'skip', 'configure') or None if cancelled
+        """
+        if self.exec() == QDialog.DialogCode.Accepted:
+            return self._action
+        return None
+
+
+class OpenAthensSetupDialog(QDialog):
+    """
+    Dialog for configuring OpenAthens institutional access.
+
+    Allows users to enter their institution's OpenAthens login URL.
+
+    Example:
+        dialog = OpenAthensSetupDialog(parent)
+        url = dialog.get_institution_url()
+        if url:
+            # Save to config
+            config.openathens.institution_url = url
+            config.openathens.enabled = True
+    """
+
+    def __init__(
+        self,
+        current_url: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initialize the OpenAthens setup dialog.
+
+        Args:
+            current_url: Current institution URL (if configured)
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.current_url = current_url
+        self._result_url: Optional[str] = None
+
+        self.setWindowTitle("Configure OpenAthens")
+        self.setMinimumWidth(scaled(OPENATHENS_SETUP_DIALOG_MIN_WIDTH))
+
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the dialog UI."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(scaled(12))
+
+        # Info section
+        info_label = QLabel(
+            "<b>OpenAthens Institutional Access</b><br><br>"
+            "Enter your institution's OpenAthens login URL. This is typically found "
+            "on your library's website or database access page.<br><br>"
+            "The URL should start with <code>https://</code> and typically contains "
+            "your institution's name or 'openathens' in the domain."
+        )
+        info_label.setWordWrap(True)
+        info_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(info_label)
+
+        # URL input
+        form_layout = QFormLayout()
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://login.openathens.net/...")
+        self.url_input.setText(self.current_url)
+        form_layout.addRow("Institution URL:", self.url_input)
+        layout.addLayout(form_layout)
+
+        # Example/help text
+        example_label = QLabel(
+            "<small><b>Examples:</b><br>"
+            "• https://login.openathens.net/auth/institution-name/o/12345<br>"
+            "• https://ezproxy.institution.edu/login</small>"
+        )
+        example_label.setTextFormat(Qt.TextFormat.RichText)
+        example_label.setStyleSheet("QLabel { color: #666; }")
+        layout.addWidget(example_label)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_accept(self) -> None:
+        """Validate and accept the URL."""
+        url = self.url_input.text().strip()
+
+        if not url:
+            # User cleared the URL - disable OpenAthens
+            self._result_url = ""
+            self.accept()
+            return
+
+        # Validate URL format
+        if not url.startswith("https://"):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Invalid URL",
+                "The institution URL must start with https:// for security."
+            )
+            return
+
+        self._result_url = url
+        self.accept()
+
+    def get_institution_url(self) -> Optional[str]:
+        """
+        Show dialog and get the configured URL.
+
+        Returns:
+            Institution URL string, empty string to disable, or None if cancelled
+        """
+        if self.exec() == QDialog.DialogCode.Accepted:
+            return self._result_url
         return None

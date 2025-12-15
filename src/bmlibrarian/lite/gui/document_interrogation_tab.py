@@ -49,10 +49,15 @@ from ..conversation_export import (
     export_conversation_to_markdown,
     create_conversation_message,
 )
-from .workers import AnswerWorker, PDFDiscoveryWorker
+from .workers import AnswerWorker, PDFDiscoveryWorker, OpenAthensAuthWorker
 from .chat_widgets import ChatBubble
 from .document_viewer import LiteDocumentViewWidget
-from .dialogs import WrongPDFDialog, IdentifierInputDialog
+from .dialogs import (
+    WrongPDFDialog,
+    IdentifierInputDialog,
+    OpenAthensPromptDialog,
+    OpenAthensSetupDialog,
+)
 from .citation_loader import (
     build_doc_metadata,
     build_abstract_text,
@@ -94,12 +99,14 @@ class DocumentInterrogationTab(QWidget):
         self._agent = LiteInterrogationAgent(config=config, storage=storage)
         self._worker: Optional[AnswerWorker] = None
         self._pdf_worker: Optional[PDFDiscoveryWorker] = None
+        self._openathens_worker: Optional[OpenAthensAuthWorker] = None
         self._pdf_progress_dialog: Optional[QProgressDialog] = None
         self._document_loaded = False
         self._current_doc_metadata: Optional[dict] = None
         self._current_pdf_path: Optional[Path] = None
         self._pending_citation: Optional['Citation'] = None
         self._pending_fetch_title: Optional[str] = None
+        self._pending_paywall_url: Optional[str] = None  # Article URL for retry after auth
 
         self.scale = get_font_scale()
         self.conversation_history: List[dict] = []
@@ -500,10 +507,22 @@ class DocumentInterrogationTab(QWidget):
         self._pdf_progress_dialog.canceled.connect(lambda: (self._cancel_pdf_discovery(), on_error and on_error("Cancelled")))
         self._pdf_progress_dialog.show()
 
-        self._pdf_worker = PDFDiscoveryWorker(doc_dict, get_pdf_base_dir(), self.config.discovery.unpaywall_email or None, self)
+        # Get OpenAthens URL if configured
+        openathens_url = None
+        if self.config.openathens.enabled and self.config.openathens.institution_url:
+            openathens_url = self.config.openathens.institution_url
+
+        self._pdf_worker = PDFDiscoveryWorker(
+            doc_dict,
+            get_pdf_base_dir(),
+            self.config.discovery.unpaywall_email or None,
+            openathens_url,
+            self,
+        )
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(lambda p: self._on_pdf_ready(p, on_success))
         self._pdf_worker.verification_warning.connect(self._on_pdf_warning)
+        self._pdf_worker.paywall_detected.connect(lambda url, err: self._on_paywall_detected(url, err, on_error))
         self._pdf_worker.error.connect(lambda e: self._on_pdf_error(e, on_error))
         self._pdf_worker.start()
 
@@ -537,6 +556,135 @@ class DocumentInterrogationTab(QWidget):
         self._pdf_worker = None
         logger.warning(f"PDF verification failed: {warning}")
         QMessageBox.warning(self, "PDF Verification Failed", f"Downloaded PDF may not match.\n\n{warning}\n\nFile: {file_path}")
+
+    def _on_paywall_detected(self, article_url: str, error: str, callback=None) -> None:
+        """Handle paywall detection - prompt for OpenAthens authentication."""
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+        self._pdf_worker = None
+
+        logger.info(f"Paywall detected for {article_url}: {error}")
+
+        # Store for retry after authentication
+        self._pending_paywall_url = article_url
+
+        # Check if OpenAthens is configured
+        is_configured = (
+            self.config.openathens.enabled and
+            bool(self.config.openathens.institution_url)
+        )
+
+        # Show prompt dialog
+        dialog = OpenAthensPromptDialog(article_url, is_configured, self)
+        action = dialog.get_action()
+
+        if action == OpenAthensPromptDialog.ACTION_AUTHENTICATE:
+            # Start OpenAthens authentication
+            self._start_openathens_auth()
+        elif action == OpenAthensPromptDialog.ACTION_CONFIGURE:
+            # Configure OpenAthens
+            self._configure_openathens()
+        elif action == OpenAthensPromptDialog.ACTION_SKIP:
+            # User chose to skip - load abstract if we have a citation
+            if self._pending_citation:
+                self._load_citation_abstract(self._pending_citation)
+            elif callback:
+                callback("Skipped - using abstract only")
+            else:
+                self._add_chat_bubble(
+                    "PDF could not be downloaded due to paywall restrictions.\n\n"
+                    "You can try configuring OpenAthens institutional access in Settings.",
+                    is_user=False
+                )
+        # else: cancelled - do nothing
+
+    def _configure_openathens(self) -> None:
+        """Show OpenAthens configuration dialog."""
+        current_url = self.config.openathens.institution_url
+        dialog = OpenAthensSetupDialog(current_url, self)
+        url = dialog.get_institution_url()
+
+        if url is None:
+            # Cancelled
+            return
+
+        if url:
+            # Enable with new URL
+            self.config.openathens.enabled = True
+            self.config.openathens.institution_url = url
+            self.config.save()
+            logger.info(f"OpenAthens configured with URL: {url}")
+
+            # Ask if they want to authenticate now
+            reply = QMessageBox.question(
+                self,
+                "OpenAthens Configured",
+                "OpenAthens has been configured.\n\nWould you like to authenticate now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._start_openathens_auth()
+        else:
+            # Disable OpenAthens
+            self.config.openathens.enabled = False
+            self.config.openathens.institution_url = ""
+            self.config.save()
+            logger.info("OpenAthens disabled")
+
+    def _start_openathens_auth(self) -> None:
+        """Start OpenAthens authentication in background thread."""
+        if not self.config.openathens.enabled or not self.config.openathens.institution_url:
+            QMessageBox.warning(
+                self,
+                "OpenAthens Not Configured",
+                "Please configure OpenAthens institutional access first."
+            )
+            return
+
+        self._add_chat_bubble(
+            "Starting OpenAthens authentication...\n\n"
+            "A browser window will open. Please complete your institutional login.",
+            is_user=False
+        )
+
+        self._openathens_worker = OpenAthensAuthWorker(
+            institution_url=self.config.openathens.institution_url,
+            session_max_age_hours=self.config.openathens.session_max_age_hours,
+            parent=self,
+        )
+        self._openathens_worker.finished.connect(self._on_openathens_success)
+        self._openathens_worker.error.connect(self._on_openathens_error)
+        self._openathens_worker.start()
+
+    def _on_openathens_success(self) -> None:
+        """Handle successful OpenAthens authentication."""
+        self._openathens_worker = None
+        self._add_chat_bubble(
+            "✓ OpenAthens authentication successful!\n\n"
+            "Retrying PDF download with institutional access...",
+            is_user=False
+        )
+
+        # Retry the download if we have document metadata
+        if self._current_doc_metadata:
+            title = self._current_doc_metadata.get('title') or self._pending_fetch_title or 'PDF'
+            self._start_pdf_discovery(
+                self._current_doc_metadata,
+                title,
+                on_success=lambda p: self._load_pdf_file(Path(p), title),
+                on_error=lambda e: self._on_pdf_error(e, None)
+            )
+
+    def _on_openathens_error(self, error: str) -> None:
+        """Handle OpenAthens authentication error."""
+        self._openathens_worker = None
+        logger.error(f"OpenAthens authentication failed: {error}")
+        QMessageBox.warning(
+            self,
+            "Authentication Failed",
+            f"OpenAthens authentication failed:\n\n{error}"
+        )
 
     def _load_pdf_file(self, pdf_path: Path, title: str) -> None:
         """Load a PDF file into the viewer."""

@@ -71,19 +71,33 @@ class PDFDiscoveryWorker(QThread):
         progress: Emitted with (stage, status) during download
         finished: Emitted with file_path when download succeeds
         verification_warning: Emitted with (file_path, warning_message) on verification mismatch
+        paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
     """
 
     progress = Signal(str, str)  # stage, status
     finished = Signal(str)  # file_path on success
     verification_warning = Signal(str, str)  # file_path, warning_message
+    paywall_detected = Signal(str, str)  # article_url, error_message
     error = Signal(str)  # error message
+
+    # Error patterns that indicate paywall/access issues
+    PAYWALL_ERROR_PATTERNS = [
+        'browser download failed',
+        'no pdf sources found',
+        'access denied',
+        'subscription required',
+        'login required',
+        'institutional access',
+        'full text not available',
+    ]
 
     def __init__(
         self,
         doc_dict: Dict[str, Any],
         output_dir: Path,
         unpaywall_email: Optional[str] = None,
+        openathens_url: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         """
@@ -93,27 +107,87 @@ class PDFDiscoveryWorker(QThread):
             doc_dict: Document dictionary with doi, pmid, title, year, etc.
             output_dir: Base directory for PDF storage (year subdirs created)
             unpaywall_email: Email for Unpaywall API
+            openathens_url: OpenAthens institution URL for authenticated downloads
             parent: Optional parent widget
         """
         super().__init__(parent)
         self.doc_dict = doc_dict
         self.output_dir = output_dir
         self.unpaywall_email = unpaywall_email
+        self.openathens_url = openathens_url
         self._cancelled = False
+
+    def _is_paywall_error(self, error_message: str) -> bool:
+        """
+        Check if an error message indicates a paywall/access issue.
+
+        Args:
+            error_message: Error message from download attempt
+
+        Returns:
+            True if the error suggests paywalled content
+        """
+        if not error_message:
+            return False
+        error_lower = error_message.lower()
+        return any(pattern in error_lower for pattern in self.PAYWALL_ERROR_PATTERNS)
+
+    def _get_article_url(self) -> str:
+        """
+        Get the article URL for OpenAthens authentication.
+
+        Returns:
+            DOI URL or other suitable article URL
+        """
+        doi = self.doc_dict.get('doi')
+        if doi:
+            # Normalize DOI to URL
+            if not doi.startswith('http'):
+                return f"https://doi.org/{doi}"
+            return doi
+        # Fall back to other identifiers
+        pmid = self.doc_dict.get('pmid')
+        if pmid:
+            return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+        return ""
 
     def run(self) -> None:
         """Execute PDF discovery and download with verification."""
         try:
-            from bmlibrarian.discovery import download_pdf_for_document
+            from bmlibrarian.discovery import FullTextFinder
+
+            # Try to load OpenAthens auth if configured
+            openathens_auth = None
+            if self.openathens_url:
+                try:
+                    from bmlibrarian.utils.openathens_auth import OpenAthensConfig, OpenAthensAuth
+                    config = OpenAthensConfig(institution_url=self.openathens_url)
+                    openathens_auth = OpenAthensAuth(config=config)
+                    if openathens_auth.is_authenticated():
+                        logger.info("Using existing OpenAthens session for download")
+                    else:
+                        logger.info("OpenAthens configured but no valid session")
+                        openathens_auth = None
+                except ImportError:
+                    logger.debug("OpenAthens auth not available (playwright not installed)")
+                except Exception as e:
+                    logger.warning(f"Failed to load OpenAthens auth: {e}")
 
             def progress_callback(stage: str, status: str) -> None:
                 if not self._cancelled:
                     self.progress.emit(stage, status)
 
-            result = download_pdf_for_document(
+            # Create finder with OpenAthens auth if available
+            finder = FullTextFinder(
+                unpaywall_email=self.unpaywall_email,
+                openathens_proxy_url=self.openathens_url if openathens_auth else None,
+                openathens_auth=openathens_auth,
+            )
+
+            result = finder.download_for_document(
                 document=self.doc_dict,
                 output_dir=self.output_dir,
-                unpaywall_email=self.unpaywall_email,
+                use_browser_fallback=True,
                 progress_callback=progress_callback,
                 verify_content=True,  # Enable verification to detect wrong PDFs
                 delete_on_mismatch=False,  # Keep file but warn user
@@ -148,7 +222,15 @@ class PDFDiscoveryWorker(QThread):
                 else:
                     self.finished.emit(result.file_path)
             else:
-                self.error.emit(result.error_message or "Unknown error")
+                error_message = result.error_message or "Unknown error"
+
+                # Check if this is a paywall issue (DOI exists but download failed)
+                article_url = self._get_article_url()
+                if article_url and self._is_paywall_error(error_message):
+                    logger.info(f"Paywall detected for {article_url}: {error_message}")
+                    self.paywall_detected.emit(article_url, error_message)
+                else:
+                    self.error.emit(error_message)
 
         except Exception as e:
             logger.exception("PDF discovery failed")
@@ -158,3 +240,76 @@ class PDFDiscoveryWorker(QThread):
     def cancel(self) -> None:
         """Request cancellation of the operation."""
         self._cancelled = True
+
+
+class OpenAthensAuthWorker(QThread):
+    """
+    Background worker for OpenAthens interactive authentication.
+
+    Opens a browser window for the user to complete institutional login,
+    then captures authentication cookies for subsequent PDF downloads.
+
+    Signals:
+        finished: Emitted when authentication succeeds
+        error: Emitted with error message on failure
+    """
+
+    finished = Signal()  # Authentication succeeded
+    error = Signal(str)  # error message
+
+    def __init__(
+        self,
+        institution_url: str,
+        session_max_age_hours: int = 24,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initialize OpenAthens authentication worker.
+
+        Args:
+            institution_url: Institution's OpenAthens login URL (HTTPS)
+            session_max_age_hours: Maximum session age before re-authentication
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.institution_url = institution_url
+        self.session_max_age_hours = session_max_age_hours
+
+    def run(self) -> None:
+        """Execute OpenAthens interactive authentication."""
+        try:
+            import asyncio
+            from bmlibrarian.utils.openathens_auth import OpenAthensConfig, OpenAthensAuth
+
+            config = OpenAthensConfig(
+                institution_url=self.institution_url,
+                session_max_age_hours=self.session_max_age_hours,
+                headless=False,  # Need visible browser for user login
+            )
+
+            auth = OpenAthensAuth(config=config)
+
+            async def do_login():
+                return await auth.login_interactive()
+
+            # Run the async login in an event loop
+            success = asyncio.run(do_login())
+
+            if success:
+                logger.info("OpenAthens authentication succeeded")
+                self.finished.emit()
+            else:
+                self.error.emit("Authentication failed or was cancelled")
+
+        except ImportError as e:
+            logger.error(f"OpenAthens auth requires playwright: {e}")
+            self.error.emit(
+                "OpenAthens authentication requires Playwright.\n"
+                "Install with: uv add playwright && uv run python -m playwright install chromium"
+            )
+        except ValueError as e:
+            logger.error(f"OpenAthens config error: {e}")
+            self.error.emit(f"Configuration error: {e}")
+        except Exception as e:
+            logger.exception("OpenAthens authentication failed")
+            self.error.emit(str(e))

@@ -30,6 +30,7 @@ def build_doc_metadata(citation: 'Citation') -> Dict[str, Any]:
     Build document metadata dictionary from a citation.
 
     Extracts relevant fields for PDF discovery and document tracking.
+    Falls back to extracting PMID from document ID if the explicit field is empty.
 
     Args:
         citation: Citation object containing document information
@@ -42,10 +43,14 @@ def build_doc_metadata(citation: 'Citation') -> Dict[str, Any]:
         # {'id': 123, 'doi': '10.1038/...', 'pmid': '12345', ...}
     """
     doc = citation.document
+    # Get PMID - fallback to extracting from doc ID if explicit field is empty
+    pmid = doc.pmid
+    if not pmid and doc.id and doc.id.startswith('pmid-'):
+        pmid = doc.id[5:]  # Extract '38906474' from 'pmid-38906474'
     return {
         'id': doc.id,
         'doi': doc.doi,
-        'pmid': doc.pmid,
+        'pmid': pmid,
         'pmcid': doc.pmc_id,
         'pmc_id': doc.pmc_id,
         'title': doc.title,
@@ -92,10 +97,16 @@ def has_pdf_identifiers(citation: 'Citation') -> bool:
         citation: Citation object to check
 
     Returns:
-        True if the citation has DOI, PMID, or PMC ID
+        True if the citation has DOI, PMID, or PMC ID (including from doc ID)
     """
     doc = citation.document
-    return bool(doc.doi or doc.pmid or doc.pmc_id)
+    # Check explicit identifiers first
+    if doc.doi or doc.pmid or doc.pmc_id:
+        return True
+    # Fallback: extract PMID from document ID if it follows 'pmid-XXXX' pattern
+    if doc.id and doc.id.startswith('pmid-'):
+        return True
+    return False
 
 
 def get_document_title(citation: 'Citation', default: str = "Untitled Document") -> str:

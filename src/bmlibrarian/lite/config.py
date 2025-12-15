@@ -65,6 +65,15 @@ class PubMedConfig:
 
 
 @dataclass
+class OpenAthensConfig:
+    """OpenAthens institutional access configuration."""
+
+    enabled: bool = False  # Whether OpenAthens is configured
+    institution_url: str = ""  # Institution's OpenAthens login URL (HTTPS required)
+    session_max_age_hours: int = 24  # Maximum session age before re-authentication
+
+
+@dataclass
 class DiscoveryConfig:
     """PDF discovery and download configuration."""
 
@@ -149,6 +158,7 @@ class LiteConfig:
     embeddings: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     pubmed: PubMedConfig = field(default_factory=PubMedConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
+    openathens: OpenAthensConfig = field(default_factory=OpenAthensConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
 
@@ -228,6 +238,14 @@ class LiteConfig:
                 unpaywall_email=discovery_data.get("unpaywall_email", ""),
             )
 
+        if "openathens" in data:
+            openathens_data = data["openathens"]
+            config.openathens = OpenAthensConfig(
+                enabled=bool(openathens_data.get("enabled", False)),
+                institution_url=openathens_data.get("institution_url", ""),
+                session_max_age_hours=int(openathens_data.get("session_max_age_hours", 24)),
+            )
+
         if "storage" in data:
             storage_data = data["storage"]
             data_dir = storage_data.get("data_dir", str(DEFAULT_DATA_DIR))
@@ -272,6 +290,11 @@ class LiteConfig:
             },
             "discovery": {
                 "unpaywall_email": self.discovery.unpaywall_email,
+            },
+            "openathens": {
+                "enabled": self.openathens.enabled,
+                "institution_url": self.openathens.institution_url,
+                "session_max_age_hours": self.openathens.session_max_age_hours,
             },
             "storage": {
                 "data_dir": str(self.storage.data_dir),
