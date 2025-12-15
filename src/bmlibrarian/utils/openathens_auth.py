@@ -286,7 +286,13 @@ class OpenAthensAuth:
         # We need to be careful here - just changing domains doesn't mean we're authenticated
         # (e.g., redirecting from OpenAthens to SSO login page)
         if current_url:
-            current_parsed = urlparse(current_url)
+            current_url_lower = current_url.lower()
+
+            # First check for successful OpenAthens authentication
+            # When auth completes, user is redirected to my.openathens.net/app/...
+            if 'my.openathens.net/app/' in current_url_lower:
+                logger.info(f"OpenAthens authentication complete - redirected to dashboard: {current_url}")
+                return True
 
             # SSO login pages typically have these patterns in the URL
             sso_login_indicators = [
@@ -300,13 +306,13 @@ class OpenAthensAuth:
                 # Institution-specific patterns (Australian universities)
                 '.edu.au/idp', '.edu.au/sso', '.edu.au/login',
                 # OpenAthens portal (selecting institution, not authenticated yet)
-                'my.openathens.net',
+                # Note: my.openathens.net/app/* indicates SUCCESSFUL auth (dashboard)
+                'my.openathens.net/?',  # Only the login/selection page, not /app/
                 # SAML/Shibboleth federation pages
                 'wayf', 'discovery', 'ds.aaf.edu.au',
             ]
 
             # Check if we're still on a login page (not authenticated yet)
-            current_url_lower = current_url.lower()
             is_login_page = any(indicator in current_url_lower for indicator in sso_login_indicators)
 
             if is_login_page:
