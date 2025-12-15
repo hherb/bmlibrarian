@@ -2,15 +2,53 @@
 
 This module uses Playwright to download PDFs from URLs that have anti-bot protections
 like Cloudflare verification, CAPTCHAs, or other browser checks.
+
+It also supports institutional access via OpenAthens/SAML federation:
+1. Navigate to publisher page with OpenAthens cookies
+2. Find and click institutional login link
+3. SAML flow authenticates via institution's OpenAthens
+4. Publisher sets session cookies granting access
+5. PDF can then be downloaded
 """
 
 import logging
 import time
+import re
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Patterns for finding institutional access links on publisher pages
+INSTITUTIONAL_ACCESS_PATTERNS = [
+    # Generic institutional access text
+    r'access.*(through|via|using).*institution',
+    r'institutional.*access',
+    r'institution.*login',
+    r'log\s*in.*institution',
+    r'sign\s*in.*institution',
+    # Shibboleth/SAML patterns
+    r'shibboleth',
+    r'wayf',  # Where Are You From (federation discovery)
+    # OpenAthens specific
+    r'openathens',
+    # Publisher-specific patterns
+    r'access.*openathens',
+    r'access.*shibboleth',
+]
+
+# URL patterns that indicate institutional login pages/flows
+INSTITUTIONAL_URL_PATTERNS = [
+    r'idp\.',           # Identity Provider
+    r'/shibboleth',
+    r'/wayf',
+    r'/login.*institution',
+    r'/auth.*institution',
+    r'openathens\.net',
+    r'/saml/',
+    r'/Shibboleth\.sso',
+]
 
 
 class BrowserDownloader:
@@ -133,7 +171,12 @@ class BrowserDownloader:
             # Inject cookies if provided (e.g., from OpenAthens authentication)
             if cookies:
                 logger.info(f"Injecting {len(cookies)} authentication cookies")
-                await context.add_cookies(cookies)
+                # Group cookies by domain for proper injection
+                for cookie in cookies:
+                    # Ensure cookie has required fields and valid domain
+                    if 'name' in cookie and 'value' in cookie:
+                        await context.add_cookies([cookie])
+                logger.debug(f"Injected cookies for domains: {set(c.get('domain', 'unknown') for c in cookies)}")
 
             # Add stealth scripts to context
             await context.add_init_script("""
@@ -238,6 +281,26 @@ class BrowserDownloader:
                 logger.info("Checking for Cloudflare verification...")
                 await self._wait_for_cloudflare(page, max_wait)
 
+            # Track if we should try institutional access later
+            tried_institutional_access = False
+
+            # STEP 0: Early paywall detection with proactive institutional access
+            # If we have OpenAthens cookies, check if page shows paywall indicators
+            # and try to gain institutional access BEFORE collecting PDF candidates
+            if cookies:
+                is_paywalled = await self._detect_paywall(page)
+                if is_paywalled:
+                    logger.info("Paywall detected - attempting institutional access...")
+                    tried_institutional_access = True
+                    institutional_success = await self._try_institutional_access(
+                        page, openathens_cookies=cookies, max_wait=45
+                    )
+                    if institutional_success:
+                        # Re-navigate to original URL with authenticated session
+                        logger.info("Institutional access established - reloading page...")
+                        await page.goto(url, wait_until='domcontentloaded', timeout=self.timeout)
+                        await asyncio.sleep(2)  # Let page render with authenticated content
+
             # STEP 1: Collect ALL PDF candidates from the page
             pdf_candidates = await self._collect_all_pdf_candidates(page, url)
             logger.info(f"Found {len(pdf_candidates)} PDF candidate(s) on page")
@@ -254,11 +317,27 @@ class BrowserDownloader:
                         'size': len(content)
                     }
 
-                return {
-                    'status': 'failed',
-                    'error': 'No PDF candidates found on page',
-                    'doi_rejected_count': 0
-                }
+                # No PDF candidates - this might be a paywall
+                # If we have OpenAthens cookies, try institutional access
+                if cookies and not tried_institutional_access:
+                    logger.info("No PDF candidates found - trying institutional access...")
+                    tried_institutional_access = True
+                    institutional_success = await self._try_institutional_access(
+                        page, openathens_cookies=cookies, max_wait=45
+                    )
+                    if institutional_success:
+                        # Re-navigate to original URL and try again
+                        await page.goto(url, wait_until='domcontentloaded', timeout=self.timeout)
+                        await asyncio.sleep(2)  # Let page render
+                        pdf_candidates = await self._collect_all_pdf_candidates(page, url)
+                        logger.info(f"After institutional access: found {len(pdf_candidates)} PDF candidate(s)")
+
+                if not pdf_candidates:
+                    return {
+                        'status': 'failed',
+                        'error': 'No PDF candidates found on page',
+                        'doi_rejected_count': 0
+                    }
 
             # STEP 2: Score and rank candidates based on DOI match and URL patterns
             ranked_candidates = self._rank_pdf_candidates(
@@ -289,7 +368,38 @@ class BrowserDownloader:
                 if result and result.get('status') == 'success':
                     return result
 
-            # All candidates failed
+            # All candidates failed - maybe we need institutional access?
+            # Try institutional login if we have OpenAthens cookies and haven't tried yet
+            if cookies and not tried_institutional_access:
+                logger.info("All PDF downloads failed - trying institutional access...")
+                tried_institutional_access = True
+                institutional_success = await self._try_institutional_access(
+                    page, openathens_cookies=cookies, max_wait=45
+                )
+                if institutional_success:
+                    # Re-try PDF candidates after gaining access
+                    logger.info("Re-trying PDF candidates after institutional access...")
+                    await page.goto(url, wait_until='domcontentloaded', timeout=self.timeout)
+                    await asyncio.sleep(2)
+
+                    pdf_candidates = await self._collect_all_pdf_candidates(page, url)
+                    if pdf_candidates:
+                        ranked_candidates = self._rank_pdf_candidates(
+                            pdf_candidates, expected_doi, url
+                        )
+
+                        for candidate_url, score, source in ranked_candidates:
+                            if expected_doi and score < 100 and doi_matched_count > 0:
+                                continue
+
+                            result = await self._try_download_pdf_candidate(
+                                page, candidate_url, save_path, source
+                            )
+                            if result and result.get('status') == 'success':
+                                logger.info("Successfully downloaded PDF after institutional access!")
+                                return result
+
+            # All methods failed
             if doi_rejected_count > 0 and expected_doi and doi_matched_count == 0:
                 error_msg = (
                     f"Found {len(ranked_candidates)} PDF(s) on page but none matched "
@@ -475,6 +585,279 @@ class BrowserDownloader:
             await asyncio.sleep(1)
 
         logger.warning(f"Cloudflare verification timeout after {max_wait}s")
+
+    async def _try_institutional_access(
+        self,
+        page,
+        openathens_cookies: Optional[List[Dict[str, Any]]] = None,
+        max_wait: int = 30
+    ) -> bool:
+        """Try to gain institutional access via SAML/Shibboleth flow.
+
+        When OpenAthens cookies are present but direct access fails (paywall),
+        this method looks for institutional access links and navigates through
+        the SAML authentication flow.
+
+        The flow:
+        1. Find institutional access link on the page
+        2. Click it to trigger SAML flow
+        3. If redirected to OpenAthens, we're already authenticated (cookies)
+        4. After SAML completes, publisher sets session cookies
+        5. Return True if access was gained
+
+        Args:
+            page: Playwright page object
+            openathens_cookies: List of OpenAthens cookies to inject if needed
+            max_wait: Maximum seconds to wait for SAML flow to complete
+
+        Returns:
+            True if institutional access was successfully established
+        """
+        start_time = time.time()
+        original_url = page.url
+
+        try:
+            logger.info("Looking for institutional access link on page...")
+
+            # First, try to find institutional access links
+            institutional_link = await self._find_institutional_access_link(page)
+
+            if not institutional_link:
+                logger.debug("No institutional access link found on page")
+                return False
+
+            logger.info(f"Found institutional access link: {institutional_link[:80]}...")
+
+            # Inject OpenAthens cookies before clicking the link
+            # This ensures SAML flow sees our authenticated session
+            if openathens_cookies:
+                context = page.context
+                for cookie in openathens_cookies:
+                    if 'name' in cookie and 'value' in cookie:
+                        await context.add_cookies([cookie])
+                logger.info(f"Injected {len(openathens_cookies)} OpenAthens cookies before SAML flow")
+
+            # Navigate to the institutional access link
+            try:
+                await page.goto(institutional_link, wait_until='domcontentloaded', timeout=30000)
+            except Exception as nav_error:
+                logger.debug(f"Navigation to institutional link: {nav_error}")
+                # Navigation might trigger redirect, that's okay
+
+            # Wait for SAML flow to complete
+            # Monitor URL changes - when we return to a non-IDP URL, flow is complete
+            saml_completed = False
+            while time.time() - start_time < max_wait:
+                await asyncio.sleep(1)
+                current_url = page.url.lower()
+
+                # Check if we're still in SAML flow
+                in_saml_flow = any(
+                    re.search(pattern, current_url, re.IGNORECASE)
+                    for pattern in INSTITUTIONAL_URL_PATTERNS
+                )
+
+                if not in_saml_flow:
+                    # Check if we got redirected back with success indicators
+                    # Look for session cookies that indicate successful auth
+                    context = page.context
+                    cookies = await context.cookies()
+                    session_cookies = [c for c in cookies if any(
+                        x in c.get('name', '').lower()
+                        for x in ['session', 'auth', 'sso', 'jwt']
+                    )]
+
+                    if session_cookies:
+                        logger.info(f"SAML flow complete - received {len(session_cookies)} session cookies")
+                        saml_completed = True
+                        break
+
+                    # Also check if we can now access the page (no paywall indicators)
+                    content = await page.content()
+                    content_lower = content.lower()
+
+                    # Paywall indicators
+                    paywall_indicators = [
+                        'access denied',
+                        'subscription required',
+                        'purchase this article',
+                        'sign in to access',
+                        'log in to access',
+                        'institutional access',  # Still showing access options = not authenticated
+                    ]
+
+                    has_paywall = any(indicator in content_lower for indicator in paywall_indicators)
+
+                    if not has_paywall:
+                        logger.info("SAML flow appears complete - no paywall indicators")
+                        saml_completed = True
+                        break
+
+                logger.debug(f"Waiting for SAML flow... ({int(time.time() - start_time)}s)")
+
+            if saml_completed:
+                # Navigate back to original URL with new session
+                try:
+                    await page.goto(original_url, wait_until='domcontentloaded', timeout=30000)
+                    logger.info("Returned to original URL with institutional access")
+                except Exception:
+                    pass  # May not need to navigate back if already there
+
+                return True
+
+            logger.warning(f"SAML flow timed out after {max_wait}s")
+            return False
+
+        except Exception as e:
+            logger.error(f"Institutional access flow failed: {e}")
+            return False
+
+    async def _detect_paywall(self, page) -> bool:
+        """Detect if the current page shows a paywall.
+
+        Checks for common paywall indicators like subscription prompts,
+        access denied messages, or institutional login options.
+
+        Args:
+            page: Playwright page object
+
+        Returns:
+            True if page appears to be paywalled
+        """
+        try:
+            content = await page.content()
+            content_lower = content.lower()
+
+            # Paywall indicators
+            paywall_indicators = [
+                'access denied',
+                'subscription required',
+                'purchase this article',
+                'buy this article',
+                'rent this article',
+                'sign in to access',
+                'log in to access',
+                'get access',
+                'full text access',
+                'view pdf requires',
+                'institutional access',
+                'access through your institution',
+                'check if you have access',
+                'you do not have access',
+                'access to this content',
+            ]
+
+            # Check for paywall indicators
+            for indicator in paywall_indicators:
+                if indicator in content_lower:
+                    logger.debug(f"Paywall indicator found: {indicator}")
+                    return True
+
+            return False
+
+        except Exception as e:
+            logger.debug(f"Error detecting paywall: {e}")
+            return False
+
+    async def _find_institutional_access_link(self, page) -> Optional[str]:
+        """Find institutional access link on the current page.
+
+        Searches for links that match institutional access patterns,
+        prioritizing more specific patterns over generic ones.
+
+        Args:
+            page: Playwright page object
+
+        Returns:
+            URL of institutional access link, or None if not found
+        """
+        try:
+            # Find all links and their text/attributes
+            links_data = await page.evaluate("""
+                () => {
+                    const results = [];
+                    const links = Array.from(document.querySelectorAll('a[href]'));
+
+                    for (const link of links) {
+                        const href = link.href;
+                        const text = (link.textContent || '').toLowerCase().trim();
+                        const title = (link.getAttribute('title') || '').toLowerCase();
+                        const ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+                        const className = (link.className || '').toLowerCase();
+                        const id = (link.id || '').toLowerCase();
+
+                        // Skip empty or javascript links
+                        if (!href || href.startsWith('javascript:') || href === '#') {
+                            continue;
+                        }
+
+                        results.push({
+                            href: href,
+                            text: text.substring(0, 200),
+                            title: title.substring(0, 200),
+                            ariaLabel: ariaLabel.substring(0, 200),
+                            className: className.substring(0, 200),
+                            id: id
+                        });
+                    }
+
+                    return results;
+                }
+            """)
+
+            # Score each link based on pattern matches
+            scored_links: List[tuple[str, int]] = []
+
+            for link in links_data:
+                score = 0
+                href = link['href']
+                text = link['text']
+                title = link['title']
+                aria_label = link['ariaLabel']
+                class_name = link['className']
+                link_id = link['id']
+
+                # Check URL patterns (highest priority)
+                for pattern in INSTITUTIONAL_URL_PATTERNS:
+                    if re.search(pattern, href, re.IGNORECASE):
+                        score += 50
+                        break
+
+                # Check text/attribute patterns
+                searchable = f"{text} {title} {aria_label} {class_name} {link_id}"
+                for pattern in INSTITUTIONAL_ACCESS_PATTERNS:
+                    if re.search(pattern, searchable, re.IGNORECASE):
+                        score += 30
+                        break
+
+                # Bonus for explicit institutional terms
+                if 'institutional' in searchable:
+                    score += 20
+                if 'openathens' in searchable:
+                    score += 25
+                if 'shibboleth' in searchable:
+                    score += 25
+
+                # Penalty for generic links that might be false positives
+                if 'login' in text and 'institution' not in searchable:
+                    score -= 10  # Generic login, not institutional
+
+                if score > 0:
+                    scored_links.append((href, score))
+
+            if not scored_links:
+                return None
+
+            # Sort by score and return highest
+            scored_links.sort(key=lambda x: x[1], reverse=True)
+            best_link, best_score = scored_links[0]
+
+            logger.debug(f"Best institutional link (score={best_score}): {best_link}")
+            return best_link
+
+        except Exception as e:
+            logger.debug(f"Error finding institutional link: {e}")
+            return None
 
     def _url_matches_doi(self, url: str, expected_doi: str) -> bool:
         """Check if a URL contains or references the expected DOI.
