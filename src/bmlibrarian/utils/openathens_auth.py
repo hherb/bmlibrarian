@@ -291,6 +291,16 @@ class OpenAthensAuth:
                 '/login', '/signin', '/auth', '/sso', '/saml',
                 '/openam', '/adfs', '/cas', 'passiveLogin',
                 'login.microsoftonline', 'accounts.google',
+                # Identity provider domains (still authenticating)
+                'idp.', 'sso.', 'auth.',
+                # Common IdP paths
+                '/idp/', '/simplesaml/', '/shibboleth/',
+                # Institution-specific patterns (Australian universities)
+                '.edu.au/idp', '.edu.au/sso', '.edu.au/login',
+                # OpenAthens portal (selecting institution, not authenticated yet)
+                'my.openathens.net',
+                # SAML/Shibboleth federation pages
+                'wayf', 'discovery', 'ds.aaf.edu.au',
             ]
 
             # Check if we're still on a login page (not authenticated yet)
@@ -301,17 +311,33 @@ class OpenAthensAuth:
                 logger.debug(f"Still on login page: {current_url}")
                 return False
 
-            # If we have a lot of cookies (>5) and we're NOT on a login page,
-            # that's a strong indicator of successful authentication
-            has_many_cookies = len(cookies) >= 5
+            # Additional check: are we on a known publisher domain?
+            # This helps avoid false positives on IdP/SSO domains
+            publisher_indicators = [
+                'springer.com', 'nature.com', 'wiley.com', 'elsevier.com',
+                'sciencedirect.com', 'tandfonline.com', 'sagepub.com',
+                'oup.com', 'bmj.com', 'nejm.org', 'thelancet.com',
+                'cell.com', 'pnas.org', 'acs.org', 'rsc.org',
+                'ieee.org', 'acm.org', 'jstor.org', 'pubmed.ncbi',
+            ]
+            on_publisher = any(pub in current_url_lower for pub in publisher_indicators)
 
-            if has_many_cookies and not is_login_page:
+            # If we have many cookies (≥8) AND we're on a publisher domain,
+            # that's a strong indicator of successful authentication
+            has_many_cookies = len(cookies) >= 8
+
+            if has_many_cookies and on_publisher:
                 logger.info(
                     f"SSO completion detected: {len(cookies)} cookies, "
-                    f"not on login page: {current_url}"
+                    f"on publisher domain: {current_url}"
                 )
                 logger.info(f"Cookies: {cookie_names}")
                 return True
+            elif has_many_cookies and not is_login_page:
+                # Not on a recognized publisher but lots of cookies - log but don't auto-detect
+                logger.debug(
+                    f"Many cookies ({len(cookies)}) but not on recognized publisher: {current_url}"
+                )
 
         logger.debug(f"No authentication cookies found. Present cookies: {cookie_names}")
         return False
