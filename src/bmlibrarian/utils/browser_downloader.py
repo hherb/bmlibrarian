@@ -541,19 +541,32 @@ class BrowserDownloader:
             List of (url, source_type) tuples where source_type describes
             where the URL was found (e.g., 'embedded', 'download_link', 'pdf_link')
         """
-        from urllib.parse import urljoin
+        from urllib.parse import urljoin, urlparse, urlunparse
 
         candidates: list[tuple[str, str]] = []
         seen_urls: set[str] = set()
 
+        def normalize_url(url: str) -> str:
+            """Normalize URL by removing anchor fragments.
+
+            URLs like example.com/article#main and example.com/article#ref-CR1
+            are effectively the same page, so we deduplicate by stripping fragments.
+            """
+            parsed = urlparse(url)
+            # Remove fragment (anchor) from URL
+            return urlunparse(parsed._replace(fragment=''))
+
         def add_candidate(url: str, source: str) -> None:
-            """Add a candidate URL if not already seen."""
-            if url and url != 'about:blank' and url not in seen_urls:
+            """Add a candidate URL if not already seen (ignoring anchor fragments)."""
+            if url and url != 'about:blank':
                 # Make URL absolute
                 abs_url = urljoin(base_url, url)
-                if abs_url not in seen_urls:
-                    seen_urls.add(abs_url)
-                    candidates.append((abs_url, source))
+                # Normalize by stripping anchor fragment for deduplication
+                normalized = normalize_url(abs_url)
+                if normalized not in seen_urls:
+                    seen_urls.add(normalized)
+                    # Store the normalized URL (without fragment)
+                    candidates.append((normalized, source))
 
         # 1. Check embedded PDF viewers
         selectors = [
