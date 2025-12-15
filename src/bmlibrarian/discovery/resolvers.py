@@ -502,13 +502,19 @@ class PMCResolver(BaseResolver):
         return None
 
     def _pmid_to_pmcid(self, pmid: str) -> Optional[str]:
-        """Convert PMID to PMCID using ID converter."""
+        """Convert PMID to PMCID using ID converter.
+
+        Uses the NCBI elink API with linkname=pubmed_pmc to get the article's
+        own PMC entry. Without specifying linkname, the API may also return
+        pubmed_pmc_refs which are articles that CITE this one (wrong!).
+        """
         try:
             url = f"{self.EUTILS_BASE}/elink.fcgi"
             params = {
                 'dbfrom': 'pubmed',
                 'db': 'pmc',
                 'id': pmid,
+                'linkname': 'pubmed_pmc',  # CRITICAL: only get the article itself, not references!
                 'retmode': 'json'
             }
 
@@ -518,7 +524,9 @@ class PMCResolver(BaseResolver):
                 linksets = data.get('linksets', [])
                 for linkset in linksets:
                     for linksetdb in linkset.get('linksetdbs', []):
-                        if linksetdb.get('dbto') == 'pmc':
+                        # Double-check linkname to be safe
+                        linkname = linksetdb.get('linkname', '')
+                        if linksetdb.get('dbto') == 'pmc' and linkname == 'pubmed_pmc':
                             links = linksetdb.get('links', [])
                             if links:
                                 return f"PMC{links[0]}"

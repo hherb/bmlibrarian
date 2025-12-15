@@ -688,6 +688,11 @@ class DocumentInterrogationTab(QWidget):
 
     def _load_pdf_file(self, pdf_path: Path, title: str) -> None:
         """Load a PDF file into the viewer."""
+        # Ensure progress dialog is closed (defensive - should already be closed)
+        if self._pdf_progress_dialog:
+            self._pdf_progress_dialog.close()
+            self._pdf_progress_dialog = None
+
         if not pdf_path.exists():
             QMessageBox.warning(self, "File Not Found", f"PDF not found:\n{pdf_path}")
             return

@@ -270,14 +270,21 @@ class SettingsDialog(QDialog):
         api_key = self.api_key_input.text().strip()
         self.config.pubmed.api_key = api_key if api_key else None
 
-        # OpenAthens - validate URL before saving
+        # OpenAthens - validate URL or domain before saving
         openathens_url = self.openathens_url_input.text().strip()
         if self.openathens_enabled.isChecked() and openathens_url:
-            if not openathens_url.startswith("https://"):
+            # Allow either full HTTPS URL or domain-only input
+            is_domain_only = (
+                '.' in openathens_url and
+                not openathens_url.startswith('http') and
+                '/' not in openathens_url
+            )
+            if not is_domain_only and not openathens_url.startswith("https://"):
                 QMessageBox.warning(
                     self,
                     "Invalid URL",
-                    "OpenAthens institution URL must start with https:// for security."
+                    "OpenAthens URL must start with https:// for security,\n"
+                    "or enter just your institution's domain (e.g., jcu.edu.au)."
                 )
                 return
 

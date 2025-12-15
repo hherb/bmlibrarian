@@ -2,6 +2,14 @@
 
 Provides secure session management for OpenAthens institutional authentication
 using Playwright browser automation with proper security practices.
+
+Supports two OpenAthens URL formats:
+1. Redirector URLs (modern): go.openathens.net/redirector/{domain}?url={target}
+   - URL wrapping service that triggers auth when navigating to wrapped URLs
+   - No direct login page - auth happens via SSO when accessing wrapped resources
+
+2. Portal URLs (legacy): my.openathens.net or institution-specific login pages
+   - Direct login portal for manual authentication
 """
 
 import json
@@ -12,10 +20,18 @@ import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Constants for OpenAthens URL detection
+REDIRECTOR_HOST = "go.openathens.net"
+REDIRECTOR_PATH_PREFIX = "/redirector/"
+
+# Test URL for triggering redirector authentication
+# Using PubMed as it's widely accessible and triggers institutional auth
+REDIRECTOR_TEST_TARGET = "https://pubmed.ncbi.nlm.nih.gov/"
 
 
 class OpenAthensConfig:
@@ -78,8 +94,10 @@ class OpenAthensConfig:
     def _validate_url(self, url: str) -> str:
         """Validate and normalize institution URL.
 
+        Handles both full URLs and domain-only input (auto-converts to redirector URL).
+
         Args:
-            url: URL to validate
+            url: URL or domain to validate
 
         Returns:
             Normalized URL
@@ -89,6 +107,20 @@ class OpenAthensConfig:
         """
         if not url:
             raise ValueError("Institution URL cannot be empty")
+
+        # Check if it's a domain-only input (e.g., "jcu.edu.au")
+        # Domain has dots, no slashes (except possibly in protocol)
+        url_stripped = url.strip()
+        is_domain_only = (
+            '.' in url_stripped and
+            not url_stripped.startswith('http') and
+            '/' not in url_stripped
+        )
+
+        if is_domain_only:
+            # Convert domain to redirector URL
+            url = f"https://{REDIRECTOR_HOST}{REDIRECTOR_PATH_PREFIX}{url_stripped}"
+            logger.info(f"Converted domain '{url_stripped}' to redirector URL: {url}")
 
         # Parse URL
         parsed = urlparse(url)
@@ -103,6 +135,35 @@ class OpenAthensConfig:
 
         # Normalize by removing trailing slash
         return url.rstrip('/')
+
+    def is_redirector_url(self) -> bool:
+        """Check if the configured URL is an OpenAthens Redirector URL.
+
+        Redirector URLs have the format: go.openathens.net/redirector/{domain}
+
+        Returns:
+            True if redirector URL, False if portal/login URL
+        """
+        parsed = urlparse(self.institution_url)
+        return (
+            parsed.netloc == REDIRECTOR_HOST and
+            parsed.path.startswith(REDIRECTOR_PATH_PREFIX)
+        )
+
+    def get_redirector_auth_url(self, target_url: str = REDIRECTOR_TEST_TARGET) -> str:
+        """Construct a redirector URL with a target for triggering authentication.
+
+        Args:
+            target_url: Target URL to wrap (default: PubMed)
+
+        Returns:
+            Full redirector URL that will trigger institutional SSO
+        """
+        if not self.is_redirector_url():
+            raise ValueError("Not a redirector URL - use institution_url directly")
+
+        encoded_target = quote(target_url, safe='')
+        return f"{self.institution_url}?url={encoded_target}"
 
 
 class OpenAthensAuth:
@@ -175,12 +236,32 @@ class OpenAthensAuth:
     def _check_network_connectivity(self) -> bool:
         """Check if institutional URL is reachable.
 
+        For redirector URLs, we skip the check because:
+        - The redirector host returns 404 on root path
+        - The redirector path returns 400 without a url= parameter
+        - The redirector is designed to redirect, not respond directly
+
         Returns:
-            True if reachable, False otherwise
+            True if reachable (or redirector URL), False otherwise
         """
         try:
+            if self.config.is_redirector_url():
+                # For redirector URLs, skip the connectivity check
+                # The redirector service doesn't have a testable endpoint
+                # (returns 400 without url= param, 404 on root)
+                # We'll find out if it works when we actually navigate
+                logger.debug(
+                    f"Skipping connectivity check for redirector URL: "
+                    f"{self.config.institution_url}"
+                )
+                return True
+
+            # For traditional login portals, do the connectivity check
+            check_url = self.config.institution_url
+            logger.debug(f"Checking portal connectivity: {check_url}")
+
             response = requests.head(
-                self.config.institution_url,
+                check_url,
                 timeout=10,
                 allow_redirects=True
             )
@@ -294,6 +375,10 @@ class OpenAthensAuth:
                 logger.info(f"OpenAthens authentication complete - redirected to dashboard: {current_url}")
                 return True
 
+            # Check if we've left the OpenAthens redirector and SSO flow entirely
+            # and reached a publisher page with authenticated content
+            left_openathens = REDIRECTOR_HOST not in current_url_lower
+
             # SSO login pages typically have these patterns in the URL
             sso_login_indicators = [
                 '/login', '/signin', '/auth', '/sso', '/saml',
@@ -341,7 +426,16 @@ class OpenAthensAuth:
                 )
                 logger.info(f"Cookies: {cookie_names}")
                 return True
-            elif has_many_cookies and not is_login_page:
+
+            # For redirector flow: if we've left OpenAthens/SSO and reached publisher
+            # with some cookies (authentication may have completed)
+            if left_openathens and on_publisher and len(cookies) >= 4 and not is_login_page:
+                logger.info(
+                    f"Redirector auth complete: reached publisher with {len(cookies)} cookies: {current_url}"
+                )
+                return True
+
+            if has_many_cookies and not is_login_page:
                 # Not on a recognized publisher but lots of cookies - log but don't auto-detect
                 logger.debug(
                     f"Many cookies ({len(cookies)}) but not on recognized publisher: {current_url}"
@@ -474,11 +568,22 @@ class OpenAthensAuth:
 
             page = await context.new_page()
 
-            # Navigate to institution login
-            logger.info(f"Navigating to: {self.config.institution_url}")
+            # Determine the URL to navigate to
+            if self.config.is_redirector_url():
+                # For redirector URLs, we need to wrap a target URL to trigger SSO
+                # Use a paywalled publisher URL that will require authentication
+                test_target = "https://link.springer.com/article/10.1007/s00381-016-3068-4"
+                nav_url = self.config.get_redirector_auth_url(test_target)
+                logger.info(f"Using OpenAthens Redirector flow")
+                logger.info(f"Navigating to wrapped URL: {nav_url}")
+            else:
+                # For portal URLs, navigate directly
+                nav_url = self.config.institution_url
+                logger.info(f"Navigating to portal URL: {nav_url}")
+
             try:
                 await page.goto(
-                    self.config.institution_url,
+                    nav_url,
                     wait_until='domcontentloaded',
                     timeout=self.config.page_timeout
                 )
