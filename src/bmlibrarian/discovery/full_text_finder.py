@@ -241,6 +241,11 @@ class FullTextFinder:
                 duration_ms=(time.time() - start_time) * 1000
             )
 
+        # Log all discovered sources for debugging
+        logger.info(f"Discovered {len(discovery.sources)} PDF source(s):")
+        for i, src in enumerate(discovery.sources, 1):
+            logger.info(f"  {i}. {src.source_type.value}: {src.url[:80]}...")
+
         # Try downloading from each source in priority order via HTTP
         if progress_callback:
             progress_callback("download", "starting")
