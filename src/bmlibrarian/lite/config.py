@@ -65,6 +65,13 @@ class PubMedConfig:
 
 
 @dataclass
+class DiscoveryConfig:
+    """PDF discovery and download configuration."""
+
+    unpaywall_email: str = ""  # Email for Unpaywall API (enables additional PDF sources)
+
+
+@dataclass
 class StorageConfig:
     """Storage configuration with derived paths."""
 
@@ -141,6 +148,7 @@ class LiteConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     pubmed: PubMedConfig = field(default_factory=PubMedConfig)
+    discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
 
@@ -214,6 +222,12 @@ class LiteConfig:
                 api_key=pubmed_data.get("api_key"),
             )
 
+        if "discovery" in data:
+            discovery_data = data["discovery"]
+            config.discovery = DiscoveryConfig(
+                unpaywall_email=discovery_data.get("unpaywall_email", ""),
+            )
+
         if "storage" in data:
             storage_data = data["storage"]
             data_dir = storage_data.get("data_dir", str(DEFAULT_DATA_DIR))
@@ -255,6 +269,9 @@ class LiteConfig:
             "pubmed": {
                 "email": self.pubmed.email,
                 "api_key": self.pubmed.api_key,
+            },
+            "discovery": {
+                "unpaywall_email": self.discovery.unpaywall_email,
             },
             "storage": {
                 "data_dir": str(self.storage.data_dir),

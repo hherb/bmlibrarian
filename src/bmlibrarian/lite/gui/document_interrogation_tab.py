@@ -500,7 +500,7 @@ class DocumentInterrogationTab(QWidget):
         self._pdf_progress_dialog.canceled.connect(lambda: (self._cancel_pdf_discovery(), on_error and on_error("Cancelled")))
         self._pdf_progress_dialog.show()
 
-        self._pdf_worker = PDFDiscoveryWorker(doc_dict, get_pdf_base_dir(), getattr(self.config, 'unpaywall_email', None), self)
+        self._pdf_worker = PDFDiscoveryWorker(doc_dict, get_pdf_base_dir(), self.config.discovery.unpaywall_email or None, self)
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(lambda p: self._on_pdf_ready(p, on_success))
         self._pdf_worker.verification_warning.connect(self._on_pdf_warning)
