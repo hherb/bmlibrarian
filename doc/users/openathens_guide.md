@@ -148,6 +148,24 @@ if not url_result.valid:
 
 ### Finding Your Institution URL
 
+There are two types of OpenAthens URLs you might use:
+
+#### Option 1: OpenAthens Redirector URL (Recommended)
+
+**Format**: `https://go.openathens.net/redirector/{your-domain}`
+
+**Example**: `https://go.openathens.net/redirector/jcu.edu.au`
+
+This is the simplest option - just use your institution's domain. BMLibrarian will automatically construct the full redirector URL if you enter just the domain.
+
+**How to find your domain**:
+- Use your institution's email domain (e.g., `jcu.edu.au` from `user@jcu.edu.au`)
+- Or check your library's proxy documentation
+
+#### Option 2: Direct OpenAthens Portal URL
+
+**Format**: `https://my.openathens.net/...` or institution-specific URL
+
 1. **Via OpenAthens Search**:
    - Go to https://www.openathens.net/
    - Search for your institution
@@ -161,6 +179,23 @@ if not url_result.valid:
 
 3. **Contact Your Library**:
    - Your institutional library can provide the correct OpenAthens URL
+
+### Domain-Only Configuration
+
+BMLibrarian supports entering just your institution's domain for convenience:
+
+```python
+# All of these work - BMLibrarian auto-converts to full URL
+config = OpenAthensConfig(institution_url='jcu.edu.au')
+config = OpenAthensConfig(institution_url='https://go.openathens.net/redirector/jcu.edu.au')
+
+# Both become: https://go.openathens.net/redirector/jcu.edu.au
+```
+
+**In the GUI Settings**:
+1. Go to Settings → OpenAthens
+2. Enter just your domain (e.g., `jcu.edu.au`)
+3. The system automatically converts it to the full redirector URL
 
 ## Interactive Login Process
 
@@ -655,8 +690,141 @@ When reporting issues, include:
 - Your institutional credentials
 - Any authentication tokens
 
+## Complete PDF Discovery Workflow
+
+BMLibrarian's PDF discovery system works in multiple stages, with OpenAthens providing access to paywalled content when open access isn't available.
+
+### How PDF Discovery Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         PDF Discovery Flow                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. PMC Resolver ──────────────────────────────────────────────────┐│
+│     └─ Check PubMed Central for free OA PDF                        ││
+│        ├─ PMCID lookup via NCBI elink API                          ││
+│        └─ CRITICAL: Uses linkname=pubmed_pmc (not pubmed_pmc_refs) ││
+│                                                                      │
+│  2. Unpaywall Resolver ─────────────────────────────────────────────│
+│     └─ Check Unpaywall for OA versions (preprints, green OA)       ││
+│                                                                      │
+│  3. DOI Resolver ───────────────────────────────────────────────────│
+│     └─ Resolve DOI to publisher site                               ││
+│        └─ Find direct PDF link (often paywalled)                   ││
+│                                                                      │
+│  4. OpenAthens Integration (if configured) ─────────────────────────│
+│     └─ If paywalled: wrap URL through OpenAthens redirector        ││
+│        └─ Redirector authenticates via institution SSO             ││
+│           └─ Publisher receives authenticated request              ││
+│              └─ PDF downloaded successfully                        ││
+│                                                                      │
+│  5. PDF Verification ───────────────────────────────────────────────│
+│     └─ Extract DOI from downloaded PDF                             ││
+│        └─ Compare with expected DOI                                ││
+│           └─ Warn if mismatch (wrong PDF downloaded)               ││
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Example: Downloading a Paywalled Article
+
+```python
+from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
+from bmlibrarian.utils.openathens_auth import OpenAthensConfig, OpenAthensAuth
+import asyncio
+
+# 1. Configure OpenAthens with your institution
+config = OpenAthensConfig(institution_url='jcu.edu.au')  # Just the domain works
+auth = OpenAthensAuth(config)
+
+# 2. Authenticate if needed (opens browser for SSO login)
+if not auth.is_authenticated():
+    success = asyncio.run(auth.login_interactive())
+    if not success:
+        print("Authentication failed")
+        exit(1)
+    print("Authenticated successfully!")
+
+# 3. Create finder with OpenAthens and Unpaywall
+finder = FullTextFinder(
+    unpaywall_email='your@email.com',
+    openathens_proxy_url='https://go.openathens.net/redirector/jcu.edu.au',
+    openathens_auth=auth
+)
+
+# 4. Discover and download
+identifiers = DocumentIdentifiers(
+    doi='10.1007/s00247-025-06301-7',
+    pmid='40526116',
+    title='Example Article Title'
+)
+
+result = finder.download_for_document(
+    document=identifiers.__dict__,
+    output_dir=Path('~/pdfs').expanduser(),
+    verify_content=True  # Verify we got the right PDF
+)
+
+if result.success:
+    print(f"Downloaded: {result.file_path}")
+    print(f"Source: {result.source.source_type.value}")
+    if result.verified is False:
+        print(f"WARNING: Verification failed - {result.verification_warnings}")
+else:
+    print(f"Failed: {result.error_message}")
+```
+
+### What Happens Behind the Scenes
+
+1. **PMC Check**: System queries NCBI elink API with `linkname=pubmed_pmc` to check if article is in PubMed Central
+2. **Unpaywall Check**: Queries Unpaywall API for open access versions
+3. **DOI Resolution**: If no OA found, resolves DOI to get publisher URL (e.g., `https://link.springer.com/article/...`)
+4. **OpenAthens Wrapping**: System wraps publisher URL through redirector:
+   ```
+   Original: https://link.springer.com/article/10.1007/s00247-025-06301-7
+   Wrapped:  https://go.openathens.net/redirector/jcu.edu.au?url=https%3A%2F%2Flink.springer.com%2Farticle%2F...
+   ```
+5. **Authentication Flow**:
+   - Request goes to OpenAthens redirector
+   - Redirector recognizes institution from domain
+   - If not authenticated, redirects to institution SSO
+   - After auth, redirects to publisher with session cookies
+   - Publisher grants access based on institutional subscription
+6. **PDF Verification**: Downloaded PDF is verified by extracting its DOI and comparing to expected DOI
+
+### Troubleshooting PDF Discovery
+
+#### Problem: "PDF verification FAILED - wrong document may have been downloaded"
+
+**Cause**: The downloaded PDF has a different DOI than expected. This typically happens when:
+- Publisher returned a different article (rare)
+- Paywall redirected to a preview/sample article
+- PMC resolver returned a citing article instead of the requested article (now fixed)
+
+**Solution**:
+- Check the verification warnings for details
+- The file is kept (not deleted) for manual inspection
+- Try re-downloading with different identifiers
+
+#### Problem: "No PDF sources found" for paywalled content
+
+**Cause**: Article is paywalled and OpenAthens isn't configured.
+
+**Solution**:
+1. Configure OpenAthens with your institution
+2. Authenticate via `login_interactive()`
+3. Re-attempt download
+
+#### Problem: OpenAthens authentication fails immediately
+
+**Cause**: Using a Redirector URL that doesn't respond to connectivity checks.
+
+**Solution**: This was fixed in BMLibrarian - Redirector URLs now skip connectivity checks since they only work with a target URL parameter.
+
 ## See Also
 
 - [PDF Import Guide](pdf_import_guide.md) - Importing PDFs into BMLibrarian
+- [Full-Text Discovery Guide](full_text_discovery_guide.md) - Complete discovery system documentation
 - [Browser Downloader](../BROWSER_DOWNLOADER.md) - Browser-based PDF downloads
 - [PDF Manager](../developers/pdf_manager.md) - PDF management system

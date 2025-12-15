@@ -478,7 +478,8 @@ class FullTextFinder:
                     timeout=timeout,
                     expected_doi=expected_doi,
                     cookies=browser_cookies,
-                    user_agent=browser_user_agent
+                    user_agent=browser_user_agent,
+                    retry_cloudflare_visible=True  # Auto-retry with visible browser for Cloudflare
                 )
 
                 if result.get('status') == 'success':

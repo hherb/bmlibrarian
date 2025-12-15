@@ -41,6 +41,8 @@ dependencies = [
     "fastembed>=0.7.3",
     # Sentence boundary detection
     "pysbd>=0.3.4",
+    "playwright-stealth>=2.0.0",
+    "undetected-chromedriver>=3.5.5",
 ]
 
 [project.optional-dependencies]

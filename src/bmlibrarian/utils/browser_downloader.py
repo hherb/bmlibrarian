@@ -3,6 +3,15 @@
 This module uses Playwright to download PDFs from URLs that have anti-bot protections
 like Cloudflare verification, CAPTCHAs, or other browser checks.
 
+It uses playwright-stealth to avoid detection by anti-bot systems like Cloudflare.
+The stealth plugin patches various browser properties that automation detection systems
+check for, including:
+- navigator.webdriver
+- Chrome runtime properties
+- Plugin and language settings
+- WebGL vendor/renderer strings
+- And many more fingerprinting vectors
+
 It also supports institutional access via OpenAthens/SAML federation:
 1. Navigate to publisher page with OpenAthens cookies
 2. Find and click institutional login link
@@ -19,6 +28,21 @@ from typing import Optional, Dict, Any, List
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Try to import playwright-stealth for anti-detection
+try:
+    from playwright_stealth import Stealth
+    HAS_STEALTH = True
+    # Create a stealth instance with all evasions enabled
+    STEALTH_INSTANCE = Stealth()
+    logger.debug("playwright-stealth available for anti-detection")
+except ImportError:
+    HAS_STEALTH = False
+    STEALTH_INSTANCE = None
+    logger.warning(
+        "playwright-stealth not installed. Cloudflare-protected sites may not work. "
+        "Install with: uv add playwright-stealth"
+    )
 
 # Patterns for finding institutional access links on publisher pages
 INSTITUTIONAL_ACCESS_PATTERNS = [
@@ -89,18 +113,25 @@ class BrowserDownloader:
         self.playwright = await async_playwright().start()
 
         # Launch Chromium with stealth settings
+        # Additional args for better anti-detection
+        launch_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            # Additional stealth args
+            '--disable-infobars',
+            '--window-size=1920,1080',
+            '--start-maximized',
+        ]
+
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
-            ]
+            args=launch_args
         )
-        logger.info(f"Browser started (headless={self.headless})")
+        logger.info(f"Browser started (headless={self.headless}, stealth={HAS_STEALTH})")
 
     async def stop(self):
         """Stop the browser instance."""
@@ -178,37 +209,43 @@ class BrowserDownloader:
                         await context.add_cookies([cookie])
                 logger.debug(f"Injected cookies for domains: {set(c.get('domain', 'unknown') for c in cookies)}")
 
-            # Add stealth scripts to context
-            await context.add_init_script("""
-                // Override navigator.webdriver
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
+            # Add fallback stealth scripts if playwright-stealth not available
+            if not HAS_STEALTH:
+                await context.add_init_script("""
+                    // Override navigator.webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
 
-                // Override plugins and mimeTypes
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
-                });
+                    // Override plugins and mimeTypes
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
 
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
-                });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en']
+                    });
 
-                // Override permissions
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
+                    // Override permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
 
-                // Add chrome object
-                window.chrome = {
-                    runtime: {}
-                };
-            """)
+                    // Add chrome object
+                    window.chrome = {
+                        runtime: {}
+                    };
+                """)
 
             page = await context.new_page()
+
+            # Apply playwright-stealth if available (comprehensive anti-detection)
+            if HAS_STEALTH and STEALTH_INSTANCE:
+                await STEALTH_INSTANCE.apply_stealth_async(page)
+                logger.debug("Applied playwright-stealth to page")
 
             # Set download behavior
             save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,9 +314,30 @@ class BrowserDownloader:
                 pass  # Continue if timeout
 
             # Wait for Cloudflare verification if needed
+            cloudflare_passed = True
             if wait_for_cloudflare:
                 logger.info("Checking for Cloudflare verification...")
-                await self._wait_for_cloudflare(page, max_wait)
+
+                # Use longer timeout for visible browsers (user needs time to click)
+                effective_wait = max_wait if self.headless else max(max_wait, 120)
+
+                if not self.headless:
+                    logger.info(
+                        "If you see a Cloudflare 'I am human' checkbox, please click it. "
+                        f"Waiting up to {effective_wait} seconds..."
+                    )
+
+                cloudflare_passed = await self._wait_for_cloudflare(page, effective_wait)
+
+                # If Cloudflare challenge failed and we're headless, return special error
+                # so caller can retry with non-headless browser
+                if not cloudflare_passed and self.headless:
+                    return {
+                        'status': 'failed',
+                        'error': 'Cloudflare challenge requires user interaction',
+                        'cloudflare_blocked': True,
+                        'doi_rejected_count': 0
+                    }
 
             # Track if we should try institutional access later
             tried_institutional_access = False
@@ -549,42 +607,141 @@ class BrowserDownloader:
 
         return None
 
-    async def _wait_for_cloudflare(self, page, max_wait: int):
+    async def _wait_for_cloudflare(self, page, max_wait: int) -> bool:
         """Wait for Cloudflare verification to complete.
 
         Args:
             page: Playwright page object
             max_wait: Maximum seconds to wait
+
+        Returns:
+            True if Cloudflare challenge was passed (or not present),
+            False if still stuck on Cloudflare after max_wait
         """
         start_time = time.time()
+        checkbox_click_attempted = False
 
         while time.time() - start_time < max_wait:
             # Check for common Cloudflare indicators
-            title = await page.title()
-            content = await page.content()
+            try:
+                title = await page.title()
+                content = await page.content()
+            except Exception as e:
+                # Page might have navigated during check
+                logger.debug(f"Error checking page during Cloudflare wait: {e}")
+                await asyncio.sleep(1)
+                continue
 
-            cloudflare_indicators = [
+            # Specific Cloudflare challenge indicators (in page title or challenge elements)
+            cloudflare_challenge_indicators = [
                 'Just a moment',
                 'Checking your browser',
-                'cloudflare',
                 'cf-challenge',
-                'cf_chl_'
+                'cf_chl_',
+                'challenge-platform',
+                'turnstile',  # Cloudflare's captcha
             ]
 
+            # Check specifically for challenge page (not just any page mentioning cloudflare)
+            title_lower = title.lower()
             has_cloudflare = any(
-                indicator.lower() in title.lower() or
+                indicator.lower() in title_lower
+                for indicator in cloudflare_challenge_indicators[:2]  # Title check
+            ) or any(
                 indicator.lower() in content.lower()
-                for indicator in cloudflare_indicators
+                for indicator in cloudflare_challenge_indicators[2:]  # Content check
             )
 
             if not has_cloudflare:
                 logger.info("Cloudflare verification completed (or not present)")
-                return
+                return True
 
-            logger.info(f"Waiting for Cloudflare verification... ({int(time.time() - start_time)}s)")
+            # Try to click the Turnstile checkbox if we haven't already
+            # This works in visible mode when user is watching
+            if not checkbox_click_attempted and not self.headless:
+                checkbox_click_attempted = True
+                await self._try_click_turnstile_checkbox(page)
+
+            elapsed = int(time.time() - start_time)
+            logger.info(f"Waiting for Cloudflare verification... ({elapsed}s)")
             await asyncio.sleep(1)
 
         logger.warning(f"Cloudflare verification timeout after {max_wait}s")
+        return False
+
+    async def _try_click_turnstile_checkbox(self, page) -> bool:
+        """Try to click the Cloudflare Turnstile checkbox.
+
+        The Turnstile widget is embedded in an iframe. We try to locate and click
+        the checkbox to help pass the verification.
+
+        Args:
+            page: Playwright page object
+
+        Returns:
+            True if checkbox was clicked, False otherwise
+        """
+        try:
+            # Turnstile is in an iframe with specific characteristics
+            # Look for the Turnstile iframe
+            frames = page.frames
+            for frame in frames:
+                frame_url = frame.url.lower()
+                if 'challenges.cloudflare.com' in frame_url or 'turnstile' in frame_url:
+                    logger.info("Found Cloudflare Turnstile iframe, attempting to interact...")
+
+                    # Try to click the checkbox within the iframe
+                    try:
+                        # The checkbox is typically an input element or a div that acts as checkbox
+                        checkbox_selectors = [
+                            'input[type="checkbox"]',
+                            '#cf-turnstile-response',
+                            '[role="checkbox"]',
+                            '.cf-turnstile',
+                            'label',  # Sometimes the label is clickable
+                        ]
+
+                        for selector in checkbox_selectors:
+                            try:
+                                checkbox = await frame.query_selector(selector)
+                                if checkbox:
+                                    await checkbox.click()
+                                    logger.info(f"Clicked Turnstile element: {selector}")
+                                    await asyncio.sleep(2)  # Wait for challenge to process
+                                    return True
+                            except Exception as click_error:
+                                logger.debug(f"Could not click {selector}: {click_error}")
+                                continue
+                    except Exception as iframe_error:
+                        logger.debug(f"Error interacting with Turnstile iframe: {iframe_error}")
+
+            # Also try clicking on the page directly (some implementations)
+            try:
+                # Try to find and click any verify button on the main page
+                verify_selectors = [
+                    'button:has-text("Verify")',
+                    'input[type="checkbox"]',
+                    '[data-testid="challenge"]',
+                ]
+                for selector in verify_selectors:
+                    try:
+                        element = await page.query_selector(selector)
+                        if element:
+                            await element.click()
+                            logger.info(f"Clicked verify element on main page: {selector}")
+                            await asyncio.sleep(2)
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            logger.debug("Could not find Turnstile checkbox to click")
+            return False
+
+        except Exception as e:
+            logger.debug(f"Error trying to click Turnstile checkbox: {e}")
+            return False
 
     async def _try_institutional_access(
         self,
@@ -1385,6 +1542,225 @@ class BrowserDownloader:
             return None, 0
 
 
+async def _download_with_persistent_context(
+    url: str,
+    save_path: Path,
+    headless: bool,
+    timeout: int,
+    expected_doi: Optional[str],
+    cookies: Optional[list],
+    user_agent: Optional[str],
+    user_data_dir: Optional[str]
+) -> Dict[str, Any]:
+    """Download PDF using a persistent browser context.
+
+    Persistent contexts preserve cookies, localStorage, and other state
+    between sessions. This is useful for:
+    - Cloudflare clearance cookies (cf_clearance)
+    - Sites that remember "trusted" browsers
+    - Avoiding repeated CAPTCHA verification
+
+    Args:
+        url: URL to download from
+        save_path: Path to save the PDF
+        headless: Run browser in headless mode
+        timeout: Timeout in milliseconds
+        expected_doi: DOI to validate against
+        cookies: Additional cookies to inject
+        user_agent: Custom user agent
+        user_data_dir: Directory for browser data
+
+    Returns:
+        Dictionary with download result
+    """
+    from playwright.async_api import async_playwright
+    import os
+
+    # Default user data directory
+    if not user_data_dir:
+        user_data_dir = os.path.expanduser("~/.bmlibrarian/browser_data")
+
+    # Ensure directory exists
+    os.makedirs(user_data_dir, exist_ok=True)
+
+    logger.info(f"Using persistent browser context at: {user_data_dir}")
+
+    playwright = None
+    context = None
+
+    try:
+        playwright = await async_playwright().start()
+
+        # Launch args for stealth
+        launch_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-infobars',
+            '--window-size=1920,1080',
+        ]
+
+        # Use persistent context (launch_persistent_context)
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir,
+            headless=headless,
+            args=launch_args,
+            viewport={'width': 1920, 'height': 1080},
+            user_agent=user_agent or (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/131.0.0.0 Safari/537.36'
+            ),
+            locale='en-US',
+            timezone_id='America/New_York',
+            accept_downloads=True
+        )
+
+        # Inject additional cookies if provided
+        if cookies:
+            logger.info(f"Injecting {len(cookies)} additional cookies")
+            for cookie in cookies:
+                if 'name' in cookie and 'value' in cookie:
+                    await context.add_cookies([cookie])
+
+        # Get the page (persistent context has one page by default)
+        pages = context.pages
+        if pages:
+            page = pages[0]
+        else:
+            page = await context.new_page()
+
+        # Apply stealth if available
+        if HAS_STEALTH and STEALTH_INSTANCE:
+            await STEALTH_INSTANCE.apply_stealth_async(page)
+            logger.debug("Applied playwright-stealth to persistent context page")
+
+        # Navigate to URL
+        logger.info(f"Navigating to: {url}")
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        response = await page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+
+        if not response:
+            return {
+                'status': 'failed',
+                'error': 'No response received from URL'
+            }
+
+        # Check if we got a PDF directly
+        content_type = response.headers.get('content-type', '').lower()
+        if 'application/pdf' in content_type:
+            logger.info("PDF received directly, downloading...")
+            pdf_content = await response.body()
+
+            if pdf_content and pdf_content[:4] == b'%PDF':
+                save_path.write_bytes(pdf_content)
+                return {
+                    'status': 'success',
+                    'path': str(save_path),
+                    'size': len(pdf_content)
+                }
+
+        # Wait for page to load
+        try:
+            await page.wait_for_load_state('networkidle', timeout=10000)
+        except Exception:
+            pass
+
+        # Check for Cloudflare
+        title = await page.title()
+        content = await page.content()
+
+        cloudflare_indicators = ['Just a moment', 'Checking your browser', 'cf-challenge', 'turnstile']
+        has_cloudflare = any(ind.lower() in title.lower() or ind.lower() in content.lower()
+                           for ind in cloudflare_indicators)
+
+        if has_cloudflare:
+            # Wait for user to complete verification (persistent context remembers it)
+            logger.info("Cloudflare detected - waiting for verification (up to 120s)...")
+            if not headless:
+                logger.info("Please complete the Cloudflare verification in the browser window.")
+
+            start_time = time.time()
+            max_wait = 120
+
+            while time.time() - start_time < max_wait:
+                try:
+                    title = await page.title()
+                    content = await page.content()
+                except Exception:
+                    await asyncio.sleep(1)
+                    continue
+
+                has_cloudflare = any(ind.lower() in title.lower() or ind.lower() in content.lower()
+                                   for ind in cloudflare_indicators)
+                if not has_cloudflare:
+                    logger.info("Cloudflare verification completed!")
+                    break
+
+                await asyncio.sleep(1)
+
+            if has_cloudflare:
+                return {
+                    'status': 'failed',
+                    'error': 'Cloudflare verification timeout',
+                    'cloudflare_blocked': True
+                }
+
+        # Try to find and download PDF (simplified version)
+        # Look for PDF links or embedded viewers
+        pdf_links = await page.evaluate("""
+            () => {
+                const links = Array.from(document.querySelectorAll('a[href]'));
+                return links
+                    .map(a => a.href)
+                    .filter(href => href.toLowerCase().includes('.pdf') ||
+                                   href.toLowerCase().includes('download'));
+            }
+        """)
+
+        if pdf_links:
+            # Try the first PDF link
+            for pdf_url in pdf_links[:3]:
+                if expected_doi and expected_doi.lower() not in pdf_url.lower():
+                    continue
+
+                try:
+                    pdf_response = await page.goto(pdf_url, timeout=timeout)
+                    if pdf_response:
+                        ct = pdf_response.headers.get('content-type', '').lower()
+                        if 'application/pdf' in ct:
+                            pdf_content = await pdf_response.body()
+                            if pdf_content and pdf_content[:4] == b'%PDF':
+                                save_path.write_bytes(pdf_content)
+                                return {
+                                    'status': 'success',
+                                    'path': str(save_path),
+                                    'size': len(pdf_content)
+                                }
+                except Exception as e:
+                    logger.debug(f"Error downloading from {pdf_url}: {e}")
+
+        return {
+            'status': 'failed',
+            'error': 'Could not find or download PDF'
+        }
+
+    except Exception as e:
+        logger.error(f"Persistent context download failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+    finally:
+        if context:
+            await context.close()
+        if playwright:
+            await playwright.stop()
+
+
 def download_pdf_with_browser(
     url: str,
     save_path: Path,
@@ -1392,7 +1768,10 @@ def download_pdf_with_browser(
     timeout: int = 60000,
     expected_doi: Optional[str] = None,
     cookies: Optional[list] = None,
-    user_agent: Optional[str] = None
+    user_agent: Optional[str] = None,
+    retry_cloudflare_visible: bool = True,
+    use_persistent_context: bool = False,
+    user_data_dir: Optional[str] = None
 ) -> Dict[str, Any]:
     """Synchronous wrapper for browser-based PDF download.
 
@@ -1405,12 +1784,24 @@ def download_pdf_with_browser(
                      to prevent downloading wrong papers from related article sections
         cookies: Optional list of cookie dicts to inject (e.g., from OpenAthens session)
         user_agent: Optional custom user agent string
+        retry_cloudflare_visible: If True and Cloudflare blocks headless browser,
+                                 automatically retry with visible browser for user to
+                                 complete the verification (default: True)
+        use_persistent_context: If True, use a persistent browser context that preserves
+                               Cloudflare clearance cookies across sessions. This helps
+                               bypass Cloudflare for sites you've manually verified before.
+        user_data_dir: Directory for persistent browser data. If not specified,
+                      defaults to ~/.bmlibrarian/browser_data/
 
     Returns:
         Dictionary with download result
     """
-    async def _download():
-        async with BrowserDownloader(headless=headless, timeout=timeout) as downloader:
+    async def _download(use_headless: bool, persistent: bool = False):
+        if persistent:
+            return await _download_with_persistent_context(
+                url, save_path, use_headless, timeout, expected_doi, cookies, user_agent, user_data_dir
+            )
+        async with BrowserDownloader(headless=use_headless, timeout=timeout) as downloader:
             return await downloader.download_pdf(
                 url, save_path,
                 expected_doi=expected_doi,
@@ -1418,7 +1809,584 @@ def download_pdf_with_browser(
                 user_agent=user_agent
             )
 
-    return asyncio.run(_download())
+    # First attempt with specified headless mode
+    # If persistent context requested, use it directly
+    if use_persistent_context:
+        result = asyncio.run(_download(headless, persistent=True))
+        return result
+
+    result = asyncio.run(_download(headless))
+
+    # If Cloudflare blocked and we should retry with better methods
+    if (result.get('cloudflare_blocked') and
+        headless and
+        retry_cloudflare_visible):
+
+        logger.info(
+            "\n============================================================\n"
+            "CLOUDFLARE PROTECTION DETECTED\n"
+            "============================================================\n"
+            "This site uses Cloudflare anti-bot protection.\n"
+            "Trying undetected-chromedriver (better Cloudflare bypass)...\n"
+            "============================================================"
+        )
+
+        # Try with undetected-chromedriver first (best Cloudflare bypass)
+        uc_result = download_pdf_with_undetected_chrome(
+            url=url,
+            save_path=save_path,
+            headless=False,  # Non-headless for best results
+            timeout=120,
+            expected_doi=expected_doi,
+            cookies=cookies
+        )
+
+        if uc_result.get('status') == 'success':
+            return uc_result
+
+        # If undetected-chromedriver failed but got past Cloudflare,
+        # the site is likely paywalled - not a Cloudflare issue
+        logger.info(
+            "undetected-chromedriver got past Cloudflare but couldn't download PDF. "
+            "This site may require institutional access (OpenAthens) or login."
+        )
+
+        # Return the original result with enhanced error message
+        result['error'] = (
+            "Cloudflare was bypassed but PDF download failed. "
+            "This site likely requires institutional access (OpenAthens) "
+            "or a subscription login. Configure OpenAthens in settings if "
+            "your institution has access."
+        )
+
+    return result
+
+
+def download_pdf_with_undetected_chrome(
+    url: str,
+    save_path: Path,
+    headless: bool = False,
+    timeout: int = 120,
+    expected_doi: Optional[str] = None,
+    cookies: Optional[list] = None,
+    openathens_url: Optional[str] = None,
+    ezproxy_url: Optional[str] = None
+) -> Dict[str, Any]:
+    """Download PDF using undetected-chromedriver (best Cloudflare bypass).
+
+    This uses undetected-chromedriver which patches Chrome/Chromium to evade
+    Cloudflare and other bot detection systems. It's more effective than
+    Playwright for sites with aggressive anti-bot protection.
+
+    Also supports clicking through institutional login flows (like LWW OneID)
+    when OpenAthens or EZproxy is configured.
+
+    Args:
+        url: URL to download from
+        save_path: Path to save the PDF
+        headless: Run browser in headless mode (default: False for Cloudflare)
+        timeout: Timeout in seconds (default: 120)
+        expected_doi: If provided, validate PDF links contain this DOI
+        cookies: Optional list of cookie dicts to inject
+        openathens_url: OpenAthens redirector URL for institutional access
+                       (e.g., "https://go.openathens.net/redirector/jcu.edu.au")
+        ezproxy_url: EZproxy login URL for institutional access
+                    (e.g., "http://elibrary.jcu.edu.au/login?url=")
+
+    Returns:
+        Dictionary with download result
+    """
+    try:
+        import undetected_chromedriver as uc
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+    except ImportError:
+        return {
+            'status': 'failed',
+            'error': 'undetected-chromedriver not installed. Install with: uv add undetected-chromedriver'
+        }
+
+    import os
+    from urllib.parse import urlparse, quote
+
+    driver = None
+    try:
+        logger.info(f"Starting undetected Chrome (headless={headless})...")
+
+        # Configure Chrome options
+        options = uc.ChromeOptions()
+
+        if headless:
+            options.add_argument('--headless=new')
+
+        # Set download directory
+        download_dir = str(save_path.parent.absolute())
+        os.makedirs(download_dir, exist_ok=True)
+
+        prefs = {
+            'download.default_directory': download_dir,
+            'download.prompt_for_download': False,
+            'download.directory_upgrade': True,
+            'plugins.always_open_pdf_externally': True,  # Download PDFs instead of viewing
+        }
+        options.add_experimental_option('prefs', prefs)
+
+        # Launch undetected Chrome
+        driver = uc.Chrome(options=options, version_main=None)
+        driver.set_page_load_timeout(timeout)
+
+        # Inject cookies if provided
+        if cookies:
+            # First navigate to a page on the domain to set cookies
+            parsed = urlparse(url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            try:
+                driver.get(base_url)
+                time.sleep(1)
+                for cookie in cookies:
+                    if 'name' in cookie and 'value' in cookie:
+                        # Selenium requires specific cookie format
+                        selenium_cookie = {
+                            'name': cookie['name'],
+                            'value': cookie['value'],
+                            'domain': cookie.get('domain', parsed.netloc),
+                            'path': cookie.get('path', '/'),
+                        }
+                        try:
+                            driver.add_cookie(selenium_cookie)
+                        except Exception as ce:
+                            logger.debug(f"Could not add cookie {cookie['name']}: {ce}")
+                logger.info(f"Injected {len(cookies)} cookies")
+            except Exception as e:
+                logger.debug(f"Error setting cookies: {e}")
+
+        # Navigate to the target URL
+        logger.info(f"Navigating to: {url}")
+        driver.get(url)
+
+        # Wait for Cloudflare challenge to complete (if present)
+        # undetected-chromedriver usually bypasses it automatically
+        max_wait = 60
+        start_time = time.time()
+
+        while time.time() - start_time < max_wait:
+            title = driver.title.lower()
+            page_source = driver.page_source.lower()
+
+            cloudflare_indicators = [
+                'just a moment',
+                'checking your browser',
+                'cf-challenge',
+                'challenge-platform',
+            ]
+
+            has_cloudflare = any(ind in title or ind in page_source for ind in cloudflare_indicators)
+
+            if not has_cloudflare:
+                logger.info("Page loaded (no Cloudflare challenge or it was bypassed)")
+                break
+
+            logger.info(f"Waiting for Cloudflare... ({int(time.time() - start_time)}s)")
+            time.sleep(2)
+
+        # Give page time to fully render
+        time.sleep(3)
+
+        # Check if we need institutional access (look for login links)
+        # LWW uses login.journals.lww.com/OneID/Login.aspx with "Access through Ovid" text
+        institutional_login_needed = False
+        institutional_login_link = None
+
+        try:
+            links = driver.find_elements(By.TAG_NAME, 'a')
+
+            # First pass: look for high-confidence institutional patterns
+            # (specific URLs that indicate institutional access)
+            high_confidence_patterns = [
+                'login.journals.lww.com',  # LWW institutional login
+                'openathens',
+                'shibboleth',
+                '/wayf',  # Where Are You From (federation)
+                'idp.',   # Identity Provider
+            ]
+
+            # Second pass: look for links with institutional text
+            institutional_text_patterns = [
+                'institutional',
+                'ovid',  # LWW uses "Access through Ovid" for institutional
+                'institution',
+                'university',
+                'library access',
+            ]
+
+            candidate_links = []
+
+            for link in links:
+                href = link.get_attribute('href') or ''
+                text = (link.text or '').lower().strip()
+                href_lower = href.lower()
+
+                # Skip empty or javascript links
+                if not href or href.startswith('javascript:'):
+                    continue
+
+                # High confidence: URL matches institutional pattern
+                if any(pattern in href_lower for pattern in high_confidence_patterns):
+                    logger.info(f"Found high-confidence institutional link: {href}")
+                    institutional_login_link = href
+                    institutional_login_needed = True
+                    break
+
+                # Medium confidence: link text suggests institutional access
+                if any(pattern in text for pattern in institutional_text_patterns):
+                    candidate_links.append((href, text, 'text_match'))
+
+            # If no high-confidence link, use best text-matched candidate
+            if not institutional_login_needed and candidate_links:
+                # Prefer links with "ovid" or "institutional" in text
+                for href, text, _ in candidate_links:
+                    if 'ovid' in text or 'institutional' in text:
+                        institutional_login_link = href
+                        institutional_login_needed = True
+                        logger.info(f"Found institutional link via text match: {href} (text: {text})")
+                        break
+
+                # Fallback to first candidate
+                if not institutional_login_needed and candidate_links:
+                    institutional_login_link = candidate_links[0][0]
+                    institutional_login_needed = True
+                    logger.info(f"Found institutional link (fallback): {institutional_login_link}")
+
+        except Exception as e:
+            logger.debug(f"Error checking for institutional login: {e}")
+
+        # If institutional login is needed and we have OpenAthens or EZproxy URL
+        if institutional_login_needed and (openathens_url or ezproxy_url):
+            # Prefer EZproxy if available (more reliable for PDF downloads)
+            proxy_url = ezproxy_url or openathens_url
+            proxy_type = "EZproxy" if ezproxy_url else "OpenAthens"
+
+            logger.info(f"Attempting institutional access via {proxy_type}...")
+
+            # Construct the proxy-wrapped URL
+            target_url = url
+            encoded_target = quote(target_url, safe='')
+
+            if ezproxy_url:
+                # EZproxy format: base?url=target
+                if '?' in ezproxy_url:
+                    wrapped_url = f"{ezproxy_url}{encoded_target}"
+                else:
+                    wrapped_url = f"{ezproxy_url}?url={encoded_target}"
+            elif 'go.openathens.net/redirector' in openathens_url:
+                # OpenAthens Redirector format
+                wrapped_url = f"{openathens_url}?url={encoded_target}"
+            else:
+                # Traditional proxy format
+                wrapped_url = f"{openathens_url}/login?url={encoded_target}"
+
+            logger.info(f"Navigating to {proxy_type} wrapped URL: {wrapped_url[:100]}...")
+            driver.get(wrapped_url)
+
+            # Wait for SSO login to complete
+            # User will need to complete their institution's SSO manually
+            logger.info(
+                f"\n============================================================\n"
+                f"INSTITUTIONAL LOGIN REQUIRED ({proxy_type})\n"
+                f"============================================================\n"
+                f"Please complete your institutional login in the browser window.\n"
+                f"Waiting up to 120 seconds for authentication...\n"
+                f"============================================================"
+            )
+
+            # Wait for user to complete SSO login
+            sso_timeout = 120
+            sso_start = time.time()
+
+            while time.time() - sso_start < sso_timeout:
+                current_url = driver.current_url.lower()
+
+                # Check if we're back on the publisher site (not on SSO/login pages)
+                sso_indicators = [
+                    '/login', '/signin', '/auth', '/sso', '/saml',
+                    'idp.', 'sso.', 'auth.', 'login.microsoftonline',
+                    'go.openathens.net', 'my.openathens.net',
+                    'elibrary.', 'ezproxy.',  # EZproxy login pages
+                ]
+
+                still_on_sso = any(ind in current_url for ind in sso_indicators)
+
+                if not still_on_sso:
+                    logger.info(f"SSO complete - now on: {driver.current_url}")
+                    time.sleep(3)  # Let page load
+                    break
+
+                time.sleep(2)
+
+        # Now try to find PDF download link
+        pdf_url = None
+
+        # FIRST: Check meta tags for PDF URLs (most reliable source)
+        # Different publishers use different meta tag names
+        pdf_meta_names = [
+            'citation_pdf_url',     # Standard academic meta tag
+            'wkhealth_pdf_url',     # Wolters Kluwer / LWW
+            'dc.identifier.uri',    # Dublin Core (some use for PDF)
+            'pdf_url',              # Generic
+        ]
+
+        for meta_name in pdf_meta_names:
+            if pdf_url:
+                break
+            try:
+                meta = driver.find_element(By.CSS_SELECTOR, f'meta[name="{meta_name}"]')
+                content = meta.get_attribute('content')
+                if content and ('pdf' in content.lower() or 'download' in content.lower()):
+                    pdf_url = content
+                    logger.info(f"Found PDF URL in meta tag '{meta_name}': {pdf_url}")
+            except Exception:
+                pass
+
+        # SECOND: Look for links with "download pdf" or similar text
+        if not pdf_url:
+            try:
+                links = driver.find_elements(By.TAG_NAME, 'a')
+                download_candidates = []
+
+                for link in links:
+                    href = link.get_attribute('href') or ''
+                    text = (link.text or '').lower().strip()
+                    href_lower = href.lower()
+
+                    # Skip non-http links
+                    if not href or href.startswith('javascript:') or href.startswith('#'):
+                        continue
+
+                    # Score the link
+                    score = 0
+
+                    # Links with 'downloadpdf' or similar in URL (high confidence)
+                    if 'downloadpdf' in href_lower or 'download.pdf' in href_lower:
+                        score += 50
+                    elif '.pdf' in href_lower:
+                        score += 30
+                    elif 'download' in href_lower and 'pdf' in href_lower:
+                        score += 40
+
+                    # Link text mentions PDF download
+                    if 'download' in text and 'pdf' in text:
+                        score += 25
+                    elif text == 'pdf' or text == 'download pdf':
+                        score += 20
+                    elif 'pdf' in text:
+                        score += 10
+
+                    # Bonus for being on the same domain
+                    if 'journals.lww.com' in href_lower or 'lww.com' in href_lower:
+                        score += 5
+
+                    # Penalty for obvious non-article PDFs
+                    if 'author-document' in href_lower or 'permission' in href_lower:
+                        score -= 30
+                    if 'supplement' in href_lower:
+                        score -= 20
+
+                    if score > 0:
+                        download_candidates.append((href, score, text))
+
+                # Sort by score and pick best
+                if download_candidates:
+                    download_candidates.sort(key=lambda x: x[1], reverse=True)
+                    best_href, best_score, best_text = download_candidates[0]
+                    logger.info(f"Found PDF link (score={best_score}): {best_href} (text: {best_text})")
+                    pdf_url = best_href
+
+            except Exception as e:
+                logger.debug(f"Error finding PDF links: {e}")
+
+        # If we found a PDF URL, try multiple methods to download it
+        if pdf_url:
+            logger.info(f"Found PDF URL: {pdf_url}")
+
+            # Method 1: Try JavaScript fetch with credentials (preserves auth cookies)
+            logger.info("Attempting JavaScript fetch with credentials...")
+            try:
+                # Use fetch API to download PDF content
+                fetch_script = f"""
+                return (async () => {{
+                    try {{
+                        const response = await fetch("{pdf_url}", {{
+                            credentials: 'include',
+                            headers: {{
+                                'Accept': 'application/pdf, */*'
+                            }}
+                        }});
+
+                        if (!response.ok) {{
+                            return {{error: 'HTTP ' + response.status, status: response.status}};
+                        }}
+
+                        const contentType = response.headers.get('content-type') || '';
+                        const buffer = await response.arrayBuffer();
+                        const bytes = new Uint8Array(buffer);
+
+                        // Check if response is PDF
+                        const header = String.fromCharCode(...bytes.slice(0, 4));
+
+                        return {{
+                            contentType: contentType,
+                            size: bytes.length,
+                            isPdf: header === '%PDF',
+                            header: header,
+                            // Return full content as base64 for smaller files
+                            data: bytes.length < 50000000 ? btoa(String.fromCharCode(...bytes)) : null
+                        }};
+                    }} catch (e) {{
+                        return {{error: e.toString()}};
+                    }}
+                }})();
+                """
+
+                result = driver.execute_script(fetch_script)
+                logger.debug(f"Fetch result: contentType={result.get('contentType')}, size={result.get('size')}, isPdf={result.get('isPdf')}")
+
+                if result.get('isPdf') and result.get('data'):
+                    # Decode base64 and save
+                    import base64
+                    pdf_data = base64.b64decode(result['data'])
+                    save_path.write_bytes(pdf_data)
+                    size = len(pdf_data)
+                    logger.info(f"PDF downloaded via JavaScript fetch: {size} bytes")
+                    return {
+                        'status': 'success',
+                        'path': str(save_path),
+                        'size': size
+                    }
+                elif result.get('error'):
+                    logger.debug(f"JavaScript fetch failed: {result.get('error')}")
+                elif not result.get('isPdf'):
+                    logger.debug(f"Response is not a PDF (header: {result.get('header')})")
+
+            except Exception as fetch_error:
+                logger.debug(f"JavaScript fetch exception: {fetch_error}")
+
+            # Method 2: Direct navigation (may trigger download)
+            logger.info("Attempting direct navigation to PDF URL...")
+            driver.get(pdf_url)
+            time.sleep(5)  # Wait for download to start/complete
+
+            # Check if file was downloaded
+            downloaded_files = list(Path(download_dir).glob('*.pdf'))
+
+            # Find most recently modified PDF
+            if downloaded_files:
+                newest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
+
+                # Move/rename to expected path
+                if newest_file != save_path:
+                    import shutil
+                    shutil.move(str(newest_file), str(save_path))
+
+                if save_path.exists():
+                    # Verify it's a PDF
+                    with open(save_path, 'rb') as f:
+                        header = f.read(4)
+                    if header == b'%PDF':
+                        size = save_path.stat().st_size
+                        logger.info(f"PDF downloaded successfully: {save_path} ({size} bytes)")
+                        return {
+                            'status': 'success',
+                            'path': str(save_path),
+                            'size': size
+                        }
+                    else:
+                        logger.warning("Downloaded file is not a valid PDF")
+
+        # If no PDF link found, try to get page content
+        # Some sites embed PDFs in viewers
+        try:
+            # Check for embedded PDF viewer
+            iframes = driver.find_elements(By.TAG_NAME, 'iframe')
+            for iframe in iframes:
+                src = iframe.get_attribute('src') or ''
+                if '.pdf' in src.lower():
+                    logger.info(f"Found PDF in iframe: {src}")
+                    driver.get(src)
+                    time.sleep(5)
+
+                    downloaded_files = list(Path(download_dir).glob('*.pdf'))
+                    if downloaded_files:
+                        newest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
+                        if newest_file != save_path:
+                            import shutil
+                            shutil.move(str(newest_file), str(save_path))
+                        if save_path.exists():
+                            size = save_path.stat().st_size
+                            return {
+                                'status': 'success',
+                                'path': str(save_path),
+                                'size': size
+                            }
+        except Exception as e:
+            logger.debug(f"Error checking iframes: {e}")
+
+        # If institutional login was needed but not successful
+        if institutional_login_needed:
+            # Check if we're on a publisher page that still shows paywalled content
+            page_source = driver.page_source.lower()
+            paywall_indicators = [
+                'subscribe', 'subscription required', 'purchase this article',
+                'buy this article', 'access denied', 'institutional access',
+                'sign in to access', 'log in to access'
+            ]
+
+            still_paywalled = any(ind in page_source for ind in paywall_indicators)
+
+            if still_paywalled:
+                # Provide detailed error with troubleshooting steps
+                error_msg = (
+                    "Could not authenticate for PDF download. Possible causes:\n"
+                    "1. Your institution may not have access to this publisher\n"
+                    "2. OpenAthens/EZproxy may not be configured for this publisher\n"
+                    "3. For LWW/Lippincott journals, try accessing via Ovid platform instead\n\n"
+                    "Troubleshooting:\n"
+                    "- Check if your library has access to this journal\n"
+                    "- Try accessing through your library's A-Z database list\n"
+                    "- For LWW journals, search for the article in Ovid"
+                )
+                return {
+                    'status': 'failed',
+                    'error': error_msg,
+                    'needs_institutional_access': True,
+                    'publisher_detected': 'lww' if 'lww.com' in url.lower() else 'unknown'
+                }
+
+            if not openathens_url and not ezproxy_url:
+                return {
+                    'status': 'failed',
+                    'error': 'This article requires institutional access. Configure OpenAthens or EZproxy in settings.',
+                    'needs_institutional_access': True
+                }
+
+        return {
+            'status': 'failed',
+            'error': 'Could not find or download PDF from page'
+        }
+
+    except Exception as e:
+        logger.error(f"Undetected Chrome download failed: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
+
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 # Example usage
@@ -1428,5 +2396,7 @@ if __name__ == "__main__":
     test_url = "https://example.com/paper.pdf"
     test_path = Path("/tmp/test_download.pdf")
 
-    result = download_pdf_with_browser(test_url, test_path, headless=False)
+    # Try undetected-chromedriver first (best for Cloudflare)
+    print("Testing with undetected-chromedriver...")
+    result = download_pdf_with_undetected_chrome(test_url, test_path, headless=False)
     print(f"Download result: {result}")

@@ -230,6 +230,72 @@ Queries PubMed Central for open access PDFs:
 
 **Priority**: 5-6 (highest priority for OA)
 
+#### CRITICAL: NCBI elink API Link Types
+
+The PMC resolver uses the NCBI elink API to convert PMIDs to PMCIDs. **This API returns multiple link types** and correct filtering is essential:
+
+| Link Type | Description | Use Case |
+|-----------|-------------|----------|
+| `pubmed_pmc` | The article's own PMC entry | ✅ **Use this** for PDF discovery |
+| `pubmed_pmc_refs` | Articles in PMC that cite this article | ❌ **Never use** - returns wrong papers |
+
+**The Bug (Fixed 2025-01-15)**:
+
+Without specifying `linkname=pubmed_pmc`, the API returns ALL link types. If an article is NOT in PMC but IS cited by PMC articles, the old code would return a PMC ID for a **citing article** instead of returning `None`.
+
+**Example of the problem**:
+```bash
+# Query without linkname filter - WRONG
+curl "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pubmed&db=pmc&id=40526116&retmode=json"
+
+# Response includes BOTH link types:
+# {
+#   "linksetdbs": [
+#     {"linkname": "pubmed_pmc_refs", "links": ["11904944"]},  # WRONG - citing article!
+#     {"linkname": "pubmed_pmc", "links": []}  # Correct - no PMC entry
+#   ]
+# }
+```
+
+**Correct Implementation**:
+```python
+def _pmid_to_pmcid(self, pmid: str) -> Optional[str]:
+    params = {
+        'dbfrom': 'pubmed',
+        'db': 'pmc',
+        'id': pmid,
+        'linkname': 'pubmed_pmc',  # CRITICAL: only get article's own PMC entry!
+        'retmode': 'json'
+    }
+
+    response = self.session.get(url, params=params, timeout=self.timeout)
+    if response.status_code == 200:
+        data = response.json()
+        for linkset in data.get('linksets', []):
+            for linksetdb in linkset.get('linksetdbs', []):
+                # Double-check linkname to be absolutely safe
+                linkname = linksetdb.get('linkname', '')
+                if linksetdb.get('dbto') == 'pmc' and linkname == 'pubmed_pmc':
+                    links = linksetdb.get('links', [])
+                    if links:
+                        return f"PMC{links[0]}"
+    return None
+```
+
+**Key Points**:
+1. Always include `'linkname': 'pubmed_pmc'` in request params
+2. Double-check `linkname == 'pubmed_pmc'` when parsing response
+3. Return `None` if no direct PMC entry exists (other resolvers will find the PDF)
+
+**Testing the fix**:
+```bash
+# With linkname filter - CORRECT
+curl "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pubmed&db=pmc&id=40526116&linkname=pubmed_pmc&retmode=json"
+
+# Response: Empty links array = article not in PMC
+# System correctly falls back to DOI resolver which finds Springer PDF
+```
+
 ### UnpaywallResolver
 
 Queries Unpaywall API for open access versions:

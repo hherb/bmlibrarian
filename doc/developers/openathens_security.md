@@ -210,6 +210,50 @@ def _check_network_connectivity(self) -> bool:
 - ✅ Reduces timeout delays
 - ✅ Provides better error messages
 
+#### OpenAthens Redirector URLs (Special Handling)
+
+OpenAthens uses two different URL patterns that require different handling:
+
+| URL Type | Pattern | Connectivity Check |
+|----------|---------|-------------------|
+| **Portal URLs** | `my.openathens.net/*` | ✅ Check required |
+| **Redirector URLs** | `go.openathens.net/redirector/{domain}` | ❌ Skip check |
+
+**Why Redirector URLs are special**:
+- Redirector URLs don't respond to HEAD requests directly
+- They only work when a target URL is appended: `?url={encoded_target}`
+- Checking `go.openathens.net/redirector/jcu.edu.au` always fails, but the redirector works fine
+
+**Implementation**:
+```python
+def _check_network_connectivity(self) -> bool:
+    # Skip connectivity check for OpenAthens Redirector URLs
+    # These URLs don't respond directly - they need a target URL parameter
+    if 'go.openathens.net/redirector' in self.config.institution_url:
+        logger.debug("Skipping connectivity check for OpenAthens Redirector URL")
+        return True
+
+    # Normal connectivity check for other URLs
+    try:
+        response = requests.head(self.config.institution_url, timeout=10)
+        return response.status_code < 400
+    except Exception as e:
+        logger.warning(f"Network connectivity check failed: {e}")
+        return False
+```
+
+**How Redirector URLs work**:
+```
+1. User visits: https://go.openathens.net/redirector/jcu.edu.au?url=https://link.springer.com/article/10.1007/example
+
+2. OpenAthens:
+   a. Identifies institution by domain (jcu.edu.au)
+   b. Redirects to institution's SSO if not authenticated
+   c. After auth, redirects to target URL with session cookies
+
+3. Publisher receives request with OpenAthens cookies → grants access
+```
+
 ### 6. Session Validation Caching
 
 **Purpose**: Reduce overhead without compromising security.
