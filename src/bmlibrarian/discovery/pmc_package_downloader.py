@@ -253,31 +253,57 @@ class PMCPackageDownloader:
         if base_filename is None:
             base_filename = source.metadata.get('pmcid', 'unknown')
 
-        # Download tar.gz to memory
-        tar_data = self._download_ftp(source.url)
-        if tar_data is None:
+        # Download and extract with retry on corruption
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            # Download tar.gz to memory
+            logger.info(f"PMC package download attempt {attempt}/{self.max_retries}")
+            tar_data = self._download_ftp(source.url)
+
+            if tar_data is None:
+                last_error = "FTP download failed - could not retrieve file from server"
+                logger.warning(f"Attempt {attempt}: {last_error}")
+                continue
+
+            # Extract contents
+            extracted = self._extract_package(
+                tar_data=tar_data,
+                pdf_output_dir=pdf_output_dir,
+                fulltext_output_dir=fulltext_output_dir,
+                base_filename=base_filename
+            )
+
+            if extracted.error_message:
+                last_error = extracted.error_message
+                logger.warning(f"Attempt {attempt}: Extraction failed - {last_error}")
+                # Retry on corruption (likely incomplete download)
+                if "invalid" in last_error.lower() or "corrupt" in last_error.lower() or "gzip" in last_error.lower():
+                    logger.info(f"Retrying due to possible download corruption...")
+                    continue
+                # Non-recoverable error
+                break
+
+            # Success - we have extracted content
+            break
+        else:
+            # All attempts failed
             return DownloadResult(
                 success=False,
                 source=source,
-                error_message="FTP download failed",
+                error_message=f"PMC package download failed after {self.max_retries} attempts: {last_error}",
                 duration_ms=(time.time() - start_time) * 1000,
                 attempts=self.max_retries
             )
 
-        # Extract contents
-        extracted = self._extract_package(
-            tar_data=tar_data,
-            pdf_output_dir=pdf_output_dir,
-            fulltext_output_dir=fulltext_output_dir,
-            base_filename=base_filename
-        )
-
+        # Check if extraction ultimately failed (non-recoverable error)
         if extracted.error_message:
             return DownloadResult(
                 success=False,
                 source=source,
-                error_message=extracted.error_message,
-                duration_ms=(time.time() - start_time) * 1000
+                error_message=f"PMC package extraction failed: {extracted.error_message}",
+                duration_ms=(time.time() - start_time) * 1000,
+                attempts=attempt,
+                package_contents=extracted.package_contents
             )
 
         # Must have at least a PDF
