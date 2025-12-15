@@ -419,6 +419,11 @@ class OpenAthensAuth:
         Returns:
             True if login successful, False otherwise
         """
+        # Clear any existing session to ensure fresh authentication
+        # This prevents stale cookies from interfering with auth detection
+        logger.info("Clearing existing session before re-authentication...")
+        self.clear_session()
+
         # Check network connectivity first
         if not self._check_network_connectivity():
             logger.error(f"Cannot reach institution URL: {self.config.institution_url}")
