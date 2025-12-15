@@ -411,10 +411,11 @@ class OpenAthensSetupDialog(QDialog):
         # Info section
         info_label = QLabel(
             "<b>OpenAthens Institutional Access</b><br><br>"
-            "Enter your institution's OpenAthens login URL. This is typically found "
-            "on your library's website or database access page.<br><br>"
-            "The URL should start with <code>https://</code> and typically contains "
-            "your institution's name or 'openathens' in the domain."
+            "Enter your institution's OpenAthens Redirector URL or domain. "
+            "This is typically found on your library's website (search for "
+            "'OpenAthens Link Generator').<br><br>"
+            "You can enter either the full Redirector URL or just your "
+            "institution's domain."
         )
         info_label.setWordWrap(True)
         info_label.setTextFormat(Qt.TextFormat.RichText)
@@ -423,16 +424,16 @@ class OpenAthensSetupDialog(QDialog):
         # URL input
         form_layout = QFormLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://login.openathens.net/...")
+        self.url_input.setPlaceholderText("https://go.openathens.net/redirector/yourinstitution.edu")
         self.url_input.setText(self.current_url)
-        form_layout.addRow("Institution URL:", self.url_input)
+        form_layout.addRow("Redirector URL:", self.url_input)
         layout.addLayout(form_layout)
 
         # Example/help text
         example_label = QLabel(
             "<small><b>Examples:</b><br>"
-            "• https://login.openathens.net/auth/institution-name/o/12345<br>"
-            "• https://ezproxy.institution.edu/login</small>"
+            "• https://go.openathens.net/redirector/jcu.edu.au<br>"
+            "• jcu.edu.au (domain only - will auto-convert)</small>"
         )
         example_label.setTextFormat(Qt.TextFormat.RichText)
         example_label.setStyleSheet("QLabel { color: #666; }")
@@ -447,7 +448,7 @@ class OpenAthensSetupDialog(QDialog):
         layout.addWidget(buttons)
 
     def _on_accept(self) -> None:
-        """Validate and accept the URL."""
+        """Validate and accept the URL or domain."""
         url = self.url_input.text().strip()
 
         if not url:
@@ -456,13 +457,23 @@ class OpenAthensSetupDialog(QDialog):
             self.accept()
             return
 
-        # Validate URL format
+        # Check if it's a domain (contains a dot, no slashes except protocol)
+        is_domain_only = '.' in url and '/' not in url.replace('https://', '').replace('http://', '')
+
+        if is_domain_only:
+            # Accept domain-only input - it will be converted to redirector URL
+            self._result_url = url
+            self.accept()
+            return
+
+        # Validate full URL format
         if not url.startswith("https://"):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self,
                 "Invalid URL",
-                "The institution URL must start with https:// for security."
+                "The URL must start with https:// for security,\n"
+                "or enter just your institution's domain (e.g., jcu.edu.au)."
             )
             return
 

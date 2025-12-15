@@ -189,11 +189,14 @@ class SettingsDialog(QDialog):
         openathens_layout.addRow(self.openathens_enabled)
 
         self.openathens_url_input = QLineEdit()
-        self.openathens_url_input.setPlaceholderText("https://my.openathens.net/?passiveLogin=false")
+        self.openathens_url_input.setPlaceholderText("https://go.openathens.net/redirector/yourinstitution.edu.au")
         self.openathens_url_input.setToolTip(
-            "Your institution's OpenAthens login URL (must start with https://)"
+            "Your institution's OpenAthens Redirector URL or domain.\n"
+            "Examples:\n"
+            "- https://go.openathens.net/redirector/jcu.edu.au\n"
+            "- jcu.edu.au (domain only - will auto-convert)"
         )
-        openathens_layout.addRow("Institution URL:", self.openathens_url_input)
+        openathens_layout.addRow("Redirector URL:", self.openathens_url_input)
 
         self.openathens_session_age = QSpinBox()
         self.openathens_session_age.setRange(1, 168)  # 1 hour to 1 week
@@ -206,8 +209,9 @@ class SettingsDialog(QDialog):
 
         openathens_note = QLabel(
             "<small>OpenAthens allows access to paywalled content through "
-            "your institution's subscription. Find your login URL on your "
-            "library's website.</small>"
+            "your institution's subscription. Find the OpenAthens Redirector URL "
+            "on your library's website (search for 'OpenAthens Link Generator').<br>"
+            "You can also just enter your institution's domain (e.g., jcu.edu.au).</small>"
         )
         openathens_note.setWordWrap(True)
         openathens_layout.addRow(openathens_note)
