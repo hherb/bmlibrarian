@@ -958,7 +958,17 @@ class CrossRefTitleResolver(BaseResolver):
 
 
 class OpenAthensResolver(BaseResolver):
-    """Resolver that constructs OpenAthens proxy URLs for institutional access."""
+    """Resolver that constructs OpenAthens proxy/redirector URLs for institutional access.
+
+    Supports two URL formats:
+    1. OpenAthens Redirector (modern): go.openathens.net/redirector/{domain}?url={target}
+       - Used by institutions like JCU with format: go.openathens.net/redirector/jcu.edu.au
+    2. Traditional proxy: proxy.example.com/login?url={target}
+       - Used by institutions with EZProxy-style systems
+    """
+
+    # OpenAthens Redirector base URL
+    REDIRECTOR_BASE = "go.openathens.net/redirector"
 
     def __init__(
         self,
@@ -968,18 +978,62 @@ class OpenAthensResolver(BaseResolver):
         """Initialize OpenAthens resolver.
 
         Args:
-            proxy_base_url: Base URL for OpenAthens proxy (e.g., "https://proxy.openathens.net")
+            proxy_base_url: Base URL for OpenAthens access. Can be:
+                - Redirector URL: "https://go.openathens.net/redirector/jcu.edu.au"
+                - Proxy URL: "https://proxy.openathens.net"
+                - Domain only: "jcu.edu.au" (will use redirector)
             timeout: HTTP request timeout
         """
         super().__init__(timeout)
-        self.proxy_base_url = proxy_base_url.rstrip('/')
+        self.proxy_base_url = self._normalize_url(proxy_base_url)
+        self.is_redirector = self.REDIRECTOR_BASE in self.proxy_base_url.lower()
+
+    def _normalize_url(self, url: str) -> str:
+        """Normalize the proxy/redirector URL.
+
+        Handles various input formats:
+        - Full redirector URL: https://go.openathens.net/redirector/jcu.edu.au
+        - Domain only: jcu.edu.au (converts to redirector URL)
+        - Proxy URL: https://proxy.example.com
+
+        Args:
+            url: Input URL or domain
+
+        Returns:
+            Normalized URL without trailing slash
+        """
+        url = url.strip().rstrip('/')
+
+        # If it's just a domain (no slashes except protocol), assume redirector
+        if '/' not in url or url.count('/') <= 2:
+            # Remove protocol if present
+            domain = url
+            for prefix in ['https://', 'http://']:
+                if domain.lower().startswith(prefix):
+                    domain = domain[len(prefix):]
+                    break
+
+            # Check if it's already a go.openathens.net URL
+            if domain.lower().startswith('go.openathens.net'):
+                return f"https://{domain}"
+
+            # Check if it looks like a domain (contains a dot, no paths)
+            if '.' in domain and '/' not in domain:
+                # Assume it's a domain for redirector use
+                return f"https://go.openathens.net/redirector/{domain}"
+
+        # Ensure https:// prefix
+        if not url.lower().startswith('http'):
+            url = f"https://{url}"
+
+        return url
 
     @property
     def name(self) -> str:
         return "openathens"
 
     def resolve(self, identifiers: DocumentIdentifiers) -> ResolutionResult:
-        """Generate OpenAthens proxy URL for document."""
+        """Generate OpenAthens proxy/redirector URL for document."""
         start_time = time.time()
 
         # Need either DOI or direct PDF URL
@@ -1001,7 +1055,7 @@ class OpenAthensResolver(BaseResolver):
                 duration_ms=(time.time() - start_time) * 1000
             )
 
-        # Construct proxy URL
+        # Construct proxy/redirector URL
         proxy_url = self._construct_proxy_url(target_url)
 
         source = PDFSource(
@@ -1011,7 +1065,8 @@ class OpenAthensResolver(BaseResolver):
             priority=50,  # Lower priority than OA sources
             metadata={
                 'original_url': target_url,
-                'proxy_base': self.proxy_base_url
+                'proxy_base': self.proxy_base_url,
+                'is_redirector': self.is_redirector
             }
         )
 
@@ -1022,17 +1077,20 @@ class OpenAthensResolver(BaseResolver):
         )
 
     def _construct_proxy_url(self, target_url: str) -> str:
-        """Construct OpenAthens proxy URL.
+        """Construct OpenAthens proxy or redirector URL.
 
         Args:
             target_url: Original URL to proxy
 
         Returns:
-            Proxied URL
+            Proxied/redirected URL
         """
-        # Standard OpenAthens proxy format
-        # Some institutions use: proxy.example.com/login?url=<target>
-        # Others use: <target-domain>.proxy.example.com
-        # We'll use the login redirect format which is more universal
         encoded_url = quote(target_url, safe='')
-        return f"{self.proxy_base_url}/login?url={encoded_url}"
+
+        if self.is_redirector:
+            # OpenAthens Redirector format: base_url?url=<encoded_target>
+            # e.g., https://go.openathens.net/redirector/jcu.edu.au?url=https%3A%2F%2Fdoi.org%2F...
+            return f"{self.proxy_base_url}?url={encoded_url}"
+        else:
+            # Traditional proxy format: base_url/login?url=<encoded_target>
+            return f"{self.proxy_base_url}/login?url={encoded_url}"

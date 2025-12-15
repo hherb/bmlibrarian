@@ -93,26 +93,52 @@ class FullTextFinder:
         if 'direct_url' not in self.skip_resolvers:
             self.resolvers.append(DirectURLResolver(timeout=timeout))
 
-        # OpenAthens proxy - only use if it's actually a proxy URL, not the auth portal
-        # my.openathens.net is an authentication service, not a proxy
-        # EZProxy URLs typically contain 'ezproxy' or 'proxy' and can proxy URLs
+        # OpenAthens proxy/redirector - detect the type of URL provided
+        # Types:
+        # 1. my.openathens.net - authentication portal only (not usable for proxying)
+        # 2. go.openathens.net/redirector/{domain} - OpenAthens Redirector (modern, works!)
+        # 3. {domain} - institution domain (will be converted to redirector URL)
+        # 4. proxy.example.com / ezproxy.example.com - traditional proxy
         if 'openathens' not in self.skip_resolvers and openathens_proxy_url:
-            is_auth_portal = 'my.openathens.net' in openathens_proxy_url.lower()
-            is_proxy_url = any(x in openathens_proxy_url.lower() for x in ['ezproxy', 'proxy.'])
+            url_lower = openathens_proxy_url.lower()
 
-            if is_proxy_url and not is_auth_portal:
-                # This is a real proxy URL (e.g., EZProxy), add the resolver
-                self.resolvers.append(OpenAthensResolver(
-                    proxy_base_url=openathens_proxy_url,
-                    timeout=timeout
-                ))
-            elif is_auth_portal:
+            # Check for authentication portal (not usable for proxying)
+            is_auth_portal = 'my.openathens.net' in url_lower and '/redirector' not in url_lower
+
+            # Check for OpenAthens Redirector (modern format)
+            is_redirector = 'go.openathens.net/redirector' in url_lower
+
+            # Check for traditional proxy URLs
+            is_traditional_proxy = any(x in url_lower for x in ['ezproxy', 'proxy.'])
+
+            # Check if it might be a domain that should use redirector
+            # (contains a dot, doesn't look like a full URL)
+            is_likely_domain = (
+                '.' in openathens_proxy_url and
+                not url_lower.startswith('http') and
+                '/' not in openathens_proxy_url
+            )
+
+            if is_auth_portal:
                 # This is just the auth portal - don't try to use it as a proxy
                 # Cookie-based authentication will be used instead (via openathens_auth)
                 logger.info(
                     "OpenAthens auth portal detected (not a proxy). "
                     "Authenticated cookies will be used for downloads."
                 )
+            elif is_redirector or is_traditional_proxy or is_likely_domain:
+                # Valid proxy/redirector URL - add the resolver
+                # The OpenAthensResolver handles format detection internally
+                self.resolvers.append(OpenAthensResolver(
+                    proxy_base_url=openathens_proxy_url,
+                    timeout=timeout
+                ))
+                if is_redirector:
+                    logger.info(f"OpenAthens Redirector configured: {openathens_proxy_url}")
+                elif is_likely_domain:
+                    logger.info(f"Domain detected, will use OpenAthens Redirector: {openathens_proxy_url}")
+                else:
+                    logger.info(f"Traditional proxy configured: {openathens_proxy_url}")
 
         # HTTP session for downloads
         self.session = requests.Session()
