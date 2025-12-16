@@ -149,6 +149,13 @@ class TestAssessDocument:
         metadata_result = QualityAssessment.unclassified()
         manager.metadata_filter.assess.return_value = metadata_result
 
+        # Mock the classifier since it will be called before detailed assessment
+        classification = StudyClassification(
+            study_design=StudyDesign.RCT,
+            confidence=0.88,
+        )
+        manager.study_classifier.classify.return_value = classification
+
         detailed_result = QualityAssessment(
             assessment_tier=3,
             extraction_method="llm_sonnet",

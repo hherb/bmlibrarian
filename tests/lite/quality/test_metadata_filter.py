@@ -181,7 +181,7 @@ class TestMetadataFilterAssess:
         assessment = filter.assess(doc)
 
         assert assessment.study_design == StudyDesign.META_ANALYSIS
-        assert assessment.quality_tier == QualityTier.TIER_5_SYSTEMATIC
+        assert assessment.quality_tier == QualityTier.TIER_5_SYNTHESIS
         assert assessment.confidence == METADATA_HIGH_CONFIDENCE
         assert assessment.extraction_method == "metadata"
 
@@ -191,7 +191,7 @@ class TestMetadataFilterAssess:
         assessment = filter.assess(doc)
 
         assert assessment.study_design == StudyDesign.SYSTEMATIC_REVIEW
-        assert assessment.quality_tier == QualityTier.TIER_5_SYSTEMATIC
+        assert assessment.quality_tier == QualityTier.TIER_5_SYNTHESIS
         assert assessment.confidence == METADATA_HIGH_CONFIDENCE
 
     def test_assess_rct(self, filter: MetadataFilter) -> None:
@@ -244,7 +244,7 @@ class TestMetadataFilterAssess:
         assessment = filter.assess(doc)
 
         assert assessment.study_design == StudyDesign.META_ANALYSIS
-        assert assessment.quality_tier == QualityTier.TIER_5_SYSTEMATIC
+        assert assessment.quality_tier == QualityTier.TIER_5_SYNTHESIS
 
     def test_assess_rct_over_multicenter(self, filter: MetadataFilter) -> None:
         """Test that RCT is selected over Multicenter Study."""
@@ -345,7 +345,7 @@ class TestMetadataFilterGetTierForTypes:
     def test_tier_for_meta_analysis(self, filter: MetadataFilter) -> None:
         """Test tier lookup for Meta-Analysis."""
         tier = filter.get_tier_for_types(["Meta-Analysis"])
-        assert tier == QualityTier.TIER_5_SYSTEMATIC
+        assert tier == QualityTier.TIER_5_SYNTHESIS
 
     def test_tier_for_rct(self, filter: MetadataFilter) -> None:
         """Test tier lookup for RCT."""
@@ -370,7 +370,7 @@ class TestMetadataFilterGetTierForTypes:
     def test_tier_for_multiple_types_priority(self, filter: MetadataFilter) -> None:
         """Test tier lookup respects priority."""
         tier = filter.get_tier_for_types(["Case Reports", "Meta-Analysis"])
-        assert tier == QualityTier.TIER_5_SYSTEMATIC
+        assert tier == QualityTier.TIER_5_SYNTHESIS
 
 
 class TestPartialMatching:

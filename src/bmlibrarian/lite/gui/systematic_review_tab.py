@@ -48,6 +48,11 @@ from ..agents import (
     LiteCitationAgent,
     LiteReportingAgent,
 )
+from ..quality import QualityManager, QualityFilter, QualityAssessment
+
+from .quality_filter_panel import QualityFilterPanel
+from .quality_summary import QualitySummaryWidget
+from .workers import QualityFilterWorker
 
 # Directory for auto-saved reports
 REPORTS_DIR = Path.home() / "bmlibrarian_reports"
@@ -61,9 +66,10 @@ class WorkflowWorker(QThread):
 
     Executes the full workflow in a background thread:
     1. Search PubMed
-    2. Score documents
-    3. Extract citations
-    4. Generate report
+    2. Quality filter (optional)
+    3. Score documents
+    4. Extract citations
+    5. Generate report
 
     Signals:
         progress: Emitted during progress (step, current, total)
@@ -84,6 +90,8 @@ class WorkflowWorker(QThread):
         storage: LiteStorage,
         max_results: int = 100,
         min_score: int = 3,
+        quality_filter: Optional[QualityFilter] = None,
+        quality_manager: Optional[QualityManager] = None,
     ) -> None:
         """
         Initialize the workflow worker.
@@ -94,6 +102,8 @@ class WorkflowWorker(QThread):
             storage: Storage layer
             max_results: Maximum PubMed results to fetch
             min_score: Minimum relevance score (1-5)
+            quality_filter: Optional quality filter settings
+            quality_manager: Optional quality manager for filtering
         """
         super().__init__()
         self.question = question
@@ -101,6 +111,8 @@ class WorkflowWorker(QThread):
         self.storage = storage
         self.max_results = max_results
         self.min_score = min_score
+        self.quality_filter = quality_filter
+        self.quality_manager = quality_manager
         self._cancelled = False
 
     def run(self) -> None:
@@ -126,7 +138,42 @@ class WorkflowWorker(QThread):
                 self.finished.emit("No documents found for this query.")
                 return
 
-            # Step 2: Score documents
+            # Step 2: Quality filtering (if enabled)
+            if self.quality_filter and self.quality_manager:
+                # Only apply quality filter if minimum tier is set
+                if self.quality_filter.minimum_tier.value > 0:
+                    self.progress.emit("quality_filter", 0, len(documents))
+
+                    def quality_progress(
+                        current: int,
+                        total: int,
+                        assessment: QualityAssessment,
+                    ) -> None:
+                        self.progress.emit("quality_filter", current, total)
+
+                    filtered, assessments = self.quality_manager.filter_documents(
+                        documents,
+                        self.quality_filter,
+                        progress_callback=quality_progress,
+                    )
+                    self.step_complete.emit("quality_filter", (filtered, assessments))
+
+                    if self._cancelled:
+                        self.finished.emit("Workflow cancelled.")
+                        return
+
+                    if not filtered:
+                        self.finished.emit(
+                            f"No documents passed quality filter. "
+                            f"{len(documents)} documents were assessed but none met "
+                            f"the minimum quality requirements."
+                        )
+                        return
+
+                    # Use filtered documents for scoring
+                    documents = filtered
+
+            # Step 3: Score documents
             scoring_agent = LiteScoringAgent(config=self.config)
             scored_docs = scoring_agent.score_documents(
                 self.question,
@@ -218,8 +265,12 @@ class SystematicReviewTab(QWidget):
         self.config = config
         self.storage = storage
         self._worker: Optional[WorkflowWorker] = None
+        self._quality_worker: Optional[QualityFilterWorker] = None
         self._current_report: str = ""
         self._current_question: str = ""
+
+        # Quality manager for document assessment
+        self.quality_manager = QualityManager(config)
 
         # Store citations by document ID for later access
         self._citations_by_doc_id: Dict[str, Citation] = {}
@@ -228,6 +279,7 @@ class SystematicReviewTab(QWidget):
         self._documents_found: List[LiteDocument] = []
         self._scored_documents: List[ScoredDocument] = []
         self._all_citations: List[Citation] = []
+        self._quality_assessments: Dict[str, QualityAssessment] = {}
         self._current_report_path: Optional[Path] = None
 
         # Ensure reports directory exists
@@ -288,6 +340,16 @@ class SystematicReviewTab(QWidget):
 
         question_layout.addLayout(options_layout)
         layout.addWidget(question_group)
+
+        # Quality filter panel (collapsible)
+        self.quality_filter_panel = QualityFilterPanel()
+        self.quality_filter_panel.filterChanged.connect(self._on_quality_filter_changed)
+        layout.addWidget(self.quality_filter_panel)
+
+        # Quality summary widget (shows tier distribution after filtering)
+        self.quality_summary = QualitySummaryWidget()
+        self.quality_summary.setVisible(False)  # Hidden until filtering complete
+        layout.addWidget(self.quality_summary)
 
         # Progress section
         progress_group = QGroupBox("Progress")
@@ -367,7 +429,9 @@ class SystematicReviewTab(QWidget):
         self._documents_found = []
         self._scored_documents = []
         self._all_citations = []
+        self._quality_assessments = {}
         self._current_report_path = None
+        self.quality_summary.setVisible(False)
 
         # Update UI state
         self.run_btn.setEnabled(False)
@@ -378,6 +442,9 @@ class SystematicReviewTab(QWidget):
         self.progress_bar.setValue(0)
         self._current_report = ""
 
+        # Get quality filter settings
+        quality_filter = self.quality_filter_panel.get_filter()
+
         # Create and start worker
         self._worker = WorkflowWorker(
             question=question,
@@ -385,6 +452,8 @@ class SystematicReviewTab(QWidget):
             storage=self.storage,
             max_results=self.max_results_spin.value(),
             min_score=self.min_score_spin.value(),
+            quality_filter=quality_filter,
+            quality_manager=self.quality_manager,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.step_complete.connect(self._on_step_complete)
@@ -397,11 +466,27 @@ class SystematicReviewTab(QWidget):
         if self._worker:
             self._worker.cancel()
             self.progress_label.setText("Cancelling...")
+        if self._quality_worker:
+            self._quality_worker.cancel()
+
+    def _on_quality_filter_changed(self, filter_settings: QualityFilter) -> None:
+        """
+        Handle quality filter settings change.
+
+        This is called when user modifies filter settings in the panel.
+        Settings are applied when the workflow runs.
+
+        Args:
+            filter_settings: New quality filter settings
+        """
+        logger.debug(f"Quality filter changed: {filter_settings}")
+        # Settings will be used when workflow runs - no immediate action needed
 
     def _on_progress(self, step: str, current: int, total: int) -> None:
         """Handle progress updates from worker."""
         step_names = {
             "search": "Searching PubMed",
+            "quality_filter": "Assessing quality",
             "scoring": "Scoring documents",
             "citations": "Extracting citations",
             "report": "Generating report",
@@ -418,6 +503,17 @@ class SystematicReviewTab(QWidget):
             docs: List[LiteDocument] = result
             self._documents_found = docs
             self.progress_label.setText(f"Found {len(docs)} documents")
+            # Quality filtering happens after search in the workflow worker
+            # Results are stored for later display
+        elif step == "quality_filter":
+            # Handle quality filtering results
+            filtered_docs, assessments = result
+            self._store_quality_assessments(assessments)
+            self.progress_label.setText(
+                f"Quality filter: {len(filtered_docs)}/{len(assessments)} passed"
+            )
+            # Show quality summary
+            self._show_quality_summary(assessments)
         elif step == "scoring":
             scored: List[ScoredDocument] = result
             self._scored_documents = scored
@@ -635,6 +731,48 @@ class SystematicReviewTab(QWidget):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self._worker = None
+        self._quality_worker = None
+
+    def _store_quality_assessments(
+        self,
+        assessments: List[QualityAssessment],
+    ) -> None:
+        """
+        Store quality assessments by document ID for later access.
+
+        Args:
+            assessments: List of quality assessments
+        """
+        for assessment in assessments:
+            if hasattr(assessment, 'document_id') and assessment.document_id:
+                self._quality_assessments[assessment.document_id] = assessment
+
+    def _show_quality_summary(self, assessments: List[QualityAssessment]) -> None:
+        """
+        Display quality assessment summary.
+
+        Args:
+            assessments: List of quality assessments to summarize
+        """
+        if not assessments:
+            self.quality_summary.setVisible(False)
+            return
+
+        summary = self.quality_manager.get_assessment_summary(assessments)
+        self.quality_summary.update_summary(summary)
+        self.quality_summary.setVisible(True)
+
+    def get_quality_assessment(self, doc_id: str) -> Optional[QualityAssessment]:
+        """
+        Get quality assessment for a document.
+
+        Args:
+            doc_id: Document ID
+
+        Returns:
+            QualityAssessment if found, None otherwise
+        """
+        return self._quality_assessments.get(doc_id)
 
     def _export_report(self) -> None:
         """Export the report to a file."""
@@ -676,6 +814,9 @@ class SystematicReviewTab(QWidget):
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(self._current_report)
 
+            # Get quality filter settings for audit
+            quality_filter_settings = self.quality_filter_panel.get_filter()
+
             # Build audit trail
             audit_data = {
                 "metadata": {
@@ -688,6 +829,17 @@ class SystematicReviewTab(QWidget):
                     "documents_scored_relevant": len(self._scored_documents),
                     "documents_rejected": len(self._documents_found) - len(self._scored_documents),
                     "citations_extracted": len(self._all_citations),
+                    "quality_filter_applied": quality_filter_settings.minimum_tier.value > 0,
+                    "quality_assessments_count": len(self._quality_assessments),
+                },
+                "quality_filter_settings": {
+                    "minimum_tier": quality_filter_settings.minimum_tier.name,
+                    "require_randomization": quality_filter_settings.require_randomization,
+                    "require_blinding": quality_filter_settings.require_blinding,
+                    "minimum_sample_size": quality_filter_settings.minimum_sample_size,
+                    "use_metadata_only": quality_filter_settings.use_metadata_only,
+                    "use_llm_classification": quality_filter_settings.use_llm_classification,
+                    "use_detailed_assessment": quality_filter_settings.use_detailed_assessment,
                 },
                 "documents_found": [
                     {
@@ -698,6 +850,17 @@ class SystematicReviewTab(QWidget):
                         "journal": doc.journal,
                         "pmid": doc.pmid,
                         "doi": doc.doi,
+                        "quality_assessment": (
+                            {
+                                "study_design": self._quality_assessments[doc.id].study_design.value,
+                                "quality_tier": self._quality_assessments[doc.id].quality_tier.name,
+                                "quality_score": self._quality_assessments[doc.id].quality_score,
+                                "confidence": self._quality_assessments[doc.id].confidence,
+                                "assessment_tier": self._quality_assessments[doc.id].assessment_tier,
+                            }
+                            if doc.id in self._quality_assessments
+                            else None
+                        ),
                     }
                     for doc in self._documents_found
                 ],

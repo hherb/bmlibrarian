@@ -4,6 +4,7 @@ Background worker threads for BMLibrarian Lite GUI.
 Provides QThread-based workers for long-running operations:
 - AnswerWorker: Generate answers using the interrogation agent
 - PDFDiscoveryWorker: Discover and download PDFs with verification
+- QualityFilterWorker: Filter documents by quality criteria
 
 These workers allow the main GUI thread to remain responsive while
 background operations execute.
@@ -11,10 +12,15 @@ background operations execute.
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
+
+if TYPE_CHECKING:
+    from ..data_models import LiteDocument
+    from ..quality.data_models import QualityFilter, QualityAssessment
+    from ..quality.quality_manager import QualityManager
 
 logger = logging.getLogger(__name__)
 
@@ -313,3 +319,73 @@ class OpenAthensAuthWorker(QThread):
         except Exception as e:
             logger.exception("OpenAthens authentication failed")
             self.error.emit(str(e))
+
+
+class QualityFilterWorker(QThread):
+    """
+    Background worker for quality filtering documents.
+
+    Executes quality assessment and filtering in a background thread
+    to prevent blocking the GUI during LLM calls.
+
+    Signals:
+        progress: Emitted during progress (current, total, assessment)
+        finished: Emitted when filtering completes (filtered_docs, all_assessments)
+        error: Emitted on error (error message)
+    """
+
+    progress = Signal(int, int, object)  # current, total, QualityAssessment
+    finished = Signal(list, list)  # filtered docs, all assessments
+    error = Signal(str)
+
+    def __init__(
+        self,
+        quality_manager: "QualityManager",
+        documents: List["LiteDocument"],
+        filter_settings: "QualityFilter",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """
+        Initialize the quality filter worker.
+
+        Args:
+            quality_manager: QualityManager instance for assessment
+            documents: List of documents to filter
+            filter_settings: Quality filter configuration
+            parent: Optional parent widget
+        """
+        super().__init__(parent)
+        self.quality_manager = quality_manager
+        self.documents = documents
+        self.filter_settings = filter_settings
+        self._cancelled = False
+
+    def run(self) -> None:
+        """Run quality filtering in background thread."""
+        try:
+            def progress_callback(
+                current: int,
+                total: int,
+                assessment: "QualityAssessment",
+            ) -> None:
+                """Emit progress signal if not cancelled."""
+                if not self._cancelled:
+                    self.progress.emit(current, total, assessment)
+
+            filtered, assessments = self.quality_manager.filter_documents(
+                self.documents,
+                self.filter_settings,
+                progress_callback=progress_callback,
+            )
+
+            if not self._cancelled:
+                self.finished.emit(filtered, assessments)
+
+        except Exception as e:
+            logger.exception("Quality filtering failed")
+            if not self._cancelled:
+                self.error.emit(str(e))
+
+    def cancel(self) -> None:
+        """Request cancellation of the operation."""
+        self._cancelled = True

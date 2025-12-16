@@ -68,11 +68,11 @@ class TestQualityTierEnum:
         assert QualityTier.TIER_2_OBSERVATIONAL.value == 2
         assert QualityTier.TIER_3_CONTROLLED.value == 3
         assert QualityTier.TIER_4_EXPERIMENTAL.value == 4
-        assert QualityTier.TIER_5_SYSTEMATIC.value == 5
+        assert QualityTier.TIER_5_SYNTHESIS.value == 5
 
     def test_tier_comparison(self) -> None:
         """Test that tiers can be compared by value."""
-        assert QualityTier.TIER_5_SYSTEMATIC.value > QualityTier.TIER_4_EXPERIMENTAL.value
+        assert QualityTier.TIER_5_SYNTHESIS.value > QualityTier.TIER_4_EXPERIMENTAL.value
         assert QualityTier.TIER_4_EXPERIMENTAL.value > QualityTier.TIER_3_CONTROLLED.value
         assert QualityTier.TIER_3_CONTROLLED.value > QualityTier.TIER_2_OBSERVATIONAL.value
 
@@ -103,17 +103,17 @@ class TestDesignMappings:
             assert isinstance(TIER_LABELS[tier], str)
 
     def test_score_ranges(self) -> None:
-        """Test that scores are within expected range."""
+        """Test that scores are within expected range (0-10)."""
         for design, score in DESIGN_TO_SCORE.items():
-            assert 0.0 <= score <= 1.0, f"Invalid score {score} for {design}"
+            assert 0.0 <= score <= 10.0, f"Invalid score {score} for {design}"
 
     def test_tier_score_consistency(self) -> None:
         """Test that higher tiers have higher scores."""
-        systematic = DESIGN_TO_SCORE[StudyDesign.META_ANALYSIS]
+        synthesis = DESIGN_TO_SCORE[StudyDesign.META_ANALYSIS]
         experimental = DESIGN_TO_SCORE[StudyDesign.RCT]
         anecdotal = DESIGN_TO_SCORE[StudyDesign.CASE_REPORT]
 
-        assert systematic > experimental
+        assert synthesis > experimental
         assert experimental > anecdotal
 
 
@@ -124,44 +124,25 @@ class TestQualityFilter:
         """Test default filter values."""
         qf = QualityFilter()
         assert qf.minimum_tier == QualityTier.UNCLASSIFIED
-        assert qf.minimum_score == 0.0
         assert qf.require_randomization is False
         assert qf.require_blinding is False
         assert qf.minimum_sample_size is None
-        assert qf.exclude_designs == []
+        assert qf.use_metadata_only is False
+        assert qf.use_llm_classification is True
+        assert qf.use_detailed_assessment is False
 
     def test_custom_filter(self) -> None:
         """Test creating custom filter."""
         qf = QualityFilter(
             minimum_tier=QualityTier.TIER_4_EXPERIMENTAL,
-            minimum_score=0.7,
             require_randomization=True,
             require_blinding=True,
             minimum_sample_size=100,
-            exclude_designs=[StudyDesign.CASE_REPORT, StudyDesign.EDITORIAL],
         )
         assert qf.minimum_tier == QualityTier.TIER_4_EXPERIMENTAL
-        assert qf.minimum_score == 0.7
         assert qf.require_randomization is True
         assert qf.require_blinding is True
         assert qf.minimum_sample_size == 100
-        assert len(qf.exclude_designs) == 2
-
-    def test_to_dict_and_from_dict(self) -> None:
-        """Test serialization and deserialization."""
-        qf = QualityFilter(
-            minimum_tier=QualityTier.TIER_3_CONTROLLED,
-            minimum_score=0.5,
-            require_blinding=True,
-            exclude_designs=[StudyDesign.EDITORIAL],
-        )
-        data = qf.to_dict()
-        restored = QualityFilter.from_dict(data)
-
-        assert restored.minimum_tier == qf.minimum_tier
-        assert restored.minimum_score == qf.minimum_score
-        assert restored.require_blinding == qf.require_blinding
-        assert restored.exclude_designs == qf.exclude_designs
 
 
 class TestStudyClassification:
@@ -172,11 +153,9 @@ class TestStudyClassification:
         sc = StudyClassification(
             study_design=StudyDesign.RCT,
             confidence=0.9,
-            extraction_method="metadata",
         )
         assert sc.study_design == StudyDesign.RCT
         assert sc.confidence == 0.9
-        assert sc.extraction_method == "metadata"
         assert sc.is_randomized is None
         assert sc.is_blinded is None
         assert sc.sample_size is None
@@ -186,36 +165,13 @@ class TestStudyClassification:
         sc = StudyClassification(
             study_design=StudyDesign.RCT,
             confidence=0.95,
-            extraction_method="llm_haiku",
             is_randomized=True,
-            is_blinded=True,
-            blinding_type="double",
-            is_controlled=True,
+            is_blinded="double",
             sample_size=250,
-            extraction_details=["Phase III RCT", "Double-blind design"],
         )
         assert sc.is_randomized is True
-        assert sc.is_blinded is True
-        assert sc.blinding_type == "double"
+        assert sc.is_blinded == "double"
         assert sc.sample_size == 250
-        assert len(sc.extraction_details) == 2
-
-    def test_to_dict_and_from_dict(self) -> None:
-        """Test serialization and deserialization."""
-        sc = StudyClassification(
-            study_design=StudyDesign.COHORT_PROSPECTIVE,
-            confidence=0.85,
-            extraction_method="llm_sonnet",
-            sample_size=500,
-            extraction_details=["Large prospective cohort"],
-        )
-        data = sc.to_dict()
-        restored = StudyClassification.from_dict(data)
-
-        assert restored.study_design == sc.study_design
-        assert restored.confidence == sc.confidence
-        assert restored.extraction_method == sc.extraction_method
-        assert restored.sample_size == sc.sample_size
 
 
 class TestBiasRisk:
@@ -224,43 +180,24 @@ class TestBiasRisk:
     def test_default_values(self) -> None:
         """Test default bias risk values."""
         br = BiasRisk()
-        assert br.selection_bias is None
-        assert br.performance_bias is None
-        assert br.detection_bias is None
-        assert br.attrition_bias is None
-        assert br.reporting_bias is None
-        assert br.overall_risk is None
-        assert br.notes == []
+        assert br.selection == "unclear"
+        assert br.performance == "unclear"
+        assert br.detection == "unclear"
+        assert br.attrition == "unclear"
+        assert br.reporting == "unclear"
 
     def test_custom_risk_assessment(self) -> None:
         """Test creating custom risk assessment."""
         br = BiasRisk(
-            selection_bias="low",
-            performance_bias="high",
-            detection_bias="unclear",
-            attrition_bias="low",
-            reporting_bias="low",
-            overall_risk="moderate",
-            notes=["Open-label study", "Incomplete blinding"],
+            selection="low",
+            performance="high",
+            detection="unclear",
+            attrition="low",
+            reporting="low",
         )
-        assert br.selection_bias == "low"
-        assert br.performance_bias == "high"
-        assert br.overall_risk == "moderate"
-        assert len(br.notes) == 2
-
-    def test_to_dict_and_from_dict(self) -> None:
-        """Test serialization and deserialization."""
-        br = BiasRisk(
-            selection_bias="low",
-            overall_risk="low",
-            notes=["Well-designed RCT"],
-        )
-        data = br.to_dict()
-        restored = BiasRisk.from_dict(data)
-
-        assert restored.selection_bias == br.selection_bias
-        assert restored.overall_risk == br.overall_risk
-        assert restored.notes == br.notes
+        assert br.selection == "low"
+        assert br.performance == "high"
+        assert br.detection == "unclear"
 
 
 class TestQualityAssessment:
@@ -273,28 +210,21 @@ class TestQualityAssessment:
             extraction_method="metadata",
             study_design=StudyDesign.RCT,
             quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
-            quality_score=0.8,
+            quality_score=8.0,
             confidence=0.95,
         )
         assert qa.assessment_tier == 1
         assert qa.extraction_method == "metadata"
         assert qa.study_design == StudyDesign.RCT
         assert qa.quality_tier == QualityTier.TIER_4_EXPERIMENTAL
-        assert qa.quality_score == 0.8
+        assert qa.quality_score == 8.0
         assert qa.confidence == 0.95
 
     def test_full_assessment(self) -> None:
         """Test creating full assessment with all fields."""
-        classification = StudyClassification(
-            study_design=StudyDesign.RCT,
-            confidence=0.9,
-            extraction_method="llm_sonnet",
-            is_randomized=True,
-            is_blinded=True,
-        )
         bias_risk = BiasRisk(
-            selection_bias="low",
-            overall_risk="low",
+            selection="low",
+            performance="low",
         )
 
         qa = QualityAssessment(
@@ -302,15 +232,13 @@ class TestQualityAssessment:
             extraction_method="llm_sonnet",
             study_design=StudyDesign.RCT,
             quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
-            quality_score=0.85,
+            quality_score=8.5,
             confidence=0.9,
-            classification=classification,
             bias_risk=bias_risk,
             strengths=["Double-blind", "Large sample size"],
             limitations=["Single center"],
             evidence_level="1b",
         )
-        assert qa.classification is not None
         assert qa.bias_risk is not None
         assert len(qa.strengths) == 2
         assert len(qa.limitations) == 1
@@ -321,12 +249,11 @@ class TestQualityAssessment:
         qa = QualityAssessment.from_metadata(
             study_design=StudyDesign.SYSTEMATIC_REVIEW,
             confidence=0.95,
-            extraction_details=["Matched publication type: Systematic Review"],
         )
         assert qa.assessment_tier == 1
         assert qa.extraction_method == "metadata"
         assert qa.study_design == StudyDesign.SYSTEMATIC_REVIEW
-        assert qa.quality_tier == QualityTier.TIER_5_SYSTEMATIC
+        assert qa.quality_tier == QualityTier.TIER_5_SYNTHESIS
         assert qa.confidence == 0.95
 
     def test_from_classification_factory(self) -> None:
@@ -334,8 +261,6 @@ class TestQualityAssessment:
         classification = StudyClassification(
             study_design=StudyDesign.CASE_CONTROL,
             confidence=0.85,
-            extraction_method="llm_haiku",
-            is_controlled=True,
         )
         qa = QualityAssessment.from_classification(classification)
 
@@ -356,85 +281,115 @@ class TestQualityAssessment:
         assert qa.quality_score == 0.0
         assert qa.confidence == 0.0
 
-    def test_to_dict_and_from_dict(self) -> None:
-        """Test serialization and deserialization."""
+    def test_to_dict(self) -> None:
+        """Test serialization."""
         qa = QualityAssessment(
             assessment_tier=2,
             extraction_method="llm_haiku",
             study_design=StudyDesign.COHORT_PROSPECTIVE,
             quality_tier=QualityTier.TIER_3_CONTROLLED,
-            quality_score=0.7,
+            quality_score=7.0,
             confidence=0.85,
             strengths=["Large sample"],
             limitations=["Observational design"],
         )
         data = qa.to_dict()
-        restored = QualityAssessment.from_dict(data)
 
-        assert restored.assessment_tier == qa.assessment_tier
-        assert restored.extraction_method == qa.extraction_method
-        assert restored.study_design == qa.study_design
-        assert restored.quality_tier == qa.quality_tier
-        assert restored.quality_score == qa.quality_score
-        assert restored.confidence == qa.confidence
-        assert restored.strengths == qa.strengths
-        assert restored.limitations == qa.limitations
+        assert data["assessment_tier"] == qa.assessment_tier
+        assert data["extraction_method"] == qa.extraction_method
+        assert data["study_design"] == qa.study_design.value
+        assert data["quality_tier"] == qa.quality_tier.value
 
-    def test_meets_filter_by_tier(self) -> None:
-        """Test meets_filter checks tier requirement."""
+    def test_passes_filter_by_tier(self) -> None:
+        """Test passes_filter checks tier requirement."""
         qa = QualityAssessment(
             assessment_tier=1,
             extraction_method="metadata",
             study_design=StudyDesign.RCT,
             quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
-            quality_score=0.8,
+            quality_score=8.0,
             confidence=0.95,
         )
 
         # Should pass tier 4 requirement
         filter_4 = QualityFilter(minimum_tier=QualityTier.TIER_4_EXPERIMENTAL)
-        assert qa.meets_filter(filter_4)
+        assert qa.passes_filter(filter_4)
 
         # Should fail tier 5 requirement
-        filter_5 = QualityFilter(minimum_tier=QualityTier.TIER_5_SYSTEMATIC)
-        assert not qa.meets_filter(filter_5)
+        filter_5 = QualityFilter(minimum_tier=QualityTier.TIER_5_SYNTHESIS)
+        assert not qa.passes_filter(filter_5)
 
-    def test_meets_filter_by_score(self) -> None:
-        """Test meets_filter checks score requirement."""
-        qa = QualityAssessment(
+    def test_passes_filter_randomization(self) -> None:
+        """Test passes_filter checks randomization requirement."""
+        qa_randomized = QualityAssessment(
+            assessment_tier=1,
+            extraction_method="metadata",
+            study_design=StudyDesign.RCT,
+            quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
+            quality_score=8.0,
+            confidence=0.95,
+            is_randomized=True,
+        )
+        qa_not_randomized = QualityAssessment(
             assessment_tier=1,
             extraction_method="metadata",
             study_design=StudyDesign.COHORT_PROSPECTIVE,
             quality_tier=QualityTier.TIER_3_CONTROLLED,
-            quality_score=0.6,
+            quality_score=6.0,
             confidence=0.85,
+            is_randomized=False,
         )
 
-        # Should pass 0.5 threshold
-        filter_low = QualityFilter(minimum_score=0.5)
-        assert qa.meets_filter(filter_low)
+        filter_require_random = QualityFilter(require_randomization=True)
+        assert qa_randomized.passes_filter(filter_require_random)
+        assert not qa_not_randomized.passes_filter(filter_require_random)
 
-        # Should fail 0.7 threshold
-        filter_high = QualityFilter(minimum_score=0.7)
-        assert not qa.meets_filter(filter_high)
-
-    def test_meets_filter_excluded_designs(self) -> None:
-        """Test meets_filter checks excluded designs."""
-        qa = QualityAssessment(
+    def test_passes_filter_blinding(self) -> None:
+        """Test passes_filter checks blinding requirement."""
+        qa_blinded = QualityAssessment(
             assessment_tier=1,
             extraction_method="metadata",
-            study_design=StudyDesign.EDITORIAL,
-            quality_tier=QualityTier.TIER_1_ANECDOTAL,
-            quality_score=0.1,
+            study_design=StudyDesign.RCT,
+            quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
+            quality_score=8.0,
             confidence=0.95,
+            is_blinded="double",
+        )
+        qa_not_blinded = QualityAssessment(
+            assessment_tier=1,
+            extraction_method="metadata",
+            study_design=StudyDesign.RCT,
+            quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
+            quality_score=7.0,
+            confidence=0.85,
+            is_blinded=None,
         )
 
-        # Should pass if not excluded
-        filter_no_exclude = QualityFilter()
-        assert qa.meets_filter(filter_no_exclude)
+        filter_require_blind = QualityFilter(require_blinding=True)
+        assert qa_blinded.passes_filter(filter_require_blind)
+        assert not qa_not_blinded.passes_filter(filter_require_blind)
 
-        # Should fail if excluded
-        filter_exclude = QualityFilter(
-            exclude_designs=[StudyDesign.EDITORIAL, StudyDesign.LETTER]
+    def test_passes_filter_sample_size(self) -> None:
+        """Test passes_filter checks sample size requirement."""
+        qa_large = QualityAssessment(
+            assessment_tier=1,
+            extraction_method="metadata",
+            study_design=StudyDesign.RCT,
+            quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
+            quality_score=8.0,
+            confidence=0.95,
+            sample_size=500,
         )
-        assert not qa.meets_filter(filter_exclude)
+        qa_small = QualityAssessment(
+            assessment_tier=1,
+            extraction_method="metadata",
+            study_design=StudyDesign.RCT,
+            quality_tier=QualityTier.TIER_4_EXPERIMENTAL,
+            quality_score=7.0,
+            confidence=0.85,
+            sample_size=50,
+        )
+
+        filter_min_100 = QualityFilter(minimum_sample_size=100)
+        assert qa_large.passes_filter(filter_min_100)
+        assert not qa_small.passes_filter(filter_min_100)
