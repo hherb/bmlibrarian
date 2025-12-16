@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
+from shiboken6 import isValid as is_widget_valid
 from typing import Optional, Callable, Dict, Any
 from pathlib import Path
 import logging
@@ -1082,16 +1083,19 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         try:
             # Execute discovery with progress callback
             def progress_callback(stage: str, status: str) -> None:
-                progress_dialog.add_step(stage, status)
+                if is_widget_valid(progress_dialog):
+                    progress_dialog.add_step(stage, status)
 
             result = self._execute_pdf_discovery(card_data, progress_callback)
 
             if result and result.exists():
-                # Success - update progress dialog
-                progress_dialog.set_success(result)
+                # Success - update progress dialog (check validity first)
+                if is_widget_valid(progress_dialog):
+                    progress_dialog.set_success(result)
 
-                # Update primary button to VIEW state
-                primary_button._transition_to_view(result)
+                # Update primary button to VIEW state (check validity first)
+                if is_widget_valid(primary_button):
+                    primary_button._transition_to_view(result)
 
                 # Update database with pdf_filename
                 document = {
@@ -1114,28 +1118,34 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     f"{card_data.doc_id}: {result}"
                 )
 
-                # Emit signal
-                primary_button.pdf_discovered.emit(result)
+                # Emit signal (check validity first)
+                if is_widget_valid(primary_button):
+                    primary_button.pdf_discovered.emit(result)
 
-                # Update button to indicate success
-                find_button.setText("✓ Found")
-                find_button.setEnabled(False)
+                # Update button to indicate success (check validity first)
+                if is_widget_valid(find_button):
+                    find_button.setText("✓ Found")
+                    find_button.setEnabled(False)
 
-                # Close dialog after a short delay
-                QTimer.singleShot(1500, progress_dialog.accept)
+                # Close dialog after a short delay (check validity first)
+                if is_widget_valid(progress_dialog):
+                    QTimer.singleShot(1500, progress_dialog.accept)
 
             else:
-                # Discovery failed
-                progress_dialog.set_failure("No PDF sources found")
+                # Discovery failed (check widget validity before accessing)
+                if is_widget_valid(progress_dialog):
+                    progress_dialog.set_failure("No PDF sources found")
                 logger.warning(
                     f"PDF discovery failed for document {card_data.doc_id}"
                 )
-                find_button.setText("✗ Not Found")
+                if is_widget_valid(find_button):
+                    find_button.setText("✗ Not Found")
 
-                # Close dialog after a delay
-                QTimer.singleShot(2000, progress_dialog.reject)
+                # Close dialog after a delay (check validity first)
+                if is_widget_valid(progress_dialog):
+                    QTimer.singleShot(2000, progress_dialog.reject)
 
-                # Re-enable button after a delay
+                # Re-enable button after a delay (check validity in callback)
                 QTimer.singleShot(
                     PDFOperationSettings.BUTTON_RESET_DELAY_MS,
                     lambda: self._reset_find_button(find_button, original_text)
@@ -1143,26 +1153,37 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
         except Exception as e:
             error_msg = str(e)
-            progress_dialog.set_failure(error_msg)
+            # Check widget validity before accessing (widgets may have been deleted)
+            if is_widget_valid(progress_dialog):
+                progress_dialog.set_failure(error_msg)
             logger.error(
                 f"Error during PDF discovery for document {card_data.doc_id}: {e}"
             )
-            find_button.setText("✗ Error")
+            if is_widget_valid(find_button):
+                find_button.setText("✗ Error")
 
-            # Close dialog after a delay
-            QTimer.singleShot(2000, progress_dialog.reject)
+            # Close dialog after a delay (check validity first)
+            if is_widget_valid(progress_dialog):
+                QTimer.singleShot(2000, progress_dialog.reject)
 
-            # Re-enable button after a delay
+            # Re-enable button after a delay (check validity in callback)
             QTimer.singleShot(
                 PDFOperationSettings.BUTTON_RESET_DELAY_MS,
                 lambda: self._reset_find_button(find_button, original_text)
             )
 
-            # Emit error signal through primary button
-            primary_button.error_occurred.emit(error_msg)
+            # Emit error signal through primary button (check validity first)
+            if is_widget_valid(primary_button):
+                primary_button.error_occurred.emit(error_msg)
 
     def _reset_find_button(self, button: QPushButton, original_text: str) -> None:
-        """Reset the Find PDF button to its original state."""
+        """Reset the Find PDF button to its original state.
+
+        Safely handles the case where the button has been deleted
+        (e.g., parent widget was closed during async operation).
+        """
+        if not is_widget_valid(button):
+            return
         button.setText(original_text)
         button.setEnabled(True)
 
