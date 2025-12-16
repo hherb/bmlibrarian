@@ -177,7 +177,9 @@ class TestResponseParsing:
         result = classifier._parse_response(response)
 
         assert result.study_design == StudyDesign.RCT
-        assert result.confidence == 0.5  # Default value
+        # Default confidence is 0.0 (CONFIDENCE_PARSE_FAILURE_DEFAULT)
+        # to signal uncertainty rather than hiding it with arbitrary values
+        assert result.confidence == 0.0
         assert result.is_randomized is None
         assert result.sample_size is None
 
@@ -326,5 +328,7 @@ class TestConfidenceParsing:
         assert classifier._parse_confidence("0.75") == 0.75
 
     def test_parse_invalid_confidence(self, classifier: LiteStudyClassifier) -> None:
-        """Test invalid confidence returns default."""
-        assert classifier._parse_confidence("invalid") == 0.5
+        """Test invalid confidence returns zero (signals uncertainty)."""
+        # Default is 0.0 (CONFIDENCE_PARSE_FAILURE_DEFAULT)
+        # to signal uncertainty rather than hiding it with arbitrary values
+        assert classifier._parse_confidence("invalid") == 0.0

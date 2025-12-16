@@ -13,12 +13,15 @@ from .data_models import (
     StudyDesign,
     QualityTier,
     QualityAssessment,
+    DESIGN_LABELS as DATA_MODEL_DESIGN_LABELS,
+    TIER_LABELS as DATA_MODEL_TIER_LABELS,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # Descriptions for each quality tier (Oxford CEBM inspired)
+# These are lowercase descriptive phrases for use in sentences
 TIER_DESCRIPTIONS: dict[QualityTier, str] = {
     QualityTier.TIER_5_SYNTHESIS: "systematic reviews and meta-analyses",
     QualityTier.TIER_4_EXPERIMENTAL: "randomized controlled trials",
@@ -28,7 +31,8 @@ TIER_DESCRIPTIONS: dict[QualityTier, str] = {
     QualityTier.UNCLASSIFIED: "unclassified studies",
 }
 
-# Human-readable labels for study designs
+# Lowercase plural labels for study designs (for use in sentences)
+# These are derived from DATA_MODEL_DESIGN_LABELS but in lowercase plural form
 DESIGN_LABELS: dict[StudyDesign, str] = {
     StudyDesign.SYSTEMATIC_REVIEW: "systematic reviews",
     StudyDesign.META_ANALYSIS: "meta-analyses",
@@ -48,7 +52,8 @@ DESIGN_LABELS: dict[StudyDesign, str] = {
 }
 
 # Threshold for high-quality evidence (Tier 4 and above)
-HIGH_QUALITY_THRESHOLD = QualityTier.TIER_4_EXPERIMENTAL.value
+# Using the enum directly for comparison (clearer and type-safe)
+HIGH_QUALITY_TIER = QualityTier.TIER_4_EXPERIMENTAL
 
 # Threshold for small sample size warning
 SMALL_SAMPLE_SIZE_THRESHOLD = 50
@@ -136,9 +141,10 @@ class EvidenceSummaryGenerator:
 
         # Quality distribution summary
         avg_score = sum(a.quality_score for a in assessments) / total
+        # Use direct enum comparison via @total_ordering
         high_quality = sum(
             1 for a in assessments
-            if a.quality_tier.value >= HIGH_QUALITY_THRESHOLD
+            if a.quality_tier >= HIGH_QUALITY_TIER
         )
         high_quality_pct = (high_quality / total) * 100
 

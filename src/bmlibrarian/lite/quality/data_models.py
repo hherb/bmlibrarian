@@ -6,9 +6,15 @@ study design classification, and assessment results. These models
 follow the evidence hierarchy used in evidence-based medicine.
 """
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import total_ordering
 from typing import Optional, Any
+
+from ..constants import VALID_BIAS_RISK_VALUES
+
+logger = logging.getLogger(__name__)
 
 
 class StudyDesign(Enum):
@@ -37,6 +43,7 @@ class StudyDesign(Enum):
     UNKNOWN = "unknown"
 
 
+@total_ordering
 class QualityTier(Enum):
     """
     Quality tier for filtering based on evidence hierarchy.
@@ -51,6 +58,9 @@ class QualityTier(Enum):
     Tier 2: Observational studies
     Tier 1: Anecdotal/opinion (lowest)
     Tier 0: Unclassified
+
+    This enum supports comparison operators (>, <, >=, <=) via @total_ordering,
+    allowing direct comparison: `QualityTier.TIER_5_SYNTHESIS > QualityTier.TIER_3_CONTROLLED`
     """
 
     TIER_5_SYNTHESIS = 5
@@ -59,6 +69,38 @@ class QualityTier(Enum):
     TIER_2_OBSERVATIONAL = 2
     TIER_1_ANECDOTAL = 1
     UNCLASSIFIED = 0
+
+    def __lt__(self, other: "QualityTier") -> bool:
+        """
+        Less-than comparison based on tier value.
+
+        Args:
+            other: Another QualityTier to compare against
+
+        Returns:
+            True if this tier is lower quality than other
+        """
+        if not isinstance(other, QualityTier):
+            return NotImplemented
+        return self.value < other.value
+
+    def __eq__(self, other: object) -> bool:
+        """
+        Equality comparison.
+
+        Args:
+            other: Another object to compare against
+
+        Returns:
+            True if both are the same QualityTier
+        """
+        if not isinstance(other, QualityTier):
+            return NotImplemented
+        return self.value == other.value
+
+    def __hash__(self) -> int:
+        """Return hash based on value for dict/set usage."""
+        return hash(self.value)
 
 
 # Mapping from study design to quality tier
@@ -162,13 +204,17 @@ class QualityFilter:
         """
         Check if a quality tier passes the minimum threshold.
 
+        Uses direct enum comparison via QualityTier's __ge__ method
+        (enabled by @total_ordering decorator).
+
         Args:
             tier: Quality tier to check
 
         Returns:
             True if tier meets or exceeds minimum
         """
-        return tier.value >= self.minimum_tier.value
+        # Direct enum comparison - clearer and type-safe
+        return tier >= self.minimum_tier
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -288,22 +334,59 @@ class BiasRisk:
         }
 
     @classmethod
+    def _validate_bias_value(cls, value: str, domain: str) -> str:
+        """
+        Validate and normalize a bias risk value.
+
+        Args:
+            value: The bias risk value to validate
+            domain: The domain name (for error messages)
+
+        Returns:
+            Validated bias risk value (defaults to "unclear" if invalid)
+        """
+        normalized = str(value).lower().strip()
+        if normalized in VALID_BIAS_RISK_VALUES:
+            return normalized
+        # Log invalid value and default to "unclear"
+        logger.warning(
+            f"BiasRisk: Invalid value '{value}' for domain '{domain}', "
+            f"expected one of: {', '.join(sorted(VALID_BIAS_RISK_VALUES))}. "
+            "Defaulting to 'unclear'."
+        )
+        return "unclear"
+
+    @classmethod
     def from_dict(cls, data: dict[str, str]) -> "BiasRisk":
         """
-        Create from dictionary.
+        Create from dictionary with validation.
+
+        All bias risk values are validated against VALID_BIAS_RISK_VALUES
+        ("low", "unclear", "high"). Invalid values are logged and replaced
+        with "unclear" to maintain scientific integrity.
 
         Args:
             data: Dictionary with bias domain values
 
         Returns:
-            BiasRisk instance
+            BiasRisk instance with validated values
         """
         return cls(
-            selection=data.get("selection", "unclear"),
-            performance=data.get("performance", "unclear"),
-            detection=data.get("detection", "unclear"),
-            attrition=data.get("attrition", "unclear"),
-            reporting=data.get("reporting", "unclear"),
+            selection=cls._validate_bias_value(
+                data.get("selection", "unclear"), "selection"
+            ),
+            performance=cls._validate_bias_value(
+                data.get("performance", "unclear"), "performance"
+            ),
+            detection=cls._validate_bias_value(
+                data.get("detection", "unclear"), "detection"
+            ),
+            attrition=cls._validate_bias_value(
+                data.get("attrition", "unclear"), "attrition"
+            ),
+            reporting=cls._validate_bias_value(
+                data.get("reporting", "unclear"), "reporting"
+            ),
         )
 
 

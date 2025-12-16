@@ -12,7 +12,7 @@ from bmlibrarian.lite.quality.evidence_summary import (
     EvidenceSummaryGenerator,
     TIER_DESCRIPTIONS,
     DESIGN_LABELS,
-    HIGH_QUALITY_THRESHOLD,
+    HIGH_QUALITY_TIER,
     SMALL_SAMPLE_SIZE_THRESHOLD,
     LOW_QUALITY_WARNING_THRESHOLD,
     UNCLASSIFIED_WARNING_THRESHOLD,
@@ -32,9 +32,11 @@ class TestEvidenceSummaryGeneratorConstants:
         for design in StudyDesign:
             assert design in DESIGN_LABELS, f"Missing label for {design}"
 
-    def test_high_quality_threshold_valid(self) -> None:
-        """High quality threshold should be between 1 and 5."""
-        assert 1 <= HIGH_QUALITY_THRESHOLD <= 5
+    def test_high_quality_tier_valid(self) -> None:
+        """High quality tier should be a valid QualityTier."""
+        assert HIGH_QUALITY_TIER in QualityTier
+        # Should be at least experimental level
+        assert HIGH_QUALITY_TIER.value >= QualityTier.TIER_4_EXPERIMENTAL.value
 
     def test_small_sample_size_threshold_reasonable(self) -> None:
         """Small sample size threshold should be reasonable."""
