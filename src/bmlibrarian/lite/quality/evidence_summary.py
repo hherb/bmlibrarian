@@ -53,6 +53,12 @@ HIGH_QUALITY_THRESHOLD = QualityTier.TIER_4_EXPERIMENTAL.value
 # Threshold for small sample size warning
 SMALL_SAMPLE_SIZE_THRESHOLD = 50
 
+# Threshold for low-quality evidence warning (proportion of total)
+LOW_QUALITY_WARNING_THRESHOLD = 0.5
+
+# Threshold for unclassified studies warning (proportion of total)
+UNCLASSIFIED_WARNING_THRESHOLD = 0.3
+
 
 class EvidenceSummaryGenerator:
     """
@@ -185,7 +191,7 @@ class EvidenceSummaryGenerator:
 
         # Check for reliance on low-quality evidence
         low_quality = tier_counts.get(QualityTier.TIER_1_ANECDOTAL, 0)
-        if len(assessments) > 0 and low_quality > len(assessments) * 0.5:
+        if len(assessments) > 0 and low_quality > len(assessments) * LOW_QUALITY_WARNING_THRESHOLD:
             notes.append(
                 "More than half of the evidence comes from case reports "
                 "or expert opinion; interpret findings with caution."
@@ -204,7 +210,7 @@ class EvidenceSummaryGenerator:
 
         # Check for unclassified studies
         unclassified = tier_counts.get(QualityTier.UNCLASSIFIED, 0)
-        if len(assessments) > 0 and unclassified > len(assessments) * 0.3:
+        if len(assessments) > 0 and unclassified > len(assessments) * UNCLASSIFIED_WARNING_THRESHOLD:
             notes.append(
                 f"{unclassified} studies could not be classified; "
                 "quality interpretation is limited."

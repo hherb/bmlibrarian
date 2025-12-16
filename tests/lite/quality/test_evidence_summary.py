@@ -14,6 +14,8 @@ from bmlibrarian.lite.quality.evidence_summary import (
     DESIGN_LABELS,
     HIGH_QUALITY_THRESHOLD,
     SMALL_SAMPLE_SIZE_THRESHOLD,
+    LOW_QUALITY_WARNING_THRESHOLD,
+    UNCLASSIFIED_WARNING_THRESHOLD,
 )
 
 
@@ -38,6 +40,14 @@ class TestEvidenceSummaryGeneratorConstants:
         """Small sample size threshold should be reasonable."""
         assert SMALL_SAMPLE_SIZE_THRESHOLD > 0
         assert SMALL_SAMPLE_SIZE_THRESHOLD < 200
+
+    def test_low_quality_warning_threshold_valid(self) -> None:
+        """Low quality warning threshold should be between 0 and 1."""
+        assert 0 < LOW_QUALITY_WARNING_THRESHOLD <= 1
+
+    def test_unclassified_warning_threshold_valid(self) -> None:
+        """Unclassified warning threshold should be between 0 and 1."""
+        assert 0 < UNCLASSIFIED_WARNING_THRESHOLD <= 1
 
 
 class TestEvidenceSummaryGeneratorBasic:
