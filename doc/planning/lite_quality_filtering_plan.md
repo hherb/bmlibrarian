@@ -29,35 +29,50 @@ Three complementary agents:
 
 ---
 
-## Proposed Solution: Three-Tier Quality Filtering
+## Proposed Solution: Two-Tier Quality Filtering
+
+### Why Not Rule-Based Keyword Matching?
+
+**REJECTED APPROACH**: Rule-based keyword extraction has proven unreliable because:
+- Documents frequently mention OTHER studies' methodologies in their abstracts
+- Example: "Unlike the RCT by Smith et al., our observational study..." would incorrectly match "RCT"
+- Example: "Previous systematic reviews have not addressed..." would incorrectly match "systematic review"
+- Exclusion patterns cannot reliably handle all variations of context
+- False positive rate too high for quality filtering decisions
+
+**ADOPTED APPROACH**: Use LLM for all study design classification, with two tiers:
+1. **Tier 1**: PubMed metadata (free, instant) - reliable when available
+2. **Tier 2**: Fast LLM classification (cheap, accurate) - handles all cases
+
+---
 
 ### Tier 1: Metadata-Based Filtering (Free, Instant)
 
-**What**: Use PubMed publication types and MeSH terms already returned by E-utilities API.
+**What**: Use PubMed publication types assigned by NLM indexers (already in E-utilities response).
 
 **PubMed Publication Types** (hierarchy):
 ```
-Highest Quality:
+Highest Quality (Tier 5):
 - Meta-Analysis
 - Systematic Review
 - Randomized Controlled Trial
 - Practice Guideline
 - Guideline
 
-High Quality:
+High Quality (Tier 4):
 - Clinical Trial, Phase IV
 - Clinical Trial, Phase III
 - Multicenter Study
 - Validation Study
 - Comparative Study
 
-Moderate Quality:
+Moderate Quality (Tier 3):
 - Clinical Trial, Phase II
 - Clinical Trial, Phase I
 - Observational Study
 - Cohort Study (when available)
 
-Lower Quality:
+Lower Quality (Tier 2):
 - Case Reports
 - Editorial
 - Comment
@@ -69,18 +84,18 @@ Lower Quality:
 **Implementation**:
 ```python
 @dataclass
-class QualityTier:
+class QualityTierMapping:
     """Quality tier based on publication type."""
     level: int  # 1-5 (5 = highest)
     publication_types: list[str]
     description: str
 
-QUALITY_TIERS = {
-    5: QualityTier(5, ["Meta-Analysis", "Systematic Review"], "Systematic evidence synthesis"),
-    4: QualityTier(4, ["Randomized Controlled Trial", "Practice Guideline"], "High-level evidence"),
-    3: QualityTier(3, ["Clinical Trial", "Multicenter Study", "Comparative Study"], "Controlled studies"),
-    2: QualityTier(2, ["Observational Study", "Cohort", "Case-Control"], "Observational evidence"),
-    1: QualityTier(1, ["Case Reports", "Editorial", "Letter"], "Anecdotal/opinion"),
+PUBMED_TYPE_TO_TIER = {
+    5: QualityTierMapping(5, ["Meta-Analysis", "Systematic Review"], "Systematic evidence synthesis"),
+    4: QualityTierMapping(4, ["Randomized Controlled Trial", "Practice Guideline"], "High-level evidence"),
+    3: QualityTierMapping(3, ["Clinical Trial", "Multicenter Study", "Comparative Study"], "Controlled studies"),
+    2: QualityTierMapping(2, ["Observational Study", "Cohort", "Case-Control"], "Observational evidence"),
+    1: QualityTierMapping(1, ["Case Reports", "Editorial", "Letter"], "Anecdotal/opinion"),
 }
 ```
 
@@ -93,137 +108,89 @@ QUALITY_TIERS = {
 
 **Cost**: Zero additional API calls
 **Speed**: Instant (metadata already fetched)
-**Accuracy**: ~70-80% for well-indexed articles
+**Accuracy**: ~85-95% for well-indexed articles (NLM indexers are experts)
+**Limitation**: Not all articles have publication type assigned; newer articles may lack indexing
 
 ---
 
-### Tier 2: Rule-Based Quality Extraction (Free, Fast)
+### Tier 2: Fast LLM Classification (Claude Haiku - Cheap, Accurate)
 
-**What**: Keyword and pattern matching on abstracts to detect quality indicators.
+**What**: Use Claude Haiku (fastest, cheapest Claude model) for study design classification when PubMed metadata is missing or insufficient.
 
-**Adapted from PaperWeightAssessmentAgent's rule-based extraction**:
+**When Used**:
+- PubMed publication type not assigned (newer articles, preprints)
+- User wants to verify/override PubMed classification
+- User enables "AI-verified quality filtering"
 
-#### Study Design Detection
+**Why Haiku?**:
+- **Cost**: ~$0.00025 per abstract (~400 tokens input, 50 tokens output)
+- **Speed**: ~0.5-1 second per document
+- **Accuracy**: ~90-95% for study design classification (simple, focused task)
+- **50 documents**: ~$0.0125 total (negligible)
+
+**LiteStudyClassifier** (minimal, focused prompt):
+
 ```python
-STUDY_DESIGN_PATTERNS = {
-    "systematic_review": {
-        "keywords": ["systematic review", "meta-analysis", "prisma", "cochrane"],
-        "exclusions": ["no systematic review", "unlike systematic"],
-        "score": 10.0,
-        "tier": 5
-    },
-    "rct": {
-        "keywords": ["randomized controlled", "randomised controlled", "rct",
-                     "double-blind", "double blind", "placebo-controlled"],
-        "exclusions": ["non-randomized", "not randomized", "quasi-randomized"],
-        "score": 8.0,
-        "tier": 4
-    },
-    "prospective_cohort": {
-        "keywords": ["prospective cohort", "prospective study", "followed for"],
-        "exclusions": ["retrospective"],
-        "score": 6.0,
-        "tier": 3
-    },
-    "retrospective": {
-        "keywords": ["retrospective", "chart review", "medical records"],
-        "exclusions": [],
-        "score": 5.0,
-        "tier": 2
-    },
-    "case_control": {
-        "keywords": ["case-control", "case control", "matched controls"],
-        "exclusions": [],
-        "score": 4.0,
-        "tier": 2
-    },
-    "cross_sectional": {
-        "keywords": ["cross-sectional", "cross sectional", "survey"],
-        "exclusions": [],
-        "score": 3.0,
-        "tier": 2
-    },
-    "case_series": {
-        "keywords": ["case series", "consecutive patients", "patient series"],
-        "exclusions": [],
-        "score": 2.0,
-        "tier": 1
-    },
-    "case_report": {
-        "keywords": ["case report", "case presentation", "we present a case"],
-        "exclusions": [],
-        "score": 1.0,
-        "tier": 1
-    }
-}
+class LiteStudyClassifier(LiteBaseAgent):
+    """Fast study design classification using Claude Haiku."""
+
+    # Use Haiku for speed and cost
+    DEFAULT_MODEL = "claude-3-haiku-20240307"
+
+    SYSTEM_PROMPT = """You classify biomedical research papers by study design.
+    Focus ONLY on what study design THIS paper used - ignore any other studies mentioned.
+    Be concise. Return only the requested JSON."""
+
+    def classify(self, document: LiteDocument) -> StudyClassification:
+        """Classify study design using fast LLM."""
+        # Short prompt for speed
+        prompt = f"""Classify THIS paper's study design:
+
+Title: {document.title}
+Abstract: {(document.abstract or "")[:2000]}
+
+Return JSON:
+{{
+    "study_design": "systematic_review|meta_analysis|rct|cohort_prospective|cohort_retrospective|case_control|cross_sectional|case_series|case_report|editorial|other",
+    "is_randomized": true/false/null,
+    "is_blinded": "none|single|double|triple|null",
+    "sample_size": number or null,
+    "confidence": 0.0-1.0
+}}
+
+IMPORTANT: Classify what THIS study did, not studies it references."""
+
+        response = self._call_llm(prompt, model=self.DEFAULT_MODEL)
+        return self._parse_response(response)
 ```
 
-#### Quality Indicator Detection
-```python
-QUALITY_INDICATORS = {
-    "blinding": {
-        "single_blind": ["single-blind", "single blind", "assessor-blind"],
-        "double_blind": ["double-blind", "double blind", "double-masked"],
-        "triple_blind": ["triple-blind", "triple blind"]
-    },
-    "sample_size": {
-        # Regex patterns
-        "patterns": [
-            r"n\s*=\s*(\d{1,7})",
-            r"N\s*=\s*(\d{1,7})",
-            r"(\d{1,7})\s*(?:participants|patients|subjects|individuals)"
-        ]
-    },
-    "methodology": {
-        "intention_to_treat": ["intention-to-treat", "intention to treat", "itt analysis"],
-        "power_calculation": ["power calculation", "sample size calculation", "powered to detect"],
-        "preregistered": ["clinicaltrials.gov", "prospero", "pre-registered", "preregistered"]
-    }
-}
-```
+**Cost Comparison**:
+| Model | Input ($/1M tokens) | Output ($/1M tokens) | Per Abstract |
+|-------|---------------------|----------------------|--------------|
+| Haiku | $0.25 | $1.25 | ~$0.00025 |
+| Sonnet | $3.00 | $15.00 | ~$0.003 |
+| Opus | $15.00 | $75.00 | ~$0.015 |
 
-#### Rule-Based Assessment Output
-```python
-@dataclass
-class RuleBasedAssessment:
-    """Results from rule-based quality extraction."""
-    study_design: str  # e.g., "rct", "prospective_cohort"
-    study_design_score: float  # 0-10
-    quality_tier: int  # 1-5
-
-    # Quality indicators detected
-    blinding_level: Optional[str]  # "single", "double", "triple", None
-    sample_size: Optional[int]
-    has_power_calculation: bool
-    has_preregistration: bool
-    has_itt_analysis: bool
-
-    # Confidence
-    confidence: float  # 0-1 based on keyword match strength
-    extraction_details: list[str]  # Audit trail of what was found
-```
-
-**Cost**: Zero API calls
-**Speed**: <100ms per document
-**Accuracy**: ~60-70% for study design, higher for specific indicators
+**Recommendation**: Use Haiku for classification, Sonnet only for detailed assessment.
 
 ---
 
-### Tier 3: LLM-Based Quality Assessment (Cloud API, Detailed)
+### Tier 3 (Optional): Detailed Quality Assessment (Claude Sonnet)
 
-**What**: Claude API call for comprehensive quality assessment. Used selectively.
+**What**: Comprehensive quality assessment with strengths, limitations, bias evaluation.
 
-**When to Use Tier 3**:
-1. User explicitly requests detailed assessment
-2. Rule-based extraction has low confidence
-3. Document passes initial filters but needs verification
-4. Small batch of high-priority documents
+**When Used**:
+- User explicitly requests detailed assessment
+- Preparing evidence tables for systematic reviews
+- Generating quality summary for reports
 
-**Simplified LiteQualityAgent** (adapted from StudyAssessmentAgent):
+**LiteQualityAgent** (full assessment):
 
 ```python
 class LiteQualityAgent(LiteBaseAgent):
-    """Lightweight quality assessment using Claude API."""
+    """Comprehensive quality assessment using Claude Sonnet."""
+
+    DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
     SYSTEM_PROMPT = """You are a research quality assessment expert.
     Evaluate the methodological quality of biomedical research papers.
@@ -233,40 +200,48 @@ class LiteQualityAgent(LiteBaseAgent):
     If information is unclear or not mentioned, indicate this explicitly."""
 
     def assess_quality(self, document: LiteDocument) -> QualityAssessment:
-        """Assess document quality using LLM."""
-        # Truncate abstract to save tokens
+        """Full quality assessment using LLM."""
         text = (document.abstract or "")[:4000]
 
-        prompt = f"""Assess this research paper's quality:
+        prompt = f"""Assess this research paper's methodological quality:
 
 Title: {document.title}
 Abstract: {text}
 
-Provide a JSON response with:
+Provide a JSON response:
 {{
-    "study_design": "systematic_review|rct|cohort_prospective|cohort_retrospective|case_control|cross_sectional|case_series|case_report|other",
+    "study_design": "systematic_review|meta_analysis|rct|cohort_prospective|cohort_retrospective|case_control|cross_sectional|case_series|case_report|editorial|other",
     "quality_score": 1-10,
     "evidence_level": "1a|1b|2a|2b|3a|3b|4|5",
     "design_characteristics": {{
-        "randomized": true/false,
-        "controlled": true/false,
-        "blinded": "none|single|double|triple",
-        "prospective": true/false,
-        "multicenter": true/false
+        "randomized": true/false/null,
+        "controlled": true/false/null,
+        "blinded": "none|single|double|triple|null",
+        "prospective": true/false/null,
+        "multicenter": true/false/null
     }},
     "sample_size": null or number,
-    "strengths": ["list of 2-3 strengths"],
-    "limitations": ["list of 2-3 limitations"],
+    "bias_risk": {{
+        "selection": "low|unclear|high",
+        "performance": "low|unclear|high",
+        "detection": "low|unclear|high",
+        "attrition": "low|unclear|high",
+        "reporting": "low|unclear|high"
+    }},
+    "strengths": ["2-3 methodological strengths"],
+    "limitations": ["2-3 methodological limitations"],
     "confidence": 0.0-1.0
-}}"""
+}}
+
+Focus on THIS study's methodology, not studies it references."""
 
         response = self._call_llm(prompt)
         return self._parse_response(response)
 ```
 
-**Cost**: ~$0.003-0.01 per document (Claude 3.5 Sonnet)
-**Speed**: 2-5 seconds per document
-**Accuracy**: ~85-95%
+**Cost**: ~$0.003-0.005 per document (Claude Sonnet)
+**Speed**: 2-4 seconds per document
+**Accuracy**: ~90-95% with detailed breakdown
 
 ---
 
@@ -280,8 +255,8 @@ src/bmlibrarian/lite/
 │   ├── __init__.py
 │   ├── data_models.py          # Quality-related dataclasses
 │   ├── metadata_filter.py      # Tier 1: PubMed publication type filtering
-│   ├── rule_extractor.py       # Tier 2: Rule-based quality extraction
-│   ├── quality_agent.py        # Tier 3: LLM-based quality assessment
+│   ├── study_classifier.py     # Tier 2: Fast LLM classification (Haiku)
+│   ├── quality_agent.py        # Tier 3: Detailed LLM assessment (Sonnet, optional)
 │   └── quality_manager.py      # Orchestrates all tiers
 ```
 
@@ -324,10 +299,9 @@ class QualityFilter:
     minimum_sample_size: Optional[int] = None
 
     # Assessment depth
-    use_metadata_filter: bool = True   # Tier 1
-    use_rule_extraction: bool = True   # Tier 2
-    use_llm_assessment: bool = False   # Tier 3 (opt-in)
-    llm_for_uncertain: bool = True     # Use LLM when rules uncertain
+    use_metadata_only: bool = False     # Tier 1 only (free, fast, less complete)
+    use_llm_classification: bool = True # Tier 2: Haiku for unclassified docs
+    use_detailed_assessment: bool = False  # Tier 3: Sonnet for full quality report
 
 @dataclass
 class QualityAssessment:
@@ -373,7 +347,7 @@ class QualityManager:
     ):
         self.config = config
         self.metadata_filter = MetadataFilter()
-        self.rule_extractor = RuleBasedExtractor()
+        self.study_classifier = LiteStudyClassifier(config, llm_client) if llm_client else None
         self.quality_agent = LiteQualityAgent(config, llm_client) if llm_client else None
 
     def assess_document(
@@ -384,30 +358,57 @@ class QualityManager:
         """
         Assess document quality using tiered approach.
 
-        Tier 1 (metadata) -> Tier 2 (rules) -> Tier 3 (LLM, if enabled)
+        Tier 1 (metadata) -> Tier 2 (Haiku classification) -> Tier 3 (Sonnet detailed, if enabled)
         """
-        # Tier 1: Metadata filtering
-        if filter_settings.use_metadata_filter:
-            metadata_result = self.metadata_filter.assess(document)
-            if metadata_result.confidence >= 0.8:
-                return metadata_result
+        # Tier 1: Metadata filtering (always try first - it's free)
+        metadata_result = self.metadata_filter.assess(document)
 
-        # Tier 2: Rule-based extraction
-        if filter_settings.use_rule_extraction:
-            rule_result = self.rule_extractor.assess(document)
-            if rule_result.confidence >= 0.7:
-                return rule_result
+        # If metadata provides confident classification and user accepts metadata-only
+        if filter_settings.use_metadata_only:
+            return metadata_result
 
-        # Tier 3: LLM assessment (if enabled and needed)
-        if filter_settings.use_llm_assessment or (
-            filter_settings.llm_for_uncertain and
-            rule_result.confidence < 0.5
-        ):
-            if self.quality_agent:
+        # If metadata has high confidence, use it (NLM indexers are reliable)
+        if metadata_result.confidence >= 0.9 and metadata_result.quality_tier != QualityTier.UNCLASSIFIED:
+            # Optionally enhance with LLM for detailed assessment
+            if filter_settings.use_detailed_assessment and self.quality_agent:
+                return self.quality_agent.assess_quality(document)
+            return metadata_result
+
+        # Tier 2: Fast LLM classification (Haiku) for unclassified or low-confidence docs
+        if filter_settings.use_llm_classification and self.study_classifier:
+            classification = self.study_classifier.classify(document)
+
+            # Tier 3: Detailed assessment if requested
+            if filter_settings.use_detailed_assessment and self.quality_agent:
                 return self.quality_agent.assess_quality(document)
 
-        # Return best available result
-        return rule_result or metadata_result
+            # Convert classification to assessment
+            return self._classification_to_assessment(classification)
+
+        # Fallback to metadata result
+        return metadata_result
+
+    def _classification_to_assessment(
+        self,
+        classification: StudyClassification
+    ) -> QualityAssessment:
+        """Convert fast classification to full assessment structure."""
+        return QualityAssessment(
+            assessment_tier=2,
+            study_design=classification.study_design,
+            quality_tier=self._design_to_tier(classification.study_design),
+            quality_score=self._design_to_score(classification.study_design),
+            evidence_level=None,  # Not available from fast classification
+            is_randomized=classification.is_randomized,
+            is_controlled=None,
+            is_blinded=classification.is_blinded,
+            is_prospective=None,
+            is_multicenter=None,
+            sample_size=classification.sample_size,
+            confidence=classification.confidence,
+            extraction_method="llm_haiku",
+            extraction_details=["Fast classification via Claude Haiku"]
+        )
 
     def filter_documents(
         self,
@@ -612,9 +613,9 @@ User Research Question
 [2] PubMed Search (unchanged)
         ↓
 [NEW] Quality Filtering
-    ├── Tier 1: Filter by publication types (instant)
-    ├── Tier 2: Rule-based extraction on remaining (fast)
-    └── Tier 3: LLM assessment for uncertain cases (if enabled)
+    ├── Tier 1: Filter by PubMed publication types (instant, free)
+    ├── Tier 2: Haiku classification for unclassified docs (~$0.00025/doc)
+    └── Tier 3: Sonnet detailed assessment (optional, ~$0.003/doc)
         ↓
 [3] Relevance Scoring (only quality-filtered docs)
         ↓
@@ -653,8 +654,11 @@ This review synthesizes evidence from **12 studies**:
   "quality_filtering": {
     "enabled": true,
     "default_minimum_tier": 0,
-    "default_use_llm": false,
-    "llm_confidence_threshold": 0.5,
+    "use_metadata_only": false,
+    "use_llm_classification": true,
+    "use_detailed_assessment": false,
+    "classification_model": "claude-3-haiku-20240307",
+    "assessment_model": "claude-sonnet-4-20250514",
     "show_quality_badges": true,
     "include_quality_in_reports": true
   }
@@ -666,7 +670,11 @@ This review synthesizes evidence from **12 studies**:
 ```python
 # constants.py additions
 DEFAULT_MINIMUM_QUALITY_TIER = 0  # No filtering
-DEFAULT_LLM_CONFIDENCE_THRESHOLD = 0.5
+DEFAULT_USE_METADATA_ONLY = False
+DEFAULT_USE_LLM_CLASSIFICATION = True
+DEFAULT_USE_DETAILED_ASSESSMENT = False
+DEFAULT_CLASSIFICATION_MODEL = "claude-3-haiku-20240307"
+DEFAULT_ASSESSMENT_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_SHOW_QUALITY_BADGES = True
 ```
 
@@ -674,26 +682,26 @@ DEFAULT_SHOW_QUALITY_BADGES = True
 
 ## Implementation Phases
 
-### Phase 1: Core Quality Module (Week 1)
+### Phase 1: Core Quality Module
 1. Create `quality/` module structure
 2. Implement data models (`data_models.py`)
 3. Implement Tier 1 metadata filter (`metadata_filter.py`)
-4. Implement Tier 2 rule extractor (`rule_extractor.py`)
-5. Unit tests for Tier 1 and 2
+4. Unit tests for metadata filtering
 
-### Phase 2: LLM Integration (Week 2)
-1. Implement Tier 3 quality agent (`quality_agent.py`)
-2. Implement quality manager orchestrator (`quality_manager.py`)
-3. Integration tests for full tiered approach
-4. Add configuration options
+### Phase 2: LLM Classification
+1. Implement Tier 2 study classifier (`study_classifier.py`) using Haiku
+2. Implement Tier 3 quality agent (`quality_agent.py`) using Sonnet
+3. Implement quality manager orchestrator (`quality_manager.py`)
+4. Integration tests for tiered approach
+5. Add configuration options
 
-### Phase 3: GUI Integration (Week 3)
+### Phase 3: GUI Integration
 1. Create QualityFilterPanel widget
 2. Add quality badges to document cards
 3. Integrate with systematic review workflow
 4. Update settings dialog with quality options
 
-### Phase 4: Report Enhancement (Week 4)
+### Phase 4: Report Enhancement
 1. Modify LiteReportingAgent to include quality information
 2. Add evidence summary section
 3. Include study characteristics in citations
@@ -705,8 +713,8 @@ DEFAULT_SHOW_QUALITY_BADGES = True
 
 ### Unit Tests
 - Metadata filter accuracy on known publication types
-- Rule extractor on sample abstracts with known study designs
-- LLM agent response parsing
+- LLM classifier response parsing and error handling
+- Quality agent response parsing and validation
 - Quality manager tier selection logic
 
 ### Integration Tests
@@ -723,19 +731,27 @@ Create curated set of ~100 abstracts with known study designs for validation:
 - 20 case reports
 - 10 editorials/letters
 
+**Critical Test Cases** (to avoid keyword matching failures):
+- Abstracts that MENTION RCTs but ARE NOT RCTs
+- Abstracts that DISCUSS systematic reviews but ARE observational studies
+- Abstracts that COMPARE to double-blind studies but ARE open-label
+
 ---
 
 ## Cost Analysis
 
 ### API Cost per Search Session
 
-| Scenario | Documents | Tier 3 Calls | Est. Cost |
-|----------|-----------|--------------|-----------|
-| No LLM filtering | 50 | 0 | $0.00 |
-| LLM for uncertain (20%) | 50 | 10 | $0.03-0.10 |
-| Full LLM assessment | 50 | 50 | $0.15-0.50 |
+| Scenario | Documents | Haiku Calls | Sonnet Calls | Est. Cost |
+|----------|-----------|-------------|--------------|-----------|
+| Metadata only | 50 | 0 | 0 | $0.00 |
+| Metadata + Haiku (30% need classification) | 50 | 15 | 0 | ~$0.004 |
+| Full Haiku classification | 50 | 50 | 0 | ~$0.0125 |
+| Haiku + Sonnet detailed | 50 | 50 | 50 | ~$0.16 |
 
-**Recommendation**: Default to Tier 1+2 only, with LLM opt-in for detailed assessment.
+**Default Recommendation**: Metadata + Haiku for unclassified (~$0.004/session)
+- Fast and cheap enough to always enable
+- Sonnet detailed assessment opt-in for systematic reviews
 
 ---
 
@@ -770,10 +786,29 @@ Create curated set of ~100 abstracts with known study designs for validation:
 
 This plan provides a pragmatic approach to adding quality filtering to BMLibrarian Lite:
 
-1. **Preserves lightweight nature** - No new heavy dependencies
-2. **Cost-effective** - Free tiers handle most cases, LLM is opt-in
-3. **Progressively accurate** - Higher tiers add precision
-4. **User-configurable** - Researchers choose their quality/speed tradeoff
-5. **Transparent** - Quality badges and audit trails show reasoning
+1. **Preserves lightweight nature** - No new heavy dependencies, uses existing Claude API
+2. **Reliable classification** - LLM understands context, avoids keyword matching failures
+3. **Cost-effective** - Haiku classification is ~$0.00025/doc, negligible for typical searches
+4. **User-configurable** - Researchers choose metadata-only, Haiku, or full Sonnet assessment
+5. **Transparent** - Quality badges and audit trails show classification reasoning
 
-The tiered approach (metadata → rules → LLM) matches how researchers naturally filter literature: quick scan of publication types, then deeper read of promising abstracts, then detailed quality assessment of key papers.
+### Why LLM Over Keywords?
+
+The critical insight is that **keyword matching fails on scientific abstracts** because:
+- Authors frequently reference other studies' methodologies
+- Context determines meaning: "unlike the RCT..." vs "we conducted an RCT..."
+- Exclusion patterns cannot capture all linguistic variations
+
+LLM classification solves this by understanding semantic context. With Haiku's low cost (~$0.01 per 50 documents), it's practical to use LLM for all classification rather than maintaining fragile keyword rules.
+
+### Tiered Approach
+
+```
+Tier 1: PubMed Metadata (free, instant)
+    ↓ (if unclassified or low confidence)
+Tier 2: Claude Haiku (cheap, accurate)
+    ↓ (if detailed assessment requested)
+Tier 3: Claude Sonnet (comprehensive, optional)
+```
+
+This matches researcher workflow: trust NLM indexers when available, use AI for the rest.
