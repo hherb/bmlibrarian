@@ -294,3 +294,7 @@ CLASSIFICATION_RETRY_BASE_DELAY = 1.0
 
 # Exponential backoff multiplier for retries
 CLASSIFICATION_RETRY_BACKOFF_MULTIPLIER = 2.0
+
+# Jitter factor for retry delays (0.0 to 1.0)
+# Adds randomness to prevent thundering herd effects (per golden rule 22)
+CLASSIFICATION_RETRY_JITTER_FACTOR = 0.2

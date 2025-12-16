@@ -33,7 +33,9 @@ from ..constants import (
     CLASSIFICATION_MAX_RETRIES,
     CLASSIFICATION_RETRY_BASE_DELAY,
     CLASSIFICATION_RETRY_BACKOFF_MULTIPLIER,
+    CLASSIFICATION_RETRY_JITTER_FACTOR,
 )
+from ..utils import _calculate_delay_with_jitter
 from .data_models import StudyDesign, StudyClassification
 
 logger = logging.getLogger(__name__)
@@ -656,6 +658,9 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         """
         Classify document with retry logic for transient failures.
 
+        Uses exponential backoff with jitter to prevent thundering herd
+        effects when multiple clients retry simultaneously (golden rule 22).
+
         Args:
             document: Document to classify
             doc_id: Document identifier for logging
@@ -664,7 +669,6 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
             StudyClassification result
         """
         last_error: Optional[Exception] = None
-        delay = CLASSIFICATION_RETRY_BASE_DELAY
 
         for attempt in range(CLASSIFICATION_MAX_RETRIES):
             try:
@@ -677,12 +681,18 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
             except Exception as e:
                 last_error = e
                 if attempt < CLASSIFICATION_MAX_RETRIES - 1:
+                    # Calculate delay with jitter (golden rule 22)
+                    delay = _calculate_delay_with_jitter(
+                        base_delay=CLASSIFICATION_RETRY_BASE_DELAY,
+                        attempt=attempt,
+                        exponential_base=CLASSIFICATION_RETRY_BACKOFF_MULTIPLIER,
+                        jitter_factor=CLASSIFICATION_RETRY_JITTER_FACTOR,
+                    )
                     logger.warning(
                         f"Document {doc_id}: Classification attempt {attempt + 1} "
                         f"failed: {e}. Retrying in {delay:.1f}s..."
                     )
                     time.sleep(delay)
-                    delay *= CLASSIFICATION_RETRY_BACKOFF_MULTIPLIER
                 else:
                     logger.error(
                         f"Document {doc_id}: All {CLASSIFICATION_MAX_RETRIES} "
