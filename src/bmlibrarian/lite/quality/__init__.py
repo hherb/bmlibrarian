@@ -70,6 +70,10 @@ from .quality_manager import (
     QualityManager,
 )
 
+from .evidence_summary import EvidenceSummaryGenerator
+
+from .report_formatter import QualityReportFormatter
+
 __all__ = [
     # Enums
     "StudyDesign",
@@ -95,4 +99,7 @@ __all__ = [
     "LiteQualityAgent",
     # Manager (orchestrates all tiers)
     "QualityManager",
+    # Report enhancement
+    "EvidenceSummaryGenerator",
+    "QualityReportFormatter",
 ]
