@@ -35,9 +35,22 @@ from ..constants import (
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_MAX_TOKENS,
+    QUALITY_CLASSIFIER_MODEL,
+    QUALITY_ASSESSOR_MODEL,
 )
+from ..quality.data_models import QualityTier
 
 logger = logging.getLogger(__name__)
+
+
+# Quality tier options for settings
+QUALITY_TIER_OPTIONS = [
+    ("No filter (include all)", QualityTier.UNCLASSIFIED),
+    ("Primary research (exclude opinions)", QualityTier.TIER_2_OBSERVATIONAL),
+    ("Controlled studies (cohort+)", QualityTier.TIER_3_CONTROLLED),
+    ("High-quality evidence (RCT+)", QualityTier.TIER_4_EXPERIMENTAL),
+    ("Systematic evidence only (SR/MA)", QualityTier.TIER_5_SYNTHESIS),
+]
 
 # Available Claude models
 CLAUDE_MODELS = [
@@ -218,6 +231,60 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(openathens_group)
 
+        # Quality Filtering Settings
+        quality_group = QGroupBox("Quality Filtering")
+        quality_layout = QFormLayout(quality_group)
+
+        # Default minimum tier
+        self.default_tier_combo = QComboBox()
+        for label, _ in QUALITY_TIER_OPTIONS:
+            self.default_tier_combo.addItem(label)
+        self.default_tier_combo.setToolTip(
+            "Default minimum quality tier for document filtering"
+        )
+        quality_layout.addRow("Default Minimum Tier:", self.default_tier_combo)
+
+        # Default LLM classification
+        self.default_llm_classification = QCheckBox("Enable AI classification by default")
+        self.default_llm_classification.setChecked(True)
+        self.default_llm_classification.setToolTip(
+            "Use Claude Haiku to classify unindexed articles (~$0.00025 per article)"
+        )
+        quality_layout.addRow(self.default_llm_classification)
+
+        # Show quality badges
+        self.show_quality_badges = QCheckBox("Show quality badges on document cards")
+        self.show_quality_badges.setChecked(True)
+        self.show_quality_badges.setToolTip(
+            "Display color-coded quality tier badges on document cards"
+        )
+        quality_layout.addRow(self.show_quality_badges)
+
+        # Classification model
+        self.class_model_input = QLineEdit()
+        self.class_model_input.setText(QUALITY_CLASSIFIER_MODEL)
+        self.class_model_input.setToolTip(
+            "Claude model for fast study design classification (Tier 2)"
+        )
+        quality_layout.addRow("Classification Model:", self.class_model_input)
+
+        # Assessment model
+        self.assess_model_input = QLineEdit()
+        self.assess_model_input.setText(QUALITY_ASSESSOR_MODEL)
+        self.assess_model_input.setToolTip(
+            "Claude model for detailed quality assessment (Tier 3)"
+        )
+        quality_layout.addRow("Assessment Model:", self.assess_model_input)
+
+        quality_note = QLabel(
+            "<small>Quality filtering helps prioritize high-quality evidence "
+            "(RCTs, systematic reviews) in literature searches.</small>"
+        )
+        quality_note.setWordWrap(True)
+        quality_layout.addRow(quality_note)
+
+        layout.addWidget(quality_group)
+
         # Buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.Save | QDialogButtonBox.Cancel
@@ -257,6 +324,30 @@ class SettingsDialog(QDialog):
         # Update field enabled state
         self._on_openathens_enabled_changed()
 
+        # Quality Filtering - load from config if available
+        if hasattr(self.config, 'quality') and self.config.quality:
+            # Default tier
+            tier_value = getattr(self.config.quality, 'default_minimum_tier', 0)
+            for i, (_, tier) in enumerate(QUALITY_TIER_OPTIONS):
+                if tier.value == tier_value:
+                    self.default_tier_combo.setCurrentIndex(i)
+                    break
+
+            # LLM classification
+            use_llm = getattr(self.config.quality, 'use_llm_classification', True)
+            self.default_llm_classification.setChecked(use_llm)
+
+            # Show badges
+            show_badges = getattr(self.config.quality, 'show_quality_badges', True)
+            self.show_quality_badges.setChecked(show_badges)
+
+            # Models
+            class_model = getattr(self.config.quality, 'classification_model', QUALITY_CLASSIFIER_MODEL)
+            self.class_model_input.setText(class_model)
+
+            assess_model = getattr(self.config.quality, 'assessment_model', QUALITY_ASSESSOR_MODEL)
+            self.assess_model_input.setText(assess_model)
+
     def _save_config(self) -> None:
         """Save configuration and close dialog."""
         # Update config object
@@ -291,6 +382,15 @@ class SettingsDialog(QDialog):
         self.config.openathens.enabled = self.openathens_enabled.isChecked()
         self.config.openathens.institution_url = openathens_url
         self.config.openathens.session_max_age_hours = self.openathens_session_age.value()
+
+        # Quality Filtering - save settings if config supports it
+        if hasattr(self.config, 'quality'):
+            tier_idx = self.default_tier_combo.currentIndex()
+            self.config.quality.default_minimum_tier = QUALITY_TIER_OPTIONS[tier_idx][1].value
+            self.config.quality.use_llm_classification = self.default_llm_classification.isChecked()
+            self.config.quality.show_quality_badges = self.show_quality_badges.isChecked()
+            self.config.quality.classification_model = self.class_model_input.text().strip()
+            self.config.quality.assessment_model = self.assess_model_input.text().strip()
 
         # Save to file
         self.config.save()

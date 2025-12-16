@@ -168,3 +168,80 @@ CONFIG_FILE_PERMISSIONS = 0o600
 # Directory permissions for configuration directories
 # 0o700 = drwx------ (only owner can access)
 CONFIG_DIR_PERMISSIONS = 0o700
+
+# =============================================================================
+# Quality Filtering Settings
+# =============================================================================
+
+# Default quality tier threshold for filtering (3 = controlled observational and above)
+# Quality tiers: 5=systematic, 4=experimental, 3=controlled, 2=observational, 1=anecdotal
+DEFAULT_QUALITY_TIER_THRESHOLD = 3
+
+# Default minimum quality score (0.0 - 1.0)
+DEFAULT_QUALITY_SCORE_THRESHOLD = 0.5
+
+# Default confidence threshold for accepting LLM classifications (0.0 - 1.0)
+DEFAULT_QUALITY_CONFIDENCE_THRESHOLD = 0.7
+
+# =============================================================================
+# Quality Assessment LLM Settings
+# =============================================================================
+
+# Model for quick study design classification (Tier 2)
+# Claude Haiku: Fast, cheap (~$0.00025/doc)
+QUALITY_CLASSIFIER_MODEL = "claude-3-5-haiku-20241022"
+
+# Model for detailed quality assessment (Tier 3)
+# Claude Sonnet: More thorough, higher cost (~$0.003/doc)
+QUALITY_ASSESSOR_MODEL = "claude-sonnet-4-20250514"
+
+# Temperature for quality classification (lower = more deterministic)
+QUALITY_LLM_TEMPERATURE = 0.1
+
+# Max tokens for classification response
+QUALITY_CLASSIFIER_MAX_TOKENS = 256
+
+# Max tokens for detailed assessment response
+QUALITY_ASSESSOR_MAX_TOKENS = 1024
+
+# =============================================================================
+# Quality Metadata Confidence Levels
+# =============================================================================
+
+# Confidence when PubMed publication type matches exactly
+METADATA_HIGH_CONFIDENCE = 0.95
+
+# Confidence when PubMed publication type matches partially
+METADATA_PARTIAL_MATCH_CONFIDENCE = 0.80
+
+# Confidence when publication types present but unrecognized
+METADATA_UNKNOWN_TYPE_CONFIDENCE = 0.30
+
+# Confidence when no publication types available
+METADATA_NO_TYPE_CONFIDENCE = 0.0
+
+# =============================================================================
+# Quality Classification Confidence Levels
+# =============================================================================
+
+# Confidence threshold for accepting Haiku classification
+CLASSIFIER_ACCEPTANCE_CONFIDENCE = 0.75
+
+# Confidence boost when multiple indicators agree
+CLASSIFIER_MULTI_INDICATOR_BOOST = 0.10
+
+# Maximum confidence from LLM classification
+CLASSIFIER_MAX_CONFIDENCE = 0.90
+
+# =============================================================================
+# Quality Assessment Batch Settings
+# =============================================================================
+
+# Number of documents to classify in parallel
+QUALITY_BATCH_SIZE = 10
+
+# Delay between API calls in seconds (rate limiting)
+QUALITY_API_DELAY_SECONDS = 0.1
+
+# Maximum documents to assess with detailed Sonnet analysis
+QUALITY_MAX_DETAILED_ASSESSMENTS = 20

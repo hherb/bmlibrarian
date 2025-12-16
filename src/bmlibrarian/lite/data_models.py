@@ -9,7 +9,10 @@ the lite module for consistent data handling.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .quality.data_models import QualityAssessment
 
 
 class DocumentSource(Enum):
@@ -229,6 +232,7 @@ class Citation:
     passage: str  # Extracted text passage
     relevance_score: int  # Score of parent document
     context: str = ""  # Why this passage is relevant
+    assessment: Optional["QualityAssessment"] = None  # Quality assessment if available
 
     @property
     def formatted_citation(self) -> str:
@@ -239,6 +243,51 @@ class Citation:
             Citation with quoted passage
         """
         return f'"{self.passage}" [{self.document.formatted_authors}, {self.document.year or "n.d."}]'
+
+    @property
+    def formatted_reference(self) -> str:
+        """
+        Return a short reference string.
+
+        Returns:
+            Short reference (e.g., "Smith et al., 2023")
+        """
+        if self.document.authors:
+            first_author = self.document.authors[0].split(",")[0].split()[-1]
+            if len(self.document.authors) > 1:
+                author_str = f"{first_author} et al."
+            else:
+                author_str = first_author
+        else:
+            author_str = "Unknown"
+        year = self.document.year or "n.d."
+        return f"{author_str}, {year}"
+
+    @property
+    def quality_annotation(self) -> str:
+        """
+        Get quality annotation for inline use.
+
+        Returns:
+            Quality annotation string or empty string
+        """
+        if not self.assessment:
+            return ""
+
+        parts = []
+        design = self.assessment.study_design.value.replace("_", " ").title()
+        if design.lower() not in ["unknown", "other"]:
+            parts.append(design)
+
+        if self.assessment.sample_size:
+            parts.append(f"n={self.assessment.sample_size:,}")
+
+        if self.assessment.is_blinded and self.assessment.is_blinded != "none":
+            parts.append(f"{self.assessment.is_blinded}-blind")
+
+        if parts:
+            return f"**{', '.join(parts)}**"
+        return ""
 
 
 @dataclass
