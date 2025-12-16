@@ -245,3 +245,52 @@ QUALITY_API_DELAY_SECONDS = 0.1
 
 # Maximum documents to assess with detailed Sonnet analysis
 QUALITY_MAX_DETAILED_ASSESSMENTS = 20
+
+# =============================================================================
+# JSON Parsing Security Settings
+# =============================================================================
+
+# Maximum size for JSON responses from LLM (in bytes)
+# This prevents DoS attacks via oversized responses
+JSON_MAX_RESPONSE_SIZE_BYTES = 65536  # 64 KB
+
+# =============================================================================
+# Classification Parsing Constants
+# =============================================================================
+
+# Valid values for blinding level (Cochrane terminology)
+VALID_BLINDING_VALUES = frozenset({"none", "single", "double", "triple"})
+
+# Valid values for bias risk assessment
+VALID_BIAS_RISK_VALUES = frozenset({"low", "unclear", "high"})
+
+# Default confidence value - used when parsing fails
+# This is intentionally LOW to signal uncertainty
+CONFIDENCE_PARSE_FAILURE_DEFAULT = 0.0
+
+# =============================================================================
+# Abstract Processing Settings
+# =============================================================================
+
+# Maximum abstract length for single-pass LLM processing
+# Abstracts longer than this will be processed in chunks
+ABSTRACT_MAX_SINGLE_PASS_LENGTH = 8000
+
+# Chunk size for processing long abstracts
+ABSTRACT_CHUNK_SIZE = 4000
+
+# Overlap between chunks for context preservation
+ABSTRACT_CHUNK_OVERLAP = 500
+
+# =============================================================================
+# Batch Processing Retry Settings
+# =============================================================================
+
+# Maximum retry attempts for failed classifications
+CLASSIFICATION_MAX_RETRIES = 3
+
+# Base delay between retries in seconds
+CLASSIFICATION_RETRY_BASE_DELAY = 1.0
+
+# Exponential backoff multiplier for retries
+CLASSIFICATION_RETRY_BACKOFF_MULTIPLIER = 2.0

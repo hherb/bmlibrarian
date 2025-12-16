@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QGroupBox,
     QWidget,
+    QProgressBar,
 )
+from PySide6.QtGui import QPalette
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
@@ -32,13 +34,42 @@ from ..quality.data_models import QualityTier, QualityFilter
 logger = logging.getLogger(__name__)
 
 
-# Tier dropdown options with labels and values
-TIER_OPTIONS: List[Tuple[str, QualityTier]] = [
-    ("No filter (include all)", QualityTier.UNCLASSIFIED),
-    ("Primary research (exclude opinions)", QualityTier.TIER_2_OBSERVATIONAL),
-    ("Controlled studies (cohort+)", QualityTier.TIER_3_CONTROLLED),
-    ("High-quality evidence (RCT+)", QualityTier.TIER_4_EXPERIMENTAL),
-    ("Systematic evidence only (SR/MA)", QualityTier.TIER_5_SYNTHESIS),
+# Tier dropdown options with labels, values, and tooltips
+TIER_OPTIONS: List[Tuple[str, QualityTier, str]] = [
+    (
+        "No filter (include all)",
+        QualityTier.UNCLASSIFIED,
+        "Include all document types regardless of study design.\n"
+        "Best for exploratory searches or when completeness is priority."
+    ),
+    (
+        "Primary research (exclude opinions)",
+        QualityTier.TIER_2_OBSERVATIONAL,
+        "Exclude editorials, letters, comments, and case reports.\n"
+        "Includes: cross-sectional studies and above.\n"
+        "Use when you want empirical data only."
+    ),
+    (
+        "Controlled studies (cohort+)",
+        QualityTier.TIER_3_CONTROLLED,
+        "Include only studies with comparison groups.\n"
+        "Includes: cohort, case-control, RCT, and systematic reviews.\n"
+        "Recommended for clinical effectiveness questions."
+    ),
+    (
+        "High-quality evidence (RCT+)",
+        QualityTier.TIER_4_EXPERIMENTAL,
+        "Include only randomized trials and systematic reviews.\n"
+        "Strongest evidence for interventional questions.\n"
+        "May miss important observational evidence."
+    ),
+    (
+        "Systematic evidence only (SR/MA)",
+        QualityTier.TIER_5_SYNTHESIS,
+        "Include only systematic reviews and meta-analyses.\n"
+        "Pre-synthesized evidence from expert reviewers.\n"
+        "Note: May return very few or no results."
+    ),
 ]
 
 # Default minimum sample size for filtering
@@ -47,6 +78,10 @@ DEFAULT_MINIMUM_SAMPLE_SIZE = 100
 # Minimum and maximum sample size range
 SAMPLE_SIZE_MIN = 1
 SAMPLE_SIZE_MAX = 100000
+
+# Sample size warning thresholds
+SAMPLE_SIZE_LOW_WARNING = 30  # Studies < 30 subjects may be underpowered
+SAMPLE_SIZE_VERY_HIGH = 10000  # Unusually large, might be unrealistic
 
 
 class QualityFilterPanel(QFrame):
@@ -59,6 +94,9 @@ class QualityFilterPanel(QFrame):
 
     Signals:
         filterChanged: Emitted when filter settings change with new QualityFilter
+        classificationStarted: Emitted when LLM classification begins
+        classificationProgress: Emitted with (current, total) during classification
+        classificationFinished: Emitted when LLM classification completes
 
     Attributes:
         _collapsed: Whether the panel is collapsed
@@ -66,6 +104,11 @@ class QualityFilterPanel(QFrame):
 
     # Emitted when filter settings change
     filterChanged = Signal(object)  # QualityFilter
+
+    # Signals for LLM classification progress indication
+    classificationStarted = Signal()
+    classificationProgress = Signal(int, int)  # (current, total)
+    classificationFinished = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """
@@ -100,6 +143,13 @@ class QualityFilterPanel(QFrame):
 
         layout.addLayout(header)
 
+        # Progress bar for LLM classification (hidden by default)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("Classifying: %v/%m documents")
+        layout.addWidget(self.progress_bar)
+
         # Collapsible content
         self.content = QFrame()
         content_layout = QVBoxLayout(self.content)
@@ -111,13 +161,20 @@ class QualityFilterPanel(QFrame):
         tier_layout = QVBoxLayout(tier_group)
 
         self.tier_combo = QComboBox()
-        for label, _ in TIER_OPTIONS:
+        for label, _, _ in TIER_OPTIONS:
             self.tier_combo.addItem(label)
-        self.tier_combo.setToolTip(
-            "Filter documents by study design quality.\n"
-            "Higher tiers include only higher-quality evidence."
-        )
+
+        # Set initial tooltip based on first option
+        self._update_tier_tooltip(0)
+
         tier_layout.addWidget(self.tier_combo)
+
+        # Tier description label (shows contextual help for selected tier)
+        self.tier_description = QLabel()
+        self.tier_description.setWordWrap(True)
+        self.tier_description.setStyleSheet("color: gray; font-size: small;")
+        self._update_tier_description(0)
+        tier_layout.addWidget(self.tier_description)
 
         content_layout.addWidget(tier_group)
 
@@ -140,16 +197,34 @@ class QualityFilterPanel(QFrame):
         # Sample size requirement
         sample_layout = QHBoxLayout()
         self.require_sample_size = QCheckBox("Minimum sample size:")
+        self.require_sample_size.setToolTip(
+            "Filter out studies with fewer participants than specified.\n"
+            "Smaller studies may lack statistical power to detect effects."
+        )
         sample_layout.addWidget(self.require_sample_size)
 
         self.sample_size_spin = QSpinBox()
         self.sample_size_spin.setRange(SAMPLE_SIZE_MIN, SAMPLE_SIZE_MAX)
         self.sample_size_spin.setValue(DEFAULT_MINIMUM_SAMPLE_SIZE)
         self.sample_size_spin.setEnabled(False)
+        self.sample_size_spin.setToolTip(
+            f"Typical values:\n"
+            f"• {SAMPLE_SIZE_LOW_WARNING}+ for pilot studies\n"
+            f"• 100+ for most research questions\n"
+            f"• 1000+ for rare event detection"
+        )
         sample_layout.addWidget(self.sample_size_spin)
         sample_layout.addStretch()
 
         req_layout.addLayout(sample_layout)
+
+        # Sample size validation feedback label
+        self.sample_size_warning = QLabel()
+        self.sample_size_warning.setWordWrap(True)
+        self.sample_size_warning.setStyleSheet("color: #B8860B; font-size: small;")  # Dark goldenrod
+        self.sample_size_warning.setVisible(False)
+        req_layout.addWidget(self.sample_size_warning)
+
         content_layout.addWidget(req_group)
 
         # === Assessment Depth ===
@@ -187,11 +262,11 @@ class QualityFilterPanel(QFrame):
     def _connect_signals(self) -> None:
         """Connect widget signals to handlers."""
         self.toggle_btn.toggled.connect(self._toggle_content)
-        self.tier_combo.currentIndexChanged.connect(self._on_filter_changed)
+        self.tier_combo.currentIndexChanged.connect(self._on_tier_changed)
         self.require_randomization.toggled.connect(self._on_filter_changed)
         self.require_blinding.toggled.connect(self._on_filter_changed)
         self.require_sample_size.toggled.connect(self._on_sample_size_toggled)
-        self.sample_size_spin.valueChanged.connect(self._on_filter_changed)
+        self.sample_size_spin.valueChanged.connect(self._on_sample_size_value_changed)
         self.metadata_only.toggled.connect(self._on_metadata_only_toggled)
         self.use_llm.toggled.connect(self._on_filter_changed)
         self.detailed_assessment.toggled.connect(self._on_filter_changed)
@@ -223,7 +298,82 @@ class QualityFilterPanel(QFrame):
             checked: Whether checkbox is checked
         """
         self.sample_size_spin.setEnabled(checked)
+        self._validate_sample_size()
         self._on_filter_changed()
+
+    def _on_sample_size_value_changed(self, value: int) -> None:
+        """
+        Handle sample size value change with validation feedback.
+
+        Args:
+            value: New sample size value
+        """
+        self._validate_sample_size()
+        self._on_filter_changed()
+
+    def _on_tier_changed(self, index: int) -> None:
+        """
+        Handle tier selection change.
+
+        Args:
+            index: Selected tier index
+        """
+        self._update_tier_tooltip(index)
+        self._update_tier_description(index)
+        self._on_filter_changed()
+
+    def _update_tier_tooltip(self, index: int) -> None:
+        """
+        Update combo box tooltip based on selected tier.
+
+        Args:
+            index: Selected tier index
+        """
+        if 0 <= index < len(TIER_OPTIONS):
+            _, _, tooltip = TIER_OPTIONS[index]
+            self.tier_combo.setToolTip(tooltip)
+
+    def _update_tier_description(self, index: int) -> None:
+        """
+        Update tier description label based on selected tier.
+
+        Args:
+            index: Selected tier index
+        """
+        if 0 <= index < len(TIER_OPTIONS):
+            _, _, tooltip = TIER_OPTIONS[index]
+            # Show abbreviated description
+            first_line = tooltip.split("\n")[0]
+            self.tier_description.setText(first_line)
+
+    def _validate_sample_size(self) -> None:
+        """Validate sample size and show appropriate feedback."""
+        if not self.require_sample_size.isChecked():
+            self.sample_size_warning.setVisible(False)
+            return
+
+        value = self.sample_size_spin.value()
+
+        if value < SAMPLE_SIZE_LOW_WARNING:
+            self.sample_size_warning.setText(
+                f"⚠ Studies with n<{SAMPLE_SIZE_LOW_WARNING} may be underpowered "
+                "for detecting meaningful effects."
+            )
+            self.sample_size_warning.setStyleSheet(
+                "color: #B8860B; font-size: small;"  # Dark goldenrod (warning)
+            )
+            self.sample_size_warning.setVisible(True)
+        elif value > SAMPLE_SIZE_VERY_HIGH:
+            self.sample_size_warning.setText(
+                f"ℹ Very high threshold (n≥{value:,}) may exclude most studies. "
+                "This is appropriate for common conditions but may miss rare disease research."
+            )
+            self.sample_size_warning.setStyleSheet(
+                "color: #4682B4; font-size: small;"  # Steel blue (info)
+            )
+            self.sample_size_warning.setVisible(True)
+        else:
+            self.sample_size_warning.setVisible(False)
 
     def _on_metadata_only_toggled(self, checked: bool) -> None:
         """
@@ -297,7 +447,7 @@ class QualityFilterPanel(QFrame):
             filter_settings: Settings to apply to UI
         """
         # Find matching tier index
-        for i, (_, tier) in enumerate(TIER_OPTIONS):
+        for i, (_, tier, _) in enumerate(TIER_OPTIONS):
             if tier == filter_settings.minimum_tier:
                 self.tier_combo.setCurrentIndex(i)
                 break
@@ -315,6 +465,9 @@ class QualityFilterPanel(QFrame):
         self.use_llm.setChecked(filter_settings.use_llm_classification)
         self.detailed_assessment.setChecked(filter_settings.use_detailed_assessment)
 
+        # Update validation feedback
+        self._validate_sample_size()
+
     def expand(self) -> None:
         """Expand the panel to show content."""
         self.toggle_btn.setChecked(True)
@@ -331,3 +484,42 @@ class QualityFilterPanel(QFrame):
             True if panel is collapsed
         """
         return self._collapsed
+
+    # === Progress Bar Control Methods ===
+
+    def start_classification_progress(self, total: int) -> None:
+        """
+        Start showing classification progress.
+
+        Call this when beginning LLM classification of documents.
+
+        Args:
+            total: Total number of documents to classify
+        """
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.classificationStarted.emit()
+
+    def update_classification_progress(self, current: int, total: int) -> None:
+        """
+        Update classification progress.
+
+        Call this during LLM classification to update the progress bar.
+
+        Args:
+            current: Number of documents classified so far
+            total: Total number of documents
+        """
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.classificationProgress.emit(current, total)
+
+    def finish_classification_progress(self) -> None:
+        """
+        Hide classification progress.
+
+        Call this when LLM classification is complete.
+        """
+        self.progress_bar.setVisible(False)
+        self.classificationFinished.emit()
