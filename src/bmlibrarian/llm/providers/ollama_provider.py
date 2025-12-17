@@ -267,6 +267,11 @@ class OllamaProvider(LLMProvider):
         """
         try:
             response = self.client.list()
+            # Ollama library >= 0.4.0 uses ListResponse with .models attribute
+            # containing Model objects with .model attribute (not 'name' dict key)
+            if hasattr(response, 'models'):
+                return [m.model for m in response.models]
+            # Fallback for older ollama library versions (dict-based response)
             return [m["name"] for m in response.get("models", [])]
         except Exception as e:
             logger.warning(f"Failed to list Ollama models: {e}")
