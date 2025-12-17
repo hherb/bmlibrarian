@@ -15,6 +15,7 @@ class SourceType(Enum):
 
     DIRECT_URL = "direct_url"  # Direct PDF URL from database
     DOI_REDIRECT = "doi_redirect"  # PDF URL via DOI resolution
+    DOI_FALLBACK = "doi_fallback"  # Fallback DOI URL when no sources found (for browser)
     PMC = "pmc"  # PubMed Central
     PMC_PACKAGE = "pmc_package"  # PMC tar.gz package (contains PDF + NXML)
     UNPAYWALL = "unpaywall"  # Unpaywall API

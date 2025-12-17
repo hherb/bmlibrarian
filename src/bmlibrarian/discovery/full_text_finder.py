@@ -274,10 +274,26 @@ class FullTextFinder:
             progress_callback=progress_callback
         )
 
+        # If no sources found but we have a DOI, create a fallback DOI URL
+        # This enables browser-based download for publishers with Cloudflare protection
+        # (e.g., Cochrane, Wiley) that block HTTP-based discovery
+        if not discovery.sources and identifiers.doi:
+            doi_url = self._create_doi_fallback_url(identifiers.doi)
+            if doi_url:
+                fallback_source = PDFSource(
+                    url=doi_url,
+                    source_type=SourceType.DOI_FALLBACK,
+                    access_type=AccessType.UNKNOWN,
+                    priority=100,  # Low priority - last resort
+                    metadata={'reason': 'No sources discovered, using DOI fallback'}
+                )
+                discovery.sources.append(fallback_source)
+                logger.info(f"No sources found, added DOI fallback: {doi_url}")
+
         if not discovery.sources:
             return DownloadResult(
                 success=False,
-                error_message="No PDF sources found",
+                error_message="No PDF sources found and no DOI available for fallback",
                 duration_ms=(time.time() - start_time) * 1000
             )
 
@@ -916,6 +932,36 @@ class FullTextFinder:
     ) -> bool:
         """Check if source URL already exists in list."""
         return any(s.url == source.url for s in existing)
+
+    def _create_doi_fallback_url(self, doi: str) -> Optional[str]:
+        """Create a fallback URL from DOI for browser-based download.
+
+        When no PDF sources are discovered (e.g., due to Cloudflare protection
+        blocking HTTP requests), we can still try browser-based download using
+        the DOI URL. This works for publishers like Cochrane/Wiley that have
+        freely accessible PDFs but aggressive bot protection.
+
+        Args:
+            doi: Document DOI (with or without prefix)
+
+        Returns:
+            doi.org URL, or None if DOI is invalid
+        """
+        if not doi:
+            return None
+
+        # Normalize DOI - remove common prefixes
+        doi = doi.strip()
+        for prefix in ['https://doi.org/', 'http://doi.org/', 'doi:', 'DOI:']:
+            if doi.lower().startswith(prefix.lower()):
+                doi = doi[len(prefix):]
+
+        doi = doi.strip()
+        if not doi:
+            return None
+
+        # Return doi.org URL - browser will follow redirects to publisher
+        return f"https://doi.org/{doi}"
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "FullTextFinder":
