@@ -233,30 +233,9 @@ def build_literature_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
 
 
 def build_scoring_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
-    """Create Scoring tab (document relevance scoring).
+    """Create Scoring tab (document relevance scoring with progressive display).
 
-    Args:
-        ui: UI constants for styling
-
-    Returns:
-        Tuple of (widget, refs) - refs is empty for placeholder tabs
-    """
-    return build_placeholder_tab(
-        ui,
-        "",
-        "Document Scoring",
-        "This tab will display:\n"
-        "- Interactive scoring interface (in interactive mode)\n"
-        "- Automated scoring results (in auto mode)\n"
-        "- Document relevance scores (1-5 scale)\n"
-        "- Color-coded score badges\n"
-        "- Scoring progress and statistics"
-    )
-
-
-def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
-    """
-    Create Citations tab (extracted citations).
+    Shows documents as they are scored with a progress bar indicating progress.
 
     Args:
         ui: UI constants for styling
@@ -264,6 +243,91 @@ def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     Returns:
         Tuple of (widget, refs) where refs.widgets contains:
         - 'summary_label': QLabel for summary
+        - 'progress_bar': QProgressBar for scoring progress
+        - 'container': QWidget container for document cards
+        - 'layout': QVBoxLayout for adding cards
+        - 'empty_label': QLabel for empty state
+    """
+    refs = TabRefs()
+
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(
+        ui.TAB_WIDGET_MARGIN, ui.TAB_WIDGET_MARGIN,
+        ui.TAB_WIDGET_MARGIN, ui.TAB_WIDGET_MARGIN
+    )
+
+    # Header
+    header_label = QLabel("Document Scoring")
+    header_font = QFont()
+    header_font.setPointSize(ui.TAB_HEADER_FONT_SIZE)
+    header_font.setBold(True)
+    header_label.setFont(header_font)
+    layout.addWidget(header_label)
+
+    # Subtitle
+    subtitle_label = QLabel("AI relevance scoring results (1-5 scale)")
+    subtitle_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY};")
+    layout.addWidget(subtitle_label)
+
+    # Scoring summary
+    summary_label = QLabel("No documents scored yet")
+    summary_label.setStyleSheet(f"color: {ui.COLOR_TEXT_GREY};")
+    layout.addWidget(summary_label)
+    refs.widgets['summary_label'] = summary_label
+
+    # Progress bar for scoring (hidden by default)
+    progress_bar = QProgressBar()
+    progress_bar.setTextVisible(True)
+    progress_bar.setFormat("Scoring document %v/%m")
+    progress_bar.setStyleSheet(StyleSheets.progress_bar(ui))
+    progress_bar.setVisible(False)
+    layout.addWidget(progress_bar)
+    refs.widgets['progress_bar'] = progress_bar
+
+    # Scroll area for scored document list
+    scroll_area = QScrollArea()
+    scroll_area.setWidgetResizable(True)
+    scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+    # Container widget for scored document cards
+    container = QWidget()
+    container_layout = QVBoxLayout(container)
+    container_layout.setSpacing(ui.CARD_SPACING)
+    container_layout.setContentsMargins(0, ui.CARD_CONTENT_MARGIN_TOP, 0, 0)
+
+    # Empty state message
+    empty_label = QLabel("Documents will appear here as they are scored")
+    empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
+    empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    container_layout.addWidget(empty_label)
+
+    # Add stretch at bottom
+    container_layout.addStretch()
+
+    scroll_area.setWidget(container)
+    layout.addWidget(scroll_area)
+
+    refs.widgets['container'] = container
+    refs.widgets['layout'] = container_layout
+    refs.widgets['empty_label'] = empty_label
+
+    return widget, refs
+
+
+def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
+    """
+    Create Citations tab (extracted citations with progressive display).
+
+    Shows citations as they are extracted with a progress bar indicating progress.
+
+    Args:
+        ui: UI constants for styling
+
+    Returns:
+        Tuple of (widget, refs) where refs.widgets contains:
+        - 'summary_label': QLabel for summary
+        - 'progress_bar': QProgressBar for extraction progress
         - 'container': QWidget container for citation cards
         - 'layout': QVBoxLayout for adding cards
         - 'empty_label': QLabel for empty state
@@ -298,6 +362,15 @@ def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     layout.addWidget(summary_label)
     refs.widgets['summary_label'] = summary_label
 
+    # Progress bar for citation extraction (hidden by default)
+    progress_bar = QProgressBar()
+    progress_bar.setTextVisible(True)
+    progress_bar.setFormat("Extracting citation %v/%m")
+    progress_bar.setStyleSheet(StyleSheets.progress_bar(ui))
+    progress_bar.setVisible(False)
+    layout.addWidget(progress_bar)
+    refs.widgets['progress_bar'] = progress_bar
+
     # Scroll area for citation list
     scroll_area = QScrollArea()
     scroll_area.setWidgetResizable(True)
@@ -310,7 +383,7 @@ def build_citations_tab(ui: UIConstants) -> tuple[QWidget, TabRefs]:
     container_layout.setContentsMargins(0, ui.CARD_CONTENT_MARGIN_TOP, 0, 0)
 
     # Empty state message
-    empty_label = QLabel("No citations to display")
+    empty_label = QLabel("Citations will appear here as they are extracted")
     empty_label.setStyleSheet(StyleSheets.empty_state_label(ui))
     empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     container_layout.addWidget(empty_label)

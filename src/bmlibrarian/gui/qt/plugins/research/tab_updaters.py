@@ -836,3 +836,163 @@ def _add_citation_context(
 
     # Insert context at the top of the citation card
     citation_card.main_layout.insertWidget(0, context_frame)
+
+
+# ============================================================================
+# Progressive Display Functions (single-item additions)
+# ============================================================================
+
+def _remove_empty_label_and_stretch(
+    layout: QVBoxLayout,
+    empty_label: Optional[QWidget] = None
+) -> None:
+    """
+    Remove the empty state label and trailing stretch from a layout.
+
+    Called before adding the first item to a tab's card container.
+
+    Args:
+        layout: The layout to modify
+        empty_label: Optional reference to the empty label widget
+    """
+    # Remove the empty label if it exists and is still in the layout
+    if empty_label:
+        try:
+            layout.removeWidget(empty_label)
+            empty_label.setParent(None)
+            empty_label.deleteLater()
+        except RuntimeError:
+            pass  # Widget may already be deleted
+
+    # Remove the trailing stretch (last item if it's a spacer)
+    if layout.count() > 0:
+        last_item = layout.itemAt(layout.count() - 1)
+        if last_item and last_item.spacerItem():
+            layout.takeAt(layout.count() - 1)
+
+
+def add_single_scored_document(
+    layout: QVBoxLayout,
+    doc: dict,
+    score_result: dict,
+    index: int,
+    card_factory: CardFactoryProtocol,
+    ui: UIConstants,
+    logger: Optional[logging.Logger] = None,
+    empty_label: Optional[QWidget] = None
+) -> Optional[QWidget]:
+    """
+    Add a single scored document card to a layout for progressive display.
+
+    This function is designed to be called repeatedly as documents are scored,
+    adding each card to the layout without clearing existing content.
+
+    Args:
+        layout: Layout to add the card to
+        doc: Document dictionary
+        score_result: Scoring result dictionary
+        index: Document index (1-indexed) for display
+        card_factory: QtDocumentCardFactory instance
+        ui: UI constants for styling
+        logger: Optional logger for error reporting
+        empty_label: Optional empty state label to remove on first card
+
+    Returns:
+        The created card widget, or None if creation failed
+    """
+    logger = logger or logging.getLogger(__name__)
+
+    try:
+        # Remove empty label and stretch on first item
+        if index == 1:
+            _remove_empty_label_and_stretch(layout, empty_label)
+
+        # Create the scored document card
+        card = create_document_score_card(
+            index=index,
+            doc=doc,
+            score_result=score_result,
+            card_factory=card_factory,
+            ui=ui,
+            logger=logger
+        )
+
+        # Insert before any trailing stretch (or at end if no stretch)
+        insert_pos = layout.count()
+        if layout.count() > 0:
+            last_item = layout.itemAt(layout.count() - 1)
+            if last_item and last_item.spacerItem():
+                insert_pos = layout.count() - 1
+
+        layout.insertWidget(insert_pos, card)
+
+        return card
+
+    except Exception as e:
+        logger.error(f"Error adding scored document card {index}: {e}", exc_info=True)
+        return None
+
+
+def add_single_citation(
+    layout: QVBoxLayout,
+    citation: Any,
+    index: int,
+    ui: UIConstants,
+    logger: Optional[logging.Logger] = None,
+    card_factory: Optional[CardFactoryProtocol] = None,
+    empty_label: Optional[QWidget] = None
+) -> Optional[QWidget]:
+    """
+    Add a single citation card to a layout for progressive display.
+
+    This function is designed to be called repeatedly as citations are extracted,
+    adding each card to the layout without clearing existing content.
+
+    Args:
+        layout: Layout to add the card to
+        citation: Citation dictionary or Citation object
+        index: Citation index (1-indexed) for display
+        ui: UI constants for styling
+        logger: Optional logger for error reporting
+        card_factory: Optional card factory for PDF button creation
+        empty_label: Optional empty state label to remove on first card
+
+    Returns:
+        The created card widget, or None if creation failed
+    """
+    logger = logger or logging.getLogger(__name__)
+
+    # Import CitationCard widget
+    from ...widgets.citation_card import CitationCard
+
+    try:
+        # Remove empty label and stretch on first item
+        if index == 1:
+            _remove_empty_label_and_stretch(layout, empty_label)
+
+        # Create PDF button if factory available
+        pdf_button_widget = None
+        if card_factory:
+            pdf_button_widget = _create_citation_pdf_button(citation, card_factory, logger)
+
+        # Create the citation card
+        card = CitationCard(
+            citation_data=citation,
+            index=index,
+            pdf_button_widget=pdf_button_widget
+        )
+
+        # Insert before any trailing stretch (or at end if no stretch)
+        insert_pos = layout.count()
+        if layout.count() > 0:
+            last_item = layout.itemAt(layout.count() - 1)
+            if last_item and last_item.spacerItem():
+                insert_pos = layout.count() - 1
+
+        layout.insertWidget(insert_pos, card)
+
+        return card
+
+    except Exception as e:
+        logger.error(f"Error adding citation card {index}: {e}", exc_info=True)
+        return None

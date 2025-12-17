@@ -42,6 +42,11 @@ class WorkflowThread(QThread):
     counterfactual_analysis_complete = Signal(dict)  # Analysis results
     final_report_generated = Signal(str)  # Markdown report
 
+    # Progressive display signals (emitted per-item for real-time UI updates)
+    document_scored = Signal(object, object, int, int)  # (doc, score_result, current, total)
+    citation_progress = Signal(int, int)  # (current, total) - for progress bar
+    citation_extracted = Signal(object, int, int)  # (citation, current, total) - per citation
+
     # Completion signals
     workflow_completed = Signal(dict)  # Final results dictionary
     workflow_error = Signal(Exception)  # Error occurred
@@ -183,7 +188,7 @@ class WorkflowThread(QThread):
             self.status_message.emit(f"✓ Found {len(self.documents)} documents")
 
             # ==================================================================
-            # Step 3: Score Documents
+            # Step 3: Score Documents (progressive display)
             # ==================================================================
             step_name = "score_documents"
             self.step_started.emit(step_name, f"Scoring {len(self.documents)} documents for relevance")
@@ -199,7 +204,7 @@ class WorkflowThread(QThread):
                 if self._check_cancellation(step_name):
                     return
 
-                # Emit progress
+                # Emit progress for progress bar
                 self.step_progress.emit(step_name, i, total)
 
                 # Score document
@@ -209,6 +214,8 @@ class WorkflowThread(QThread):
 
                 if score_result:
                     self.scored_documents.append((doc, score_result))
+                    # Emit per-document signal for progressive Scoring tab display
+                    self.document_scored.emit(doc, score_result, i, total)
 
             self.documents_scored.emit(self.scored_documents)
             self.step_completed.emit(step_name)
@@ -228,7 +235,7 @@ class WorkflowThread(QThread):
             )
 
             # ==================================================================
-            # Step 4: Extract Citations
+            # Step 4: Extract Citations (progressive display)
             # ==================================================================
             step_name = "extract_citations"
             self.step_started.emit(step_name, f"Extracting citations from {high_scoring_count} high-scoring documents")
@@ -237,7 +244,8 @@ class WorkflowThread(QThread):
             if self._check_cancellation(step_name):
                 return
 
-            self.citations = self.executor.extract_citations(
+            # Extract citations with progress callback for progressive display
+            self.citations = self._extract_citations_progressive(
                 self.scored_documents,
                 score_threshold=self.score_threshold
             )
@@ -458,6 +466,92 @@ class WorkflowThread(QThread):
             self.logger.error(f"Workflow execution failed: {e}", exc_info=True)
             self.status_message.emit(f"❌ Error: {str(e)}")
             self.workflow_error.emit(e)
+
+    def _extract_citations_progressive(
+        self,
+        scored_documents: List[Tuple[Dict, Dict]],
+        score_threshold: float = 3.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract citations with progressive display support.
+
+        Emits citation_progress and citation_extracted signals for each document
+        processed, allowing the UI to display citations as they are extracted.
+
+        Args:
+            scored_documents: List of (document, score_result) tuples
+            score_threshold: Minimum score for citation extraction
+
+        Returns:
+            List of extracted citations
+        """
+        if not self.executor.citation_agent:
+            self.logger.error("CitationAgent not initialized")
+            return []
+
+        # Filter to high-scoring documents
+        high_scoring = [
+            (doc, score_result) for doc, score_result in scored_documents
+            if isinstance(score_result.get('score'), (int, float))
+            and score_result.get('score', 0) >= score_threshold
+        ]
+
+        if not high_scoring:
+            self.logger.warning(f"No documents meet threshold {score_threshold}")
+            return []
+
+        total_docs = len(high_scoring)
+        citations = []
+        citation_count = 0
+
+        self.logger.info(f"Extracting citations from {total_docs} high-scoring documents")
+
+        for i, (doc, score_result) in enumerate(high_scoring, 1):
+            if self._should_cancel:
+                self.logger.info("Citation extraction cancelled")
+                break
+
+            # Emit progress for progress bar
+            self.citation_progress.emit(i, total_docs)
+
+            try:
+                # Extract citation from this document
+                # Use executor's configured citation extraction threshold
+                min_relevance = getattr(
+                    self.executor, 'citation_extraction_threshold', 0.7
+                )
+                citation = self.executor.citation_agent.extract_citation_from_document(
+                    user_question=self.question,
+                    document=doc,
+                    min_relevance=min_relevance
+                )
+
+                if citation:
+                    # Convert Citation object to dict for consistency
+                    citation_dict = {
+                        'passage': citation.passage,
+                        'summary': citation.summary,
+                        'relevance_score': citation.relevance_score,
+                        'document_id': citation.document_id,
+                        'document_title': citation.document_title,
+                        'authors': citation.authors,
+                        'publication_date': citation.publication_date,
+                        'pmid': citation.pmid,
+                        'doi': citation.doi,
+                        'pdf_url': getattr(citation, 'pdf_url', None),
+                        'pdf_filename': getattr(citation, 'pdf_filename', None),
+                    }
+                    citations.append(citation_dict)
+                    citation_count += 1
+
+                    # Emit per-citation signal for progressive display
+                    self.citation_extracted.emit(citation_dict, citation_count, total_docs)
+
+            except Exception as e:
+                self.logger.error(f"Error extracting citation from doc {doc.get('id')}: {e}")
+
+        self.logger.info(f"Extracted {len(citations)} citations from {total_docs} documents")
+        return citations
 
     def _emit_completion_no_documents(self) -> None:
         """Emit completion signal when no documents are found."""
