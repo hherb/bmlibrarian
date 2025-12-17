@@ -190,6 +190,11 @@ class WorkflowHandlersMixin:
         self.workflow_thread.citations_extracted.connect(self._on_citations_extracted)
         self.workflow_thread.preliminary_report_generated.connect(self._on_preliminary_report_generated)
 
+        # Progressive display signals (per-item updates)
+        self.workflow_thread.document_scored.connect(self._on_document_scored)
+        self.workflow_thread.citation_progress.connect(self._on_citation_progress)
+        self.workflow_thread.citation_extracted.connect(self._on_citation_extracted)
+
         # Counterfactual analysis signals
         self.workflow_thread.counterfactual_analysis_complete.connect(self._on_counterfactual_analysis_complete)
         self.workflow_thread.final_report_generated.connect(self._on_final_report_generated)
@@ -379,14 +384,14 @@ class WorkflowHandlersMixin:
         """
         Handle scoring progress signal.
 
-        Updates the progress bar in the Literature tab.
+        Updates the progress bar in the Scoring tab.
 
         Args:
             current: Current document number being scored
             total: Total number of documents to score
         """
-        if hasattr(self, 'literature_refs') and 'progress_bar' in self.literature_refs.widgets:
-            progress_bar = self.literature_refs.widgets['progress_bar']
+        if hasattr(self, 'scoring_refs') and self.scoring_refs and 'progress_bar' in self.scoring_refs.widgets:
+            progress_bar = self.scoring_refs.widgets['progress_bar']
             # Show progress bar if it's hidden
             if not progress_bar.isVisible():
                 progress_bar.setVisible(True)
@@ -395,35 +400,31 @@ class WorkflowHandlersMixin:
             progress_bar.setMaximum(total)
             progress_bar.setValue(current)
 
+            # Update summary label with live count
+            if 'summary_label' in self.scoring_refs.widgets:
+                self.scoring_refs.widgets['summary_label'].setText(
+                    f"Scoring document {current}/{total}..."
+                )
+
     @Slot(list)
     def _on_documents_scored(self: 'ResearchTabWidget', scored_documents: list) -> None:
         """
-        Handle documents scored signal.
+        Handle documents scored signal (scoring complete).
 
-        Updates the Literature tab to display scored documents.
+        Hides progress bar and updates final summary in the Scoring tab.
+        Note: The Literature tab is left as-is (showing search results).
+        Scoring results are displayed progressively in the Scoring tab via _on_document_scored.
 
         Args:
             scored_documents: List of (document, score_result) tuples
         """
-        from .tab_updaters import update_literature_tab
-
         self.logger.info(f"Documents scored: {len(scored_documents)}")
 
-        # Hide progress bar
-        if hasattr(self, 'literature_refs') and 'progress_bar' in self.literature_refs.widgets:
-            self.literature_refs.widgets['progress_bar'].setVisible(False)
+        # Hide progress bar in Scoring tab
+        if hasattr(self, 'scoring_refs') and self.scoring_refs and 'progress_bar' in self.scoring_refs.widgets:
+            self.scoring_refs.widgets['progress_bar'].setVisible(False)
 
-        # Update the Literature tab with scored documents
-        if hasattr(self, 'literature_refs') and 'layout' in self.literature_refs.widgets:
-            update_literature_tab(
-                self.literature_refs.widgets['layout'],
-                scored_documents,
-                self.document_card_factory,
-                self.ui,
-                self.logger
-            )
-
-        # Update summary label
+        # Update summary label in Scoring tab with final count
         total = len(scored_documents)
         # Type-safe score extraction with validation
         high_scoring = len([
@@ -431,8 +432,8 @@ class WorkflowHandlersMixin:
             if isinstance(s.get('score'), (int, float)) and s.get('score', 0) >= self.ui.SCORE_THRESHOLD_RELEVANT
         ])
 
-        if hasattr(self, 'literature_refs') and 'summary_label' in self.literature_refs.widgets:
-            self.literature_refs.widgets['summary_label'].setText(
+        if hasattr(self, 'scoring_refs') and self.scoring_refs and 'summary_label' in self.scoring_refs.widgets:
+            self.scoring_refs.widgets['summary_label'].setText(
                 f"{total} documents scored | {high_scoring} highly relevant (score >= {self.ui.SCORE_THRESHOLD_RELEVANT})"
             )
 
@@ -441,34 +442,143 @@ class WorkflowHandlersMixin:
     @Slot(list)
     def _on_citations_extracted(self: 'ResearchTabWidget', citations: list) -> None:
         """
-        Handle citations extracted signal.
+        Handle citations extracted signal (extraction complete).
 
-        Updates the Citations tab to display extracted citations.
+        Hides progress bar and updates final summary in the Citations tab.
+        Note: Citation cards are added progressively via _on_citation_extracted.
 
         Args:
             citations: List of citation dictionaries
         """
-        from .tab_updaters import update_citations_tab
-
         self.logger.info(f"Citations extracted: {len(citations)}")
 
-        # Update the Citations tab with citations
-        if hasattr(self, 'citations_refs') and 'layout' in self.citations_refs.widgets:
-            update_citations_tab(
-                self.citations_refs.widgets['layout'],
-                citations,
-                self.ui,
-                self.logger,
-                card_factory=self.document_card_factory
-            )
+        # Hide progress bar in Citations tab
+        if hasattr(self, 'citations_refs') and self.citations_refs and 'progress_bar' in self.citations_refs.widgets:
+            self.citations_refs.widgets['progress_bar'].setVisible(False)
 
-        # Update summary label
-        if hasattr(self, 'citations_refs') and 'summary_label' in self.citations_refs.widgets:
+        # Update summary label with final count
+        if hasattr(self, 'citations_refs') and self.citations_refs and 'summary_label' in self.citations_refs.widgets:
             self.citations_refs.widgets['summary_label'].setText(
                 f"{len(citations)} citations extracted from high-scoring documents"
             )
 
         self.status_message.emit(f"Extracted {len(citations)} citations")
+
+    # ========================================================================
+    # Progressive Display Signal Handlers
+    # ========================================================================
+
+    @Slot(object, object, int, int)
+    def _on_document_scored(
+        self: 'ResearchTabWidget',
+        doc: dict,
+        score_result: dict,
+        current: int,
+        total: int
+    ) -> None:
+        """
+        Handle per-document scoring signal for progressive display.
+
+        Adds a scored document card to the Scoring tab as each document is scored.
+
+        Args:
+            doc: Document dictionary
+            score_result: Scoring result dictionary with 'score' and 'reasoning'
+            current: Current document number (1-indexed)
+            total: Total number of documents being scored
+        """
+        from .tab_updaters import add_single_scored_document
+
+        if not hasattr(self, 'scoring_refs') or not self.scoring_refs:
+            return
+
+        if 'layout' not in self.scoring_refs.widgets:
+            return
+
+        try:
+            add_single_scored_document(
+                layout=self.scoring_refs.widgets['layout'],
+                doc=doc,
+                score_result=score_result,
+                index=current,
+                card_factory=self.document_card_factory,
+                ui=self.ui,
+                logger=self.logger,
+                empty_label=self.scoring_refs.widgets.get('empty_label')
+            )
+        except Exception as e:
+            self.logger.error(f"Error adding scored document card: {e}", exc_info=True)
+
+    @Slot(int, int)
+    def _on_citation_progress(self: 'ResearchTabWidget', current: int, total: int) -> None:
+        """
+        Handle citation extraction progress signal.
+
+        Updates the progress bar in the Citations tab.
+
+        Args:
+            current: Current document number being processed
+            total: Total number of documents to extract citations from
+        """
+        if not hasattr(self, 'citations_refs') or not self.citations_refs:
+            return
+
+        if 'progress_bar' not in self.citations_refs.widgets:
+            return
+
+        progress_bar = self.citations_refs.widgets['progress_bar']
+
+        # Show progress bar if hidden
+        if not progress_bar.isVisible():
+            progress_bar.setVisible(True)
+
+        # Update progress
+        progress_bar.setMaximum(total)
+        progress_bar.setValue(current)
+
+        # Update summary label with live count
+        if 'summary_label' in self.citations_refs.widgets:
+            self.citations_refs.widgets['summary_label'].setText(
+                f"Extracting citations from document {current}/{total}..."
+            )
+
+    @Slot(object, int, int)
+    def _on_citation_extracted(
+        self: 'ResearchTabWidget',
+        citation: dict,
+        current: int,
+        total: int
+    ) -> None:
+        """
+        Handle per-citation extraction signal for progressive display.
+
+        Adds a citation card to the Citations tab as each citation is extracted.
+
+        Args:
+            citation: Citation dictionary
+            current: Current citation number (1-indexed)
+            total: Total number of documents being processed
+        """
+        from .tab_updaters import add_single_citation
+
+        if not hasattr(self, 'citations_refs') or not self.citations_refs:
+            return
+
+        if 'layout' not in self.citations_refs.widgets:
+            return
+
+        try:
+            add_single_citation(
+                layout=self.citations_refs.widgets['layout'],
+                citation=citation,
+                index=current,
+                ui=self.ui,
+                logger=self.logger,
+                card_factory=self.document_card_factory,
+                empty_label=self.citations_refs.widgets.get('empty_label')
+            )
+        except Exception as e:
+            self.logger.error(f"Error adding citation card: {e}", exc_info=True)
 
     @Slot(str)
     def _on_preliminary_report_generated(self: 'ResearchTabWidget', report: str) -> None:

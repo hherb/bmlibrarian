@@ -96,6 +96,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         # Tab UI references (populated during tab creation)
         self.search_refs: Optional[TabRefs] = None
         self.literature_refs: Optional[TabRefs] = None
+        self.scoring_refs: Optional[TabRefs] = None  # Scoring tab with progressive display
         self.citations_refs: Optional[TabRefs] = None
         self.preliminary_refs: Optional[TabRefs] = None
         self.counterfactual_refs: Optional[TabRefs] = None
@@ -360,7 +361,7 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         # Create tabs using builder functions
         search_tab, self.search_refs = build_search_tab(self.ui)
         literature_tab, self.literature_refs = build_literature_tab(self.ui)
-        scoring_tab, _ = build_scoring_tab(self.ui)
+        scoring_tab, self.scoring_refs = build_scoring_tab(self.ui)
         citations_tab, self.citations_refs = build_citations_tab(self.ui)
         preliminary_tab, self.preliminary_refs = build_preliminary_tab(self.ui)
         counterfactual_tab, self.counterfactual_refs = build_counterfactual_tab(self.ui)
