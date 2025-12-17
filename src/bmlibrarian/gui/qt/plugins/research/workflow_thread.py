@@ -516,10 +516,14 @@ class WorkflowThread(QThread):
 
             try:
                 # Extract citation from this document
+                # Use executor's configured citation extraction threshold
+                min_relevance = getattr(
+                    self.executor, 'citation_extraction_threshold', 0.7
+                )
                 citation = self.executor.citation_agent.extract_citation_from_document(
                     user_question=self.question,
                     document=doc,
-                    min_relevance=0.7
+                    min_relevance=min_relevance
                 )
 
                 if citation:
