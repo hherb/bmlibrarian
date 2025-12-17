@@ -10,6 +10,7 @@ import logging
 
 # Import ReportBuilder for consistent final report generation (same as Flet GUI)
 from bmlibrarian.gui.report_builder import ReportBuilder
+from bmlibrarian.agents.citation_agent import Citation
 
 
 class WorkflowThread(QThread):
@@ -471,7 +472,7 @@ class WorkflowThread(QThread):
         self,
         scored_documents: List[Tuple[Dict, Dict]],
         score_threshold: float = 3.0
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Citation]:
         """
         Extract citations with progressive display support.
 
@@ -483,7 +484,7 @@ class WorkflowThread(QThread):
             score_threshold: Minimum score for citation extraction
 
         Returns:
-            List of extracted citations
+            List of Citation objects (required by ReportingAgent)
         """
         if not self.executor.citation_agent:
             self.logger.error("CitationAgent not initialized")
@@ -501,7 +502,7 @@ class WorkflowThread(QThread):
             return []
 
         total_docs = len(high_scoring)
-        citations = []
+        citations: List[Citation] = []
         citation_count = 0
 
         self.logger.info(f"Extracting citations from {total_docs} high-scoring documents")
@@ -527,7 +528,11 @@ class WorkflowThread(QThread):
                 )
 
                 if citation:
-                    # Convert Citation object to dict for consistency
+                    # Keep Citation object for ReportingAgent
+                    citations.append(citation)
+                    citation_count += 1
+
+                    # Create dict for signal emission (UI display)
                     citation_dict = {
                         'passage': citation.passage,
                         'summary': citation.summary,
@@ -538,11 +543,10 @@ class WorkflowThread(QThread):
                         'publication_date': citation.publication_date,
                         'pmid': citation.pmid,
                         'doi': citation.doi,
+                        'abstract': citation.abstract,
                         'pdf_url': getattr(citation, 'pdf_url', None),
                         'pdf_filename': getattr(citation, 'pdf_filename', None),
                     }
-                    citations.append(citation_dict)
-                    citation_count += 1
 
                     # Emit per-citation signal for progressive display
                     self.citation_extracted.emit(citation_dict, citation_count, total_docs)
