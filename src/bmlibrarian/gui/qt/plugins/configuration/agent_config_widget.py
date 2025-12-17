@@ -101,24 +101,12 @@ class AgentConfigWidget(QWidget):
         group = QGroupBox("Model Settings")
         layout = QFormLayout()
 
-        # Model selection
+        # Model selection - starts empty, populated by parent via update_model_list()
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
-        self.model_combo.addItems([
-            "gpt-oss:20b",
-            "medgemma4B_it_q8:latest",
-            "medgemma-27b-text-it-Q8_0:latest",
-        ])
-        self.model_combo.setToolTip("Select or enter a model name from Ollama")
+        self.model_combo.setToolTip("Select a model from the dropdown or enter a custom model name")
+        self.model_combo.setPlaceholderText("Loading models...")
         layout.addRow("Model:", self.model_combo)
-
-        # Refresh models button hint
-        info_label = QLabel(
-            "Click 'Test Connection' to refresh available models from Ollama server."
-        )
-        info_label.setWordWrap(True)
-        info_label# Styling handled by centralized theme
-        layout.addRow("", info_label)
 
         group.setLayout(layout)
         return group

@@ -119,6 +119,9 @@ class ConfigurationTabWidget(QWidget):
         button_layout = self._create_button_layout()
         main_layout.addLayout(button_layout)
 
+        # Load available models from Ollama on startup
+        self._load_initial_models()
+
     def _create_sync_status_bar(self, parent_layout: QVBoxLayout) -> None:
         """Create the database sync status bar.
 
@@ -505,6 +508,33 @@ class ConfigurationTabWidget(QWidget):
             self.status_message.emit(error_msg)
             logger.error(error_msg)
 
+    def _load_initial_models(self):
+        """Load available models from Ollama on startup."""
+        try:
+            ollama_url = self.general_widget.get_ollama_url()
+            model_names = list_ollama_models(host=ollama_url)
+
+            if model_names:
+                self._update_all_model_widgets(model_names)
+                logger.info(f"Loaded {len(model_names)} models from Ollama on startup")
+            else:
+                logger.warning("No models found on Ollama server during startup")
+
+        except Exception as e:
+            # Don't show error dialog on startup, just log it
+            logger.warning(f"Could not load Ollama models on startup: {e}")
+
+    def _update_all_model_widgets(self, model_names: list[str]):
+        """
+        Update all widgets that have model selection with the available models.
+
+        Args:
+            model_names: List of available model names from Ollama
+        """
+        for key, widget in self.config_widgets.items():
+            if hasattr(widget, 'update_model_list'):
+                widget.update_model_list(model_names)
+
     def refresh_models(self):
         """Refresh available models from Ollama server."""
         try:
@@ -517,10 +547,8 @@ class ConfigurationTabWidget(QWidget):
                 self.status_message.emit("No models found on Ollama server")
                 return
 
-            # Update agent config widgets with new model list
-            for key, widget in self.config_widgets.items():
-                if isinstance(widget, AgentConfigWidget):
-                    widget.update_model_list(model_names)
+            # Update all widgets with model selection
+            self._update_all_model_widgets(model_names)
 
             self.status_message.emit(
                 f"Refreshed {len(model_names)} models from Ollama"

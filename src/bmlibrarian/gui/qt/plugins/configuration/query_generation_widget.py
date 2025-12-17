@@ -133,12 +133,8 @@ class QueryGenerationWidget(QWidget):
         label = QLabel("Models to use for query generation:")
         layout.addWidget(label)
 
+        # Models list - starts empty, populated by parent via update_model_list()
         self.models_list = QListWidget()
-        self.models_list.addItems([
-            "medgemma-27b-text-it-Q8_0:latest",
-            "gpt-oss:20b",
-            "medgemma4B_it_q8:latest",
-        ])
         self.models_list.setSelectionMode(QListWidget.MultiSelection)
         # List height: 3 items × control height = good default
         self.models_list.setMaximumHeight(s['control_height_medium'] * 3)
@@ -316,3 +312,29 @@ class QueryGenerationWidget(QWidget):
         """
         self.config = config
         self._load_values()
+
+    def update_model_list(self, models: list[str]):
+        """
+        Update available models in the list widget.
+
+        Preserves currently selected models when updating the list.
+
+        Args:
+            models: List of model names from Ollama
+        """
+        # Remember currently selected models
+        selected_models = [
+            self.models_list.item(i).text()
+            for i in range(self.models_list.count())
+            if self.models_list.item(i).isSelected()
+        ]
+
+        # Clear and repopulate
+        self.models_list.clear()
+        self.models_list.addItems(models)
+
+        # Restore selections
+        for i in range(self.models_list.count()):
+            item = self.models_list.item(i)
+            if item.text() in selected_models:
+                item.setSelected(True)
