@@ -21,12 +21,12 @@ from typing import Optional
 import json
 import logging
 from pathlib import Path
-import ollama
 
 from .general_settings_widget import GeneralSettingsWidget
 from .agent_config_widget import AgentConfigWidget
 from .query_generation_widget import QueryGenerationWidget
 from .....config import get_config, DEFAULT_CONFIG
+from .....llm import list_ollama_models
 from ...resources.styles import get_font_scale
 from ...resources.styles.stylesheet_generator import StylesheetGenerator
 
@@ -385,17 +385,13 @@ class ConfigurationTabWidget(QWidget):
         try:
             ollama_url = self.general_widget.get_ollama_url()
 
-            # Create client with configured URL
-            client = ollama.Client(host=ollama_url)
+            # Use centralized utility function
+            models = list_ollama_models(host=ollama_url)
 
-            # List models to test connection
-            models_response = client.list()
+            if not models:
+                raise ConnectionError("Could not retrieve models from Ollama server")
 
-            # Validate response structure
-            if not isinstance(models_response, dict) or 'models' not in models_response:
-                raise ValueError("Invalid response from Ollama server")
-
-            model_count = len(models_response.get('models', []))
+            model_count = len(models)
 
             QMessageBox.information(
                 self,
@@ -514,18 +510,12 @@ class ConfigurationTabWidget(QWidget):
         try:
             ollama_url = self.general_widget.get_ollama_url()
 
-            # Create client with configured URL
-            client = ollama.Client(host=ollama_url)
+            # Use centralized utility function
+            model_names = list_ollama_models(host=ollama_url)
 
-            # List models
-            models_response = client.list()
-
-            # Validate response structure
-            if not isinstance(models_response, dict) or 'models' not in models_response:
-                raise ValueError("Invalid response from Ollama server")
-
-            models = models_response.get('models', [])
-            model_names = [model.get('name', '') for model in models]
+            if not model_names:
+                self.status_message.emit("No models found on Ollama server")
+                return
 
             # Update agent config widgets with new model list
             for key, widget in self.config_widgets.items():

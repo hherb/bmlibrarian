@@ -82,6 +82,7 @@ from .constants import (
 from .client import (
     LLMClient,
     get_llm_client,
+    list_ollama_models,
 )
 
 # Provider access (for advanced use cases)
@@ -124,6 +125,7 @@ __all__ = [
     # Client (primary interface)
     "LLMClient",
     "get_llm_client",
+    "list_ollama_models",
     # Providers (advanced)
     "LLMProvider",
     "get_provider",

@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, Slot, Signal
 from typing import Dict, Optional
 
 from bmlibrarian.config import get_config, DEFAULT_CONFIG
+from bmlibrarian.llm import list_ollama_models
 from ...tabs.general_tab import GeneralSettingsTab
 from ...tabs.agent_tab import AgentConfigTab
 from ...tabs.search_tab import SearchSettingsTab
@@ -464,15 +465,11 @@ class SettingsWidget(QWidget):
     @Slot()
     def _test_connection(self):
         """Test connection to Ollama server."""
+        host = self.config.get_ollama_config()['host']
+
         try:
-            import ollama
-
-            host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-
-            # Get available models
-            models_response = client.list()
-            models = [model.model for model in models_response.models]
+            # Use centralized utility function
+            models = list_ollama_models(host=host)
 
             if models:
                 QMessageBox.information(
@@ -495,7 +492,7 @@ class SettingsWidget(QWidget):
             QMessageBox.critical(
                 self,
                 "Connection Test Failed",
-                f"❌ Failed to connect to {self.config.get_ollama_config()['host']}\n\n"
+                f"❌ Failed to connect to {host}\n\n"
                 f"Error: {str(ex)}"
             )
 

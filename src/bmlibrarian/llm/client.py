@@ -522,3 +522,55 @@ def get_llm_client(**kwargs: Any) -> LLMClient:
         pass  # Config not available, use defaults
 
     return LLMClient(**kwargs)
+
+
+def list_ollama_models(host: Optional[str] = None) -> list[str]:
+    """
+    List available Ollama models.
+
+    Centralized utility function for listing Ollama models that handles
+    both old and new Ollama library API formats.
+
+    Args:
+        host: Ollama server URL. If None, uses configured default.
+
+    Returns:
+        List of model names available on the server.
+        Returns empty list on connection failure.
+
+    Examples:
+        >>> models = list_ollama_models()
+        >>> print(models[:3])
+        ['gpt-oss:20b', 'medgemma4B_it_q8:latest', 'qwen3:8b']
+
+        >>> models = list_ollama_models("http://192.168.1.100:11434")
+    """
+    import ollama
+
+    try:
+        # Get configured host if not provided
+        if host is None:
+            try:
+                from ..config import get_ollama_host
+                host = get_ollama_host()
+            except ImportError:
+                host = DEFAULT_OLLAMA_HOST
+
+        client = ollama.Client(host=host)
+        response = client.list()
+
+        # Ollama library >= 0.4.0 uses ListResponse with .models attribute
+        # containing Model objects with .model attribute
+        if hasattr(response, 'models'):
+            return [m.model for m in response.models]
+
+        # Fallback for older ollama library versions (dict-based response)
+        if isinstance(response, dict) and 'models' in response:
+            return [m["name"] for m in response.get("models", [])]
+
+        logger.warning("Unexpected Ollama list response format")
+        return []
+
+    except Exception as e:
+        logger.warning(f"Failed to list Ollama models: {e}")
+        return []
