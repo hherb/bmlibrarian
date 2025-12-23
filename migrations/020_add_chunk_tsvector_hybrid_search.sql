@@ -273,10 +273,8 @@ Example Usage:
 -- Phase 5: Grant permissions
 -- ============================================================================
 
-GRANT EXECUTE ON FUNCTION semantic.chunks_ts_vector_trigger() TO rwbadmin;
-GRANT EXECUTE ON FUNCTION semantic.chunks_ts_vector_trigger() TO hherb;
-GRANT EXECUTE ON FUNCTION semantic.chunks_ts_vector_trigger() TO postgres;
-
-GRANT EXECUTE ON FUNCTION semantic.hybrid_chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER, FLOAT, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION semantic.hybrid_chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER, FLOAT, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION semantic.hybrid_chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER, FLOAT, INTEGER) TO postgres;
+-- Grant execute permission to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT EXECUTE ON FUNCTION semantic.chunks_ts_vector_trigger() TO PUBLIC;
+GRANT EXECUTE ON FUNCTION semantic.hybrid_chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER, FLOAT, INTEGER) TO PUBLIC;

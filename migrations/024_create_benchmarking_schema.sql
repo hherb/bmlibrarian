@@ -404,24 +404,16 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION benchmarking.update_rankings IS 'Update all rankings for a benchmark run';
 
 -- ============================================================================
--- Grants (adjust based on your user setup)
+-- Grants
 -- ============================================================================
 
-GRANT USAGE ON SCHEMA benchmarking TO rwbadmin;
-GRANT USAGE ON SCHEMA benchmarking TO hherb;
-GRANT USAGE ON SCHEMA benchmarking TO postgres;
-
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA benchmarking TO rwbadmin;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA benchmarking TO hherb;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA benchmarking TO postgres;
-
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA benchmarking TO rwbadmin;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA benchmarking TO hherb;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA benchmarking TO postgres;
-
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA benchmarking TO rwbadmin;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA benchmarking TO hherb;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA benchmarking TO postgres;
+-- Grant permissions to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT USAGE ON SCHEMA benchmarking TO PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA benchmarking TO PUBLIC;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA benchmarking TO PUBLIC;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA benchmarking TO PUBLIC;
 
 -- ============================================================================
 -- Migration Complete

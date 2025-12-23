@@ -101,13 +101,10 @@ The function automatically:
 -- Grant appropriate permissions
 -- ============================================================================
 
--- Grant execute permission to database users
--- Adjust these grants based on your database user roles
-GRANT EXECUTE ON FUNCTION fulltext_search(text, integer) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION fulltext_search(text, integer) TO hherb;
-
--- Grant execute to postgres superuser (if needed for migrations)
-GRANT EXECUTE ON FUNCTION fulltext_search(text, integer) TO postgres;
+-- Grant execute permission to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT EXECUTE ON FUNCTION fulltext_search(text, integer) TO PUBLIC;
 
 -- ============================================================================
 -- Verify function creation

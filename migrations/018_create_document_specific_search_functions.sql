@@ -296,21 +296,10 @@ Example:
 -- Grant appropriate permissions
 -- ============================================================================
 
--- semantic_search_document permissions
-GRANT EXECUTE ON FUNCTION semantic_search_document(INTEGER, TEXT, FLOAT, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION semantic_search_document(INTEGER, TEXT, FLOAT, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION semantic_search_document(INTEGER, TEXT, FLOAT, INTEGER) TO postgres;
-
--- semantic.chunksearch_document permissions
-GRANT EXECUTE ON FUNCTION semantic.chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION semantic.chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION semantic.chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER) TO postgres;
-
--- Helper function permissions
-GRANT EXECUTE ON FUNCTION has_abstract_embeddings(INTEGER, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION has_abstract_embeddings(INTEGER, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION has_abstract_embeddings(INTEGER, INTEGER) TO postgres;
-
-GRANT EXECUTE ON FUNCTION get_document_text_status(INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION get_document_text_status(INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION get_document_text_status(INTEGER) TO postgres;
+-- Grant execute permission to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT EXECUTE ON FUNCTION semantic_search_document(INTEGER, TEXT, FLOAT, INTEGER) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION semantic.chunksearch_document(INTEGER, TEXT, FLOAT, INTEGER) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION has_abstract_embeddings(INTEGER, INTEGER) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION get_document_text_status(INTEGER) TO PUBLIC;

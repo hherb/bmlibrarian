@@ -158,26 +158,15 @@ COMMENT ON FUNCTION get_pubmed_api_search_stats IS
     'Returns summary statistics for PubMed API searches';
 
 -- ============================================================================
--- Grants (adjust based on your user setup)
+-- Grants
 -- ============================================================================
 
--- Grant permissions to common users
-DO $$
-BEGIN
-    -- Grant to rwbadmin if exists
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rwbadmin') THEN
-        GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_searches TO rwbadmin;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_search_documents TO rwbadmin;
-        GRANT USAGE ON SEQUENCE pubmed_api_searches_id_seq TO rwbadmin;
-    END IF;
-
-    -- Grant to hherb if exists
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hherb') THEN
-        GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_searches TO hherb;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_search_documents TO hherb;
-        GRANT USAGE ON SEQUENCE pubmed_api_searches_id_seq TO hherb;
-    END IF;
-END $$;
+-- Grant permissions to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_searches TO PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON pubmed_api_search_documents TO PUBLIC;
+GRANT USAGE ON SEQUENCE pubmed_api_searches_id_seq TO PUBLIC;
 
 -- ============================================================================
 -- Migration Complete

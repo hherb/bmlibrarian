@@ -206,15 +206,11 @@ Example Usage:
 -- Grant appropriate permissions
 -- ============================================================================
 
--- BM25 function permissions
-GRANT EXECUTE ON FUNCTION bm25(TEXT, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION bm25(TEXT, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION bm25(TEXT, INTEGER) TO postgres;
-
--- Semantic search function permissions
-GRANT EXECUTE ON FUNCTION semantic_search(TEXT, FLOAT, INTEGER) TO rwbadmin;
-GRANT EXECUTE ON FUNCTION semantic_search(TEXT, FLOAT, INTEGER) TO hherb;
-GRANT EXECUTE ON FUNCTION semantic_search(TEXT, FLOAT, INTEGER) TO postgres;
+-- Grant execute permission to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT EXECUTE ON FUNCTION bm25(TEXT, INTEGER) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION semantic_search(TEXT, FLOAT, INTEGER) TO PUBLIC;
 
 -- ============================================================================
 -- Verify function creation

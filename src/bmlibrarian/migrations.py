@@ -119,16 +119,58 @@ class MigrationManager:
         """Calculate SHA-256 checksum of migration content."""
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
     
+    def _extract_concurrent_indexes(self, sql_content: str) -> Tuple[str, List[str]]:
+        """Extract CREATE INDEX CONCURRENTLY statements from SQL content.
+
+        These statements cannot run inside a transaction block, so they must
+        be executed separately with autocommit enabled.
+
+        Args:
+            sql_content: The full SQL content of the migration file
+
+        Returns:
+            Tuple of (modified_sql_without_concurrent_indexes, list_of_concurrent_index_statements)
+        """
+        # Pattern to match CREATE INDEX CONCURRENTLY statements
+        # Handles multi-line statements ending with semicolon
+        pattern = re.compile(
+            r'CREATE\s+INDEX\s+CONCURRENTLY\s+.*?;',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        concurrent_statements = pattern.findall(sql_content)
+        modified_sql = pattern.sub('-- [CONCURRENT INDEX MOVED TO POST-TRANSACTION EXECUTION]', sql_content)
+
+        return modified_sql, concurrent_statements
+
     def _apply_sql_file(self, sql_file_path: Path):
-        """Apply a SQL file to the database."""
+        """Apply a SQL file to the database.
+
+        Handles CREATE INDEX CONCURRENTLY statements specially by executing
+        them outside of the transaction block with autocommit enabled.
+        """
         with open(sql_file_path, 'r', encoding='utf-8') as f:
             sql_content = f.read()
-        
-        with self._get_connection(self.database) as conn:
-            with conn.cursor() as cur:
-                # Execute the SQL content
-                cur.execute(sql_content)
-                conn.commit()
+
+        # Extract CONCURRENT index statements that can't run in a transaction
+        main_sql, concurrent_indexes = self._extract_concurrent_indexes(sql_content)
+
+        # Execute the main SQL content within a transaction
+        if main_sql.strip():
+            with self._get_connection(self.database) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(main_sql)
+                    conn.commit()
+
+        # Execute CONCURRENT index statements outside of transaction
+        if concurrent_indexes:
+            logger.info(f"Executing {len(concurrent_indexes)} CONCURRENT index statement(s) outside transaction")
+            with self._get_connection(self.database) as conn:
+                conn.autocommit = True
+                with conn.cursor() as cur:
+                    for idx_stmt in concurrent_indexes:
+                        logger.info(f"Creating concurrent index: {idx_stmt[:80]}...")
+                        cur.execute(idx_stmt)
     
     def _record_migration(self, filename: str, checksum: str):
         """Record a migration as applied."""

@@ -60,24 +60,31 @@ class DownloadTracker:
         self._ensure_tracking_table()
 
     def _ensure_tracking_table(self):
-        """Create pubmed_download_log table if it doesn't exist."""
+        """Create pubmed_download_log table if it doesn't exist.
+
+        Note: This table schema must match the existing database schema:
+        - file_name VARCHAR(255) NOT NULL UNIQUE
+        - file_type VARCHAR(50) NOT NULL
+        - download_date TIMESTAMP NOT NULL
+        - processed BOOLEAN DEFAULT FALSE
+        - process_date TIMESTAMP
+        - file_size BIGINT
+        - checksum VARCHAR(64)
+        - status VARCHAR(20) DEFAULT 'downloaded'
+        """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS pubmed_download_log (
                         id SERIAL PRIMARY KEY,
-                        filename TEXT UNIQUE NOT NULL,
-                        file_type TEXT NOT NULL,  -- 'baseline' or 'update'
-                        download_timestamp TIMESTAMP,
-                        processing_timestamp TIMESTAMP,
-                        file_size BIGINT,
-                        checksum TEXT,
+                        file_name VARCHAR(255) UNIQUE NOT NULL,
+                        file_type VARCHAR(50) NOT NULL,
+                        download_date TIMESTAMP NOT NULL,
                         processed BOOLEAN DEFAULT FALSE,
-                        status TEXT,
-                        error_message TEXT,
-                        articles_count INTEGER,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        process_date TIMESTAMP,
+                        file_size BIGINT,
+                        checksum VARCHAR(64),
+                        status VARCHAR(20) DEFAULT 'downloaded'
                     )
                 """)
                 conn.commit()
@@ -87,7 +94,7 @@ class DownloadTracker:
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT 1 FROM pubmed_download_log WHERE filename = %s",
+                    "SELECT 1 FROM pubmed_download_log WHERE file_name = %s",
                     (filename,)
                 )
                 return cur.fetchone() is not None
@@ -97,7 +104,7 @@ class DownloadTracker:
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT processed FROM pubmed_download_log WHERE filename = %s",
+                    "SELECT processed FROM pubmed_download_log WHERE file_name = %s",
                     (filename,)
                 )
                 result = cur.fetchone()
@@ -109,32 +116,32 @@ class DownloadTracker:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO pubmed_download_log
-                    (filename, file_type, download_timestamp, file_size, checksum, status)
+                    (file_name, file_type, download_date, file_size, checksum, status)
                     VALUES (%s, %s, %s, %s, %s, 'downloaded')
-                    ON CONFLICT (filename) DO UPDATE SET
-                        download_timestamp = EXCLUDED.download_timestamp,
+                    ON CONFLICT (file_name) DO UPDATE SET
+                        download_date = EXCLUDED.download_date,
                         file_size = EXCLUDED.file_size,
                         checksum = EXCLUDED.checksum,
-                        status = EXCLUDED.status,
-                        updated_at = CURRENT_TIMESTAMP
+                        status = EXCLUDED.status
                 """, (filename, file_type, datetime.now(), file_size, checksum))
                 conn.commit()
 
     def mark_processed(self, filename: str, articles_count: int = 0, error: Optional[str] = None):
-        """Mark file as processed."""
+        """Mark file as processed.
+
+        Note: articles_count and error are accepted for API compatibility but
+        not stored (columns don't exist in current schema).
+        """
         status = 'error' if error else 'processed'
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     UPDATE pubmed_download_log
                     SET processed = %s,
-                        processing_timestamp = %s,
-                        status = %s,
-                        articles_count = %s,
-                        error_message = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE filename = %s
-                """, (not error, datetime.now(), status, articles_count, error, filename))
+                        process_date = %s,
+                        status = %s
+                    WHERE file_name = %s
+                """, (not error, datetime.now(), status, filename))
                 conn.commit()
 
     def get_unprocessed_files(self) -> List[str]:
@@ -142,9 +149,9 @@ class DownloadTracker:
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT filename FROM pubmed_download_log
+                    SELECT file_name FROM pubmed_download_log
                     WHERE processed = FALSE
-                    ORDER BY filename
+                    ORDER BY file_name
                 """)
                 return [row[0] for row in cur.fetchall()]
 
@@ -223,13 +230,22 @@ class PubMedBulkImporter:
         ftp.login()  # Anonymous login
         ftp.set_pasv(True)
 
-        # Set socket keepalive
+        # Set socket keepalive (platform-specific options)
         import socket
+        import sys
         sock = ftp.sock
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+
+        # TCP keepalive options differ between platforms
+        if sys.platform == 'darwin':
+            # macOS: TCP_KEEPALIVE sets the idle time before keepalive probes
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60)
+        elif sys.platform.startswith('linux'):
+            # Linux: TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        # Windows: keepalive options set differently, SO_KEEPALIVE alone is sufficient
 
         return ftp
 

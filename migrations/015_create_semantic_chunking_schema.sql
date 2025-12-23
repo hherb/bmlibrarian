@@ -79,6 +79,9 @@ COMMENT ON COLUMN semantic.chunk_queue.last_error IS 'Error message from most re
 -- Create HNSW index for fast approximate nearest neighbor search
 -- ============================================================================
 
+-- This index is created CONCURRENTLY to avoid locking the table during
+-- bulk imports of millions of documents. The migration manager handles
+-- CONCURRENTLY indexes by executing them outside the transaction block.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_semantic_chunks_embedding_hnsw
 ON semantic.chunks
 USING hnsw (embedding vector_cosine_ops)
@@ -320,18 +323,10 @@ Returns the number of chunks deleted.';
 -- Grant appropriate permissions
 -- ============================================================================
 
-GRANT USAGE ON SCHEMA semantic TO rwbadmin;
-GRANT USAGE ON SCHEMA semantic TO hherb;
-GRANT USAGE ON SCHEMA semantic TO postgres;
-
-GRANT ALL ON ALL TABLES IN SCHEMA semantic TO rwbadmin;
-GRANT ALL ON ALL TABLES IN SCHEMA semantic TO hherb;
-GRANT ALL ON ALL TABLES IN SCHEMA semantic TO postgres;
-
-GRANT ALL ON ALL SEQUENCES IN SCHEMA semantic TO rwbadmin;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA semantic TO hherb;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA semantic TO postgres;
-
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA semantic TO rwbadmin;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA semantic TO hherb;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA semantic TO postgres;
+-- Grant permissions to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT USAGE ON SCHEMA semantic TO PUBLIC;
+GRANT ALL ON ALL TABLES IN SCHEMA semantic TO PUBLIC;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA semantic TO PUBLIC;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA semantic TO PUBLIC;

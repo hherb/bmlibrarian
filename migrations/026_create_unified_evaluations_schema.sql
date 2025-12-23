@@ -583,21 +583,13 @@ COMMENT ON FUNCTION evaluations.compare_evaluators IS 'Compare evaluations from 
 -- Grants
 -- ============================================================================
 
-GRANT USAGE ON SCHEMA evaluations TO rwbadmin;
-GRANT USAGE ON SCHEMA evaluations TO hherb;
-GRANT USAGE ON SCHEMA evaluations TO postgres;
-
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA evaluations TO rwbadmin;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA evaluations TO hherb;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA evaluations TO postgres;
-
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA evaluations TO rwbadmin;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA evaluations TO hherb;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA evaluations TO postgres;
-
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA evaluations TO rwbadmin;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA evaluations TO hherb;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA evaluations TO postgres;
+-- Grant permissions to PUBLIC (all database users)
+-- Since this is a repository for publicly available documents with no confidential data,
+-- we grant access to all users. User roles only exist to distinguish human evaluators.
+GRANT USAGE ON SCHEMA evaluations TO PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA evaluations TO PUBLIC;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA evaluations TO PUBLIC;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA evaluations TO PUBLIC;
 
 -- ============================================================================
 -- Migration Complete
