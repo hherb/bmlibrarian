@@ -17,6 +17,7 @@ import sys
 import time
 import logging
 import requests
+import multiprocessing
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
@@ -39,6 +40,37 @@ except ImportError:
     # Fallback if tqdm is not installed
     logger.warning("tqdm not installed. Progress bars will not be displayed.")
     tqdm = None
+
+
+# Timeout constant for PDF extraction (seconds)
+PDF_EXTRACTION_TIMEOUT_SECONDS = 60
+
+# Use 'spawn' start method on macOS to avoid fork-related issues
+# This must be set before any multiprocessing operations
+try:
+    multiprocessing.set_start_method('spawn', force=False)
+except RuntimeError:
+    # Already set - this is fine
+    pass
+
+
+def _extract_pdf_in_subprocess(pdf_path: str, result_queue: multiprocessing.Queue) -> None:
+    """
+    Worker function to extract PDF content in a subprocess.
+
+    This isolates potential segfaults in pymupdf4llm from crashing the main process.
+
+    Args:
+        pdf_path: Full path to the PDF file
+        result_queue: Queue to put the result (markdown text or empty string on error)
+    """
+    try:
+        import pymupdf4llm
+        markdown_text = pymupdf4llm.to_markdown(pdf_path)
+        result_queue.put(markdown_text)
+    except Exception as e:
+        # Log error and return empty string
+        result_queue.put("")
 
 
 class MedRxivImporter:
@@ -397,9 +429,13 @@ class MedRxivImporter:
             logger.error(f"Error downloading {pdf_url}: {e}")
             return None, False
 
-    def extract_full_text(self, filename: str, timeout_seconds: int = 20) -> str:
+    def extract_full_text(self, filename: str, timeout_seconds: int = PDF_EXTRACTION_TIMEOUT_SECONDS) -> str:
         """
-        Extract content from PDF as markdown.
+        Extract content from PDF as markdown using subprocess isolation.
+
+        This method runs pymupdf4llm in a separate subprocess to prevent segfaults
+        from crashing the main process. This is necessary because PyMuPDF can
+        occasionally crash on malformed PDFs, especially on macOS ARM.
 
         Args:
             filename: Filename of the PDF (not full path)
@@ -419,40 +455,57 @@ class MedRxivImporter:
             return ""
 
         try:
-            import signal
             import shutil
-            from contextlib import contextmanager
 
-            class TimeoutException(Exception):
-                pass
+            # Use subprocess to isolate potential segfaults
+            result_queue: multiprocessing.Queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=_extract_pdf_in_subprocess,
+                args=(str(pdf_path), result_queue)
+            )
+            process.start()
+            process.join(timeout=timeout_seconds)
 
-            @contextmanager
-            def timeout(seconds):
-                def timeout_handler(signum, frame):
-                    raise TimeoutException(f"PDF processing timed out after {seconds} seconds")
+            if process.is_alive():
+                # Process timed out - terminate it
+                logger.warning(f"PDF processing timed out after {timeout_seconds} seconds for {filename}")
+                process.terminate()
+                process.join(timeout=5)  # Give it 5 seconds to terminate gracefully
+                if process.is_alive():
+                    process.kill()  # Force kill if still alive
+                    process.join()
 
-                original_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(seconds)
-                try:
-                    yield
-                finally:
-                    signal.alarm(0)
-                    signal.signal(signal.SIGALRM, original_handler)
-
-            try:
-                with timeout(timeout_seconds):
-                    markdown_text = pymupdf4llm.to_markdown(str(pdf_path))
-                    logger.debug(f"Successfully converted {filename} to markdown")
-                    return markdown_text
-            except TimeoutException as e:
-                logger.warning(f"{e}")
                 # Move problematic PDF to 'failed' subdirectory
                 failed_dir = self.pdf_base_dir / 'failed'
                 failed_dir.mkdir(exist_ok=True)
                 failed_path = failed_dir / filename
-                shutil.move(str(pdf_path), str(failed_path))
-                logger.info(f"Moved problematic PDF {filename} to {failed_dir}")
+                if pdf_path.exists():  # Check it wasn't already moved
+                    shutil.move(str(pdf_path), str(failed_path))
+                    logger.info(f"Moved problematic PDF {filename} to {failed_dir}")
                 return ""
+
+            # Check if process crashed (non-zero exit code indicates crash/segfault)
+            if process.exitcode != 0:
+                logger.warning(f"PDF extraction subprocess crashed (exit code {process.exitcode}) for {filename}")
+                # Move problematic PDF to 'failed' subdirectory
+                failed_dir = self.pdf_base_dir / 'failed'
+                failed_dir.mkdir(exist_ok=True)
+                failed_path = failed_dir / filename
+                if pdf_path.exists():
+                    shutil.move(str(pdf_path), str(failed_path))
+                    logger.info(f"Moved problematic PDF {filename} to {failed_dir}")
+                return ""
+
+            # Get result from queue
+            try:
+                markdown_text = result_queue.get_nowait()
+                if markdown_text:
+                    logger.debug(f"Successfully converted {filename} to markdown")
+                return markdown_text
+            except Exception:
+                logger.warning(f"No result from PDF extraction subprocess for {filename}")
+                return ""
+
         except Exception as e:
             logger.error(f"Error extracting text from {filename}: {e}")
             return ""
