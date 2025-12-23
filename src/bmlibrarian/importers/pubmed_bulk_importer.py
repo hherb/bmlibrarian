@@ -271,7 +271,8 @@ class PubMedBulkImporter:
         return md5.hexdigest()
 
     def _download_file(self, ftp: ftplib.FTP, filename: str, dest_path: Path,
-                      expected_size: int, max_retries: int = 5) -> bool:
+                      expected_size: int, max_retries: int = 5,
+                      current_path: str = None) -> Tuple[bool, ftplib.FTP]:
         """
         Download file from FTP with resume capability.
 
@@ -281,18 +282,31 @@ class PubMedBulkImporter:
             dest_path: Local destination path
             expected_size: Expected file size in bytes
             max_retries: Maximum retry attempts
+            current_path: Current FTP directory path for reconnection
 
         Returns:
-            True if download successful, False otherwise
+            Tuple of (success: bool, ftp: FTP connection - may be new if reconnected)
         """
         for attempt in range(max_retries):
             try:
+                # Test connection health before attempting download
+                try:
+                    ftp.voidcmd('NOOP')
+                except Exception:
+                    logger.info(f"{filename}: Connection stale, reconnecting...")
+                    try:
+                        ftp.quit()
+                    except Exception:
+                        pass
+                    ftp = self._create_ftp_connection()
+                    if current_path:
+                        ftp.cwd(current_path)
                 # Check if partial download exists
                 start_pos = dest_path.stat().st_size if dest_path.exists() else 0
 
                 if start_pos == expected_size:
                     logger.info(f"{filename}: Already downloaded ({expected_size} bytes)")
-                    return True
+                    return True, ftp
                 elif start_pos > expected_size:
                     logger.warning(f"{filename}: Local file larger than expected, redownloading")
                     dest_path.unlink()
@@ -303,8 +317,9 @@ class PubMedBulkImporter:
                 logger.info(f"{filename}: Downloading (resume from {start_pos}/{expected_size} bytes)")
 
                 with open(dest_path, mode) as f:
-                    # Resume from position
+                    # Resume from position - must be in binary mode
                     if start_pos > 0:
+                        ftp.voidcmd('TYPE I')  # Switch to binary mode for REST
                         ftp.sendcmd(f'REST {start_pos}')
 
                     # Download with progress
@@ -327,40 +342,61 @@ class PubMedBulkImporter:
                     logger.error(f"{filename}: Size mismatch ({actual_size} != {expected_size})")
                     if attempt < max_retries - 1:
                         logger.info(f"Retrying download (attempt {attempt + 2}/{max_retries})")
-                        time.sleep(5)
+                        time.sleep(5 * (attempt + 1))  # Exponential backoff
                         continue
-                    return False
+                    return False, ftp
 
                 # Verify gzip integrity
                 try:
                     with gzip.open(dest_path, 'rb') as gz:
                         gz.read(1)  # Try to read first byte
                     logger.info(f"{filename}: Download complete and verified")
-                    return True
+                    return True, ftp
                 except Exception as e:
                     logger.error(f"{filename}: Gzip verification failed: {e}")
                     if attempt < max_retries - 1:
                         dest_path.unlink()
-                        time.sleep(5)
+                        time.sleep(5 * (attempt + 1))  # Exponential backoff
                         continue
-                    return False
+                    return False, ftp
+
+            except (BrokenPipeError, ConnectionResetError, EOFError, TimeoutError,
+                    ftplib.error_temp, ftplib.error_reply) as e:
+                # Connection-related errors - always reconnect
+                logger.error(f"{filename}: Connection error: {e}")
+                if attempt < max_retries - 1:
+                    retry_delay = 10 * (attempt + 1)  # Exponential backoff: 10, 20, 30, 40 seconds
+                    logger.info(f"Reconnecting and retrying in {retry_delay}s (attempt {attempt + 2}/{max_retries})")
+                    time.sleep(retry_delay)
+                    # Create fresh connection
+                    try:
+                        ftp.quit()
+                    except Exception:
+                        pass
+                    ftp = self._create_ftp_connection()
+                    if current_path:
+                        ftp.cwd(current_path)
+                    continue
+                return False, ftp
 
             except Exception as e:
                 logger.error(f"{filename}: Download error: {e}")
                 if attempt < max_retries - 1:
-                    logger.info(f"Retrying (attempt {attempt + 2}/{max_retries})")
-                    time.sleep(5)
-                    # Create fresh connection
+                    retry_delay = 5 * (attempt + 1)
+                    logger.info(f"Retrying in {retry_delay}s (attempt {attempt + 2}/{max_retries})")
+                    time.sleep(retry_delay)
+                    # Create fresh connection for safety
                     try:
                         ftp.quit()
-                    except:
+                    except Exception:
                         pass
                     ftp = self._create_ftp_connection()
-                    ftp.cwd(self.BASELINE_PATH if 'baseline' in str(dest_path) else self.UPDATE_PATH)
+                    if current_path:
+                        ftp.cwd(current_path)
                     continue
-                return False
+                return False, ftp
 
-        return False
+        return False, ftp
 
     def download_baseline(self, skip_existing: bool = True) -> int:
         """
@@ -374,6 +410,7 @@ class PubMedBulkImporter:
         """
         logger.info("Starting baseline download")
         ftp = self._create_ftp_connection()
+        ftp.cwd(self.BASELINE_PATH)
         downloaded = 0
 
         try:
@@ -386,18 +423,22 @@ class PubMedBulkImporter:
                     continue
 
                 dest_path = self.baseline_dir / filename
-                if self._download_file(ftp, filename, dest_path, size):
+                success, ftp = self._download_file(
+                    ftp, filename, dest_path, size,
+                    current_path=self.BASELINE_PATH
+                )
+                if success:
                     checksum = self._calculate_checksum(dest_path)
                     if self.tracker:
                         self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
                     downloaded += 1
                 else:
-                    logger.error(f"{filename}: Download failed")
+                    logger.error(f"{filename}: Download failed after all retries")
 
         finally:
             try:
                 ftp.quit()
-            except:
+            except Exception:
                 pass
 
         logger.info(f"Baseline download complete: {downloaded} files downloaded")
@@ -415,6 +456,7 @@ class PubMedBulkImporter:
         """
         logger.info("Starting update files download")
         ftp = self._create_ftp_connection()
+        ftp.cwd(self.UPDATE_PATH)
         downloaded = 0
 
         try:
@@ -427,18 +469,22 @@ class PubMedBulkImporter:
                     continue
 
                 dest_path = self.update_dir / filename
-                if self._download_file(ftp, filename, dest_path, size):
+                success, ftp = self._download_file(
+                    ftp, filename, dest_path, size,
+                    current_path=self.UPDATE_PATH
+                )
+                if success:
                     checksum = self._calculate_checksum(dest_path)
                     if self.tracker:
                         self.tracker.mark_downloaded(filename, 'update', size, checksum)
                     downloaded += 1
                 else:
-                    logger.error(f"{filename}: Download failed")
+                    logger.error(f"{filename}: Download failed after all retries")
 
         finally:
             try:
                 ftp.quit()
-            except:
+            except Exception:
                 pass
 
         logger.info(f"Update files download complete: {downloaded} files downloaded")
