@@ -44,6 +44,6 @@ papers/
 # Benchmark results (generated during testing)
 tests/benchmarks/results/
 LONG_bmlibrarian_results_20251126_220515.json
-.coverage.URDhhMBP128.local.92354.XGFAbzYx
-.coverage.URDhhMBP128.local.92354.XsdmffXx
+
+# Claude Code local settings
 .claude/settings.local.json
