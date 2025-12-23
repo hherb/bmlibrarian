@@ -653,6 +653,11 @@ class MedRxivImporter:
                 start_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime('%Y-%m-%d')
                 report_progress(f"No data in database. Starting from {days_to_fetch} days ago ({start_date})")
 
+        # Clamp start date to medRxiv launch date (no papers exist before this)
+        if start_date < self.MEDRXIV_LAUNCH_DATE:
+            report_progress(f"Note: medRxiv launched {self.MEDRXIV_LAUNCH_DATE}. Clamping start date from {start_date} to {self.MEDRXIV_LAUNCH_DATE}")
+            start_date = self.MEDRXIV_LAUNCH_DATE
+
         # Use provided end_date or default to today
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')

@@ -14,10 +14,11 @@ DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DB_CONNECTION_TIMEOUT_SECONDS = 10
 
 # Import settings
+# Note: medRxiv launched June 6, 2019 - the importer will clamp dates before this
 MEDRXIV_DEFAULT_DAYS = 7
 MEDRXIV_MIN_DAYS = 1
 MEDRXIV_MAX_DAYS = 365
-MEDRXIV_FULL_IMPORT_DAYS = 3650  # ~10 years for full historical import
+MEDRXIV_FULL_IMPORT_DAYS = 2500  # Full historical import (importer clamps to launch date)
 
 PUBMED_DEFAULT_MAX_RESULTS = 100
 PUBMED_MIN_RESULTS = 10

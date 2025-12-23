@@ -205,7 +205,8 @@ def main():
         '--days-to-fetch',
         type=int,
         default=1095,
-        help='Number of days back to fetch if database is empty (default: 1095)'
+        help='Number of days back to fetch if database is empty (default: 1095). '
+             'Note: medRxiv launched June 6, 2019 - dates before this are automatically skipped.'
     )
     update_parser.add_argument(
         '--max-retries',
