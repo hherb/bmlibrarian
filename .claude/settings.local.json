@@ -18,7 +18,9 @@
       "Bash(python3:*)",
       "Read(//private/tmp/**)",
       "Read(//tmp/**)",
-      "Bash(uv add:*)"
+      "Bash(uv add:*)",
+      "Bash(curl:*)",
+      "Bash(__NEW_LINE__ echo \"\")"
     ],
     "deny": [],
     "ask": []

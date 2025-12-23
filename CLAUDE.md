@@ -164,17 +164,8 @@ Since this project uses `uv` for package management:
   - `uv run python systematic_review_gui.py --review-dir ~/my_reviews` - Start with specific review directory
   - `uv run python systematic_review_gui.py --debug` - Enable debug logging
 - **BMLibrarian Lite** (lightweight version without PostgreSQL):
-  - `uv run python bmlibrarian_lite.py` - Launch BMLibrarian Lite GUI (default)
-  - `uv run python bmlibrarian_lite.py stats` - Show storage statistics (documents, chunks, sessions)
-  - `uv run python bmlibrarian_lite.py stats --json` - Output statistics as JSON
-  - `uv run python bmlibrarian_lite.py validate` - Validate configuration settings
-  - `uv run python bmlibrarian_lite.py validate --verbose` - Validate with detailed output
-  - `uv run python bmlibrarian_lite.py config` - Show current configuration
-  - `uv run python bmlibrarian_lite.py config --json` - Export configuration as JSON
-  - `uv run python bmlibrarian_lite.py clear` - Clear all stored data (with confirmation)
-  - `uv run python bmlibrarian_lite.py --version` - Show version
-  - **Features**: ChromaDB + SQLite storage, FastEmbed for local embeddings, Anthropic Claude API, PubMed search
-  - **Documentation**: See `doc/users/bmlibrarian_lite_guide.md` and `doc/developers/bmlibrarian_lite_architecture.md`
+  - Available as a separate project: https://github.com/hherb/bmlibrarian_lite
+  - Features: ChromaDB + SQLite storage, FastEmbed for local embeddings, Anthropic Claude API, PubMed search
 - **Fact-Checker Distribution Tools** (for inter-rater reliability analysis):
   - `uv run python scripts/export_review_package.py --output review_package.db --exported-by username` - Export self-contained SQLite review package
   - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
