@@ -177,8 +177,15 @@ class ImportWorker(QThread):
         self.progress_percent.emit(PROGRESS_COMPLETE)
 
     def _run_pubmed_full(self, stats: dict) -> None:
-        """Run full PubMed baseline import."""
-        self.progress.emit("Starting full PubMed baseline import (this will take many hours)...")
+        """Run full PubMed baseline import with parallel download/import.
+
+        Uses the new parallel download/import method which:
+        - Downloads files in one thread while importing in another
+        - Ensures sequential import order (critical for corrections/retractions)
+        - Provides real-time progress feedback
+        - Handles pre-existing downloaded files
+        """
+        self.progress.emit("Starting full PubMed baseline download and import...")
         self.progress_percent.emit(0)
 
         try:
@@ -186,19 +193,17 @@ class ImportWorker(QThread):
 
             importer = PubMedBulkImporter()
 
-            # Download baseline
-            self._progress_callback("Downloading PubMed baseline files...")
-            importer.download_baseline()
+            # Use the new parallel download/import method with callbacks
+            pubmed_stats = importer.download_and_import_baseline(
+                progress_callback=self._progress_callback,
+                cancel_check=self.is_cancelled,
+            )
 
-            if self._cancelled:
-                self._progress_callback("Import cancelled by user")
-                return
-
-            # Import baseline
-            self._progress_callback("Importing PubMed baseline files...")
-            pubmed_stats = importer.import_files(file_type="baseline")
             stats["pubmed"] = pubmed_stats
-            self._progress_callback(f"PubMed baseline import complete: {pubmed_stats}")
+            self._progress_callback(
+                f"PubMed baseline complete: {pubmed_stats.get('files_processed', 0)} files, "
+                f"{pubmed_stats.get('total_articles', 0):,} articles"
+            )
         except Exception as e:
             logger.error(f"PubMed full import failed: {e}", exc_info=True)
             stats["pubmed_error"] = str(e)

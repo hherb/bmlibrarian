@@ -39,16 +39,24 @@ import gzip
 import hashlib
 import logging
 import os
+import queue
+import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Callable
 import backoff
 
 from bmlibrarian.database import get_db_manager
 
 logger = logging.getLogger(__name__)
+
+# Type alias for progress callback: (message: str) -> None
+ProgressCallback = Callable[[str], None]
+
+# Type alias for cancel check: () -> bool
+CancelCheck = Callable[[], bool]
 
 
 class DownloadTracker:
@@ -180,6 +188,152 @@ class DownloadTracker:
                 }
 
 
+class ImportQueue:
+    """Thread-safe queue ensuring sequential file processing by file number.
+
+    PubMed baseline files are numbered sequentially (pubmed25n0001.xml.gz,
+    pubmed25n0002.xml.gz, etc.) and must be imported in order because later
+    files may contain corrections/retractions that supersede earlier versions.
+
+    This queue accepts files in any order but only releases them for import
+    when they are the next expected sequential file.
+    """
+
+    # Regex pattern to extract file number from PubMed filenames
+    # Matches: pubmed25n0001.xml.gz, pubmed24n1274.xml.gz, etc.
+    FILE_NUMBER_PATTERN = r'pubmed\d+n(\d+)\.xml\.gz$'
+
+    def __init__(self, start_from: int = 1):
+        """
+        Initialize the import queue.
+
+        Args:
+            start_from: First file number to expect (1-indexed)
+        """
+        import re
+        self._pattern = re.compile(self.FILE_NUMBER_PATTERN)
+        self._queue: Dict[int, Path] = {}  # file_number -> filepath
+        self._next_to_import: int = start_from
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._download_complete = False
+        self._total_files = 0
+        self._imported_count = 0
+        self._skipped_files: set = set()  # Track files that were skipped (already processed)
+
+    def _extract_file_number(self, filepath: Path) -> Optional[int]:
+        """Extract the sequential file number from a PubMed filename.
+
+        Args:
+            filepath: Path to the file
+
+        Returns:
+            The file number (1-indexed) or None if not a valid filename
+        """
+        match = self._pattern.search(filepath.name)
+        if match:
+            return int(match.group(1))
+        return None
+
+    def set_total_files(self, total: int) -> None:
+        """Set the total number of files expected."""
+        with self._lock:
+            self._total_files = total
+
+    def add_downloaded(self, filepath: Path) -> bool:
+        """
+        Add a downloaded file to the queue.
+
+        Args:
+            filepath: Path to the downloaded file
+
+        Returns:
+            True if added successfully, False if invalid filename
+        """
+        file_num = self._extract_file_number(filepath)
+        if file_num is None:
+            logger.warning(f"Could not extract file number from: {filepath.name}")
+            return False
+
+        with self._condition:
+            self._queue[file_num] = filepath
+            logger.debug(f"Added to queue: {filepath.name} (file #{file_num})")
+            self._condition.notify_all()
+            return True
+
+    def mark_skipped(self, filepath: Path) -> None:
+        """Mark a file as skipped (already processed)."""
+        file_num = self._extract_file_number(filepath)
+        if file_num is not None:
+            with self._lock:
+                self._skipped_files.add(file_num)
+
+    def get_next_for_import(self, timeout: float = 5.0) -> Optional[Path]:
+        """
+        Get the next file for import if it's the expected sequence number.
+
+        This method blocks until:
+        - The next sequential file is available
+        - The timeout expires
+        - All downloads are complete and no more files expected
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            Path to the next file to import, or None if should wait/stop
+        """
+        with self._condition:
+            deadline = time.time() + timeout
+
+            while True:
+                # Skip any files that were marked as already processed
+                while self._next_to_import in self._skipped_files:
+                    logger.debug(f"Skipping file #{self._next_to_import} (already processed)")
+                    self._next_to_import += 1
+
+                # Check if next file is available
+                if self._next_to_import in self._queue:
+                    filepath = self._queue.pop(self._next_to_import)
+                    self._next_to_import += 1
+                    self._imported_count += 1
+                    return filepath
+
+                # Check if we're done
+                if self._download_complete and not self._queue:
+                    return None
+
+                # Wait for more files or timeout
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+
+                self._condition.wait(timeout=remaining)
+
+    def mark_download_complete(self) -> None:
+        """Signal that all downloads are finished."""
+        with self._condition:
+            self._download_complete = True
+            self._condition.notify_all()
+
+    def is_complete(self) -> bool:
+        """Check if all downloads are complete and queue is empty."""
+        with self._lock:
+            return self._download_complete and not self._queue
+
+    def get_status(self) -> Dict:
+        """Get current queue status for progress reporting."""
+        with self._lock:
+            return {
+                'next_expected': self._next_to_import,
+                'queued_count': len(self._queue),
+                'imported_count': self._imported_count,
+                'total_files': self._total_files,
+                'download_complete': self._download_complete,
+                'queued_numbers': sorted(self._queue.keys())[:10]  # First 10 for display
+            }
+
+
 class PubMedBulkImporter:
     """FTP-based PubMed bulk downloader and importer."""
 
@@ -270,9 +424,16 @@ class PubMedBulkImporter:
                 md5.update(chunk)
         return md5.hexdigest()
 
-    def _download_file(self, ftp: ftplib.FTP, filename: str, dest_path: Path,
-                      expected_size: int, max_retries: int = 5,
-                      current_path: str = None) -> Tuple[bool, ftplib.FTP]:
+    def _download_file(
+        self,
+        ftp: ftplib.FTP,
+        filename: str,
+        dest_path: Path,
+        expected_size: int,
+        max_retries: int = 5,
+        current_path: str = None,
+        progress_callback: Optional[ProgressCallback] = None
+    ) -> Tuple[bool, ftplib.FTP]:
         """
         Download file from FTP with resume capability.
 
@@ -283,6 +444,7 @@ class PubMedBulkImporter:
             expected_size: Expected file size in bytes
             max_retries: Maximum retry attempts
             current_path: Current FTP directory path for reconnection
+            progress_callback: Optional callback for progress messages
 
         Returns:
             Tuple of (success: bool, ftp: FTP connection - may be new if reconnected)
@@ -314,7 +476,14 @@ class PubMedBulkImporter:
 
                 # Open file for appending
                 mode = 'ab' if start_pos > 0 else 'wb'
-                logger.info(f"{filename}: Downloading (resume from {start_pos}/{expected_size} bytes)")
+                if start_pos > 0:
+                    start_mb = start_pos / (1024 * 1024)
+                    msg = f"{filename}: Resuming from {start_mb:.1f} MB"
+                    logger.info(msg)
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD] {msg}")
+                else:
+                    logger.info(f"{filename}: Downloading ({expected_size} bytes)")
 
                 with open(dest_path, mode) as f:
                     # Resume from position - must be in binary mode
@@ -366,7 +535,10 @@ class PubMedBulkImporter:
                 logger.error(f"{filename}: Connection error: {e}")
                 if attempt < max_retries - 1:
                     retry_delay = 10 * (attempt + 1)  # Exponential backoff: 10, 20, 30, 40 seconds
-                    logger.info(f"Reconnecting and retrying in {retry_delay}s (attempt {attempt + 2}/{max_retries})")
+                    msg = f"{filename}: Connection error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
+                    logger.info(msg)
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
                     time.sleep(retry_delay)
                     # Create fresh connection
                     try:
@@ -383,7 +555,10 @@ class PubMedBulkImporter:
                 logger.error(f"{filename}: Download error: {e}")
                 if attempt < max_retries - 1:
                     retry_delay = 5 * (attempt + 1)
-                    logger.info(f"Retrying in {retry_delay}s (attempt {attempt + 2}/{max_retries})")
+                    msg = f"{filename}: Error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
+                    logger.info(msg)
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
                     time.sleep(retry_delay)
                     # Create fresh connection for safety
                     try:
@@ -398,42 +573,71 @@ class PubMedBulkImporter:
 
         return False, ftp
 
-    def download_baseline(self, skip_existing: bool = True) -> int:
+    def download_baseline(
+        self,
+        skip_existing: bool = True,
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None
+    ) -> int:
         """
         Download PubMed baseline files.
 
         Args:
             skip_existing: Skip files already downloaded (default: True)
+            progress_callback: Optional callback for progress messages
+            cancel_check: Optional callback to check if operation should be cancelled
 
         Returns:
             Number of files downloaded
         """
         logger.info("Starting baseline download")
+        if progress_callback:
+            progress_callback("[DOWNLOAD] Connecting to NCBI FTP server...")
+
         ftp = self._create_ftp_connection()
         ftp.cwd(self.BASELINE_PATH)
         downloaded = 0
 
         try:
             files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
-            logger.info(f"Found {len(files)} baseline files")
+            total_files = len(files)
+            logger.info(f"Found {total_files} baseline files")
+            if progress_callback:
+                progress_callback(f"[INIT] Found {total_files} baseline files on server")
 
-            for filename, size in files:
+            for idx, (filename, size) in enumerate(files, 1):
+                # Check for cancellation
+                if cancel_check and cancel_check():
+                    if progress_callback:
+                        progress_callback("[DOWNLOAD] Cancelled by user")
+                    break
+
                 if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
                     logger.debug(f"{filename}: Already downloaded, skipping")
                     continue
 
+                # Format size for display
+                size_mb = size / (1024 * 1024)
+                if progress_callback:
+                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
+
                 dest_path = self.baseline_dir / filename
                 success, ftp = self._download_file(
                     ftp, filename, dest_path, size,
-                    current_path=self.BASELINE_PATH
+                    current_path=self.BASELINE_PATH,
+                    progress_callback=progress_callback
                 )
                 if success:
                     checksum = self._calculate_checksum(dest_path)
                     if self.tracker:
                         self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
                     downloaded += 1
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD] {filename}: Complete (verified)")
                 else:
                     logger.error(f"{filename}: Download failed after all retries")
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
 
         finally:
             try:
@@ -442,6 +646,8 @@ class PubMedBulkImporter:
                 pass
 
         logger.info(f"Baseline download complete: {downloaded} files downloaded")
+        if progress_callback:
+            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded")
         return downloaded
 
     def download_updates(self, skip_existing: bool = True) -> int:
@@ -822,13 +1028,19 @@ class PubMedBulkImporter:
         logger.debug(f"Batch stored: {inserted} inserted, {updated} updated")
         return inserted + updated
 
-    def import_file(self, filepath: Path, batch_size: int = 100) -> Dict:
+    def import_file(
+        self,
+        filepath: Path,
+        batch_size: int = 100,
+        progress_callback: Optional[ProgressCallback] = None
+    ) -> Dict:
         """
         Import articles from XML file using memory-efficient streaming.
 
         Args:
             filepath: Path to .xml.gz file
             batch_size: Number of articles to batch before database insertion
+            progress_callback: Optional callback for progress messages
 
         Returns:
             Dict with import statistics
@@ -863,7 +1075,10 @@ class PubMedBulkImporter:
                                 batch = []
 
                                 if stats['articles_parsed'] % 1000 == 0:
-                                    logger.info(f"{filepath.name}: Processed {stats['articles_parsed']} articles")
+                                    msg = f"{filepath.name}: Processed {stats['articles_parsed']:,} articles"
+                                    logger.info(msg)
+                                    if progress_callback:
+                                        progress_callback(f"[IMPORT] {msg}")
                         else:
                             stats['errors'] += 1
 
@@ -910,12 +1125,19 @@ class PubMedBulkImporter:
 
         return stats
 
-    def import_all_files(self, file_type: Optional[str] = None) -> Dict:
+    def import_all_files(
+        self,
+        file_type: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None
+    ) -> Dict:
         """
         Import all downloaded files.
 
         Args:
             file_type: 'baseline', 'update', or None for both
+            progress_callback: Optional callback for progress messages
+            cancel_check: Optional callback to check if operation should be cancelled
 
         Returns:
             Dict with overall statistics
@@ -933,16 +1155,300 @@ class PubMedBulkImporter:
         if file_type in (None, 'update'):
             dirs_to_process.append(self.update_dir)
 
+        # Collect all files to process
+        all_files = []
         for directory in dirs_to_process:
-            for filepath in sorted(directory.glob('*.xml.gz')):
-                # Skip if already processed
-                if self.tracker and self.tracker.is_file_processed(filepath.name):
-                    logger.info(f"{filepath.name}: Already processed, skipping")
-                    continue
+            all_files.extend(sorted(directory.glob('*.xml.gz')))
+        total_files = len(all_files)
 
-                stats = self.import_file(filepath)
-                overall_stats['files_processed'] += 1
-                overall_stats['total_articles'] += stats['articles_imported']
-                overall_stats['total_errors'] += stats['errors']
+        for idx, filepath in enumerate(all_files, 1):
+            # Check for cancellation
+            if cancel_check and cancel_check():
+                if progress_callback:
+                    progress_callback("[IMPORT] Cancelled by user")
+                break
+
+            # Skip if already processed
+            if self.tracker and self.tracker.is_file_processed(filepath.name):
+                logger.info(f"{filepath.name}: Already processed, skipping")
+                continue
+
+            if progress_callback:
+                progress_callback(f"[IMPORT] {idx}/{total_files}: {filepath.name}")
+
+            stats = self.import_file(filepath, progress_callback=progress_callback)
+            overall_stats['files_processed'] += 1
+            overall_stats['total_articles'] += stats['articles_imported']
+            overall_stats['total_errors'] += stats['errors']
+
+            if progress_callback:
+                progress_callback(
+                    f"[IMPORT] {filepath.name}: {stats['articles_imported']} articles imported"
+                )
 
         return overall_stats
+
+    def _import_worker(
+        self,
+        import_queue: ImportQueue,
+        progress_callback: Optional[ProgressCallback],
+        cancel_check: Optional[CancelCheck],
+        stats: Dict
+    ) -> None:
+        """
+        Worker thread that imports files sequentially from the queue.
+
+        This worker runs in a separate thread and imports files in sequential
+        order (by file number) as they become available in the queue.
+
+        Args:
+            import_queue: The ImportQueue to get files from
+            progress_callback: Optional callback for progress messages
+            cancel_check: Optional callback to check if operation should be cancelled
+            stats: Shared statistics dictionary (thread-safe updates)
+        """
+        logger.info("Import worker started")
+
+        while True:
+            # Check for cancellation
+            if cancel_check and cancel_check():
+                if progress_callback:
+                    progress_callback("[IMPORT] Cancelled by user")
+                break
+
+            # Get next file from queue
+            filepath = import_queue.get_next_for_import(timeout=5.0)
+
+            if filepath is None:
+                if import_queue.is_complete():
+                    logger.info("Import worker: All files processed")
+                    break
+
+                # Still waiting for files - report status
+                status = import_queue.get_status()
+                if progress_callback and status['queued_count'] > 0:
+                    progress_callback(
+                        f"[IMPORT] Waiting for file #{status['next_expected']} "
+                        f"({status['queued_count']} files queued, waiting for sequence)"
+                    )
+                continue
+
+            # Import the file
+            if progress_callback:
+                status = import_queue.get_status()
+                progress_callback(
+                    f"[IMPORT] {status['imported_count']}/{status['total_files']}: {filepath.name}"
+                )
+
+            try:
+                file_stats = self.import_file(filepath, progress_callback=progress_callback)
+
+                # Update shared statistics
+                with threading.Lock():
+                    stats['files_processed'] += 1
+                    stats['total_articles'] += file_stats['articles_imported']
+                    stats['total_errors'] += file_stats['errors']
+
+                if progress_callback:
+                    progress_callback(
+                        f"[IMPORT] {filepath.name}: {file_stats['articles_imported']:,} articles imported"
+                    )
+                    # Periodic summary
+                    if stats['files_processed'] % 10 == 0:
+                        progress_callback(
+                            f"[STATS] Imported: {stats['files_processed']} files, "
+                            f"{stats['total_articles']:,} articles"
+                        )
+
+            except Exception as e:
+                logger.error(f"Import worker error on {filepath.name}: {e}", exc_info=True)
+                if progress_callback:
+                    progress_callback(f"[IMPORT ERROR] {filepath.name}: {e}")
+                with threading.Lock():
+                    stats['total_errors'] += 1
+
+        logger.info("Import worker finished")
+
+    def download_and_import_baseline(
+        self,
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None,
+        skip_existing: bool = True
+    ) -> Dict:
+        """
+        Download and import baseline files in parallel.
+
+        Downloads happen in the main thread while imports process sequentially
+        in a separate thread. Files are imported in file-number order regardless
+        of download completion order.
+
+        This method handles:
+        - Pre-existing downloaded but unprocessed files
+        - Resume of partial downloads
+        - Sequential import order (critical for corrections/retractions)
+        - Graceful cancellation
+
+        Args:
+            progress_callback: Optional callback for progress messages
+            cancel_check: Optional callback to check if operation should be cancelled
+            skip_existing: Skip files already downloaded (default: True)
+
+        Returns:
+            Dict with overall statistics including:
+            - files_downloaded: Number of files newly downloaded
+            - files_processed: Number of files imported
+            - total_articles: Total articles imported
+            - total_errors: Total errors encountered
+        """
+        logger.info("Starting parallel download and import")
+
+        stats = {
+            'files_downloaded': 0,
+            'files_processed': 0,
+            'total_articles': 0,
+            'total_errors': 0,
+            'pre_existing_queued': 0
+        }
+
+        if progress_callback:
+            progress_callback("[INIT] Connecting to NCBI FTP server...")
+
+        # Get list of remote files
+        ftp = self._create_ftp_connection()
+        try:
+            remote_files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
+            total_files = len(remote_files)
+            logger.info(f"Found {total_files} baseline files on server")
+            if progress_callback:
+                progress_callback(f"[INIT] Found {total_files} baseline files on server")
+        except Exception as e:
+            logger.error(f"Failed to get file list: {e}")
+            if progress_callback:
+                progress_callback(f"[ERROR] Failed to get file list: {e}")
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+            raise
+
+        # Create import queue
+        import_queue = ImportQueue(start_from=1)
+        import_queue.set_total_files(total_files)
+
+        # Queue pre-existing downloaded but unprocessed files
+        if progress_callback:
+            progress_callback("[INIT] Checking for pre-existing downloaded files...")
+
+        pre_existing = 0
+        already_processed = 0
+        for filepath in sorted(self.baseline_dir.glob('*.xml.gz')):
+            if self.tracker:
+                if self.tracker.is_file_processed(filepath.name):
+                    # Already processed - mark as skipped in queue
+                    import_queue.mark_skipped(filepath)
+                    already_processed += 1
+                elif self.tracker.is_file_downloaded(filepath.name):
+                    # Downloaded but not processed - add to queue
+                    import_queue.add_downloaded(filepath)
+                    pre_existing += 1
+            else:
+                # No tracker - assume file needs processing
+                import_queue.add_downloaded(filepath)
+                pre_existing += 1
+
+        stats['pre_existing_queued'] = pre_existing
+
+        if progress_callback:
+            if already_processed > 0:
+                progress_callback(f"[INIT] {already_processed} files already processed (skipping)")
+            if pre_existing > 0:
+                progress_callback(f"[INIT] {pre_existing} pre-downloaded files queued for import")
+
+        # Start import worker thread
+        import_thread = threading.Thread(
+            target=self._import_worker,
+            args=(import_queue, progress_callback, cancel_check, stats),
+            name="PubMed-ImportWorker",
+            daemon=True
+        )
+        import_thread.start()
+        logger.info("Import worker thread started")
+
+        # Download files in main thread
+        try:
+            downloaded = 0
+            for idx, (filename, size) in enumerate(remote_files, 1):
+                # Check for cancellation
+                if cancel_check and cancel_check():
+                    if progress_callback:
+                        progress_callback("[DOWNLOAD] Cancelled by user")
+                    break
+
+                # Skip if already downloaded
+                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
+                    logger.debug(f"{filename}: Already downloaded, skipping")
+                    continue
+
+                # Report download progress
+                size_mb = size / (1024 * 1024)
+                if progress_callback:
+                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
+
+                dest_path = self.baseline_dir / filename
+                success, ftp = self._download_file(
+                    ftp, filename, dest_path, size,
+                    current_path=self.BASELINE_PATH,
+                    progress_callback=progress_callback
+                )
+
+                if success:
+                    checksum = self._calculate_checksum(dest_path)
+                    if self.tracker:
+                        self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
+                    downloaded += 1
+                    stats['files_downloaded'] += 1
+
+                    # Add to import queue
+                    import_queue.add_downloaded(dest_path)
+
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD] {filename}: Complete (queued for import)")
+                else:
+                    logger.error(f"{filename}: Download failed after all retries")
+                    if progress_callback:
+                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
+                    stats['total_errors'] += 1
+
+        finally:
+            # Close FTP connection
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
+            # Signal download completion
+            import_queue.mark_download_complete()
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD] All downloads complete: {stats['files_downloaded']} files")
+
+        # Wait for import to finish
+        if progress_callback:
+            progress_callback("[IMPORT] Waiting for import to complete...")
+
+        import_thread.join()
+
+        # Final summary
+        if progress_callback:
+            progress_callback(
+                f"[COMPLETE] Downloaded: {stats['files_downloaded']}, "
+                f"Imported: {stats['files_processed']} files, "
+                f"{stats['total_articles']:,} articles, "
+                f"{stats['total_errors']} errors"
+            )
+
+        logger.info(
+            f"Parallel download/import complete: {stats['files_downloaded']} downloaded, "
+            f"{stats['files_processed']} imported, {stats['total_articles']} articles"
+        )
+
+        return stats
