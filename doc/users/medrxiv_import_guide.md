@@ -7,11 +7,29 @@ The MedRxiv importer allows you to import biomedical preprints from [medRxiv](ht
 ## Features
 
 - **Automated Metadata Import**: Fetch paper metadata from the medRxiv API
-- **PDF Downloads**: Download PDFs for preprints
-- **Full Text Extraction**: Convert PDFs to markdown for full-text search
+- **Multi-Format Full-Text Extraction**: Priority-based extraction from text, HTML, XML, and PDF
+- **PDF Downloads**: Download PDFs for preprints (fallback for full-text extraction)
 - **Incremental Updates**: Automatically resume from the last import date
 - **Batch Processing**: Handle large datasets efficiently with weekly chunking
 - **Error Recovery**: Retry logic with exponential backoff for network errors
+- **AWS MECA Bulk Sync** (Optional): Download complete MECA packages from AWS S3 for offline access
+
+## Full-Text Extraction Strategies
+
+BMLibrarian supports three extraction strategies for medRxiv papers:
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `auto` (default) | Try text → HTML → JATS XML → PDF | Best quality, recommended |
+| `pdf_only` | Only use PDF extraction | Legacy behavior, offline use |
+| `web_only` | Only try web formats, skip PDF | Fast, minimal downloads |
+
+### Extraction Priority (Auto Strategy)
+
+1. **Plain Text** (`.full.txt`) - Fastest, cleanest output when available
+2. **HTML** (`.full.html`) - Web scraping with BeautifulSoup → Markdown conversion
+3. **JATS XML** (via API `jats_xml_path`) - Structured XML parsing
+4. **PDF** (`.full.pdf`) - Subprocess-isolated pymupdf4llm extraction (fallback)
 
 ## Installation Requirements
 
@@ -19,10 +37,14 @@ The medRxiv importer requires the following Python packages:
 
 ```bash
 # Install via uv (recommended)
-uv pip install pymupdf4llm requests tqdm
+uv pip install pymupdf4llm requests tqdm beautifulsoup4 markdownify lxml
 
 # Or via pip
-pip install pymupdf4llm requests tqdm
+pip install pymupdf4llm requests tqdm beautifulsoup4 markdownify lxml
+
+# For AWS MECA bulk sync (optional)
+uv pip install bmlibrarian[aws]
+# Or: pip install boto3
 ```
 
 These dependencies are included in BMLibrarian's standard `pyproject.toml` file.
@@ -37,12 +59,36 @@ Fetch the last 7 days of new papers without downloading PDFs:
 uv run python medrxiv_import_cli.py update --days-to-fetch 7
 ```
 
-### Full Update with PDFs
+### Full Update with Multi-Format Extraction (Recommended)
 
-Fetch papers and download PDFs with full-text extraction:
+Fetch papers with automatic multi-format full-text extraction:
 
 ```bash
 uv run python medrxiv_import_cli.py update --download-pdfs --days-to-fetch 30
+```
+
+This uses the default `auto` strategy: tries text → HTML → JATS XML → PDF fallback.
+
+### Update with Specific Extraction Strategy
+
+```bash
+# Use only PDF extraction (legacy behavior)
+uv run python medrxiv_import_cli.py update --download-pdfs --extraction-strategy pdf_only
+
+# Use only web formats (faster, no PDF downloads)
+uv run python medrxiv_import_cli.py update --extraction-strategy web_only
+```
+
+### Re-Extract Full Text for Existing Records
+
+Update papers that are missing full text using better formats:
+
+```bash
+# Re-extract only papers without full text
+uv run python medrxiv_import_cli.py extract-text --missing-only --limit 100
+
+# Re-extract all papers with a specific strategy
+uv run python medrxiv_import_cli.py extract-text --extraction-strategy auto
 ```
 
 ### Download Missing PDFs
@@ -74,6 +120,7 @@ uv run python medrxiv_import_cli.py update [OPTIONS]
 
 **Options:**
 - `--download-pdfs`: Download PDFs for each paper (increases processing time)
+- `--extraction-strategy {auto,pdf_only,web_only}`: Full-text extraction strategy (default: auto)
 - `--start-date YYYY-MM-DD`: Override start date (useful for backfilling)
 - `--end-date YYYY-MM-DD`: Override end date (defaults to today)
 - `--days-to-fetch N`: Number of days back to fetch if database is empty (default: 1095)
@@ -131,6 +178,39 @@ uv run python medrxiv_import_cli.py fetch-pdfs [OPTIONS]
    uv run python medrxiv_import_cli.py fetch-pdfs
    ```
 
+### `extract-text` - Re-Extract Full Text
+
+Re-extract full text for existing records using multi-format extraction.
+
+**Usage:**
+```bash
+uv run python medrxiv_import_cli.py extract-text [OPTIONS]
+```
+
+**Options:**
+- `--limit N`: Maximum number of papers to process
+- `--missing-only`: Only process papers without full text
+- `--extraction-strategy {auto,pdf_only,web_only}`: Extraction strategy (default: auto)
+- `--pdf-dir PATH`: Override PDF storage directory
+- `-v, --verbose`: Enable verbose logging
+
+**Examples:**
+
+1. **Re-extract papers missing full text:**
+   ```bash
+   uv run python medrxiv_import_cli.py extract-text --missing-only --limit 100
+   ```
+
+2. **Re-extract all papers with web formats only:**
+   ```bash
+   uv run python medrxiv_import_cli.py extract-text --extraction-strategy web_only
+   ```
+
+3. **Full re-extraction of all papers:**
+   ```bash
+   uv run python medrxiv_import_cli.py extract-text --extraction-strategy auto
+   ```
+
 ### `status` - Show Import Statistics
 
 Display statistics about your medRxiv collection.
@@ -146,7 +226,8 @@ uv run python medrxiv_import_cli.py status
 - Total number of medRxiv papers
 - Number/percentage of papers with PDFs
 - Number/percentage of papers with full text
-- Number of papers missing PDFs
+- Number of papers missing full text
+- Current extraction strategy and priority order
 
 ## Configuration
 
@@ -191,8 +272,11 @@ You can also use the importer directly in Python code:
 ```python
 from bmlibrarian.importers import MedRxivImporter
 
-# Initialize importer
-importer = MedRxivImporter()
+# Initialize importer with extraction strategy
+importer = MedRxivImporter(
+    extraction_strategy='auto',  # 'auto', 'pdf_only', or 'web_only'
+    extraction_priority=['text', 'html', 'jats_xml', 'pdf']  # Custom priority
+)
 
 # Update database with last 30 days of papers
 stats = importer.update_database(
@@ -206,12 +290,27 @@ print(f"Processed {stats['total_processed']} papers")
 count = importer.fetch_missing_pdfs(limit=100)
 print(f"Downloaded {count} PDFs")
 
+# Re-extract full text for papers missing it
+reextract_stats = importer.reextract_full_text(
+    limit=100,
+    missing_only=True
+)
+print(f"Re-extracted {reextract_stats['extracted']} papers")
+print(f"By format: {reextract_stats['by_format']}")
+
+# Get extraction statistics
+stats = importer.get_extraction_statistics()
+print(f"Total papers: {stats['total_papers']}")
+print(f"With full text: {stats['with_fulltext']} ({stats['fulltext_percentage']}%)")
+print(f"Strategy: {stats['extraction_strategy']}")
+print(f"Priority: {' → '.join(stats['extraction_priority'])}")
+
 # Check status
 latest_date = importer.get_latest_date()
 print(f"Latest paper: {latest_date}")
 
-missing = importer.get_preprints_without_pdfs(limit=10)
-print(f"Found {len(missing)} papers without PDFs")
+missing = importer.get_preprints_without_fulltext(limit=10)
+print(f"Found {len(missing)} papers without full text")
 ```
 
 ## Workflow Recommendations
@@ -339,6 +438,143 @@ uv pip install pymupdf4llm
 - Running the same date range multiple times is safe
 - Existing papers are skipped automatically
 
+## AWS MECA Bulk Sync (Optional)
+
+For comprehensive offline access, medRxiv provides MECA (Manuscript Exchange Common Approach) packages via AWS S3. These packages contain:
+- Full-text JATS XML (structured, machine-readable)
+- PDF files
+- Images and supplementary materials
+
+**Important:** AWS MECA sync requires:
+- AWS credentials (access key and secret key)
+- AWS S3 costs (requester-pays bucket)
+
+### Installing AWS Dependencies
+
+```bash
+uv pip install bmlibrarian[aws]
+# Or: pip install boto3
+```
+
+### MECA CLI Commands
+
+The `medrxiv_meca_cli.py` provides commands for AWS S3 operations:
+
+```bash
+# List available MECA packages
+uv run python medrxiv_meca_cli.py list --limit 10
+
+# Download MECA packages
+uv run python medrxiv_meca_cli.py download --limit 10 --output-dir ~/medrxiv_meca
+
+# Import downloaded packages to database
+uv run python medrxiv_meca_cli.py import --meca-dir ~/medrxiv_meca
+
+# Full sync workflow (download + import)
+uv run python medrxiv_meca_cli.py sync --output-dir ~/medrxiv_meca --limit 100
+
+# Show import status
+uv run python medrxiv_meca_cli.py status --meca-dir ~/medrxiv_meca
+```
+
+### MECA Command Reference
+
+#### `list` - List Available Packages
+
+```bash
+uv run python medrxiv_meca_cli.py list [OPTIONS]
+```
+
+**Options:**
+- `--output-dir PATH`: Output directory for state files (default: ~/medrxiv_meca)
+- `--prefix PREFIX`: S3 key prefix filter (e.g., "Current_Content/2024-01/")
+- `--limit N`: Maximum packages to list
+- `--aws-access-key KEY`: AWS access key
+- `--aws-secret-key KEY`: AWS secret key
+
+#### `download` - Download Packages
+
+```bash
+uv run python medrxiv_meca_cli.py download [OPTIONS]
+```
+
+**Options:**
+- `--output-dir PATH`: Output directory for downloads (default: ~/medrxiv_meca)
+- `--prefix PREFIX`: S3 key prefix filter
+- `--limit N`: Maximum packages to download
+- `--delay N`: Delay between downloads in seconds (default: 60)
+- `--aws-access-key KEY`: AWS access key
+- `--aws-secret-key KEY`: AWS secret key
+
+#### `import` - Import Downloaded Packages
+
+```bash
+uv run python medrxiv_meca_cli.py import [OPTIONS]
+```
+
+**Options:**
+- `--meca-dir PATH`: Directory containing MECA packages (default: ~/medrxiv_meca)
+- `--limit N`: Maximum packages to import
+
+#### `sync` - Full Workflow
+
+```bash
+uv run python medrxiv_meca_cli.py sync [OPTIONS]
+```
+
+Combines download + import in a single command.
+
+**Options:**
+- `--output-dir PATH`: Output directory (default: ~/medrxiv_meca)
+- `--prefix PREFIX`: S3 key prefix filter
+- `--limit N`: Maximum packages
+- `--delay N`: Delay between downloads (default: 60)
+- `--aws-access-key KEY`: AWS access key
+- `--aws-secret-key KEY`: AWS secret key
+
+#### `status` - Show Progress
+
+```bash
+uv run python medrxiv_meca_cli.py status [OPTIONS]
+```
+
+**Options:**
+- `--meca-dir PATH`: Directory containing MECA imports (default: ~/medrxiv_meca)
+
+### AWS Configuration
+
+You can provide AWS credentials in three ways:
+
+1. **Command-line flags:**
+   ```bash
+   uv run python medrxiv_meca_cli.py list --aws-access-key YOUR_KEY --aws-secret-key YOUR_SECRET
+   ```
+
+2. **Environment variables:**
+   ```bash
+   export AWS_ACCESS_KEY_ID=YOUR_KEY
+   export AWS_SECRET_ACCESS_KEY=YOUR_SECRET
+   ```
+
+3. **AWS credentials file** (~/.aws/credentials):
+   ```ini
+   [default]
+   aws_access_key_id = YOUR_KEY
+   aws_secret_access_key = YOUR_SECRET
+   ```
+
+### MECA Cost Considerations
+
+The medRxiv MECA S3 bucket is **requester-pays**, meaning you pay for:
+- Data transfer out of AWS
+- S3 GET requests
+
+Estimated costs (as of 2024):
+- Data transfer: ~$0.09/GB (varies by region)
+- Total MECA archive: ~500GB+ (all packages)
+
+For more information, see the [medRxiv TDM page](https://www.medrxiv.org/tdm).
+
 ## Technical Details
 
 ### Database Schema
@@ -364,13 +600,40 @@ Papers are stored in the `document` table with:
 - **Pagination:** Cursor-based, 100 papers per page
 - **Rate Limits:** Undocumented, but respectful usage recommended
 
-### PDF Extraction
+### Full-Text Extraction System
 
-The importer uses `pymupdf4llm` for PDF to markdown conversion:
+The importer supports multiple extraction formats with priority-based selection:
+
+**1. Plain Text** (`.full.txt`)
+- Direct download from medRxiv
+- Fastest and cleanest when available
+- No HTML/XML parsing required
+
+**2. HTML** (`.full.html`)
+- BeautifulSoup parsing with lxml backend
+- Converted to Markdown using markdownify
+- Removes navigation, headers, footers, sidebars
+- Preserves article structure (headings, paragraphs, lists)
+
+**3. JATS XML** (via `jats_xml_path` API field)
+- Uses NXMLParser from discovery module
+- Structured content extraction
+- High-quality semantic markup
+
+**4. PDF** (`.full.pdf`)
+- Uses `pymupdf4llm` for PDF to markdown conversion
+- Subprocess-isolated for crash protection
 - Preserves document structure (headings, paragraphs, lists)
-- Extracts tables and figures
 - Handles multi-column layouts
-- Timeout: 20 seconds per PDF (prevents hanging on problematic files)
+- Timeout: 20 seconds per PDF
+
+### Extraction Strategy Selection
+
+| Strategy | Formats Tried | PDF Fallback | Use Case |
+|----------|--------------|--------------|----------|
+| `auto` | text → HTML → XML → PDF | Yes | Best quality (default) |
+| `pdf_only` | PDF only | N/A | Offline, legacy |
+| `web_only` | text → HTML → XML | No | Fast, minimal downloads |
 
 ## See Also
 

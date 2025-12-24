@@ -88,9 +88,14 @@ Since this project uses `uv` for package management:
   - `uv run python bmlibrarian_cli.py` - Interactive medical research CLI with full multi-agent workflow
   - `uv run python fact_checker_cli.py statements.json` - Batch fact-checker for biomedical statements (stores in PostgreSQL factcheck schema)
   - `uv run python fact_checker_cli.py statements.json --incremental` - Incremental mode (resume processing, skip already-evaluated statements)
-  - `uv run python medrxiv_import_cli.py update --download-pdfs` - Import medRxiv preprints with PDFs
+  - `uv run python medrxiv_import_cli.py update --download-pdfs` - Import medRxiv preprints with multi-format full-text extraction
+  - `uv run python medrxiv_import_cli.py update --extraction-strategy auto` - Import with priority-based extraction (text → HTML → XML → PDF)
+  - `uv run python medrxiv_import_cli.py extract-text --missing-only --limit 100` - Re-extract full text for papers without it
   - `uv run python medrxiv_import_cli.py fetch-pdfs --limit 100` - Download missing PDFs for existing records
-  - `uv run python medrxiv_import_cli.py status` - Show medRxiv import statistics
+  - `uv run python medrxiv_import_cli.py status` - Show medRxiv import statistics with extraction strategy info
+  - `uv run python medrxiv_meca_cli.py list --limit 10` - List available MECA packages from AWS S3 (requires boto3)
+  - `uv run python medrxiv_meca_cli.py download --limit 10 --output-dir ~/medrxiv_meca` - Download MECA packages
+  - `uv run python medrxiv_meca_cli.py sync --output-dir ~/medrxiv_meca --limit 100` - Full MECA workflow (download + import)
   - `uv run python pubmed_import_cli.py search "COVID-19 vaccine" --max-results 100` - Import PubMed articles by search query (targeted import)
   - `uv run python pubmed_import_cli.py pmids 12345678 23456789` - Import PubMed articles by PMID list
   - `uv run python pubmed_import_cli.py status` - Show PubMed import statistics
@@ -530,7 +535,9 @@ bmlibrarian/
 │   │       └── generator.py   # Multi-model query generator
 │   ├── importers/             # External data source importers
 │   │   ├── __init__.py        # Importer module exports
-│   │   ├── medrxiv_importer.py # MedRxiv preprint importer
+│   │   ├── medrxiv_importer.py # MedRxiv preprint importer (multi-format extraction)
+│   │   ├── medrxiv_content_extractor.py # Multi-format content extractor (text/HTML/XML/PDF)
+│   │   ├── medrxiv_meca_importer.py # MedRxiv MECA bulk importer (AWS S3)
 │   │   ├── pubmed_importer.py # PubMed E-utilities importer (targeted imports)
 │   │   ├── pubmed_bulk_importer.py # PubMed FTP bulk importer (complete mirror)
 │   │   ├── pdf_matcher.py     # LLM-based PDF matching and import (DOI/PMID/title matching)
@@ -687,7 +694,8 @@ bmlibrarian/
 ├── fact_checker_stats.py      # Comprehensive statistical analysis for fact-checker evaluations
 ├── paper_checker_cli.py       # PaperChecker CLI for fact-checking medical abstracts against literature
 ├── model_benchmark_cli.py     # Model benchmarking CLI for evaluating document scoring models
-├── medrxiv_import_cli.py      # MedRxiv preprint import CLI
+├── medrxiv_import_cli.py      # MedRxiv preprint import CLI (multi-format extraction)
+├── medrxiv_meca_cli.py        # MedRxiv MECA bulk sync CLI (AWS S3)
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
 ├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI

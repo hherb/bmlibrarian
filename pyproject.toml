@@ -43,11 +43,19 @@ dependencies = [
     "pysbd>=0.3.4",
     "playwright-stealth>=2.0.0",
     "undetected-chromedriver>=3.5.5",
+    # HTML/XML parsing for multi-format extraction
+    "beautifulsoup4>=4.12.0",
+    "markdownify>=0.12.1",
+    "lxml>=5.0.0",
 ]
 
 [project.optional-dependencies]
 browser = [
     "playwright>=1.48.0",
+]
+aws = [
+    # AWS S3 support for medRxiv MECA bulk sync
+    "boto3>=1.34.0",
 ]
 
 [project.scripts]

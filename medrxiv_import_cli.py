@@ -5,15 +5,26 @@ MedRxiv Import CLI for BMLibrarian
 Command-line interface for importing medRxiv biomedical preprints into the
 BMLibrarian knowledge base.
 
+Supports multiple extraction strategies:
+- 'auto': Try text → HTML → JATS XML → PDF in priority order (recommended)
+- 'pdf_only': Only use PDF extraction (legacy behavior)
+- 'web_only': Only try web formats (text, HTML, XML), skip PDF
+
 Usage:
-    # Full pipeline: fetch new papers and download PDFs
+    # Full pipeline with multi-format extraction (default)
     python medrxiv_import_cli.py update --download-pdfs --days-to-fetch 30
+
+    # Update with specific extraction strategy
+    python medrxiv_import_cli.py update --download-pdfs --extraction-strategy auto
 
     # Fetch only metadata (no PDFs)
     python medrxiv_import_cli.py update --days-to-fetch 7
 
     # Download missing PDFs for existing records
     python medrxiv_import_cli.py fetch-pdfs --limit 100
+
+    # Re-extract full text for existing records with better formats
+    python medrxiv_import_cli.py extract-text --limit 100 --missing-only
 
     # Full update with specific date range
     python medrxiv_import_cli.py update --start-date 2024-01-01 --end-date 2024-12-31 --download-pdfs
@@ -42,9 +53,14 @@ def cmd_update(args):
     print("=" * 70)
     print("MedRxiv Database Update")
     print("=" * 70)
+    print(f"Extraction strategy: {args.extraction_strategy}")
+    print("=" * 70)
 
     try:
-        importer = MedRxivImporter(pdf_base_dir=args.pdf_dir)
+        importer = MedRxivImporter(
+            pdf_base_dir=args.pdf_dir,
+            extraction_strategy=args.extraction_strategy
+        )
 
         stats = importer.update_database(
             download_pdfs=args.download_pdfs,
@@ -96,6 +112,47 @@ def cmd_fetch_pdfs(args):
         return 1
 
 
+def cmd_extract_text(args):
+    """Execute the extract-text command to re-extract full text."""
+    print("=" * 70)
+    print("MedRxiv Full-Text Re-Extraction")
+    print("=" * 70)
+    print(f"Extraction strategy: {args.extraction_strategy}")
+    print(f"Missing only: {args.missing_only}")
+    if args.limit:
+        print(f"Limit: {args.limit}")
+    print("=" * 70)
+
+    try:
+        importer = MedRxivImporter(
+            pdf_base_dir=args.pdf_dir,
+            extraction_strategy=args.extraction_strategy
+        )
+
+        stats = importer.reextract_full_text(
+            limit=args.limit,
+            missing_only=args.missing_only
+        )
+
+        print("\n" + "=" * 70)
+        print("Re-Extraction Complete!")
+        print("=" * 70)
+        print(f"Total processed: {stats['total_processed']}")
+        print(f"Successfully extracted: {stats['extracted']}")
+        print(f"Failed: {stats['failed']}")
+        print("\nExtraction by format:")
+        for fmt, count in stats.get('by_format', {}).items():
+            if count > 0:
+                print(f"  {fmt}: {count}")
+        print("=" * 70)
+
+        return 0
+
+    except Exception as e:
+        logging.error(f"Error during extraction: {e}", exc_info=True)
+        return 1
+
+
 def cmd_status(args):
     """Show import status and statistics."""
     print("=" * 70)
@@ -105,8 +162,9 @@ def cmd_status(args):
     try:
         importer = MedRxivImporter(pdf_base_dir=args.pdf_dir)
 
+        # Use the new get_extraction_statistics method
+        stats = importer.get_extraction_statistics()
         latest_date = importer.get_latest_date()
-        missing_pdfs = importer.get_preprints_without_pdfs(limit=1)
 
         print(f"\nLatest paper date in database: {latest_date or 'No papers found'}")
 
@@ -114,41 +172,12 @@ def cmd_status(args):
             resume_date = importer.get_resume_date(days_back=1)
             print(f"Suggested resume date: {resume_date}")
 
-        # Get total count of medRxiv papers
-        from bmlibrarian.database import get_db_manager
-        db_manager = get_db_manager()
-
-        with db_manager.get_connection() as conn:
-            with conn.cursor() as cur:
-                # Count total medRxiv papers
-                cur.execute("""
-                    SELECT COUNT(*) FROM document
-                    WHERE source_id = %s
-                """, (importer.source_id,))
-                total_papers = cur.fetchone()[0]
-
-                # Count papers with PDFs
-                cur.execute("""
-                    SELECT COUNT(*) FROM document
-                    WHERE source_id = %s
-                    AND pdf_filename IS NOT NULL
-                    AND pdf_filename != ''
-                """, (importer.source_id,))
-                with_pdfs = cur.fetchone()[0]
-
-                # Count papers with full text
-                cur.execute("""
-                    SELECT COUNT(*) FROM document
-                    WHERE source_id = %s
-                    AND full_text IS NOT NULL
-                    AND full_text != ''
-                """, (importer.source_id,))
-                with_fulltext = cur.fetchone()[0]
-
-        print(f"\nTotal medRxiv papers: {total_papers}")
-        print(f"Papers with PDFs: {with_pdfs} ({100*with_pdfs/total_papers if total_papers else 0:.1f}%)")
-        print(f"Papers with full text: {with_fulltext} ({100*with_fulltext/total_papers if total_papers else 0:.1f}%)")
-        print(f"Papers missing PDFs: {total_papers - with_pdfs}")
+        print(f"\nTotal medRxiv papers: {stats['total_papers']}")
+        print(f"Papers with PDFs: {stats['with_pdf']} ({100*stats['with_pdf']/stats['total_papers'] if stats['total_papers'] else 0:.1f}%)")
+        print(f"Papers with full text: {stats['with_fulltext']} ({stats['fulltext_percentage']}%)")
+        print(f"Papers missing full text: {stats['missing_fulltext']}")
+        print(f"\nCurrent extraction strategy: {stats['extraction_strategy']}")
+        print(f"Extraction priority: {' → '.join(stats['extraction_priority'])}")
 
         print("=" * 70)
 
@@ -214,6 +243,16 @@ def main():
         default=5,
         help='Maximum retry attempts for failed requests (default: 5)'
     )
+    update_parser.add_argument(
+        '--extraction-strategy',
+        type=str,
+        choices=['auto', 'pdf_only', 'web_only'],
+        default='auto',
+        help='Full-text extraction strategy: '
+             'auto = try text→HTML→XML→PDF (default), '
+             'pdf_only = only use PDF extraction, '
+             'web_only = only try web formats (no PDF)'
+    )
 
     # Fetch PDFs command
     fetch_parser = subparsers.add_parser(
@@ -239,6 +278,32 @@ def main():
         help='Skip PDF to markdown conversion'
     )
 
+    # Extract text command
+    extract_parser = subparsers.add_parser(
+        'extract-text',
+        help='Re-extract full text for existing records using multi-format extraction'
+    )
+    extract_parser.add_argument(
+        '--limit',
+        type=int,
+        help='Maximum number of papers to process'
+    )
+    extract_parser.add_argument(
+        '--missing-only',
+        action='store_true',
+        help='Only process papers without full text'
+    )
+    extract_parser.add_argument(
+        '--extraction-strategy',
+        type=str,
+        choices=['auto', 'pdf_only', 'web_only'],
+        default='auto',
+        help='Full-text extraction strategy: '
+             'auto = try text→HTML→XML→PDF (default), '
+             'pdf_only = only use PDF extraction, '
+             'web_only = only try web formats (no PDF)'
+    )
+
     # Status command
     status_parser = subparsers.add_parser(
         'status',
@@ -255,6 +320,8 @@ def main():
         return cmd_update(args)
     elif args.command == 'fetch-pdfs':
         return cmd_fetch_pdfs(args)
+    elif args.command == 'extract-text':
+        return cmd_extract_text(args)
     elif args.command == 'status':
         return cmd_status(args)
     else:

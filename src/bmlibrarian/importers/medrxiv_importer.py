@@ -4,12 +4,20 @@ MedRxiv Importer for BMLibrarian
 This module provides functionality to import biomedical preprints from medRxiv
 using their API, download PDFs, and extract full text.
 
+Supports multiple extraction strategies:
+- 'auto': Try text → HTML → JATS XML → PDF in priority order (recommended)
+- 'pdf_only': Only use PDF extraction (legacy behavior)
+- 'web_only': Only try web formats (text, HTML, XML), skip PDF
+
 Example usage:
     from bmlibrarian.importers import MedRxivImporter
 
-    importer = MedRxivImporter()
+    # Use multi-format extraction (default)
+    importer = MedRxivImporter(extraction_strategy='auto')
     importer.update_database(download_pdfs=True, days_to_fetch=30)
-    importer.fetch_missing_pdfs(limit=100)
+
+    # Re-extract existing records with better formats
+    importer.reextract_full_text(limit=100, missing_only=True)
 """
 
 import os
@@ -45,6 +53,12 @@ except ImportError:
 # Timeout constant for PDF extraction (seconds)
 PDF_EXTRACTION_TIMEOUT_SECONDS = 60
 
+# Valid extraction strategies
+EXTRACTION_STRATEGIES = ('auto', 'pdf_only', 'web_only')
+
+# Default extraction priority for 'auto' strategy
+DEFAULT_EXTRACTION_PRIORITY = ['text', 'html', 'jats_xml', 'pdf']
+
 # Use 'spawn' start method on macOS to avoid fork-related issues
 # This must be set before any multiprocessing operations
 try:
@@ -79,19 +93,56 @@ class MedRxivImporter:
 
     This class handles fetching metadata from the medRxiv API, downloading PDFs,
     extracting full text, and storing documents in the BMLibrarian database.
+
+    Supports multiple extraction strategies:
+    - 'auto': Try text → HTML → JATS XML → PDF in priority order
+    - 'pdf_only': Only use PDF extraction (legacy behavior)
+    - 'web_only': Only try web formats (text, HTML, XML), skip PDF
+
+    Attributes:
+        extraction_strategy: Current extraction strategy
+        extraction_priority: List of formats to try in order
+        content_extractor: MedRxivContentExtractor instance for multi-format extraction
     """
 
     MEDRXIV_API_BASE = "https://api.biorxiv.org/details/medrxiv"
     MEDRXIV_LAUNCH_DATE = "2019-06-06"
 
-    def __init__(self, pdf_base_dir: Optional[str] = None):
+    def __init__(
+        self,
+        pdf_base_dir: Optional[str] = None,
+        extraction_strategy: str = 'auto',
+        extraction_priority: Optional[List[str]] = None
+    ):
         """
         Initialize the MedRxiv importer.
 
         Args:
             pdf_base_dir: Base directory for PDF storage. If None, uses PDF_BASE_DIR
                          environment variable or defaults to ~/knowledgebase/pdf
+            extraction_strategy: Strategy for full-text extraction:
+                - 'auto': Try all formats in priority order (default)
+                - 'pdf_only': Only use PDF extraction (legacy behavior)
+                - 'web_only': Only try web formats, skip PDF
+            extraction_priority: Custom format priority order for 'auto' strategy.
+                                Defaults to ['text', 'html', 'jats_xml', 'pdf']
         """
+        # Validate extraction strategy
+        if extraction_strategy not in EXTRACTION_STRATEGIES:
+            raise ValueError(
+                f"Invalid extraction_strategy '{extraction_strategy}'. "
+                f"Must be one of: {EXTRACTION_STRATEGIES}"
+            )
+
+        self.extraction_strategy = extraction_strategy
+        self.extraction_priority = extraction_priority or DEFAULT_EXTRACTION_PRIORITY.copy()
+
+        # Adjust priority based on strategy
+        if extraction_strategy == 'pdf_only':
+            self.extraction_priority = ['pdf']
+        elif extraction_strategy == 'web_only':
+            self.extraction_priority = [f for f in self.extraction_priority if f != 'pdf']
+
         self.db_manager = get_db_manager()
 
         # Set up PDF storage directory
@@ -104,12 +155,28 @@ class MedRxivImporter:
         # Ensure PDF directory exists
         self.pdf_base_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize content extractor for multi-format extraction
+        self._content_extractor = None
+
         # Get source_id for medRxiv
         self.source_id = self._get_source_id('medrxiv')
         if not self.source_id:
             raise ValueError("MedRxiv source not found in database. Please ensure 'sources' table contains 'medrxiv' entry.")
 
-        logger.info(f"MedRxiv importer initialized with PDF directory: {self.pdf_base_dir}")
+        logger.info(
+            f"MedRxiv importer initialized with PDF directory: {self.pdf_base_dir}, "
+            f"strategy: {extraction_strategy}, priority: {self.extraction_priority}"
+        )
+
+    @property
+    def content_extractor(self):
+        """Lazy initialization of content extractor."""
+        if self._content_extractor is None:
+            from bmlibrarian.importers.medrxiv_content_extractor import MedRxivContentExtractor
+            self._content_extractor = MedRxivContentExtractor(
+                priority=[f for f in self.extraction_priority if f != 'pdf']
+            )
+        return self._content_extractor
 
     def _get_source_id(self, source_name: str) -> Optional[int]:
         """Get the source ID for a given source name."""
@@ -510,6 +577,59 @@ class MedRxivImporter:
             logger.error(f"Error extracting text from {filename}: {e}")
             return ""
 
+    def extract_full_text_multi_format(
+        self,
+        doi: str,
+        version: str = "1",
+        jats_xml_path: Optional[str] = None,
+        pdf_filename: Optional[str] = None
+    ) -> Tuple[str, str]:
+        """
+        Extract full text using multi-format extraction strategy.
+
+        Tries formats in priority order based on extraction_strategy:
+        - 'auto': text → HTML → JATS XML → PDF
+        - 'pdf_only': PDF only
+        - 'web_only': text → HTML → JATS XML (no PDF)
+
+        Args:
+            doi: Paper DOI
+            version: Paper version number
+            jats_xml_path: Optional path to JATS XML from API response
+            pdf_filename: Optional PDF filename if already downloaded
+
+        Returns:
+            Tuple of (full_text, format_used) where format_used is one of
+            'text', 'html', 'jats_xml', 'pdf', or '' if extraction failed
+        """
+        # If pdf_only strategy, go straight to PDF
+        if self.extraction_strategy == 'pdf_only':
+            if pdf_filename:
+                full_text = self.extract_full_text(pdf_filename)
+                if full_text:
+                    return full_text, 'pdf'
+            return "", ""
+
+        # Try web formats first using content extractor
+        result = self.content_extractor.extract(
+            doi=doi,
+            version=version,
+            jats_xml_path=jats_xml_path
+        )
+
+        if result.success and result.content and result.format:
+            return result.content, result.format.value
+
+        # If web formats failed and PDF is in priority, try PDF extraction
+        if 'pdf' in self.extraction_priority and pdf_filename:
+            full_text = self.extract_full_text(pdf_filename)
+            if full_text:
+                return full_text, 'pdf'
+
+        # All formats failed
+        logger.debug(f"All extraction formats failed for {doi}: {result.attempts}")
+        return "", ""
+
     def _process_papers(self, papers: List[Dict[str, Any]], download_pdfs: bool = True) -> int:
         """
         Process and store papers in the database.
@@ -562,17 +682,29 @@ class MedRxivImporter:
                         else:
                             authors = [str(authors_list)] if authors_list else []
 
-                        # Download PDF and extract text if requested
+                        # Download PDF and extract text based on strategy
                         pdf_filename = ""
                         full_text = ""
+                        version = paper.get('version', '1')
+                        jats_xml_path = paper.get('jatsxml', None)  # API may provide this
 
                         if download_pdfs:
-                            filename, was_downloaded = self.download_pdf(paper)
+                            filename, _ = self.download_pdf(paper)
                             if filename:
                                 pdf_filename = filename
-                                # Extract text only if newly downloaded
-                                if was_downloaded:
-                                    full_text = self.extract_full_text(filename)
+
+                        # Extract full text using configured strategy
+                        # For 'auto' and 'web_only', try web formats first
+                        # For 'pdf_only', only use PDF
+                        if download_pdfs or self.extraction_strategy != 'pdf_only':
+                            full_text, format_used = self.extract_full_text_multi_format(
+                                doi=doi,
+                                version=version,
+                                jats_xml_path=jats_xml_path,
+                                pdf_filename=pdf_filename if pdf_filename else None
+                            )
+                            if format_used:
+                                logger.debug(f"Extracted {doi} via {format_used}")
 
                         # Prepare data for insertion
                         title = paper.get('title', '')
@@ -580,7 +712,7 @@ class MedRxivImporter:
                         abstract = self._format_abstract_markdown(paper.get('abstract', ''))
                         date_posted = paper.get('date', '').split()[0] if ' ' in paper.get('date', '') else paper.get('date', '')
                         category = paper.get('category', '')
-                        version = paper.get('version', '1')
+                        # version already set above for extraction
 
                         pdf_url = f"https://www.medrxiv.org/content/{doi}v{version}.full.pdf"
                         url = f"https://www.medrxiv.org/content/{doi}"
@@ -897,3 +1029,211 @@ class MedRxivImporter:
 
         logger.info(f"Downloaded {success_count} missing PDFs")
         return success_count
+
+    def get_preprints_without_fulltext(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get medRxiv preprints without extracted full text.
+
+        Args:
+            limit: Maximum number of results to return
+
+        Returns:
+            List of preprints without full_text
+        """
+        query = """
+            SELECT d.id, d.doi, d.title, d.publication_date, d.pdf_url, d.pdf_filename
+            FROM document d
+            WHERE d.source_id = %s
+            AND (d.full_text = '' OR d.full_text IS NULL)
+            ORDER BY d.publication_date DESC
+        """
+
+        params = [self.source_id]
+
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
+
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                columns = [desc[0] for desc in cur.description]
+                results = []
+                for row in cur.fetchall():
+                    results.append(dict(zip(columns, row)))
+                return results
+
+    def reextract_full_text(
+        self,
+        limit: Optional[int] = None,
+        missing_only: bool = False,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Re-extract full text for existing records using multi-format extraction.
+
+        This method is useful for updating existing records with better quality
+        extractions using the new multi-format priority system.
+
+        Args:
+            limit: Maximum number of records to process (None for all)
+            missing_only: If True, only process records without full_text
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dictionary with statistics: {
+                'total_processed': int,
+                'extracted': int,
+                'failed': int,
+                'by_format': {'text': int, 'html': int, 'jats_xml': int, 'pdf': int}
+            }
+        """
+        def report_progress(message: str) -> None:
+            logger.info(message)
+            if progress_callback:
+                progress_callback(message)
+
+        # Build query based on options
+        if missing_only:
+            records = self.get_preprints_without_fulltext(limit)
+            report_progress(f"Found {len(records)} papers without full text")
+        else:
+            query = """
+                SELECT d.id, d.doi, d.title, d.publication_date, d.pdf_url, d.pdf_filename
+                FROM document d
+                WHERE d.source_id = %s
+                ORDER BY d.publication_date DESC
+            """
+            params: List[Any] = [self.source_id]
+            if limit:
+                query += " LIMIT %s"
+                params.append(limit)
+
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, tuple(params))
+                    columns = [desc[0] for desc in cur.description] if cur.description else []
+                    rows = cur.fetchall() or []
+                    records = [dict(zip(columns, row)) for row in rows]
+            report_progress(f"Found {len(records)} papers to re-extract")
+
+        if not records:
+            return {'total_processed': 0, 'extracted': 0, 'failed': 0, 'by_format': {}}
+
+        # Process records
+        stats = {
+            'total_processed': 0,
+            'extracted': 0,
+            'failed': 0,
+            'by_format': {'text': 0, 'html': 0, 'jats_xml': 0, 'pdf': 0}
+        }
+
+        if tqdm:
+            progress = tqdm(records, desc="Re-extracting full text", unit="paper")
+        else:
+            progress = records
+
+        for record in progress:
+            doi = record['doi']
+            pdf_filename = record.get('pdf_filename', '')
+            pdf_url = record.get('pdf_url', '')
+
+            if tqdm and hasattr(progress, 'set_description'):
+                progress.set_description(f"Processing {doi}")
+
+            # Extract version from PDF URL
+            version = "1"
+            try:
+                if pdf_url and "v" in pdf_url:
+                    version = pdf_url.split("v")[-1].split(".")[0]
+            except Exception:
+                pass
+
+            stats['total_processed'] += 1
+
+            # Extract full text using multi-format strategy
+            full_text, format_used = self.extract_full_text_multi_format(
+                doi=doi,
+                version=version,
+                jats_xml_path=None,
+                pdf_filename=pdf_filename if pdf_filename else None
+            )
+
+            if full_text and format_used:
+                # Update database
+                try:
+                    with self.db_manager.get_connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                UPDATE document
+                                SET full_text = %s, updated_date = CURRENT_TIMESTAMP
+                                WHERE source_id = %s AND doi = %s
+                            """, (full_text, self.source_id, doi))
+
+                    stats['extracted'] += 1
+                    stats['by_format'][format_used] = stats['by_format'].get(format_used, 0) + 1
+                    logger.debug(f"Updated full text for {doi} via {format_used}")
+
+                except Exception as e:
+                    logger.error(f"Error updating full text for {doi}: {e}")
+                    stats['failed'] += 1
+            else:
+                stats['failed'] += 1
+                logger.debug(f"Failed to extract full text for {doi}")
+
+        report_progress(
+            f"Re-extraction complete: {stats['extracted']} extracted, "
+            f"{stats['failed']} failed, formats: {stats['by_format']}"
+        )
+        return stats
+
+    def get_extraction_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about full text extraction for medRxiv papers.
+
+        Returns:
+            Dictionary with extraction statistics
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Total papers
+                cur.execute(
+                    "SELECT COUNT(*) FROM document WHERE source_id = %s",
+                    (self.source_id,)
+                )
+                result = cur.fetchone()
+                total = result[0] if result else 0
+
+                # Papers with full text
+                cur.execute(
+                    "SELECT COUNT(*) FROM document WHERE source_id = %s AND full_text IS NOT NULL AND full_text != ''",
+                    (self.source_id,)
+                )
+                result = cur.fetchone()
+                with_fulltext = result[0] if result else 0
+
+                # Papers with PDFs
+                cur.execute(
+                    "SELECT COUNT(*) FROM document WHERE source_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''",
+                    (self.source_id,)
+                )
+                result = cur.fetchone()
+                with_pdf = result[0] if result else 0
+
+                # Papers missing full text
+                cur.execute(
+                    "SELECT COUNT(*) FROM document WHERE source_id = %s AND (full_text IS NULL OR full_text = '')",
+                    (self.source_id,)
+                )
+                result = cur.fetchone()
+                missing_fulltext = result[0] if result else 0
+
+        return {
+            'total_papers': total,
+            'with_fulltext': with_fulltext,
+            'with_pdf': with_pdf,
+            'missing_fulltext': missing_fulltext,
+            'fulltext_percentage': round(with_fulltext / total * 100, 1) if total > 0 else 0,
+            'extraction_strategy': self.extraction_strategy,
+            'extraction_priority': self.extraction_priority
+        }
