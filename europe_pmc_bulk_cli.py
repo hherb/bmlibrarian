@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Europe PMC Bulk Download CLI for BMLibrarian
+Europe PMC Bulk Download and Import CLI for BMLibrarian
 
-Command-line interface for downloading full-text XML articles from
-Europe PMC Open Access FTP for offline access.
+Command-line interface for downloading and importing full-text XML articles
+from Europe PMC Open Access for offline access.
 
 Features:
 - Resumable downloads with state persistence
 - Download verification (gzip integrity check)
 - Configurable rate limiting
 - PMCID range filtering
+- Database import with Markdown full-text conversion
+- Figure/image reference handling
 
 Usage:
     # List available packages
@@ -32,6 +34,18 @@ Usage:
 
     # Estimate download time
     python europe_pmc_bulk_cli.py estimate --output-dir ~/europepmc
+
+    # Import downloaded packages to database
+    python europe_pmc_bulk_cli.py import --output-dir ~/europepmc
+
+    # Import with limit
+    python europe_pmc_bulk_cli.py import --output-dir ~/europepmc --limit 5
+
+    # Show import status
+    python europe_pmc_bulk_cli.py import-status --output-dir ~/europepmc
+
+    # Verify a specific package can be parsed
+    python europe_pmc_bulk_cli.py verify-import --output-dir ~/europepmc --package PMC13900_PMC17829.xml.gz
 """
 
 import argparse
@@ -334,6 +348,196 @@ def cmd_estimate(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    """Execute the import command.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    from src.bmlibrarian.importers.europe_pmc_importer import EuropePMCImporter
+
+    print("=" * 70)
+    print("Europe PMC Database Import")
+    print("=" * 70)
+
+    output_dir = Path(args.output_dir).expanduser()
+    packages_dir = output_dir / 'packages'
+
+    print(f"Packages directory: {packages_dir}")
+    if args.limit:
+        print(f"Limit: {args.limit} packages")
+    print("=" * 70)
+
+    try:
+        importer = EuropePMCImporter(
+            packages_dir=packages_dir,
+            batch_size=args.batch_size,
+            update_existing=not args.no_update
+        )
+
+        packages = importer.list_packages()
+        print(f"\nFound {len(packages)} packages to import")
+
+        if not packages:
+            print("No packages found. Run 'download' command first.")
+            return 1
+
+        # Import with progress callback
+        def progress_callback(
+            package_name: str,
+            pkg_num: int,
+            total_pkgs: int,
+            articles_imported: int
+        ) -> None:
+            print(f"\n[{pkg_num}/{total_pkgs}] Importing {package_name}...")
+            print(f"  Total articles imported so far: {articles_imported}")
+
+        result = importer.import_all_packages(
+            progress_callback=progress_callback,
+            limit=args.limit
+        )
+
+        print("\n" + "=" * 70)
+        print("Import Complete!")
+        print("=" * 70)
+        print(f"Packages processed: {result['imported_packages']}/{result['total_packages']}")
+        print(f"Articles inserted: {result['imported_articles']}")
+        print(f"Articles updated: {result['updated_articles']}")
+        print(f"Articles skipped: {result['skipped_articles']}")
+        print(f"Articles failed: {result['failed_articles']}")
+
+        if result['errors']:
+            print(f"\nErrors: {result['errors']}")
+            print("Recent errors:")
+            for error in result['recent_errors']:
+                print(f"  - {error}")
+
+        print("=" * 70)
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n\nImport interrupted by user. Progress has been saved.")
+        print("Run the command again to resume importing.")
+        return 130
+
+    except Exception as e:
+        logging.error(f"Error during import: {e}", exc_info=True)
+        return 1
+
+
+def cmd_import_status(args: argparse.Namespace) -> int:
+    """Execute the import-status command.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    from src.bmlibrarian.importers.europe_pmc_importer import EuropePMCImporter
+
+    print("=" * 70)
+    print("Europe PMC Import Status")
+    print("=" * 70)
+
+    output_dir = Path(args.output_dir).expanduser()
+    packages_dir = output_dir / 'packages'
+
+    try:
+        importer = EuropePMCImporter(packages_dir=packages_dir)
+        status = importer.get_status()
+
+        print(f"\nPackages directory: {status['packages_dir']}")
+        print(f"\nPackages:")
+        print(f"  Total available: {status['total_packages']}")
+        print(f"  Imported: {status['imported_packages']}")
+
+        print(f"\nArticles:")
+        print(f"  Total processed: {status['total_articles']}")
+        print(f"  Inserted: {status['imported_articles']}")
+        print(f"  Updated: {status['updated_articles']}")
+        print(f"  Skipped: {status['skipped_articles']}")
+        print(f"  Failed: {status['failed_articles']}")
+
+        if status['start_time']:
+            print(f"\nStarted: {status['start_time']}")
+        if status['last_update']:
+            print(f"Last update: {status['last_update']}")
+
+        if status['errors']:
+            print(f"\nErrors: {status['errors']}")
+            print("Recent errors:")
+            for error in status['recent_errors']:
+                print(f"  - {error}")
+
+        print("=" * 70)
+
+        return 0
+
+    except Exception as e:
+        logging.error(f"Error getting import status: {e}", exc_info=True)
+        return 1
+
+
+def cmd_verify_import(args: argparse.Namespace) -> int:
+    """Execute the verify-import command.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    from src.bmlibrarian.importers.europe_pmc_importer import EuropePMCImporter
+
+    print("=" * 70)
+    print("Europe PMC Package Verification")
+    print("=" * 70)
+
+    output_dir = Path(args.output_dir).expanduser()
+    packages_dir = output_dir / 'packages'
+    package_path = packages_dir / args.package
+
+    if not package_path.exists():
+        print(f"Package not found: {package_path}")
+        return 1
+
+    try:
+        importer = EuropePMCImporter(packages_dir=packages_dir)
+        result = importer.verify_package(package_path)
+
+        print(f"\nPackage: {result['package']}")
+        print(f"Valid: {result['valid']}")
+
+        if result['valid']:
+            print(f"Article count: {result['article_count']}")
+
+            if result['sample_articles']:
+                print(f"\nSample articles:")
+                for article in result['sample_articles']:
+                    print(f"\n  PMCID: {article['pmcid']}")
+                    print(f"  DOI: {article['doi']}")
+                    if article['title']:
+                        print(f"  Title: {article['title'][:60]}...")
+                    print(f"  Has full text: {article['has_fulltext']}")
+                    print(f"  Full text length: {article['fulltext_length']:,} chars")
+                    print(f"  Figures: {article['figures_count']}")
+        else:
+            print(f"Error: {result['error']}")
+
+        print("=" * 70)
+
+        return 0 if result['valid'] else 1
+
+    except Exception as e:
+        logging.error(f"Error verifying package: {e}", exc_info=True)
+        return 1
+
+
 def main() -> int:
     """Main entry point for the CLI.
 
@@ -446,6 +650,64 @@ def main() -> int:
         help='Output directory (default: ~/europepmc)'
     )
 
+    # Import command
+    import_parser = subparsers.add_parser(
+        'import',
+        help='Import downloaded packages to database'
+    )
+    import_parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='~/europepmc',
+        help='Output directory containing packages/ subdirectory (default: ~/europepmc)'
+    )
+    import_parser.add_argument(
+        '--limit',
+        type=int,
+        help='Maximum number of packages to import'
+    )
+    import_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=100,
+        help='Number of articles per database commit (default: 100)'
+    )
+    import_parser.add_argument(
+        '--no-update',
+        action='store_true',
+        help='Skip updating existing records (only insert new)'
+    )
+
+    # Import status command
+    import_status_parser = subparsers.add_parser(
+        'import-status',
+        help='Show import progress and statistics'
+    )
+    import_status_parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='~/europepmc',
+        help='Output directory (default: ~/europepmc)'
+    )
+
+    # Verify import command
+    verify_import_parser = subparsers.add_parser(
+        'verify-import',
+        help='Verify a package can be parsed correctly'
+    )
+    verify_import_parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='~/europepmc',
+        help='Output directory (default: ~/europepmc)'
+    )
+    verify_import_parser.add_argument(
+        '--package',
+        type=str,
+        required=True,
+        help='Package filename to verify (e.g., PMC13900_PMC17829.xml.gz)'
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -462,6 +724,12 @@ def main() -> int:
         return cmd_verify(args)
     elif args.command == 'estimate':
         return cmd_estimate(args)
+    elif args.command == 'import':
+        return cmd_import(args)
+    elif args.command == 'import-status':
+        return cmd_import_status(args)
+    elif args.command == 'verify-import':
+        return cmd_verify_import(args)
     else:
         parser.print_help()
         return 1

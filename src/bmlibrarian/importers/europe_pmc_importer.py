@@ -1,0 +1,1097 @@
+"""Europe PMC XML Importer.
+
+Imports full-text articles from Europe PMC downloaded XML packages into
+the BMLibrarian database. Uses the existing NXMLParser for consistent
+JATS XML to Markdown extraction.
+
+Features:
+- Parses gzip-compressed XML packages containing multiple articles
+- Extracts metadata (PMCID, PMID, DOI, title, authors, etc.)
+- Converts full-text to Markdown format with proper headers
+- Handles figure/image references as Markdown placeholders
+- Supports batch importing with progress tracking
+- Resumable imports with state persistence
+
+Usage:
+    from pathlib import Path
+    from bmlibrarian.importers import EuropePMCImporter
+
+    importer = EuropePMCImporter(
+        packages_dir=Path('~/europepmc/packages'),
+        batch_size=100
+    )
+
+    # Import all downloaded packages
+    stats = importer.import_all_packages()
+    print(f"Imported {stats['imported']} articles")
+
+    # Check status
+    status = importer.get_status()
+    print(f"Total: {status['total_articles']}, Imported: {status['imported']}")
+"""
+
+import gzip
+import json
+import logging
+import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any, Callable, Iterator, Tuple
+
+from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+
+logger = logging.getLogger(__name__)
+
+# Constants
+DEFAULT_BATCH_SIZE = 100
+EUROPE_PMC_SOURCE_NAME = 'europepmc'
+
+
+@dataclass
+class ArticleMetadata:
+    """Metadata extracted from a JATS XML article."""
+
+    pmcid: str  # e.g., "PMC123456"
+    pmid: Optional[str] = None
+    doi: Optional[str] = None
+    title: Optional[str] = None
+    abstract: Optional[str] = None
+    authors: List[str] = field(default_factory=list)
+    journal: Optional[str] = None
+    publication_date: Optional[str] = None  # YYYY-MM-DD format
+    year: Optional[int] = None
+    full_text: Optional[str] = None  # Markdown formatted
+    license: Optional[str] = None
+    keywords: List[str] = field(default_factory=list)
+    mesh_terms: List[str] = field(default_factory=list)
+    figures: List[Dict[str, str]] = field(default_factory=list)  # [{id, label, caption}]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            'pmcid': self.pmcid,
+            'pmid': self.pmid,
+            'doi': self.doi,
+            'title': self.title,
+            'abstract': self.abstract,
+            'authors': self.authors,
+            'journal': self.journal,
+            'publication_date': self.publication_date,
+            'year': self.year,
+            'full_text_length': len(self.full_text) if self.full_text else 0,
+            'license': self.license,
+            'keywords': self.keywords,
+            'mesh_terms': self.mesh_terms,
+            'figures_count': len(self.figures)
+        }
+
+
+@dataclass
+class ImportProgress:
+    """Tracks overall import progress."""
+
+    total_packages: int = 0
+    imported_packages: int = 0
+    total_articles: int = 0
+    imported_articles: int = 0
+    updated_articles: int = 0
+    skipped_articles: int = 0
+    failed_articles: int = 0
+    errors: List[str] = field(default_factory=list)
+    start_time: Optional[datetime] = None
+    last_update: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'total_packages': self.total_packages,
+            'imported_packages': self.imported_packages,
+            'total_articles': self.total_articles,
+            'imported_articles': self.imported_articles,
+            'updated_articles': self.updated_articles,
+            'skipped_articles': self.skipped_articles,
+            'failed_articles': self.failed_articles,
+            'errors': self.errors[-100:],  # Keep last 100 errors
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'last_update': self.last_update.isoformat() if self.last_update else None
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ImportProgress':
+        """Create from dictionary."""
+        return cls(
+            total_packages=data.get('total_packages', 0),
+            imported_packages=data.get('imported_packages', 0),
+            total_articles=data.get('total_articles', 0),
+            imported_articles=data.get('imported_articles', 0),
+            updated_articles=data.get('updated_articles', 0),
+            skipped_articles=data.get('skipped_articles', 0),
+            failed_articles=data.get('failed_articles', 0),
+            errors=data.get('errors', []),
+            start_time=datetime.fromisoformat(data['start_time']) if data.get('start_time') else None,
+            last_update=datetime.fromisoformat(data['last_update']) if data.get('last_update') else None
+        )
+
+
+class EuropePMCXMLParser:
+    """Enhanced parser for Europe PMC XML packages.
+
+    Extends NXMLParser functionality to handle:
+    - Multiple articles in a single XML file
+    - Figure/graphic references with placeholders
+    - Complete metadata extraction
+    """
+
+    def __init__(self):
+        """Initialize the parser."""
+        self.nxml_parser = NXMLParser()
+        # XML namespace for xlink
+        self.namespaces = {
+            'xlink': 'http://www.w3.org/1999/xlink'
+        }
+
+    def parse_package(self, xml_content: str) -> Iterator[ArticleMetadata]:
+        """Parse a Europe PMC XML package containing multiple articles.
+
+        Args:
+            xml_content: Raw XML content from a .xml.gz package
+
+        Yields:
+            ArticleMetadata for each article in the package
+        """
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError as e:
+            logger.error(f"Failed to parse XML package: {e}")
+            return
+
+        # Europe PMC packages wrap articles in <articles> container
+        # or may be a single <article>
+        if root.tag == 'articles':
+            articles = root.findall('article')
+        elif root.tag == 'article':
+            articles = [root]
+        else:
+            logger.warning(f"Unexpected root tag: {root.tag}")
+            return
+
+        for article_elem in articles:
+            try:
+                metadata = self._parse_article(article_elem)
+                if metadata:
+                    yield metadata
+            except Exception as e:
+                # Try to get PMCID for error logging
+                pmcid = "unknown"
+                for article_id in article_elem.findall('.//article-id'):
+                    if article_id.get('pub-id-type') == 'pmcid':
+                        pmcid = article_id.text or "unknown"
+                        break
+                logger.warning(f"Failed to parse article {pmcid}: {e}")
+
+    def _parse_article(self, article: ET.Element) -> Optional[ArticleMetadata]:
+        """Parse a single article element.
+
+        Args:
+            article: XML Element for the article
+
+        Returns:
+            ArticleMetadata or None if parsing fails
+        """
+        # Extract PMCID (required)
+        pmcid = None
+        for article_id in article.findall('.//article-id'):
+            pub_id_type = article_id.get('pub-id-type')
+            if pub_id_type == 'pmcid':
+                pmcid = article_id.text
+                if pmcid and not pmcid.startswith('PMC'):
+                    pmcid = f"PMC{pmcid}"
+                break
+
+        if not pmcid:
+            # Try pmc type
+            for article_id in article.findall('.//article-id'):
+                if article_id.get('pub-id-type') == 'pmc':
+                    pmcid = f"PMC{article_id.text}"
+                    break
+
+        if not pmcid:
+            logger.debug("Article has no PMCID, skipping")
+            return None
+
+        metadata = ArticleMetadata(pmcid=pmcid)
+
+        # Extract other IDs
+        for article_id in article.findall('.//article-id'):
+            pub_id_type = article_id.get('pub-id-type')
+            if pub_id_type == 'pmid' and article_id.text:
+                metadata.pmid = article_id.text
+            elif pub_id_type == 'doi' and article_id.text:
+                metadata.doi = article_id.text
+
+        # Extract title
+        title_elem = article.find('.//article-title')
+        if title_elem is not None:
+            metadata.title = self._extract_text(title_elem).strip()
+
+        # Extract abstract
+        abstract_elem = article.find('.//abstract')
+        if abstract_elem is not None:
+            metadata.abstract = self._extract_text(abstract_elem).strip()
+
+        # Extract authors
+        for contrib in article.findall('.//contrib[@contrib-type="author"]'):
+            name_elem = contrib.find('.//name')
+            if name_elem is not None:
+                surname = name_elem.findtext('surname', '')
+                given = name_elem.findtext('given-names', '')
+                if surname:
+                    full_name = f"{surname} {given}".strip()
+                    metadata.authors.append(full_name)
+
+        # Extract journal
+        journal_elem = article.find('.//journal-title')
+        if journal_elem is not None:
+            metadata.journal = journal_elem.text
+
+        # Extract publication date
+        pub_date = article.find('.//pub-date[@pub-type="epub"]')
+        if pub_date is None:
+            pub_date = article.find('.//pub-date')
+        if pub_date is not None:
+            year_text = pub_date.findtext('year')
+            month = pub_date.findtext('month', '01')
+            day = pub_date.findtext('day', '01')
+            if year_text:
+                metadata.year = int(year_text)
+                # Ensure valid month and day
+                try:
+                    month_int = int(month) if month else 1
+                    day_int = int(day) if day else 1
+                    month_int = max(1, min(12, month_int))
+                    day_int = max(1, min(28, day_int))  # Safe max
+                    metadata.publication_date = f"{year_text}-{month_int:02d}-{day_int:02d}"
+                except ValueError:
+                    metadata.publication_date = f"{year_text}-01-01"
+
+        # Extract license
+        license_elem = article.find('.//license')
+        if license_elem is not None:
+            xlink_href = license_elem.get('{http://www.w3.org/1999/xlink}href')
+            if xlink_href:
+                metadata.license = xlink_href
+
+        # Extract keywords
+        for kwd in article.findall('.//kwd'):
+            if kwd.text:
+                metadata.keywords.append(kwd.text.strip())
+
+        # Extract MeSH terms
+        for mesh_heading in article.findall('.//subject[@subject-type="mesh"]'):
+            if mesh_heading.text:
+                metadata.mesh_terms.append(mesh_heading.text.strip())
+
+        # Extract figures info
+        for fig in article.findall('.//fig'):
+            fig_id = fig.get('id', '')
+            label_elem = fig.find('label')
+            caption_elem = fig.find('.//caption')
+
+            fig_info = {
+                'id': fig_id,
+                'label': label_elem.text if label_elem is not None and label_elem.text else '',
+                'caption': self._extract_text(caption_elem).strip() if caption_elem is not None else ''
+            }
+
+            # Get graphic reference
+            graphic = fig.find('.//graphic')
+            if graphic is not None:
+                xlink_href = graphic.get('{http://www.w3.org/1999/xlink}href', '')
+                fig_info['graphic_ref'] = xlink_href
+
+            metadata.figures.append(fig_info)
+
+        # Convert article to Markdown full text using enhanced parser
+        article_xml = ET.tostring(article, encoding='unicode')
+        metadata.full_text = self._parse_to_markdown(article, metadata.figures)
+
+        return metadata
+
+    def _parse_to_markdown(
+        self,
+        article: ET.Element,
+        figures: List[Dict[str, str]]
+    ) -> str:
+        """Parse article to Markdown with enhanced formatting.
+
+        Args:
+            article: Article XML element
+            figures: List of figure info dicts
+
+        Returns:
+            Markdown-formatted full text
+        """
+        parts = []
+
+        # Title
+        front = article.find('.//front')
+        if front is not None:
+            title = front.find('.//article-title')
+            if title is not None:
+                title_text = self._extract_text(title).strip()
+                if title_text:
+                    parts.append(f"# {title_text}\n")
+
+            # Abstract
+            abstract = front.find('.//abstract')
+            if abstract is not None:
+                abstract_text = self._format_abstract(abstract)
+                if abstract_text:
+                    parts.append(f"\n## Abstract\n\n{abstract_text}\n")
+
+        # Body sections
+        body = article.find('.//body')
+        if body is not None:
+            body_text = self._format_body(body, figures)
+            if body_text:
+                parts.append(f"\n{body_text}")
+
+        # Acknowledgments
+        back = article.find('.//back')
+        if back is not None:
+            ack = back.find('.//ack')
+            if ack is not None:
+                ack_text = self._extract_text(ack).strip()
+                if ack_text:
+                    parts.append(f"\n## Acknowledgments\n\n{ack_text}\n")
+
+        full_text = '\n'.join(parts)
+
+        # Clean up whitespace
+        full_text = re.sub(r'\n{3,}', '\n\n', full_text)
+        full_text = re.sub(r' {2,}', ' ', full_text)
+
+        return full_text.strip()
+
+    def _format_abstract(self, abstract: ET.Element) -> str:
+        """Format abstract with section labels if present.
+
+        Args:
+            abstract: Abstract XML element
+
+        Returns:
+            Formatted abstract text
+        """
+        parts = []
+
+        # Check for structured abstract with sections
+        sections = abstract.findall('sec')
+        if sections:
+            for sec in sections:
+                title = sec.find('title')
+                if title is not None and title.text:
+                    parts.append(f"**{title.text}**: ")
+
+                for p in sec.findall('p'):
+                    p_text = self._extract_text(p).strip()
+                    if p_text:
+                        parts.append(p_text)
+                        parts.append('\n\n')
+        else:
+            # Simple abstract
+            abstract_text = self._extract_text(abstract).strip()
+            if abstract_text:
+                parts.append(abstract_text)
+
+        return ''.join(parts).strip()
+
+    def _format_body(
+        self,
+        body: ET.Element,
+        figures: List[Dict[str, str]]
+    ) -> str:
+        """Format body with sections and figure placeholders.
+
+        Args:
+            body: Body XML element
+            figures: Figure info for references
+
+        Returns:
+            Formatted body text
+        """
+        parts = []
+
+        # Create figure lookup
+        fig_lookup = {f.get('id', ''): f for f in figures}
+
+        def process_section(sec: ET.Element, level: int = 2) -> None:
+            """Process a section recursively."""
+            title = sec.find('title')
+            if title is not None:
+                title_text = self._extract_text(title).strip()
+                if title_text:
+                    prefix = '#' * min(level, 6)
+                    parts.append(f"\n{prefix} {title_text}\n")
+
+            # Process direct children (paragraphs, lists, etc.)
+            for child in sec:
+                if child.tag == 'p':
+                    p_text = self._format_paragraph(child, fig_lookup)
+                    if p_text:
+                        parts.append(f"\n{p_text}\n")
+                elif child.tag == 'sec':
+                    # Nested section
+                    process_section(child, level + 1)
+                elif child.tag == 'list':
+                    list_text = self._format_list(child)
+                    if list_text:
+                        parts.append(f"\n{list_text}\n")
+                elif child.tag == 'fig':
+                    fig_text = self._format_figure(child, fig_lookup)
+                    if fig_text:
+                        parts.append(f"\n{fig_text}\n")
+
+        # Process top-level sections
+        for sec in body.findall('sec'):
+            process_section(sec)
+
+        # Also process paragraphs directly under body
+        for p in body.findall('p'):
+            p_text = self._format_paragraph(p, fig_lookup)
+            if p_text:
+                parts.append(f"\n{p_text}\n")
+
+        return '\n'.join(parts)
+
+    def _format_paragraph(
+        self,
+        p: ET.Element,
+        fig_lookup: Dict[str, Dict]
+    ) -> str:
+        """Format a paragraph with inline figure references.
+
+        Args:
+            p: Paragraph XML element
+            fig_lookup: Figure info lookup by ID
+
+        Returns:
+            Formatted paragraph text
+        """
+        # Build text with replacements for special elements
+        text_parts = []
+
+        if p.text:
+            text_parts.append(p.text)
+
+        for child in p:
+            if child.tag == 'xref' and child.get('ref-type') == 'fig':
+                # Figure reference
+                ref_id = child.get('rid', '')
+                fig_info = fig_lookup.get(ref_id, {})
+                label = fig_info.get('label', child.text or ref_id)
+                text_parts.append(f"[{label}]")
+            elif child.tag == 'italic' or child.tag == 'i':
+                text_parts.append(f"*{self._extract_text(child)}*")
+            elif child.tag == 'bold' or child.tag == 'b':
+                text_parts.append(f"**{self._extract_text(child)}**")
+            elif child.tag == 'sup':
+                text_parts.append(f"^{self._extract_text(child)}^")
+            elif child.tag == 'sub':
+                text_parts.append(f"~{self._extract_text(child)}~")
+            else:
+                text_parts.append(self._extract_text(child))
+
+            if child.tail:
+                text_parts.append(child.tail)
+
+        return ''.join(text_parts).strip()
+
+    def _format_list(self, list_elem: ET.Element) -> str:
+        """Format a list to Markdown.
+
+        Args:
+            list_elem: List XML element
+
+        Returns:
+            Formatted list text
+        """
+        parts = []
+        list_type = list_elem.get('list-type', 'bullet')
+
+        for i, item in enumerate(list_elem.findall('list-item'), 1):
+            item_text = self._extract_text(item).strip()
+            if list_type == 'order':
+                parts.append(f"{i}. {item_text}")
+            else:
+                parts.append(f"- {item_text}")
+
+        return '\n'.join(parts)
+
+    def _format_figure(
+        self,
+        fig: ET.Element,
+        fig_lookup: Dict[str, Dict]
+    ) -> str:
+        """Format a figure as a Markdown placeholder.
+
+        Args:
+            fig: Figure XML element
+            fig_lookup: Figure info lookup
+
+        Returns:
+            Markdown figure placeholder
+        """
+        fig_id = fig.get('id', '')
+        fig_info = fig_lookup.get(fig_id, {})
+
+        label = fig_info.get('label', fig_id)
+        caption = fig_info.get('caption', '')
+        graphic_ref = fig_info.get('graphic_ref', fig_id)
+
+        # Create Markdown image placeholder
+        # Format: ![Label: Caption](graphic_reference)
+        alt_text = f"{label}: {caption[:100]}..." if len(caption) > 100 else f"{label}: {caption}"
+        alt_text = alt_text.strip(': ')
+
+        return f"![{alt_text}]({graphic_ref})"
+
+    def _extract_text(self, element: ET.Element) -> str:
+        """Recursively extract text from an element.
+
+        Args:
+            element: XML element
+
+        Returns:
+            Concatenated text content
+        """
+        if element is None:
+            return ""
+
+        # Skip certain tags
+        skip_tags = {
+            'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
+            'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
+            'lpage', 'history', 'permissions', 'self-uri', 'counts',
+            'custom-meta-group', 'funding-group', 'ref-list', 'table-wrap',
+            'supplementary-material', 'inline-formula', 'disp-formula'
+        }
+
+        if element.tag in skip_tags:
+            return ""
+
+        parts = []
+
+        if element.text:
+            parts.append(element.text)
+
+        for child in element:
+            child_text = self._extract_text(child)
+            if child_text:
+                parts.append(child_text)
+            if child.tail:
+                parts.append(child.tail)
+
+        return ''.join(parts)
+
+
+class EuropePMCImporter:
+    """Imports Europe PMC XML packages into the BMLibrarian database.
+
+    Handles:
+    - Reading gzip-compressed XML packages
+    - Parsing multiple articles per package
+    - Database upsert operations (insert or update)
+    - Progress tracking and resumability
+    """
+
+    def __init__(
+        self,
+        packages_dir: Path,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        update_existing: bool = True
+    ):
+        """Initialize the importer.
+
+        Args:
+            packages_dir: Directory containing downloaded .xml.gz packages
+            batch_size: Number of articles per database commit
+            update_existing: If True, update existing records with new full_text
+        """
+        self.packages_dir = Path(packages_dir).expanduser()
+        self.batch_size = batch_size
+        self.update_existing = update_existing
+
+        # State file in same directory as packages
+        self.state_file = self.packages_dir.parent / 'import_state.json'
+
+        # Parser
+        self.parser = EuropePMCXMLParser()
+
+        # Progress tracking
+        self.progress = ImportProgress()
+        self._load_state()
+
+        # Source ID (loaded on first use)
+        self._source_id: Optional[int] = None
+
+        logger.info(
+            f"Europe PMC Importer initialized with packages_dir: {self.packages_dir}"
+        )
+
+    def _load_state(self) -> None:
+        """Load import state from file."""
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+
+                if 'import_progress' in state:
+                    self.progress = ImportProgress.from_dict(state['import_progress'])
+                    logger.info(
+                        f"Loaded state: {self.progress.imported_articles} articles imported"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load state: {e}")
+
+    def _save_state(self) -> None:
+        """Save import state to file."""
+        self.progress.last_update = datetime.now()
+
+        # Load existing state to preserve download state
+        existing_state = {}
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    existing_state = json.load(f)
+            except Exception:
+                pass
+
+        existing_state['import_progress'] = self.progress.to_dict()
+
+        with open(self.state_file, 'w') as f:
+            json.dump(existing_state, f, indent=2)
+
+    def _get_source_id(self, db_manager) -> int:
+        """Get or create source ID for Europe PMC.
+
+        Args:
+            db_manager: Database manager instance
+
+        Returns:
+            Source ID
+        """
+        if self._source_id is not None:
+            return self._source_id
+
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Try to find existing source
+                cur.execute(
+                    "SELECT id FROM sources WHERE LOWER(name) = %s",
+                    (EUROPE_PMC_SOURCE_NAME,)
+                )
+                result = cur.fetchone()
+
+                if result:
+                    self._source_id = result[0]
+                else:
+                    # Create new source
+                    cur.execute(
+                        """
+                        INSERT INTO sources (name, url, is_reputable, is_free)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            EUROPE_PMC_SOURCE_NAME,
+                            'https://europepmc.org',
+                            True,
+                            True
+                        )
+                    )
+                    result = cur.fetchone()
+                    self._source_id = result[0] if result else None
+                    conn.commit()
+                    logger.info(f"Created Europe PMC source with ID: {self._source_id}")
+
+        if self._source_id is None:
+            raise ValueError("Failed to get or create Europe PMC source")
+
+        return self._source_id
+
+    def list_packages(self) -> List[Path]:
+        """List all available XML packages.
+
+        Returns:
+            List of .xml.gz file paths
+        """
+        if not self.packages_dir.exists():
+            logger.warning(f"Packages directory does not exist: {self.packages_dir}")
+            return []
+
+        packages = list(self.packages_dir.glob('*.xml.gz'))
+        packages.sort()
+
+        return packages
+
+    def import_all_packages(
+        self,
+        progress_callback: Optional[Callable[[str, int, int, int], None]] = None,
+        limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Import all downloaded packages.
+
+        Args:
+            progress_callback: Callback(package_name, pkg_num, total_pkgs, articles_imported)
+            limit: Maximum number of packages to import
+
+        Returns:
+            Import statistics
+        """
+        from bmlibrarian.database import get_db_manager
+
+        packages = self.list_packages()
+        if limit:
+            packages = packages[:limit]
+
+        if not packages:
+            logger.info("No packages to import")
+            return self.get_status()
+
+        self.progress.total_packages = len(packages)
+        if not self.progress.start_time:
+            self.progress.start_time = datetime.now()
+
+        db_manager = get_db_manager()
+        source_id = self._get_source_id(db_manager)
+
+        logger.info(f"Importing {len(packages)} packages...")
+
+        for pkg_num, package_path in enumerate(packages, 1):
+            if progress_callback:
+                progress_callback(
+                    package_path.name,
+                    pkg_num,
+                    len(packages),
+                    self.progress.imported_articles
+                )
+
+            try:
+                stats = self._import_package(package_path, db_manager, source_id)
+                self.progress.imported_packages += 1
+                self.progress.imported_articles += stats['inserted']
+                self.progress.updated_articles += stats['updated']
+                self.progress.skipped_articles += stats['skipped']
+                self.progress.failed_articles += stats['failed']
+                self._save_state()
+
+                logger.info(
+                    f"[{pkg_num}/{len(packages)}] {package_path.name}: "
+                    f"{stats['inserted']} new, {stats['updated']} updated, "
+                    f"{stats['skipped']} skipped, {stats['failed']} failed"
+                )
+
+            except Exception as e:
+                error_msg = f"Failed to import {package_path.name}: {e}"
+                logger.error(error_msg)
+                self.progress.errors.append(error_msg)
+                self._save_state()
+
+        return self.get_status()
+
+    def _import_package(
+        self,
+        package_path: Path,
+        db_manager,
+        source_id: int
+    ) -> Dict[str, int]:
+        """Import a single package.
+
+        Args:
+            package_path: Path to .xml.gz file
+            db_manager: Database manager
+            source_id: Source ID for Europe PMC
+
+        Returns:
+            Stats dict with inserted, updated, skipped, failed counts
+        """
+        stats = {'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0}
+
+        # Read and decompress
+        try:
+            with gzip.open(package_path, 'rt', encoding='utf-8') as f:
+                xml_content = f.read()
+        except Exception as e:
+            logger.error(f"Failed to read {package_path}: {e}")
+            stats['failed'] = 1
+            return stats
+
+        # Parse articles
+        articles = list(self.parser.parse_package(xml_content))
+        self.progress.total_articles += len(articles)
+
+        # Batch insert/update
+        batch = []
+        for article in articles:
+            batch.append(article)
+
+            if len(batch) >= self.batch_size:
+                batch_stats = self._upsert_batch(batch, db_manager, source_id)
+                stats['inserted'] += batch_stats['inserted']
+                stats['updated'] += batch_stats['updated']
+                stats['skipped'] += batch_stats['skipped']
+                stats['failed'] += batch_stats['failed']
+                batch = []
+
+        # Process remaining
+        if batch:
+            batch_stats = self._upsert_batch(batch, db_manager, source_id)
+            stats['inserted'] += batch_stats['inserted']
+            stats['updated'] += batch_stats['updated']
+            stats['skipped'] += batch_stats['skipped']
+            stats['failed'] += batch_stats['failed']
+
+        return stats
+
+    def _upsert_batch(
+        self,
+        articles: List[ArticleMetadata],
+        db_manager,
+        source_id: int
+    ) -> Dict[str, int]:
+        """Insert or update a batch of articles.
+
+        Args:
+            articles: List of ArticleMetadata
+            db_manager: Database manager
+            source_id: Source ID
+
+        Returns:
+            Stats dict
+        """
+        stats = {'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0}
+
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                for article in articles:
+                    try:
+                        result = self._upsert_article(cur, article, source_id)
+                        stats[result] += 1
+                    except Exception as e:
+                        logger.debug(f"Failed to upsert {article.pmcid}: {e}")
+                        stats['failed'] += 1
+
+                conn.commit()
+
+        return stats
+
+    def _upsert_article(
+        self,
+        cursor,
+        article: ArticleMetadata,
+        source_id: int
+    ) -> str:
+        """Insert or update a single article.
+
+        Args:
+            cursor: Database cursor
+            article: Article metadata
+            source_id: Source ID
+
+        Returns:
+            'inserted', 'updated', or 'skipped'
+        """
+        # Check if exists by PMCID (external_id) and source
+        cursor.execute(
+            "SELECT id, full_text FROM document WHERE source_id = %s AND external_id = %s",
+            (source_id, article.pmcid)
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            doc_id, existing_fulltext = existing
+
+            # Update if we have new full_text and update_existing is True
+            if self.update_existing and article.full_text:
+                # Only update if we have new content
+                if not existing_fulltext or len(article.full_text) > len(existing_fulltext):
+                    cursor.execute(
+                        """
+                        UPDATE document SET
+                            doi = COALESCE(%s, doi),
+                            title = COALESCE(%s, title),
+                            abstract = COALESCE(%s, abstract),
+                            authors = COALESCE(%s, authors),
+                            publication = COALESCE(%s, publication),
+                            publication_date = COALESCE(%s::date, publication_date),
+                            full_text = %s,
+                            keywords = COALESCE(%s, keywords),
+                            mesh_terms = COALESCE(%s, mesh_terms),
+                            updated_date = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (
+                            article.doi,
+                            article.title,
+                            article.abstract,
+                            article.authors if article.authors else None,
+                            article.journal,
+                            article.publication_date,
+                            article.full_text,
+                            article.keywords if article.keywords else None,
+                            article.mesh_terms if article.mesh_terms else None,
+                            doc_id
+                        )
+                    )
+                    return 'updated'
+
+            return 'skipped'
+
+        # Also check by DOI if available (may exist from another source)
+        if article.doi:
+            cursor.execute(
+                "SELECT id FROM document WHERE doi = %s AND source_id != %s",
+                (article.doi, source_id)
+            )
+            doi_match = cursor.fetchone()
+            if doi_match:
+                # Update the existing record with Europe PMC full text
+                if self.update_existing and article.full_text:
+                    cursor.execute(
+                        """
+                        UPDATE document SET
+                            full_text = COALESCE(%s, full_text),
+                            updated_date = CURRENT_TIMESTAMP
+                        WHERE id = %s AND (full_text IS NULL OR full_text = '')
+                        """,
+                        (article.full_text, doi_match[0])
+                    )
+                    return 'updated'
+                return 'skipped'
+
+        # Insert new record
+        cursor.execute(
+            """
+            INSERT INTO document (
+                source_id, external_id, doi, title, abstract,
+                authors, publication, publication_date, full_text,
+                keywords, mesh_terms, url
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s::date, %s,
+                %s, %s, %s
+            )
+            """,
+            (
+                source_id,
+                article.pmcid,
+                article.doi,
+                article.title,
+                article.abstract,
+                article.authors if article.authors else None,
+                article.journal,
+                article.publication_date,
+                article.full_text,
+                article.keywords if article.keywords else None,
+                article.mesh_terms if article.mesh_terms else None,
+                f"https://europepmc.org/article/PMC/{article.pmcid.replace('PMC', '')}"
+            )
+        )
+
+        return 'inserted'
+
+    def import_single_package(
+        self,
+        package_path: Path,
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> Dict[str, Any]:
+        """Import a single package.
+
+        Args:
+            package_path: Path to .xml.gz file
+            progress_callback: Callback(articles_processed, total_articles)
+
+        Returns:
+            Import statistics for this package
+        """
+        from bmlibrarian.database import get_db_manager
+
+        db_manager = get_db_manager()
+        source_id = self._get_source_id(db_manager)
+
+        stats = self._import_package(package_path, db_manager, source_id)
+
+        return {
+            'package': package_path.name,
+            'inserted': stats['inserted'],
+            'updated': stats['updated'],
+            'skipped': stats['skipped'],
+            'failed': stats['failed'],
+            'total': sum(stats.values())
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current import status.
+
+        Returns:
+            Status dictionary
+        """
+        packages = self.list_packages()
+
+        return {
+            'packages_dir': str(self.packages_dir),
+            'total_packages': len(packages),
+            'imported_packages': self.progress.imported_packages,
+            'total_articles': self.progress.total_articles,
+            'imported_articles': self.progress.imported_articles,
+            'updated_articles': self.progress.updated_articles,
+            'skipped_articles': self.progress.skipped_articles,
+            'failed_articles': self.progress.failed_articles,
+            'errors': len(self.progress.errors),
+            'recent_errors': self.progress.errors[-5:],
+            'start_time': self.progress.start_time.isoformat() if self.progress.start_time else None,
+            'last_update': self.progress.last_update.isoformat() if self.progress.last_update else None
+        }
+
+    def verify_package(self, package_path: Path) -> Dict[str, Any]:
+        """Verify a package can be parsed correctly.
+
+        Args:
+            package_path: Path to .xml.gz file
+
+        Returns:
+            Verification results
+        """
+        result = {
+            'package': package_path.name,
+            'valid': False,
+            'article_count': 0,
+            'sample_articles': [],
+            'error': None
+        }
+
+        try:
+            with gzip.open(package_path, 'rt', encoding='utf-8') as f:
+                xml_content = f.read()
+
+            articles = list(self.parser.parse_package(xml_content))
+            result['valid'] = True
+            result['article_count'] = len(articles)
+
+            # Sample first 3 articles
+            for article in articles[:3]:
+                result['sample_articles'].append({
+                    'pmcid': article.pmcid,
+                    'title': article.title[:100] if article.title else None,
+                    'doi': article.doi,
+                    'has_fulltext': bool(article.full_text),
+                    'fulltext_length': len(article.full_text) if article.full_text else 0,
+                    'figures_count': len(article.figures)
+                })
+
+        except Exception as e:
+            result['error'] = str(e)
+
+        return result

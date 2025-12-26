@@ -1,15 +1,18 @@
-# Europe PMC Bulk Download Guide
+# Europe PMC Bulk Download and Import Guide
 
-This guide explains how to download full-text XML articles from Europe PMC's Open Access collection for offline access.
+This guide explains how to download and import full-text XML articles from Europe PMC's Open Access collection into BMLibrarian.
 
 ## Overview
 
-Europe PMC provides free access to over 5.7 million open access biomedical articles in JATS XML format. The bulk downloader allows you to:
+Europe PMC provides free access to over 5.7 million open access biomedical articles in JATS XML format. The bulk download and import system allows you to:
 
 - Download the complete Open Access collection
 - Resume interrupted downloads
 - Verify download integrity (gzip validation)
 - Filter by PMCID range for targeted downloads
+- Import full-text articles into BMLibrarian database
+- Convert JATS XML to Markdown with proper formatting
+- Handle figure/image references
 
 ## Quick Start
 
@@ -17,11 +20,17 @@ Europe PMC provides free access to over 5.7 million open access biomedical artic
 # List available packages
 uv run python europe_pmc_bulk_cli.py list
 
-# Download all packages (with 1-minute delay between files)
+# Download packages (with 1-minute delay between files)
 uv run python europe_pmc_bulk_cli.py download --output-dir ~/europepmc
 
 # Check download status
 uv run python europe_pmc_bulk_cli.py status --output-dir ~/europepmc
+
+# Import downloaded packages to database
+uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc
+
+# Check import status
+uv run python europe_pmc_bulk_cli.py import-status --output-dir ~/europepmc
 ```
 
 ## CLI Commands
@@ -87,6 +96,51 @@ Estimates remaining download time based on current progress:
 ```bash
 uv run python europe_pmc_bulk_cli.py estimate --output-dir ~/europepmc
 ```
+
+### Import to Database
+
+Imports downloaded packages into the BMLibrarian database:
+
+```bash
+# Import all packages
+uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc
+
+# Import with limit (for testing)
+uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc --limit 5
+
+# Import without updating existing records
+uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc --no-update
+
+# Custom batch size for database commits
+uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc --batch-size 50
+```
+
+Options:
+- `--output-dir`: Directory containing downloaded packages (default: `~/europepmc`)
+- `--limit`: Maximum packages to import
+- `--batch-size`: Articles per database commit (default: 100)
+- `--no-update`: Only insert new records, skip updating existing ones
+
+### Import Status
+
+Shows current import progress and statistics:
+
+```bash
+uv run python europe_pmc_bulk_cli.py import-status --output-dir ~/europepmc
+```
+
+### Verify Import
+
+Verifies a specific package can be parsed correctly before importing:
+
+```bash
+uv run python europe_pmc_bulk_cli.py verify-import --output-dir ~/europepmc --package PMC13900_PMC17829.xml.gz
+```
+
+This shows:
+- Article count in the package
+- Sample articles with metadata
+- Full text length and figure count
 
 ## Directory Structure
 
@@ -237,8 +291,119 @@ downloader = EuropePMCBulkDownloader(
 2. Use `estimate` command to check projected time
 3. Consider running overnight for large downloads
 
+## Database Import Details
+
+### How Import Works
+
+1. **Package Reading**: Gzip-compressed XML packages are decompressed and parsed
+2. **Article Extraction**: Each `<article>` element is extracted with metadata
+3. **Markdown Conversion**: Full text is converted to Markdown format:
+   - `# Title` for article title
+   - `## Section` for section headers
+   - Paragraphs with proper spacing
+   - **Bold** and *italic* formatting preserved
+   - Lists converted to Markdown format
+4. **Figure Handling**: Figure references are converted to Markdown image placeholders:
+   - `![Figure 1: Caption](graphic_reference)`
+   - Note: Actual image files are not included in XML packages
+5. **Database Upsert**: Articles are inserted or updated based on PMCID
+
+### Update Behavior
+
+By default, the importer will:
+- **Insert** new articles that don't exist in the database
+- **Update** existing articles if the new full text is longer (adds content)
+- **Skip** articles where existing full text is already comprehensive
+
+Use `--no-update` to only insert new articles without modifying existing ones.
+
+### Matching Strategy
+
+Articles are matched using:
+1. **PMCID + Source**: Primary matching key (Europe PMC source)
+2. **DOI**: Cross-source matching to add full text to existing records
+
+This means if you have articles from PubMed or medRxiv, importing Europe PMC data will add full text to those existing records.
+
+## Programmatic Usage - Import
+
+```python
+from pathlib import Path
+from bmlibrarian.importers import EuropePMCImporter
+
+# Create importer
+importer = EuropePMCImporter(
+    packages_dir=Path('~/europepmc/packages'),
+    batch_size=100,
+    update_existing=True
+)
+
+# List available packages
+packages = importer.list_packages()
+print(f"Found {len(packages)} packages")
+
+# Verify a package before importing
+result = importer.verify_package(packages[0])
+print(f"Package valid: {result['valid']}")
+print(f"Article count: {result['article_count']}")
+
+# Import all packages with progress
+def on_progress(pkg_name, pkg_num, total_pkgs, articles):
+    print(f"[{pkg_num}/{total_pkgs}] {pkg_name}: {articles} articles imported")
+
+stats = importer.import_all_packages(
+    progress_callback=on_progress,
+    limit=10  # Optional: limit packages
+)
+
+print(f"Inserted: {stats['imported_articles']}")
+print(f"Updated: {stats['updated_articles']}")
+print(f"Skipped: {stats['skipped_articles']}")
+
+# Check status
+status = importer.get_status()
+print(f"Total processed: {status['total_articles']}")
+```
+
+### Parsing XML Directly
+
+```python
+from bmlibrarian.importers import EuropePMCXMLParser
+
+parser = EuropePMCXMLParser()
+
+# Parse a package (xml_content is the decompressed XML string)
+for article in parser.parse_package(xml_content):
+    print(f"PMCID: {article.pmcid}")
+    print(f"Title: {article.title}")
+    print(f"Full text length: {len(article.full_text)} chars")
+    print(f"Figures: {len(article.figures)}")
+```
+
+## Image Handling
+
+### Current Behavior
+
+Europe PMC XML packages contain **references** to images, not the actual image files. The importer converts these to Markdown placeholders:
+
+```markdown
+![Figure 1: Cell division in vitro](BCR-3-1-061-1)
+```
+
+The graphic reference (e.g., `BCR-3-1-061-1`) can be used to fetch images from Europe PMC's servers if needed.
+
+### Fetching Images (Future Enhancement)
+
+Images can be retrieved from Europe PMC using URLs like:
+```
+https://europepmc.org/articles/PMC123456/bin/BCR-3-1-061-1.jpg
+```
+
+A future enhancement could add automatic image downloading and local storage.
+
 ## Related Documentation
 
 - [Europe PMC Downloads](https://europepmc.org/downloads)
 - [Europe PMC Open Access](https://europepmc.org/downloads/openaccess)
 - [JATS XML Format](https://jats.nlm.nih.gov/)
+- [BMLibrarian Importers](../developers/importer_system.md)

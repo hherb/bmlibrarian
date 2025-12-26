@@ -115,14 +115,18 @@ Since this project uses `uv` for package management:
   - `uv run python pmc_bulk_cli.py status` - Show PMC bulk download progress
   - `uv run python pmc_bulk_cli.py estimate` - Estimate download time and storage requirements
   - **Note**: PMC bulk importer is designed for offline work with configurable rate limiting (default 2 min between files)
-  - `uv run python europe_pmc_bulk_cli.py list` - List available Europe PMC Open Access packages (~250 files, ~10K articles each)
+  - `uv run python europe_pmc_bulk_cli.py list` - List available Europe PMC Open Access packages (~1000+ files, ~100 articles each)
   - `uv run python europe_pmc_bulk_cli.py download --output-dir ~/europepmc` - Download Europe PMC full-text XML with resumable progress
   - `uv run python europe_pmc_bulk_cli.py download --delay 120 --limit 10` - Download with 2-minute delay, limited to 10 packages
   - `uv run python europe_pmc_bulk_cli.py download --range 1-1000000` - Download specific PMCID range only
   - `uv run python europe_pmc_bulk_cli.py verify --output-dir ~/europepmc` - Verify gzip integrity of all downloaded files
   - `uv run python europe_pmc_bulk_cli.py status` - Show Europe PMC download progress
   - `uv run python europe_pmc_bulk_cli.py estimate` - Estimate remaining download time
-  - **Note**: Europe PMC bulk downloader downloads gzip-compressed JATS XML (50-100+ GB total), verification ensures no corrupt files
+  - `uv run python europe_pmc_bulk_cli.py import --output-dir ~/europepmc` - Import downloaded packages to database with Markdown full-text
+  - `uv run python europe_pmc_bulk_cli.py import --limit 5 --batch-size 50` - Import with limits
+  - `uv run python europe_pmc_bulk_cli.py import-status` - Show import progress and statistics
+  - `uv run python europe_pmc_bulk_cli.py verify-import --package PMC13900_PMC17829.xml.gz` - Verify package can be parsed before import
+  - **Note**: Europe PMC importer converts JATS XML to Markdown with proper headers, figure placeholders, and emphasis formatting
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
