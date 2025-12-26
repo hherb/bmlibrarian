@@ -18,6 +18,11 @@ from .pdf_ingestor import (
     PDFIngestor,
     IngestResult,
 )
+from .europe_pmc_bulk_downloader import (
+    EuropePMCBulkDownloader,
+    EuropePMCPackageInfo,
+    DownloadProgress as EuropePMCDownloadProgress,
+)
 
 __all__ = [
     'MedRxivImporter',
@@ -35,4 +40,7 @@ __all__ = [
     'list_converters',
     'PDFIngestor',
     'IngestResult',
+    'EuropePMCBulkDownloader',
+    'EuropePMCPackageInfo',
+    'EuropePMCDownloadProgress',
 ]
