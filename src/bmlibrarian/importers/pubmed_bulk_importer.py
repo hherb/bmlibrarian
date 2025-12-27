@@ -515,10 +515,11 @@ class PubMedBulkImporter:
                         continue
                     return False, ftp
 
-                # Verify gzip integrity
+                # Verify gzip integrity by reading entire file (checks CRC32)
                 try:
                     with gzip.open(dest_path, 'rb') as gz:
-                        gz.read(1)  # Try to read first byte
+                        while gz.read(65536):  # Read in 64KB chunks to verify full file
+                            pass
                     logger.info(f"{filename}: Download complete and verified")
                     return True, ftp
                 except Exception as e:

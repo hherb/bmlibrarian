@@ -104,6 +104,9 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting)
   - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
+  - `uv run python pubmed_repair_cli.py scan` - Scan downloaded PubMed files for gzip corruption
+  - `uv run python pubmed_repair_cli.py scan --type update` - Scan only update files for corruption
+  - `uv run python pubmed_repair_cli.py repair --reimport -y` - Re-download corrupted files and re-import to database
   - **Note**: PubMed bulk importer now preserves abstract structure and formatting as Markdown (section labels, subscripts, superscripts, emphasis)
   - `uv run python pmc_bulk_cli.py list --license oa_comm` - List available PMC Open Access packages
   - `uv run python pmc_bulk_cli.py download --license oa_comm` - Download PMC baseline packages (with PDF + full-text NXML)
@@ -710,6 +713,7 @@ bmlibrarian/
 ├── medrxiv_meca_cli.py        # MedRxiv MECA bulk sync CLI (AWS S3)
 ├── pubmed_import_cli.py       # PubMed E-utilities import CLI (targeted imports)
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
+├── pubmed_repair_cli.py       # PubMed download repair CLI (scan/fix corrupted gzip files)
 ├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
 ├── migrate_config_to_db.py    # Settings migration CLI
