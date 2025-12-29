@@ -379,8 +379,9 @@ class EuropePMCPDFDownloader:
             response.raise_for_status()
 
             # Find all PMCxxxx### directories
-            # Pattern matches: PMCxxxx000/, PMCxxxx001/, etc.
-            dir_pattern = r'href="(PMCxxxx\d{3})/"'
+            # Pattern matches: PMCxxxx000/, PMCxxxx001/, ..., PMCxxxx1400/, etc.
+            # Uses \d{3,4} to match 3-4 digits (directories go from 000 to 1400+)
+            dir_pattern = r'href="(PMCxxxx\d{3,4})/"'
             directories = []
             match_count = 0
             for match in re.finditer(dir_pattern, response.text):
@@ -514,8 +515,8 @@ class EuropePMCPDFDownloader:
             )
             response.raise_for_status()
 
-            # Find all PMCxxxx### directories
-            dir_pattern = r'href="(PMCxxxx\d{3})/"'
+            # Find all PMCxxxx### directories (000 to 1400+)
+            dir_pattern = r'href="(PMCxxxx\d{3,4})/"'
             directories = []
             for match in re.finditer(dir_pattern, response.text):
                 directories.append(match.group(1))
