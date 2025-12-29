@@ -54,15 +54,31 @@ logger = logging.getLogger(__name__)
 # The PDF packages are served alongside XML packages
 EUROPE_PMC_PDF_BASE_URL = "https://europepmc.org/ftp/oa/"
 
-# Default configuration
-DEFAULT_DELAY_SECONDS = 60  # 1 minute between files (polite)
+# Default configuration constants
+# Timing and rate limiting
+DEFAULT_DELAY_SECONDS = 60  # 1 minute between files (polite to servers)
 DEFAULT_TIMEOUT = 600  # 10 minutes for large PDF packages
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_CHUNK_SIZE = 8192  # 8KB chunks for streaming
 DEFAULT_RETRY_BASE_DELAY = 5  # Base delay for retries in seconds
 DEFAULT_JITTER_FACTOR = 0.25  # 25% jitter on retry delays
+
+# Download configuration
+DEFAULT_CHUNK_SIZE = 8192  # 8KB chunks for streaming
 PROGRESS_LOG_INTERVAL_BYTES = 50 * 1024 * 1024  # Log progress every 50MB
 MAX_ERRORS_TO_KEEP = 100  # Maximum number of errors to keep in state
+
+# PMCID validation bounds
+MIN_PMCID = 1
+MAX_PMCID = 99_999_999  # Upper bound for reasonable PMCID values
+
+# Regex timeout protection (max matches to prevent ReDoS)
+MAX_REGEX_MATCHES = 10000
+
+# User-Agent identifier (without contact email - use config for that)
+USER_AGENT_BASE = "BMLibrarian/1.0 (PDF Bulk Downloader)"
+
+# Default output directory
+DEFAULT_OUTPUT_DIR = "~/europepmc_pdf"
 
 
 @dataclass
@@ -174,7 +190,8 @@ class EuropePMCPDFDownloader:
         timeout: int = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         extract_pdfs: bool = True,
-        pdf_output_dir: Optional[Path] = None
+        pdf_output_dir: Optional[Path] = None,
+        contact_email: Optional[str] = None
     ):
         """Initialize PDF bulk downloader.
 
@@ -187,13 +204,18 @@ class EuropePMCPDFDownloader:
             max_retries: Maximum retry attempts per file
             extract_pdfs: If True, extract PDFs from packages after download
             pdf_output_dir: Directory for extracted PDFs. Defaults to output_dir/pdf
+            contact_email: Optional contact email for User-Agent header
+
+        Raises:
+            ValueError: If pmcid_ranges contains invalid ranges
         """
         self.output_dir = Path(output_dir).expanduser()
-        self.pmcid_ranges = pmcid_ranges
+        self.pmcid_ranges = self._validate_pmcid_ranges(pmcid_ranges)
         self.delay_between_files = delay_between_files
         self.timeout = timeout
         self.max_retries = max_retries
         self.extract_pdfs = extract_pdfs
+        self._session: Optional[requests.Session] = None
 
         # Create directory structure
         self.packages_dir = self.output_dir / 'packages'
@@ -208,11 +230,79 @@ class EuropePMCPDFDownloader:
         self.progress = PDFDownloadProgress()
         self._load_state()
 
-        # Session for HTTP requests
-        self._session = requests.Session()
-        self._session.headers.update({
-            'User-Agent': 'BMLibrarian/1.0 (PDF Bulk Downloader; mailto:contact@example.com)'
-        })
+        # Build User-Agent header
+        if contact_email:
+            user_agent = f"{USER_AGENT_BASE}; mailto:{contact_email})"
+        else:
+            user_agent = f"{USER_AGENT_BASE})"
+        self._user_agent = user_agent
+
+    def _validate_pmcid_ranges(
+        self,
+        ranges: Optional[List[Tuple[int, int]]]
+    ) -> Optional[List[Tuple[int, int]]]:
+        """Validate and normalize PMCID ranges.
+
+        Args:
+            ranges: List of (start, end) tuples
+
+        Returns:
+            Validated ranges or None
+
+        Raises:
+            ValueError: If ranges are invalid
+        """
+        if ranges is None:
+            return None
+
+        validated = []
+        for start, end in ranges:
+            # Validate bounds
+            if start < MIN_PMCID or end < MIN_PMCID:
+                raise ValueError(
+                    f"PMCID range ({start}, {end}) contains invalid values. "
+                    f"PMCIDs must be >= {MIN_PMCID}"
+                )
+            if start > MAX_PMCID or end > MAX_PMCID:
+                raise ValueError(
+                    f"PMCID range ({start}, {end}) exceeds maximum value {MAX_PMCID}"
+                )
+            # Ensure start <= end
+            if start > end:
+                logger.warning(
+                    f"Swapping reversed PMCID range: ({start}, {end}) -> ({end}, {start})"
+                )
+                start, end = end, start
+            validated.append((start, end))
+
+        return validated if validated else None
+
+    def _get_session(self) -> requests.Session:
+        """Get or create HTTP session (lazy initialization).
+
+        Returns:
+            HTTP session with configured headers
+        """
+        if self._session is None:
+            self._session = requests.Session()
+            self._session.headers.update({
+                'User-Agent': self._user_agent
+            })
+        return self._session
+
+    def close(self) -> None:
+        """Close HTTP session and release resources."""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def __enter__(self) -> 'EuropePMCPDFDownloader':
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit - close resources."""
+        self.close()
 
     def _load_state(self) -> None:
         """Load download state from file."""
@@ -270,7 +360,8 @@ class EuropePMCPDFDownloader:
         packages = []
 
         try:
-            response = self._session.get(
+            session = self._get_session()
+            response = session.get(
                 EUROPE_PMC_PDF_BASE_URL,
                 timeout=self.timeout
             )
@@ -282,12 +373,28 @@ class EuropePMCPDFDownloader:
             # - PMC#_PMC#.tar.gz that contain PDFs
             # The actual pattern depends on Europe PMC's current offering
 
+            # Simple, non-backtracking regex patterns to prevent ReDoS
             # Pattern 1: Explicit PDF tar.gz packages
-            pdf_pattern = r'href="(PMC(\d+)_PMC(\d+)\.pdf\.tar\.gz)"'
+            # Using simple character classes and limited groups
+            pdf_pattern = r'href="(PMC(\d{1,9})_PMC(\d{1,9})\.pdf\.tar\.gz)"'
+            match_count = 0
             for match in re.finditer(pdf_pattern, response.text):
+                match_count += 1
+                if match_count > MAX_REGEX_MATCHES:
+                    logger.warning(
+                        f"Reached maximum regex matches ({MAX_REGEX_MATCHES}), "
+                        "stopping package discovery"
+                    )
+                    break
+
                 filename = match.group(1)
                 pmcid_start = int(match.group(2))
                 pmcid_end = int(match.group(3))
+
+                # Validate PMCID bounds
+                if pmcid_start > MAX_PMCID or pmcid_end > MAX_PMCID:
+                    logger.debug(f"Skipping package with out-of-range PMCIDs: {filename}")
+                    continue
 
                 if self._in_pmcid_range(pmcid_start, pmcid_end):
                     pkg = self._create_package_info(
@@ -297,14 +404,30 @@ class EuropePMCPDFDownloader:
 
             # Pattern 2: Generic tar.gz packages (may contain PDFs)
             # These are the same packages as XML but contain PDFs
-            tar_pattern = r'href="(PMC(\d+)_PMC(\d+)\.tar\.gz)"'
+            tar_pattern = r'href="(PMC(\d{1,9})_PMC(\d{1,9})\.tar\.gz)"'
+            added_filenames = {p.filename for p in packages}
+            match_count = 0
             for match in re.finditer(tar_pattern, response.text):
+                match_count += 1
+                if match_count > MAX_REGEX_MATCHES:
+                    logger.warning(
+                        f"Reached maximum regex matches ({MAX_REGEX_MATCHES}), "
+                        "stopping package discovery"
+                    )
+                    break
+
                 filename = match.group(1)
                 pmcid_start = int(match.group(2))
                 pmcid_end = int(match.group(3))
 
+                # Validate PMCID bounds
+                if pmcid_start > MAX_PMCID or pmcid_end > MAX_PMCID:
+                    logger.debug(f"Skipping package with out-of-range PMCIDs: {filename}")
+                    continue
+
                 # Skip if already added as PDF package
-                if filename.replace('.tar.gz', '.pdf.tar.gz') in [p.filename for p in packages]:
+                pdf_equivalent = filename.replace('.tar.gz', '.pdf.tar.gz')
+                if pdf_equivalent in added_filenames:
                     continue
 
                 if self._in_pmcid_range(pmcid_start, pmcid_end):
@@ -507,6 +630,9 @@ class EuropePMCPDFDownloader:
         Returns:
             True if download successful
         """
+        session = self._get_session()
+        last_progress_log = 0
+
         for attempt in range(self.max_retries):
             try:
                 if attempt > 0:
@@ -516,7 +642,7 @@ class EuropePMCPDFDownloader:
                     jitter = base_delay * DEFAULT_JITTER_FACTOR * random.random()
                     time.sleep(base_delay + jitter)
 
-                response = self._session.get(
+                response = session.get(
                     url,
                     stream=True,
                     timeout=self.timeout
@@ -526,6 +652,7 @@ class EuropePMCPDFDownloader:
                 total_size = int(response.headers.get('content-length', 0))
                 pkg.size_bytes = total_size
                 downloaded = 0
+                last_progress_log = 0
 
                 with open(output_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=DEFAULT_CHUNK_SIZE):
@@ -533,13 +660,14 @@ class EuropePMCPDFDownloader:
                             f.write(chunk)
                             downloaded += len(chunk)
 
-                            # Log progress periodically
-                            if total_size > 0 and downloaded % PROGRESS_LOG_INTERVAL_BYTES < DEFAULT_CHUNK_SIZE:
+                            # Log progress using byte threshold (more efficient than modulo)
+                            if total_size > 0 and (downloaded - last_progress_log) >= PROGRESS_LOG_INTERVAL_BYTES:
                                 pct = (downloaded / total_size * 100)
                                 logger.debug(
                                     f"  {self._format_bytes(downloaded)} / "
                                     f"{self._format_bytes(total_size)} ({pct:.1f}%)"
                                 )
+                                last_progress_log = downloaded
 
                 return True
 
@@ -568,11 +696,51 @@ class EuropePMCPDFDownloader:
             logger.warning(f"Archive verification error for {file_path.name}: {e}")
             return False
 
+    def _is_safe_tar_member(self, member: tarfile.TarInfo) -> bool:
+        """Check if a tar archive member has a safe path.
+
+        Prevents path traversal attacks by rejecting:
+        - Absolute paths
+        - Paths containing '..'
+        - Paths with dangerous characters
+
+        Args:
+            member: Tar archive member to check
+
+        Returns:
+            True if the path is safe
+        """
+        # Normalize the path
+        safe_path = Path(member.name).as_posix()
+
+        # Reject absolute paths
+        if safe_path.startswith('/'):
+            logger.warning(f"Skipping unsafe absolute path: {member.name}")
+            return False
+
+        # Reject path traversal attempts
+        normalized = Path(safe_path).resolve().as_posix()
+        if '..' in safe_path or '..' in normalized:
+            logger.warning(f"Skipping path traversal attempt: {member.name}")
+            return False
+
+        # Reject paths that would escape the extraction directory
+        # Check each component
+        for part in Path(safe_path).parts:
+            if part == '..' or part.startswith('/'):
+                logger.warning(f"Skipping unsafe path component: {member.name}")
+                return False
+
+        return True
+
     def _extract_pdfs_from_package(self, pkg: PDFPackageInfo) -> int:
         """Extract PDF files from a downloaded package.
 
         PDFs are extracted to year-based subdirectories for organization.
         Files are named by their PMCID: PMC{id}.pdf
+
+        Implements path traversal protection to prevent malicious archives
+        from extracting files outside the intended directory.
 
         Args:
             pkg: Package to extract PDFs from
@@ -585,6 +753,7 @@ class EuropePMCPDFDownloader:
             return 0
 
         pdf_count = 0
+        skipped_unsafe = 0
 
         try:
             with tarfile.open(package_path, 'r:gz') as tar:
@@ -592,21 +761,33 @@ class EuropePMCPDFDownloader:
                     if not member.isfile():
                         continue
 
+                    # Security check: validate archive member path
+                    if not self._is_safe_tar_member(member):
+                        skipped_unsafe += 1
+                        continue
+
                     name_lower = member.name.lower()
                     if not name_lower.endswith('.pdf'):
                         continue
 
-                    # Extract PMCID from filename
-                    pmcid_match = re.search(r'PMC(\d+)', member.name, re.IGNORECASE)
+                    # Extract PMCID from filename using bounded regex
+                    pmcid_match = re.search(r'PMC(\d{1,9})', member.name, re.IGNORECASE)
                     if not pmcid_match:
                         continue
 
-                    pmcid = f"PMC{pmcid_match.group(1)}"
+                    pmcid_num = int(pmcid_match.group(1))
+
+                    # Validate PMCID is within bounds
+                    if pmcid_num < MIN_PMCID or pmcid_num > MAX_PMCID:
+                        logger.debug(f"Skipping out-of-range PMCID: {pmcid_num}")
+                        continue
+
+                    pmcid = f"PMC{pmcid_num}"
 
                     # Determine output path with year-based organization
                     # For now, use a simple PMCID-based structure
                     # Could be enhanced to use publication year from database
-                    pdf_subdir = self.pdf_dir / self._get_pmcid_subdir(int(pmcid_match.group(1)))
+                    pdf_subdir = self.pdf_dir / self._get_pmcid_subdir(pmcid_num)
                     pdf_subdir.mkdir(parents=True, exist_ok=True)
                     pdf_path = pdf_subdir / f"{pmcid}.pdf"
 
@@ -615,7 +796,7 @@ class EuropePMCPDFDownloader:
                         pdf_count += 1
                         continue
 
-                    # Extract PDF
+                    # Extract PDF (using extractfile, not extract, for safety)
                     try:
                         pdf_file = tar.extractfile(member)
                         if pdf_file:
@@ -634,6 +815,11 @@ class EuropePMCPDFDownloader:
         except Exception as e:
             logger.warning(f"Error extracting PDFs from {pkg.filename}: {e}")
 
+        if skipped_unsafe > 0:
+            logger.warning(
+                f"Skipped {skipped_unsafe} unsafe paths in {pkg.filename}"
+            )
+
         if pdf_count > 0:
             logger.info(f"Extracted {pdf_count} PDFs from {pkg.filename}")
 
@@ -650,7 +836,16 @@ class EuropePMCPDFDownloader:
 
         Returns:
             Subdirectory path like "1000/1000-1099"
+
+        Raises:
+            ValueError: If PMCID is out of valid range
         """
+        # Validate PMCID bounds to prevent integer overflow
+        if pmcid < MIN_PMCID or pmcid > MAX_PMCID:
+            raise ValueError(
+                f"PMCID {pmcid} out of valid range ({MIN_PMCID}-{MAX_PMCID})"
+            )
+
         # Group by 1000s, then by 100s
         thousands = (pmcid // 1000) * 1000
         hundreds = (pmcid // 100) * 100
