@@ -130,6 +130,17 @@ Since this project uses `uv` for package management:
   - `uv run python europe_pmc_bulk_cli.py import-status` - Show import progress and statistics
   - `uv run python europe_pmc_bulk_cli.py verify-import --package PMC13900_PMC17829.xml.gz` - Verify package can be parsed before import
   - **Note**: Europe PMC importer converts JATS XML to Markdown with proper headers, figure placeholders, and emphasis formatting
+  - `uv run python europe_pmc_pdf_cli.py list` - List available Europe PMC PDF packages
+  - `uv run python europe_pmc_pdf_cli.py download --output-dir ~/europepmc_pdf` - Download Europe PMC PDFs with resumable progress
+  - `uv run python europe_pmc_pdf_cli.py download --delay 120 --limit 10` - Download with 2-minute delay, limited to 10 packages
+  - `uv run python europe_pmc_pdf_cli.py download --range 1-1000000` - Download specific PMCID range only
+  - `uv run python europe_pmc_pdf_cli.py download --no-extract` - Download packages without extracting PDFs
+  - `uv run python europe_pmc_pdf_cli.py verify --output-dir ~/europepmc_pdf` - Verify integrity of downloaded packages
+  - `uv run python europe_pmc_pdf_cli.py extract --output-dir ~/europepmc_pdf` - Extract PDFs from downloaded packages
+  - `uv run python europe_pmc_pdf_cli.py status` - Show Europe PMC PDF download progress
+  - `uv run python europe_pmc_pdf_cli.py estimate` - Estimate remaining download time
+  - `uv run python europe_pmc_pdf_cli.py find --pmcid PMC123456` - Find a specific PDF by PMCID in local storage
+  - **Note**: Europe PMC PDF downloader extracts PDFs to year-based subdirectories for organization
   - `uv run python embed_documents_cli.py embed --source medrxiv --limit 100` - Generate embeddings for medRxiv abstracts
   - `uv run python embed_documents_cli.py count --source medrxiv` - Count documents needing embeddings
   - `uv run python embed_documents_cli.py status` - Show embedding statistics
@@ -715,6 +726,7 @@ bmlibrarian/
 ├── pubmed_bulk_cli.py         # PubMed FTP bulk download/import CLI (complete mirror)
 ├── pubmed_repair_cli.py       # PubMed download repair CLI (scan/fix corrupted gzip files)
 ├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI
+├── europe_pmc_pdf_cli.py      # Europe PMC PDF bulk download CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
 ├── migrate_config_to_db.py    # Settings migration CLI
 ├── export_to_pdf.py           # Markdown to PDF export CLI tool

@@ -29,6 +29,11 @@ from .europe_pmc_importer import (
     ArticleMetadata as EuropePMCArticleMetadata,
     ImportProgress as EuropePMCImportProgress,
 )
+from .europe_pmc_pdf_downloader import (
+    EuropePMCPDFDownloader,
+    PDFPackageInfo as EuropePMCPDFPackageInfo,
+    PDFDownloadProgress as EuropePMCPDFDownloadProgress,
+)
 
 __all__ = [
     'MedRxivImporter',
@@ -53,4 +58,7 @@ __all__ = [
     'EuropePMCXMLParser',
     'EuropePMCArticleMetadata',
     'EuropePMCImportProgress',
+    'EuropePMCPDFDownloader',
+    'EuropePMCPDFPackageInfo',
+    'EuropePMCPDFDownloadProgress',
 ]
