@@ -34,13 +34,12 @@ Usage:
     status = downloader.get_status()
 """
 
-import io
 import json
 import logging
 import random
 import re
-import tarfile
 import time
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -51,8 +50,10 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Europe PMC FTP server details for PDFs
-# The PDF packages are served alongside XML packages
-EUROPE_PMC_PDF_BASE_URL = "https://europepmc.org/ftp/oa/"
+# PDFs are served from a separate /pdf/ directory with a two-level structure:
+# - Top level: PMCxxxx000/, PMCxxxx001/, etc. directories
+# - Inside each: PMC#######.zip files containing individual PDFs
+EUROPE_PMC_PDF_BASE_URL = "https://europepmc.org/ftp/pdf/"
 
 # Default configuration constants
 # Timing and rate limiting
@@ -338,16 +339,24 @@ class EuropePMCPDFDownloader:
 
     def list_available_packages(
         self,
-        refresh: bool = False
+        refresh: bool = False,
+        max_directories: Optional[int] = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None
     ) -> List[PDFPackageInfo]:
         """List available PDF packages from Europe PMC FTP.
 
-        Europe PMC PDF packages follow patterns like:
-        - PMC#_PMC#.pdf.tar.gz (bundled PDFs by PMCID range)
-        - Individual article tar.gz with PDFs inside
+        Europe PMC PDF structure (as of 2025):
+        - Top-level directories: PMCxxxx000/, PMCxxxx001/, etc.
+        - Inside each directory: PMC#######.zip files (e.g., PMC1034000.zip)
+        - Each zip contains a single PDF for that PMCID
+
+        Note: There are 1000+ directories with potentially millions of zip files.
+        Use max_directories to limit scanning scope or pmcid_ranges in constructor.
 
         Args:
             refresh: Force refresh from server
+            max_directories: Maximum number of directories to scan (None for all)
+            progress_callback: Callback(dir_name, current, total) for progress updates
 
         Returns:
             List of available PDFPackageInfo objects
@@ -361,82 +370,110 @@ class EuropePMCPDFDownloader:
 
         try:
             session = self._get_session()
+
+            # First, get the list of top-level directories
             response = session.get(
                 EUROPE_PMC_PDF_BASE_URL,
                 timeout=self.timeout
             )
             response.raise_for_status()
 
-            # Parse HTML directory listing for PDF packages
-            # Look for patterns like:
-            # - PMC#_PMC#.pdf.tar.gz (PDF bundle format)
-            # - PMC#_PMC#.tar.gz that contain PDFs
-            # The actual pattern depends on Europe PMC's current offering
-
-            # Simple, non-backtracking regex patterns to prevent ReDoS
-            # Pattern 1: Explicit PDF tar.gz packages
-            # Using simple character classes and limited groups
-            pdf_pattern = r'href="(PMC(\d{1,9})_PMC(\d{1,9})\.pdf\.tar\.gz)"'
+            # Find all PMCxxxx### directories
+            # Pattern matches: PMCxxxx000/, PMCxxxx001/, etc.
+            dir_pattern = r'href="(PMCxxxx\d{3})/"'
+            directories = []
             match_count = 0
-            for match in re.finditer(pdf_pattern, response.text):
+            for match in re.finditer(dir_pattern, response.text):
                 match_count += 1
                 if match_count > MAX_REGEX_MATCHES:
                     logger.warning(
                         f"Reached maximum regex matches ({MAX_REGEX_MATCHES}), "
-                        "stopping package discovery"
+                        "stopping directory discovery"
                     )
                     break
+                directories.append(match.group(1))
 
-                filename = match.group(1)
-                pmcid_start = int(match.group(2))
-                pmcid_end = int(match.group(3))
+            # Sort directories for consistent ordering
+            directories.sort()
 
-                # Validate PMCID bounds
-                if pmcid_start > MAX_PMCID or pmcid_end > MAX_PMCID:
-                    logger.debug(f"Skipping package with out-of-range PMCIDs: {filename}")
+            # Apply max_directories limit if specified
+            total_dirs = len(directories)
+            if max_directories is not None and max_directories < total_dirs:
+                directories = directories[:max_directories]
+                logger.info(
+                    f"Limiting scan to first {max_directories} of {total_dirs} directories"
+                )
+
+            logger.info(f"Scanning {len(directories)} PDF directories...")
+
+            # Now scan each directory for zip files
+            for i, dir_name in enumerate(directories):
+                if progress_callback:
+                    progress_callback(dir_name, i + 1, len(directories))
+
+                try:
+                    dir_url = f"{EUROPE_PMC_PDF_BASE_URL}{dir_name}/"
+                    dir_response = session.get(dir_url, timeout=self.timeout)
+                    dir_response.raise_for_status()
+
+                    # Find all PMC#######.zip files in this directory
+                    # Pattern: PMC followed by 7+ digits, then .zip
+                    zip_pattern = r'href="(PMC(\d{7,9})\.zip)"'
+                    match_count = 0
+                    for match in re.finditer(zip_pattern, dir_response.text):
+                        match_count += 1
+                        if match_count > MAX_REGEX_MATCHES:
+                            logger.warning(
+                                f"Reached maximum regex matches ({MAX_REGEX_MATCHES}) "
+                                f"in directory {dir_name}"
+                            )
+                            break
+
+                        filename = match.group(1)
+                        pmcid_num = int(match.group(2))
+
+                        # Validate PMCID bounds
+                        if pmcid_num < MIN_PMCID or pmcid_num > MAX_PMCID:
+                            logger.debug(f"Skipping out-of-range PMCID: {filename}")
+                            continue
+
+                        # Check if this PMCID is in our configured range
+                        if self._in_pmcid_range(pmcid_num, pmcid_num):
+                            # Extract size from the HTML if available
+                            # Format: <td align="right">247K</td>
+                            size_bytes = self._parse_size_from_html(
+                                dir_response.text, filename
+                            )
+
+                            pkg = PDFPackageInfo(
+                                filename=filename,
+                                pmcid_start=pmcid_num,
+                                pmcid_end=pmcid_num,  # Single PMCID per zip
+                                size_bytes=size_bytes,
+                                url=f"{dir_url}{filename}"
+                            )
+
+                            # Preserve existing download status
+                            if filename in self.packages:
+                                existing = self.packages[filename]
+                                pkg.downloaded = existing.downloaded
+                                pkg.verified = existing.verified
+                                pkg.extracted = existing.extracted
+                                pkg.download_date = existing.download_date
+                                pkg.pdf_count = existing.pdf_count
+
+                            packages.append(pkg)
+
+                    logger.debug(
+                        f"Scanned {dir_name}: found {match_count} packages "
+                        f"({i+1}/{len(directories)})"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"Failed to scan directory {dir_name}: {e}")
                     continue
 
-                if self._in_pmcid_range(pmcid_start, pmcid_end):
-                    pkg = self._create_package_info(
-                        filename, pmcid_start, pmcid_end
-                    )
-                    packages.append(pkg)
-
-            # Pattern 2: Generic tar.gz packages (may contain PDFs)
-            # These are the same packages as XML but contain PDFs
-            tar_pattern = r'href="(PMC(\d{1,9})_PMC(\d{1,9})\.tar\.gz)"'
-            added_filenames = {p.filename for p in packages}
-            match_count = 0
-            for match in re.finditer(tar_pattern, response.text):
-                match_count += 1
-                if match_count > MAX_REGEX_MATCHES:
-                    logger.warning(
-                        f"Reached maximum regex matches ({MAX_REGEX_MATCHES}), "
-                        "stopping package discovery"
-                    )
-                    break
-
-                filename = match.group(1)
-                pmcid_start = int(match.group(2))
-                pmcid_end = int(match.group(3))
-
-                # Validate PMCID bounds
-                if pmcid_start > MAX_PMCID or pmcid_end > MAX_PMCID:
-                    logger.debug(f"Skipping package with out-of-range PMCIDs: {filename}")
-                    continue
-
-                # Skip if already added as PDF package
-                pdf_equivalent = filename.replace('.tar.gz', '.pdf.tar.gz')
-                if pdf_equivalent in added_filenames:
-                    continue
-
-                if self._in_pmcid_range(pmcid_start, pmcid_end):
-                    pkg = self._create_package_info(
-                        filename, pmcid_start, pmcid_end
-                    )
-                    packages.append(pkg)
-
-            # Sort by PMCID start
+            # Sort by PMCID
             packages.sort(key=lambda p: p.pmcid_start)
 
             if not packages:
@@ -458,6 +495,66 @@ class EuropePMCPDFDownloader:
 
         return packages
 
+    def list_directories(self) -> List[str]:
+        """List available top-level PDF directories without scanning contents.
+
+        This is much faster than list_available_packages() as it only fetches
+        the top-level directory listing.
+
+        Returns:
+            List of directory names (e.g., ['PMCxxxx000', 'PMCxxxx001', ...])
+        """
+        logger.info("Fetching PDF directory list from Europe PMC FTP...")
+
+        try:
+            session = self._get_session()
+            response = session.get(
+                EUROPE_PMC_PDF_BASE_URL,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+
+            # Find all PMCxxxx### directories
+            dir_pattern = r'href="(PMCxxxx\d{3})/"'
+            directories = []
+            for match in re.finditer(dir_pattern, response.text):
+                directories.append(match.group(1))
+
+            directories.sort()
+            logger.info(f"Found {len(directories)} PDF directories")
+            return directories
+
+        except Exception as e:
+            logger.error(f"Failed to list directories: {e}")
+            raise
+
+    def _parse_size_from_html(self, html: str, filename: str) -> int:
+        """Parse file size from HTML directory listing.
+
+        Args:
+            html: HTML content of directory listing
+            filename: Name of the file to find size for
+
+        Returns:
+            Size in bytes, or 0 if not found
+        """
+        # Look for pattern like: href="PMC1034000.zip">PMC1034000.zip</a>...247K
+        escaped_filename = re.escape(filename)
+        pattern = rf'{escaped_filename}</a>.*?<td[^>]*>\s*([\d.]+)([KMGT]?)\s*</td>'
+        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+
+        if match:
+            try:
+                size_num = float(match.group(1))
+                unit = match.group(2).upper() if match.group(2) else ''
+
+                multipliers = {'': 1, 'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+                return int(size_num * multipliers.get(unit, 1))
+            except (ValueError, KeyError):
+                pass
+
+        return 0
+
     def _in_pmcid_range(self, start: int, end: int) -> bool:
         """Check if package overlaps with configured PMCID ranges."""
         if not self.pmcid_ranges:
@@ -468,32 +565,6 @@ class EuropePMCPDFDownloader:
             (start <= r[1] and end >= r[0])
             for r in self.pmcid_ranges
         )
-
-    def _create_package_info(
-        self,
-        filename: str,
-        pmcid_start: int,
-        pmcid_end: int
-    ) -> PDFPackageInfo:
-        """Create PDFPackageInfo, preserving existing state if available."""
-        pkg = PDFPackageInfo(
-            filename=filename,
-            pmcid_start=pmcid_start,
-            pmcid_end=pmcid_end,
-            url=f"{EUROPE_PMC_PDF_BASE_URL}{filename}"
-        )
-
-        # Preserve existing download status
-        if filename in self.packages:
-            existing = self.packages[filename]
-            pkg.downloaded = existing.downloaded
-            pkg.verified = existing.verified
-            pkg.extracted = existing.extracted
-            pkg.download_date = existing.download_date
-            pkg.size_bytes = existing.size_bytes
-            pkg.pdf_count = existing.pdf_count
-
-        return pkg
 
     def download_packages(
         self,
@@ -679,25 +750,32 @@ class EuropePMCPDFDownloader:
         return False
 
     def _verify_archive(self, file_path: Path) -> bool:
-        """Verify tar.gz file integrity.
+        """Verify zip file integrity.
 
         Args:
             file_path: Path to archive file
 
         Returns:
-            True if file is valid tar.gz
+            True if file is valid zip
         """
         try:
-            with tarfile.open(file_path, 'r:gz') as tar:
-                # Just try to list members to verify integrity
-                members = tar.getmembers()
-                return len(members) > 0
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                # Test CRC of all files in the archive
+                bad_file = zf.testzip()
+                if bad_file is not None:
+                    logger.warning(f"Corrupted file in archive: {bad_file}")
+                    return False
+                # Verify there's at least one file
+                return len(zf.namelist()) > 0
+        except zipfile.BadZipFile as e:
+            logger.warning(f"Invalid zip file {file_path.name}: {e}")
+            return False
         except Exception as e:
             logger.warning(f"Archive verification error for {file_path.name}: {e}")
             return False
 
-    def _is_safe_tar_member(self, member: tarfile.TarInfo) -> bool:
-        """Check if a tar archive member has a safe path.
+    def _is_safe_zip_member(self, member_name: str) -> bool:
+        """Check if a zip archive member has a safe path.
 
         Prevents path traversal attacks by rejecting:
         - Absolute paths
@@ -705,35 +783,35 @@ class EuropePMCPDFDownloader:
         - Paths starting with '/'
 
         Args:
-            member: Tar archive member to check
+            member_name: Name/path of the archive member
 
         Returns:
             True if the path is safe
         """
         # Normalize path separators
-        member_path = Path(member.name)
+        member_path = Path(member_name)
 
         # Reject absolute paths (both Unix and Windows style)
-        if member_path.is_absolute() or member.name.startswith('/'):
-            logger.warning(f"Skipping unsafe absolute path: {member.name}")
+        if member_path.is_absolute() or member_name.startswith('/'):
+            logger.warning(f"Skipping unsafe absolute path: {member_name}")
             return False
 
         # Reject paths with traversal components
         # Check each path component for '..' or absolute markers
         for part in member_path.parts:
             if part == '..':
-                logger.warning(f"Skipping path traversal attempt: {member.name}")
+                logger.warning(f"Skipping path traversal attempt: {member_name}")
                 return False
             if part.startswith('/'):
-                logger.warning(f"Skipping unsafe path component: {member.name}")
+                logger.warning(f"Skipping unsafe path component: {member_name}")
                 return False
 
         return True
 
     def _extract_pdfs_from_package(self, pkg: PDFPackageInfo) -> int:
-        """Extract PDF files from a downloaded package.
+        """Extract PDF files from a downloaded zip package.
 
-        PDFs are extracted to year-based subdirectories for organization.
+        PDFs are extracted to PMCID-based subdirectories for organization.
         Files are named by their PMCID: PMC{id}.pdf
 
         Implements path traversal protection to prevent malicious archives
@@ -753,22 +831,19 @@ class EuropePMCPDFDownloader:
         skipped_unsafe = 0
 
         try:
-            with tarfile.open(package_path, 'r:gz') as tar:
-                for member in tar.getmembers():
-                    if not member.isfile():
-                        continue
-
+            with zipfile.ZipFile(package_path, 'r') as zf:
+                for member in zf.namelist():
                     # Security check: validate archive member path
-                    if not self._is_safe_tar_member(member):
+                    if not self._is_safe_zip_member(member):
                         skipped_unsafe += 1
                         continue
 
-                    name_lower = member.name.lower()
+                    name_lower = member.lower()
                     if not name_lower.endswith('.pdf'):
                         continue
 
                     # Extract PMCID from filename using bounded regex
-                    pmcid_match = re.search(r'PMC(\d{1,9})', member.name, re.IGNORECASE)
+                    pmcid_match = re.search(r'PMC(\d{1,9})', member, re.IGNORECASE)
                     if not pmcid_match:
                         continue
 
@@ -781,9 +856,7 @@ class EuropePMCPDFDownloader:
 
                     pmcid = f"PMC{pmcid_num}"
 
-                    # Determine output path with year-based organization
-                    # For now, use a simple PMCID-based structure
-                    # Could be enhanced to use publication year from database
+                    # Determine output path with PMCID-based organization
                     pdf_subdir = self.pdf_dir / self._get_pmcid_subdir(pmcid_num)
                     pdf_subdir.mkdir(parents=True, exist_ok=True)
                     pdf_path = pdf_subdir / f"{pmcid}.pdf"
@@ -793,22 +866,22 @@ class EuropePMCPDFDownloader:
                         pdf_count += 1
                         continue
 
-                    # Extract PDF (using extractfile, not extract, for safety)
+                    # Extract PDF using read() instead of extract() for safety
                     try:
-                        pdf_file = tar.extractfile(member)
-                        if pdf_file:
-                            pdf_content = pdf_file.read()
+                        pdf_content = zf.read(member)
 
-                            # Verify it's a valid PDF
-                            if pdf_content[:4] == b'%PDF':
-                                pdf_path.write_bytes(pdf_content)
-                                pdf_count += 1
-                                logger.debug(f"Extracted {pmcid}.pdf ({len(pdf_content)} bytes)")
-                            else:
-                                logger.debug(f"Skipping invalid PDF: {member.name}")
+                        # Verify it's a valid PDF
+                        if pdf_content[:4] == b'%PDF':
+                            pdf_path.write_bytes(pdf_content)
+                            pdf_count += 1
+                            logger.debug(f"Extracted {pmcid}.pdf ({len(pdf_content)} bytes)")
+                        else:
+                            logger.debug(f"Skipping invalid PDF: {member}")
                     except Exception as e:
-                        logger.debug(f"Failed to extract {member.name}: {e}")
+                        logger.debug(f"Failed to extract {member}: {e}")
 
+        except zipfile.BadZipFile as e:
+            logger.warning(f"Invalid zip file {pkg.filename}: {e}")
         except Exception as e:
             logger.warning(f"Error extracting PDFs from {pkg.filename}: {e}")
 

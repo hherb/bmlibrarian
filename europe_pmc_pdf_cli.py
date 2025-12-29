@@ -114,6 +114,58 @@ def parse_range(range_str: str) -> Tuple[int, int]:
     return (start, end)
 
 
+def cmd_list_dirs(args: argparse.Namespace) -> int:
+    """Execute the list-dirs command (fast directory listing).
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Exit code (0 for success)
+    """
+    from src.bmlibrarian.importers.europe_pmc_pdf_downloader import EuropePMCPDFDownloader
+    import requests
+
+    print("=" * 70)
+    print("Europe PMC PDF Directory Listing")
+    print("=" * 70)
+
+    try:
+        with EuropePMCPDFDownloader(output_dir=Path(args.output_dir)) as downloader:
+            directories = downloader.list_directories()
+
+            print(f"\nFound {len(directories)} PDF directories")
+            print("-" * 70)
+
+            # Show first 30 directories
+            for dir_name in directories[:30]:
+                print(f"  {dir_name}/")
+
+            if len(directories) > 30:
+                print(f"  ... and {len(directories) - 30} more")
+
+            print("-" * 70)
+            print(f"Total directories: {len(directories)}")
+            print("\nNote: Each directory contains individual PMC#######.zip files.")
+            print("Use 'list --max-dirs N' to scan contents of first N directories.")
+            print("=" * 70)
+
+            return 0
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Network error: {e}")
+        print(f"Network error while contacting Europe PMC. Please check your connection.")
+        return 1
+    except PermissionError as e:
+        logging.error(f"Permission error: {e}")
+        print(f"Permission denied. Check that you have write access to: {args.output_dir}")
+        return 1
+    except OSError as e:
+        logging.error(f"File system error: {e}")
+        print(f"File system error: {e}")
+        return 1
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """Execute the list command.
 
@@ -130,6 +182,13 @@ def cmd_list(args: argparse.Namespace) -> int:
     print("Europe PMC Open Access PDF Package Listing")
     print("=" * 70)
 
+    if args.max_dirs:
+        print(f"Scanning first {args.max_dirs} directories...")
+    else:
+        print("WARNING: Scanning all directories may take a long time!")
+        print("Use --max-dirs N to limit scanning scope.")
+    print("=" * 70)
+
     pmcid_ranges = None
     if args.range:
         try:
@@ -143,8 +202,17 @@ def cmd_list(args: argparse.Namespace) -> int:
             output_dir=Path(args.output_dir),
             pmcid_ranges=pmcid_ranges
         ) as downloader:
-            packages = downloader.list_available_packages(refresh=args.refresh)
+            # Progress callback for directory scanning
+            def progress_callback(dir_name: str, current: int, total: int) -> None:
+                print(f"  Scanning [{current}/{total}] {dir_name}...", end='\r')
 
+            packages = downloader.list_available_packages(
+                refresh=args.refresh,
+                max_directories=args.max_dirs,
+                progress_callback=progress_callback
+            )
+
+            print()  # Clear the progress line
             print(f"\nFound {len(packages)} PDF packages")
             print("-" * 70)
 
@@ -219,6 +287,8 @@ def cmd_download(args: argparse.Namespace) -> int:
     print(f"Output directory: {args.output_dir}")
     if args.limit:
         print(f"Limit: {args.limit} packages")
+    if args.max_dirs:
+        print(f"Max directories: {args.max_dirs}")
     print(f"Delay between files: {args.delay} seconds")
     print(f"Extract PDFs: {not args.no_extract}")
     print("=" * 70)
@@ -240,8 +310,9 @@ def cmd_download(args: argparse.Namespace) -> int:
             max_retries=args.max_retries,
             extract_pdfs=not args.no_extract
         ) as downloader:
-            # List packages first
-            packages = downloader.list_available_packages()
+            # List packages first (with max_dirs limit if specified)
+            max_dirs = getattr(args, 'max_dirs', None)
+            packages = downloader.list_available_packages(max_directories=max_dirs)
             print(f"\nFound {len(packages)} PDF packages available")
 
             # Download with progress callback
@@ -553,6 +624,18 @@ def main() -> int:
 
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
+    # List-dirs command (fast)
+    list_dirs_parser = subparsers.add_parser(
+        'list-dirs',
+        help='List available PDF directories (fast, no package scanning)'
+    )
+    list_dirs_parser.add_argument(
+        '--output-dir',
+        type=str,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f'Output directory (default: {DEFAULT_OUTPUT_DIR})'
+    )
+
     # List command
     list_parser = subparsers.add_parser(
         'list',
@@ -568,6 +651,11 @@ def main() -> int:
         '--range',
         type=str,
         help=f'PMCID range filter (e.g., "1-1000000", valid: {MIN_PMCID}-{MAX_PMCID})'
+    )
+    list_parser.add_argument(
+        '--max-dirs',
+        type=int,
+        help='Maximum number of directories to scan (recommended: start with 1-5)'
     )
     list_parser.add_argument(
         '--refresh',
@@ -590,6 +678,11 @@ def main() -> int:
         '--limit',
         type=int,
         help='Maximum number of packages to download'
+    )
+    download_parser.add_argument(
+        '--max-dirs',
+        type=int,
+        help='Maximum number of directories to scan for packages'
     )
     download_parser.add_argument(
         '--delay',
@@ -691,7 +784,9 @@ def main() -> int:
     setup_logging(args.verbose)
 
     # Execute command
-    if args.command == 'list':
+    if args.command == 'list-dirs':
+        return cmd_list_dirs(args)
+    elif args.command == 'list':
         return cmd_list(args)
     elif args.command == 'download':
         return cmd_download(args)
