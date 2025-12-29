@@ -517,6 +517,16 @@ class EuropePMCXMLParser:
                     if fig_text:
                         parts.append(f"\n{fig_text}\n")
 
+            elif elem.tag == 'disp-formula':
+                formula_text = self._format_formula(elem, display=True)
+                if formula_text:
+                    parts.append(f"\n{formula_text}\n")
+
+            elif elem.tag == 'supplementary-material':
+                supp_text = self._format_supplementary(elem)
+                if supp_text:
+                    parts.append(f"\n{supp_text}\n")
+
         # Process all direct children of body
         for child in body:
             process_element(child, level=2)
@@ -569,6 +579,21 @@ class EuropePMCXMLParser:
             elif child.tag == 'xref' and child.get('ref-type') == 'table':
                 # Table reference - keep the reference text
                 text_parts.append(child.text or '')
+            elif child.tag == 'inline-formula':
+                # Inline formula - format and include inline
+                formula_text = self._format_formula(child, display=False)
+                if formula_text:
+                    text_parts.append(formula_text)
+            elif child.tag == 'disp-formula':
+                # Display formula embedded in paragraph
+                formula_text = self._format_formula(child, display=True)
+                if formula_text:
+                    embedded_content.append(formula_text)
+            elif child.tag == 'supplementary-material':
+                # Supplementary material embedded in paragraph
+                supp_text = self._format_supplementary(child)
+                if supp_text:
+                    embedded_content.append(supp_text)
             elif child.tag == 'italic' or child.tag == 'i':
                 text_parts.append(f"*{self._extract_text(child)}*")
             elif child.tag == 'bold' or child.tag == 'b':
@@ -740,6 +765,279 @@ class EuropePMCXMLParser:
 
         return '\n'.join(parts)
 
+    def _format_formula(self, formula_elem: ET.Element, display: bool = False) -> str:
+        """Format a formula element (inline-formula or disp-formula).
+
+        Attempts to extract readable mathematical content from formulas.
+        Handles both simple text formulas and MathML content.
+
+        Args:
+            formula_elem: Formula XML element
+            display: If True, format as display (block) equation
+
+        Returns:
+            Formatted formula text
+        """
+        # First check if there's a label (for numbered equations)
+        label_elem = formula_elem.find('label')
+        label = ''
+        if label_elem is not None and label_elem.text:
+            label = f"({label_elem.text.strip()})"
+
+        # Try to find MathML content
+        # MathML can be with namespace prefix (mml:math) or without (math)
+        math_elem = formula_elem.find('.//{http://www.w3.org/1998/Math/MathML}math')
+        if math_elem is None:
+            math_elem = formula_elem.find('.//math')
+
+        if math_elem is not None:
+            # Extract text from MathML - this gives a simplified representation
+            math_text = self._extract_mathml_text(math_elem)
+            if math_text:
+                if display:
+                    # Display formula: put on its own line with optional label
+                    if label:
+                        return f"\n> **Equation {label}**: {math_text}\n"
+                    return f"\n> {math_text}\n"
+                else:
+                    # Inline formula
+                    return f" {math_text} "
+
+        # No MathML, try to get direct text content
+        text_content = self._extract_text(formula_elem).strip()
+        if text_content:
+            # Remove any label text that might be duplicated
+            if label and text_content.startswith(label):
+                text_content = text_content[len(label):].strip()
+
+            if display:
+                if label:
+                    return f"\n> **Equation {label}**: {text_content}\n"
+                return f"\n> {text_content}\n"
+            else:
+                return f" {text_content} "
+
+        return ''
+
+    def _extract_mathml_text(self, math_elem: ET.Element) -> str:
+        """Extract readable text from MathML element.
+
+        Converts MathML to a simplified text representation.
+        This preserves the mathematical meaning while making it readable.
+
+        Args:
+            math_elem: MathML math element
+
+        Returns:
+            Simplified text representation of the formula
+        """
+        parts: List[str] = []
+
+        def process_mathml(elem: ET.Element) -> None:
+            """Recursively process MathML elements."""
+            # Get local tag name (remove namespace)
+            tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+
+            # Handle specific MathML elements
+            if tag == 'mfrac':
+                # Fraction: numerator/denominator
+                children = list(elem)
+                if len(children) >= 2:
+                    parts.append('(')
+                    process_mathml(children[0])
+                    parts.append(')/(')
+                    process_mathml(children[1])
+                    parts.append(')')
+                return
+            elif tag == 'msup':
+                # Superscript: base^exponent
+                children = list(elem)
+                if len(children) >= 2:
+                    process_mathml(children[0])
+                    parts.append('^')
+                    process_mathml(children[1])
+                return
+            elif tag == 'msub':
+                # Subscript: base_subscript
+                children = list(elem)
+                if len(children) >= 2:
+                    process_mathml(children[0])
+                    parts.append('_')
+                    process_mathml(children[1])
+                return
+            elif tag == 'msubsup':
+                # Subscript and superscript
+                children = list(elem)
+                if len(children) >= 3:
+                    process_mathml(children[0])
+                    parts.append('_')
+                    process_mathml(children[1])
+                    parts.append('^')
+                    process_mathml(children[2])
+                return
+            elif tag == 'msqrt':
+                # Square root
+                parts.append('√(')
+                for child in elem:
+                    process_mathml(child)
+                parts.append(')')
+                return
+            elif tag == 'mroot':
+                # nth root
+                children = list(elem)
+                if len(children) >= 2:
+                    parts.append('root(')
+                    process_mathml(children[1])
+                    parts.append(', ')
+                    process_mathml(children[0])
+                    parts.append(')')
+                return
+            elif tag == 'mover':
+                # Overscript (e.g., hat, bar)
+                children = list(elem)
+                if children:
+                    process_mathml(children[0])
+                return
+            elif tag == 'munder':
+                # Underscript (e.g., limits)
+                for child in elem:
+                    process_mathml(child)
+                return
+            elif tag == 'munderover':
+                # Both under and over (e.g., sum with limits)
+                children = list(elem)
+                if children:
+                    process_mathml(children[0])
+                return
+            elif tag in ['mrow', 'mstyle', 'mpadded', 'mphantom', 'menclose']:
+                # Container elements - just process children
+                for child in elem:
+                    process_mathml(child)
+                return
+            elif tag == 'mfenced':
+                # Fenced content (parentheses, brackets, etc.)
+                open_char = elem.get('open', '(')
+                close_char = elem.get('close', ')')
+                parts.append(open_char)
+                for child in elem:
+                    process_mathml(child)
+                parts.append(close_char)
+                return
+            elif tag == 'mtable':
+                # Table/matrix - simplified representation
+                parts.append('[matrix]')
+                return
+
+            # For text-containing elements, extract the text
+            if elem.text:
+                text = elem.text.strip()
+                # Convert common Unicode math characters
+                text = self._convert_math_unicode(text)
+                parts.append(text)
+
+            # Process children for other elements
+            for child in elem:
+                process_mathml(child)
+                if child.tail:
+                    parts.append(child.tail.strip())
+
+        process_mathml(math_elem)
+        result = ''.join(parts).strip()
+
+        # Clean up excessive spaces
+        result = ' '.join(result.split())
+
+        return result
+
+    def _convert_math_unicode(self, text: str) -> str:
+        """Convert common Unicode math characters to readable ASCII equivalents.
+
+        Args:
+            text: Text potentially containing Unicode math symbols
+
+        Returns:
+            Text with Unicode converted to ASCII where possible
+        """
+        # Common mathematical Unicode to ASCII mappings
+        replacements = {
+            '×': '*',
+            '÷': '/',
+            '±': '±',
+            '−': '-',
+            '≤': '<=',
+            '≥': '>=',
+            '≠': '!=',
+            '≈': '≈',
+            '∞': '∞',
+            'π': 'π',
+            'α': 'α',
+            'β': 'β',
+            'γ': 'γ',
+            'δ': 'δ',
+            'ε': 'ε',
+            'θ': 'θ',
+            'λ': 'λ',
+            'μ': 'μ',
+            'σ': 'σ',
+            'Σ': 'Σ',
+            'φ': 'φ',
+            'ω': 'ω',
+            'Ω': 'Ω',
+            '\u00a0': ' ',  # Non-breaking space
+            '\u2009': ' ',  # Thin space
+            '\u2003': ' ',  # Em space
+        }
+
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+
+        return text
+
+    def _format_supplementary(self, supp_elem: ET.Element) -> str:
+        """Format a supplementary-material element.
+
+        Args:
+            supp_elem: supplementary-material XML element
+
+        Returns:
+            Markdown formatted supplementary material reference
+        """
+        supp_id = supp_elem.get('id', '')
+
+        # Try to get the media href
+        media = supp_elem.find('.//media')
+        href = ''
+        if media is not None:
+            href = media.get('{http://www.w3.org/1999/xlink}href', '')
+
+        # Get caption if available
+        caption = supp_elem.find('.//caption')
+        caption_text = ''
+        if caption is not None:
+            caption_text = self._extract_text(caption).strip()
+
+        # Get label if available
+        label = supp_elem.find('label')
+        label_text = ''
+        if label is not None and label.text:
+            label_text = label.text.strip()
+
+        # Build the reference
+        if label_text:
+            ref = f"**{label_text}**"
+        elif supp_id:
+            ref = f"**Supplementary Material ({supp_id})**"
+        else:
+            ref = "**Supplementary Material**"
+
+        if caption_text:
+            ref = f"{ref}: {caption_text}"
+
+        if href:
+            ref = f"{ref} [{href}]"
+
+        return f"\n> 📎 {ref}\n"
+
     def _extract_text(self, element: ET.Element) -> str:
         """Recursively extract text from an element.
 
@@ -752,14 +1050,13 @@ class EuropePMCXMLParser:
         if element is None:
             return ""
 
-        # Skip certain tags (metadata, references, formulas)
-        # Note: table-wrap and fig are handled separately in _format_body
+        # Skip certain tags (metadata, references)
+        # Note: table-wrap, fig, formulas, supplementary are handled separately
         skip_tags = {
             'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
             'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
             'lpage', 'history', 'permissions', 'self-uri', 'counts',
-            'custom-meta-group', 'funding-group', 'ref-list',
-            'supplementary-material', 'inline-formula', 'disp-formula'
+            'custom-meta-group', 'funding-group', 'ref-list'
         }
 
         if element.tag in skip_tags:
