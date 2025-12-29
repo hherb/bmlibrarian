@@ -74,8 +74,8 @@ MAX_PMCID = 99_999_999  # Upper bound for reasonable PMCID values
 # Regex timeout protection (max matches to prevent ReDoS)
 MAX_REGEX_MATCHES = 10000
 
-# User-Agent identifier (without contact email - use config for that)
-USER_AGENT_BASE = "BMLibrarian/1.0 (PDF Bulk Downloader)"
+# User-Agent identifier (base without closing paren - allows adding contact email)
+USER_AGENT_BASE = "BMLibrarian/1.0 (PDF Bulk Downloader"
 
 # Default output directory
 DEFAULT_OUTPUT_DIR = "~/europepmc_pdf"
@@ -701,8 +701,8 @@ class EuropePMCPDFDownloader:
 
         Prevents path traversal attacks by rejecting:
         - Absolute paths
-        - Paths containing '..'
-        - Paths with dangerous characters
+        - Paths containing '..' components
+        - Paths starting with '/'
 
         Args:
             member: Tar archive member to check
@@ -710,24 +710,21 @@ class EuropePMCPDFDownloader:
         Returns:
             True if the path is safe
         """
-        # Normalize the path
-        safe_path = Path(member.name).as_posix()
+        # Normalize path separators
+        member_path = Path(member.name)
 
-        # Reject absolute paths
-        if safe_path.startswith('/'):
+        # Reject absolute paths (both Unix and Windows style)
+        if member_path.is_absolute() or member.name.startswith('/'):
             logger.warning(f"Skipping unsafe absolute path: {member.name}")
             return False
 
-        # Reject path traversal attempts
-        normalized = Path(safe_path).resolve().as_posix()
-        if '..' in safe_path or '..' in normalized:
-            logger.warning(f"Skipping path traversal attempt: {member.name}")
-            return False
-
-        # Reject paths that would escape the extraction directory
-        # Check each component
-        for part in Path(safe_path).parts:
-            if part == '..' or part.startswith('/'):
+        # Reject paths with traversal components
+        # Check each path component for '..' or absolute markers
+        for part in member_path.parts:
+            if part == '..':
+                logger.warning(f"Skipping path traversal attempt: {member.name}")
+                return False
+            if part.startswith('/'):
                 logger.warning(f"Skipping unsafe path component: {member.name}")
                 return False
 

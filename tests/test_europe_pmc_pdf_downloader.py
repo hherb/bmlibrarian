@@ -76,16 +76,25 @@ class TestPathTraversalPrevention:
 
         downloader.close()
 
-    def test_dotdot_in_filename_blocked(self, tmp_path: Path) -> None:
-        """Filenames containing .. should be blocked."""
+    def test_dotdot_in_filename_allowed(self, tmp_path: Path) -> None:
+        """Filenames containing .. (not as path component) should be allowed."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
         member = MagicMock()
         member.name = "PMC..123456.pdf"
 
-        # This is actually safe, but our paranoid check blocks it
-        # The important thing is we don't allow actual traversal
+        # This is safe - '..' in a filename is not a path component
+        # We only block '..' when it's a separate path component
         result = downloader._is_safe_tar_member(member)
-        # Our check blocks anything with '..' in the path
+        assert result is True
+        downloader.close()
+
+    def test_dotdot_as_component_blocked(self, tmp_path: Path) -> None:
+        """Path component '..' should be blocked."""
+        downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
+        member = MagicMock()
+        member.name = "data/../PMC123456.pdf"
+
+        result = downloader._is_safe_tar_member(member)
         assert result is False
         downloader.close()
 
@@ -264,6 +273,8 @@ class TestUserAgentConfiguration:
         assert "mailto:" not in downloader._user_agent
         assert "example.com" not in downloader._user_agent
         assert "BMLibrarian" in downloader._user_agent
+        # Verify balanced parentheses
+        assert downloader._user_agent.count('(') == downloader._user_agent.count(')')
         downloader.close()
 
     def test_custom_contact_email(self, tmp_path: Path) -> None:
@@ -273,6 +284,8 @@ class TestUserAgentConfiguration:
             contact_email="test@example.org"
         )
         assert "mailto:test@example.org" in downloader._user_agent
+        # Verify balanced parentheses
+        assert downloader._user_agent.count('(') == downloader._user_agent.count(')')
         downloader.close()
 
 
