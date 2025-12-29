@@ -138,10 +138,13 @@ class ImportProgress:
 class EuropePMCXMLParser:
     """Enhanced parser for Europe PMC XML packages.
 
-    Extends NXMLParser functionality to handle:
-    - Multiple articles in a single XML file
+    Delegates to NXMLParser for core JATS XML formatting while adding:
+    - Multiple articles in a single XML file (streaming support)
     - Figure/graphic references with placeholders
-    - Complete metadata extraction
+    - Complete metadata extraction (PMCID, PMID, DOI, authors, etc.)
+
+    All formatting methods (tables, figures, formulas, etc.) are delegated
+    to NXMLParser to avoid code duplication and ensure consistency.
     """
 
     def __init__(self):
@@ -151,6 +154,39 @@ class EuropePMCXMLParser:
         self.namespaces = {
             'xlink': 'http://www.w3.org/1999/xlink'
         }
+
+    # Delegate formatting methods to NXMLParser to avoid duplication
+    def _format_table(self, table_wrap: ET.Element) -> str:
+        """Delegate table formatting to NXMLParser."""
+        return self.nxml_parser._format_table(table_wrap)
+
+    def _format_list(self, list_elem: ET.Element) -> str:
+        """Delegate list formatting to NXMLParser."""
+        return self.nxml_parser._format_list(list_elem)
+
+    def _format_formula(self, formula_elem: ET.Element, display: bool = False) -> str:
+        """Delegate formula formatting to NXMLParser."""
+        return self.nxml_parser._format_formula(formula_elem, display)
+
+    def _format_supplementary(self, supp_elem: ET.Element) -> str:
+        """Delegate supplementary material formatting to NXMLParser."""
+        return self.nxml_parser._format_supplementary(supp_elem)
+
+    def _format_funding_group(self, funding_elem: ET.Element) -> str:
+        """Delegate funding group formatting to NXMLParser."""
+        return self.nxml_parser._format_funding_group(funding_elem)
+
+    def _format_author_notes(self, notes_elem: ET.Element) -> str:
+        """Delegate author notes formatting to NXMLParser."""
+        return self.nxml_parser._format_author_notes(notes_elem)
+
+    def _format_ref_list(self, ref_list_elem: ET.Element) -> str:
+        """Delegate reference list formatting to NXMLParser."""
+        return self.nxml_parser._format_ref_list(ref_list_elem)
+
+    def _extract_text(self, element: ET.Element) -> str:
+        """Delegate text extraction to NXMLParser."""
+        return self.nxml_parser._extract_text(element)
 
     def parse_package(self, xml_content: str) -> Iterator[ArticleMetadata]:
         """Parse a Europe PMC XML package containing multiple articles.
@@ -370,20 +406,22 @@ class EuropePMCXMLParser:
     def _parse_to_markdown(
         self,
         article: ET.Element,
-        figures: List[Dict[str, str]]
+        figures: List[Dict[str, str]],
+        include_references: bool = True
     ) -> str:
         """Parse article to Markdown with enhanced formatting.
 
         Args:
             article: Article XML element
             figures: List of figure info dicts
+            include_references: If True, include bibliography at the end
 
         Returns:
             Markdown-formatted full text
         """
         parts = []
 
-        # Title
+        # Title and front matter
         front = article.find('.//front')
         if front is not None:
             title = front.find('.//article-title')
@@ -391,6 +429,13 @@ class EuropePMCXMLParser:
                 title_text = self._extract_text(title).strip()
                 if title_text:
                     parts.append(f"# {title_text}\n")
+
+            # Author notes (corresponding author, contributions, conflicts)
+            author_notes = front.find('.//author-notes')
+            if author_notes is not None:
+                notes_text = self._format_author_notes(author_notes)
+                if notes_text:
+                    parts.append(notes_text)
 
             # Abstract
             abstract = front.find('.//abstract')
@@ -406,14 +451,33 @@ class EuropePMCXMLParser:
             if body_text:
                 parts.append(f"\n{body_text}")
 
-        # Acknowledgments
+        # Back matter
         back = article.find('.//back')
         if back is not None:
+            # Acknowledgments
             ack = back.find('.//ack')
             if ack is not None:
                 ack_text = self._extract_text(ack).strip()
                 if ack_text:
                     parts.append(f"\n## Acknowledgments\n\n{ack_text}\n")
+
+            # Funding information
+            funding_group = back.find('.//funding-group')
+            if funding_group is None:
+                # Sometimes in front matter
+                funding_group = article.find('.//front//funding-group')
+            if funding_group is not None:
+                funding_text = self._format_funding_group(funding_group)
+                if funding_text:
+                    parts.append(funding_text)
+
+            # References/bibliography
+            if include_references:
+                ref_list = back.find('.//ref-list')
+                if ref_list is not None:
+                    refs_text = self._format_ref_list(ref_list)
+                    if refs_text:
+                        parts.append(refs_text)
 
         full_text = '\n'.join(parts)
 
@@ -679,402 +743,6 @@ class EuropePMCXMLParser:
             alt_text = label
 
         return f"![{alt_text}]({graphic_ref})"
-
-    def _format_table(self, table_wrap: ET.Element) -> str:
-        """Format a table-wrap element as Markdown table.
-
-        Args:
-            table_wrap: table-wrap XML element containing label, caption, and table
-
-        Returns:
-            Markdown formatted table with caption
-        """
-        parts = []
-
-        # Get label (e.g., "Table 1")
-        label_elem = table_wrap.find('label')
-        label = label_elem.text.strip() if label_elem is not None and label_elem.text else ''
-
-        # Get caption/title
-        caption_title = table_wrap.find('.//caption/title')
-        caption_p = table_wrap.find('.//caption/p')
-        caption_text = ''
-        if caption_title is not None:
-            caption_text = self._extract_text(caption_title).strip()
-        elif caption_p is not None:
-            caption_text = self._extract_text(caption_p).strip()
-
-        # Add table header with label and caption
-        if label or caption_text:
-            header = f"**{label}**" if label else ""
-            if caption_text:
-                header = f"{header}: {caption_text}" if header else caption_text
-            parts.append(f"\n{header}\n")
-
-        # Find the actual table element
-        table = table_wrap.find('.//table')
-        if table is None:
-            # No table structure, just return caption
-            return '\n'.join(parts) if parts else ''
-
-        # Extract headers from thead
-        headers = []
-        thead = table.find('.//thead')
-        if thead is not None:
-            for th in thead.findall('.//th'):
-                headers.append(self._extract_text(th).strip() or ' ')
-            # Also check for td in thead (some tables use td instead of th)
-            if not headers:
-                for td in thead.findall('.//td'):
-                    headers.append(self._extract_text(td).strip() or ' ')
-
-        # Extract rows from tbody
-        rows = []
-        tbody = table.find('.//tbody')
-        if tbody is not None:
-            for tr in tbody.findall('tr'):
-                row = []
-                for td in tr.findall('td'):
-                    cell_text = self._extract_text(td).strip()
-                    # Escape pipe characters in cell content
-                    cell_text = cell_text.replace('|', '\\|')
-                    row.append(cell_text or ' ')
-                if row:
-                    rows.append(row)
-
-        # If no headers but we have rows, use first row as headers
-        if not headers and rows:
-            headers = rows.pop(0)
-
-        # Build markdown table
-        if headers:
-            # Determine column count
-            col_count = len(headers)
-
-            # Header row
-            parts.append('| ' + ' | '.join(headers) + ' |')
-            # Separator row
-            parts.append('| ' + ' | '.join(['---'] * col_count) + ' |')
-
-            # Data rows
-            for row in rows:
-                # Pad row to match header count
-                while len(row) < col_count:
-                    row.append(' ')
-                parts.append('| ' + ' | '.join(row[:col_count]) + ' |')
-
-        return '\n'.join(parts)
-
-    def _format_formula(self, formula_elem: ET.Element, display: bool = False) -> str:
-        """Format a formula element (inline-formula or disp-formula).
-
-        Attempts to extract readable mathematical content from formulas.
-        Handles both simple text formulas and MathML content.
-
-        Args:
-            formula_elem: Formula XML element
-            display: If True, format as display (block) equation
-
-        Returns:
-            Formatted formula text
-        """
-        # First check if there's a label (for numbered equations)
-        label_elem = formula_elem.find('label')
-        label = ''
-        if label_elem is not None and label_elem.text:
-            label = f"({label_elem.text.strip()})"
-
-        # Try to find MathML content
-        # MathML can be with namespace prefix (mml:math) or without (math)
-        math_elem = formula_elem.find('.//{http://www.w3.org/1998/Math/MathML}math')
-        if math_elem is None:
-            math_elem = formula_elem.find('.//math')
-
-        if math_elem is not None:
-            # Extract text from MathML - this gives a simplified representation
-            math_text = self._extract_mathml_text(math_elem)
-            if math_text:
-                if display:
-                    # Display formula: put on its own line with optional label
-                    if label:
-                        return f"\n> **Equation {label}**: {math_text}\n"
-                    return f"\n> {math_text}\n"
-                else:
-                    # Inline formula
-                    return f" {math_text} "
-
-        # No MathML, try to get direct text content
-        text_content = self._extract_text(formula_elem).strip()
-        if text_content:
-            # Remove any label text that might be duplicated
-            if label and text_content.startswith(label):
-                text_content = text_content[len(label):].strip()
-
-            if display:
-                if label:
-                    return f"\n> **Equation {label}**: {text_content}\n"
-                return f"\n> {text_content}\n"
-            else:
-                return f" {text_content} "
-
-        return ''
-
-    def _extract_mathml_text(self, math_elem: ET.Element) -> str:
-        """Extract readable text from MathML element.
-
-        Converts MathML to a simplified text representation.
-        This preserves the mathematical meaning while making it readable.
-
-        Args:
-            math_elem: MathML math element
-
-        Returns:
-            Simplified text representation of the formula
-        """
-        parts: List[str] = []
-
-        def process_mathml(elem: ET.Element) -> None:
-            """Recursively process MathML elements."""
-            # Get local tag name (remove namespace)
-            tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-
-            # Handle specific MathML elements
-            if tag == 'mfrac':
-                # Fraction: numerator/denominator
-                children = list(elem)
-                if len(children) >= 2:
-                    parts.append('(')
-                    process_mathml(children[0])
-                    parts.append(')/(')
-                    process_mathml(children[1])
-                    parts.append(')')
-                return
-            elif tag == 'msup':
-                # Superscript: base^exponent
-                children = list(elem)
-                if len(children) >= 2:
-                    process_mathml(children[0])
-                    parts.append('^')
-                    process_mathml(children[1])
-                return
-            elif tag == 'msub':
-                # Subscript: base_subscript
-                children = list(elem)
-                if len(children) >= 2:
-                    process_mathml(children[0])
-                    parts.append('_')
-                    process_mathml(children[1])
-                return
-            elif tag == 'msubsup':
-                # Subscript and superscript
-                children = list(elem)
-                if len(children) >= 3:
-                    process_mathml(children[0])
-                    parts.append('_')
-                    process_mathml(children[1])
-                    parts.append('^')
-                    process_mathml(children[2])
-                return
-            elif tag == 'msqrt':
-                # Square root
-                parts.append('√(')
-                for child in elem:
-                    process_mathml(child)
-                parts.append(')')
-                return
-            elif tag == 'mroot':
-                # nth root
-                children = list(elem)
-                if len(children) >= 2:
-                    parts.append('root(')
-                    process_mathml(children[1])
-                    parts.append(', ')
-                    process_mathml(children[0])
-                    parts.append(')')
-                return
-            elif tag == 'mover':
-                # Overscript (e.g., hat, bar)
-                children = list(elem)
-                if children:
-                    process_mathml(children[0])
-                return
-            elif tag == 'munder':
-                # Underscript (e.g., limits)
-                for child in elem:
-                    process_mathml(child)
-                return
-            elif tag == 'munderover':
-                # Both under and over (e.g., sum with limits)
-                children = list(elem)
-                if children:
-                    process_mathml(children[0])
-                return
-            elif tag in ['mrow', 'mstyle', 'mpadded', 'mphantom', 'menclose']:
-                # Container elements - just process children
-                for child in elem:
-                    process_mathml(child)
-                return
-            elif tag == 'mfenced':
-                # Fenced content (parentheses, brackets, etc.)
-                open_char = elem.get('open', '(')
-                close_char = elem.get('close', ')')
-                parts.append(open_char)
-                for child in elem:
-                    process_mathml(child)
-                parts.append(close_char)
-                return
-            elif tag == 'mtable':
-                # Table/matrix - simplified representation
-                parts.append('[matrix]')
-                return
-
-            # For text-containing elements, extract the text
-            if elem.text:
-                text = elem.text.strip()
-                # Convert common Unicode math characters
-                text = self._convert_math_unicode(text)
-                parts.append(text)
-
-            # Process children for other elements
-            for child in elem:
-                process_mathml(child)
-                if child.tail:
-                    parts.append(child.tail.strip())
-
-        process_mathml(math_elem)
-        result = ''.join(parts).strip()
-
-        # Clean up excessive spaces
-        result = ' '.join(result.split())
-
-        return result
-
-    def _convert_math_unicode(self, text: str) -> str:
-        """Convert common Unicode math characters to readable ASCII equivalents.
-
-        Args:
-            text: Text potentially containing Unicode math symbols
-
-        Returns:
-            Text with Unicode converted to ASCII where possible
-        """
-        # Common mathematical Unicode to ASCII mappings
-        replacements = {
-            '×': '*',
-            '÷': '/',
-            '±': '±',
-            '−': '-',
-            '≤': '<=',
-            '≥': '>=',
-            '≠': '!=',
-            '≈': '≈',
-            '∞': '∞',
-            'π': 'π',
-            'α': 'α',
-            'β': 'β',
-            'γ': 'γ',
-            'δ': 'δ',
-            'ε': 'ε',
-            'θ': 'θ',
-            'λ': 'λ',
-            'μ': 'μ',
-            'σ': 'σ',
-            'Σ': 'Σ',
-            'φ': 'φ',
-            'ω': 'ω',
-            'Ω': 'Ω',
-            '\u00a0': ' ',  # Non-breaking space
-            '\u2009': ' ',  # Thin space
-            '\u2003': ' ',  # Em space
-        }
-
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-
-        return text
-
-    def _format_supplementary(self, supp_elem: ET.Element) -> str:
-        """Format a supplementary-material element.
-
-        Args:
-            supp_elem: supplementary-material XML element
-
-        Returns:
-            Markdown formatted supplementary material reference
-        """
-        supp_id = supp_elem.get('id', '')
-
-        # Try to get the media href
-        media = supp_elem.find('.//media')
-        href = ''
-        if media is not None:
-            href = media.get('{http://www.w3.org/1999/xlink}href', '')
-
-        # Get caption if available
-        caption = supp_elem.find('.//caption')
-        caption_text = ''
-        if caption is not None:
-            caption_text = self._extract_text(caption).strip()
-
-        # Get label if available
-        label = supp_elem.find('label')
-        label_text = ''
-        if label is not None and label.text:
-            label_text = label.text.strip()
-
-        # Build the reference
-        if label_text:
-            ref = f"**{label_text}**"
-        elif supp_id:
-            ref = f"**Supplementary Material ({supp_id})**"
-        else:
-            ref = "**Supplementary Material**"
-
-        if caption_text:
-            ref = f"{ref}: {caption_text}"
-
-        if href:
-            ref = f"{ref} [{href}]"
-
-        return f"\n> 📎 {ref}\n"
-
-    def _extract_text(self, element: ET.Element) -> str:
-        """Recursively extract text from an element.
-
-        Args:
-            element: XML element
-
-        Returns:
-            Concatenated text content
-        """
-        if element is None:
-            return ""
-
-        # Skip certain tags (metadata, references)
-        # Note: table-wrap, fig, formulas, supplementary are handled separately
-        skip_tags = {
-            'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
-            'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
-            'lpage', 'history', 'permissions', 'self-uri', 'counts',
-            'custom-meta-group', 'funding-group', 'ref-list'
-        }
-
-        if element.tag in skip_tags:
-            return ""
-
-        parts = []
-
-        if element.text:
-            parts.append(element.text)
-
-        for child in element:
-            child_text = self._extract_text(child)
-            if child_text:
-                parts.append(child_text)
-            if child.tail:
-                parts.append(child.tail)
-
-        return ''.join(parts)
 
 
 class EuropePMCImporter:

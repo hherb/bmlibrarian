@@ -59,14 +59,17 @@ class NXMLParser:
     from PMC servers).
     """
 
-    # Tags to skip entirely (these contain metadata, not content)
-    # Note: table-wrap, fig, formulas are NOT skipped - they are handled specially
+    # Tags to skip entirely (metadata that doesn't belong in body text)
+    # Note: table-wrap, fig, formulas, supplementary-material are NOT skipped - they are handled specially
+    # Note: funding-group, ref-list, author-notes are NOT skipped - they have dedicated handlers
     SKIP_TAGS = {
         'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
-        'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
-        'lpage', 'history', 'permissions', 'self-uri', 'counts',
-        'custom-meta-group', 'funding-group', 'ref-list'
+        'pub-date', 'volume', 'issue', 'fpage', 'lpage', 'history',
+        'permissions', 'self-uri', 'counts', 'custom-meta-group'
     }
+
+    # Tags that contain affiliations - extracted separately for metadata
+    AFFILIATION_TAGS = {'aff', 'aff-group'}
 
     # MathML namespace
     MATHML_NS = '{http://www.w3.org/1998/Math/MathML}'
@@ -77,14 +80,15 @@ class NXMLParser:
         'def-item', 'boxed-text', 'disp-quote', 'speech', 'verse-group'
     }
 
-    def parse(self, nxml_content: str) -> str:
-        """Parse NXML content to extract plain text.
+    def parse(self, nxml_content: str, include_references: bool = True) -> str:
+        """Parse NXML content to extract Markdown-formatted text.
 
         Args:
             nxml_content: Raw NXML (JATS XML) content
+            include_references: If True, include bibliography at the end
 
         Returns:
-            Extracted plain text with preserved paragraph structure
+            Extracted Markdown text with preserved structure
         """
         try:
             root = ET.fromstring(nxml_content)
@@ -94,7 +98,7 @@ class NXMLParser:
 
         text_parts = []
 
-        # Extract front matter (title, abstract)
+        # Extract front matter (title, abstract, author notes)
         front = root.find('.//front')
         if front is not None:
             # Article title
@@ -103,6 +107,13 @@ class NXMLParser:
                 title_text = self._extract_text(title).strip()
                 if title_text:
                     text_parts.append(f"# {title_text}\n")
+
+            # Author notes (corresponding author, contributions, conflicts)
+            author_notes = front.find('.//author-notes')
+            if author_notes is not None:
+                notes_text = self._format_author_notes(author_notes)
+                if notes_text:
+                    text_parts.append(notes_text)
 
             # Abstract
             abstract = front.find('.//abstract')
@@ -118,14 +129,33 @@ class NXMLParser:
             if body_text:
                 text_parts.append(f"\n{body_text}")
 
-        # Extract back matter (acknowledgments, etc.) - skip references
+        # Extract back matter
         back = root.find('.//back')
         if back is not None:
+            # Acknowledgments
             ack = back.find('.//ack')
             if ack is not None:
                 ack_text = self._extract_text(ack).strip()
                 if ack_text:
                     text_parts.append(f"\n## Acknowledgments\n\n{ack_text}\n")
+
+            # Funding information
+            funding_group = back.find('.//funding-group')
+            if funding_group is None:
+                # Sometimes in front matter
+                funding_group = root.find('.//front//funding-group')
+            if funding_group is not None:
+                funding_text = self._format_funding_group(funding_group)
+                if funding_text:
+                    text_parts.append(funding_text)
+
+            # References/bibliography
+            if include_references:
+                ref_list = back.find('.//ref-list')
+                if ref_list is not None:
+                    refs_text = self._format_ref_list(ref_list)
+                    if refs_text:
+                        text_parts.append(refs_text)
 
         full_text = '\n'.join(text_parts)
 
@@ -697,16 +727,259 @@ class NXMLParser:
 
         return f"\n> 📎 {ref}\n"
 
-    def _extract_text(self, element: ET.Element) -> str:
+    def _format_funding_group(self, funding_elem: ET.Element) -> str:
+        """Format a funding-group element.
+
+        Extracts funding sources, grant numbers, and any conflict of interest
+        statements. This information is important for transparency.
+
+        Args:
+            funding_elem: funding-group XML element
+
+        Returns:
+            Markdown formatted funding information
+        """
+        parts = []
+
+        # Process individual funding sources (award-group elements)
+        for award in funding_elem.findall('.//award-group'):
+            funding_source = award.find('.//funding-source')
+            award_id = award.find('.//award-id')
+
+            source_text = ''
+            if funding_source is not None:
+                source_text = self._extract_text(funding_source, skip_affiliations=False).strip()
+
+            award_text = ''
+            if award_id is not None:
+                award_text = award_id.text.strip() if award_id.text else ''
+
+            if source_text:
+                if award_text:
+                    parts.append(f"- {source_text} (Grant: {award_text})")
+                else:
+                    parts.append(f"- {source_text}")
+
+        # Also check for funding-statement elements (sometimes used for freeform text)
+        for stmt in funding_elem.findall('.//funding-statement'):
+            stmt_text = self._extract_text(stmt, skip_affiliations=False).strip()
+            if stmt_text:
+                parts.append(f"- {stmt_text}")
+
+        if parts:
+            return "\n**Funding:**\n" + '\n'.join(parts) + "\n"
+        return ""
+
+    def _format_author_notes(self, notes_elem: ET.Element) -> str:
+        """Format an author-notes element.
+
+        Extracts corresponding author information, footnotes about authors,
+        and any conflict of interest statements.
+
+        Args:
+            notes_elem: author-notes XML element
+
+        Returns:
+            Markdown formatted author notes
+        """
+        parts = []
+
+        # Look for corresponding author info
+        for corresp in notes_elem.findall('.//corresp'):
+            corresp_text = self._extract_text(corresp, skip_affiliations=False).strip()
+            if corresp_text:
+                parts.append(f"**Corresponding Author:** {corresp_text}")
+
+        # Look for footnotes (fn elements)
+        for fn in notes_elem.findall('.//fn'):
+            fn_type = fn.get('fn-type', '')
+            fn_text = self._extract_text(fn, skip_affiliations=False).strip()
+
+            if fn_text:
+                if fn_type == 'con':
+                    parts.append(f"**Author Contributions:** {fn_text}")
+                elif fn_type == 'conflict':
+                    parts.append(f"**Conflict of Interest:** {fn_text}")
+                elif fn_type == 'present-address':
+                    parts.append(f"**Present Address:** {fn_text}")
+                elif fn_type == 'equal':
+                    parts.append(f"**Equal Contribution:** {fn_text}")
+                else:
+                    # Generic footnote
+                    parts.append(fn_text)
+
+        if parts:
+            return "\n" + '\n\n'.join(parts) + "\n"
+        return ""
+
+    def _format_ref_list(self, ref_list_elem: ET.Element) -> str:
+        """Format a ref-list element as a references section.
+
+        Extracts bibliographic references with formatting.
+
+        Args:
+            ref_list_elem: ref-list XML element
+
+        Returns:
+            Markdown formatted references section
+        """
+        refs = []
+
+        # Check for title
+        title_elem = ref_list_elem.find('title')
+        title = "References"
+        if title_elem is not None and title_elem.text:
+            title = title_elem.text.strip()
+
+        # Process each reference
+        for ref in ref_list_elem.findall('.//ref'):
+            ref_id = ref.get('id', '')
+            ref_text = ""
+
+            # Try to find citation or mixed-citation
+            citation = ref.find('.//mixed-citation')
+            if citation is None:
+                citation = ref.find('.//element-citation')
+            if citation is None:
+                citation = ref.find('.//citation')
+
+            if citation is not None:
+                # Extract structured citation parts
+                parts = []
+
+                # Authors
+                authors = []
+                for name in citation.findall('.//name'):
+                    surname = name.findtext('surname', '')
+                    given = name.findtext('given-names', '')
+                    if surname:
+                        authors.append(f"{surname} {given}".strip())
+
+                if authors:
+                    parts.append(', '.join(authors[:3]))
+                    if len(authors) > 3:
+                        parts.append(' et al.')
+                    parts.append('. ')
+
+                # Year
+                year = citation.findtext('.//year', '')
+                if year:
+                    parts.append(f"({year}). ")
+
+                # Article title
+                article_title = citation.find('.//article-title')
+                if article_title is not None:
+                    title_text = self._extract_text(article_title, skip_affiliations=False).strip()
+                    if title_text:
+                        parts.append(f"{title_text}. ")
+
+                # Journal/Source
+                source = citation.findtext('.//source', '')
+                if source:
+                    parts.append(f"*{source}*")
+
+                # Volume, issue, pages
+                volume = citation.findtext('.//volume', '')
+                issue = citation.findtext('.//issue', '')
+                fpage = citation.findtext('.//fpage', '')
+                lpage = citation.findtext('.//lpage', '')
+
+                if volume:
+                    parts.append(f", {volume}")
+                if issue:
+                    parts.append(f"({issue})")
+                if fpage:
+                    if lpage:
+                        parts.append(f": {fpage}-{lpage}")
+                    else:
+                        parts.append(f": {fpage}")
+
+                # DOI
+                doi = citation.findtext('.//pub-id[@pub-id-type="doi"]', '')
+                if doi:
+                    parts.append(f". doi: {doi}")
+
+                ref_text = ''.join(parts)
+
+            # Fallback to raw text extraction
+            if not ref_text:
+                ref_text = self._extract_text(ref, skip_affiliations=False).strip()
+
+            if ref_text:
+                # Add reference number if available
+                label = ref.find('label')
+                if label is not None and label.text:
+                    refs.append(f"{label.text.strip()}. {ref_text}")
+                else:
+                    refs.append(f"- {ref_text}")
+
+        if refs:
+            return f"\n## {title}\n\n" + '\n'.join(refs) + "\n"
+        return ""
+
+    def _extract_affiliations(self, front_elem: ET.Element) -> List[Dict[str, str]]:
+        """Extract author affiliations from front matter.
+
+        Args:
+            front_elem: Front matter XML element
+
+        Returns:
+            List of affiliation dictionaries with 'id' and 'text' keys
+        """
+        affiliations = []
+
+        for aff in front_elem.findall('.//aff'):
+            aff_id = aff.get('id', '')
+
+            # Get institution name
+            institution = aff.find('.//institution')
+            addr_line = aff.find('.//addr-line')
+            country = aff.find('.//country')
+
+            parts = []
+            if institution is not None and institution.text:
+                parts.append(institution.text.strip())
+
+            # Sometimes the text is directly in the aff element
+            if not parts:
+                aff_text = self._extract_text(aff, skip_affiliations=False).strip()
+                # Remove the label if present
+                label = aff.find('label')
+                if label is not None and label.text and aff_text.startswith(label.text):
+                    aff_text = aff_text[len(label.text):].strip()
+                if aff_text:
+                    parts.append(aff_text)
+            else:
+                if addr_line is not None:
+                    addr_text = self._extract_text(addr_line, skip_affiliations=False).strip()
+                    if addr_text:
+                        parts.append(addr_text)
+                if country is not None and country.text:
+                    parts.append(country.text.strip())
+
+            if parts:
+                affiliations.append({
+                    'id': aff_id,
+                    'text': ', '.join(parts)
+                })
+
+        return affiliations
+
+    def _extract_text(self, element: ET.Element, skip_affiliations: bool = True) -> str:
         """Recursively extract text from an element.
 
         Args:
             element: XML element
+            skip_affiliations: If True, skip affiliation tags (for body text)
 
         Returns:
             Concatenated text content
         """
         if element.tag in self.SKIP_TAGS:
+            return ""
+
+        # Affiliations are typically handled separately in metadata extraction
+        if skip_affiliations and element.tag in self.AFFILIATION_TAGS:
             return ""
 
         parts = []
@@ -717,7 +990,7 @@ class NXMLParser:
 
         # Process children
         for child in element:
-            child_text = self._extract_text(child)
+            child_text = self._extract_text(child, skip_affiliations)
             if child_text:
                 if child.tag in self.BLOCK_TAGS:
                     parts.append(f"\n{child_text}\n")
