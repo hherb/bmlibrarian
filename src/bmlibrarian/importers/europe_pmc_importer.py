@@ -155,6 +155,9 @@ class EuropePMCXMLParser:
     def parse_package(self, xml_content: str) -> Iterator[ArticleMetadata]:
         """Parse a Europe PMC XML package containing multiple articles.
 
+        DEPRECATED: Use parse_package_streaming() for large files to avoid
+        memory issues. This method loads the entire XML into memory.
+
         Args:
             xml_content: Raw XML content from a .xml.gz package
 
@@ -190,6 +193,51 @@ class EuropePMCXMLParser:
                         pmcid = article_id.text or "unknown"
                         break
                 logger.warning(f"Failed to parse article {pmcid}: {e}")
+
+    def parse_package_streaming(
+        self,
+        file_handle
+    ) -> Iterator[ArticleMetadata]:
+        """Parse a Europe PMC XML package using streaming/iterative parsing.
+
+        Uses xml.etree.ElementTree.iterparse() to process articles one at a
+        time without loading the entire XML tree into memory. This is essential
+        for large packages that would otherwise cause out-of-memory errors.
+
+        Args:
+            file_handle: File-like object (e.g., from gzip.open()) containing XML
+
+        Yields:
+            ArticleMetadata for each article in the package
+        """
+        # Use iterparse with 'end' events to get complete article elements
+        # Clear elements after processing to free memory
+        context = ET.iterparse(file_handle, events=('end',))
+
+        article_count = 0
+        for event, elem in context:
+            # Only process complete article elements
+            if elem.tag == 'article':
+                article_count += 1
+                try:
+                    metadata = self._parse_article(elem)
+                    if metadata:
+                        yield metadata
+                except Exception as e:
+                    # Try to get PMCID for error logging
+                    pmcid = "unknown"
+                    for article_id in elem.findall('.//article-id'):
+                        if article_id.get('pub-id-type') == 'pmcid':
+                            pmcid = article_id.text or "unknown"
+                            break
+                    logger.warning(f"Failed to parse article {pmcid}: {e}")
+                finally:
+                    # CRITICAL: Clear the element to free memory
+                    # This is what makes iterparse memory-efficient
+                    elem.clear()
+
+        if article_count == 0:
+            logger.warning("No articles found in package")
 
     def _parse_article(self, article: ET.Element) -> Optional[ArticleMetadata]:
         """Parse a single article element.
@@ -412,7 +460,7 @@ class EuropePMCXMLParser:
         body: ET.Element,
         figures: List[Dict[str, str]]
     ) -> str:
-        """Format body with sections and figure placeholders.
+        """Format body with sections, figures, and tables.
 
         Args:
             body: Body XML element
@@ -426,42 +474,52 @@ class EuropePMCXMLParser:
         # Create figure lookup
         fig_lookup = {f.get('id', ''): f for f in figures}
 
-        def process_section(sec: ET.Element, level: int = 2) -> None:
-            """Process a section recursively."""
-            title = sec.find('title')
-            if title is not None:
-                title_text = self._extract_text(title).strip()
-                if title_text:
-                    prefix = '#' * min(level, 6)
-                    parts.append(f"\n{prefix} {title_text}\n")
+        def process_element(elem: ET.Element, level: int = 2) -> None:
+            """Process an element and its children recursively."""
+            if elem.tag == 'sec':
+                # Section with title
+                title = elem.find('title')
+                if title is not None:
+                    title_text = self._extract_text(title).strip()
+                    if title_text:
+                        prefix = '#' * min(level, 6)
+                        parts.append(f"\n{prefix} {title_text}\n")
 
-            # Process direct children (paragraphs, lists, etc.)
-            for child in sec:
-                if child.tag == 'p':
-                    p_text = self._format_paragraph(child, fig_lookup)
-                    if p_text:
-                        parts.append(f"\n{p_text}\n")
-                elif child.tag == 'sec':
-                    # Nested section
-                    process_section(child, level + 1)
-                elif child.tag == 'list':
-                    list_text = self._format_list(child)
-                    if list_text:
-                        parts.append(f"\n{list_text}\n")
-                elif child.tag == 'fig':
-                    fig_text = self._format_figure(child, fig_lookup)
+                # Process section children
+                for child in elem:
+                    if child.tag != 'title':  # Skip title, already processed
+                        process_element(child, level + 1)
+
+            elif elem.tag == 'p':
+                p_text = self._format_paragraph(elem, fig_lookup)
+                if p_text:
+                    parts.append(f"\n{p_text}\n")
+
+            elif elem.tag == 'list':
+                list_text = self._format_list(elem)
+                if list_text:
+                    parts.append(f"\n{list_text}\n")
+
+            elif elem.tag == 'fig':
+                fig_text = self._format_figure(elem, fig_lookup)
+                if fig_text:
+                    parts.append(f"\n{fig_text}\n")
+
+            elif elem.tag == 'table-wrap':
+                table_text = self._format_table(elem)
+                if table_text:
+                    parts.append(f"\n{table_text}\n")
+
+            elif elem.tag == 'fig-group':
+                # Process all figures in the group
+                for fig in elem.findall('fig'):
+                    fig_text = self._format_figure(fig, fig_lookup)
                     if fig_text:
                         parts.append(f"\n{fig_text}\n")
 
-        # Process top-level sections
-        for sec in body.findall('sec'):
-            process_section(sec)
-
-        # Also process paragraphs directly under body
-        for p in body.findall('p'):
-            p_text = self._format_paragraph(p, fig_lookup)
-            if p_text:
-                parts.append(f"\n{p_text}\n")
+        # Process all direct children of body
+        for child in body:
+            process_element(child, level=2)
 
         return '\n'.join(parts)
 
@@ -470,28 +528,47 @@ class EuropePMCXMLParser:
         p: ET.Element,
         fig_lookup: Dict[str, Dict]
     ) -> str:
-        """Format a paragraph with inline figure references.
+        """Format a paragraph with inline elements, tables, and figures.
+
+        JATS XML often embeds floating tables and figures inside paragraphs
+        at the point where they're referenced. This method handles both
+        inline formatting and extracts embedded table-wrap/fig elements.
 
         Args:
             p: Paragraph XML element
             fig_lookup: Figure info lookup by ID
 
         Returns:
-            Formatted paragraph text
+            Formatted paragraph text with embedded tables/figures
         """
         # Build text with replacements for special elements
         text_parts = []
+        # Collect embedded tables and figures to append after paragraph text
+        embedded_content = []
 
         if p.text:
             text_parts.append(p.text)
 
         for child in p:
-            if child.tag == 'xref' and child.get('ref-type') == 'fig':
-                # Figure reference
+            if child.tag == 'table-wrap':
+                # Embedded table - format and collect for later
+                table_md = self._format_table(child)
+                if table_md:
+                    embedded_content.append(table_md)
+            elif child.tag == 'fig':
+                # Embedded figure - format and collect for later
+                fig_md = self._format_figure(child, fig_lookup)
+                if fig_md:
+                    embedded_content.append(fig_md)
+            elif child.tag == 'xref' and child.get('ref-type') == 'fig':
+                # Figure reference (not embedded figure)
                 ref_id = child.get('rid', '')
                 fig_info = fig_lookup.get(ref_id, {})
                 label = fig_info.get('label', child.text or ref_id)
                 text_parts.append(f"[{label}]")
+            elif child.tag == 'xref' and child.get('ref-type') == 'table':
+                # Table reference - keep the reference text
+                text_parts.append(child.text or '')
             elif child.tag == 'italic' or child.tag == 'i':
                 text_parts.append(f"*{self._extract_text(child)}*")
             elif child.tag == 'bold' or child.tag == 'b':
@@ -506,7 +583,12 @@ class EuropePMCXMLParser:
             if child.tail:
                 text_parts.append(child.tail)
 
-        return ''.join(text_parts).strip()
+        # Combine paragraph text with any embedded content
+        result = ''.join(text_parts).strip()
+        if embedded_content:
+            result = result + '\n\n' + '\n\n'.join(embedded_content)
+
+        return result
 
     def _format_list(self, list_elem: ET.Element) -> str:
         """Format a list to Markdown.
@@ -546,16 +628,117 @@ class EuropePMCXMLParser:
         fig_id = fig.get('id', '')
         fig_info = fig_lookup.get(fig_id, {})
 
-        label = fig_info.get('label', fig_id)
-        caption = fig_info.get('caption', '')
-        graphic_ref = fig_info.get('graphic_ref', fig_id)
+        # Get label from element or lookup
+        label_elem = fig.find('label')
+        label = label_elem.text if label_elem is not None and label_elem.text else fig_info.get('label', fig_id)
 
-        # Create Markdown image placeholder
+        # Get caption from element or lookup
+        caption_elem = fig.find('.//caption')
+        if caption_elem is not None:
+            caption = self._extract_text(caption_elem).strip()
+        else:
+            caption = fig_info.get('caption', '')
+
+        # Get graphic reference
+        graphic = fig.find('.//graphic')
+        if graphic is not None:
+            graphic_ref = graphic.get('{http://www.w3.org/1999/xlink}href', fig_id)
+        else:
+            graphic_ref = fig_info.get('graphic_ref', fig_id)
+
+        # Create Markdown image placeholder with full caption
         # Format: ![Label: Caption](graphic_reference)
-        alt_text = f"{label}: {caption[:100]}..." if len(caption) > 100 else f"{label}: {caption}"
-        alt_text = alt_text.strip(': ')
+        if caption:
+            alt_text = f"{label}: {caption}"
+        else:
+            alt_text = label
 
         return f"![{alt_text}]({graphic_ref})"
+
+    def _format_table(self, table_wrap: ET.Element) -> str:
+        """Format a table-wrap element as Markdown table.
+
+        Args:
+            table_wrap: table-wrap XML element containing label, caption, and table
+
+        Returns:
+            Markdown formatted table with caption
+        """
+        parts = []
+
+        # Get label (e.g., "Table 1")
+        label_elem = table_wrap.find('label')
+        label = label_elem.text.strip() if label_elem is not None and label_elem.text else ''
+
+        # Get caption/title
+        caption_title = table_wrap.find('.//caption/title')
+        caption_p = table_wrap.find('.//caption/p')
+        caption_text = ''
+        if caption_title is not None:
+            caption_text = self._extract_text(caption_title).strip()
+        elif caption_p is not None:
+            caption_text = self._extract_text(caption_p).strip()
+
+        # Add table header with label and caption
+        if label or caption_text:
+            header = f"**{label}**" if label else ""
+            if caption_text:
+                header = f"{header}: {caption_text}" if header else caption_text
+            parts.append(f"\n{header}\n")
+
+        # Find the actual table element
+        table = table_wrap.find('.//table')
+        if table is None:
+            # No table structure, just return caption
+            return '\n'.join(parts) if parts else ''
+
+        # Extract headers from thead
+        headers = []
+        thead = table.find('.//thead')
+        if thead is not None:
+            for th in thead.findall('.//th'):
+                headers.append(self._extract_text(th).strip() or ' ')
+            # Also check for td in thead (some tables use td instead of th)
+            if not headers:
+                for td in thead.findall('.//td'):
+                    headers.append(self._extract_text(td).strip() or ' ')
+
+        # Extract rows from tbody
+        rows = []
+        tbody = table.find('.//tbody')
+        if tbody is not None:
+            for tr in tbody.findall('tr'):
+                row = []
+                for td in tr.findall('td'):
+                    cell_text = self._extract_text(td).strip()
+                    # Escape pipe characters in cell content
+                    cell_text = cell_text.replace('|', '\\|')
+                    row.append(cell_text or ' ')
+                if row:
+                    rows.append(row)
+
+        # If no headers but we have rows, use first row as headers
+        if not headers and rows:
+            headers = rows.pop(0)
+
+        # Build markdown table
+        if headers:
+            # Determine column count
+            col_count = len(headers)
+
+            # Header row
+            parts.append('| ' + ' | '.join(headers) + ' |')
+            # Separator row
+            parts.append('| ' + ' | '.join(['---'] * col_count) + ' |')
+
+            # Data rows
+            for row in rows:
+                # Pad row to match header count
+                while len(row) < col_count:
+                    row.append(' ')
+                parts.append('| ' + ' | '.join(row[:col_count]) + ' |')
+
+        return '\n'.join(parts)
 
     def _extract_text(self, element: ET.Element) -> str:
         """Recursively extract text from an element.
@@ -569,12 +752,13 @@ class EuropePMCXMLParser:
         if element is None:
             return ""
 
-        # Skip certain tags
+        # Skip certain tags (metadata, references, formulas)
+        # Note: table-wrap and fig are handled separately in _format_body
         skip_tags = {
             'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
             'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
             'lpage', 'history', 'permissions', 'self-uri', 'counts',
-            'custom-meta-group', 'funding-group', 'ref-list', 'table-wrap',
+            'custom-meta-group', 'funding-group', 'ref-list',
             'supplementary-material', 'inline-formula', 'disp-formula'
         }
 
@@ -807,7 +991,11 @@ class EuropePMCImporter:
         db_manager,
         source_id: int
     ) -> Dict[str, int]:
-        """Import a single package.
+        """Import a single package using streaming XML parsing.
+
+        Uses iterative parsing to process articles one at a time without
+        loading the entire XML file into memory. This prevents out-of-memory
+        errors for large Europe PMC packages.
 
         Args:
             package_path: Path to .xml.gz file
@@ -818,41 +1006,40 @@ class EuropePMCImporter:
             Stats dict with inserted, updated, skipped, failed counts
         """
         stats = {'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0}
+        article_count = 0
 
-        # Read and decompress
+        # Use streaming parser - opens gzip file and parses iteratively
         try:
-            with gzip.open(package_path, 'rt', encoding='utf-8') as f:
-                xml_content = f.read()
+            with gzip.open(package_path, 'rb') as f:
+                # Batch insert/update as articles are streamed
+                batch: List[ArticleMetadata] = []
+
+                for article in self.parser.parse_package_streaming(f):
+                    article_count += 1
+                    batch.append(article)
+
+                    if len(batch) >= self.batch_size:
+                        batch_stats = self._upsert_batch(batch, db_manager, source_id)
+                        stats['inserted'] += batch_stats['inserted']
+                        stats['updated'] += batch_stats['updated']
+                        stats['skipped'] += batch_stats['skipped']
+                        stats['failed'] += batch_stats['failed']
+                        batch = []
+
+                # Process remaining articles in final batch
+                if batch:
+                    batch_stats = self._upsert_batch(batch, db_manager, source_id)
+                    stats['inserted'] += batch_stats['inserted']
+                    stats['updated'] += batch_stats['updated']
+                    stats['skipped'] += batch_stats['skipped']
+                    stats['failed'] += batch_stats['failed']
+
         except Exception as e:
-            logger.error(f"Failed to read {package_path}: {e}")
+            logger.error(f"Failed to process {package_path}: {e}")
             stats['failed'] = 1
             return stats
 
-        # Parse articles
-        articles = list(self.parser.parse_package(xml_content))
-        self.progress.total_articles += len(articles)
-
-        # Batch insert/update
-        batch = []
-        for article in articles:
-            batch.append(article)
-
-            if len(batch) >= self.batch_size:
-                batch_stats = self._upsert_batch(batch, db_manager, source_id)
-                stats['inserted'] += batch_stats['inserted']
-                stats['updated'] += batch_stats['updated']
-                stats['skipped'] += batch_stats['skipped']
-                stats['failed'] += batch_stats['failed']
-                batch = []
-
-        # Process remaining
-        if batch:
-            batch_stats = self._upsert_batch(batch, db_manager, source_id)
-            stats['inserted'] += batch_stats['inserted']
-            stats['updated'] += batch_stats['updated']
-            stats['skipped'] += batch_stats['skipped']
-            stats['failed'] += batch_stats['failed']
-
+        self.progress.total_articles += article_count
         return stats
 
     def _upsert_batch(
