@@ -48,20 +48,25 @@ class ExtractedPackage:
 class NXMLParser:
     """Parser for PMC NXML (JATS XML) full-text files.
 
-    Extracts plain text content from JATS XML format used by PMC.
+    Extracts Markdown-formatted content from JATS XML format used by PMC.
     Handles article structure including:
     - Front matter (title, abstract)
-    - Body (sections, paragraphs)
+    - Body (sections, paragraphs, tables, figures)
     - Back matter (references, acknowledgments)
+
+    Note: Tables are converted to Markdown table format. Figures are converted
+    to Markdown image placeholders (the actual images must be fetched separately
+    from PMC servers).
     """
 
     # Tags to skip entirely (these contain metadata, not content)
+    # Note: table-wrap and fig are NOT skipped - they are handled specially
     SKIP_TAGS = {
         'object-id', 'journal-id', 'issn', 'publisher', 'contrib-group',
         'aff', 'author-notes', 'pub-date', 'volume', 'issue', 'fpage',
         'lpage', 'history', 'permissions', 'self-uri', 'counts',
-        'custom-meta-group', 'funding-group', 'ref-list', 'table-wrap',
-        'fig', 'supplementary-material', 'inline-formula', 'disp-formula'
+        'custom-meta-group', 'funding-group', 'ref-list',
+        'supplementary-material', 'inline-formula', 'disp-formula'
     }
 
     # Tags that add whitespace/newlines
@@ -131,33 +136,257 @@ class NXMLParser:
     def _extract_body(self, body: ET.Element) -> str:
         """Extract text from body element with section structure.
 
+        Handles tables, figures, and paragraphs with embedded content.
+        JATS XML often embeds floating elements (table-wrap, fig) inside
+        paragraphs at the point where they're referenced.
+
         Args:
             body: Body XML element
 
         Returns:
-            Formatted text with section headers
+            Formatted Markdown text with section headers, tables, and figures
         """
         parts = []
 
-        for sec in body.findall('.//sec'):
-            # Get section title
-            title = sec.find('title')
-            if title is not None:
-                title_text = self._extract_text(title).strip()
-                if title_text:
-                    parts.append(f"\n## {title_text}\n")
+        def process_element(elem: ET.Element, level: int = 2) -> None:
+            """Process an element and its children recursively."""
+            if elem.tag == 'sec':
+                # Section with title
+                title = elem.find('title')
+                if title is not None:
+                    title_text = self._extract_text(title).strip()
+                    if title_text:
+                        prefix = '#' * min(level, 6)
+                        parts.append(f"\n{prefix} {title_text}\n")
 
-            # Get paragraphs directly under this section
-            for p in sec.findall('p'):
-                p_text = self._extract_text(p).strip()
+                # Process section children (skip title, already processed)
+                for child in elem:
+                    if child.tag != 'title':
+                        process_element(child, level + 1)
+
+            elif elem.tag == 'p':
+                p_text = self._format_paragraph(elem)
                 if p_text:
                     parts.append(f"\n{p_text}\n")
 
-        # Also get any paragraphs not in sections
-        for p in body.findall('p'):
-            p_text = self._extract_text(p).strip()
-            if p_text:
-                parts.append(f"\n{p_text}\n")
+            elif elem.tag == 'table-wrap':
+                table_text = self._format_table(elem)
+                if table_text:
+                    parts.append(f"\n{table_text}\n")
+
+            elif elem.tag == 'fig':
+                fig_text = self._format_figure(elem)
+                if fig_text:
+                    parts.append(f"\n{fig_text}\n")
+
+            elif elem.tag == 'fig-group':
+                # Process all figures in the group
+                for fig in elem.findall('fig'):
+                    fig_text = self._format_figure(fig)
+                    if fig_text:
+                        parts.append(f"\n{fig_text}\n")
+
+            elif elem.tag == 'list':
+                list_text = self._format_list(elem)
+                if list_text:
+                    parts.append(f"\n{list_text}\n")
+
+        # Process all direct children of body
+        for child in body:
+            process_element(child, level=2)
+
+        return '\n'.join(parts)
+
+    def _format_paragraph(self, p: ET.Element) -> str:
+        """Format a paragraph with inline elements and embedded tables/figures.
+
+        JATS XML often embeds floating tables and figures inside paragraphs
+        at the point where they're referenced. This method extracts both the
+        paragraph text and any embedded content.
+
+        Args:
+            p: Paragraph XML element
+
+        Returns:
+            Formatted paragraph text with embedded tables/figures appended
+        """
+        text_parts = []
+        embedded_content = []
+
+        if p.text:
+            text_parts.append(p.text)
+
+        for child in p:
+            if child.tag == 'table-wrap':
+                # Embedded table - format and collect for later
+                table_md = self._format_table(child)
+                if table_md:
+                    embedded_content.append(table_md)
+            elif child.tag == 'fig':
+                # Embedded figure - format and collect for later
+                fig_md = self._format_figure(child)
+                if fig_md:
+                    embedded_content.append(fig_md)
+            elif child.tag == 'xref':
+                # Cross-reference (figure, table, etc.) - keep the text
+                ref_text = child.text or ''
+                text_parts.append(ref_text)
+            elif child.tag == 'italic' or child.tag == 'i':
+                text_parts.append(f"*{self._extract_text(child)}*")
+            elif child.tag == 'bold' or child.tag == 'b':
+                text_parts.append(f"**{self._extract_text(child)}**")
+            elif child.tag == 'sup':
+                text_parts.append(f"^{self._extract_text(child)}^")
+            elif child.tag == 'sub':
+                text_parts.append(f"~{self._extract_text(child)}~")
+            else:
+                text_parts.append(self._extract_text(child))
+
+            if child.tail:
+                text_parts.append(child.tail)
+
+        # Combine paragraph text with embedded content
+        result = ''.join(text_parts).strip()
+        if embedded_content:
+            result = result + '\n\n' + '\n\n'.join(embedded_content)
+
+        return result
+
+    def _format_table(self, table_wrap: ET.Element) -> str:
+        """Format a table-wrap element as Markdown table.
+
+        Args:
+            table_wrap: table-wrap XML element containing label, caption, and table
+
+        Returns:
+            Markdown formatted table with caption
+        """
+        parts = []
+
+        # Get label (e.g., "Table 1")
+        label_elem = table_wrap.find('label')
+        label = label_elem.text.strip() if label_elem is not None and label_elem.text else ''
+
+        # Get caption/title
+        caption_title = table_wrap.find('.//caption/title')
+        caption_p = table_wrap.find('.//caption/p')
+        caption_text = ''
+        if caption_title is not None:
+            caption_text = self._extract_text(caption_title).strip()
+        elif caption_p is not None:
+            caption_text = self._extract_text(caption_p).strip()
+
+        # Add table header with label and caption
+        if label or caption_text:
+            header = f"**{label}**" if label else ""
+            if caption_text:
+                header = f"{header}: {caption_text}" if header else caption_text
+            parts.append(f"\n{header}\n")
+
+        # Find the actual table element
+        table = table_wrap.find('.//table')
+        if table is None:
+            return '\n'.join(parts) if parts else ''
+
+        # Extract headers from thead
+        headers = []
+        thead = table.find('.//thead')
+        if thead is not None:
+            for th in thead.findall('.//th'):
+                headers.append(self._extract_text(th).strip() or ' ')
+            # Also check for td in thead (some tables use td instead of th)
+            if not headers:
+                for td in thead.findall('.//td'):
+                    headers.append(self._extract_text(td).strip() or ' ')
+
+        # Extract rows from tbody
+        rows = []
+        tbody = table.find('.//tbody')
+        if tbody is not None:
+            for tr in tbody.findall('tr'):
+                row = []
+                for td in tr.findall('td'):
+                    cell_text = self._extract_text(td).strip()
+                    # Escape pipe characters in cell content
+                    cell_text = cell_text.replace('|', '\\|')
+                    row.append(cell_text or ' ')
+                if row:
+                    rows.append(row)
+
+        # If no headers but we have rows, use first row as headers
+        if not headers and rows:
+            headers = rows.pop(0)
+
+        # Build Markdown table
+        if headers:
+            col_count = len(headers)
+            # Header row
+            parts.append('| ' + ' | '.join(headers) + ' |')
+            # Separator row
+            parts.append('| ' + ' | '.join(['---'] * col_count) + ' |')
+            # Data rows
+            for row in rows:
+                # Pad row to match header count
+                while len(row) < col_count:
+                    row.append(' ')
+                parts.append('| ' + ' | '.join(row[:col_count]) + ' |')
+
+        return '\n'.join(parts)
+
+    def _format_figure(self, fig: ET.Element) -> str:
+        """Format a figure element as Markdown image placeholder.
+
+        Args:
+            fig: Figure XML element
+
+        Returns:
+            Markdown image placeholder with caption
+        """
+        fig_id = fig.get('id', '')
+
+        # Get label from element
+        label_elem = fig.find('label')
+        label = label_elem.text if label_elem is not None and label_elem.text else fig_id
+
+        # Get caption
+        caption_elem = fig.find('.//caption')
+        caption = ''
+        if caption_elem is not None:
+            caption = self._extract_text(caption_elem).strip()
+
+        # Get graphic reference
+        graphic = fig.find('.//graphic')
+        if graphic is not None:
+            graphic_ref = graphic.get('{http://www.w3.org/1999/xlink}href', fig_id)
+        else:
+            graphic_ref = fig_id
+
+        # Create Markdown image placeholder
+        if caption:
+            alt_text = f"{label}: {caption}"
+        else:
+            alt_text = label
+
+        return f"![{alt_text}]({graphic_ref})"
+
+    def _format_list(self, list_elem: ET.Element) -> str:
+        """Format a list element to Markdown.
+
+        Args:
+            list_elem: List XML element
+
+        Returns:
+            Formatted Markdown list
+        """
+        parts = []
+        list_type = list_elem.get('list-type', 'bullet')
+
+        for i, item in enumerate(list_elem.findall('list-item'), 1):
+            item_text = self._extract_text(item).strip()
+            if list_type == 'order':
+                parts.append(f"{i}. {item_text}")
+            else:
+                parts.append(f"- {item_text}")
 
         return '\n'.join(parts)
 
