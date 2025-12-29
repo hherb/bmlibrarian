@@ -432,6 +432,12 @@ def cmd_find(args: argparse.Namespace) -> int:
 
         return 0 if pdf_path else 1
 
+    except ValueError as e:
+        print(f"\nError: {e}")
+        print("\nPMCID should be in format 'PMC123456' or '123456'")
+        print("=" * 70)
+        return 1
+
     except Exception as e:
         logging.error(f"Error finding PDF: {e}", exc_info=True)
         return 1

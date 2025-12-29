@@ -34,10 +34,10 @@ Usage:
     status = downloader.get_status()
 """
 
-import gzip
 import io
 import json
 import logging
+import random
 import re
 import tarfile
 import time
@@ -59,6 +59,10 @@ DEFAULT_DELAY_SECONDS = 60  # 1 minute between files (polite)
 DEFAULT_TIMEOUT = 600  # 10 minutes for large PDF packages
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_CHUNK_SIZE = 8192  # 8KB chunks for streaming
+DEFAULT_RETRY_BASE_DELAY = 5  # Base delay for retries in seconds
+DEFAULT_JITTER_FACTOR = 0.25  # 25% jitter on retry delays
+PROGRESS_LOG_INTERVAL_BYTES = 50 * 1024 * 1024  # Log progress every 50MB
+MAX_ERRORS_TO_KEEP = 100  # Maximum number of errors to keep in state
 
 
 @dataclass
@@ -133,7 +137,7 @@ class PDFDownloadProgress:
             'total_pdfs': self.total_pdfs,
             'total_bytes': self.total_bytes,
             'downloaded_bytes': self.downloaded_bytes,
-            'errors': self.errors[-100:],  # Keep last 100 errors
+            'errors': self.errors[-MAX_ERRORS_TO_KEEP:],
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'last_update': self.last_update.isoformat() if self.last_update else None
         }
@@ -507,7 +511,10 @@ class EuropePMCPDFDownloader:
             try:
                 if attempt > 0:
                     logger.info(f"Retry attempt {attempt + 1}/{self.max_retries}")
-                    time.sleep(5 * attempt)  # Linear backoff
+                    # Linear backoff with jitter to prevent thundering herd
+                    base_delay = DEFAULT_RETRY_BASE_DELAY * attempt
+                    jitter = base_delay * DEFAULT_JITTER_FACTOR * random.random()
+                    time.sleep(base_delay + jitter)
 
                 response = self._session.get(
                     url,
@@ -526,8 +533,8 @@ class EuropePMCPDFDownloader:
                             f.write(chunk)
                             downloaded += len(chunk)
 
-                            # Log progress every 50MB
-                            if total_size > 0 and downloaded % (50 * 1024 * 1024) < DEFAULT_CHUNK_SIZE:
+                            # Log progress periodically
+                            if total_size > 0 and downloaded % PROGRESS_LOG_INTERVAL_BYTES < DEFAULT_CHUNK_SIZE:
                                 pct = (downloaded / total_size * 100)
                                 logger.debug(
                                     f"  {self._format_bytes(downloaded)} / "
@@ -821,13 +828,27 @@ class EuropePMCPDFDownloader:
 
         Returns:
             Path to PDF file if it exists, None otherwise
-        """
-        # Normalize PMCID
-        if pmcid.upper().startswith('PMC'):
-            pmcid_num = int(pmcid[3:])
-        else:
-            pmcid_num = int(pmcid)
 
+        Raises:
+            ValueError: If PMCID is invalid (not numeric after removing PMC prefix)
+        """
+        if not pmcid or not isinstance(pmcid, str):
+            raise ValueError(f"Invalid PMCID: {pmcid!r} - must be a non-empty string")
+
+        # Normalize PMCID
+        pmcid_clean = pmcid.strip().upper()
+        if pmcid_clean.startswith('PMC'):
+            pmcid_str = pmcid_clean[3:]
+        else:
+            pmcid_str = pmcid_clean
+
+        # Validate numeric portion
+        if not pmcid_str.isdigit():
+            raise ValueError(
+                f"Invalid PMCID: {pmcid!r} - must be numeric (with optional PMC prefix)"
+            )
+
+        pmcid_num = int(pmcid_str)
         subdir = self._get_pmcid_subdir(pmcid_num)
         pdf_path = self.pdf_dir / subdir / f"PMC{pmcid_num}.pdf"
 
