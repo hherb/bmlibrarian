@@ -910,10 +910,26 @@ class BaseAgent(ABC):
                         )
                         continue  # Retry with new generation
 
-            except (ConnectionError, ValueError) as e:
+            except ConnectionError as e:
                 # Don't retry on connection errors - these need user intervention
                 agent_logger.error(f"LLM connection error during {retry_context}: {e}")
                 raise
+
+            except ValueError as e:
+                # Empty response is a transient error that can be retried
+                is_final_attempt = (attempt == max_retries)
+                if is_final_attempt:
+                    agent_logger.error(
+                        f"🚫 LLM ERROR for {retry_context}: "
+                        f"All {max_retries + 1} attempts exhausted. Error: {e}"
+                    )
+                    raise
+                else:
+                    agent_logger.warning(
+                        f"⚠️  LLM ERROR for {retry_context} (attempt {attempt + 1}): "
+                        f"{e}. Will retry ({max_retries - attempt} attempts remaining)..."
+                    )
+                    continue  # Retry with new generation
 
         # Should never reach here, but just in case
         raise json.JSONDecodeError(
@@ -1011,10 +1027,26 @@ class BaseAgent(ABC):
                         )
                         continue  # Retry with new generation
 
-            except (ConnectionError, ValueError) as e:
+            except ConnectionError as e:
                 # Don't retry on connection errors - these need user intervention
                 agent_logger.error(f"LLM connection error during {retry_context}: {e}")
                 raise
+
+            except ValueError as e:
+                # Empty response is a transient error that can be retried
+                is_final_attempt = (attempt == max_retries)
+                if is_final_attempt:
+                    agent_logger.error(
+                        f"🚫 LLM ERROR for {retry_context}: "
+                        f"All {max_retries + 1} attempts exhausted. Error: {e}"
+                    )
+                    raise
+                else:
+                    agent_logger.warning(
+                        f"⚠️  LLM ERROR for {retry_context} (attempt {attempt + 1}): "
+                        f"{e}. Will retry ({max_retries - attempt} attempts remaining)..."
+                    )
+                    continue  # Retry with new generation
 
         # Should never reach here, but just in case
         raise json.JSONDecodeError(
