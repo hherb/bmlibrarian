@@ -30,12 +30,20 @@ except ImportError:
     PubMedSearchLabWindow = None
     run_pubmed_search_lab = None
 
+# Paper Reviewer Lab - Qt-based comprehensive paper assessment
+try:
+    from .paper_reviewer_lab import PaperReviewerLab
+except ImportError:
+    # Qt not available
+    PaperReviewerLab = None
+
 __all__ = [
     'QueryAgentLab',
     'CitationAgentLab',
     'PICOLab',
     'PaperCheckerLab',
     'PaperCheckerLabFlet',
+    'PaperReviewerLab',
     'ImporterTestLab',
     'PubMedSearchLabWindow',
     'run_pubmed_search_lab',
