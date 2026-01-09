@@ -208,6 +208,7 @@ Since this project uses `uv` for package management:
   - `uv run python scripts/prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
   - `uv run python scripts/paper_weight_lab.py` - Interactive Paper Weight Assessment laboratory (PySide6/Qt) for evaluating evidential weight of research papers
   - `uv run python scripts/paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
+  - `uv run python scripts/paper_reviewer_lab.py` - Interactive Paper Reviewer laboratory (PySide6/Qt) for comprehensive paper assessment with DOI/PMID/PDF/text input
   - `uv run python scripts/pubmed_search_lab.py` - Interactive PubMed Search laboratory (PySide6/Qt) for searching PubMed API without local database storage
 - **PDF Processing Tools**:
   - `uv run python examples/pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
@@ -685,6 +686,7 @@ bmlibrarian/
 │   │   ├── paper_checker_guide.md  # PaperChecker overview and quick start
 │   │   ├── paper_checker_cli_guide.md  # PaperChecker CLI reference
 │   │   ├── paper_checker_lab_guide.md  # PaperChecker laboratory guide
+│   │   ├── paper_reviewer_lab_guide.md  # Paper Reviewer laboratory guide
 │   │   └── full_text_discovery_guide.md  # Full-text PDF discovery guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
@@ -705,6 +707,7 @@ bmlibrarian/
 │   ├── prisma2020_lab.py      # PRISMA2020Agent laboratory GUI
 │   ├── paper_weight_lab.py    # PaperWeightAssessmentAgent laboratory GUI
 │   ├── paper_checker_lab.py   # PaperChecker laboratory GUI
+│   ├── paper_reviewer_lab.py  # Paper Reviewer laboratory GUI (comprehensive assessment)
 │   ├── export_review_package.py # Export SQLite review packages
 │   ├── export_human_evaluations.py # Export human annotations to JSON
 │   ├── import_human_evaluations.py # Re-import human evaluations
