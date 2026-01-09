@@ -536,12 +536,17 @@ class PaperReviewResult:
                 ])
                 if paper.contradictory_excerpt:
                     lines.extend([
-                        "**Key excerpt:**",
+                        "**Contradictory Evidence:**",
                         f"> {paper.contradictory_excerpt}",
                         "",
                     ])
-                if paper.contradiction_explanation:
-                    lines.append(f"*{paper.contradiction_explanation}*")
+                    if paper.contradiction_explanation:
+                        lines.append(f"*{paper.contradiction_explanation}*")
+                else:
+                    # No contradictory evidence found in this paper
+                    lines.append("**Contradictory Evidence:** *No contradictory evidence found in this paper*")
+                    if paper.contradiction_explanation:
+                        lines.append(f"*Reason: {paper.contradiction_explanation}*")
                 lines.append("")
         else:
             lines.append("*No contradicting papers found in the search.*")

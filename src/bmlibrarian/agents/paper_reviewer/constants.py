@@ -44,6 +44,7 @@ DEFAULT_PUBMED_SEARCH_LIMIT = 20
 # Reranking limits
 MAX_PAPERS_TO_RERANK = 50  # Maximum papers to pass through LLM reranking
 ABSTRACT_PREVIEW_LENGTH = 200  # Characters of abstract to show in ranking prompt
+MAX_PAPERS_FOR_CITATION_EXTRACTION = 10  # Maximum papers to extract citations from
 
 # Synthesis limits
 MAX_STRENGTHS_TO_EXTRACT = 3  # From each assessment
@@ -94,6 +95,7 @@ __all__ = [
     'DEFAULT_PUBMED_SEARCH_LIMIT',
     'MAX_PAPERS_TO_RERANK',
     'ABSTRACT_PREVIEW_LENGTH',
+    'MAX_PAPERS_FOR_CITATION_EXTRACTION',
     'MAX_STRENGTHS_TO_EXTRACT',
     'MAX_WEAKNESSES_TO_EXTRACT',
     'MAX_STRENGTHS_IN_SUMMARY',

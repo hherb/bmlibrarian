@@ -27,6 +27,7 @@ from .constants import (
     DEFAULT_PUBMED_SEARCH_LIMIT,
     MAX_PAPERS_TO_RERANK,
     ABSTRACT_PREVIEW_LENGTH,
+    MAX_PAPERS_FOR_CITATION_EXTRACTION,
     PUBMED_ESEARCH_URL,
     PUBMED_EFETCH_URL,
     REQUEST_TIMEOUT,
@@ -785,7 +786,104 @@ Respond ONLY with valid JSON. Include all papers."""
 
         # Sort by relevance score and return top results
         papers_to_rank.sort(key=lambda p: p.relevance_score, reverse=True)
-        return papers_to_rank[:max_results]
+        top_papers = papers_to_rank[:max_results]
+
+        # Extract contradictory citations from top papers
+        self._extract_contradictory_citations(top_papers, counter_statement)
+
+        return top_papers
+
+    def _extract_contradictory_citations(
+        self,
+        papers: List[ContradictoryPaper],
+        counter_statement: str,
+    ) -> None:
+        """
+        Extract specific contradictory excerpts from each paper's abstract.
+
+        For papers where no contradictory evidence is found in the abstract,
+        sets contradictory_excerpt to None and updates explanation accordingly.
+
+        Args:
+            papers: List of papers to extract citations from (modified in place)
+            counter_statement: The counter-statement to find evidence for
+        """
+        if not papers:
+            return
+
+        # Limit to avoid excessive LLM calls
+        papers_to_process = papers[:MAX_PAPERS_FOR_CITATION_EXTRACTION]
+
+        self._call_callback(
+            "citation_extraction",
+            f"Extracting contradictory citations from {len(papers_to_process)} papers"
+        )
+
+        for paper in papers_to_process:
+            if not paper.abstract:
+                paper.contradictory_excerpt = None
+                paper.contradiction_explanation = "No abstract available for citation extraction"
+                continue
+
+            prompt = f"""You are a scientific citation analyst. Your task is to find the specific part of this abstract that contradicts or questions the following statement.
+
+Counter-Statement (what we're looking for evidence of):
+{counter_statement}
+
+Paper Title: {paper.title}
+
+Abstract:
+{paper.abstract}
+
+INSTRUCTIONS:
+1. Search the abstract for specific sentences or claims that contradict, question, or provide evidence against the counter-statement
+2. If you find contradictory evidence, extract the exact quote (verbatim) from the abstract
+3. If the abstract does NOT contain any contradictory evidence, clearly indicate this
+4. Be conservative - only extract text that directly contradicts or questions the statement
+
+Response format (JSON only):
+{{
+    "has_contradictory_evidence": true/false,
+    "contradictory_excerpt": "Exact quote from abstract if found, null if not found",
+    "explanation": "Brief explanation of why this excerpt contradicts the statement, or why no contradictory evidence was found"
+}}
+
+Respond ONLY with valid JSON."""
+
+            try:
+                result = self._generate_and_parse_json(
+                    prompt,
+                    max_retries=2,
+                    retry_context="citation extraction",
+                    num_predict=DEFAULT_MAX_TOKENS_SHORT,
+                )
+
+                has_evidence = result.get('has_contradictory_evidence', False)
+                excerpt = result.get('contradictory_excerpt')
+                explanation = result.get('explanation', '')
+
+                if has_evidence and excerpt:
+                    paper.contradictory_excerpt = excerpt
+                    paper.contradiction_explanation = explanation
+                else:
+                    paper.contradictory_excerpt = None
+                    paper.contradiction_explanation = (
+                        explanation if explanation
+                        else "No contradictory evidence found in this paper's abstract"
+                    )
+
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Failed to extract citation from {paper.title}: {e}")
+                paper.contradictory_excerpt = None
+                paper.contradiction_explanation = "Citation extraction failed"
+
+        # For papers beyond the extraction limit, set a default message
+        for paper in papers[MAX_PAPERS_FOR_CITATION_EXTRACTION:]:
+            if not paper.contradictory_excerpt:
+                paper.contradiction_explanation = (
+                    paper.contradiction_explanation or
+                    "Citation not extracted (paper beyond extraction limit)"
+                )
 
 
 __all__ = ['ContradictoryEvidenceFinder']
