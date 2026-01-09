@@ -18,18 +18,19 @@ from typing import Optional, Dict, Any, List, Tuple
 import requests
 
 from .models import SourceType
+from .constants import (
+    REQUEST_TIMEOUT,
+    PUBMED_EFETCH_URL,
+    CROSSREF_API_URL,
+    DOI_ORG_URL,
+    USER_AGENT,
+    ABSTRACT_LENGTH_THRESHOLD,
+    PUBMED_API_DELAY,
+    PUBMED_API_DELAY_WITH_KEY,
+    CROSSREF_API_DELAY,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Constants
-REQUEST_TIMEOUT = 30  # seconds
-PUBMED_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-CROSSREF_API_URL = "https://api.crossref.org/works"
-DOI_ORG_URL = "https://doi.org"
-
-# User agent for API requests
-USER_AGENT = "BMLibrarian/1.0 (Paper Reviewer; mailto:contact@bmlibrarian.org)"
 
 
 class DocumentResolver:
@@ -64,8 +65,8 @@ class DocumentResolver:
         # Rate limiting
         self._last_pubmed_request = 0.0
         self._last_crossref_request = 0.0
-        self._pubmed_delay = 0.1 if ncbi_api_key else 0.34  # 10/s with key, 3/s without
-        self._crossref_delay = 0.05  # 20/s for polite pool
+        self._pubmed_delay = PUBMED_API_DELAY_WITH_KEY if ncbi_api_key else PUBMED_API_DELAY
+        self._crossref_delay = CROSSREF_API_DELAY
 
     def resolve(
         self,
@@ -264,6 +265,8 @@ class DocumentResolver:
         """
         logger.info(f"Processing raw text ({len(text)} characters)")
 
+        # Classify text as abstract or full_text based on length threshold
+        is_full_text = len(text) >= ABSTRACT_LENGTH_THRESHOLD
         doc = {
             'id': None,
             'title': 'User-provided text',
@@ -272,8 +275,8 @@ class DocumentResolver:
             'journal': None,
             'doi': None,
             'pmid': None,
-            'abstract': text if len(text) < 3000 else text[:3000],
-            'full_text': text if len(text) >= 3000 else None,
+            'abstract': text[:ABSTRACT_LENGTH_THRESHOLD] if is_full_text else text,
+            'full_text': text if is_full_text else None,
         }
 
         return doc, SourceType.TEXT
@@ -663,7 +666,7 @@ class DocumentResolver:
                             doi = value
 
         # If content is short, treat as abstract
-        if len(full_text) < 3000:
+        if len(full_text) < ABSTRACT_LENGTH_THRESHOLD:
             abstract = full_text
             full_text = None
 

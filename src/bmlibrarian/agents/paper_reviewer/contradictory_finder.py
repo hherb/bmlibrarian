@@ -8,31 +8,32 @@ Uses multi-strategy search: semantic, HyDE, keyword, and optional PubMed API.
 import json
 import logging
 import time
+import xml.etree.ElementTree as ET
 from typing import Dict, Any, Optional, Callable, List, Tuple
 
 from ..base import BaseAgent
 from ...config import get_model, get_agent_config, get_ollama_host
 from ...database import get_db_manager
 from .models import ContradictoryPaper, SearchMethod, SearchSource
+from .constants import (
+    MAX_TEXT_LENGTH,
+    DEFAULT_TEMPERATURE_MODERATE,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MAX_TOKENS_SHORT,
+    DEFAULT_SEMANTIC_SEARCH_LIMIT,
+    DEFAULT_HYDE_SEARCH_LIMIT,
+    DEFAULT_KEYWORD_SEARCH_LIMIT,
+    DEFAULT_MAX_SEARCH_RESULTS,
+    DEFAULT_PUBMED_SEARCH_LIMIT,
+    MAX_PAPERS_TO_RERANK,
+    ABSTRACT_PREVIEW_LENGTH,
+    PUBMED_ESEARCH_URL,
+    PUBMED_EFETCH_URL,
+    REQUEST_TIMEOUT,
+    PUBMED_API_DELAY,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Constants
-MAX_TEXT_LENGTH = 6000  # Maximum characters for prompts
-DEFAULT_TEMPERATURE = 0.3  # Moderate temperature for creative counter-statement
-DEFAULT_MAX_TOKENS = 2000
-
-# Search configuration
-DEFAULT_SEMANTIC_LIMIT = 30
-DEFAULT_HYDE_LIMIT = 30
-DEFAULT_KEYWORD_LIMIT = 30
-DEFAULT_MAX_RESULTS = 20  # Maximum results to return after reranking
-DEFAULT_PUBMED_LIMIT = 20
-
-# PubMed API
-PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-PUBMED_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 
 class ContradictoryEvidenceFinder(BaseAgent):
@@ -54,7 +55,7 @@ class ContradictoryEvidenceFinder(BaseAgent):
         self,
         model: Optional[str] = None,
         host: Optional[str] = None,
-        temperature: float = DEFAULT_TEMPERATURE,
+        temperature: float = DEFAULT_TEMPERATURE_MODERATE,
         top_p: float = 0.9,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         callback: Optional[Callable[[str, str], None]] = None,
@@ -99,11 +100,11 @@ class ContradictoryEvidenceFinder(BaseAgent):
         self.ncbi_api_key = ncbi_api_key
 
         # Search limits
-        self.semantic_limit = DEFAULT_SEMANTIC_LIMIT
-        self.hyde_limit = DEFAULT_HYDE_LIMIT
-        self.keyword_limit = DEFAULT_KEYWORD_LIMIT
-        self.max_results = DEFAULT_MAX_RESULTS
-        self.pubmed_limit = DEFAULT_PUBMED_LIMIT
+        self.semantic_limit = DEFAULT_SEMANTIC_SEARCH_LIMIT
+        self.hyde_limit = DEFAULT_HYDE_SEARCH_LIMIT
+        self.keyword_limit = DEFAULT_KEYWORD_SEARCH_LIMIT
+        self.max_results = DEFAULT_MAX_SEARCH_RESULTS
+        self.pubmed_limit = DEFAULT_PUBMED_SEARCH_LIMIT
 
     def get_agent_type(self) -> str:
         """Get the agent type identifier."""
@@ -220,7 +221,7 @@ Respond ONLY with valid JSON."""
                 prompt,
                 max_retries=3,
                 retry_context="counter-statement generation",
-                num_predict=500,
+                num_predict=DEFAULT_MAX_TOKENS_SHORT,
             )
             return result.get('counter_statement', f"No effect: {hypothesis}")
 
@@ -481,7 +482,7 @@ Respond ONLY with valid JSON."""
             params['api_key'] = self.ncbi_api_key
 
         try:
-            response = requests.get(PUBMED_ESEARCH_URL, params=params, timeout=30)
+            response = requests.get(PUBMED_ESEARCH_URL, params=params, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
 
             data = response.json()
@@ -505,8 +506,8 @@ Respond ONLY with valid JSON."""
             if self.ncbi_api_key:
                 fetch_params['api_key'] = self.ncbi_api_key
 
-            time.sleep(0.34)  # Rate limiting
-            fetch_response = requests.get(PUBMED_EFETCH_URL, params=fetch_params, timeout=30)
+            time.sleep(PUBMED_API_DELAY)  # Rate limiting
+            fetch_response = requests.get(PUBMED_EFETCH_URL, params=fetch_params, timeout=REQUEST_TIMEOUT)
             fetch_response.raise_for_status()
 
             # Parse XML
@@ -521,10 +522,18 @@ Respond ONLY with valid JSON."""
 
         return papers
 
-    def _parse_pubmed_article_to_paper(self, article) -> Optional[ContradictoryPaper]:
-        """Parse PubMed XML article to ContradictoryPaper."""
-        import xml.etree.ElementTree as ET
+    def _parse_pubmed_article_to_paper(
+        self, article: ET.Element
+    ) -> Optional[ContradictoryPaper]:
+        """
+        Parse PubMed XML article to ContradictoryPaper.
 
+        Args:
+            article: XML Element representing a PubMed article
+
+        Returns:
+            ContradictoryPaper if parsing successful, None otherwise
+        """
         try:
             # PMID
             pmid_elem = article.find('.//PMID')
@@ -584,8 +593,16 @@ Respond ONLY with valid JSON."""
             logger.warning(f"Failed to parse PubMed article: {e}")
             return None
 
-    def _get_element_text(self, elem) -> str:
-        """Get all text content from XML element."""
+    def _get_element_text(self, elem: Optional[ET.Element]) -> str:
+        """
+        Get all text content from XML element, including nested elements.
+
+        Args:
+            elem: XML Element to extract text from, or None
+
+        Returns:
+            Concatenated text content from element and all children
+        """
         if elem is None:
             return ''
         if not list(elem):
@@ -668,14 +685,19 @@ Respond ONLY with valid JSON."""
             return []
 
         # Limit papers to process (LLM context limit)
-        papers_to_rank = papers[:50]
+        papers_to_rank = papers[:MAX_PAPERS_TO_RERANK]
+        if len(papers) > MAX_PAPERS_TO_RERANK:
+            logger.info(
+                f"Limiting reranking to {MAX_PAPERS_TO_RERANK} papers "
+                f"(from {len(papers)} total)"
+            )
 
         # Build paper summaries for ranking
         paper_summaries = []
         for i, paper in enumerate(papers_to_rank):
             summary = f"{i+1}. {paper.title}"
             if paper.abstract:
-                summary += f" - {paper.abstract[:200]}..."
+                summary += f" - {paper.abstract[:ABSTRACT_PREVIEW_LENGTH]}..."
             paper_summaries.append(summary)
 
         summaries_text = "\n".join(paper_summaries)

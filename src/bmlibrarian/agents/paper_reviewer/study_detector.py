@@ -13,14 +13,19 @@ from typing import Dict, Any, Optional, Callable, List
 from ..base import BaseAgent
 from ...config import get_model, get_agent_config, get_ollama_host
 from .models import StudyTypeResult
+from .constants import (
+    MAX_TEXT_LENGTH,
+    MIN_ABSTRACT_LENGTH,
+    DEFAULT_TEMPERATURE_LOW,
+    DEFAULT_MAX_TOKENS,
+    LOW_CONFIDENCE_THRESHOLD,
+)
+from .text_utils import (
+    chunk_text,
+    get_text_with_priority,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Constants
-MAX_TEXT_LENGTH = 8000  # Maximum characters to analyze
-DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent classification
-DEFAULT_MAX_TOKENS = 1000
 
 # Rule-based keywords for study type detection
 STUDY_TYPE_KEYWORDS = {
@@ -106,7 +111,7 @@ class StudyTypeDetector(BaseAgent):
         self,
         model: Optional[str] = None,
         host: Optional[str] = None,
-        temperature: float = DEFAULT_TEMPERATURE,
+        temperature: float = DEFAULT_TEMPERATURE_LOW,
         top_p: float = 0.9,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         callback: Optional[Callable[[str, str], None]] = None,
@@ -165,12 +170,11 @@ class StudyTypeDetector(BaseAgent):
         """
         self._call_callback("detection_started", "Detecting study type")
 
-        # Get text to analyze
-        text = self._get_analysis_text(document)
         title = document.get('title', '')
 
-        # Phase 1: Rule-based detection
-        rule_based_type = self._rule_based_detection(text, title)
+        # Phase 1: Rule-based detection (uses all text, no truncation)
+        full_text = self._get_full_text_for_rules(document)
+        rule_based_type = self._rule_based_detection(full_text, title)
         logger.debug(f"Rule-based detection result: {rule_based_type}")
 
         # Phase 2: LLM confirmation and detailed analysis
@@ -366,25 +370,26 @@ Respond ONLY with valid JSON. No additional text."""
             is_observational=is_observational,
             is_case_report=is_case,
             is_laboratory=is_lab,
-            confidence=0.6,  # Lower confidence for rule-based only
+            confidence=LOW_CONFIDENCE_THRESHOLD,  # Lower confidence for rule-based only
             rationale="Classification based on keyword detection without LLM confirmation.",
         )
 
     def _get_analysis_text(self, document: Dict[str, Any]) -> str:
         """
-        Get text for analysis, preferring abstract for classification.
+        Get text for LLM analysis, preferring abstract for classification.
 
         For study type detection, abstract is often sufficient and more efficient.
+        For long documents, returns text suitable for LLM processing.
 
         Args:
             document: Document dictionary
 
         Returns:
-            Text string for analysis
+            Text string for analysis (may be chunked for very long documents)
         """
         # For classification, abstract is usually sufficient
         abstract = document.get('abstract', '')
-        if abstract and len(abstract) > 200:
+        if abstract and len(abstract) > MIN_ABSTRACT_LENGTH:
             # Include title + abstract (usually sufficient for classification)
             title = document.get('title', '')
             text = f"{title}\n\n{abstract}"
@@ -396,11 +401,35 @@ Respond ONLY with valid JSON. No additional text."""
             else:
                 text = abstract or document.get('content', '') or document.get('text', '')
 
-        # Truncate if too long
+        # For very long documents, use first meaningful chunk
+        # Study type is typically identifiable from abstract/methods section
         if len(text) > MAX_TEXT_LENGTH:
-            text = text[:MAX_TEXT_LENGTH] + "..."
+            logger.info(
+                f"Document has {len(text):,} chars; using first chunk for study type detection "
+                f"(rule-based detection scans all text)"
+            )
+            chunks = chunk_text(text, max_chunk_size=MAX_TEXT_LENGTH)
+            text = chunks[0] if chunks else text[:MAX_TEXT_LENGTH]
 
         return text
+
+    def _get_full_text_for_rules(self, document: Dict[str, Any]) -> str:
+        """
+        Get complete text for rule-based keyword detection.
+
+        Rule-based detection scans all text since it's just string matching.
+
+        Args:
+            document: Document dictionary
+
+        Returns:
+            Complete text string (no truncation)
+        """
+        text, source = get_text_with_priority(document, prefer_full_text=True)
+        title = document.get('title', '')
+        if title and text:
+            return f"{title}\n\n{text}"
+        return text or title
 
 
 __all__ = ['StudyTypeDetector']

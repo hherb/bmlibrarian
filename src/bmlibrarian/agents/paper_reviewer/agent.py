@@ -34,6 +34,16 @@ from .models import (
     create_review_steps,
     VERSION,
 )
+from .constants import (
+    MAX_STRENGTHS_TO_EXTRACT,
+    MAX_WEAKNESSES_TO_EXTRACT,
+    MAX_STRENGTHS_IN_SUMMARY,
+    MAX_WEAKNESSES_IN_SUMMARY,
+    STRONG_SCORE_THRESHOLD,
+    WEAK_SCORE_THRESHOLD,
+    HIGH_CONFIDENCE_THRESHOLD,
+    LOW_CONFIDENCE_THRESHOLD,
+)
 from .resolver import DocumentResolver
 from .summarizer import SummaryGenerator
 from .study_detector import StudyTypeDetector
@@ -498,44 +508,44 @@ class PaperReviewerAgent(BaseAgent):
         # From Study Assessment
         if result.study_assessment:
             sa = result.study_assessment
-            strengths.extend(sa.strengths[:3])  # Top 3 strengths
-            weaknesses.extend(sa.limitations[:3])  # Top 3 limitations
+            strengths.extend(sa.strengths[:MAX_STRENGTHS_TO_EXTRACT])
+            weaknesses.extend(sa.limitations[:MAX_WEAKNESSES_TO_EXTRACT])
 
         # From Paper Weight Assessment
         if result.paper_weight:
             pw = result.paper_weight
 
             # Add study design strength/weakness based on score
-            if pw.study_design.score >= 7:
+            if pw.study_design.score >= STRONG_SCORE_THRESHOLD:
                 strengths.append(f"Strong study design ({pw.study_type or 'well-designed'})")
-            elif pw.study_design.score < 4:
+            elif pw.study_design.score < WEAK_SCORE_THRESHOLD:
                 weaknesses.append(f"Weak study design (score: {pw.study_design.score:.1f}/10)")
 
             # Add sample size strength/weakness
-            if pw.sample_size.score >= 7:
+            if pw.sample_size.score >= STRONG_SCORE_THRESHOLD:
                 if pw.sample_size_n:
                     strengths.append(f"Adequate sample size (N={pw.sample_size_n})")
                 else:
                     strengths.append("Adequate sample size")
-            elif pw.sample_size.score < 4:
+            elif pw.sample_size.score < WEAK_SCORE_THRESHOLD:
                 weaknesses.append("Small sample size limits generalizability")
 
             # Add methodological quality
-            if pw.methodological_quality.score >= 7:
+            if pw.methodological_quality.score >= STRONG_SCORE_THRESHOLD:
                 strengths.append("High methodological quality")
-            elif pw.methodological_quality.score < 4:
+            elif pw.methodological_quality.score < WEAK_SCORE_THRESHOLD:
                 weaknesses.append("Methodological concerns")
 
             # Add risk of bias (inverted - high score = low risk)
-            if pw.risk_of_bias.score >= 7:
+            if pw.risk_of_bias.score >= STRONG_SCORE_THRESHOLD:
                 strengths.append("Low risk of bias")
-            elif pw.risk_of_bias.score < 4:
+            elif pw.risk_of_bias.score < WEAK_SCORE_THRESHOLD:
                 weaknesses.append("High risk of bias")
 
         # From PICO (if applicable)
         if result.pico_extraction:
             pico = result.pico_extraction
-            if pico.extraction_confidence >= 0.8:
+            if pico.extraction_confidence >= HIGH_CONFIDENCE_THRESHOLD:
                 strengths.append("Clear PICO framework")
             if pico.comparison and pico.comparison.lower() not in ['none', 'n/a', 'not specified']:
                 strengths.append("Has comparison/control group")
@@ -547,9 +557,9 @@ class PaperReviewerAgent(BaseAgent):
             prisma = result.prisma_assessment
             # Check if overall compliance is good
             if hasattr(prisma, 'overall_score') and prisma.overall_score:
-                if prisma.overall_score >= 0.8:
+                if prisma.overall_score >= HIGH_CONFIDENCE_THRESHOLD:
                     strengths.append("High PRISMA compliance")
-                elif prisma.overall_score < 0.5:
+                elif prisma.overall_score < LOW_CONFIDENCE_THRESHOLD:
                     weaknesses.append("Poor PRISMA compliance")
 
         # Deduplicate while preserving order
@@ -569,7 +579,7 @@ class PaperReviewerAgent(BaseAgent):
                 seen_weaknesses.add(w_lower)
                 unique_weaknesses.append(w)
 
-        return unique_strengths[:6], unique_weaknesses[:6]
+        return unique_strengths[:MAX_STRENGTHS_IN_SUMMARY], unique_weaknesses[:MAX_WEAKNESSES_IN_SUMMARY]
 
 
 __all__ = ['PaperReviewerAgent']

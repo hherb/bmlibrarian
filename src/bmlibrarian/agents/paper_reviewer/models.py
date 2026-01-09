@@ -14,16 +14,13 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import json
 
+from .constants import VERSION, DATETIME_FORMAT
+
 if TYPE_CHECKING:
     from ..pico_agent import PICOExtraction
     from ..prisma2020_agent import PRISMA2020Assessment
     from ..paper_weight.models import PaperWeightResult
     from ..study_assessment_agent import StudyAssessment
-
-
-# Constants
-DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
-VERSION = "1.0.0"
 
 
 class ReviewStepStatus(Enum):

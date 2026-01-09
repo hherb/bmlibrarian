@@ -10,14 +10,18 @@ from typing import Dict, Any, Optional, Callable, Tuple
 
 from ..base import BaseAgent
 from ...config import get_model, get_agent_config, get_ollama_host
+from .constants import (
+    MAX_TEXT_LENGTH,
+    DEFAULT_TEMPERATURE_LOW,
+    DEFAULT_MAX_TOKENS_LONG,
+)
+from .text_utils import (
+    chunk_text,
+    get_text_with_priority,
+    combine_title_and_text,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Constants
-MAX_TEXT_LENGTH = 12000  # Maximum characters to analyze
-DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent output
-DEFAULT_MAX_TOKENS = 1500
 
 
 class SummaryGenerator(BaseAgent):
@@ -35,9 +39,9 @@ class SummaryGenerator(BaseAgent):
         self,
         model: Optional[str] = None,
         host: Optional[str] = None,
-        temperature: float = DEFAULT_TEMPERATURE,
+        temperature: float = DEFAULT_TEMPERATURE_LOW,
         top_p: float = 0.9,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int = DEFAULT_MAX_TOKENS_LONG,
         callback: Optional[Callable[[str, str], None]] = None,
         orchestrator: Optional[Any] = None,
         show_model_info: bool = True,
@@ -85,6 +89,8 @@ class SummaryGenerator(BaseAgent):
         """
         Generate a concise 2-3 sentence summary of the paper.
 
+        Uses chunking for long documents to ensure all content is analyzed.
+
         Args:
             document: Document dictionary with title, abstract, and optionally full_text
             include_methodology: Whether to mention methodology in summary
@@ -101,6 +107,11 @@ class SummaryGenerator(BaseAgent):
             return "No text available for summarization.", 0.0
 
         title = document.get('title', 'Untitled')
+
+        # Check if we need chunked processing
+        if self._needs_chunking(text):
+            logger.info(f"Document requires chunked processing ({len(text):,} chars)")
+            return self._generate_summary_chunked(document, text, title)
 
         prompt = f"""You are a medical research summarizer. Create a brief 2-3 sentence summary of this paper.
 
@@ -358,31 +369,182 @@ Respond ONLY with valid JSON. No additional text."""
         Get the best available text for analysis.
 
         Prefers full_text if available and substantial, otherwise uses abstract.
+        If text is too long, uses chunked processing via dedicated methods.
 
         Args:
             document: Document dictionary
 
         Returns:
-            Text string for analysis (truncated if necessary)
+            Text string for analysis (complete, no truncation)
         """
-        full_text = document.get('full_text', '')
-        abstract = document.get('abstract', '')
-
-        # Prefer full text if available and substantial
-        if full_text and len(full_text) > len(abstract):
-            text = full_text
-        elif abstract:
-            text = abstract
-        else:
-            # Fall back to any text field
-            text = document.get('content', '') or document.get('text', '')
-
-        # Truncate if too long
-        if len(text) > MAX_TEXT_LENGTH:
-            text = text[:MAX_TEXT_LENGTH] + "..."
-            logger.debug(f"Truncated text to {MAX_TEXT_LENGTH} characters")
-
+        text, source = get_text_with_priority(document, prefer_full_text=True)
         return text
+
+    def _needs_chunking(self, text: str) -> bool:
+        """Check if text needs to be processed in chunks."""
+        return len(text) > MAX_TEXT_LENGTH
+
+    def _summarize_chunk(self, chunk: str, title: str) -> Tuple[str, float]:
+        """
+        Generate a summary for a single chunk of text.
+
+        Args:
+            chunk: Text chunk to summarize
+            title: Document title for context
+
+        Returns:
+            Tuple of (summary, confidence)
+        """
+        prompt = f"""You are a medical research summarizer. Create a brief summary of this section of a paper.
+
+Paper Title: {title}
+
+Section Text:
+{chunk}
+
+INSTRUCTIONS:
+1. Summarize the key points in 2-3 sentences
+2. Focus on methodology, findings, and implications
+3. Be specific with numbers and results where available
+
+Response format (JSON only):
+{{
+    "summary": "Your summary here",
+    "confidence": 0.85
+}}
+
+Respond ONLY with valid JSON."""
+
+        try:
+            result = self._generate_and_parse_json(
+                prompt,
+                max_retries=3,
+                retry_context="chunk summary",
+                num_predict=self.max_tokens,
+            )
+            return result.get('summary', ''), float(result.get('confidence', 0.7))
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to summarize chunk: {e}")
+            return "", 0.0
+
+    def _merge_summaries(
+        self,
+        chunk_summaries: list,
+        title: str,
+    ) -> Tuple[str, float]:
+        """
+        Merge multiple chunk summaries into a final 2-3 sentence summary.
+
+        Args:
+            chunk_summaries: List of (summary, confidence) tuples from chunks
+            title: Document title
+
+        Returns:
+            Tuple of (final_summary, average_confidence)
+        """
+        # Combine all chunk summaries
+        combined = "\n\n".join([s for s, c in chunk_summaries if s])
+
+        if not combined:
+            return "Unable to generate summary from document.", 0.0
+
+        prompt = f"""You are a medical research summarizer. Combine these section summaries into a single cohesive 2-3 sentence summary.
+
+Paper Title: {title}
+
+Section Summaries:
+{combined}
+
+INSTRUCTIONS:
+1. Create exactly 2-3 sentences (no more, no less)
+2. First sentence: Study type and population/topic
+3. Second sentence: Main intervention/method and key finding
+4. Optional third sentence: Important implication or limitation
+5. Be specific with numbers and results
+6. Keep it under 100 words total
+
+Response format (JSON only):
+{{
+    "summary": "Your final 2-3 sentence summary",
+    "confidence": 0.85
+}}
+
+Respond ONLY with valid JSON."""
+
+        try:
+            result = self._generate_and_parse_json(
+                prompt,
+                max_retries=3,
+                retry_context="merge summaries",
+                num_predict=self.max_tokens,
+            )
+
+            summary = result.get('summary', '').strip()
+            confidence = float(result.get('confidence', 0.7))
+
+            # Average with chunk confidences for overall confidence
+            chunk_confs = [c for s, c in chunk_summaries if c > 0]
+            if chunk_confs:
+                avg_chunk_conf = sum(chunk_confs) / len(chunk_confs)
+                # Weight the merge confidence and chunk confidence
+                confidence = (confidence + avg_chunk_conf) / 2
+
+            return summary, confidence
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to merge summaries: {e}")
+            # Fall back to first summary
+            if chunk_summaries:
+                return chunk_summaries[0]
+            return "Failed to generate summary.", 0.0
+
+    def _generate_summary_chunked(
+        self,
+        document: Dict[str, Any],
+        text: str,
+        title: str,
+    ) -> Tuple[str, float]:
+        """
+        Generate summary for a long document using chunked processing.
+
+        Args:
+            document: Original document dict
+            text: Full text to summarize
+            title: Document title
+
+        Returns:
+            Tuple of (summary, confidence)
+        """
+        self._call_callback("summary_progress", f"Processing {len(text):,} chars in chunks")
+
+        # Split into chunks
+        chunks = chunk_text(text, max_chunk_size=MAX_TEXT_LENGTH)
+        logger.info(f"Split document into {len(chunks)} chunks for summarization")
+
+        # Summarize each chunk
+        chunk_summaries = []
+        for i, chunk in enumerate(chunks):
+            self._call_callback(
+                "summary_progress",
+                f"Summarizing chunk {i+1}/{len(chunks)}"
+            )
+            summary, confidence = self._summarize_chunk(chunk, title)
+            if summary:
+                chunk_summaries.append((summary, confidence))
+
+        if not chunk_summaries:
+            return "Failed to generate summaries from document chunks.", 0.0
+
+        # Merge chunk summaries into final summary
+        self._call_callback("summary_progress", "Merging chunk summaries")
+        final_summary, final_confidence = self._merge_summaries(chunk_summaries, title)
+
+        self._call_callback(
+            "summary_completed",
+            f"Generated summary from {len(chunks)} chunks (confidence: {final_confidence:.0%})"
+        )
+
+        return final_summary, final_confidence
 
 
 __all__ = ['SummaryGenerator']

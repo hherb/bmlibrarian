@@ -28,12 +28,16 @@ from .models import (
     StudyTypeResult,
     ReviewStep,
     ReviewStepStatus,
+    SourceType,
+    SearchMethod,
+    SearchSource,
 )
 from .resolver import DocumentResolver
 from .summarizer import SummaryGenerator
 from .study_detector import StudyTypeDetector
 from .contradictory_finder import ContradictoryEvidenceFinder
 from .agent import PaperReviewerAgent
+from . import constants
 
 __all__ = [
     # Main agent
@@ -49,4 +53,9 @@ __all__ = [
     "StudyTypeResult",
     "ReviewStep",
     "ReviewStepStatus",
+    "SourceType",
+    "SearchMethod",
+    "SearchSource",
+    # Constants module
+    "constants",
 ]
