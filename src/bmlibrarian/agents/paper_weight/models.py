@@ -175,21 +175,21 @@ class PaperWeightResult:
 
     def to_dict(self) -> dict:
         """
-        Convert to flat dictionary for database storage.
+        Convert to flat dictionary for JSON serialization.
 
-        Returns flattened structure matching paper_weights.assessments table schema.
+        Returns flattened structure suitable for JSON and database storage.
         """
         return {
             'document_id': self.document_id,
             'assessor_version': self.assessor_version,
-            'assessed_at': self.assessed_at,
+            'assessed_at': self.assessed_at.isoformat() if self.assessed_at else None,
             'study_design_score': self.study_design.score,
             'sample_size_score': self.sample_size.score,
             'methodological_quality_score': self.methodological_quality.score,
             'risk_of_bias_score': self.risk_of_bias.score,
             'replication_status_score': self.replication_status.score,
             'final_weight': self.final_weight,
-            'dimension_weights': json.dumps(self.dimension_weights),
+            'dimension_weights': self.dimension_weights,
             'study_type': self.study_type,
             'sample_size': self.sample_size_n
         }

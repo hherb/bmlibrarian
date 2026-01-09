@@ -201,12 +201,15 @@ class DocumentResolver:
             from bmlibrarian.pdf_processor import PDFExtractor, SectionSegmenter
 
             # Extract text from PDF
-            extractor = PDFExtractor()
-            text_blocks = extractor.extract(pdf_path)
+            extractor = PDFExtractor(str(pdf_path))
+            text_blocks = extractor.extract_text_blocks()
 
             # Segment into sections
             segmenter = SectionSegmenter()
             document = segmenter.segment(text_blocks)
+
+            # Clean up
+            extractor.close()
 
             # Build document dict
             doc = self._pdf_document_to_dict(document, pdf_path)
@@ -681,6 +684,98 @@ class DocumentResolver:
             'abstract': abstract,
             'full_text': full_text,
         }
+
+    def import_document(self, doc: Dict[str, Any]) -> int:
+        """
+        Import a document into the database and return its ID.
+
+        This is used when a document was resolved from a non-database source
+        (PDF, text, web fetch) and needs to be persisted for features that
+        require a database ID (e.g., paper weight assessment, caching).
+
+        Args:
+            doc: Document dictionary with standard fields (title, abstract, etc.)
+
+        Returns:
+            The database ID of the imported document
+
+        Raises:
+            RuntimeError: If import fails
+        """
+        from bmlibrarian.database import get_db_manager
+
+        db_manager = get_db_manager()
+
+        # Get or create 'paper_reviewer' source
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                # Get or create source
+                cur.execute(
+                    "SELECT id FROM sources WHERE name = 'paper_reviewer'"
+                )
+                row = cur.fetchone()
+                if row:
+                    source_id = row[0]
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO sources (name, url, is_reputable, is_free)
+                        VALUES ('paper_reviewer', NULL, false, true)
+                        RETURNING id
+                        """
+                    )
+                    source_id = cur.fetchone()[0]
+
+                # Generate external_id from DOI, PMID, or hash of content
+                external_id = doc.get('doi') or doc.get('pmid')
+                if not external_id:
+                    # Generate unique ID from content hash
+                    import hashlib
+                    content = (doc.get('title', '') + doc.get('abstract', '')).encode('utf-8')
+                    external_id = f"pr_{hashlib.sha256(content).hexdigest()[:16]}"
+
+                # Check if already exists by external_id
+                cur.execute(
+                    "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
+                    (source_id, external_id)
+                )
+                existing = cur.fetchone()
+                if existing:
+                    logger.info(f"Document already exists with id={existing[0]}")
+                    return existing[0]
+
+                # Parse year to date
+                pub_date = None
+                if doc.get('year'):
+                    pub_date = f"{doc['year']}-01-01"
+
+                # Insert document
+                cur.execute(
+                    """
+                    INSERT INTO document (
+                        source_id, external_id, doi, title, abstract,
+                        authors, publication, publication_date,
+                        full_text
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::date, %s)
+                    RETURNING id
+                    """,
+                    (
+                        source_id,
+                        external_id,
+                        doc.get('doi'),
+                        doc.get('title', 'Untitled'),
+                        doc.get('abstract', ''),
+                        doc.get('authors', []),
+                        doc.get('journal'),
+                        pub_date,
+                        doc.get('full_text'),
+                    )
+                )
+                doc_id = cur.fetchone()[0]
+                conn.commit()
+
+                logger.info(f"Imported document with id={doc_id}")
+                return doc_id
 
 
 __all__ = ['DocumentResolver']

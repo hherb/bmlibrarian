@@ -376,21 +376,43 @@ Respond ONLY with valid JSON."""
 
         db_manager = get_db_manager()
 
-        # Use PostgreSQL's semantic_docsearch function
-        query = """
-            SELECT d.*, s.name as source_name, sr.similarity
-            FROM semantic_docsearch(%s, %s) sr
-            JOIN document d ON d.id = sr.document_id
-            LEFT JOIN sources s ON d.source_id = s.id
-            WHERE (%s IS NULL OR d.id != %s)
-            ORDER BY sr.similarity DESC
-            LIMIT %s
-        """
+        # Default similarity threshold for finding contradictory evidence
+        threshold = 0.5
+
+        # Build query with optional exclusion filter
+        # semantic_docsearch returns: chunk_id, document_id, score, doi, source_id,
+        # external_id, title, publication_date, authors, abstract
+        if exclude_doc_id is not None:
+            query = """
+                SELECT DISTINCT ON (sr.document_id)
+                    sr.document_id as id, sr.score as similarity, sr.doi, sr.title,
+                    sr.publication_date, sr.authors, sr.abstract,
+                    s.name as source_name
+                FROM semantic_docsearch(%s, %s, %s) sr
+                LEFT JOIN sources s ON sr.source_id = s.id
+                WHERE sr.document_id != %s
+                ORDER BY sr.document_id, sr.score DESC
+            """
+            params = (text, threshold, limit * 2, exclude_doc_id)
+        else:
+            query = """
+                SELECT DISTINCT ON (sr.document_id)
+                    sr.document_id as id, sr.score as similarity, sr.doi, sr.title,
+                    sr.publication_date, sr.authors, sr.abstract,
+                    s.name as source_name
+                FROM semantic_docsearch(%s, %s, %s) sr
+                LEFT JOIN sources s ON sr.source_id = s.id
+                ORDER BY sr.document_id, sr.score DESC
+            """
+            params = (text, threshold, limit * 2)
 
         with db_manager.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(query, (text, limit * 2, exclude_doc_id, exclude_doc_id, limit))
-                return [dict(row) for row in cur.fetchall()]
+                cur.execute(query, params)
+                results = [dict(row) for row in cur.fetchall()]
+                # Sort by similarity and limit
+                results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+                return results[:limit]
 
     def _keyword_search(
         self,
@@ -419,20 +441,34 @@ Respond ONLY with valid JSON."""
         # Build search query with OR operator
         search_query = " | ".join(keywords)
 
-        query = """
-            SELECT d.*, s.name as source_name,
-                   ts_rank(d.search_vector, plainto_tsquery('english', %s)) as rank
-            FROM document d
-            LEFT JOIN sources s ON d.source_id = s.id
-            WHERE d.search_vector @@ plainto_tsquery('english', %s)
-              AND (%s IS NULL OR d.id != %s)
-            ORDER BY rank DESC
-            LIMIT %s
-        """
+        # Build query with optional exclusion filter
+        if exclude_doc_id is not None:
+            query = """
+                SELECT d.*, s.name as source_name,
+                       ts_rank(d.search_vector, plainto_tsquery('english', %s)) as rank
+                FROM document d
+                LEFT JOIN sources s ON d.source_id = s.id
+                WHERE d.search_vector @@ plainto_tsquery('english', %s)
+                  AND d.id != %s
+                ORDER BY rank DESC
+                LIMIT %s
+            """
+            params = (search_query, search_query, exclude_doc_id, limit)
+        else:
+            query = """
+                SELECT d.*, s.name as source_name,
+                       ts_rank(d.search_vector, plainto_tsquery('english', %s)) as rank
+                FROM document d
+                LEFT JOIN sources s ON d.source_id = s.id
+                WHERE d.search_vector @@ plainto_tsquery('english', %s)
+                ORDER BY rank DESC
+                LIMIT %s
+            """
+            params = (search_query, search_query, limit)
 
         with db_manager.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(query, (search_query, search_query, exclude_doc_id, exclude_doc_id, limit))
+                cur.execute(query, params)
                 return [dict(row) for row in cur.fetchall()]
 
     def _search_pubmed(

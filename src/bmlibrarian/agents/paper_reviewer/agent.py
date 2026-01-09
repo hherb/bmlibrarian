@@ -344,7 +344,7 @@ class PaperReviewerAgent(BaseAgent):
                         host=self.host,
                         show_model_info=False,
                     )
-                    pico_extraction = pico_agent.extract_pico(doc)
+                    pico_extraction = pico_agent.extract_pico_from_document(doc)
                     result.pico_extraction = pico_extraction
                     if pico_extraction:
                         update_step("pico_assessment", ReviewStepStatus.COMPLETED,
@@ -390,13 +390,22 @@ class PaperReviewerAgent(BaseAgent):
             if not skip_paper_weight:
                 update_step("paper_weight", ReviewStepStatus.IN_PROGRESS, "Running paper weight assessment")
                 try:
+                    # Paper weight assessment requires a database document ID
+                    document_id = doc.get('id')
+                    if document_id is None:
+                        # Import document to database first
+                        logger.info("Document not in database, importing for paper weight assessment")
+                        document_id = self.resolver.import_document(doc)
+                        doc['id'] = document_id
+                        result.document_id = document_id
+
                     from ..paper_weight import PaperWeightAssessmentAgent
                     pw_agent = PaperWeightAssessmentAgent(
                         model=self.model,
                         host=self.host,
                         show_model_info=False,
                     )
-                    paper_weight = pw_agent.assess_paper(doc)
+                    paper_weight = pw_agent.assess_paper(document_id)
                     result.paper_weight = paper_weight
                     if paper_weight:
                         update_step("paper_weight", ReviewStepStatus.COMPLETED,

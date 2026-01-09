@@ -155,7 +155,9 @@ class WorkflowPanel(QWidget):
         """
         card = self._step_cards.get(step_name)
         if not card:
-            logger.warning(f"Unknown step: {step_name}")
+            # Sub-agents may emit internal progress callbacks that don't
+            # correspond to main workflow steps - silently ignore them
+            logger.debug(f"Ignoring internal callback step: {step_name}")
             return
 
         card.set_status(status, message)
