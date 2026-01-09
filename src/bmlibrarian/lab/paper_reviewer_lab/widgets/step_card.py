@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QWidget, QSizePolicy,
 )
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
 from ..constants import (
     STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED,

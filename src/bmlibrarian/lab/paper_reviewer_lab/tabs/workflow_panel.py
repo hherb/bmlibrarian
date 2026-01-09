@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QProgressBar, QFrame,
 )
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 
 from ..constants import (
     WORKFLOW_STEPS, STEP_WEIGHTS,

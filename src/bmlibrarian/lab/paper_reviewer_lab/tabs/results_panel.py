@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QMessageBox, QTabWidget,
 )
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 from bmlibrarian.agents.paper_reviewer import PaperReviewResult
 
 from ..constants import (

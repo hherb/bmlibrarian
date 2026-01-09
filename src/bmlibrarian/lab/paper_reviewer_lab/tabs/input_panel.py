@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QFrame, QSizePolicy,
 )
 
-from bmlibrarian.gui.qt.resources.dpi_scale import scaled
+from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
 from bmlibrarian.config import get_models_list, get_model
 
 from ..constants import (
