@@ -16,6 +16,7 @@ Available Agents:
 - StudyAssessmentAgent: Evaluates research quality, study type, and trustworthiness of evidence
 - PRISMA2020Agent: Assesses systematic reviews against PRISMA 2020 reporting guidelines
 - SemanticQueryAgent: Adaptive semantic search with threshold adjustment and query rephrasing
+- PaperReviewerAgent: Comprehensive paper quality assessment combining multiple agents
 
 Paper Weight Assessment Data Models:
 - AssessmentDetail: Audit trail entry for single assessment component
@@ -68,6 +69,18 @@ from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 from .factory import AgentFactory
+from .paper_reviewer import (
+    PaperReviewerAgent,
+    PaperReviewResult,
+    ContradictoryPaper,
+    StudyTypeResult,
+    ReviewStep,
+    ReviewStepStatus,
+    DocumentResolver,
+    SummaryGenerator,
+    StudyTypeDetector,
+    ContradictoryEvidenceFinder,
+)
 
 # NOTE: FactCheckerAgent has been moved to bmlibrarian.factchecker module
 # Import it from there directly: from bmlibrarian.factchecker import FactCheckerAgent
@@ -122,5 +135,16 @@ __all__ = [
     "WorkflowStep",
     "HumanEditLogger",
     "get_human_edit_logger",
-    "AgentFactory"
+    "AgentFactory",
+    # Paper Reviewer
+    "PaperReviewerAgent",
+    "PaperReviewResult",
+    "ContradictoryPaper",
+    "StudyTypeResult",
+    "ReviewStep",
+    "ReviewStepStatus",
+    "DocumentResolver",
+    "SummaryGenerator",
+    "StudyTypeDetector",
+    "ContradictoryEvidenceFinder",
 ]
