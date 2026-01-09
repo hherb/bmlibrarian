@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
+from bmlibrarian.gui.qt.widgets.markdown_viewer import MarkdownViewer
 from bmlibrarian.agents.paper_reviewer import PaperReviewResult
 
 from ..constants import (
@@ -41,6 +42,7 @@ class ResultsPanel(QWidget):
         """Initialize the results panel."""
         super().__init__(parent)
         self._result: Optional[PaperReviewResult] = None
+        self._markdown_content: str = ''  # Raw markdown for copy/export
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -63,10 +65,8 @@ class ResultsPanel(QWidget):
         self.result_tabs = QTabWidget()
         layout.addWidget(self.result_tabs)
 
-        # Markdown view
-        self.markdown_view = QTextEdit()
-        self.markdown_view.setReadOnly(True)
-        self.markdown_view.setPlaceholderText("Review results will appear here...")
+        # Markdown view (rendered HTML)
+        self.markdown_view = MarkdownViewer()
         self.result_tabs.addTab(self.markdown_view, "Report")
 
         # JSON view
@@ -111,13 +111,15 @@ class ResultsPanel(QWidget):
         """
         self._result = result
 
-        # Update markdown view
+        # Update markdown view (rendered)
         try:
             markdown_content = result.to_markdown()
-            self.markdown_view.setPlainText(markdown_content)
+            self._markdown_content = markdown_content  # Store for copy/export
+            self.markdown_view.set_markdown(markdown_content)
         except Exception as e:
             logger.error(f"Failed to generate markdown: {e}")
-            self.markdown_view.setPlainText(f"Error generating report: {e}")
+            self._markdown_content = f"Error generating report: {e}"
+            self.markdown_view.set_markdown(f"**Error:** {e}")
 
         # Update JSON view
         try:
@@ -139,7 +141,8 @@ class ResultsPanel(QWidget):
 
         current_tab = self.result_tabs.currentIndex()
         if current_tab == 0:
-            text = self.markdown_view.toPlainText()
+            # Copy raw markdown (not HTML) for the report tab
+            text = getattr(self, '_markdown_content', '')
         else:
             text = self.json_view.toPlainText()
 
@@ -237,7 +240,8 @@ class ResultsPanel(QWidget):
     def clear(self) -> None:
         """Clear the results display."""
         self._result = None
-        self.markdown_view.clear()
+        self._markdown_content = ''
+        self.markdown_view.clear_content()
         self.json_view.clear()
         self.copy_btn.setEnabled(False)
         self.export_md_btn.setEnabled(False)
