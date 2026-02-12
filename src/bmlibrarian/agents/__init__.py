@@ -16,6 +16,7 @@ Available Agents:
 - StudyAssessmentAgent: Evaluates research quality, study type, and trustworthiness of evidence
 - PRISMA2020Agent: Assesses systematic reviews against PRISMA 2020 reporting guidelines
 - SemanticQueryAgent: Adaptive semantic search with threshold adjustment and query rephrasing
+- TransparencyAgent: Evaluates disclosure completeness and undisclosed bias risk
 - PaperReviewerAgent: Comprehensive paper quality assessment combining multiple agents
 
 Paper Weight Assessment Data Models:
@@ -69,6 +70,8 @@ from .queue_manager import QueueManager, TaskStatus, TaskPriority
 from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 from .factory import AgentFactory
+from .transparency_agent import TransparencyAgent
+from .transparency_data import TransparencyAssessment, RiskLevel, DataAvailability
 from .paper_reviewer import (
     PaperReviewerAgent,
     PaperReviewResult,
@@ -136,6 +139,11 @@ __all__ = [
     "HumanEditLogger",
     "get_human_edit_logger",
     "AgentFactory",
+    # Transparency
+    "TransparencyAgent",
+    "TransparencyAssessment",
+    "RiskLevel",
+    "DataAvailability",
     # Paper Reviewer
     "PaperReviewerAgent",
     "PaperReviewResult",

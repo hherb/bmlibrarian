@@ -37,6 +37,7 @@ Usage:
 import ftplib
 import gzip
 import hashlib
+import json
 import logging
 import os
 import queue
@@ -45,7 +46,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Callable
+from typing import Any, Optional, Dict, List, Tuple, Callable
 import backoff
 
 from bmlibrarian.database import get_db_manager
@@ -868,6 +869,94 @@ class PubMedBulkImporter:
         except:
             return f'{year}-01-01'
 
+    def _extract_transparency_metadata(
+        self,
+        article: ET.Element,
+        medline: ET.Element,
+        pubmed_article: ET.Element,
+    ) -> Dict:
+        """Extract transparency-related metadata from PubMed XML.
+
+        Parses grants, publication types, retraction status, and author
+        affiliations from PubMed XML elements. This data is used by the
+        TransparencyAgent for offline bias risk assessment.
+
+        Args:
+            article: The Article element within MedlineCitation.
+            medline: The MedlineCitation element.
+            pubmed_article: The top-level PubmedArticle element.
+
+        Returns:
+            Dictionary with transparency metadata fields.
+        """
+        metadata: Dict = {}
+
+        # 1. Extract grants from <GrantList>
+        grants = []
+        for grant in article.findall('.//GrantList/Grant'):
+            grant_data: Dict[str, Optional[str]] = {}
+            grant_id = grant.findtext('GrantID')
+            agency = grant.findtext('Agency')
+            country = grant.findtext('Country')
+            if agency or grant_id:
+                grant_data['agency'] = agency
+                grant_data['grant_id'] = grant_id
+                grant_data['country'] = country
+                grants.append(grant_data)
+        if grants:
+            metadata['grants'] = grants
+
+        # 2. Extract publication types from <PublicationTypeList>
+        pub_types = []
+        is_retracted = False
+        for pub_type in article.findall('.//PublicationTypeList/PublicationType'):
+            if pub_type.text:
+                pub_types.append(pub_type.text)
+                if pub_type.text.lower() in (
+                    'retracted publication',
+                    'retraction of publication',
+                ):
+                    is_retracted = True
+        if pub_types:
+            metadata['publication_types'] = pub_types
+        metadata['is_retracted'] = is_retracted
+
+        # 3. Check <CommentsCorrectionsList> for retraction references
+        pubmed_data = pubmed_article.find('.//PubmedData')
+        if pubmed_data is not None:
+            for correction in pubmed_data.findall(
+                './/CommentsCorrectionsList/CommentsCorrections'
+            ):
+                ref_type = correction.get('RefType', '')
+                if ref_type.lower() in ('retractionin', 'retractionof'):
+                    is_retracted = True
+                    metadata['is_retracted'] = True
+
+        # 4. Extract author affiliations from <AffiliationInfo>
+        author_affiliations = []
+        for author in article.findall('.//AuthorList/Author'):
+            last = author.findtext('LastName', '')
+            first = author.findtext('ForeName', '')
+            name = f'{last} {first}'.strip()
+            if not name:
+                continue
+
+            affiliations = []
+            for aff_info in author.findall('.//AffiliationInfo/Affiliation'):
+                if aff_info.text:
+                    affiliations.append(aff_info.text)
+
+            if affiliations:
+                author_affiliations.append({
+                    'author': name,
+                    'affiliations': affiliations,
+                })
+
+        if author_affiliations:
+            metadata['author_affiliations'] = author_affiliations
+
+        return metadata
+
     def _parse_article(self, article_elem: ET.Element) -> Optional[Dict]:
         """Parse PubmedArticle XML element into article dict."""
         try:
@@ -925,6 +1014,11 @@ class PubMedBulkImporter:
                 if keyword.text:
                     keywords.append(keyword.text)
 
+            # Extract transparency metadata (grants, publication types, affiliations)
+            transparency_metadata = self._extract_transparency_metadata(
+                article, medline, article_elem
+            )
+
             return {
                 'pmid': pmid,
                 'doi': doi,
@@ -935,7 +1029,8 @@ class PubMedBulkImporter:
                 'publication_date': pub_date,
                 'url': f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/',
                 'mesh_terms': mesh_terms,
-                'keywords': keywords
+                'keywords': keywords,
+                'transparency_metadata': transparency_metadata,
             }
 
         except Exception as e:
@@ -1027,7 +1122,125 @@ class PubMedBulkImporter:
                 conn.commit()
 
         logger.debug(f"Batch stored: {inserted} inserted, {updated} updated")
+
+        # Store transparency metadata for articles that have it
+        self._store_transparency_metadata_batch(articles, conn if 'conn' in dir() else None)
+
         return inserted + updated
+
+    def _store_transparency_metadata_batch(
+        self,
+        articles: List[Dict],
+        conn: Optional[Any] = None,
+    ) -> int:
+        """Store transparency metadata extracted from PubMed XML.
+
+        Inserts grants, publication types, retraction status, and author
+        affiliations into the transparency.document_metadata table.
+        This is additive and does not affect the main document import.
+
+        Args:
+            articles: List of article dictionaries with transparency_metadata.
+            conn: Optional existing database connection.
+
+        Returns:
+            Number of metadata records stored.
+        """
+        stored = 0
+        close_conn = False
+
+        try:
+            if conn is None:
+                conn = self.db_manager.get_connection().__enter__()
+                close_conn = True
+
+            # Check if transparency schema exists
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_schema = 'transparency'
+                        AND table_name = 'document_metadata'
+                    )
+                """)
+                schema_exists = cur.fetchone()[0]
+
+            if not schema_exists:
+                logger.debug("transparency.document_metadata table not found, skipping metadata storage")
+                return 0
+
+            with conn.cursor() as cur:
+                for article in articles:
+                    metadata = article.get('transparency_metadata')
+                    if not metadata:
+                        continue
+
+                    pmid = article.get('pmid')
+                    if not pmid:
+                        continue
+
+                    # Look up document_id by pmid
+                    cur.execute(
+                        "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
+                        (self.source_id, pmid),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+
+                    document_id = row[0]
+                    grants = metadata.get('grants')
+                    pub_types = metadata.get('publication_types')
+                    is_retracted = metadata.get('is_retracted', False)
+                    author_affiliations = metadata.get('author_affiliations')
+
+                    # Skip if no meaningful metadata
+                    if not grants and not pub_types and not is_retracted and not author_affiliations:
+                        continue
+
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO transparency.document_metadata (
+                                document_id, grants, publication_types,
+                                is_retracted, author_affiliations, source
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (document_id)
+                            DO UPDATE SET
+                                grants = COALESCE(EXCLUDED.grants, transparency.document_metadata.grants),
+                                publication_types = COALESCE(EXCLUDED.publication_types, transparency.document_metadata.publication_types),
+                                is_retracted = EXCLUDED.is_retracted OR transparency.document_metadata.is_retracted,
+                                author_affiliations = COALESCE(EXCLUDED.author_affiliations, transparency.document_metadata.author_affiliations),
+                                imported_at = NOW()
+                            """,
+                            (
+                                document_id,
+                                json.dumps(grants) if grants else None,
+                                pub_types,
+                                is_retracted,
+                                json.dumps(author_affiliations) if author_affiliations else None,
+                                'pubmed_bulk',
+                            ),
+                        )
+                        stored += 1
+                    except Exception as e:
+                        logger.debug(f"Could not store transparency metadata for PMID {pmid}: {e}")
+
+                conn.commit()
+
+        except Exception as e:
+            logger.debug(f"Transparency metadata storage skipped: {e}")
+        finally:
+            if close_conn and conn:
+                try:
+                    conn.__exit__(None, None, None)
+                except Exception:
+                    pass
+
+        if stored > 0:
+            logger.debug(f"Stored transparency metadata for {stored} articles")
+
+        return stored
 
     def import_file(
         self,

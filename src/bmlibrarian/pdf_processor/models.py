@@ -23,6 +23,10 @@ class SectionType(Enum):
     REFERENCES = "references"
     SUPPLEMENTARY = "supplementary"
     APPENDIX = "appendix"
+    FUNDING = "funding"
+    CONFLICTS = "conflicts"
+    DATA_AVAILABILITY = "data_availability"
+    AUTHOR_CONTRIBUTIONS = "author_contributions"
     UNKNOWN = "unknown"
 
 

@@ -210,6 +210,22 @@ Since this project uses `uv` for package management:
   - `uv run python scripts/paper_checker_lab.py` - Interactive PaperChecker laboratory (PySide6/Qt) for medical abstract fact-checking with step-by-step visualization
   - `uv run python scripts/paper_reviewer_lab.py` - Interactive Paper Reviewer laboratory (PySide6/Qt) for comprehensive paper assessment with DOI/PMID/PDF/text input
   - `uv run python scripts/pubmed_search_lab.py` - Interactive PubMed Search laboratory (PySide6/Qt) for searching PubMed API without local database storage
+  - `uv run python scripts/transparency_lab.py` - Interactive Transparency Assessment laboratory (PySide6/Qt) for detecting undisclosed bias risk in biomedical papers
+- **Transparency Assessment Tools**:
+  - `uv run python transparency_analyzer_cli.py assess --doc-id 12345` - Assess transparency of a single document by ID
+  - `uv run python transparency_analyzer_cli.py assess --query "cardiovascular exercise" --limit 50` - Assess documents matching a search query
+  - `uv run python transparency_analyzer_cli.py assess --has-fulltext --limit 100` - Assess documents with full text available
+  - `uv run python transparency_analyzer_cli.py stats` - Show transparency assessment statistics
+  - `uv run python transparency_analyzer_cli.py show --doc-id 12345` - Show detailed assessment for a document
+  - `uv run python transparency_analyzer_cli.py export --output results.json` - Export assessments to JSON
+  - `uv run python transparency_analyzer_cli.py export --output results.csv` - Export assessments to CSV
+  - `uv run python clinicaltrials_import_cli.py download --output-dir ~/clinicaltrials` - Download ClinicalTrials.gov bulk data (~10GB)
+  - `uv run python clinicaltrials_import_cli.py import --input-dir ~/clinicaltrials` - Import ClinicalTrials.gov trials to database
+  - `uv run python clinicaltrials_import_cli.py status` - Show ClinicalTrials.gov import statistics
+  - `uv run python retraction_watch_cli.py import --file retraction_watch.csv` - Import Retraction Watch CSV data
+  - `uv run python retraction_watch_cli.py lookup --doi 10.1234/example` - Look up retraction status by DOI
+  - `uv run python retraction_watch_cli.py status` - Show Retraction Watch import statistics
+  - **Note**: Transparency assessment works fully offline using local Ollama models and documents in the database
 - **PDF Processing Tools**:
   - `uv run python examples/pdf_processor_demo.py` - PySide6 demo application for PDF section segmentation (biomedical publications)
   - `uv run python tests/test_pdf_processor.py paper.pdf` - Command-line test script for PDF processor library
@@ -421,6 +437,7 @@ BMLibrarian uses a sophisticated multi-agent architecture with enum-based workfl
 9. **StudyAssessmentAgent**: Evaluates research quality, study design, methodological rigor, bias risk, and trustworthiness of biomedical evidence
 10. **PRISMA2020Agent**: Assesses systematic reviews and meta-analyses against PRISMA 2020 reporting guidelines (27-item checklist with suitability pre-screening)
 11. **PaperCheckerAgent**: Validates medical abstract claims against contradictory literature using multi-strategy search (semantic + HyDE + keyword) with evidence-based verdicts (supports/contradicts/undecided)
+12. **TransparencyAgent**: Detects undisclosed bias risk by assessing funding disclosure, conflict of interest, data availability, trial registration, and author contributions using offline LLM analysis with bulk metadata enrichment (PubMed grants, ClinicalTrials.gov sponsors, Retraction Watch)
 
 ### Document Card Factory System
 
@@ -556,6 +573,8 @@ bmlibrarian/
 │   │   ├── editor_agent.py    # Comprehensive report editing and integration
 │   │   ├── queue_manager.py   # SQLite-based task queue system
 │   │   ├── orchestrator.py    # Multi-agent workflow coordination
+│   │   ├── transparency_data.py # Transparency assessment data models and constants
+│   │   ├── transparency_agent.py # TransparencyAgent for undisclosed bias risk detection
 │   │   └── query_generation/  # Multi-model query generation system
 │   │       ├── __init__.py    # Query generation module exports
 │   │       ├── data_types.py  # Type-safe dataclasses for query results
@@ -568,6 +587,8 @@ bmlibrarian/
 │   │   ├── pubmed_importer.py # PubMed E-utilities importer (targeted imports)
 │   │   ├── pubmed_bulk_importer.py # PubMed FTP bulk importer (complete mirror)
 │   │   ├── pdf_matcher.py     # LLM-based PDF matching and import (DOI/PMID/title matching)
+│   │   ├── clinicaltrials_importer.py # ClinicalTrials.gov bulk importer (sponsor classification)
+│   │   ├── retraction_watch_importer.py # Retraction Watch CSV importer (retraction detection)
 │   │   └── README.md          # Importer documentation
 │   ├── embeddings/            # Document embedding generation
 │   │   ├── __init__.py        # Embeddings module exports
@@ -613,7 +634,8 @@ bmlibrarian/
 │       ├── query_lab.py       # QueryAgent experimental GUI
 │       ├── pico_lab.py        # PICOAgent experimental GUI for PICO component extraction
 │       ├── study_assessment_lab.py # StudyAssessmentAgent experimental GUI for study quality evaluation
-│       └── prisma2020_lab.py  # PRISMA2020Agent experimental GUI for PRISMA 2020 compliance assessment
+│       ├── prisma2020_lab.py  # PRISMA2020Agent experimental GUI for PRISMA 2020 compliance assessment
+│       └── transparency_lab.py # TransparencyAgent experimental GUI for undisclosed bias risk assessment
 │   └── factchecker/           # Fact-checker module (PostgreSQL-based)
 │       ├── __init__.py        # Fact-checker module exports
 │       ├── agent/             # Fact-checker agent
@@ -656,6 +678,7 @@ bmlibrarian/
 │   ├── test_citation_agent.py # Citation extraction tests
 │   ├── test_reporting_agent.py# Report generation tests
 │   ├── test_counterfactual_agent.py # Counterfactual analysis tests
+│   ├── test_transparency_agent.py # Transparency assessment tests (43 tests)
 │   └── paperchecker/          # PaperChecker test suite
 │       ├── test_statement_extractor.py   # Statement extraction tests
 │       ├── test_counter_generator.py     # Counter-statement tests
@@ -687,7 +710,10 @@ bmlibrarian/
 │   │   ├── paper_checker_cli_guide.md  # PaperChecker CLI reference
 │   │   ├── paper_checker_lab_guide.md  # PaperChecker laboratory guide
 │   │   ├── paper_reviewer_lab_guide.md  # Paper Reviewer laboratory guide
-│   │   └── full_text_discovery_guide.md  # Full-text PDF discovery guide
+│   │   ├── full_text_discovery_guide.md  # Full-text PDF discovery guide
+│   │   ├── transparency_assessment_guide.md  # Transparency assessment user guide
+│   │   ├── clinicaltrials_import_guide.md  # ClinicalTrials.gov import guide
+│   │   └── retraction_watch_guide.md  # Retraction Watch import guide
 │   └── developers/            # Technical documentation
 │       ├── agent_module.md
 │       ├── citation_system.md
@@ -699,7 +725,8 @@ bmlibrarian/
 │       ├── document_interrogation_ui_spec.md  # Document interrogation UI specification
 │       ├── multi_model_architecture.md  # Multi-model architecture docs
 │       ├── paper_checker_architecture.md  # PaperChecker system design and architecture
-│       └── full_text_discovery_system.md  # Full-text PDF discovery architecture
+│       ├── full_text_discovery_system.md  # Full-text PDF discovery architecture
+│       └── transparency_assessment_system.md  # Transparency assessment system architecture
 ├── scripts/                   # Utility scripts and laboratory tools
 │   ├── query_lab.py           # QueryAgent experimental laboratory GUI
 │   ├── pico_lab.py            # PICOAgent experimental laboratory GUI
@@ -708,6 +735,7 @@ bmlibrarian/
 │   ├── paper_weight_lab.py    # PaperWeightAssessmentAgent laboratory GUI
 │   ├── paper_checker_lab.py   # PaperChecker laboratory GUI
 │   ├── paper_reviewer_lab.py  # Paper Reviewer laboratory GUI (comprehensive assessment)
+│   ├── transparency_lab.py    # TransparencyAgent laboratory GUI (bias risk assessment)
 │   ├── export_review_package.py # Export SQLite review packages
 │   ├── export_human_evaluations.py # Export human annotations to JSON
 │   ├── import_human_evaluations.py # Re-import human evaluations
@@ -731,6 +759,9 @@ bmlibrarian/
 ├── pmc_bulk_cli.py            # PMC Open Access bulk download/import CLI
 ├── europe_pmc_pdf_cli.py      # Europe PMC PDF bulk download CLI
 ├── pdf_import_cli.py          # PDF import CLI with LLM-based metadata extraction and matching
+├── transparency_analyzer_cli.py # Transparency assessment CLI for detecting undisclosed bias risk
+├── clinicaltrials_import_cli.py # ClinicalTrials.gov bulk download/import CLI
+├── retraction_watch_cli.py    # Retraction Watch CSV import CLI
 ├── migrate_config_to_db.py    # Settings migration CLI
 ├── export_to_pdf.py           # Markdown to PDF export CLI tool
 ├── initial_setup_and_download.py  # Database setup and battle-testing script
