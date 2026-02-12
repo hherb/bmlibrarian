@@ -52,223 +52,143 @@ All AI processing happens locally on your hardware:
 - **No usage tracking or telemetry**
 - **Complete control over model selection and parameters**
 
-## What's New 🎉
+## What's New
 
-**Latest Features (11/2025):**
+**Latest Features (02/2026):**
 
-### 🔬 Systematic Literature Review Agent
+### Paper Reviewer Lab
+
+A comprehensive paper assessment tool that combines all of BMLibrarian's analysis agents into a single unified workflow. Accepts input via DOI, PMID, PDF file, or pasted text.
+
+```bash
+# Launch the Paper Reviewer Lab
+uv run python scripts/paper_reviewer_lab.py
+```
+
+**11-Step Assessment Workflow:**
+1. Resolve Input (fetch document metadata via DOI/PMID/PDF/text)
+2. Generate Summary (2-3 sentence synopsis)
+3. Extract Hypothesis (identify core claims)
+4. Detect Study Type (classify research methodology)
+5. PICO Analysis (Population/Intervention/Comparison/Outcome)
+6. PRISMA 2020 Assessment (systematic review checklist, if applicable)
+7. Paper Weight Assessment (evidential weight scoring)
+8. Study Quality Assessment (trustworthiness evaluation)
+9. Synthesize Strengths/Weaknesses
+10. Search Contradictory Evidence (optional PubMed search)
+11. Compile Comprehensive Report
+
+**Key Features:**
+- Multiple input methods: DOI, PMID, PDF file, pasted abstract text
+- Real-time workflow progress visualization (PySide6/Qt)
+- Model selection from available Ollama models
+- Results display in Markdown and JSON
+- Export to Markdown, PDF, or JSON
+
+### Systematic Literature Review Agent
 
 A complete systematic review automation system with human oversight and audit trails. Conducts AI-assisted literature reviews following PRISMA 2020 guidelines with configurable search strategies, quality assessment, and composite scoring.
 
 ```bash
 # Run a systematic review
-python systematic_review_cli.py --question "Effect of statins on CVD prevention" \
+uv run python systematic_review_cli.py --question "Effect of statins on CVD prevention" \
     --include "RCTs" "Human studies" --exclude "Animal studies"
+
+# GUI with checkpoint-based resume capability
+uv run python systematic_review_gui.py
 ```
 
 **Key Capabilities:**
 - **Multi-strategy search**: Semantic, keyword, hybrid, and HyDE queries with PICO analysis
-- **9-phase workflow**: Search planning → Execution → Filtering → Scoring → Quality → Composite → Classification → Evidence Synthesis → Reporting
-- **Evidence synthesis**: Extracts citations from included papers and synthesizes a narrative answer with key findings and evidence strength assessment
+- **9-phase workflow**: Search planning, execution, filtering, scoring, quality assessment, composite scoring, classification, evidence synthesis, reporting
+- **Cochrane/GRADE assessment**: Integrated quality assessment with GRADE formatting
+- **Checkpoint-based resume**: Save and resume reviews across sessions
 - **Human checkpoints**: Interactive mode pauses at key decision points for human review
 - **Quality assessment**: Integrates StudyAssessmentAgent, PaperWeightAssessmentAgent, PICOAgent, and PRISMA2020Agent
 - **Complete audit trail**: Full reproducibility with JSON, Markdown, CSV, and PRISMA flow diagram outputs
 - **Configurable weights**: Customize relevance, quality, recency, and source reliability weights
 
-#### Systematic Review Workflow Diagram
+### Europe PMC Full-Text and PDF Import
 
-```mermaid
-flowchart TB
-    subgraph User["User Input"]
-        U1[Research Question]
-        U2[Inclusion/Exclusion Criteria]
-        U3[Scoring Weights]
-    end
-
-    subgraph Phase1["Phase 1: Search Planning"]
-        P1[Planner]
-        P1A[PICO Analysis]
-        P1B[Query Generation]
-        P1C[Strategy Optimization]
-    end
-
-    subgraph Phase2["Phase 2: Search Execution"]
-        E1[SearchExecutor]
-        E1A[Semantic Queries]
-        E1B[Keyword Queries]
-        E1C[Hybrid Queries]
-        E1D[HyDE Queries]
-        E2[Deduplication]
-    end
-
-    subgraph Phase3["Phase 3: Initial Filtering"]
-        F1[InitialFilter]
-        F1A[Date Range Check]
-        F1B[Language Check]
-        F1C[Study Type Keywords]
-        F1D[Exclusion Keywords]
-    end
-
-    subgraph Phase4["Phase 4: Relevance Scoring"]
-        S1[RelevanceScorer]
-        S1A[DocumentScoringAgent]
-        S2[InclusionEvaluator]
-        S2A[Criteria Matching]
-        S3[Threshold Filter]
-    end
-
-    subgraph Phase5["Phase 5: Quality Assessment"]
-        Q1[QualityAssessor]
-        Q1A[StudyAssessmentAgent]
-        Q1B[PaperWeightAssessmentAgent]
-        Q1C[PICOAgent]
-        Q1D[PRISMA2020Agent]
-    end
-
-    subgraph Phase6["Phase 6: Composite Scoring"]
-        C1[CompositeScorer]
-        C1A[Weight Application]
-        C1B[Score Normalization]
-        C2[Quality Gate]
-        C3[Final Ranking]
-    end
-
-    subgraph Phase7["Phase 7: Classification"]
-        CL1{Decision}
-        CL2[Included Papers]
-        CL3[Excluded Papers]
-        CL4[Uncertain Papers]
-    end
-
-    subgraph Phase8["Phase 8: Report Generation"]
-        R1[Reporter]
-        R1A[JSON Report]
-        R1B[Markdown Report]
-        R1C[CSV Export]
-        R1D[PRISMA Flow Diagram]
-    end
-
-    subgraph AuditTrail["Audit Trail"]
-        D1[Documenter]
-        D1A[Process Steps]
-        D1B[Checkpoints]
-        D1C[Metrics]
-    end
-
-    %% Flow connections
-    U1 --> P1
-    U2 --> P1
-    U3 --> C1
-
-    P1 --> P1A --> P1B --> P1C
-    P1C --> E1
-
-    E1 --> E1A & E1B & E1C & E1D
-    E1A & E1B & E1C & E1D --> E2
-    E2 --> F1
-
-    F1 --> F1A --> F1B --> F1C --> F1D
-    F1D --> S1
-
-    S1 --> S1A --> S2
-    S2 --> S2A --> S3
-    S3 --> Q1
-
-    Q1 --> Q1A & Q1B
-    Q1 -.-> Q1C
-    Q1 -.-> Q1D
-    Q1A & Q1B --> C1
-
-    C1 --> C1A --> C1B --> C2
-    C2 --> C3 --> CL1
-
-    CL1 -->|Above threshold| CL2
-    CL1 -->|Below threshold| CL3
-    CL1 -->|Borderline| CL4
-
-    CL2 & CL3 & CL4 --> R1
-    R1 --> R1A & R1B & R1C & R1D
-
-    %% Audit trail connections (dashed)
-    P1 -.-> D1
-    E1 -.-> D1
-    F1 -.-> D1
-    S1 -.-> D1
-    Q1 -.-> D1
-    C1 -.-> D1
-    R1 -.-> D1
-
-    D1 --> D1A & D1B & D1C
-
-    %% Checkpoint interactions
-    P1C -->|Checkpoint 1| CHK1((Human Review))
-    E2 -->|Checkpoint 2| CHK2((Human Review))
-    S3 -->|Checkpoint 3| CHK3((Human Review))
-    Q1 -->|Checkpoint 4| CHK4((Human Review))
-
-    %% Styling
-    classDef phase fill:#e1f5fe,stroke:#0277bd
-    classDef agent fill:#fff3e0,stroke:#ff6f00
-    classDef output fill:#e8f5e9,stroke:#2e7d32
-    classDef checkpoint fill:#fce4ec,stroke:#c2185b
-    classDef audit fill:#f3e5f5,stroke:#7b1fa2
-
-    class P1,E1,F1,S1,Q1,C1,R1 phase
-    class S1A,Q1A,Q1B,Q1C,Q1D agent
-    class R1A,R1B,R1C,R1D output
-    class CHK1,CHK2,CHK3,CHK4 checkpoint
-    class D1,D1A,D1B,D1C audit
-```
-
-### ✅ Audit Trail Validation GUI
-
-A human review interface for validating automated evaluations in the systematic review audit trail. Enables benchmarking AI accuracy and collecting training data for model improvement.
+Download and import full-text articles and PDFs from Europe PMC's Open Access repository.
 
 ```bash
-# Launch audit validation GUI
-uv run python audit_validation_gui.py --user alice
+# List available Europe PMC packages (~1000+ files, ~100 articles each)
+uv run python europe_pmc_bulk_cli.py list
 
-# Incremental mode (show only unvalidated items)
+# Download and import full-text XML with Markdown conversion
+uv run python europe_pmc_bulk_cli.py sync --output-dir ~/europepmc
+
+# Download Open Access PDFs
+uv run python europe_pmc_pdf_cli.py download --output-dir ~/europepmc_pdf
+```
+
+**Key Features:**
+- JATS XML to Markdown conversion (headers, figures, tables, emphasis)
+- Resumable downloads with progress tracking
+- Configurable rate limiting (polite mode)
+- Year-based PDF organization
+- PMCID range filtering
+
+### PubMed Search Lab
+
+Interactive PubMed search directly via the PubMed API, without requiring a local database.
+
+```bash
+uv run python scripts/pubmed_search_lab.py
+```
+
+**Key Features:**
+- Natural language to PubMed query conversion
+- MeSH term lookup and expansion
+- Search results display with abstracts
+- No local database required
+
+### Audit Trail Validation GUI
+
+A human review interface for validating automated evaluations in the systematic review audit trail.
+
+```bash
+uv run python audit_validation_gui.py --user alice
 uv run python audit_validation_gui.py --user alice --incremental
 ```
 
 **Key Features:**
-- **Tab-per-step organization**: Separate tabs for Queries, Scores, Citations, Reports, and Counterfactuals
-- **Validation statuses**: Mark items as Validated, Incorrect, Uncertain, or Needs Review
-- **Error categorization**: 25+ predefined error categories organized by target type
-- **Statistics dashboard**: Track validation rates, error distributions, and reviewer performance
-- **Multi-reviewer support**: Enable inter-rater reliability studies with per-reviewer tracking
-- **Time tracking**: Monitor review time per item for benchmarking
+- Tab-per-step organization for Queries, Scores, Citations, Reports, and Counterfactuals
+- Validation statuses: Validated, Incorrect, Uncertain, or Needs Review
+- Error categorization with 25+ predefined categories
+- Statistics dashboard with reviewer performance tracking
+- Multi-reviewer support for inter-rater reliability studies
 
-### ✍️ Citation-Aware Writing Editor
+### Citation-Aware Writing Editor
 
-A markdown editor with integrated citation management for academic writing. Search and cite references from your literature database while writing manuscripts and systematic review reports.
+A markdown editor with integrated citation management for academic writing.
 
 **Key Features:**
-- **Citation markers**: Insert citations with `[@id:12345:Smith2023]` format
-- **Semantic search**: Find references using natural language queries
-- **Multiple styles**: Vancouver, APA, Harvard, and Chicago citation formats
-- **Autosave with history**: Automatic saves with version history
-- **Export with references**: Generate formatted documents with proper reference lists
-- **Database persistence**: Documents stored in PostgreSQL for reliable storage
+- Citation markers with `[@id:12345:Smith2023]` format
+- Semantic search for finding references
+- Multiple citation styles: Vancouver, APA, Harvard, Chicago
+- Autosave with version history
+- Export with formatted reference lists
+- PostgreSQL-backed document persistence
 
 ### Other Recent Features
 
-- 📊 **Paper Weight Assessment**: Evaluate research papers across five quality dimensions (study design, sample size, methodology, bias risk, replication)
-- 🔬 **PICO Extraction**: Automatically extract Population, Intervention, Comparison, and Outcome for systematic reviews
-- ✅ **PRISMA 2020 Compliance**: Assess systematic reviews against the full 27-item PRISMA 2020 checklist
-- 📖 **Document Interrogation**: Interactive Q&A interface for asking questions about loaded PDF, Markdown, or text documents
-- 🔗 **Full-Text PDF Discovery**: Automated discovery and download from PMC, Unpaywall, DOI resolution, and OpenAthens
-- 🔍 **PaperChecker System**: Fact-check medical abstracts by searching for contradictory literature evidence
-- 🔍 **Fact Checker System**: LLM training data auditing with literature validation
-  - **CLI & Desktop GUI**: Batch processing and interactive human review interfaces
-  - **Blind Mode**: Review statements without AI bias for unbiased human annotation
-  - **Incremental Mode**: Smart filtering to show only unannotated statements
-  - **SQLite Integration**: Persistent database storage with intelligent JSON import/merge
-- 🚀 **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
-- 📊 **Query Performance Tracking**: Real-time analysis showing which models find the best documents
-- 🗄️ **PostgreSQL Audit Trail**: Complete persistent tracking of research workflow sessions
-- ⚡ **Automatic Database Migrations**: Zero-configuration schema updates on startup
+- **Paper Weight Assessment**: Evaluate research papers across five quality dimensions (study design, sample size, methodology, bias risk, replication)
+- **PICO Extraction**: Automatically extract Population, Intervention, Comparison, and Outcome for systematic reviews
+- **PRISMA 2020 Compliance**: Assess systematic reviews against the full 27-item PRISMA 2020 checklist
+- **Document Interrogation**: Interactive Q&A interface for asking questions about loaded PDF, Markdown, or text documents
+- **Full-Text PDF Discovery**: Automated discovery and download from PMC, Unpaywall, DOI resolution, and OpenAthens
+- **PaperChecker System**: Fact-check medical abstracts by searching for contradictory literature evidence
+- **Fact Checker System**: LLM training data auditing with literature validation (CLI, desktop GUI, blind mode, incremental mode, SQLite integration)
+- **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
+- **Semantic Chunking**: Multiple chunking strategies (adaptive, sentence-based, SpaCy NLP) with vector embeddings for improved retrieval
+- **LLM Provider Abstraction**: Unified interface across multiple LLM providers with token tracking
+- **Thesaurus/MeSH Expansion**: Term expansion and synonym lookup for improved search coverage
+- **User Authentication**: Login system with per-user database-backed settings
+- **PubMed Download Repair**: CLI for detecting and fixing corrupted gzip files in bulk downloads
+- **PostgreSQL Audit Trail**: Complete persistent tracking of research workflow sessions
+- **Automatic Database Migrations**: Zero-configuration schema updates on startup
 
 ## Overview
 
@@ -278,14 +198,16 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 
 ### Codebase Statistics
 
-- **347 Python files** organized in hierarchical module structure
-- **437 classes** implementing specialized functionality
-- **3,654 functions** providing granular capabilities
-- **104,000 lines of code** (excluding comments, docstrings, and blank lines)
-- **> 8,000 lines of docstrings** for comprehensive documentation
+- **728 Python files** organized in hierarchical module structure
+- **1,390 classes** implementing specialized functionality
+- **9,671 functions** providing granular capabilities
+- **~211,000 lines of code** (excluding comments, docstrings, and blank lines; ~298,000 total)
+- **~8,800 docstrings** for comprehensive documentation
+- **145 test files** with comprehensive test coverage
+- **272 documentation files** (Markdown)
 - **100% type hints** for all public APIs and data structures
-- **100% docstrings** for all public APIs, classes, methods, and functions
-- **Comprehensive test coverage:** >95% across critical modules
+- **26 top-level CLI/GUI applications**
+- **17 GUI plugins** in the Qt plugin system
 
 ### Comparison to Established Systems
 
@@ -293,10 +215,10 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 |--------|---------------|--------|--------|
 | Redis | ~30,000 | Database | Production |
 | nginx | ~100,000 | Web server | Production |
-| **BMLibrarian** | **~104,000** | **Biomedical AI** | **functional prototype** |
 | Django | ~300,000 | Web framework | Production |
+| **BMLibrarian** | **~211,000** | **Biomedical AI** | **Production-ready** |
 
-**BMLibrarian is comparable in scale to mature, widely-deployed infrastructure software.**
+**BMLibrarian exceeds the scale of many mature, widely-deployed infrastructure software projects.**
 
 ---
 
@@ -306,32 +228,36 @@ BMLibrarian transforms how researchers interact with biomedical literature by co
 
 **Multi-layer architecture:**
 - **Core database layer:** PostgreSQL integration with custom query optimization
-- **Vector search layer:** pgvector integration with HNSW indexing at 40M document scale
-- **Agent orchestration layer:** 13+ specialized AI agents with sophisticated coordination
+- **Vector search layer:** pgvector integration with HNSW indexing at 40M+ document scale
+- **Agent orchestration layer:** 15+ specialized AI agents with sophisticated coordination
 - **Workflow management layer:** Persistent task queuing, state management, error recovery
-- **Multiple user interfaces:** CLI, desktop GUI (Flet + Qt), web mode, laboratory tools
+- **Multiple user interfaces:** CLI, desktop GUI (PySide6/Qt), laboratory tools
 - **Full-text discovery system:** Multi-source PDF retrieval with browser automation
-- **Research quality assessment:** PRISMA 2020, PICO extraction, study design evaluation
-- **Fact-checking infrastructure:** Statement validation, training data auditing
-- **Configuration management:** Hierarchical config system with GUI editors
+- **Semantic chunking system:** Multiple chunking strategies with vector embeddings
+- **LLM provider abstraction:** Unified interface with token tracking across providers
+- **Research quality assessment:** PRISMA 2020, PICO extraction, study design evaluation, paper weight scoring
+- **Fact-checking infrastructure:** Statement validation, training data auditing, abstract fact-checking
+- **Systematic review automation:** Checkpoint-based reviews with Cochrane/GRADE assessment
+- **Configuration management:** Hierarchical config system with database-backed user settings
+- **User authentication:** Login system with per-user settings and session management
 - **Database migrations:** Automatic schema updates with version tracking
-- **Comprehensive documentation:** User guides + developer docs for every major component
+- **Comprehensive documentation:** 272 markdown files covering user guides + developer docs
 
 ### Development Methodology
 
 **Professional software engineering practices:**
-- ✅ Type hints throughout (Python 3.12+)
-- ✅ Comprehensive unit testing (>95% coverage)
-- ✅ Modular architecture with clear separation of concerns
-- ✅ Configuration-driven design (no hardcoded parameters)
-- ✅ Extensive error handling and logging
-- ✅ Database transaction management and connection pooling
-- ✅ Async/parallel processing where appropriate
-- ✅ GUI/CLI separation for testability
-- ✅ Plugin architecture for extensibility
+- Type hints throughout (Python 3.12+)
+- Comprehensive unit testing (134 test files)
+- Modular architecture with clear separation of concerns
+- Configuration-driven design (no hardcoded parameters)
+- Extensive error handling and logging
+- Database transaction management and connection pooling
+- Async/parallel processing where appropriate
+- GUI/CLI separation for testability
+- Plugin architecture for extensibility (17 GUI plugins)
 ---
 
-## Fact Checker System 🔍
+## Fact Checker System
 
 The **BMLibrarian Fact Checker** is a specialized tool for auditing biomedical statements in LLM training datasets, medical knowledge bases, and research claims. It evaluates statement veracity by searching literature databases and comparing claims against published evidence.
 
@@ -429,7 +355,7 @@ The **BMLibrarian PaperChecker** is a sophisticated fact-checking system for med
 - **Interactive testing** with step-by-step workflow visualization
 - **Real-time progress** showing each processing stage
 - **Results inspection** for all intermediate outputs
-- **Desktop and web modes** for flexible deployment
+- **Native desktop application** (PySide6/Qt)
 
 ### Workflow Overview
 
@@ -673,38 +599,44 @@ uv run python -c "from bmlibrarian.discovery import download_pdf_for_document; .
 
 ## Key Features
 
-### 🤖 Multi-Agent AI System
+### Multi-Agent AI System
 - **QueryAgent**: Natural language to PostgreSQL query conversion
+- **SemanticQueryAgent**: Vector-based semantic search with embeddings
 - **DocumentScoringAgent**: Relevance scoring for research questions (1-5 scale)
 - **CitationFinderAgent**: Extracts relevant passages from high-scoring documents
 - **ReportingAgent**: Synthesizes citations into medical publication-style reports
 - **CounterfactualAgent**: Analyzes documents to generate research questions for finding contradictory evidence
 - **EditorAgent**: Creates balanced comprehensive reports integrating all evidence
-- **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence for training data auditing
+- **FactCheckerAgent**: Evaluates biomedical statements (yes/no/maybe) with literature evidence
 - **PaperCheckerAgent**: Validates medical abstract claims against contradictory literature evidence
-- **PICOAgent**: Extracts Population, Intervention, Comparison, and Outcome components from research papers
+- **PaperReviewerAgent**: Comprehensive paper assessment combining all analysis agents in an 11-step workflow
+- **PICOAgent**: Extracts Population, Intervention, Comparison, and Outcome components
 - **PRISMA2020Agent**: Assesses systematic reviews against the 27-item PRISMA 2020 checklist
-- **StudyAssessmentAgent**: Evaluates research quality, study design, methodological rigor, and bias risk
-- **PaperWeightAgent**: Comprehensive evidential weight scoring across five quality dimensions
+- **StudyAssessmentAgent**: Evaluates research quality, study design, and bias risk
+- **PaperWeightAgent**: Evidential weight scoring across five quality dimensions
 - **DocumentInterrogationAgent**: Interactive Q&A with loaded documents (PDF, Markdown, text)
+- **SystematicReviewAgent**: Automated systematic literature review with Cochrane/GRADE assessment
 
-### 🔄 Advanced Workflow Orchestration
+### Advanced Workflow Orchestration
 - **Enum-Based Workflow**: Flexible step orchestration with meaningful names
 - **Iterative Processing**: Query refinement, threshold adjustment, citation requests
 - **Task Queue System**: SQLite-based persistent task queuing for memory-efficient processing
 - **Human-in-the-Loop**: Interactive decision points with auto-mode support
 - **Branching Logic**: Conditional step execution and error recovery
 
-### 🏗️ Production-Ready Infrastructure
+### Production-Ready Infrastructure
 - **Database Migration System**: Automated schema initialization and incremental updates with startup integration
-- **PostgreSQL + pgvector**: Semantic search with vector embeddings
-- **PostgreSQL Audit Trail**: Comprehensive tracking of research workflow sessions, queries, documents, and evaluations
+- **PostgreSQL + pgvector**: Semantic search with vector embeddings at 40M+ document scale
+- **Semantic Chunking**: Multiple strategies (adaptive, sentence-based, SpaCy NLP) with vector embeddings
+- **PostgreSQL Audit Trail**: Comprehensive tracking of research workflow sessions
+- **User Authentication**: Login system with per-user database-backed settings
+- **LLM Provider Abstraction**: Unified interface with token tracking across providers
 - **Local LLM Integration**: Ollama service for privacy-preserving AI inference
-- **Comprehensive Testing**: Unit tests for all agents with >95% coverage
-- **GUI Applications**: Desktop interfaces for research and configuration
+- **134 Test Files**: Comprehensive test coverage across all modules
+- **16 GUI Plugins**: Modular PySide6/Qt plugin architecture
 - **Browser-Based Downloader**: Playwright automation for Cloudflare-protected PDFs (optional)
 
-### 📊 Advanced Analytics
+### Advanced Analytics
 - **Multi-Model Query Generation**: Use multiple AI models (up to 3) to generate diverse database queries for 20-40% improved document retrieval
 - **Query Performance Tracking**: Real-time analysis of which models and parameters find the most relevant documents
 - **Counterfactual Analysis**: Systematic search for contradictory evidence with progressive audit trail
@@ -721,7 +653,7 @@ uv run python -c "from bmlibrarian.discovery import download_pdf_for_document; .
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/hherb/bmlibrarian.git
 cd bmlibrarian
 
 # Install dependencies using uv (recommended)
@@ -1016,24 +948,14 @@ The human review desktop application (`fact_checker_review_gui.py`) provides:
 
 ### Desktop Research Application
 The GUI research application (`bmlibrarian_research_gui.py`) offers:
-- Native cross-platform desktop interface built with Flet
+- Native cross-platform desktop interface built with PySide6/Qt
 - Visual workflow progress with collapsible step cards
-- **Multi-model query generation** with smart pagination and result tracking:
-  - 🔍 Multiple AI models generate diverse database queries
-  - 📊 Per-query result counts showing documents found by each model
-  - 📈 Real-time performance statistics identifying best-performing models
-  - 🎯 Unique document tracking showing which models find documents others miss
-- **Progressive counterfactual audit trail** with real-time updates showing:
-  - 📋 Identified claims with confidence levels
-  - ❓ Counterfactual research questions with priority badges
-  - 🔍 Database searches with PostgreSQL queries
-  - 📊 Search results with color-coded relevance scores
-  - 📝 Citation extraction showing validated, rejected, and no-extraction cases
-  - 📈 Summary statistics and confidence assessment
-- **PostgreSQL audit trail** for persistent session tracking and historical analysis
+- Multi-model query generation with smart pagination and result tracking
+- Progressive counterfactual audit trail with real-time updates
+- PostgreSQL audit trail for persistent session tracking
 - Real-time agent execution with configured AI models
 - Formatted markdown report preview with scrollable display
-- Direct file save functionality (macOS-compatible)
+- Direct file save functionality
 - Complete transparency into citation validation and rejection reasoning
 
 ### Configuration Interface
@@ -1046,12 +968,15 @@ The configuration GUI (`bmlibrarian_config_gui.py`) provides:
 - Support for configuring query diversity, pagination, and performance tracking
 
 ### Laboratory Tools
+- **Paper Reviewer Lab** (`paper_reviewer_lab.py`): Comprehensive paper assessment with 11-step unified workflow (PySide6/Qt)
+- **Paper Checker Lab** (`paper_checker_lab.py`): Interactive medical abstract fact-checking with step-by-step visualization
+- **Paper Weight Lab** (`paper_weight_lab.py`): Evidential weight assessment across five quality dimensions (PySide6/Qt)
+- **PubMed Search Lab** (`pubmed_search_lab.py`): Search PubMed API directly without local database (PySide6/Qt)
 - **QueryAgent Lab** (`query_lab.py`): Experimental interface for natural language to SQL conversion
 - **PICO Lab** (`pico_lab.py`): Interactive PICO component extraction from research papers
 - **PRISMA 2020 Lab** (`prisma2020_lab.py`): Systematic review compliance assessment against 27-item checklist
 - **Study Assessment Lab** (`study_assessment_lab.py`): Research quality and trustworthiness evaluation
-- **Paper Weight Lab** (`paper_weight_lab.py`): Comprehensive evidential weight assessment (PySide6/Qt GUI)
-- **Paper Checker Lab** (`paper_checker_lab.py`): Interactive medical abstract fact-checking with step-by-step visualization
+- **Citation Lab** (`citation_lab.py`): Citation extraction experimentation
 - **Agent Demonstrations**: Examples showcasing multi-agent capabilities in `examples/` directory
 
 ## Configuration System
@@ -1145,6 +1070,7 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[CLI Guide](doc/users/cli_guide.md)** - Command-line interface usage
 - **[Research GUI Guide](doc/users/research_gui_guide.md)** - Desktop research application
 - **[Config GUI Guide](doc/users/config_gui_guide.md)** - Configuration interface
+- **[Paper Reviewer Lab Guide](doc/users/paper_reviewer_lab_guide.md)** - Comprehensive paper assessment
 - **[Fact Checker Guide](doc/users/fact_checker_guide.md)** - LLM training data auditing and statement verification
 - **[Fact Checker Review Guide](doc/users/fact_checker_review_guide.md)** - Human annotation and review GUI
 - **[Paper Checker Guide](doc/users/paper_checker_guide.md)** - Medical abstract fact-checking
@@ -1154,17 +1080,20 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[Study Assessment Guide](doc/users/study_assessment_guide.md)** - Research quality evaluation
 - **[Document Interrogation Guide](doc/users/document_interrogation_guide.md)** - Interactive document Q&A
 - **[Full-Text Discovery Guide](doc/users/full_text_discovery_guide.md)** - PDF discovery and download
+- **[PDF Export Guide](doc/users/pdf_export_guide.md)** - Markdown to PDF export
 - **[Query Agent Guide](doc/users/query_agent_guide.md)** - Natural language query processing
 - **[Multi-Model Query Guide](doc/users/multi_model_query_guide.md)** - Multi-model query generation
-- **[Query Performance Tracking](doc/users/query_performance_tracking.md)** - Performance analysis
 - **[Citation Guide](doc/users/citation_guide.md)** - Citation extraction and formatting
 - **[Reporting Guide](doc/users/reporting_guide.md)** - Report generation and export
 - **[Counterfactual Guide](doc/users/counterfactual_guide.md)** - Contradictory evidence analysis
-- **[Systematic Review Guide](doc/users/systematic_review_guide.md)** - Complete systematic literature review workflow
+- **[Systematic Review Guide](doc/users/systematic_review_guide.md)** - Systematic literature review workflow
 - **[Audit Validation Guide](doc/users/audit_validation_guide.md)** - Human validation of audit trail items
 - **[Writing Plugin Guide](doc/users/writing_plugin_guide.md)** - Citation-aware markdown editor
+- **[Settings Migration Guide](doc/users/settings_migration_guide.md)** - Database-backed settings migration
+- **[OpenAthens Guide](doc/users/openathens_guide.md)** - Institutional proxy authentication
+- **[MedRxiv Import Guide](doc/users/medrxiv_import_guide.md)** - MedRxiv preprint import
+- **[Document Embedding Guide](doc/users/document_embedding_guide.md)** - Document embedding generation
 - **[Workflow Guide](doc/users/workflow_guide.md)** - Workflow orchestration system
-- **[Migration System](doc/users/migration_system.md)** - Database migration system
 - **[Troubleshooting](doc/users/troubleshooting.md)** - Common issues and solutions
 
 ### Developer Documentation
@@ -1189,7 +1118,7 @@ Comprehensive documentation is available in the `doc/` directory:
 
 1. **Clone the repository:**
 ```bash
-git clone <repository-url>
+git clone https://github.com/hherb/bmlibrarian.git
 cd bmlibrarian
 ```
 
@@ -1247,7 +1176,7 @@ uv run python bmlibrarian_research_gui.py --auto "test question" --quick
 uv run python bmlibrarian_config_gui.py --debug
 ```
 
-Current test coverage: **>95%** across all agent modules
+Test suite: **145 test files** across all modules
 
 ### Development Commands
 
@@ -1324,107 +1253,15 @@ We welcome contributions to BMLibrarian! Areas for contribution include:
 
 BMLibrarian is a **production-ready** system with:
 
-- ✅ **Full Multi-Agent Architecture**: Complete implementation with 13+ specialized AI agents
-- ✅ **Comprehensive Workflow System**: 12-step research process with iterative capabilities  
-- ✅ **Robust Infrastructure**: Queue orchestration, error handling, and progress tracking
-- ✅ **Multiple Interfaces**: CLI, desktop GUI, and configuration applications
-- ✅ **Extensive Testing**: >95% test coverage across all agent modules
-- ✅ **Complete Documentation**: Both user guides and developer documentation
-- ✅ **Privacy-First**: Local LLM processing via Ollama for sensitive research data
-
-### Recent Major Updates
-
-#### Fact Checker System for LLM Training Data Auditing (Latest)
-- **Complete fact-checking infrastructure**: CLI tool and desktop GUI for biomedical statement verification
-- **Blind mode review**: Hide AI evaluations during human annotation to prevent bias
-- **Incremental processing**: Smart filtering to show only unannotated statements for efficient review
-- **SQLite database integration**: Persistent storage with intelligent JSON import/merge workflow
-- **Citation hallucination prevention**: Validation system ensures all citations reference real database documents
-- **Multi-user support**: Track annotations by different reviewers with user metadata
-- **Expandable citation cards**: Full abstract display with highlighted passages for context verification
-- **Database workflow**: Automatic `.db` creation from JSON files with seamless merging on subsequent imports
-- **Confidence assessment**: High/medium/low confidence ratings based on evidence strength and consistency
-- **Validation support**: Compare AI evaluations against expected answers for accuracy testing
-
-#### Database Migration System & Automatic Startup
-- **Automatic schema initialization**: Database migrations run automatically on application startup
-- **Incremental updates**: Smart migration system tracks completed migrations and only applies new ones
-- **Zero-downtime upgrades**: Seamless schema updates without manual intervention
-- **Migration tracking**: Comprehensive tracking of applied migrations with timestamps
-
-#### PostgreSQL Audit Trail System
-- **Comprehensive research tracking**: Persistent storage of complete research workflow sessions
-- **Session management**: Track research questions, queries, documents, scores, and citations
-- **Performance analysis**: Historical query performance data for optimization insights
-- **Document provenance**: Full traceability from query to final report citations
-- **Integration**: Seamlessly integrated into all CLI and GUI workflows
-
-#### Query Performance Tracking System
-- **Real-time model analysis**: Track which AI models find the most relevant documents
-- **Parameter optimization**: Identify best temperature, top_p, and other parameter combinations
-- **Unique document tracking**: See which models find documents others miss
-- **Statistical summaries**: Per-query and per-model performance metrics
-- **GUI integration**: Visual display of performance statistics in research GUI
-
-#### Multi-Model Query Generation
-- **Query diversity**: Use 1-3 queries per model across up to 3 different AI models
-- **Improved retrieval**: Typically finds 20-40% more relevant documents than single-model
-- **Smart pagination**: Efficient handling of large result sets across multiple queries
-- **Per-query result counts**: Visual display of documents found by each query/model
-- **Configuration GUI**: Dedicated tab for multi-model query generation settings
-- **Backward compatible**: Feature flag system (disabled by default, opt-in)
-
-#### Progressive Counterfactual Audit Trail
-- **Real-time workflow visualization**: Complete transparency into counterfactual analysis
-- **Stage-by-stage display**: Claims → Questions → Searches → Results → Citations → Summary
-- **Citation validation transparency**: See exactly why citations were rejected or accepted
-- **Persistent audit trail**: All stages remain visible after completion for detailed study
-- **User override capability**: Expert users can accept rejected citations with custom reasoning
-- **Enhanced token limits**: Reduced JSON truncation errors (6K→10K tokens)
-- **Consistent search parameters**: Counterfactual search uses same max_results as main search
-
-#### Multi-Agent System Implementation
-- Complete 6-agent architecture with specialized roles
-- Enum-based workflow orchestration system
-- SQLite-based task queue for memory-efficient processing
-- Human-in-the-loop interaction with auto-mode support
-
-#### Advanced Research Capabilities
-- Counterfactual analysis for finding contradictory evidence
-- Citation validation with AI-powered verification and rejection reasoning
-- Comprehensive report editing with evidence integration
-- Agent-driven refinement (agents can request more citations)
-- Document verification to prevent citation hallucination
-- Full abstract display for user judgment on rejected citations
-
-#### Modern GUI Applications
-- Desktop research application with progressive workflow visualization
-- Multi-model query generation with smart pagination and performance tracking
-- Query performance statistics showing model effectiveness in real-time
-- Progressive counterfactual audit trail with real-time updates
-- Configuration GUI with model selection and parameter tuning
-- Dedicated multi-model query generation configuration tab
-- Cross-platform compatibility with native desktop and web modes
-- Real-time agent execution monitoring
-- Color-coded relevance scores and priority badges
-- Visual value displays for all configuration sliders
-
-#### Workflow Enhancement
-- Iterative query refinement and threshold adjustment
-- Branching logic for conditional step execution
-- Context management and state preservation
-- Enhanced markdown export with proper citation formatting
-- Progressive display that persists after workflow completion
-
-#### Quality Improvements & Bug Fixes
-- **Serialization fixes**: Resolved datetime and scoring result JSON export bugs
-- **Performance tracking**: Restored progress callbacks for document scoring and citation extraction
-- **Multi-model pagination**: Smart handling of large result sets across multiple queries
-- **GUI slider improvements**: All configuration sliders now show current values visually
-- **Markdown handling**: Proper parsing of code blocks in LLM query responses
-- **Database connectivity**: Consistent use of DatabaseManager for all audit connections
-- **Citation extraction**: Full abstract display for rejected citations to aid user judgment
-- **Result deduplication**: Comprehensive statistics showing before/after deduplication comparison
+- **15+ Specialized AI Agents**: Full multi-agent architecture with sophisticated coordination
+- **Systematic Review Automation**: Checkpoint-based reviews with Cochrane/GRADE assessment
+- **Comprehensive Workflow System**: 12-step research process with iterative capabilities
+- **Robust Infrastructure**: Queue orchestration, error handling, semantic chunking, and progress tracking
+- **26 CLI/GUI Applications**: Research, configuration, fact-checking, systematic review, import tools
+- **16 GUI Plugins**: Modular PySide6/Qt plugin architecture
+- **134 Test Files**: Comprehensive test coverage across all modules
+- **272 Documentation Files**: User guides and developer documentation for every component
+- **Privacy-First**: All AI processing runs locally via Ollama
 
 ## License
 
@@ -1442,8 +1279,10 @@ BMLibrarian is a **production-ready** system with:
 BMLibrarian builds upon the power of:
 - **PostgreSQL + pgvector**: High-performance semantic search capabilities
 - **Ollama**: Local, privacy-preserving language model inference
-- **Flet**: Cross-platform GUI development framework
-- **Python Ecosystem**: Modern Python ≥3.12 with comprehensive typing support
+- **PySide6/Qt**: Cross-platform native desktop GUI framework
+- **ReportLab**: Professional PDF generation (BSD license)
+- **Playwright**: Browser automation for PDF discovery and OpenAthens authentication
+- **Python Ecosystem**: Modern Python >=3.12 with comprehensive typing support
 
 ---
 
