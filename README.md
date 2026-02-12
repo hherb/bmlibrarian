@@ -179,6 +179,7 @@ A markdown editor with integrated citation management for academic writing.
 - **PRISMA 2020 Compliance**: Assess systematic reviews against the full 27-item PRISMA 2020 checklist
 - **Document Interrogation**: Interactive Q&A interface for asking questions about loaded PDF, Markdown, or text documents
 - **Full-Text PDF Discovery**: Automated discovery and download from PMC, Unpaywall, DOI resolution, and OpenAthens
+- **Transparency Assessment**: Detect undisclosed bias risk by evaluating funding disclosure, COI statements, data availability, trial registration, and author contributions (CLI, Lab GUI, bulk metadata enrichment)
 - **PaperChecker System**: Fact-check medical abstracts by searching for contradictory literature evidence
 - **Fact Checker System**: LLM training data auditing with literature validation (CLI, desktop GUI, blind mode, incremental mode, SQLite integration)
 - **Multi-Model Query Generation**: Use up to 3 AI models simultaneously for 20-40% more relevant documents
@@ -614,6 +615,7 @@ uv run python -c "from bmlibrarian.discovery import download_pdf_for_document; .
 - **PRISMA2020Agent**: Assesses systematic reviews against the 27-item PRISMA 2020 checklist
 - **StudyAssessmentAgent**: Evaluates research quality, study design, and bias risk
 - **PaperWeightAgent**: Evidential weight scoring across five quality dimensions
+- **TransparencyAgent**: Undisclosed bias risk detection via funding, COI, data availability, and trial registration analysis
 - **DocumentInterrogationAgent**: Interactive Q&A with loaded documents (PDF, Markdown, text)
 - **SystematicReviewAgent**: Automated systematic literature review with Cochrane/GRADE assessment
 
@@ -975,6 +977,7 @@ The configuration GUI (`bmlibrarian_config_gui.py`) provides:
 - **QueryAgent Lab** (`query_lab.py`): Experimental interface for natural language to SQL conversion
 - **PICO Lab** (`pico_lab.py`): Interactive PICO component extraction from research papers
 - **PRISMA 2020 Lab** (`prisma2020_lab.py`): Systematic review compliance assessment against 27-item checklist
+- **Transparency Lab** (`transparency_lab.py`): Undisclosed bias risk assessment for research papers
 - **Study Assessment Lab** (`study_assessment_lab.py`): Research quality and trustworthiness evaluation
 - **Citation Lab** (`citation_lab.py`): Citation extraction experimentation
 - **Agent Demonstrations**: Examples showcasing multi-agent capabilities in `examples/` directory
@@ -1078,6 +1081,7 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[PICO Agent Guide](doc/users/pico_agent_guide.md)** - PICO component extraction for systematic reviews
 - **[PRISMA 2020 Guide](doc/users/prisma2020_guide.md)** - Systematic review compliance assessment
 - **[Study Assessment Guide](doc/users/study_assessment_guide.md)** - Research quality evaluation
+- **[Transparency Assessment Guide](doc/users/transparency_assessment_guide.md)** - Undisclosed bias risk detection
 - **[Document Interrogation Guide](doc/users/document_interrogation_guide.md)** - Interactive document Q&A
 - **[Full-Text Discovery Guide](doc/users/full_text_discovery_guide.md)** - PDF discovery and download
 - **[PDF Export Guide](doc/users/pdf_export_guide.md)** - Markdown to PDF export
@@ -1106,6 +1110,7 @@ Comprehensive documentation is available in the `doc/` directory:
 - **[PICO Agent](doc/developers/pico_agent.md)** - PICO extraction system internals
 - **[PRISMA 2020 System](doc/developers/prisma2020_system.md)** - PRISMA compliance assessment system
 - **[Study Assessment System](doc/developers/study_assessment_system.md)** - Research quality evaluation system
+- **[Transparency Assessment System](doc/developers/transparency_assessment_system.md)** - Bias risk detection architecture
 - **[Full-Text Discovery System](doc/developers/full_text_discovery_system.md)** - PDF discovery architecture
 - **[Document Card Factory](doc/developers/document_card_factory_system.md)** - GUI document card system
 - **[Multi-Model Architecture](doc/developers/multi_model_architecture.md)** - Multi-model query generation
