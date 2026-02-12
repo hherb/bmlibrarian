@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import scaled
-from bmlibrarian.config import get_models_list, get_model
+from bmlibrarian.config import get_model
 
 from ..constants import (
     INPUT_TYPE_DOI, INPUT_TYPE_PMID, INPUT_TYPE_PDF,
@@ -220,8 +220,10 @@ class InputPanel(QWidget):
     def _populate_models(self) -> None:
         """Populate the model dropdown."""
         try:
-            models = get_models_list()
-            current_model = get_model('paper_reviewer')
+            import ollama
+            models_response = ollama.list()
+            models = [m.model for m in models_response.models]
+            current_model = get_model('paper_reviewer', default='gpt-oss:20b')
 
             self.model_combo.clear()
             for model in models:
@@ -233,7 +235,7 @@ class InputPanel(QWidget):
                 self.model_combo.setCurrentIndex(index)
         except Exception as e:
             logger.warning(f"Failed to get models list: {e}")
-            self.model_combo.addItem("default")
+            self.model_combo.addItem("gpt-oss:20b")
 
     def _on_input_changed(self, input_type: str) -> None:
         """Handle input field change."""
