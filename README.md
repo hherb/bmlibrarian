@@ -1268,6 +1268,18 @@ BMLibrarian is a **production-ready** system with:
 - **272 Documentation Files**: User guides and developer documentation for every component
 - **Privacy-First**: All AI processing runs locally via Ollama
 
+## Related Projects
+
+BMLibrarian is part of a family of open-source tools for biomedical research. These companion projects extend its capabilities in different directions:
+
+- **[bmlibrarian_lite](https://github.com/hherb/bmlibrarian_lite)** — A lightweight version of BMLibrarian that runs without PostgreSQL. Features native desktop (PySide6), iOS/macOS (Swift), and Android (Kotlin) apps with SQLite+sqlite-vec storage, FastEmbed embeddings, and support for multiple LLM providers (Anthropic, OpenAI, Ollama).
+
+- **[bmlib](https://github.com/hherb/bmlib)** — Shared Python library providing LLM abstraction across providers (Anthropic, OpenAI, Ollama, DeepSeek, Mistral, Gemini), quality assessment pipelines, transparency analysis, publication ingestion from PubMed/bioRxiv/medRxiv, and database utilities. Available on PyPI.
+
+- **[biasbuster](https://github.com/hherb/biasbuster)** — Toolkit for building curated training datasets to fine-tune LLMs for detecting bias in biomedical abstracts. Includes data collection from Retraction Watch and Cochrane, multi-dimensional bias taxonomy, LoRA fine-tuning infrastructure, and evaluation harness with statistical comparison of model performance.
+
+- **[BioMedicalNews](https://github.com/hherb/BioMedicalNews)** — Biomedical news reader that fetches preprints from medRxiv, bioRxiv, and Europe PMC, uses LLM-based relevance scoring and quality evaluation, and delivers curated digests via email. Built on bmlib.
+
 ## License
 
 [License information to be added]
