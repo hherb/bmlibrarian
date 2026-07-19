@@ -41,12 +41,17 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Iterator, Tuple
 
 from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.importers.transaction_utils import record_savepoint
 
 logger = logging.getLogger(__name__)
 
 # Constants
 DEFAULT_BATCH_SIZE = 100
 EUROPE_PMC_SOURCE_NAME = 'europepmc'
+
+# SAVEPOINT name used to isolate each article's writes within a batch
+# transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
+EUROPE_PMC_ARTICLE_SAVEPOINT = "europe_pmc_article_record"
 
 
 @dataclass
@@ -1029,7 +1034,13 @@ class EuropePMCImporter:
             with conn.cursor() as cur:
                 for article in articles:
                     try:
-                        result = self._upsert_article(cur, article, source_id)
+                        # Each article's writes run inside a SAVEPOINT so a
+                        # failure for this article only discards this
+                        # article's writes and leaves the connection in a
+                        # healthy (non-aborted) state, instead of poisoning
+                        # every subsequent article in this batch.
+                        with record_savepoint(cur, EUROPE_PMC_ARTICLE_SAVEPOINT):
+                            result = self._upsert_article(cur, article, source_id)
                         stats[result] += 1
                     except Exception as e:
                         logger.debug(f"Failed to upsert {article.pmcid}: {e}")

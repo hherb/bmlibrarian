@@ -33,6 +33,7 @@ from pathlib import Path
 # Import bmlibrarian components
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.utils.pdf_validation import is_pdf_file
+from bmlibrarian.importers.transaction_utils import record_savepoint
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ EXTRACTION_STRATEGIES = ('auto', 'pdf_only', 'web_only')
 
 # Default extraction priority for 'auto' strategy
 DEFAULT_EXTRACTION_PRIORITY = ['text', 'html', 'jats_xml', 'pdf']
+
+# SAVEPOINT name used to isolate each paper's writes within a batch
+# transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
+MEDRXIV_PAPER_SAVEPOINT = "medrxiv_paper_record"
 
 # Use 'spawn' start method on macOS to avoid fork-related issues
 # This must be set before any multiprocessing operations
@@ -670,102 +675,107 @@ class MedRxivImporter:
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 for paper in progress:
+                    doi = paper.get('doi', 'unknown')
                     try:
-                        doi = paper.get('doi', '')
+                        # Each paper's writes run inside a SAVEPOINT so that a
+                        # failure for this paper only discards this paper's
+                        # writes, not previously-inserted papers already
+                        # counted as successes in this batch transaction.
+                        with record_savepoint(cur, MEDRXIV_PAPER_SAVEPOINT):
+                            doi = paper.get('doi', '')
 
-                        # Set progress description
-                        if tqdm:
-                            progress.set_description(f"Processing {doi}")
+                            # Set progress description
+                            if tqdm:
+                                progress.set_description(f"Processing {doi}")
 
-                        # Check if already exists
-                        cur.execute(
-                            "SELECT id FROM document WHERE source_id = %s AND doi = %s",
-                            (self.source_id, doi)
-                        )
-                        existing = cur.fetchone()
-
-                        if existing:
-                            logger.debug(f"Paper already exists: {doi}")
-                            continue
-
-                        # Handle authors
-                        authors_list = paper.get('authors', [])
-                        if isinstance(authors_list, list):
-                            author_names = []
-                            for author in authors_list:
-                                if isinstance(author, dict) and 'author' in author:
-                                    author_names.append(author['author'])
-                                elif isinstance(author, str):
-                                    author_names.append(author)
-                            authors = author_names
-                        else:
-                            authors = [str(authors_list)] if authors_list else []
-
-                        # Download PDF and extract text based on strategy
-                        pdf_filename = ""
-                        full_text = ""
-                        version = paper.get('version', '1')
-                        jats_xml_path = paper.get('jatsxml', None)  # API may provide this
-
-                        if download_pdfs:
-                            filename, _ = self.download_pdf(paper)
-                            if filename:
-                                pdf_filename = filename
-
-                        # Extract full text using configured strategy
-                        # For 'auto' and 'web_only', try web formats first
-                        # For 'pdf_only', only use PDF
-                        if download_pdfs or self.extraction_strategy != 'pdf_only':
-                            full_text, format_used = self.extract_full_text_multi_format(
-                                doi=doi,
-                                version=version,
-                                jats_xml_path=jats_xml_path,
-                                pdf_filename=pdf_filename if pdf_filename else None
+                            # Check if already exists
+                            cur.execute(
+                                "SELECT id FROM document WHERE source_id = %s AND doi = %s",
+                                (self.source_id, doi)
                             )
-                            if format_used:
-                                logger.debug(f"Extracted {doi} via {format_used}")
+                            existing = cur.fetchone()
 
-                        # Prepare data for insertion
-                        title = paper.get('title', '')
-                        # Format abstract with Markdown section headers
-                        abstract = self._format_abstract_markdown(paper.get('abstract', ''))
-                        date_posted = paper.get('date', '').split()[0] if ' ' in paper.get('date', '') else paper.get('date', '')
-                        category = paper.get('category', '')
-                        # version already set above for extraction
+                            if existing:
+                                logger.debug(f"Paper already exists: {doi}")
+                                continue
 
-                        pdf_url = f"https://www.medrxiv.org/content/{doi}v{version}.full.pdf"
-                        url = f"https://www.medrxiv.org/content/{doi}"
+                            # Handle authors
+                            authors_list = paper.get('authors', [])
+                            if isinstance(authors_list, list):
+                                author_names = []
+                                for author in authors_list:
+                                    if isinstance(author, dict) and 'author' in author:
+                                        author_names.append(author['author'])
+                                    elif isinstance(author, str):
+                                        author_names.append(author)
+                                authors = author_names
+                            else:
+                                authors = [str(authors_list)] if authors_list else []
 
-                        # Insert document
-                        cur.execute("""
-                            INSERT INTO document (
-                                source_id, external_id, doi, title, abstract,
-                                authors, publication, publication_date,
-                                url, pdf_url, pdf_filename, full_text
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                        """, (
-                            self.source_id,
-                            doi,  # external_id
-                            doi,
-                            title,
-                            abstract,
-                            authors,
-                            'medRxiv',  # publication name
-                            date_posted or None,
-                            url,
-                            pdf_url,
-                            pdf_filename,
-                            full_text
-                        ))
+                            # Download PDF and extract text based on strategy
+                            pdf_filename = ""
+                            full_text = ""
+                            version = paper.get('version', '1')
+                            jats_xml_path = paper.get('jatsxml', None)  # API may provide this
 
-                        doc_id = cur.fetchone()[0]
-                        logger.debug(f"Inserted document ID {doc_id} for DOI {doi}")
-                        success_count += 1
+                            if download_pdfs:
+                                filename, _ = self.download_pdf(paper)
+                                if filename:
+                                    pdf_filename = filename
+
+                            # Extract full text using configured strategy
+                            # For 'auto' and 'web_only', try web formats first
+                            # For 'pdf_only', only use PDF
+                            if download_pdfs or self.extraction_strategy != 'pdf_only':
+                                full_text, format_used = self.extract_full_text_multi_format(
+                                    doi=doi,
+                                    version=version,
+                                    jats_xml_path=jats_xml_path,
+                                    pdf_filename=pdf_filename if pdf_filename else None
+                                )
+                                if format_used:
+                                    logger.debug(f"Extracted {doi} via {format_used}")
+
+                            # Prepare data for insertion
+                            title = paper.get('title', '')
+                            # Format abstract with Markdown section headers
+                            abstract = self._format_abstract_markdown(paper.get('abstract', ''))
+                            date_posted = paper.get('date', '').split()[0] if ' ' in paper.get('date', '') else paper.get('date', '')
+                            category = paper.get('category', '')
+                            # version already set above for extraction
+
+                            pdf_url = f"https://www.medrxiv.org/content/{doi}v{version}.full.pdf"
+                            url = f"https://www.medrxiv.org/content/{doi}"
+
+                            # Insert document
+                            cur.execute("""
+                                INSERT INTO document (
+                                    source_id, external_id, doi, title, abstract,
+                                    authors, publication, publication_date,
+                                    url, pdf_url, pdf_filename, full_text
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                RETURNING id
+                            """, (
+                                self.source_id,
+                                doi,  # external_id
+                                doi,
+                                title,
+                                abstract,
+                                authors,
+                                'medRxiv',  # publication name
+                                date_posted or None,
+                                url,
+                                pdf_url,
+                                pdf_filename,
+                                full_text
+                            ))
+
+                            doc_id = cur.fetchone()[0]
+                            logger.debug(f"Inserted document ID {doc_id} for DOI {doi}")
+                            success_count += 1
 
                     except Exception as e:
-                        logger.error(f"Error processing paper {paper.get('doi', 'unknown')}: {e}")
-                        conn.rollback()
+                        logger.error(f"Error processing paper {doi}: {e}")
                         continue
 
         return success_count

@@ -29,6 +29,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from bmlibrarian.importers.transaction_utils import record_savepoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,14 @@ DEFAULT_DATA_DIR = "~/clinicaltrials"
 
 # NCT pattern for matching in document text
 NCT_PATTERN = re.compile(r'NCT\d{8}')
+
+# SAVEPOINT name used to isolate each trial's writes within the import
+# transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
+CLINICALTRIALS_RECORD_SAVEPOINT = "clinicaltrials_trial_record"
+
+# Commit periodically during the (potentially multi-hour) bulk import so a
+# crash or interruption does not lose an entire run's worth of progress.
+CLINICALTRIALS_COMMIT_INTERVAL = 1000
 
 
 @dataclass
@@ -274,38 +284,43 @@ class ClinicalTrialsBulkImporter:
 
                             stats["parsed"] += 1
 
-                            # Store in transparency.document_metadata
-                            # We don't know the document_id yet - that's done in match step
-                            # For now, store in a staging approach via the nct_id column
-                            cur.execute(
-                                """
-                                INSERT INTO transparency.document_metadata (
-                                    document_id, clinical_trial_id, trial_sponsor,
-                                    trial_sponsor_class, trial_status, source
+                            # Each trial's write runs inside a SAVEPOINT so a
+                            # failure for this trial only discards this
+                            # trial's write, not every trial already stored
+                            # earlier in this run's transaction.
+                            with record_savepoint(cur, CLINICALTRIALS_RECORD_SAVEPOINT):
+                                # Store in transparency.document_metadata
+                                # We don't know the document_id yet - that's done in match step
+                                # For now, store in a staging approach via the nct_id column
+                                cur.execute(
+                                    """
+                                    INSERT INTO transparency.document_metadata (
+                                        document_id, clinical_trial_id, trial_sponsor,
+                                        trial_sponsor_class, trial_status, source
+                                    )
+                                    SELECT d.id, %s, %s, %s, %s, 'clinicaltrials_bulk'
+                                    FROM public.document d
+                                    WHERE d.full_text LIKE %s
+                                       OR d.abstract LIKE %s
+                                    LIMIT 1
+                                    ON CONFLICT (document_id) DO UPDATE SET
+                                        clinical_trial_id = EXCLUDED.clinical_trial_id,
+                                        trial_sponsor = EXCLUDED.trial_sponsor,
+                                        trial_sponsor_class = EXCLUDED.trial_sponsor_class,
+                                        trial_status = EXCLUDED.trial_status,
+                                        imported_at = NOW()
+                                    """,
+                                    (
+                                        trial.nct_id,
+                                        trial.lead_sponsor_name,
+                                        trial.lead_sponsor_class,
+                                        trial.overall_status,
+                                        f'%{trial.nct_id}%',
+                                        f'%{trial.nct_id}%',
+                                    ),
                                 )
-                                SELECT d.id, %s, %s, %s, %s, 'clinicaltrials_bulk'
-                                FROM public.document d
-                                WHERE d.full_text LIKE %s
-                                   OR d.abstract LIKE %s
-                                LIMIT 1
-                                ON CONFLICT (document_id) DO UPDATE SET
-                                    clinical_trial_id = EXCLUDED.clinical_trial_id,
-                                    trial_sponsor = EXCLUDED.trial_sponsor,
-                                    trial_sponsor_class = EXCLUDED.trial_sponsor_class,
-                                    trial_status = EXCLUDED.trial_status,
-                                    imported_at = NOW()
-                                """,
-                                (
-                                    trial.nct_id,
-                                    trial.lead_sponsor_name,
-                                    trial.lead_sponsor_class,
-                                    trial.overall_status,
-                                    f'%{trial.nct_id}%',
-                                    f'%{trial.nct_id}%',
-                                ),
-                            )
-                            if cur.rowcount > 0:
-                                stats["stored"] += 1
+                                if cur.rowcount > 0:
+                                    stats["stored"] += 1
 
                         except Exception as e:
                             stats["errors"] += 1
@@ -316,6 +331,11 @@ class ClinicalTrialsBulkImporter:
                                 f"Processed {i + 1}/{total} trials "
                                 f"(stored: {stats['stored']})"
                             )
+
+                        # Commit periodically so a crash mid-run doesn't
+                        # lose an entire multi-hour import's progress.
+                        if (i + 1) % CLINICALTRIALS_COMMIT_INTERVAL == 0:
+                            conn.commit()
 
                     conn.commit()
 

@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from bmlibrarian.importers.transaction_utils import record_savepoint
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,14 @@ REASON_COLUMNS = ("Reason", "Reasons", "Reason(s)", "RetractionReason")
 DATE_COLUMNS = ("RetractionDate", "Retraction Date", "retraction_date", "Date")
 NATURE_COLUMNS = ("RetractionNature", "Nature", "Type", "retraction_nature")
 TITLE_COLUMNS = ("Title", "title", "OriginalPaperTitle", "Original Paper Title")
+
+# SAVEPOINT name used to isolate each record's writes within the import
+# transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
+RETRACTION_WATCH_RECORD_SAVEPOINT = "retraction_watch_record"
+
+# Commit periodically during the import so a crash or interruption does not
+# lose an entire run's worth of progress.
+RETRACTION_WATCH_COMMIT_INTERVAL = 1000
 
 
 def _find_column(row: Dict[str, str], candidates: tuple) -> Optional[str]:
@@ -155,83 +165,82 @@ class RetractionWatchImporter:
                             except ValueError:
                                 continue
 
-                    # Try to match by DOI first, then PMID
+                    # Try to match by DOI first, then PMID, then store the
+                    # retraction. The whole record (matching + write) runs
+                    # inside one SAVEPOINT: if anything fails -- including a
+                    # match query -- we roll back to the savepoint instead of
+                    # leaving the transaction aborted for every subsequent
+                    # row, and instead of discarding rows already stored
+                    # earlier in this run's transaction.
                     document_id = None
                     match_method = None
 
-                    if doi:
-                        try:
-                            cur.execute(
-                                "SELECT id FROM public.document WHERE doi = %s LIMIT 1",
-                                (doi,),
-                            )
-                            result = cur.fetchone()
-                            if result:
-                                document_id = result[0]
-                                match_method = "doi"
-                        except Exception:
-                            pass
-
-                    if document_id is None and pmid:
-                        try:
-                            cur.execute(
-                                "SELECT id FROM public.document WHERE external_id = %s LIMIT 1",
-                                (pmid,),
-                            )
-                            result = cur.fetchone()
-                            if result:
-                                document_id = result[0]
-                                match_method = "pmid"
-                        except Exception:
-                            pass
-
-                    if document_id is None:
-                        stats["unmatched"] += 1
-                        continue
-
                     try:
-                        # Update transparency.document_metadata
-                        cur.execute(
-                            """
-                            INSERT INTO transparency.document_metadata (
-                                document_id, is_retracted, retraction_reason,
-                                retraction_date, retraction_source, source
-                            ) VALUES (%s, TRUE, %s, %s, 'retraction_watch', 'retraction_watch')
-                            ON CONFLICT (document_id) DO UPDATE SET
-                                is_retracted = TRUE,
-                                retraction_reason = COALESCE(
-                                    EXCLUDED.retraction_reason,
-                                    transparency.document_metadata.retraction_reason
-                                ),
-                                retraction_date = COALESCE(
-                                    EXCLUDED.retraction_date,
-                                    transparency.document_metadata.retraction_date
-                                ),
-                                retraction_source = 'retraction_watch',
-                                imported_at = NOW()
-                            """,
-                            (document_id, reason, retraction_date),
-                        )
+                        with record_savepoint(cur, RETRACTION_WATCH_RECORD_SAVEPOINT):
+                            if doi:
+                                cur.execute(
+                                    "SELECT id FROM public.document WHERE doi = %s LIMIT 1",
+                                    (doi,),
+                                )
+                                result = cur.fetchone()
+                                if result:
+                                    document_id = result[0]
+                                    match_method = "doi"
 
-                        # Also update doi_metadata.is_retracted for consistency
-                        if doi:
-                            cur.execute(
-                                """
-                                UPDATE public.doi_metadata
-                                SET is_retracted = TRUE
-                                WHERE doi = %s
-                                """,
-                                (doi,),
-                            )
+                            if document_id is None and pmid:
+                                cur.execute(
+                                    "SELECT id FROM public.document WHERE external_id = %s LIMIT 1",
+                                    (pmid,),
+                                )
+                                result = cur.fetchone()
+                                if result:
+                                    document_id = result[0]
+                                    match_method = "pmid"
 
-                        if match_method == "doi":
+                            if document_id is not None:
+                                # Update transparency.document_metadata
+                                cur.execute(
+                                    """
+                                    INSERT INTO transparency.document_metadata (
+                                        document_id, is_retracted, retraction_reason,
+                                        retraction_date, retraction_source, source
+                                    ) VALUES (%s, TRUE, %s, %s, 'retraction_watch', 'retraction_watch')
+                                    ON CONFLICT (document_id) DO UPDATE SET
+                                        is_retracted = TRUE,
+                                        retraction_reason = COALESCE(
+                                            EXCLUDED.retraction_reason,
+                                            transparency.document_metadata.retraction_reason
+                                        ),
+                                        retraction_date = COALESCE(
+                                            EXCLUDED.retraction_date,
+                                            transparency.document_metadata.retraction_date
+                                        ),
+                                        retraction_source = 'retraction_watch',
+                                        imported_at = NOW()
+                                    """,
+                                    (document_id, reason, retraction_date),
+                                )
+
+                                # Also update doi_metadata.is_retracted for consistency
+                                if doi:
+                                    cur.execute(
+                                        """
+                                        UPDATE public.doi_metadata
+                                        SET is_retracted = TRUE
+                                        WHERE doi = %s
+                                        """,
+                                        (doi,),
+                                    )
+                    except Exception as e:
+                        stats["errors"] += 1
+                        logger.debug(f"Error processing retraction row {i} (DOI {doi}): {e}")
+                    else:
+                        if document_id is None:
+                            stats["unmatched"] += 1
+                        elif match_method == "doi":
                             stats["matched_by_doi"] += 1
                         else:
                             stats["matched_by_pmid"] += 1
-
-                    except Exception as e:
-                        stats["errors"] += 1
-                        logger.debug(f"Error storing retraction for DOI {doi}: {e}")
 
                     if progress_callback and (i + 1) % 1000 == 0:
                         matched = stats["matched_by_doi"] + stats["matched_by_pmid"]
@@ -239,6 +248,11 @@ class RetractionWatchImporter:
                             f"Processed {i + 1}/{len(rows)} records "
                             f"(matched: {matched})"
                         )
+
+                    # Commit periodically so a crash mid-run doesn't lose an
+                    # entire run's progress.
+                    if (i + 1) % RETRACTION_WATCH_COMMIT_INTERVAL == 0:
+                        conn.commit()
 
                 conn.commit()
 

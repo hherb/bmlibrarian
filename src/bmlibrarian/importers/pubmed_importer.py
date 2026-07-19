@@ -27,6 +27,7 @@ from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.importers.transaction_utils import record_savepoint
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,10 @@ try:
 except ImportError:
     logger.warning("tqdm not installed. Progress bars will not be displayed.")
     tqdm = None
+
+# SAVEPOINT name used to isolate each article's writes within a batch
+# transaction (see bmlibrarian.importers.transaction_utils.record_savepoint)
+PUBMED_ARTICLE_SAVEPOINT = "pubmed_article_record"
 
 
 class PubMedImporter:
@@ -463,48 +468,54 @@ class PubMedImporter:
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 for article in articles:
+                    pmid = article.get('pmid', 'unknown')
                     try:
-                        pmid = article['pmid']
+                        # Each article's writes run inside a SAVEPOINT so a
+                        # failure for this article only discards this
+                        # article's writes, not previously-inserted articles
+                        # already counted as successes in this batch
+                        # transaction.
+                        with record_savepoint(cur, PUBMED_ARTICLE_SAVEPOINT):
+                            pmid = article['pmid']
 
-                        # Check if already exists
-                        cur.execute("""
-                            SELECT id FROM document
-                            WHERE source_id = %s AND external_id = %s
-                        """, (self.source_id, pmid))
+                            # Check if already exists
+                            cur.execute("""
+                                SELECT id FROM document
+                                WHERE source_id = %s AND external_id = %s
+                            """, (self.source_id, pmid))
 
-                        if cur.fetchone():
-                            logger.debug(f"Article PMID:{pmid} already exists")
-                            continue
+                            if cur.fetchone():
+                                logger.debug(f"Article PMID:{pmid} already exists")
+                                continue
 
-                        # Insert article
-                        cur.execute("""
-                            INSERT INTO document (
-                                source_id, external_id, doi, title, abstract,
-                                authors, publication, publication_date,
-                                url, mesh_terms, keywords
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                        """, (
-                            self.source_id,
-                            pmid,
-                            article.get('doi'),
-                            article['title'],
-                            article['abstract'],
-                            article['authors'],
-                            article['publication'],
-                            article.get('publication_date'),
-                            article['url'],
-                            article.get('mesh_terms', []),
-                            article.get('keywords', [])
-                        ))
+                            # Insert article
+                            cur.execute("""
+                                INSERT INTO document (
+                                    source_id, external_id, doi, title, abstract,
+                                    authors, publication, publication_date,
+                                    url, mesh_terms, keywords
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                RETURNING id
+                            """, (
+                                self.source_id,
+                                pmid,
+                                article.get('doi'),
+                                article['title'],
+                                article['abstract'],
+                                article['authors'],
+                                article['publication'],
+                                article.get('publication_date'),
+                                article['url'],
+                                article.get('mesh_terms', []),
+                                article.get('keywords', [])
+                            ))
 
-                        doc_id = cur.fetchone()[0]
-                        logger.debug(f"Inserted article ID {doc_id} (PMID:{pmid})")
-                        success_count += 1
+                            doc_id = cur.fetchone()[0]
+                            logger.debug(f"Inserted article ID {doc_id} (PMID:{pmid})")
+                            success_count += 1
 
                     except Exception as e:
-                        logger.error(f"Error storing article PMID:{article.get('pmid', 'unknown')}: {e}")
-                        conn.rollback()
+                        logger.error(f"Error storing article PMID:{pmid}: {e}")
                         continue
 
         return success_count
