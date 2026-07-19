@@ -16,12 +16,6 @@ except ImportError:
     # Qt not available
     PaperCheckerLab = None
 
-# Legacy Flet-based PaperCheckerLab
-try:
-    from .paper_checker_lab_flet import PaperCheckerLab as PaperCheckerLabFlet
-except ImportError:
-    PaperCheckerLabFlet = None
-
 # PubMed Search Lab - Qt-based
 try:
     from .pubmed_search_lab import PubMedSearchLabWindow, run_pubmed_search_lab
@@ -42,7 +36,6 @@ __all__ = [
     'CitationAgentLab',
     'PICOLab',
     'PaperCheckerLab',
-    'PaperCheckerLabFlet',
     'PaperReviewerLab',
     'ImporterTestLab',
     'PubMedSearchLabWindow',
