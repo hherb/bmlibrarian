@@ -6,17 +6,17 @@ bmlsettings PostgreSQL schema.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 
-from psycopg import Connection
+from psycopg import Connection, Cursor
 from psycopg.rows import dict_row
 
 
-# Valid settings categories
-VALID_CATEGORIES = frozenset([
-    'models', 'ollama', 'agents', 'database', 'search',
-    'query_generation', 'gui', 'openathens', 'pdf', 'general'
-])
+# Valid settings categories — single source of truth lives in
+# bmlibrarian.config.VALID_SETTINGS_CATEGORIES so the two whitelists (and
+# the bmlsettings CHECK constraints, see migration 030) cannot drift apart.
+from ..config import VALID_SETTINGS_CATEGORIES as VALID_CATEGORIES
 
 
 class UserSettingsManager:
@@ -64,6 +64,33 @@ class UserSettingsManager:
         """Get the current user ID."""
         return self._user_id
 
+    @contextmanager
+    def _cursor(self) -> Iterator[Cursor]:
+        """Cursor with rollback-on-error transaction safety.
+
+        The settings manager shares a long-lived connection (GUI session /
+        CLI persistent connection). Without a rollback, one failed statement
+        would leave that connection in PostgreSQL's aborted-transaction
+        state and every subsequent settings operation would fail until the
+        process restarts.
+
+        Yields:
+            A cursor on the managed connection.
+
+        Raises:
+            Re-raises whatever the wrapped block raised, after rolling the
+            connection back to a clean state.
+        """
+        try:
+            with self._conn.cursor() as cur:
+                yield cur
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception as rollback_error:
+                self._logger.error(f"Rollback failed: {rollback_error}")
+            raise
+
     def get(self, category: str, use_cache: bool = True) -> Dict[str, Any]:
         """Get settings for a category.
 
@@ -91,7 +118,7 @@ class UserSettingsManager:
             return self._cache[category].copy()
 
         # Load from database
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT bmlsettings.get_user_settings(%s, %s)",
                 (self._user_id, category)
@@ -154,7 +181,7 @@ class UserSettingsManager:
                 f"Valid categories: {', '.join(sorted(VALID_CATEGORIES))}"
             )
 
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT bmlsettings.save_user_settings(%s, %s, %s)",
                 (self._user_id, category, json.dumps(settings))
@@ -200,7 +227,7 @@ class UserSettingsManager:
         Returns:
             Dictionary with category names as keys and settings dicts as values.
         """
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT bmlsettings.get_all_user_settings(%s)",
                 (self._user_id,)
@@ -232,7 +259,7 @@ class UserSettingsManager:
                 f"Valid categories: {', '.join(sorted(VALID_CATEGORIES))}"
             )
 
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """
                 DELETE FROM bmlsettings.user_settings
@@ -254,7 +281,7 @@ class UserSettingsManager:
         Returns:
             True if all settings were reset successfully.
         """
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "DELETE FROM bmlsettings.user_settings WHERE user_id = %s",
                 (self._user_id,)
@@ -283,7 +310,7 @@ class UserSettingsManager:
         if category not in VALID_CATEGORIES:
             return False
 
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """
                 SELECT 1 FROM bmlsettings.user_settings
@@ -311,7 +338,7 @@ class UserSettingsManager:
                 f"Valid categories: {', '.join(sorted(VALID_CATEGORIES))}"
             )
 
-        with self._conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """
                 SELECT settings FROM bmlsettings.default_settings

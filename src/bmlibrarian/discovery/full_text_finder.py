@@ -26,6 +26,12 @@ from .resolvers import (
     PMCResolver, UnpaywallResolver, OpenAthensResolver
 )
 from ..utils.url_validation import get_validated_openathens_url
+from ..utils.pdf_validation import is_pdf_content
+from ..utils.download_utils import (
+    partial_download_path,
+    promote_partial_download,
+    discard_partial_download,
+)
 from .pmc_package_downloader import PMCPackageDownloader
 
 logger = logging.getLogger(__name__)
@@ -570,6 +576,10 @@ class FullTextFinder:
                 duration_ms=(time.time() - start_time) * 1000
             )
 
+        # All writes go to a temporary .part sibling of output_path; error
+        # handlers discard only that partial file, never a pre-existing good
+        # file at the final path.
+        part_path = partial_download_path(output_path)
         for attempt in range(max_attempts):
             try:
                 if attempt > 0:
@@ -586,7 +596,7 @@ class FullTextFinder:
 
                 # Download file
                 total_size = 0
-                with open(output_path, 'wb') as f:
+                with open(part_path, 'wb') as f:
                     def write_chunk(data: bytes) -> None:
                         nonlocal total_size
                         f.write(data)
@@ -599,16 +609,16 @@ class FullTextFinder:
                 # Verify file was written
                 if total_size == 0:
                     last_error = "Downloaded file is empty"
-                    if output_path.exists():
-                        output_path.unlink()
+                    discard_partial_download(part_path)
                     continue
 
                 # Verify it's actually a PDF
-                if not self._verify_pdf(output_path):
+                if not self._verify_pdf(part_path):
                     last_error = "Downloaded file is not a valid PDF"
-                    output_path.unlink()
+                    discard_partial_download(part_path)
                     continue
 
+                promote_partial_download(part_path, output_path)
                 logger.info(f"Downloaded PDF via FTP ({total_size} bytes) from {host}")
 
                 return DownloadResult(
@@ -627,14 +637,22 @@ class FullTextFinder:
             except ftplib.error_temp as e:
                 last_error = f"FTP temporary error: {e}"
                 logger.debug(f"FTP temporary error for {url}: {e}")
+                # retrbinary() can fail mid-transfer after bytes were written;
+                # discard the partial file (never the final path, which may
+                # hold a previous successful download).
+                discard_partial_download(part_path)
 
             except (TimeoutError, ftplib.error_reply) as e:
                 last_error = f"FTP connection error: {e}"
                 logger.debug(f"FTP connection error for {url}: {e}")
+                # As above - a dropped connection can happen mid-transfer.
+                discard_partial_download(part_path)
 
             except Exception as e:
                 last_error = f"FTP error: {e}"
                 logger.debug(f"FTP download error for {url}: {e}")
+                # As above - an unexpected error can happen mid-transfer.
+                discard_partial_download(part_path)
 
         return DownloadResult(
             success=False,
@@ -697,7 +715,10 @@ class FullTextFinder:
 
                 logger.info("Using OpenAthens authenticated session")
 
-        # Attempt download with retries
+        # Attempt download with retries. All writes go to a temporary .part
+        # sibling of output_path; error handlers discard only that partial
+        # file, never a pre-existing good file at the final path.
+        part_path = partial_download_path(output_path)
         last_error = None
         for attempt in range(max_attempts):
             try:
@@ -725,9 +746,12 @@ class FullTextFinder:
                 # Create output directory if needed
                 output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Save file
+                # Stream into a temporary .part file and only promote it to
+                # output_path after validation, so a failed attempt can never
+                # leave a truncated file at (or delete a pre-existing good
+                # file from) the final path.
                 total_size = 0
-                with open(output_path, 'wb') as f:
+                with open(part_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
@@ -736,16 +760,16 @@ class FullTextFinder:
                 # Verify file was written
                 if total_size == 0:
                     last_error = "Downloaded file is empty"
-                    if output_path.exists():
-                        output_path.unlink()
+                    discard_partial_download(part_path)
                     continue
 
                 # Verify it's actually a PDF
-                if not self._verify_pdf(output_path):
+                if not self._verify_pdf(part_path):
                     last_error = "Downloaded file is not a valid PDF"
-                    output_path.unlink()
+                    discard_partial_download(part_path)
                     continue
 
+                promote_partial_download(part_path, output_path)
                 logger.info(f"Downloaded PDF ({total_size} bytes) from {source.source_type.value}")
 
                 return DownloadResult(
@@ -769,12 +793,20 @@ class FullTextFinder:
 
             except requests.exceptions.Timeout:
                 last_error = "Download timeout"
+                # A timeout can occur mid-stream after bytes were written;
+                # discard the partial file (never the final path, which may
+                # hold a previous successful download).
+                discard_partial_download(part_path)
 
             except requests.exceptions.ConnectionError as e:
                 last_error = f"Connection error: {e}"
+                # As above - a dropped connection can happen mid-stream.
+                discard_partial_download(part_path)
 
             except Exception as e:
                 last_error = str(e)
+                # As above - an unexpected error can happen mid-stream.
+                discard_partial_download(part_path)
 
         return DownloadResult(
             success=False,
@@ -796,8 +828,10 @@ class FullTextFinder:
         try:
             with open(file_path, 'rb') as f:
                 header = f.read(8)
-                # PDF files start with %PDF-
-                return header.startswith(b'%PDF-')
+                # PDF files start with %PDF- (shared check, also used by
+                # PDFManager and MedRxivImporter to catch HTML paywall
+                # pages saved with a misleading .pdf extension)
+                return is_pdf_content(header)
         except Exception:
             return False
 

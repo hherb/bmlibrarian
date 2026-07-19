@@ -165,7 +165,12 @@ class DownloadTracker:
                 return [row[0] for row in cur.fetchall()]
 
     def get_stats(self) -> Dict:
-        """Get download and processing statistics."""
+        """Get download and processing statistics.
+
+        Note: per-file article counts are not stored in the tracking schema
+        (see mark_processed), so no article count is reported here; the CLI
+        derives the real article count from the document table instead.
+        """
         with self.db_manager.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -174,8 +179,7 @@ class DownloadTracker:
                         COUNT(*) FILTER (WHERE processed = TRUE) as processed_files,
                         COUNT(*) FILTER (WHERE file_type = 'baseline') as baseline_files,
                         COUNT(*) FILTER (WHERE file_type = 'update') as update_files,
-                        SUM(file_size) as total_size,
-                        SUM(articles_count) FILTER (WHERE processed = TRUE) as total_articles
+                        SUM(file_size) as total_size
                     FROM pubmed_download_log
                 """)
                 row = cur.fetchone()
@@ -184,8 +188,7 @@ class DownloadTracker:
                     'processed_files': row[1] or 0,
                     'baseline_files': row[2] or 0,
                     'update_files': row[3] or 0,
-                    'total_size_bytes': row[4] or 0,
-                    'total_articles': row[5] or 0
+                    'total_size_bytes': row[4] or 0
                 }
 
 

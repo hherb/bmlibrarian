@@ -750,11 +750,14 @@ class PaperCheckDB:
                     for row in cur.fetchall()
                 }
 
-                # Recent activity (last RECENT_ACTIVITY_HOURS hours)
+                # Recent activity (last RECENT_ACTIVITY_HOURS hours).
+                # NOTE: the placeholder must not be inside a quoted literal
+                # (INTERVAL '%s hours' is never substituted by psycopg), so
+                # build the interval with make_interval() instead.
                 cur.execute(f"""
                     SELECT COUNT(*) as count
                     FROM {self.schema}.abstracts_checked
-                    WHERE checked_at >= NOW() - INTERVAL '%s hours'
+                    WHERE checked_at >= NOW() - make_interval(hours => %s)
                 """, (RECENT_ACTIVITY_HOURS,))
                 recent_activity = cur.fetchone()["count"]
 
@@ -767,7 +770,9 @@ class PaperCheckDB:
                 }
 
         except Exception as e:
-            logger.error(f"Failed to get statistics: {e}")
+            # exc_info so a broken query is diagnosable instead of silently
+            # reporting all-zero statistics forever.
+            logger.error(f"Failed to get statistics: {e}", exc_info=True)
             return {
                 "total_abstracts": 0,
                 "total_statements": 0,

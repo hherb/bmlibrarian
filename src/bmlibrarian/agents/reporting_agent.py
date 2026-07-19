@@ -1378,35 +1378,34 @@ Be concise and avoid redundancy."""
             except (ConnectionError, ValueError) as e:
                 logger.warning(f"Failed to process citation {i+1}: {e}")
                 continue
-                
+
+            try:
                 # Parse JSON response using inherited robust method from BaseAgent
-                try:
-                    citation_data = self._parse_json_response(llm_response)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Could not parse JSON for citation {i+1}: {e}")
-                    continue
-                
-                # Process the result
-                if not current_content:
-                    # First citation
-                    current_content = citation_data.get('content', '')
-                else:
-                    # Subsequent citation
-                    action = citation_data.get('action', 'add_new')
-                    new_content = citation_data.get('content', '')
-                    
-                    if action == 'add_new' and new_content:
-                        # Add new content
-                        current_content += " " + new_content
-                    elif action == 'add_reference' and new_content:
-                        # Replace current content with updated version
-                        current_content = new_content
-                
-                processed_citations.append(citation)
-                
+                citation_data = self._parse_json_response(llm_response)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Could not parse JSON for citation {i+1}: {e}")
+                continue
             except Exception as e:
                 logger.warning(f"Error processing citation {i+1}: {e}")
                 continue
+
+            # Process the result
+            if not current_content:
+                # First citation
+                current_content = citation_data.get('content', '')
+            else:
+                # Subsequent citation
+                action = citation_data.get('action', 'add_new')
+                new_content = citation_data.get('content', '')
+
+                if action == 'add_new' and new_content:
+                    # Add new content
+                    current_content += " " + new_content
+                elif action == 'add_reference' and new_content:
+                    # Replace current content with updated version
+                    current_content = new_content
+
+            processed_citations.append(citation)
         
         if not current_content:
             logger.error("No content generated from citations")

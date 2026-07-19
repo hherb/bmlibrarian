@@ -59,7 +59,7 @@ aws = [
 ]
 
 [project.scripts]
-bmlibrarian = "bmlibrarian.cli:main"
+bmlibrarian = "bmlibrarian.schema_cli:main"
 
 [build-system]
 requires = ["hatchling"]

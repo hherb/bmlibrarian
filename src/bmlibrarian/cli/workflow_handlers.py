@@ -10,6 +10,14 @@ from .workflow_steps import WorkflowStep, StepResult
 
 logger = logging.getLogger('bmlibrarian.workflow.handlers')
 
+# Bounded retry policy for the citation-threshold adjustment loop
+# (EXTRACT_CITATIONS / GENERATE_REPORT -> ADJUST_SCORING_THRESHOLDS /
+# REQUEST_MORE_CITATIONS -> EXTRACT_CITATIONS). Without a bound this
+# cycle would never terminate when the corpus simply has no evidence.
+THRESHOLD_ADJUSTMENT_STEP: float = 0.5
+MIN_SCORE_THRESHOLD: float = 1.0
+MAX_THRESHOLD_ADJUSTMENTS: int = 2
+
 
 class WorkflowStepHandlers:
     """Handles execution of individual workflow steps."""
@@ -192,7 +200,10 @@ class WorkflowStepHandlers:
             logger.error("Citation extraction failed")
             self.ui.show_error_message("Cannot proceed without citations.")
             context['insufficient_citations'] = True
-            return StepResult.BRANCH  # This will trigger threshold adjustment
+            # Branch explicitly: without branch_to_step the executor would
+            # fall through linearly and generate a report with no citations.
+            context['branch_to_step'] = WorkflowStep.ADJUST_SCORING_THRESHOLDS
+            return StepResult.BRANCH
         
         self.state_manager.update_citations(citations)
         context['citations'] = citations
@@ -208,7 +219,10 @@ class WorkflowStepHandlers:
             logger.error("Report generation failed")
             self.ui.show_error_message("Report generation failed.")
             context['insufficient_evidence_for_report'] = True
-            return StepResult.BRANCH  # This will trigger more citation requests
+            # Branch explicitly: without branch_to_step the executor would
+            # fall through linearly and export a None report.
+            context['branch_to_step'] = WorkflowStep.REQUEST_MORE_CITATIONS
+            return StepResult.BRANCH
         
         self.state_manager.update_final_report(report)
         context['report'] = report
@@ -305,19 +319,58 @@ class WorkflowStepHandlers:
                 logger.info("User cancelled query refinement")
                 return StepResult.USER_CANCELLED
     
+    def _adjust_threshold_and_retry(self, context: Dict[str, Any]) -> StepResult:
+        """Lower the citation score threshold and retry extraction, bounded.
+
+        Shared implementation for ADJUST_SCORING_THRESHOLDS and
+        REQUEST_MORE_CITATIONS. Lowers ``config.default_score_threshold`` by
+        THRESHOLD_ADJUSTMENT_STEP (never below MIN_SCORE_THRESHOLD) and
+        branches back to EXTRACT_CITATIONS. After MAX_THRESHOLD_ADJUSTMENTS
+        attempts (or once the floor is reached) it fails the workflow instead
+        of looping forever.
+
+        Args:
+            context: Workflow context dictionary (tracks attempt count).
+
+        Returns:
+            StepResult.BRANCH to retry extraction, or StepResult.FAILURE
+            when the retry budget is exhausted.
+        """
+        attempts = context.get('threshold_adjustment_attempts', 0)
+        current_threshold = self.config.default_score_threshold
+
+        if attempts >= MAX_THRESHOLD_ADJUSTMENTS or current_threshold <= MIN_SCORE_THRESHOLD:
+            logger.error(
+                f"No citations after {attempts} threshold adjustment(s) "
+                f"(threshold={current_threshold}); stopping workflow"
+            )
+            self.ui.show_error_message(
+                "Could not extract citations even after lowering the relevance "
+                "threshold. The database may not contain evidence for this question."
+            )
+            return StepResult.FAILURE
+
+        new_threshold = max(MIN_SCORE_THRESHOLD, current_threshold - THRESHOLD_ADJUSTMENT_STEP)
+        self.config.default_score_threshold = new_threshold
+        context['threshold_adjustment_attempts'] = attempts + 1
+        logger.info(
+            f"Lowered citation score threshold from {current_threshold} to "
+            f"{new_threshold} (attempt {attempts + 1}/{MAX_THRESHOLD_ADJUSTMENTS})"
+        )
+        self.ui.show_info_message(
+            f"Retrying citation extraction with lower relevance threshold "
+            f"({new_threshold})..."
+        )
+        context['branch_to_step'] = WorkflowStep.EXTRACT_CITATIONS
+        return StepResult.BRANCH
+
     def _handle_adjust_scoring_thresholds(self, context: Dict[str, Any]) -> StepResult:
-        """Handle scoring threshold adjustment."""
-        # This would be implemented to allow threshold adjustments
-        logger.info("Scoring threshold adjustment step - not yet implemented") 
-        context['branch_to_step'] = WorkflowStep.EXTRACT_CITATIONS
-        return StepResult.BRANCH
-    
+        """Handle scoring threshold adjustment (bounded retry loop)."""
+        return self._adjust_threshold_and_retry(context)
+
     def _handle_request_more_citations(self, context: Dict[str, Any]) -> StepResult:
-        """Handle requests for more citations."""
-        # This would be implemented to request more citations
-        logger.info("More citations request step - not yet implemented")
-        context['branch_to_step'] = WorkflowStep.EXTRACT_CITATIONS
-        return StepResult.BRANCH
+        """Handle requests for more citations by widening the threshold (bounded)."""
+        return self._adjust_threshold_and_retry(context)
     
     def _handle_review_and_revise_report(self, context: Dict[str, Any]) -> StepResult:
         """Handle report review and revision."""

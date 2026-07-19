@@ -83,12 +83,12 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
                 ae.matches_expected,
                 ae.model_used
             FROM statements s
-            LEFT JOIN ai_evaluations ae ON s.statement_id = ae.statement_id
-            LEFT JOIN (
-                SELECT statement_id, MAX(version) as max_version
-                FROM ai_evaluations
-                GROUP BY statement_id
-            ) latest ON ae.statement_id = latest.statement_id AND ae.version = latest.max_version
+            LEFT JOIN ai_evaluations ae
+                ON ae.statement_id = s.statement_id
+                AND ae.version = (
+                    SELECT MAX(version) FROM ai_evaluations
+                    WHERE statement_id = s.statement_id
+                )
             ORDER BY s.statement_id
         """)
 

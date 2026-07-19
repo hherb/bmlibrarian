@@ -51,6 +51,13 @@ PMC_FTP_HOST = "ftp.ncbi.nlm.nih.gov"
 PMC_FTP_BASE = "/pub/pmc"
 PMC_HTTPS_BASE = "https://ftp.ncbi.nlm.nih.gov/pub/pmc"
 
+# Name of this importer's row in the public.sources table. Documents
+# imported by this module are linked to that row via document.source_id,
+# and the PMCID is stored in document.external_id (there is no dedicated
+# 'pmcid' column in the schema).
+PMC_SOURCE_NAME = "pmc"
+PMC_SOURCE_URL = "https://www.ncbi.nlm.nih.gov/pmc/"
+
 # Default configuration
 DEFAULT_DELAY_SECONDS = 120  # 2 minutes between files (polite)
 DEFAULT_FTP_TIMEOUT = 300  # 5 minutes for large files
@@ -239,6 +246,9 @@ class PMCBulkImporter:
         self.packages: Dict[str, PackageInfo] = {}
         self.progress = DownloadProgress()
         self._load_state()
+
+        # Resolved lazily on first database access (see _get_source_id)
+        self.source_id: Optional[int] = None
 
     def _load_state(self) -> None:
         """Load download state from file."""
@@ -722,6 +732,7 @@ class PMCBulkImporter:
         logger.info(f"Importing {len(nxml_files)} articles to database...")
 
         db_manager = get_db_manager()
+        source_id = self._get_source_id(db_manager)
         imported = 0
         errors = 0
 
@@ -729,7 +740,7 @@ class PMCBulkImporter:
             try:
                 metadata = self._parse_nxml_metadata(nxml_path)
                 if metadata:
-                    self._upsert_article(db_manager, metadata)
+                    self._upsert_article(db_manager, source_id, metadata)
                     imported += 1
 
                 if progress_callback and (i + 1) % batch_size == 0:
@@ -849,43 +860,100 @@ class PMCBulkImporter:
             logger.debug(f"Failed to parse {nxml_path}: {e}")
             return None
 
+    def _get_source_id(self, db_manager: Any) -> int:
+        """Get or create the 'pmc' row in the sources table.
+
+        Documents imported by this module are linked to the sources table via
+        document.source_id; the PMCID itself is stored in document.external_id
+        (there is no dedicated 'pmcid' column in the schema).
+
+        Args:
+            db_manager: Database manager instance used for all DB access.
+
+        Returns:
+            The integer primary key of the 'pmc' row in the sources table.
+
+        Raises:
+            ValueError: If the source could not be found or created.
+        """
+        if self.source_id is not None:
+            return self.source_id
+
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM sources WHERE LOWER(name) = %s",
+                    (PMC_SOURCE_NAME,)
+                )
+                result = cur.fetchone()
+
+                if result:
+                    self.source_id = result[0]
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO sources (name, url, is_reputable, is_free)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (PMC_SOURCE_NAME, PMC_SOURCE_URL, True, True)
+                    )
+                    result = cur.fetchone()
+                    self.source_id = result[0] if result else None
+
+        if self.source_id is None:
+            raise ValueError("Failed to get or create 'pmc' source in 'sources' table")
+
+        return self.source_id
+
     def _upsert_article(
         self,
-        db_manager,
+        db_manager: Any,
+        source_id: int,
         metadata: ArticleMetadata
     ) -> None:
         """Insert or update article in database.
 
+        Looks up any existing record by (source_id, external_id) where
+        external_id holds the article's PMCID, then either updates it
+        (preserving existing values via COALESCE where new data is missing)
+        or inserts a new row. The journal name is stored in the
+        'publication' column and timestamps use added_date/updated_date,
+        matching the real public.document schema (see baseline_schema.sql).
+        PMID is not persisted here: public.document has no column for it,
+        and the only legitimate place to store a PMID is as external_id
+        under the 'pubmed' source (see pubmed_bulk_importer.py).
+
         Args:
-            db_manager: Database manager instance
-            metadata: Article metadata to insert/update
+            db_manager: Database manager instance.
+            source_id: Primary key of the 'pmc' row in the sources table.
+            metadata: Article metadata to insert/update.
         """
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Check if article exists by PMCID
+                # Check if article exists by source + external_id (PMCID)
                 cur.execute(
-                    "SELECT id FROM document WHERE pmcid = %s",
-                    (metadata.pmcid,)
+                    "SELECT id FROM document WHERE source_id = %s AND external_id = %s",
+                    (source_id, metadata.pmcid)
                 )
                 existing = cur.fetchone()
 
                 if existing:
-                    # Update existing record
+                    # Update existing record, preserving prior values when
+                    # the newly parsed metadata is missing a field.
                     cur.execute("""
                         UPDATE document SET
-                            pmid = COALESCE(%s, pmid),
                             doi = COALESCE(%s, doi),
                             title = COALESCE(%s, title),
                             abstract = COALESCE(%s, abstract),
                             authors = COALESCE(%s, authors),
-                            journal = COALESCE(%s, journal),
+                            publication = COALESCE(%s, publication),
                             publication_date = COALESCE(%s, publication_date),
                             full_text = COALESCE(%s, full_text),
                             pdf_filename = COALESCE(%s, pdf_filename),
-                            updated_at = NOW()
-                        WHERE pmcid = %s
+                            updated_date = CURRENT_TIMESTAMP
+                        WHERE id = %s
                     """, (
-                        metadata.pmid,
                         metadata.doi,
                         metadata.title,
                         metadata.abstract,
@@ -894,22 +962,20 @@ class PMCBulkImporter:
                         metadata.publication_date,
                         metadata.full_text,
                         metadata.pdf_filename,
-                        metadata.pmcid
+                        existing[0]
                     ))
                 else:
                     # Insert new record
                     cur.execute("""
                         INSERT INTO document (
-                            pmcid, pmid, doi, title, abstract, authors,
-                            journal, publication_date, full_text, pdf_filename,
-                            source, created_at, updated_at
+                            source_id, external_id, doi, title, abstract, authors,
+                            publication, publication_date, full_text, pdf_filename
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            'pmc_bulk', NOW(), NOW()
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                         )
                     """, (
+                        source_id,
                         metadata.pmcid,
-                        metadata.pmid,
                         metadata.doi,
                         metadata.title,
                         metadata.abstract,
@@ -919,8 +985,6 @@ class PMCBulkImporter:
                         metadata.full_text,
                         metadata.pdf_filename
                     ))
-
-                conn.commit()
 
     def get_status(self) -> Dict[str, Any]:
         """Get current import status.

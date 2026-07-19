@@ -46,6 +46,18 @@ from .json_repair import (
     JSONRepairError
 )
 
+from .pdf_validation import (
+    is_pdf_content,
+    is_pdf_file
+)
+
+from .download_utils import (
+    PARTIAL_DOWNLOAD_SUFFIX,
+    partial_download_path,
+    promote_partial_download,
+    discard_partial_download
+)
+
 __all__ = [
     # Path utilities
     'expand_path',
@@ -83,5 +95,13 @@ __all__ = [
     'repair_json',
     'safe_json_loads',
     'extract_and_repair_json',
-    'JSONRepairError'
+    'JSONRepairError',
+    # PDF content validation
+    'is_pdf_content',
+    'is_pdf_file',
+    # Atomic download helpers
+    'PARTIAL_DOWNLOAD_SUFFIX',
+    'partial_download_path',
+    'promote_partial_download',
+    'discard_partial_download'
 ]

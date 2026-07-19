@@ -153,7 +153,12 @@ Input file format:
 
         # Print results information
         print("=" * 80)
-        print(f"\n✓ Results stored in PostgreSQL (factcheck schema)")
+        storage_failures = agent.storage_failures
+        if storage_failures:
+            print(f"\n✗ WARNING: {storage_failures} result(s) FAILED to store in PostgreSQL")
+            print("  (see log output above for details - these results are NOT in the database)")
+        else:
+            print(f"\n✓ Results stored in PostgreSQL (factcheck schema)")
         print(f"  Total statements processed: {len(results)}")
 
         if args.output:

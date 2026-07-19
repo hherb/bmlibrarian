@@ -186,7 +186,8 @@ def cmd_status(args):
             print("\nProcessing Statistics:")
             print(f"  Processed files: {stats['processed_files']}")
             print(f"  Pending files: {stats['total_files'] - stats['processed_files']}")
-            print(f"  Total articles imported: {stats['total_articles']:,}")
+            # Article counts are not tracked per file; the real total is
+            # shown under "Database Statistics" below.
 
             if stats['total_files'] > 0:
                 progress = 100 * stats['processed_files'] / stats['total_files']

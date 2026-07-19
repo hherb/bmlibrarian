@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bmlibrarian.cli import create_parser, main
+from bmlibrarian.schema_cli import create_parser, main
 
 
 class TestCreateParser:
@@ -131,7 +131,7 @@ class TestCreateParser:
 class TestMain:
     """Test cases for main function."""
 
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_no_command(self, mock_create_parser):
         """Test main with no command specified."""
         mock_parser = MagicMock()
@@ -146,7 +146,7 @@ class TestMain:
         mock_parser.print_help.assert_called_once()
         mock_exit.assert_called_once_with(1)
 
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_no_action(self, mock_create_parser):
         """Test main with migrate command but no action."""
         mock_parser = MagicMock()
@@ -162,8 +162,8 @@ class TestMain:
         mock_parser.print_help.assert_called_once()
         mock_exit.assert_called_once_with(1)
 
-    @patch('bmlibrarian.cli.MigrationManager')
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.MigrationManager')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_init_success(self, mock_create_parser, mock_migration_manager):
         """Test main with successful migrate init command."""
         # Setup parser mock
@@ -197,7 +197,7 @@ class TestMain:
                 mock_path_cls.return_value = mock_path_instance
                 
                 # Mock __file__ path resolution  
-                with patch('bmlibrarian.cli.Path') as mock_path:
+                with patch('bmlibrarian.schema_cli.Path') as mock_path:
                     mock_file_path = MagicMock()
                     mock_file_path.parent.parent.parent.parent = Path("/fake/project/root")
                     mock_path.return_value = mock_file_path
@@ -226,7 +226,7 @@ class TestMain:
         finally:
             baseline_path.unlink()
 
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_init_missing_baseline_schema(self, mock_create_parser):
         """Test main with migrate init when baseline schema is missing."""
         mock_parser = MagicMock()
@@ -242,7 +242,7 @@ class TestMain:
         mock_parser.parse_args.return_value = mock_args
         mock_create_parser.return_value = mock_parser
         
-        with patch('bmlibrarian.cli.MigrationManager') as mock_migration_manager:
+        with patch('bmlibrarian.schema_cli.MigrationManager') as mock_migration_manager:
             mock_manager_instance = MagicMock()
             mock_manager_instance.initialize_database.side_effect = FileNotFoundError("Baseline schema file not found: /non/existent/baseline.sql")
             mock_migration_manager.return_value = mock_manager_instance
@@ -250,8 +250,8 @@ class TestMain:
             with pytest.raises(FileNotFoundError):
                 main()
 
-    @patch('bmlibrarian.cli.MigrationManager')
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.MigrationManager')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_apply_success(self, mock_create_parser, mock_migration_manager):
         """Test main with successful migrate apply command."""
         mock_parser = MagicMock()
@@ -271,7 +271,7 @@ class TestMain:
         mock_manager_instance.apply_pending_migrations.return_value = 2
         mock_migration_manager.return_value = mock_manager_instance
         
-        with patch('bmlibrarian.cli.Path') as mock_path:
+        with patch('bmlibrarian.schema_cli.Path') as mock_path:
             expected_path = Path.home() / ".bmlibrarian" / "migrations"
             mock_path.home.return_value = Path.home()
             
@@ -289,8 +289,8 @@ class TestMain:
         mock_manager_instance.apply_pending_migrations.assert_called_once()
         mock_print.assert_called_with("Applied 2 migration(s) successfully!")
 
-    @patch('bmlibrarian.cli.MigrationManager')
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.MigrationManager')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_apply_no_migrations(self, mock_create_parser, mock_migration_manager):
         """Test main with migrate apply when no migrations to apply."""
         mock_parser = MagicMock()
@@ -315,8 +315,8 @@ class TestMain:
         
         mock_print.assert_called_with("No pending migrations to apply.")
 
-    @patch('bmlibrarian.cli.MigrationManager')
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.MigrationManager')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_migrate_apply_custom_migrations_dir(self, mock_create_parser, mock_migration_manager):
         """Test main with migrate apply using custom migrations directory."""
         mock_parser = MagicMock()
@@ -343,7 +343,7 @@ class TestMain:
         mock_manager_instance.apply_pending_migrations.assert_called_once_with("/custom/migrations")
 
     @patch('sys.argv', ['bmlibrarian'])
-    @patch('bmlibrarian.cli.create_parser')
+    @patch('bmlibrarian.schema_cli.create_parser')
     def test_main_integration(self, mock_create_parser):
         """Test main function integration with actual argument parsing."""
         mock_parser = MagicMock()

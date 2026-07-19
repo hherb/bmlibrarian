@@ -205,7 +205,12 @@ with conn.cursor() as cur:
 conn.close()
 ```
 
-## Module: `bmlibrarian.cli`
+## Module: `bmlibrarian.schema_cli`
+
+Schema/migration CLI backing the packaged `bmlibrarian` console script.
+(Renamed from `cli.py` in July 2026: the module was shadowed by the
+`bmlibrarian.cli` package, which holds the interactive research CLI's
+components.)
 
 ### Function: `create_parser() -> argparse.ArgumentParser`
 
@@ -216,7 +221,7 @@ Creates the command-line argument parser.
 
 **Example:**
 ```python
-from bmlibrarian.cli import create_parser
+from bmlibrarian.schema_cli import create_parser
 
 parser = create_parser()
 args = parser.parse_args(["migrate", "init", "--host", "localhost"])
@@ -235,7 +240,7 @@ Main entry point for the CLI application.
 **Example:**
 ```python
 import sys
-from bmlibrarian.cli import main
+from bmlibrarian.schema_cli import main
 
 # Simulate CLI call
 sys.argv = ["bmlibrarian", "migrate", "init", "--host", "localhost", 

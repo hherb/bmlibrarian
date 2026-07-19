@@ -166,6 +166,10 @@ class FactCheckerAgent(BaseAgent):
         self.db: Optional[FactCheckerDB] = None
         self.current_session_id: Optional[str] = None
         self.incremental = incremental
+        # Count of results that failed to persist to the database; reset per
+        # batch in check_batch() and surfaced by the CLI so storage failures
+        # are never reported as success.
+        self.storage_failures: int = 0
 
         # Initialize sub-agents (will be set up during fact-checking)
         self.query_agent = None
@@ -730,6 +734,7 @@ Respond ONLY with the JSON object, no additional text."""
         """
         results = []
         total = len(statements)
+        self.storage_failures = 0
 
         self._call_callback("batch_start", f"Processing {total} statements...")
 
@@ -957,10 +962,16 @@ Respond ONLY with the JSON object, no additional text."""
         except Exception as e:
             logger.error(f"Error initializing database session: {e}")
 
-    def _store_result_in_database(self, result: FactCheckResult, source_file: Optional[str]):
-        """Store a FactCheckResult in the database."""
+    def _store_result_in_database(self, result: FactCheckResult, source_file: Optional[str]) -> bool:
+        """Store a FactCheckResult in the database.
+
+        Returns:
+            True if the result was persisted, False on any storage error.
+            Failures are also counted in ``self.storage_failures`` so batch
+            callers (and the CLI) can report them instead of claiming success.
+        """
         if not self.db:
-            return
+            return False
 
         try:
             # Insert or get statement
@@ -1006,9 +1017,12 @@ Respond ONLY with the JSON object, no additional text."""
                 self.db.insert_evidence(evidence)
 
             logger.debug(f"Stored result for statement {statement_id} in database")
+            return True
 
         except Exception as e:
-            logger.error(f"Error storing result in database: {e}")
+            logger.error(f"Error storing result in database: {e}", exc_info=True)
+            self.storage_failures += 1
+            return False
 
     def _finalize_database_session(self, processed_count: int):
         """Finalize the processing session in the database."""
