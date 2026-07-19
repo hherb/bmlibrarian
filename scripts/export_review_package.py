@@ -107,12 +107,12 @@ def export_statements_and_evaluations(pg_db: FactCheckerDB, sqlite_conn: sqlite3
                     ae.session_id,
                     ae.version
                 FROM factcheck.statements s
-                LEFT JOIN factcheck.ai_evaluations ae ON s.statement_id = ae.statement_id
-                LEFT JOIN (
-                    SELECT statement_id, MAX(version) as max_version
-                    FROM factcheck.ai_evaluations
-                    GROUP BY statement_id
-                ) latest ON ae.statement_id = latest.statement_id AND ae.version = latest.max_version
+                LEFT JOIN factcheck.ai_evaluations ae
+                    ON ae.statement_id = s.statement_id
+                    AND ae.version = (
+                        SELECT MAX(version) FROM factcheck.ai_evaluations
+                        WHERE statement_id = s.statement_id
+                    )
             """
 
             # Add session filter if specified

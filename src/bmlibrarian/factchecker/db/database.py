@@ -228,7 +228,13 @@ class FactCheckerDB:
 
     def insert_ai_evaluation(self, evaluation: AIEvaluation) -> int:
         """
-        Insert a new AI evaluation.
+        Insert a new AI evaluation as the next version for its statement.
+
+        The version is assigned automatically as MAX(version) + 1 for the
+        statement (the caller-provided ``evaluation.version`` is ignored).
+        This preserves the full evaluation history and means re-running the
+        fact-checker records a new evaluation instead of colliding with the
+        UNIQUE (statement_id, version) constraint and being silently lost.
 
         Args:
             evaluation: AIEvaluation object
@@ -251,13 +257,17 @@ class FactCheckerDB:
                         statement_id, evaluation, reason, confidence, documents_reviewed,
                         supporting_citations, contradicting_citations, neutral_citations,
                         matches_expected, model_used, model_version, agent_config, session_id, version
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        (SELECT COALESCE(MAX(version), 0) + 1
+                         FROM factcheck.ai_evaluations
+                         WHERE statement_id = %s)
+                    )
                     RETURNING evaluation_id
                 """, (evaluation.statement_id, evaluation.evaluation, evaluation.reason, evaluation.confidence,
                       evaluation.documents_reviewed, evaluation.supporting_citations, evaluation.contradicting_citations,
                       evaluation.neutral_citations, evaluation.matches_expected, evaluation.model_used,
                       evaluation.model_version, json.dumps(agent_config_jsonb) if agent_config_jsonb else None,
-                      evaluation.session_id, evaluation.version))
+                      evaluation.session_id, evaluation.statement_id))
                 return cur.fetchone()[0]
 
     def get_latest_ai_evaluation(self, statement_id: int) -> Optional[AIEvaluation]:
@@ -504,12 +514,12 @@ class FactCheckerDB:
                         ae.matches_expected,
                         ae.model_used
                     FROM factcheck.statements s
-                    LEFT JOIN factcheck.ai_evaluations ae ON s.statement_id = ae.statement_id
-                    LEFT JOIN (
-                        SELECT statement_id, MAX(version) as max_version
-                        FROM factcheck.ai_evaluations
-                        GROUP BY statement_id
-                    ) latest ON ae.statement_id = latest.statement_id AND ae.version = latest.max_version
+                    LEFT JOIN factcheck.ai_evaluations ae
+                        ON ae.statement_id = s.statement_id
+                        AND ae.version = (
+                            SELECT MAX(version) FROM factcheck.ai_evaluations
+                            WHERE statement_id = s.statement_id
+                        )
                     ORDER BY s.statement_id
                 """)
 
