@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
-    "python-dotenv>=1.1.1",
+    "python-dotenv>=1.2.2",
     "ollama>=0.2.1",
     "requests>=2.31.0",
     "psycopg-binary>=3.2.9",
@@ -46,7 +46,7 @@ dependencies = [
     # HTML/XML parsing for multi-format extraction
     "beautifulsoup4>=4.12.0",
     "markdownify>=0.12.1",
-    "lxml>=5.0.0",
+    "lxml>=6.1.0",
 ]
 
 [project.optional-dependencies]
