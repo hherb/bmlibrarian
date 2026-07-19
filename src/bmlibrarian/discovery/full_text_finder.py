@@ -26,6 +26,7 @@ from .resolvers import (
     PMCResolver, UnpaywallResolver, OpenAthensResolver
 )
 from ..utils.url_validation import get_validated_openathens_url
+from ..utils.pdf_validation import is_pdf_content
 from .pmc_package_downloader import PMCPackageDownloader
 
 logger = logging.getLogger(__name__)
@@ -627,14 +628,24 @@ class FullTextFinder:
             except ftplib.error_temp as e:
                 last_error = f"FTP temporary error: {e}"
                 logger.debug(f"FTP temporary error for {url}: {e}")
+                # retrbinary() can fail mid-transfer after the file was
+                # opened and partially written - clean up any partial file.
+                if output_path.exists():
+                    output_path.unlink()
 
             except (TimeoutError, ftplib.error_reply) as e:
                 last_error = f"FTP connection error: {e}"
                 logger.debug(f"FTP connection error for {url}: {e}")
+                # As above - a dropped connection can happen mid-transfer.
+                if output_path.exists():
+                    output_path.unlink()
 
             except Exception as e:
                 last_error = f"FTP error: {e}"
                 logger.debug(f"FTP download error for {url}: {e}")
+                # As above - an unexpected error can happen mid-transfer.
+                if output_path.exists():
+                    output_path.unlink()
 
         return DownloadResult(
             success=False,
@@ -769,12 +780,23 @@ class FullTextFinder:
 
             except requests.exceptions.Timeout:
                 last_error = "Download timeout"
+                # A timeout can occur mid-stream (after the file was opened
+                # and partially written), so clean up any partial file to
+                # avoid later code mistaking it for a completed download.
+                if output_path.exists():
+                    output_path.unlink()
 
             except requests.exceptions.ConnectionError as e:
                 last_error = f"Connection error: {e}"
+                # As above - a dropped connection can happen mid-stream.
+                if output_path.exists():
+                    output_path.unlink()
 
             except Exception as e:
                 last_error = str(e)
+                # As above - an unexpected error can happen mid-stream.
+                if output_path.exists():
+                    output_path.unlink()
 
         return DownloadResult(
             success=False,
@@ -796,8 +818,10 @@ class FullTextFinder:
         try:
             with open(file_path, 'rb') as f:
                 header = f.read(8)
-                # PDF files start with %PDF-
-                return header.startswith(b'%PDF-')
+                # PDF files start with %PDF- (shared check, also used by
+                # PDFManager and MedRxivImporter to catch HTML paywall
+                # pages saved with a misleading .pdf extension)
+                return is_pdf_content(header)
         except Exception:
             return False
 

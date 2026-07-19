@@ -46,6 +46,11 @@ from .json_repair import (
     JSONRepairError
 )
 
+from .pdf_validation import (
+    is_pdf_content,
+    is_pdf_file
+)
+
 __all__ = [
     # Path utilities
     'expand_path',
@@ -83,5 +88,8 @@ __all__ = [
     'repair_json',
     'safe_json_loads',
     'extract_and_repair_json',
-    'JSONRepairError'
+    'JSONRepairError',
+    # PDF content validation
+    'is_pdf_content',
+    'is_pdf_file'
 ]

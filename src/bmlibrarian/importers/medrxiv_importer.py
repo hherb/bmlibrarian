@@ -32,6 +32,7 @@ from pathlib import Path
 
 # Import bmlibrarian components
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.utils.pdf_validation import is_pdf_file
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -487,6 +488,20 @@ class MedRxivImporter:
                 with open(local_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
+
+                # Verify the downloaded content is actually a PDF (magic bytes),
+                # not an HTML paywall/login page served with a misleading HTTP
+                # 200 status. Without this check, such pages were silently
+                # saved as .pdf files and recorded as successful downloads.
+                if not is_pdf_file(local_path):
+                    logger.warning(
+                        f"Downloaded content is not a valid PDF (magic bytes check "
+                        f"failed), likely an HTML paywall/login page: {pdf_url}"
+                    )
+                    if local_path.exists():
+                        local_path.unlink()
+                    return None, False
+
                 logger.info(f"Downloaded {pdf_url}")
                 return safe_filename, True
             else:
@@ -494,6 +509,10 @@ class MedRxivImporter:
                 return None, False
         except Exception as e:
             logger.error(f"Error downloading {pdf_url}: {e}")
+            # Clean up any partially-written file left by a mid-stream failure
+            # so future calls don't mistake it for a completed download.
+            if local_path.exists():
+                local_path.unlink()
             return None, False
 
     def extract_full_text(self, filename: str, timeout_seconds: int = PDF_EXTRACTION_TIMEOUT_SECONDS) -> str:

@@ -17,6 +17,8 @@ from typing import Optional, Dict, Any, List, Tuple, Callable
 from datetime import datetime
 import requests
 
+from .pdf_validation import is_pdf_file
+
 logger = logging.getLogger(__name__)
 
 
@@ -235,6 +237,23 @@ class PDFManager:
                     if attempt < max_retries - 1:
                         continue
                     return None
+
+                # Verify the downloaded content is actually a PDF (magic bytes),
+                # not an HTML paywall/login page served with a misleading HTTP
+                # 200 status. A content-type mismatch alone is not trustworthy
+                # (servers can lie), so this is the authoritative check.
+                if not is_pdf_file(pdf_path):
+                    logger.warning(
+                        f"Downloaded content is not a valid PDF (magic bytes check "
+                        f"failed), likely an HTML paywall/login page: {pdf_url}"
+                    )
+                    if pdf_path.exists():
+                        pdf_path.unlink()
+                    if attempt < max_retries - 1:
+                        continue
+                    # Exhausted retries - fall through to browser fallback below,
+                    # exactly as any other exhausted-retry HTTP failure would.
+                    break
 
                 logger.info(f"PDF saved to {pdf_path} ({total_size} bytes)")
                 return pdf_path
