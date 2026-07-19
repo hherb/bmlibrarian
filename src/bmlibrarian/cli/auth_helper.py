@@ -336,13 +336,20 @@ def setup_config_with_auth(args: argparse.Namespace) -> Tuple[bool, Optional[str
         if not result.success:
             return False, result.error_message
 
-        # Set user context on config
+        # Set user context on config.
+        # NOTE: get_connection() is a @contextmanager and must not be passed
+        # around un-entered; the settings manager needs a long-lived
+        # connection, so acquire a PersistentConnection from the pool and
+        # release it at process exit.
         try:
+            import atexit
+
             db = get_db_manager()
-            conn = db.get_connection()
+            persistent = db.acquire_persistent_connection()
+            atexit.register(persistent.release)
             config.set_user_context(
                 user_id=result.user_id,
-                connection=conn,
+                connection=persistent.connection,
                 session_token=result.session_token
             )
             logger.info(f"Authenticated as {result.username}")
@@ -366,8 +373,13 @@ def setup_config_with_auth(args: argparse.Namespace) -> Tuple[bool, Optional[str
 
     if sync_to_db:
         try:
-            config.sync_to_database()
-            print("Configuration synced to database")
+            if config.sync_to_database():
+                print("Configuration synced to database")
+            else:
+                return False, (
+                    "One or more settings categories failed to sync to the "
+                    "database (see log output for details)"
+                )
         except Exception as e:
             return False, f"Failed to sync to database: {e}"
 
