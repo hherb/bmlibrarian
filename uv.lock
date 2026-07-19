@@ -306,12 +306,42 @@ wheels = [
 ]
 
 [[package]]
+name = "bmlib"
+version = "0.3.0"
+source = { editable = "../bmlib" }
+dependencies = [
+    { name = "jinja2" },
+]
+
+[package.optional-dependencies]
+ollama = [
+    { name = "ollama" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.30" },
+    { name = "bmlib", extras = ["anthropic", "ollama", "openai", "postgresql", "transparency", "publications", "dev"], marker = "extra == 'all'" },
+    { name = "httpx", marker = "extra == 'publications'", specifier = ">=0.25" },
+    { name = "httpx", marker = "extra == 'transparency'", specifier = ">=0.25" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "ollama", marker = "extra == 'ollama'", specifier = ">=0.3" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0" },
+    { name = "psycopg2-binary", marker = "extra == 'postgresql'", specifier = ">=2.9" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+]
+provides-extras = ["anthropic", "ollama", "openai", "postgresql", "transparency", "publications", "dev", "all"]
+
+[[package]]
 name = "bmlibrarian"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "backoff" },
     { name = "beautifulsoup4" },
+    { name = "bmlib", extra = ["ollama"] },
     { name = "chromadb" },
     { name = "fastembed" },
     { name = "flet", extra = ["all"] },
@@ -369,6 +399,7 @@ dev = [
 requires-dist = [
     { name = "backoff", specifier = ">=2.2.1" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
+    { name = "bmlib", extras = ["ollama"], editable = "../bmlib" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.34.0" },
     { name = "chromadb", specifier = ">=1.3.7" },
     { name = "fastembed", specifier = ">=0.7.3" },

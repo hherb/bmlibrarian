@@ -1,13 +1,19 @@
 """
 Data types for the LLM abstraction layer.
 
-This module defines the unified data structures used across all LLM providers,
-ensuring consistent interfaces regardless of the underlying provider.
+This module defines bmlibrarian-specific data structures for the LLM layer.
+
+Core types (LLMMessage) are re-exported from bmlib.llm for consistency.
+bmlibrarian-specific types (Provider enum, LLMResponse with extra fields,
+GenerationParams, etc.) are defined here.
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Any
+
+# Re-export LLMMessage from bmlib (canonical source)
+from bmlib.llm import LLMMessage  # noqa: F401
 
 
 class Provider(Enum):
@@ -35,20 +41,6 @@ class ModelSpec:
     provider: Provider
     model_name: str
     raw: str
-
-
-@dataclass
-class LLMMessage:
-    """
-    Unified message format for chat completions.
-
-    Attributes:
-        role: Message role - "system", "user", or "assistant"
-        content: The message content
-    """
-
-    role: str
-    content: str
 
 
 @dataclass

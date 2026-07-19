@@ -5,6 +5,7 @@ description = "Biomedical Literature Librarian - A Python library for accessing 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "bmlib[ollama]>=0.3.0",
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
     "python-dotenv>=1.2.2",
@@ -72,6 +73,9 @@ dev-dependencies = [
     "pytest-cov>=4.0",
     "pygments>=2.19.2",
 ]
+
+[tool.uv.sources]
+bmlib = { path = "../bmlib", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

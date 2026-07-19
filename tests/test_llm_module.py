@@ -286,47 +286,43 @@ class TestLLMResponse:
 
 
 class TestLLMClient:
-    """Tests for LLMClient (with mocked providers)."""
+    """Tests for LLMClient (with mocked bmlib providers)."""
 
     def setup_method(self):
         """Reset providers before each test."""
         reset_all_providers()
         reset_global_tracker()
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_chat_ollama(self, mock_get_provider):
-        """Test chat with Ollama provider."""
-        mock_provider = Mock()
-        mock_provider.chat.return_value = LLMResponse(
-            content="Hello!",
-            model="test-model",
-            provider=Provider.OLLAMA,
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
+    def _make_bmlib_response(self, content="Hello!", model="test-model",
+                             input_tokens=10, output_tokens=5):
+        """Create a mock bmlib LLMResponse."""
+        from bmlib.llm import LLMResponse as BmlibResponse
+        return BmlibResponse(
+            content=content,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
-        mock_get_provider.return_value = mock_provider
+
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_chat_ollama(self, mock_bmlib_chat):
+        """Test chat with Ollama provider."""
+        mock_bmlib_chat.return_value = self._make_bmlib_response()
 
         client = LLMClient(track_usage=False)
         messages = [LLMMessage(role="user", content="Hi")]
         response = client.chat(messages, model="test-model")
 
         assert response.content == "Hello!"
-        mock_provider.chat.assert_called_once()
+        assert response.provider == Provider.OLLAMA
+        mock_bmlib_chat.assert_called_once()
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_chat_anthropic(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_chat_anthropic(self, mock_bmlib_chat):
         """Test chat with Anthropic provider."""
-        mock_provider = Mock()
-        mock_provider.chat.return_value = LLMResponse(
-            content="Hello from Claude!",
-            model="claude-3-opus",
-            provider=Provider.ANTHROPIC,
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
+        mock_bmlib_chat.return_value = self._make_bmlib_response(
+            content="Hello from Claude!", model="claude-3-opus",
         )
-        mock_get_provider.return_value = mock_provider
 
         client = LLMClient(track_usage=False)
         messages = [LLMMessage(role="user", content="Hi")]
@@ -335,47 +331,34 @@ class TestLLMClient:
         assert response.content == "Hello from Claude!"
         assert response.provider == Provider.ANTHROPIC
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_fallback_on_failure(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_fallback_on_failure(self, mock_bmlib_chat):
         """Test fallback to Ollama when primary provider fails."""
-        # Primary provider (Anthropic) fails
-        mock_anthropic = Mock()
-        mock_anthropic.chat.side_effect = ConnectionError("API error")
-
-        # Fallback provider (Ollama) succeeds
-        mock_ollama = Mock()
-        mock_ollama.chat.return_value = LLMResponse(
-            content="Fallback response",
-            model="fallback-model",
-            provider=Provider.OLLAMA,
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
-        )
-
-        def get_provider_side_effect(provider_type, **kwargs):
-            if provider_type == Provider.ANTHROPIC:
-                return mock_anthropic
-            return mock_ollama
-
-        mock_get_provider.side_effect = get_provider_side_effect
+        # 1 call fails (anthropic, max_retries=1), then 1 succeeds (ollama fallback)
+        responses = [ConnectionError("API error")] + [
+            self._make_bmlib_response(
+                content="Fallback response", model="fallback-model",
+            )
+        ]
+        mock_bmlib_chat.side_effect = responses
 
         client = LLMClient(
             fallback_model="fallback-model",
             track_usage=False,
         )
         messages = [LLMMessage(role="user", content="Hi")]
-        response = client.chat(messages, model="anthropic:claude-3-opus")
+        response = client.chat(
+            messages, model="anthropic:claude-3-opus",
+            max_retries=1, retry_delay=0.01,
+        )
 
         assert response.content == "Fallback response"
         assert response.provider == Provider.OLLAMA
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_no_fallback_for_ollama(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_no_fallback_for_ollama(self, mock_bmlib_chat):
         """Test that Ollama failures don't trigger Ollama fallback."""
-        mock_provider = Mock()
-        mock_provider.chat.side_effect = ConnectionError("Ollama error")
-        mock_get_provider.return_value = mock_provider
+        mock_bmlib_chat.side_effect = ConnectionError("Ollama error")
 
         client = LLMClient(
             fallback_model="fallback-model",
@@ -384,21 +367,14 @@ class TestLLMClient:
         messages = [LLMMessage(role="user", content="Hi")]
 
         with pytest.raises(ConnectionError):
-            client.chat(messages, model="test-model")
+            client.chat(messages, model="test-model", max_retries=1)
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_usage_tracking(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_usage_tracking(self, mock_bmlib_chat):
         """Test that usage is tracked when enabled."""
-        mock_provider = Mock()
-        mock_provider.chat.return_value = LLMResponse(
-            content="Hello!",
-            model="test-model",
-            provider=Provider.OLLAMA,
-            prompt_tokens=100,
-            completion_tokens=50,
-            total_tokens=150,
+        mock_bmlib_chat.return_value = self._make_bmlib_response(
+            input_tokens=100, output_tokens=50,
         )
-        mock_get_provider.return_value = mock_provider
 
         reset_global_tracker()
         client = LLMClient(track_usage=True)
@@ -410,37 +386,28 @@ class TestLLMClient:
         assert summary["total_tokens"] == 150
         assert summary["request_count"] == 1
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_generate(self, mock_get_provider):
-        """Test generate method."""
-        mock_provider = Mock()
-        mock_provider.generate.return_value = LLMResponse(
-            content="Generated text",
-            model="test-model",
-            provider=Provider.OLLAMA,
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30,
+    @patch("bmlib.llm.client.LLMClient.chat")
+    def test_generate(self, mock_bmlib_chat):
+        """Test generate method (wraps chat)."""
+        mock_bmlib_chat.return_value = self._make_bmlib_response(
+            content="Generated text", input_tokens=10, output_tokens=20,
         )
-        mock_get_provider.return_value = mock_provider
 
         client = LLMClient(track_usage=False)
         response = client.generate("Complete this:", model="test-model")
 
         assert response.content == "Generated text"
-        mock_provider.generate.assert_called_once()
+        mock_bmlib_chat.assert_called_once()
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_embed(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.embed")
+    def test_embed(self, mock_bmlib_embed):
         """Test embed method."""
-        mock_provider = Mock()
-        mock_provider.embed.return_value = EmbeddingResponse(
+        from bmlib.llm import EmbeddingResponse as BmlibEmbedResponse
+        mock_bmlib_embed.return_value = BmlibEmbedResponse(
             embedding=[0.1, 0.2, 0.3],
             model="embed-model",
-            provider=Provider.OLLAMA,
             dimensions=3,
         )
-        mock_get_provider.return_value = mock_provider
 
         client = LLMClient(track_usage=False)
         response = client.embed("Test text", model="embed-model")
@@ -448,22 +415,18 @@ class TestLLMClient:
         assert len(response.embedding) == 3
         assert response.dimensions == 3
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_test_provider(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.test_connection")
+    def test_test_provider(self, mock_test):
         """Test provider connectivity check."""
-        mock_provider = Mock()
-        mock_provider.test_connection.return_value = True
-        mock_get_provider.return_value = mock_provider
+        mock_test.return_value = True
 
         client = LLMClient()
         assert client.test_provider(Provider.OLLAMA) is True
 
-    @patch("bmlibrarian.llm.client.get_provider")
-    def test_list_models(self, mock_get_provider):
+    @patch("bmlib.llm.client.LLMClient.list_models")
+    def test_list_models(self, mock_list):
         """Test model listing."""
-        mock_provider = Mock()
-        mock_provider.list_models.return_value = ["model-a", "model-b"]
-        mock_get_provider.return_value = mock_provider
+        mock_list.return_value = ["model-a", "model-b"]
 
         client = LLMClient()
         models = client.list_models(Provider.OLLAMA)

@@ -4,10 +4,17 @@ Tests for DocumentInterrogationAgent.
 Tests the document interrogation agent's ability to process large documents
 using sliding window chunk processing with both sequential and embedding-based
 approaches.
+
+Note: DocumentInterrogationAgent still uses old-style direct client calls
+(self.client.chat with options= parameter, dict response format). The tests
+mock _llm_client at the instance level to match this legacy API.
 """
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
+
+from bmlib.llm import LLMResponse as BmlibResponse
+
 from bmlibrarian.agents.document_interrogation_agent import (
     DocumentInterrogationAgent,
     DocumentAnswer,
@@ -86,19 +93,27 @@ class TestDocumentAnswer:
 
 
 class TestDocumentInterrogationAgent:
-    """Test DocumentInterrogationAgent class."""
+    """Test DocumentInterrogationAgent class.
+
+    Note: This agent still uses old-style direct client calls
+    (self.client.chat with options= and dict responses), so we mock
+    _llm_client at the instance level to simulate the old ollama API.
+    """
+
+    @pytest.fixture
+    def mock_bmlib_chat(self):
+        """Mock bmlib LLMClient.chat to prevent real LLM calls during init."""
+        with patch('bmlib.llm.client.LLMClient.chat') as mock_chat:
+            yield mock_chat
 
     @pytest.fixture
     def mock_ollama_client(self):
-        """Create a mock Ollama client."""
-        with patch('bmlibrarian.agents.base.ollama') as mock_ollama:
-            mock_client = Mock()
-            mock_ollama.Client.return_value = mock_client
-            yield mock_client
+        """Create a mock client that simulates old-style ollama API."""
+        return Mock()
 
     @pytest.fixture
-    def agent(self, mock_ollama_client):
-        """Create a DocumentInterrogationAgent with mocked Ollama."""
+    def agent(self, mock_bmlib_chat, mock_ollama_client):
+        """Create a DocumentInterrogationAgent with mocked LLM."""
         agent = DocumentInterrogationAgent(
             model="test-model",
             embedding_model="test-embedding",
@@ -106,6 +121,8 @@ class TestDocumentInterrogationAgent:
             chunk_overlap=20,
             show_model_info=False
         )
+        # Replace _llm_client with mock that supports old-style API
+        agent._llm_client = mock_ollama_client
         return agent
 
     def test_initialization(self, agent):
@@ -121,7 +138,7 @@ class TestDocumentInterrogationAgent:
         """Test get_agent_type method."""
         assert agent.get_agent_type() == "document_interrogation_agent"
 
-    def test_initialization_custom_params(self, mock_ollama_client):
+    def test_initialization_custom_params(self, mock_bmlib_chat):
         """Test initialization with custom parameters."""
         agent = DocumentInterrogationAgent(
             model="custom-model",
@@ -182,7 +199,7 @@ class TestDocumentInterrogationAgent:
     def test_process_document_sequential_mode(self, agent, mock_ollama_client):
         """Test document processing in sequential mode."""
         # Mock LLM responses for section extraction and synthesis
-        # Need to mock both chunks (2 chunks for 150 chars) + synthesis
+        # Agent uses old-style self.client.chat() returning dicts
         mock_ollama_client.chat.side_effect = [
             # First chunk: section extraction
             {'message': {'content': '[{"text": "Relevant passage 1", "relevance_score": 0.9, "reasoning": "Direct answer"}]'}},
@@ -393,7 +410,7 @@ class TestDocumentInterrogationAgent:
         assert "Test answer" in answer
         assert confidence == 0.75
 
-    def test_callback_invocation(self, mock_ollama_client):
+    def test_callback_invocation(self, mock_bmlib_chat):
         """Test that callback is invoked during processing."""
         callback_calls = []
 
@@ -408,8 +425,10 @@ class TestDocumentInterrogationAgent:
             show_model_info=False
         )
 
-        # Mock responses
-        mock_ollama_client.chat.side_effect = [
+        # Replace _llm_client with mock for old-style API
+        mock_client = Mock()
+        agent._llm_client = mock_client
+        mock_client.chat.side_effect = [
             {'message': {'content': '[]'}},  # Chunk 1
             {'message': {'content': '[]'}},  # Chunk 2
             {'message': {'content': '{"answer": "Test", "confidence": 0.5}'}}  # Synthesis
@@ -435,29 +454,28 @@ class TestDocumentInterrogationAgent:
             )
 
     def test_get_embedding(self, agent, mock_ollama_client):
-        """Test getting embeddings from Ollama."""
-        mock_ollama_client.embeddings.return_value = {
-            'embedding': [0.1, 0.2, 0.3, 0.4, 0.5]
-        }
+        """Test getting embeddings from LLM."""
+        # _get_embedding calls self._generate_embedding which uses self._llm_client.embed()
+        # The mock _llm_client.embed() must return an object with .embedding attribute
+        embed_response = Mock()
+        embed_response.embedding = [0.1, 0.2, 0.3, 0.4, 0.5]
+        mock_ollama_client.embed.return_value = embed_response
 
         embedding = agent._get_embedding("Test text")
 
         assert embedding == [0.1, 0.2, 0.3, 0.4, 0.5]
-        mock_ollama_client.embeddings.assert_called_once_with(
-            model="test-embedding",
-            prompt="Test text"
-        )
 
     def test_process_with_embeddings_mode(self, agent, mock_ollama_client):
         """Test document processing with embedding-based mode."""
-        # Mock embeddings (question and chunks)
-        mock_ollama_client.embeddings.side_effect = [
-            {'embedding': [1.0, 0.0, 0.0]},  # Question embedding
-            {'embedding': [0.9, 0.1, 0.0]},  # Chunk 1 (high similarity)
-            {'embedding': [0.1, 0.9, 0.0]},  # Chunk 2 (low similarity)
+        # _get_embedding calls self._generate_embedding which uses self._llm_client.embed()
+        embed_responses = [
+            Mock(embedding=[1.0, 0.0, 0.0]),  # Question embedding
+            Mock(embedding=[0.9, 0.1, 0.0]),  # Chunk 1 (high similarity)
+            Mock(embedding=[0.1, 0.9, 0.0]),  # Chunk 2 (low similarity)
         ]
+        mock_ollama_client.embed.side_effect = embed_responses
 
-        # Mock LLM responses
+        # Mock LLM responses (old-style dict format used by the agent directly)
         mock_ollama_client.chat.side_effect = [
             {'message': {'content': '[{"text": "Found it!", "relevance_score": 0.9, "reasoning": "Match"}]'}},
             {'message': {'content': '{"answer": "The answer", "confidence": 0.9}'}}
