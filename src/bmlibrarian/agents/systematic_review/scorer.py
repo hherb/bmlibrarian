@@ -62,6 +62,12 @@ RELEVANCE_SCORE_MIN = 1
 RELEVANCE_SCORE_MAX = 5
 QUALITY_SCORE_MAX = 10
 
+# Neutral mid-scale score used when an assessment dimension has no data
+# (e.g. study assessment unavailable for a paper, or no producer exists yet
+# for the dimension). Keeps configured weights applied without rewarding or
+# penalizing missing information.
+NEUTRAL_SCORE = 5.0
+
 # Recency calculation
 RECENCY_BASE_YEAR = 2000  # Papers before this get minimum recency score
 RECENCY_CURRENT_YEAR = datetime.now().year
@@ -775,15 +781,19 @@ class CompositeScorer:
         sample_size = self._extract_sample_size_score(paper.study_assessment)
         recency = self._calculate_recency_score(paper.scored_paper.paper.year)
         replication = self._extract_replication_score(paper.paper_weight)
+        paper_weight_score = self._extract_paper_weight_score(paper.paper_weight)
+        source_reliability = self._extract_source_reliability(paper)
 
-        # Calculate weighted composite
+        # Calculate weighted composite across all eight configured dimensions
         composite = (
             weights_dict["relevance"] * relevance +
             weights_dict["study_quality"] * study_quality +
             weights_dict["methodological_rigor"] * methodological_rigor +
             weights_dict["sample_size"] * sample_size +
             weights_dict["recency"] * recency +
-            weights_dict["replication_status"] * replication
+            weights_dict["replication_status"] * replication +
+            weights_dict["paper_weight"] * paper_weight_score +
+            weights_dict["source_reliability"] * source_reliability
         )
 
         # Normalize to 0-10 scale
@@ -977,16 +987,20 @@ class CompositeScorer:
         normalized = (score - RELEVANCE_SCORE_MIN) / (RELEVANCE_SCORE_MAX - RELEVANCE_SCORE_MIN) * QUALITY_SCORE_MAX
         return max(0.0, min(QUALITY_SCORE_MAX, normalized))
 
-    def _extract_study_quality(self, study_assessment: Dict[str, Any]) -> float:
+    def _extract_study_quality(self, study_assessment: Optional[Dict[str, Any]]) -> float:
         """
         Extract study quality score from assessment.
 
         Args:
-            study_assessment: StudyAssessmentAgent output
+            study_assessment: StudyAssessmentAgent output, or None when the
+                assessment could not be performed (e.g. no abstract available)
 
         Returns:
-            Quality score (0-10)
+            Quality score (0-10); NEUTRAL_SCORE when no assessment exists
         """
+        if not study_assessment:
+            return NEUTRAL_SCORE
+
         # Try various keys that might contain quality scores
         for key in ["overall_quality", "quality_score", "study_quality", "design_quality"]:
             if key in study_assessment:
@@ -997,16 +1011,20 @@ class CompositeScorer:
         # Default to moderate quality if not found
         return 5.0
 
-    def _extract_methodological_rigor(self, study_assessment: Dict[str, Any]) -> float:
+    def _extract_methodological_rigor(self, study_assessment: Optional[Dict[str, Any]]) -> float:
         """
         Extract methodological rigor score from assessment.
 
         Args:
-            study_assessment: StudyAssessmentAgent output
+            study_assessment: StudyAssessmentAgent output, or None when the
+                assessment could not be performed
 
         Returns:
-            Rigor score (0-10)
+            Rigor score (0-10); NEUTRAL_SCORE when no assessment exists
         """
+        if not study_assessment:
+            return NEUTRAL_SCORE
+
         for key in ["methodological_rigor", "rigor_score", "methodology_quality"]:
             if key in study_assessment:
                 value = study_assessment[key]
@@ -1023,16 +1041,20 @@ class CompositeScorer:
 
         return 5.0
 
-    def _extract_sample_size_score(self, study_assessment: Dict[str, Any]) -> float:
+    def _extract_sample_size_score(self, study_assessment: Optional[Dict[str, Any]]) -> float:
         """
         Extract sample size adequacy score from assessment.
 
         Args:
-            study_assessment: StudyAssessmentAgent output
+            study_assessment: StudyAssessmentAgent output, or None when the
+                assessment could not be performed
 
         Returns:
-            Sample size score (0-10)
+            Sample size score (0-10); NEUTRAL_SCORE when no assessment exists
         """
+        if not study_assessment:
+            return NEUTRAL_SCORE
+
         for key in ["sample_size_score", "sample_adequacy", "statistical_power"]:
             if key in study_assessment:
                 value = study_assessment[key]
@@ -1085,16 +1107,20 @@ class CompositeScorer:
         else:
             return 1.0
 
-    def _extract_replication_score(self, paper_weight: Dict[str, Any]) -> float:
+    def _extract_replication_score(self, paper_weight: Optional[Dict[str, Any]]) -> float:
         """
         Extract replication status score from paper weight assessment.
 
         Args:
-            paper_weight: PaperWeightAssessmentAgent output
+            paper_weight: PaperWeightAssessmentAgent output, or None when the
+                assessment could not be performed
 
         Returns:
-            Replication score (0-10)
+            Replication score (0-10); NEUTRAL_SCORE when no assessment exists
         """
+        if not paper_weight:
+            return NEUTRAL_SCORE
+
         for key in ["replication_status", "replication_score", "reproducibility"]:
             if key in paper_weight:
                 value = paper_weight[key]
@@ -1113,6 +1139,45 @@ class CompositeScorer:
 
         # Default: assume no replication data
         return 5.0
+
+    def _extract_paper_weight_score(self, paper_weight: Optional[Dict[str, Any]]) -> float:
+        """
+        Extract the overall BMLibrarian paper weight (evidence weight) score.
+
+        Args:
+            paper_weight: PaperWeightAssessmentAgent output, or None when the
+                assessment could not be performed
+
+        Returns:
+            Composite evidence weight (0-10); NEUTRAL_SCORE when no
+            assessment exists
+        """
+        if not paper_weight:
+            return NEUTRAL_SCORE
+
+        value = paper_weight.get("composite_score")
+        if isinstance(value, (int, float)):
+            return min(max(float(value), 0.0), QUALITY_SCORE_MAX)
+
+        return NEUTRAL_SCORE
+
+    def _extract_source_reliability(self, paper: AssessedPaper) -> float:
+        """
+        Extract the source/journal reliability score for a paper.
+
+        No assessment component currently produces source-reliability data,
+        so this returns NEUTRAL_SCORE for every paper. Keeping the dimension
+        in the composite formula means the configured weight is honored
+        (rather than silently dropped) and a real producer can be plugged in
+        here later without changing the scoring pipeline.
+
+        Args:
+            paper: The assessed paper
+
+        Returns:
+            Source reliability score (0-10); currently always NEUTRAL_SCORE
+        """
+        return NEUTRAL_SCORE
 
     # =========================================================================
     # Statistics

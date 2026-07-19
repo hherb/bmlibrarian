@@ -496,13 +496,15 @@ to_tsquery: "statin & cholesterol & !(children | pediatric | paediatric)"
             # Store metadata for audit trail
             self.last_search_metadata = strategy_metadata
 
-            # Apply max_rows limit if specified
-            if max_rows > 0:
-                documents = documents[:max_rows]
-
-            # Apply offset if specified
+            # Apply offset first, then the max_rows limit, so that
+            # (offset=N, max_rows=M) returns page documents[N:N+M].
+            # (Applying max_rows first returned an empty page whenever
+            # offset >= max_rows, breaking iterative pagination.)
             if offset > 0:
                 documents = documents[offset:]
+
+            if max_rows > 0:
+                documents = documents[:max_rows]
 
             # Yield documents
             for doc in documents:
@@ -1167,14 +1169,15 @@ Broader: "(aspirin | antiplatelet | anticoagulant) & (myocardial infarction | he
             if progress_callback:
                 progress_callback(f"Phase 1: Offset-based fetch {retry + 1}/{max_retry}")
 
-            # Fetch batch
+            # Fetch batch (materialize the generator so the empty-batch
+            # check below actually works — a generator object is always truthy)
             try:
-                documents = self.find_abstracts(
+                documents = list(self.find_abstracts(
                     question=question,
                     max_rows=batch_size,
                     offset=offset,
                     **search_kwargs
-                )
+                ))
             except Exception as e:
                 logger.error(f"Failed to fetch documents at offset {offset}: {e}")
                 break
