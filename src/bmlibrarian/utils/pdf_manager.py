@@ -18,6 +18,11 @@ from datetime import datetime
 import requests
 
 from .pdf_validation import is_pdf_file
+from .download_utils import (
+    partial_download_path,
+    promote_partial_download,
+    discard_partial_download,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +181,11 @@ class PDFManager:
         if pdf_path is None:
             return None
 
+        # All writes go to a temporary .part sibling of pdf_path; error
+        # handlers discard only that partial file, never a pre-existing good
+        # file at the final path.
+        part_path = partial_download_path(pdf_path)
+
         # Try download with retries
         for attempt in range(max_retries):
             try:
@@ -223,7 +233,7 @@ class PDFManager:
 
                 # Save to file with progress tracking
                 total_size = 0
-                with open(pdf_path, 'wb') as f:
+                with open(part_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:  # filter out keep-alive new chunks
                             f.write(chunk)
@@ -232,8 +242,7 @@ class PDFManager:
                 # Verify file was actually written
                 if total_size == 0:
                     logger.error(f"Downloaded file is empty: {pdf_url}")
-                    if pdf_path.exists():
-                        pdf_path.unlink()
+                    discard_partial_download(part_path)
                     if attempt < max_retries - 1:
                         continue
                     return None
@@ -242,72 +251,88 @@ class PDFManager:
                 # not an HTML paywall/login page served with a misleading HTTP
                 # 200 status. A content-type mismatch alone is not trustworthy
                 # (servers can lie), so this is the authoritative check.
-                if not is_pdf_file(pdf_path):
+                if not is_pdf_file(part_path):
                     logger.warning(
                         f"Downloaded content is not a valid PDF (magic bytes check "
                         f"failed), likely an HTML paywall/login page: {pdf_url}"
                     )
-                    if pdf_path.exists():
-                        pdf_path.unlink()
+                    discard_partial_download(part_path)
                     if attempt < max_retries - 1:
                         continue
                     # Exhausted retries - fall through to browser fallback below,
                     # exactly as any other exhausted-retry HTTP failure would.
                     break
 
+                promote_partial_download(part_path, pdf_path)
                 logger.info(f"PDF saved to {pdf_path} ({total_size} bytes)")
                 return pdf_path
 
             except requests.exceptions.Timeout as e:
                 logger.error(f"Download timeout for {pdf_url}: {e}")
+                # A timeout can occur mid-stream after bytes were written;
+                # discard the partial file (never the final path, which may
+                # hold a previous successful download).
+                discard_partial_download(part_path)
                 if attempt < max_retries - 1:
                     continue
-                return None
+                break  # Exhausted retries - try browser fallback below
 
             except requests.exceptions.HTTPError as e:
-                # Don't retry on 403 Forbidden or 404 Not Found
-                if e.response.status_code in [403, 404, 401]:
-                    logger.error(f"HTTP {e.response.status_code} error (no retry): {pdf_url}")
+                if e.response.status_code == 404:
+                    # Definitively not found - a browser won't materialize it,
+                    # so skip the fallback entirely.
+                    logger.error(f"HTTP 404 error (no retry): {pdf_url}")
                     return None
+                if e.response.status_code in [401, 403]:
+                    # Auth/anti-bot rejection: retrying the same request is
+                    # pointless, but this is exactly the case the browser
+                    # fallback exists for (Cloudflare and similar walls).
+                    logger.error(
+                        f"HTTP {e.response.status_code} error (no retry): {pdf_url}"
+                    )
+                    break  # Try browser fallback below
                 logger.error(f"HTTP error downloading PDF: {e}")
                 if attempt < max_retries - 1:
                     continue
-                return None
+                break  # Exhausted retries - try browser fallback below
 
             except requests.exceptions.ChunkedEncodingError as e:
                 logger.error(f"Incomplete download (chunked encoding error): {e}")
-                # Clean up partial file
-                if pdf_path.exists():
-                    pdf_path.unlink()
+                # Clean up partial file (never the final path)
+                discard_partial_download(part_path)
                 if attempt < max_retries - 1:
                     import time
                     time.sleep(2)  # Wait before retry
                     continue
-                return None
+                break  # Exhausted retries - try browser fallback below
 
             except requests.exceptions.ConnectionError as e:
                 logger.error(f"Connection error: {e}")
-                if pdf_path.exists():
-                    pdf_path.unlink()
+                discard_partial_download(part_path)
                 if attempt < max_retries - 1:
                     import time
                     time.sleep(2)
                     continue
-                return None
+                break  # Exhausted retries - try browser fallback below
 
             except requests.RequestException as e:
                 logger.error(f"Failed to download PDF: {e}")
-                if pdf_path.exists():
-                    pdf_path.unlink()
+                discard_partial_download(part_path)
                 if attempt < max_retries - 1:
                     continue
-                return None
+                break  # Exhausted retries - try browser fallback below
 
             except IOError as e:
+                # Local filesystem problem - the browser fallback writes to
+                # the same disk, so it cannot help here.
                 logger.error(f"Failed to save PDF: {e}")
+                discard_partial_download(part_path)
                 return None
 
-        # All retries failed - try browser-based download if enabled
+        # All retries failed - try browser-based download if enabled.
+        # The browser also writes to the temporary .part path so that its
+        # output gets the same magic-byte validation as direct HTTP
+        # downloads before being promoted to the final path.
         if use_browser_fallback:
             logger.info(f"Regular download failed, attempting browser-based download for: {pdf_url}")
             try:
@@ -315,16 +340,26 @@ class PDFManager:
 
                 result = download_pdf_with_browser(
                     url=pdf_url,
-                    save_path=pdf_path,
+                    save_path=part_path,
                     headless=True,
                     timeout=timeout * 1000  # Convert to milliseconds
                 )
 
                 if result['status'] == 'success':
-                    logger.info(f"Browser download successful: {result['path']} ({result['size']} bytes)")
+                    if not is_pdf_file(part_path):
+                        logger.warning(
+                            f"Browser download is not a valid PDF (magic bytes "
+                            f"check failed), likely an HTML paywall/login page: "
+                            f"{pdf_url}"
+                        )
+                        discard_partial_download(part_path)
+                        return None
+                    promote_partial_download(part_path, pdf_path)
+                    logger.info(f"Browser download successful: {pdf_path} ({result['size']} bytes)")
                     return pdf_path
                 else:
                     logger.error(f"Browser download failed: {result.get('error', 'Unknown error')}")
+                    discard_partial_download(part_path)
 
             except ImportError:
                 logger.warning(
@@ -333,6 +368,7 @@ class PDFManager:
                 )
             except Exception as e:
                 logger.error(f"Browser download exception: {e}")
+                discard_partial_download(part_path)
 
         return None
 

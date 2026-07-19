@@ -153,7 +153,7 @@ Input file format:
 
         # Print results information
         print("=" * 80)
-        storage_failures = getattr(agent, 'storage_failures', 0)
+        storage_failures = agent.storage_failures
         if storage_failures:
             print(f"\n✗ WARNING: {storage_failures} result(s) FAILED to store in PostgreSQL")
             print("  (see log output above for details - these results are NOT in the database)")

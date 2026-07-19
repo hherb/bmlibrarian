@@ -71,6 +71,21 @@ def test_get_stats_only_references_existing_columns() -> None:
     # The CLI formats these with ':,' so they must all be ints
     for key in (
         "total_files", "processed_files", "baseline_files",
-        "update_files", "total_size_bytes", "total_articles",
+        "update_files", "total_size_bytes",
     ):
         assert isinstance(stats[key], int), f"{key} must be an int"
+
+
+def test_get_stats_does_not_report_untracked_article_count() -> None:
+    """Per-file article counts are not stored in the tracking schema, so
+    get_stats() must not return a 'total_articles' key at all: a hardcoded
+    zero misleads every consumer (the status CLI derives the real count
+    from the document table instead)."""
+    tracker = DownloadTracker.__new__(DownloadTracker)
+    tracker.db_manager = _FakeDBManager()
+
+    stats = tracker.get_stats()
+
+    assert "total_articles" not in stats, (
+        "get_stats() must not report a permanently-zero total_articles count"
+    )

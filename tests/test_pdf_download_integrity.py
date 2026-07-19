@@ -393,3 +393,243 @@ class TestMedRxivImporterDownloadIntegrity:
         expected_path = tmp_path / expected_filename
         assert expected_path.exists()
         assert expected_path.read_bytes() == VALID_PDF_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing files must survive failed download attempts
+#
+# The mid-stream cleanup handlers must never delete a good PDF that already
+# existed at the output path before the attempt: when the failure occurs
+# BEFORE any bytes are written (e.g. a connect timeout), the file on disk is
+# a previous successful download, not this attempt's partial output.
+# ---------------------------------------------------------------------------
+
+class TestPreExistingFileSurvivesFailedAttempt:
+    """A failed download attempt must not delete a pre-existing good PDF."""
+
+    def test_full_text_finder_http_connect_failure_preserves_existing_pdf(self, tmp_path):
+        """session.get() raising before any write must leave the old file intact."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        output_path = tmp_path / "2024" / "paper.pdf"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_bytes(VALID_PDF_BYTES)
+
+        with patch.object(
+            finder.session, "get",
+            side_effect=requests.exceptions.Timeout("connect timed out"),
+        ):
+            result = finder._download_from_source(
+                source=PDFSource(
+                    url="https://example.com/paper.pdf",
+                    source_type=SourceType.DIRECT_URL,
+                    access_type=AccessType.OPEN,
+                ),
+                output_path=output_path,
+                max_attempts=1,
+            )
+
+        assert result.success is False
+        assert output_path.exists(), (
+            "A connect failure before any bytes were written must not delete "
+            "the pre-existing PDF at the output path"
+        )
+        assert output_path.read_bytes() == VALID_PDF_BYTES
+
+    def test_full_text_finder_ftp_connect_failure_preserves_existing_pdf(self, tmp_path):
+        """An FTP connect failure before any write must leave the old file intact."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        output_path = tmp_path / "2024" / "paper.pdf"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_bytes(VALID_PDF_BYTES)
+
+        mock_ftp_instance = MagicMock()
+        mock_ftp_instance.connect.side_effect = TimeoutError("FTP connect timed out")
+        mock_ftp_class = MagicMock(return_value=mock_ftp_instance)
+
+        with patch("bmlibrarian.discovery.full_text_finder.ftplib.FTP", mock_ftp_class):
+            result = finder._download_via_ftp(
+                url="ftp://ftp.example.com/pub/pmc/oa_pdf/sample.pdf",
+                output_path=output_path,
+                max_attempts=1,
+            )
+
+        assert result.success is False
+        assert output_path.exists(), (
+            "An FTP connect failure before any bytes were written must not "
+            "delete the pre-existing PDF at the output path"
+        )
+        assert output_path.read_bytes() == VALID_PDF_BYTES
+
+    def test_pdf_manager_connect_failure_preserves_existing_pdf(self, tmp_path):
+        """requests.get() raising before any write must leave the old file intact."""
+        manager = PDFManager(base_dir=str(tmp_path))
+        document = {
+            "id": 1,
+            "doi": "10.1234/example.paper",
+            "pdf_url": "https://example.com/paper.pdf",
+            "pdf_filename": "2024/paper.pdf",
+        }
+        pdf_path = manager.get_pdf_path(document, create_dirs=True)
+        pdf_path.write_bytes(VALID_PDF_BYTES)
+
+        with patch(
+            "bmlibrarian.utils.pdf_manager.requests.get",
+            side_effect=requests.exceptions.ConnectionError("connection refused"),
+        ):
+            result = manager.download_pdf(
+                document, max_retries=1, use_browser_fallback=False
+            )
+
+        assert result is None
+        assert pdf_path.exists(), (
+            "A connect failure before any bytes were written must not delete "
+            "the pre-existing PDF at the output path"
+        )
+        assert pdf_path.read_bytes() == VALID_PDF_BYTES
+
+    def test_full_text_finder_mid_stream_failure_still_removes_partial_output(self, tmp_path):
+        """Temp-file downloads must not leak .part files after a mid-stream failure."""
+        finder = FullTextFinder(unpaywall_email="test@example.com")
+        output_path = tmp_path / "2024" / "paper.pdf"
+        response = make_mock_response(
+            b"", content_type="application/pdf",
+            raising_exception=requests.exceptions.ConnectionError("reset"),
+        )
+
+        with patch.object(finder.session, "get", return_value=response):
+            result = finder._download_from_source(
+                source=PDFSource(
+                    url="https://example.com/paper.pdf",
+                    source_type=SourceType.DIRECT_URL,
+                    access_type=AccessType.OPEN,
+                ),
+                output_path=output_path,
+                max_attempts=1,
+            )
+
+        assert result.success is False
+        assert not output_path.exists()
+        leftovers = list(output_path.parent.glob("*")) if output_path.parent.exists() else []
+        assert leftovers == [], f"Partial download artifacts left behind: {leftovers}"
+
+
+# ---------------------------------------------------------------------------
+# PDFManager browser fallback: reachable on exhausted retries, and validated
+# ---------------------------------------------------------------------------
+
+class TestPDFManagerBrowserFallbackConsistency:
+    """The browser fallback must be reachable for exhausted-retry network
+    failures and anti-bot HTTP rejections, and its output must pass the same
+    magic-byte validation as direct HTTP downloads."""
+
+    def _make_manager_and_document(self, tmp_path):
+        manager = PDFManager(base_dir=str(tmp_path))
+        document = {
+            "id": 1,
+            "doi": "10.1234/example.paper",
+            "pdf_url": "https://example.com/paper.pdf",
+        }
+        return manager, document
+
+    def _fake_browser_success(self, body: bytes):
+        def fake_browser_download(**kwargs):
+            save_path = Path(kwargs["save_path"])
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(body)
+            return {"status": "success", "path": str(save_path), "size": len(body)}
+        return fake_browser_download
+
+    def test_exhausted_timeouts_fall_back_to_browser(self, tmp_path):
+        """A timeout on every retry must reach the browser fallback, not give up."""
+        manager, document = self._make_manager_and_document(tmp_path)
+
+        with patch(
+            "bmlibrarian.utils.pdf_manager.requests.get",
+            side_effect=requests.exceptions.Timeout("read timed out"),
+        ), patch(
+            "bmlibrarian.utils.browser_downloader.download_pdf_with_browser",
+            side_effect=self._fake_browser_success(VALID_PDF_BYTES),
+        ) as mock_browser:
+            result = manager.download_pdf(
+                document, max_retries=2, use_browser_fallback=True
+            )
+
+        assert mock_browser.called, (
+            "Browser fallback must be attempted after retries are exhausted"
+        )
+        pdf_path = manager.get_pdf_path(document)
+        assert result == pdf_path
+        assert pdf_path.read_bytes() == VALID_PDF_BYTES
+
+    def test_http_403_falls_back_to_browser(self, tmp_path):
+        """An anti-bot 403 is exactly what the browser fallback exists for."""
+        manager, document = self._make_manager_and_document(tmp_path)
+
+        response = MagicMock()
+        response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=MagicMock(status_code=403)
+        )
+
+        with patch(
+            "bmlibrarian.utils.pdf_manager.requests.get", return_value=response
+        ), patch(
+            "bmlibrarian.utils.browser_downloader.download_pdf_with_browser",
+            side_effect=self._fake_browser_success(VALID_PDF_BYTES),
+        ) as mock_browser:
+            result = manager.download_pdf(
+                document, max_retries=1, use_browser_fallback=True
+            )
+
+        assert mock_browser.called, "Browser fallback must be attempted on HTTP 403"
+        pdf_path = manager.get_pdf_path(document)
+        assert result == pdf_path
+        assert pdf_path.read_bytes() == VALID_PDF_BYTES
+
+    def test_http_404_does_not_launch_browser(self, tmp_path):
+        """A definitive 404 must not waste a browser launch."""
+        manager, document = self._make_manager_and_document(tmp_path)
+
+        response = MagicMock()
+        response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=MagicMock(status_code=404)
+        )
+
+        with patch(
+            "bmlibrarian.utils.pdf_manager.requests.get", return_value=response
+        ), patch(
+            "bmlibrarian.utils.browser_downloader.download_pdf_with_browser"
+        ) as mock_browser:
+            result = manager.download_pdf(
+                document, max_retries=1, use_browser_fallback=True
+            )
+
+        assert result is None
+        assert not mock_browser.called, "404 is definitive - no browser fallback"
+
+    def test_browser_fallback_output_is_magic_byte_validated(self, tmp_path):
+        """A browser 'success' that produced HTML must be rejected, not persisted."""
+        manager, document = self._make_manager_and_document(tmp_path)
+        response = make_mock_response(
+            HTML_PAYWALL_BODY, content_type="text/html; charset=utf-8"
+        )
+
+        with patch(
+            "bmlibrarian.utils.pdf_manager.requests.get", return_value=response
+        ), patch(
+            "bmlibrarian.utils.browser_downloader.download_pdf_with_browser",
+            side_effect=self._fake_browser_success(HTML_PAYWALL_BODY),
+        ) as mock_browser:
+            result = manager.download_pdf(
+                document, max_retries=1, use_browser_fallback=True
+            )
+
+        assert mock_browser.called
+        assert result is None, (
+            "A non-PDF browser download must not be reported as success"
+        )
+        pdf_path = manager.get_pdf_path(document)
+        assert not pdf_path.exists(), (
+            "A non-PDF browser download must not be left on disk as a .pdf"
+        )
+        leftovers = list(pdf_path.parent.glob("*")) if pdf_path.parent.exists() else []
+        assert leftovers == [], f"Partial download artifacts left behind: {leftovers}"

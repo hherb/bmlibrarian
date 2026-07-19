@@ -168,7 +168,7 @@ class DownloadTracker:
         """Get download and processing statistics.
 
         Note: per-file article counts are not stored in the tracking schema
-        (see mark_processed), so 'total_articles' is always 0 here; the CLI
+        (see mark_processed), so no article count is reported here; the CLI
         derives the real article count from the document table instead.
         """
         with self.db_manager.get_connection() as conn:
@@ -188,8 +188,7 @@ class DownloadTracker:
                     'processed_files': row[1] or 0,
                     'baseline_files': row[2] or 0,
                     'update_files': row[3] or 0,
-                    'total_size_bytes': row[4] or 0,
-                    'total_articles': 0
+                    'total_size_bytes': row[4] or 0
                 }
 
 

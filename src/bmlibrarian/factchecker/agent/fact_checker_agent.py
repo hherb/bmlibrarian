@@ -166,6 +166,10 @@ class FactCheckerAgent(BaseAgent):
         self.db: Optional[FactCheckerDB] = None
         self.current_session_id: Optional[str] = None
         self.incremental = incremental
+        # Count of results that failed to persist to the database; reset per
+        # batch in check_batch() and surfaced by the CLI so storage failures
+        # are never reported as success.
+        self.storage_failures: int = 0
 
         # Initialize sub-agents (will be set up during fact-checking)
         self.query_agent = None
@@ -1017,7 +1021,7 @@ Respond ONLY with the JSON object, no additional text."""
 
         except Exception as e:
             logger.error(f"Error storing result in database: {e}", exc_info=True)
-            self.storage_failures = getattr(self, 'storage_failures', 0) + 1
+            self.storage_failures += 1
             return False
 
     def _finalize_database_session(self, processed_count: int):

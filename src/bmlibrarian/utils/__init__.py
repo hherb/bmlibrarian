@@ -51,6 +51,13 @@ from .pdf_validation import (
     is_pdf_file
 )
 
+from .download_utils import (
+    PARTIAL_DOWNLOAD_SUFFIX,
+    partial_download_path,
+    promote_partial_download,
+    discard_partial_download
+)
+
 __all__ = [
     # Path utilities
     'expand_path',
@@ -91,5 +98,10 @@ __all__ = [
     'JSONRepairError',
     # PDF content validation
     'is_pdf_content',
-    'is_pdf_file'
+    'is_pdf_file',
+    # Atomic download helpers
+    'PARTIAL_DOWNLOAD_SUFFIX',
+    'partial_download_path',
+    'promote_partial_download',
+    'discard_partial_download'
 ]
