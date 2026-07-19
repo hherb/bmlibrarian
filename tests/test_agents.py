@@ -146,10 +146,15 @@ class TestQueryAgent:
         assert agent._validate_tsquery("aspirin && heart") == False  # Invalid operator
         assert agent._validate_tsquery("(unbalanced parens") == False
 
-    @patch('bmlibrarian.agents.query_agent.find_abstracts')
+    @patch('bmlibrarian.agents.query_agent.search_hybrid')
     @patch('bmlib.llm.client.LLMClient.chat')
-    def test_find_abstracts(self, mock_chat, mock_find_abstracts):
-        """Test find_abstracts method."""
+    def test_find_abstracts(self, mock_chat, mock_search_hybrid):
+        """Test find_abstracts method.
+
+        find_abstracts() retrieves via search_hybrid(), not the legacy
+        database.find_abstracts(). Patching the wrong target lets the real
+        hybrid search run against the production database.
+        """
         # Mock bmlib response
         mock_chat.return_value = BmlibResponse(
             content='covid & vaccine',
@@ -158,12 +163,12 @@ class TestQueryAgent:
             output_tokens=5
         )
 
-        # Mock database results
+        # Mock database results — search_hybrid returns (documents, metadata)
         mock_docs = [
             {'title': 'Test Document 1', 'abstract': 'Test abstract 1'},
             {'title': 'Test Document 2', 'abstract': 'Test abstract 2'}
         ]
-        mock_find_abstracts.return_value = iter(mock_docs)
+        mock_search_hybrid.return_value = (mock_docs, {'strategies_used': ['bm25']})
 
         agent = QueryAgent()
         results = list(agent.find_abstracts("COVID vaccine effectiveness"))
@@ -171,10 +176,12 @@ class TestQueryAgent:
         assert len(results) == 2
         assert results[0]['title'] == 'Test Document 1'
 
-        # Verify database function was called correctly
-        mock_find_abstracts.assert_called_once()
-        call_args = mock_find_abstracts.call_args
-        assert call_args[1]['plain'] == False  # Should use to_tsquery format
+        # Verify the search function was called with both the original question
+        # (for semantic search) and the generated tsquery (for BM25/fulltext).
+        mock_search_hybrid.assert_called_once()
+        call_kwargs = mock_search_hybrid.call_args[1]
+        assert call_kwargs['search_text'] == "COVID vaccine effectiveness"
+        assert 'covid' in call_kwargs['query_text'].lower()
 
 
 class TestDocumentScoringAgent:
