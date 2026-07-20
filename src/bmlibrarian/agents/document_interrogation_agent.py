@@ -667,16 +667,10 @@ Find all passages in the document that help answer the question.
 Return JSON array format as specified."""
 
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt}
-                ],
-                options=self._get_ollama_options()
-            )
-
-            response_text = response['message']['content'].strip()
+            response_text = self._make_llm_request(
+                messages=[{'role': 'user', 'content': user_prompt}],
+                system_prompt=system_prompt,
+            ).strip()
 
             # Parse JSON response
             # Handle markdown code blocks if present
@@ -762,16 +756,10 @@ Synthesize an answer to the question based on these sections.
 Return JSON format: {{"answer": "...", "confidence": 0.0-1.0}}"""
 
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt}
-                ],
-                options=self._get_ollama_options()
-            )
-
-            response_text = response['message']['content'].strip()
+            response_text = self._make_llm_request(
+                messages=[{'role': 'user', 'content': user_prompt}],
+                system_prompt=system_prompt,
+            ).strip()
 
             # Parse JSON response
             if response_text.startswith('```'):
@@ -857,18 +845,19 @@ Return JSON format: {{"answer": "...", "confidence": 0.0-1.0}}"""
         Returns:
             True if connection successful, False otherwise
         """
+        # BaseAgent verifies provider reachability and the chat model; this
+        # agent additionally depends on a separate embedding model.
+        if not super().test_connection():
+            return False
+
         try:
-            # Test main model
-            models = self.client.list()
-            model_names = [m.model for m in models.models]
+            available_models = self.get_available_models()
 
-            if self.model not in model_names:
-                logger.warning(f"Model {self.model} not found in Ollama")
-                return False
-
-            # Test embedding model
-            if self.embedding_model not in model_names:
-                logger.warning(f"Embedding model {self.embedding_model} not found in Ollama")
+            if self.embedding_model not in available_models:
+                logger.warning(
+                    f"Embedding model {self.embedding_model} not found. "
+                    f"Available models: {available_models}"
+                )
                 return False
 
             return True
