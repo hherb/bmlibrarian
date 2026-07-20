@@ -7,7 +7,11 @@ requires-python = ">=3.12"
 dependencies = [
     # Upper bound is deliberate: bmlib is pre-1.0, so a minor bump may change
     # the API this package delegates its whole LLM layer to.
-    "bmlib[ollama]>=0.4.0,<0.5.0",
+    #
+    # The floor is 0.5.0 because embeddings/ calls LLMClient.embed_batch,
+    # added to bmlib after 0.4.0. This assumes the release carrying it is
+    # numbered 0.5.0 — adjust both bounds if it is cut under another number.
+    "bmlib[ollama]>=0.5.0,<0.6.0",
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
     "python-dotenv>=1.2.2",

@@ -38,11 +38,7 @@ from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_w
 
 logger = logging.getLogger(__name__)
 
-try:
-    import ollama
-except ImportError:
-    logger.warning("ollama not installed. Ollama backend will not be available.")
-    ollama = None
+from ..llm import LLMClient
 
 # Type alias for backend selection
 EmbeddingBackend = Literal["ollama", "ollama_http", "llama_cpp", "sentence_transformers"]
@@ -240,11 +236,7 @@ class ChunkEmbedder:
         self._http_embedder = None
 
         if backend == "ollama":
-            if not ollama:
-                raise ImportError(
-                    "ollama package required for ollama backend. "
-                    "Install with: pip install ollama"
-                )
+            self._llm_client = LLMClient(track_usage=False)
         elif backend == "ollama_http":
             self._init_ollama_http(model_name)
         elif backend == "sentence_transformers":
@@ -485,14 +477,11 @@ class ChunkEmbedder:
         """
         import time
 
-        if ollama is None:
-            logger.error("Ollama library not available")
-            return None
-
         for attempt in range(max_retries):
             try:
-                response = ollama.embeddings(model=self.model_name, prompt=text)
-                embedding = response.get("embedding")
+                embedding = self._llm_client.embed(
+                    text=text, model=self.model_name,
+                ).embedding
 
                 if embedding:
                     if len(embedding) != EMBEDDING_DIMENSION:
@@ -502,7 +491,7 @@ class ChunkEmbedder:
                         )
                     return embedding
 
-                logger.error(f"No embedding in Ollama response: {response}")
+                logger.error("No embedding returned for text")
 
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -641,9 +630,9 @@ class ChunkEmbedder:
         # Retry loop for the batch
         for attempt in range(max_retries):
             try:
-                # Use the newer embed() API which supports batching
-                response = ollama.embed(model=self.model_name, input=valid_texts)
-                embeddings = response.get("embeddings", [])
+                embeddings = self._llm_client.embed_batch(
+                    texts=valid_texts, model=self.model_name,
+                ).embeddings
 
                 if len(embeddings) == len(valid_texts):
                     # Build result list with None for invalid texts
