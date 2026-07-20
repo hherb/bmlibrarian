@@ -17,6 +17,8 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import asdict
 
+from llm_test_support import llm_response
+
 from bmlibrarian.agents.systematic_review import (
     # Phase 1 models
     SearchCriteria,
@@ -77,38 +79,38 @@ def simple_criteria() -> SearchCriteria:
 
 
 @pytest.fixture
-def mock_ollama_response():
-    """Mock ollama.generate response."""
-    return {
-        "response": json.dumps({
+def mock_llm_pico_response():
+    """A provider response carrying a well-formed PICO extraction."""
+    return llm_response(
+        json.dumps({
             "is_clinical": True,
             "population": "Adults with cardiovascular disease",
             "intervention": "Statin therapy",
             "comparison": "Placebo or no treatment",
-            "outcome": "CVD events and mortality"
+            "outcome": "CVD events and mortality",
         })
-    }
+    )
 
 
 @pytest.fixture
 def mock_query_variations_response():
     """Mock LLM response for query variations."""
-    return {
-        "response": json.dumps([
+    return llm_response(
+        json.dumps([
             {
                 "query_text": "statin cardiovascular prevention efficacy",
                 "query_type": "semantic",
                 "purpose": "Find papers on statin efficacy",
-                "expected_coverage": "Primary intervention studies"
+                "expected_coverage": "Primary intervention studies",
             },
             {
                 "query_text": "HMG-CoA reductase inhibitors heart disease",
                 "query_type": "keyword",
                 "purpose": "Alternative terminology",
-                "expected_coverage": "Papers using technical terminology"
+                "expected_coverage": "Papers using technical terminology",
             },
         ])
-    }
+    )
 
 
 @pytest.fixture
@@ -381,15 +383,15 @@ class TestPlanner:
         assert query is not None
         assert query.query_type == QueryType.HYDE
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_extract_pico_success(
         self,
         mock_generate: MagicMock,
         sample_planner: Planner,
-        mock_ollama_response: dict,
+        mock_llm_pico_response: dict,
     ) -> None:
         """Test PICO extraction with LLM."""
-        mock_generate.return_value = mock_ollama_response
+        mock_generate.return_value = mock_llm_pico_response
 
         pico = sample_planner._extract_pico(
             "What is the efficacy of statins for CVD prevention?"
@@ -399,15 +401,15 @@ class TestPlanner:
         assert "cardiovascular" in pico.population.lower()
         assert "statin" in pico.intervention.lower()
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_extract_pico_cache(
         self,
         mock_generate: MagicMock,
         sample_planner: Planner,
-        mock_ollama_response: dict,
+        mock_llm_pico_response: dict,
     ) -> None:
         """Test PICO extraction caching."""
-        mock_generate.return_value = mock_ollama_response
+        mock_generate.return_value = mock_llm_pico_response
 
         question = "Test question for caching"
 
@@ -420,19 +422,19 @@ class TestPlanner:
         assert mock_generate.call_count == 1
         assert pico1.is_clinical == pico2.is_clinical
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_extract_pico_invalid_json(
         self, mock_generate: MagicMock, sample_planner: Planner
     ) -> None:
         """Test PICO extraction handles invalid JSON."""
-        mock_generate.return_value = {"response": "not valid json"}
+        mock_generate.return_value = llm_response("not valid json")
 
         pico = sample_planner._extract_pico("Test question")
 
         # Should return empty PICO on parse failure
         assert not pico.is_clinical
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_generate_search_plan_without_llm(
         self,
         mock_generate: MagicMock,
@@ -454,19 +456,19 @@ class TestPlanner:
         assert plan.iteration == 1
         assert plan.search_rationale != ""
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_generate_search_plan_with_llm(
         self,
         mock_generate: MagicMock,
         sample_planner: Planner,
         sample_criteria: SearchCriteria,
-        mock_ollama_response: dict,
+        mock_llm_pico_response: dict,
         mock_query_variations_response: dict,
     ) -> None:
         """Test full search plan generation with LLM."""
         # Set up mock to return PICO then variations
         mock_generate.side_effect = [
-            mock_ollama_response,
+            mock_llm_pico_response,
             mock_query_variations_response,
         ]
 
@@ -826,7 +828,7 @@ class TestSearchExecutor:
 class TestPlannerExecutorIntegration:
     """Integration tests for Planner and SearchExecutor."""
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_plan_and_execute_flow(
         self,
         mock_generate: MagicMock,
@@ -834,13 +836,13 @@ class TestPlannerExecutorIntegration:
     ) -> None:
         """Test complete flow from planning to execution setup."""
         # Mock LLM
-        mock_generate.return_value = {"response": json.dumps({
+        mock_generate.return_value = llm_response(json.dumps({
             "is_clinical": False,
             "population": "",
             "intervention": "",
             "comparison": "",
             "outcome": "",
-        })}
+        }))
 
         # Create planner and executor
         planner = Planner()
@@ -867,8 +869,8 @@ class TestPlannerExecutorIntegration:
         planner = Planner()
 
         # Initial plan
-        with patch('bmlibrarian.agents.systematic_review.planner.ollama.generate') as mock:
-            mock.return_value = {"response": "{}"}
+        with patch('bmlib.llm.client.LLMClient.chat') as mock:
+            mock.return_value = llm_response("{}")
             plan1 = planner.generate_search_plan(
                 sample_criteria,
                 num_query_variations=1,
@@ -884,8 +886,8 @@ class TestPlannerExecutorIntegration:
         assert should_iterate
 
         # Generate additional queries
-        with patch('bmlibrarian.agents.systematic_review.planner.ollama.generate') as mock:
-            mock.return_value = {"response": "{}"}
+        with patch('bmlib.llm.client.LLMClient.chat') as mock:
+            mock.return_value = llm_response("{}")
             plan2 = planner.generate_additional_queries(
                 sample_criteria,
                 plan1,

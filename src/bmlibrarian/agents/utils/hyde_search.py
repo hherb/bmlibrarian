@@ -12,12 +12,16 @@ This approach often yields better results because hypothetical documents
 are more similar to the actual documents in the database than raw questions.
 
 IMPORTANT: All database interaction goes through the database manager
-(no direct psycopg usage). All LLM interaction uses the ollama library.
+(no direct psycopg usage). All LLM interaction goes through the shared
+LLM abstraction (bmlibrarian.llm.LLMClient), never the ollama library
+directly.
 """
 
 import logging
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from ...llm import LLMClient, LLMMessage
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -27,13 +31,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_RRF_K = 60  # Standard RRF constant from literature (Cormack et al., 2009)
 DEFAULT_GENERATION_TEMPERATURE = 0.3  # Low temperature for consistent hypothetical documents
 DEFAULT_ABSTRACT_LENGTH = 300  # Typical abstract length in tokens
+
+# Generation ceiling for one hypothetical abstract. This is deliberately far
+# above DEFAULT_ABSTRACT_LENGTH: reasoning models (gpt-oss, deepseek-r1, qwq)
+# spend part of the budget thinking before emitting any prose, so a ceiling of
+# 300 leaves them truncated mid-reasoning with an empty or stub completion —
+# which this module treats as a failed generation.
+HYDE_GENERATION_MAX_TOKENS = 1200
 DEFAULT_NUM_HYPOTHETICAL_DOCS = 3  # Number of hypothetical documents to generate
 DEFAULT_EMBEDDING_MODEL_ID = 1  # snowflake-arctic-embed2:latest in database
 
 
 def generate_hypothetical_documents(
     question: str,
-    client: Any,  # ollama.Client
+    client: LLMClient,
     model: str,
     num_docs: int = DEFAULT_NUM_HYPOTHETICAL_DOCS,
     temperature: float = DEFAULT_GENERATION_TEMPERATURE,
@@ -42,13 +53,13 @@ def generate_hypothetical_documents(
     """
     Generate hypothetical biomedical documents that would answer the question.
 
-    Uses the ollama library's client.generate() method to create realistic
-    research abstracts.
+    Uses the shared LLM abstraction, so a provider-prefixed model such as
+    ``anthropic:claude-sonnet-5`` is honoured here too.
 
     Args:
         question: The user's research question
-        client: Ollama client instance (ollama.Client)
-        model: Model name for generation (e.g., medgemma-27b-text-it-Q8_0:latest)
+        client: LLM client (bmlibrarian.llm.LLMClient)
+        model: Model name for generation, optionally provider-prefixed
         num_docs: Number of hypothetical documents to generate
         temperature: Temperature for generation (higher = more diversity)
         callback: Optional callback for progress updates
@@ -57,8 +68,8 @@ def generate_hypothetical_documents(
         List of hypothetical document strings (abstracts)
 
     Example:
-        >>> import ollama
-        >>> client = ollama.Client(host="http://localhost:11434")
+        >>> from bmlibrarian.llm import LLMClient
+        >>> client = LLMClient()
         >>> docs = generate_hypothetical_documents(
         ...     "What are the effects of aspirin on cardiovascular disease?",
         ...     client, "medgemma-27b-text-it-Q8_0:latest", num_docs=3
@@ -93,17 +104,15 @@ Do NOT include titles, author names, or metadata - only the abstract text.
             else:
                 prompt = f"Write a scientific abstract with findings relevant to: {question}"
 
-            response = client.generate(
+            response = client.chat(
+                messages=[LLMMessage(role="user", content=prompt)],
                 model=model,
-                prompt=prompt,
-                system=system_prompt,
-                options={
-                    'temperature': temperature,
-                    'num_predict': DEFAULT_ABSTRACT_LENGTH
-                }
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=HYDE_GENERATION_MAX_TOKENS,
             )
 
-            hypothetical_doc = response['response'].strip()
+            hypothetical_doc = (response.content or "").strip()
 
             if hypothetical_doc:
                 hypothetical_docs.append(hypothetical_doc)
@@ -128,18 +137,18 @@ Do NOT include titles, author names, or metadata - only the abstract text.
 
 def embed_documents(
     documents: List[str],
-    client: Any,  # ollama.Client
+    client: LLMClient,
     embedding_model: str,
     callback: Optional[Callable[[str, str], None]] = None
 ) -> List[List[float]]:
     """
     Generate embeddings for multiple documents.
 
-    Uses the ollama library's client.embeddings() method for vector generation.
+    Uses the shared LLM abstraction's embed() method for vector generation.
 
     Args:
         documents: List of text documents to embed
-        client: Ollama client instance (ollama.Client)
+        client: LLM client (bmlibrarian.llm.LLMClient)
         embedding_model: Embedding model name (e.g., nomic-embed-text:latest)
         callback: Optional callback for progress updates
 
@@ -157,12 +166,12 @@ def embed_documents(
 
     for i, doc in enumerate(documents):
         try:
-            response = client.embeddings(
+            response = client.embed(
+                text=doc,
                 model=embedding_model,
-                prompt=doc
             )
 
-            embedding = response['embedding']
+            embedding = response.embedding
             if not embedding:
                 raise ValueError(f"Empty embedding for document {i+1}")
 

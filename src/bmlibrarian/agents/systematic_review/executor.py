@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
+from ...llm import LLMClient
 from .data_models import (
     SearchPlan,
     PlannedQuery,
@@ -244,6 +245,7 @@ class SearchExecutor:
         self.similarity_threshold = similarity_threshold
         self.callback = callback
         self._db_manager = db_manager
+        self._llm_client = LLMClient(ollama_host=self.config.host)
 
         # Lazy-loaded database manager
         self._initialized_db = False
@@ -826,15 +828,11 @@ class SearchExecutor:
         """Execute a HyDE (Hypothetical Document Embeddings) search."""
         try:
             from bmlibrarian.agents.utils.hyde_search import hyde_search
-            import ollama as ollama_client
-
-            # Create ollama client
-            client = ollama_client
 
             # Perform HyDE search
             results = hyde_search(
                 question=query.query_text,
-                client=client,
+                client=self._llm_client,
                 generation_model=self.config.model,
                 embedding_model=self.config.embedding_model,
                 max_results=self.results_per_query,
