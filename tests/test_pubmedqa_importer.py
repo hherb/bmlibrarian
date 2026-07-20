@@ -105,10 +105,21 @@ class TestPubMedQAImporter:
         assert importer.conn_params['dbname'] == 'envdb'
 
     def test_from_env_missing_credentials(self):
-        """Test from_env raises ValueError when credentials are missing."""
+        """
+        Test from_env raises ValueError when credentials are missing.
+
+        load_dotenv must be stubbed as well as the environment cleared.
+        from_env calls it, and it searches upward from the working
+        directory for a .env — so on any machine with real credentials at
+        or above the repo root it repopulates the variables this test
+        just cleared, and the expected ValueError never arrives.
+        """
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ValueError, match="Missing POSTGRES_USER or POSTGRES_PASSWORD"):
-                PubMedQAImporter.from_env()
+            with patch("import_pubmedqa_abstracts.load_dotenv"):
+                with pytest.raises(
+                    ValueError, match="Missing POSTGRES_USER or POSTGRES_PASSWORD"
+                ):
+                    PubMedQAImporter.from_env()
 
     @patch('psycopg.connect')
     def test_connection_error_handling(self, mock_connect, importer):
