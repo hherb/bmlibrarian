@@ -55,7 +55,7 @@ MIN_ABSTRACT_LENGTH: int = 50
 def mock_ollama_client() -> MagicMock:
     """Create a mock Ollama client for testing without network calls."""
     mock_client = MagicMock()
-    mock_client.list.return_value = {
+    mock_client.test_provider.return_value = {
         "models": [
             {"name": TEST_MODEL_NAME, "size": 1000000000}
         ]
