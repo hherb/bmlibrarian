@@ -2,12 +2,17 @@
 
 import time
 import logging
-import ollama
 from typing import List, Optional, Callable
 
+from ...llm import LLMClient, LLMMessage
 from .data_types import QueryGenerationResult, MultiModelQueryResult
 
 logger = logging.getLogger(__name__)
+
+# Generation ceiling for one query. Well above the length of a query string
+# because reasoning models spend part of the budget thinking before emitting
+# anything, and a tight ceiling returns an empty completion.
+QUERY_GENERATION_MAX_TOKENS = 800
 
 
 class MultiModelQueryGenerator:
@@ -26,7 +31,7 @@ class MultiModelQueryGenerator:
         """
         self.ollama_host = ollama_host
         self.callback = callback
-        self.client = ollama.Client(host=ollama_host)
+        self.client = LLMClient(ollama_host=ollama_host)
 
     def generate_queries(
         self,
@@ -159,23 +164,18 @@ class MultiModelQueryGenerator:
         start_time = time.time()
 
         try:
-            messages = [{'role': 'user', 'content': question}]
+            messages = [LLMMessage(role='user', content=question)]
 
-            # Add system message
-            messages = [{'role': 'system', 'content': system_prompt}] + messages
-
-            # Make Ollama request
             response = self.client.chat(
-                model=model,
                 messages=messages,
-                options={
-                    'temperature': temperature,
-                    'top_p': top_p,
-                    'num_predict': 100  # Short response for query generation
-                }
+                model=model,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=QUERY_GENERATION_MAX_TOKENS,
             )
 
-            query = response['message']['content'].strip()
+            query = (response.content or '').strip()
 
             # Sanitize query: remove markdown code blocks
             query = self._sanitize_query(query)

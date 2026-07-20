@@ -39,6 +39,9 @@ from .validators import (
 logger = logging.getLogger(__name__)
 
 # Default configuration
+# Low, so extraction reports what the passages say rather than improvising.
+EXTRACTION_TEMPERATURE = 0.1
+
 DEFAULT_MAX_CHUNKS = 5
 
 
@@ -172,7 +175,7 @@ def extract_study_type_llm(
 
     Args:
         document_id: Database ID of the document
-        llm_client: Ollama client instance
+        llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         document: Optional document dict (used for fallback if no chunks)
         hierarchy_config: Optional dict mapping study types to scores
@@ -268,12 +271,12 @@ def extract_study_type_llm(
 
     try:
         response = llm_client.generate(
-            model=model,
             prompt=prompt,
-            options={'temperature': 0.1},
+            model=model,
+            temperature=EXTRACTION_TEMPERATURE,
         )
 
-        response_text = response.get('response', '')
+        response_text = response.content or ''
 
         # Parse JSON response
         json_start = response_text.find('{')
@@ -355,7 +358,7 @@ def extract_sample_size_llm(
 
     Args:
         document_id: Database ID of the document
-        llm_client: Ollama client instance
+        llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         document: Optional document dict (used for fallback if no chunks)
         scoring_config: Optional scoring configuration
@@ -452,12 +455,12 @@ def extract_sample_size_llm(
 
     try:
         response = llm_client.generate(
-            model=model,
             prompt=prompt,
-            options={'temperature': 0.1},
+            model=model,
+            temperature=EXTRACTION_TEMPERATURE,
         )
 
-        response_text = response.get('response', '')
+        response_text = response.content or ''
 
         # Parse JSON response
         json_start = response_text.find('{')

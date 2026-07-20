@@ -36,11 +36,8 @@ LLM_LAYER = "llm"
 # This list may only shrink. Do not add to it — route new code through
 # bmlibrarian.llm.LLMClient or the BaseAgent helpers instead.
 KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
-    "agents/paper_weight/agent.py",
-    "agents/query_generation/generator.py",
     "embeddings/chunk_embedder.py",
     "embeddings/document_embedder.py",
-    "importers/pdf_matcher.py",
     "qa/document_qa.py",
 })
 

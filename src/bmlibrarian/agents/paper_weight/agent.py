@@ -419,8 +419,6 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Returns:
             List of conflict descriptions (empty if no conflicts)
         """
-        import ollama
-
         conflicts = []
 
         # Check if document has chunks available
@@ -465,7 +463,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             study_validation = validate_study_type_extraction(
                 document_id=document_id,
                 dimension_score=study_design_score,
-                llm_client=ollama,
+                llm_client=self._llm_client,
                 model=model,
                 fallback_chunks=chunks,
             )
@@ -489,7 +487,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
             sample_validation = validate_sample_size_extraction(
                 document_id=document_id,
                 dimension_score=sample_size_score,
-                llm_client=ollama,
+                llm_client=self._llm_client,
                 model=model,
                 fallback_chunks=chunks,
             )
@@ -556,8 +554,6 @@ class PaperWeightAssessmentAgent(BaseAgent):
         Workflow (legacy mode):
             Uses keyword/regex extraction with LLM validation fallback.
         """
-        import ollama
-
         try:
             # Check cache
             if not force_reassess:
@@ -600,7 +596,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 study_design_score = extract_study_type_llm(
                     document_id=document_id,
-                    llm_client=ollama,
+                    llm_client=self._llm_client,
                     model=self.model,
                     document=document,
                     hierarchy_config=hierarchy_config,
@@ -608,7 +604,7 @@ class PaperWeightAssessmentAgent(BaseAgent):
 
                 sample_size_score = extract_sample_size_llm(
                     document_id=document_id,
-                    llm_client=ollama,
+                    llm_client=self._llm_client,
                     model=self.model,
                     document=document,
                     scoring_config=scoring_config,
