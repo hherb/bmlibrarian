@@ -1156,16 +1156,13 @@ class DocumentInterrogationTabWidget(QWidget, IDocumentReceiver):
     def _load_models(self):
         """Load available Ollama models."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
 
             # Get Ollama config
             ollama_config = self.config.get_ollama_config()
             host = ollama_config.get('host', 'http://localhost:11434')
 
-            # Create client and fetch models
-            client = ollama.Client(host=host)
-            models_response = client.list()
-            models = [model.model for model in models_response.models]
+            models = list_ollama_models(host)
 
             # Update combo box
             current = self.model_combo.currentText()

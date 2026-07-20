@@ -188,10 +188,8 @@ class InputTab(QWidget):
     def _load_models(self) -> None:
         """Load available models from Ollama."""
         try:
-            import ollama
-            response = ollama.list()
-            models = [m.get('name', m.get('model', '')) for m in response.get('models', [])]
-            self._available_models = sorted(models)
+            from bmlibrarian.llm import list_ollama_models
+            self._available_models = sorted(list_ollama_models())
 
             current_text = self._model_combo.currentText()
             self._model_combo.clear()

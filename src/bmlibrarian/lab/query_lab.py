@@ -382,10 +382,9 @@ class QueryAgentLab:
     def _get_available_models(self) -> List[str]:
         """Get available models from Ollama."""
         try:
-            import ollama
-            client = ollama.Client(host=self.config.get_ollama_config()['host'])
-            models_response = client.list()
-            return sorted([model.model for model in models_response.models])
+            from bmlibrarian.llm import list_ollama_models
+            host = self.config.get_ollama_config()['host']
+            return sorted(list_ollama_models(host))
         except Exception:
             return [
                 "medgemma4B_it_q8:latest",
@@ -618,10 +617,9 @@ class QueryAgentLab:
         """Test connection to database and Ollama."""
         try:
             # Test Ollama connection
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
             host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-            models_response = client.list()
+            models = list_ollama_models(host)
             
             # Test QueryAgent initialization
             if self.query_agent:
@@ -629,7 +627,7 @@ class QueryAgentLab:
             else:
                 agent_status = "❌ QueryAgent not initialized"
             
-            model_count = len(models_response.models)
+            model_count = len(models)
             
             self._show_success_dialog(
                 f"Connection Test Results:\\n\\n"

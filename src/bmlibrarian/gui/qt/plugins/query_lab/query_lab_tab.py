@@ -321,12 +321,9 @@ class QueryLabTabWidget(QWidget):
     def _refresh_models(self):
         """Refresh available models from Ollama."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
             host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-            models_response = client.list()
-
-            models = sorted([model.model for model in models_response.models])
+            models = sorted(list_ollama_models(host))
 
             # Get current selection
             current_model = self.model_combo.currentText() if self.model_combo else None
@@ -554,11 +551,9 @@ class QueryLabTabWidget(QWidget):
     def _on_test_connection(self):
         """Test connection to database and Ollama."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
             host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-            models_response = client.list()
-            model_count = len(models_response.models)
+            model_count = len(list_ollama_models(host))
 
             agent_status = "✅ QueryAgent initialized" if self.query_agent else "❌ QueryAgent not initialized"
 

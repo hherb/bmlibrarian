@@ -220,9 +220,8 @@ class InputPanel(QWidget):
     def _populate_models(self) -> None:
         """Populate the model dropdown."""
         try:
-            import ollama
-            models_response = ollama.list()
-            models = [m.model for m in models_response.models]
+            from bmlibrarian.llm import list_ollama_models
+            models = list_ollama_models()
             current_model = get_model('paper_reviewer', default='gpt-oss:20b')
 
             self.model_combo.clear()
