@@ -59,7 +59,6 @@ KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
     "lab/pico_lab.py",
     "lab/query_lab.py",
     "lab/transparency_lab.py",
-    "paperchecker/components.py",
     "paperchecker/components/counter_statement_generator.py",
     "paperchecker/components/hyde_generator.py",
     "paperchecker/components/statement_extractor.py",
