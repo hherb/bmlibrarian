@@ -424,11 +424,9 @@ class SearchSettingsTab:
     def _get_available_models(self) -> list:
         """Get list of available Ollama models."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
             host = self.app.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-            models_response = client.list()
-            return sorted([model.model for model in models_response.models])
+            return sorted(list_ollama_models(host))
         except Exception as ex:
             print(f"Warning: Could not fetch models: {ex}")
             return [

@@ -182,9 +182,8 @@ class TransparencyLabWindow(QMainWindow):
         self.model_combo.addItem("medgemma4B_it_q8:latest")
 
         try:
-            import ollama
-            models = ollama.list()
-            model_names = [m.model for m in models.models]
+            from bmlibrarian.llm import list_ollama_models
+            model_names = list_ollama_models()
             self.model_combo.clear()
             for name in sorted(model_names):
                 self.model_combo.addItem(name)

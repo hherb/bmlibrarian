@@ -7,7 +7,13 @@ requires-python = ">=3.12"
 dependencies = [
     # Upper bound is deliberate: bmlib is pre-1.0, so a minor bump may change
     # the API this package delegates its whole LLM layer to.
-    "bmlib[ollama]>=0.4.0,<0.5.0",
+    #
+    # The floor is 0.5.1: embeddings/ needs LLMClient.embed_batch (0.5.0),
+    # and list_ollama_models needs list_models() to stop calling
+    # ollama.show() per model, which 0.5.1 fixed by making context_window
+    # lazy. On 0.5.0 that listing cost 3.53s against 139 models instead of
+    # 0.08s, on every model picker.
+    "bmlib[ollama]>=0.5.1,<0.6.0",
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
     "python-dotenv>=1.2.2",
@@ -73,6 +79,7 @@ dev-dependencies = [
     "pytest>=7.0",
     "pytest-mock>=3.10",
     "pytest-cov>=4.0",
+    "pytest-timeout>=2.3",
     "pygments>=2.19.2",
 ]
 
@@ -88,7 +95,15 @@ addopts = [
     "--cov=src/bmlibrarian",
     "--cov-report=term-missing",
     "--cov-report=html",
-    "--cov-fail-under=80"
+    "--cov-fail-under=80",
+    # No unit test legitimately runs this long. The ceiling exists so a test
+    # that blocks on an unreachable database or a live browser fails with a
+    # stack trace naming it, instead of hanging the whole suite: two such
+    # tests silently cost the suite over an hour of zero output before this
+    # was added. The method is left unset deliberately — pytest-timeout then
+    # uses signal where available, which fails only the offending test, and
+    # falls back to thread (which kills the run) only where it must.
+    "--timeout=120",
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",

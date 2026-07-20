@@ -1,11 +1,16 @@
 """Pytest configuration and fixtures for bmlibrarian tests."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# Make sibling test-support modules (llm_test_support, ...) importable by
+# name regardless of how pytest was invoked or which rootdir it inferred.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 @pytest.fixture

@@ -28,6 +28,21 @@ from bmlibrarian.paperchecker.components.statement_extractor import (
     DEFAULT_RETRY_DELAY_SECONDS,
 )
 from bmlibrarian.paperchecker.data_models import Statement, VALID_STATEMENT_TYPES
+from bmlibrarian.llm import LLMResponse, Provider
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
 
 
 # ==================== INITIALIZATION TESTS ====================
@@ -35,7 +50,7 @@ from bmlibrarian.paperchecker.data_models import Statement, VALID_STATEMENT_TYPE
 class TestStatementExtractorInit:
     """Test StatementExtractor initialization."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_init_with_defaults(self, mock_client_class: MagicMock) -> None:
         """Test initialization with default parameters."""
         extractor = StatementExtractor(model="test-model")
@@ -44,9 +59,9 @@ class TestStatementExtractorInit:
         assert extractor.max_statements == DEFAULT_MAX_STATEMENTS
         assert extractor.temperature == DEFAULT_TEMPERATURE
         assert extractor.host == DEFAULT_OLLAMA_URL
-        mock_client_class.assert_called_once_with(host=DEFAULT_OLLAMA_URL)
+        mock_client_class.assert_called_once_with(ollama_host=DEFAULT_OLLAMA_URL)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_init_with_custom_parameters(self, mock_client_class: MagicMock) -> None:
         """Test initialization with custom parameters."""
         extractor = StatementExtractor(
@@ -61,7 +76,7 @@ class TestStatementExtractorInit:
         assert extractor.temperature == 0.7
         assert extractor.host == "http://custom-host:11434"
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_init_strips_trailing_slash_from_host(
         self,
         mock_client_class: MagicMock
@@ -108,7 +123,7 @@ class TestStatementExtractorConstants:
 class TestInputValidation:
     """Test input validation for extract method."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_raises_on_empty_abstract(
         self,
         mock_client_class: MagicMock
@@ -119,7 +134,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="cannot be empty"):
             extractor.extract("")
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_raises_on_whitespace_only_abstract(
         self,
         mock_client_class: MagicMock
@@ -130,7 +145,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="cannot be empty"):
             extractor.extract("   \n\t  ")
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_raises_on_short_abstract(
         self,
         mock_client_class: MagicMock
@@ -142,7 +157,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="too short"):
             extractor.extract(short_text)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_accepts_minimum_length_abstract(
         self,
         mock_client_class: MagicMock,
@@ -150,9 +165,7 @@ class TestInputValidation:
     ) -> None:
         """Test that abstract at exactly minimum length is accepted."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": statement_extraction_response}
-        }
+        mock_client.chat.return_value = llm_reply(statement_extraction_response)
         mock_client_class.return_value = mock_client
 
         extractor = StatementExtractor(model="test-model")
@@ -168,7 +181,7 @@ class TestInputValidation:
 class TestPromptConstruction:
     """Test prompt building for statement extraction."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_build_extraction_prompt_contains_abstract(
         self,
         mock_client_class: MagicMock,
@@ -181,7 +194,7 @@ class TestPromptConstruction:
 
         assert sample_abstract in prompt
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_build_extraction_prompt_contains_max_statements(
         self,
         mock_client_class: MagicMock,
@@ -194,7 +207,7 @@ class TestPromptConstruction:
 
         assert "5" in prompt
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_build_extraction_prompt_requests_json_format(
         self,
         mock_client_class: MagicMock,
@@ -208,7 +221,7 @@ class TestPromptConstruction:
         assert "JSON" in prompt
         assert "statements" in prompt
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_build_extraction_prompt_includes_statement_types(
         self,
         mock_client_class: MagicMock,
@@ -229,7 +242,7 @@ class TestPromptConstruction:
 class TestResponseParsing:
     """Test LLM response parsing."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_valid_json_response(
         self,
         mock_client_class: MagicMock,
@@ -245,7 +258,7 @@ class TestResponseParsing:
         assert statements[0].statement_type == "conclusion"
         assert statements[1].statement_type == "finding"
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_json_in_markdown_code_block(
         self,
         mock_client_class: MagicMock,
@@ -260,7 +273,7 @@ class TestResponseParsing:
         assert statements[0].statement_type == "finding"
         assert statements[0].confidence == 0.85
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_raises_on_malformed_json(
         self,
         mock_client_class: MagicMock,
@@ -272,7 +285,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="Invalid JSON"):
             extractor._parse_response(malformed_json_response)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_raises_on_missing_statements_key(
         self,
         mock_client_class: MagicMock
@@ -284,7 +297,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="'statements'"):
             extractor._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_raises_on_no_valid_statements(
         self,
         mock_client_class: MagicMock
@@ -300,7 +313,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="No valid statements"):
             extractor._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_respects_max_statements_limit(
         self,
         mock_client_class: MagicMock
@@ -325,7 +338,7 @@ class TestResponseParsing:
 class TestStatementTypeNormalization:
     """Test statement type normalization."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_normalize_valid_types(self, mock_client_class: MagicMock) -> None:
         """Test normalization of valid statement types."""
         extractor = StatementExtractor(model="test-model")
@@ -334,7 +347,7 @@ class TestStatementTypeNormalization:
             normalized = extractor._normalize_statement_type(valid_type)
             assert normalized == valid_type
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_normalize_type_variations(self, mock_client_class: MagicMock) -> None:
         """Test normalization of common type variations."""
         extractor = StatementExtractor(model="test-model")
@@ -350,7 +363,7 @@ class TestStatementTypeNormalization:
         assert extractor._normalize_statement_type("prediction") == "hypothesis"
         assert extractor._normalize_statement_type("interpretation") == "conclusion"
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_normalize_returns_none_for_unknown_type(
         self,
         mock_client_class: MagicMock
@@ -367,7 +380,7 @@ class TestStatementTypeNormalization:
 class TestJsonExtraction:
     """Test JSON extraction from various response formats."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_json_from_code_block(
         self,
         mock_client_class: MagicMock
@@ -383,7 +396,7 @@ More text'''
         result = extractor._extract_json(response)
         assert json.loads(result) == {"test": "value"}
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_json_from_plain_code_block(
         self,
         mock_client_class: MagicMock
@@ -397,7 +410,7 @@ More text'''
         result = extractor._extract_json(response)
         assert json.loads(result) == {"test": "value"}
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_json_from_raw_response(
         self,
         mock_client_class: MagicMock
@@ -409,7 +422,7 @@ More text'''
         result = extractor._extract_json(response)
         assert json.loads(result) == {"test": "value"}
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_json_with_nested_braces(
         self,
         mock_client_class: MagicMock
@@ -428,7 +441,7 @@ More text'''
 class TestSingleStatementParsing:
     """Test parsing individual statements from response data."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_single_statement_success(
         self,
         mock_client_class: MagicMock
@@ -451,7 +464,7 @@ class TestSingleStatementParsing:
         assert statement.confidence == 0.85
         assert statement.statement_order == 1
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_single_statement_missing_required_field(
         self,
         mock_client_class: MagicMock
@@ -467,7 +480,7 @@ class TestSingleStatementParsing:
 
         assert statement is None
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_single_statement_clamps_confidence(
         self,
         mock_client_class: MagicMock
@@ -489,7 +502,7 @@ class TestSingleStatementParsing:
         statement = extractor._parse_single_statement(stmt_data, order=1)
         assert statement.confidence == 0.0
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_single_statement_uses_default_confidence(
         self,
         mock_client_class: MagicMock
@@ -506,7 +519,7 @@ class TestSingleStatementParsing:
 
         assert statement.confidence == DEFAULT_CONFIDENCE
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_parse_single_statement_empty_text_returns_none(
         self,
         mock_client_class: MagicMock
@@ -529,7 +542,7 @@ class TestSingleStatementParsing:
 class TestLLMCall:
     """Test LLM API call functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_call_llm_success(
         self,
         mock_client_class: MagicMock,
@@ -537,9 +550,7 @@ class TestLLMCall:
     ) -> None:
         """Test successful LLM call."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": statement_extraction_response}
-        }
+        mock_client.chat.return_value = llm_reply(statement_extraction_response)
         mock_client_class.return_value = mock_client
 
         extractor = StatementExtractor(model="test-model")
@@ -548,8 +559,8 @@ class TestLLMCall:
         assert result == statement_extraction_response
         mock_client.chat.assert_called_once()
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.time.sleep')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
+    @patch('bmlibrarian.paperchecker.components.llm_support.time.sleep')
     def test_call_llm_retries_on_empty_response(
         self,
         mock_sleep: MagicMock,
@@ -559,8 +570,8 @@ class TestLLMCall:
         mock_client = MagicMock()
         # First call returns empty, second succeeds
         mock_client.chat.side_effect = [
-            {"message": {"content": ""}},
-            {"message": {"content": '{"statements": []}'}}
+            llm_reply(""),
+            llm_reply('{"statements": []}')
         ]
         mock_client_class.return_value = mock_client
 
@@ -571,8 +582,8 @@ class TestLLMCall:
         assert mock_client.chat.call_count == 2
         mock_sleep.assert_called_once()  # Should sleep between retries
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.time.sleep')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
+    @patch('bmlibrarian.paperchecker.components.llm_support.time.sleep')
     def test_call_llm_raises_after_max_retries(
         self,
         mock_sleep: MagicMock,
@@ -581,9 +592,9 @@ class TestLLMCall:
         """Test that RuntimeError is raised after max retries."""
         mock_client = MagicMock()
         mock_client.chat.side_effect = [
-            {"message": {"content": ""}},
-            {"message": {"content": ""}},
-            {"message": {"content": ""}}
+            llm_reply(""),
+            llm_reply(""),
+            llm_reply("")
         ]
         mock_client_class.return_value = mock_client
 
@@ -598,24 +609,24 @@ class TestLLMCall:
 class TestConnectionTest:
     """Test connection testing functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_test_connection_success(self, mock_client_class: MagicMock) -> None:
         """Test successful connection test."""
         mock_client = MagicMock()
-        mock_client.list.return_value = {"models": []}
+        mock_client.test_provider.return_value = True
         mock_client_class.return_value = mock_client
 
         extractor = StatementExtractor(model="test-model")
         result = extractor.test_connection()
 
         assert result is True
-        mock_client.list.assert_called_once()
+        mock_client.test_provider.assert_called_once()
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_test_connection_failure(self, mock_client_class: MagicMock) -> None:
         """Test failed connection test."""
         mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
+        mock_client.test_provider.side_effect = Exception("Connection refused")
         mock_client_class.return_value = mock_client
 
         extractor = StatementExtractor(model="test-model")
@@ -629,7 +640,7 @@ class TestConnectionTest:
 class TestExtractIntegration:
     """Integration tests for the extract method."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_full_workflow(
         self,
         mock_client_class: MagicMock,
@@ -638,9 +649,7 @@ class TestExtractIntegration:
     ) -> None:
         """Test complete extraction workflow."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": statement_extraction_response}
-        }
+        mock_client.chat.return_value = llm_reply(statement_extraction_response)
         mock_client_class.return_value = mock_client
 
         extractor = StatementExtractor(model="test-model", max_statements=2)
@@ -650,7 +659,7 @@ class TestExtractIntegration:
         assert all(isinstance(s, Statement) for s in statements)
         assert all(s.statement_order > 0 for s in statements)
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_extract_wraps_llm_errors(
         self,
         mock_client_class: MagicMock,

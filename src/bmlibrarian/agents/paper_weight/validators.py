@@ -21,6 +21,9 @@ DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
 DEFAULT_SIMILARITY_THRESHOLD = 0.5  # Starting threshold for semantic search
 MIN_SIMILARITY_THRESHOLD = 0.3     # Minimum threshold to try before giving up
 THRESHOLD_DECREMENT = 0.05          # Amount to reduce threshold on each retry
+# Low, so extraction reports what the passages say rather than improvising.
+EXTRACTION_TEMPERATURE = 0.1
+
 DEFAULT_MAX_CHUNKS = 5
 DEFAULT_MAX_CONTEXT_LENGTH = 4000
 DEFAULT_SAMPLE_SIZE_CONFLICT_THRESHOLD = 0.2  # 20% difference triggers conflict
@@ -359,7 +362,7 @@ def validate_study_type_extraction(
     Args:
         document_id: Database ID of the document
         dimension_score: DimensionScore from rule-based extraction
-        llm_client: Ollama client instance
+        llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
@@ -416,12 +419,12 @@ def validate_study_type_extraction(
 
     try:
         response = llm_client.generate(
-            model=model,
             prompt=prompt,
-            options={'temperature': 0.1},
+            model=model,
+            temperature=EXTRACTION_TEMPERATURE,
         )
 
-        response_text = response.get('response', '')
+        response_text = response.content or ''
 
         # Parse JSON response
         # Find JSON in response (handle markdown code blocks)
@@ -475,7 +478,7 @@ def validate_sample_size_extraction(
     Args:
         document_id: Database ID of the document
         dimension_score: DimensionScore from rule-based extraction
-        llm_client: Ollama client instance
+        llm_client: LLM client (bmlibrarian.llm.LLMClient)
         model: LLM model name to use
         fallback_chunks: Optional pre-computed chunks to use if semantic search unavailable
 
@@ -536,12 +539,12 @@ def validate_sample_size_extraction(
 
     try:
         response = llm_client.generate(
-            model=model,
             prompt=prompt,
-            options={'temperature': 0.1},
+            model=model,
+            temperature=EXTRACTION_TEMPERATURE,
         )
 
-        response_text = response.get('response', '')
+        response_text = response.content or ''
 
         # Parse JSON response
         json_start = response_text.find('{')

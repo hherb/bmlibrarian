@@ -12,6 +12,9 @@ Tests the verdict analysis functionality including:
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
+from llm_test_support import patch_llm
+
+from bmlibrarian.llm import LLMClient, Provider
 from bmlibrarian.paperchecker.components.verdict_analyzer import (
     VerdictAnalyzer,
     DEFAULT_TEMPERATURE,
@@ -33,9 +36,8 @@ from bmlibrarian.paperchecker.data_models import (
 
 @pytest.fixture
 def analyzer():
-    """Create VerdictAnalyzer instance with mock client."""
-    with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client'):
-        return VerdictAnalyzer(model="gpt-oss:20b", temperature=0.3)
+    """Create VerdictAnalyzer instance; model calls are patched per-test."""
+    return VerdictAnalyzer(model="gpt-oss:20b", temperature=0.3)
 
 
 @pytest.fixture
@@ -114,17 +116,17 @@ class TestVerdictAnalyzerInit:
 
     def test_init_with_defaults(self):
         """Test initialization with default parameters."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient') as mock_client:
             analyzer = VerdictAnalyzer(model="gpt-oss:20b")
 
             assert analyzer.model == "gpt-oss:20b"
             assert analyzer.temperature == DEFAULT_TEMPERATURE
             assert analyzer.host == DEFAULT_OLLAMA_URL.rstrip("/")
-            mock_client.assert_called_once_with(host=DEFAULT_OLLAMA_URL.rstrip("/"))
+            mock_client.assert_called_once_with(ollama_host=DEFAULT_OLLAMA_URL.rstrip("/"))
 
     def test_init_with_custom_parameters(self):
         """Test initialization with custom parameters."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient') as mock_client:
             analyzer = VerdictAnalyzer(
                 model="custom-model:latest",
                 host="http://custom-host:11434/",
@@ -134,11 +136,11 @@ class TestVerdictAnalyzerInit:
             assert analyzer.model == "custom-model:latest"
             assert analyzer.temperature == 0.5
             assert analyzer.host == "http://custom-host:11434"  # Trailing slash stripped
-            mock_client.assert_called_once_with(host="http://custom-host:11434")
+            mock_client.assert_called_once_with(ollama_host="http://custom-host:11434")
 
     def test_init_strips_trailing_slash_from_host(self):
         """Test that trailing slash is stripped from host URL."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client'):
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient'):
             analyzer = VerdictAnalyzer(model="test", host="http://localhost:11434/")
             assert analyzer.host == "http://localhost:11434"
 
@@ -581,14 +583,13 @@ class TestAnalyze:
 
     def test_analyze_returns_verdict_object(self, analyzer, sample_statement, sample_counter_report):
         """Test that analyze returns a Verdict object."""
-        mock_response = {
-            "message": {
-                "content": '{"verdict": "contradicts", "confidence": "high", "rationale": "Strong evidence from multiple RCTs contradicts the original statement."}'
-            }
-        }
-        analyzer.client.chat = Mock(return_value=mock_response)
+        verdict_json = (
+            '{"verdict": "contradicts", "confidence": "high", "rationale": '
+            '"Strong evidence from multiple RCTs contradicts the original statement."}'
+        )
 
-        result = analyzer.analyze(sample_statement, sample_counter_report)
+        with patch_llm(verdict_json):
+            result = analyzer.analyze(sample_statement, sample_counter_report)
 
         assert isinstance(result, Verdict)
         assert result.verdict == "contradicts"
@@ -598,14 +599,13 @@ class TestAnalyze:
 
     def test_analyze_includes_metadata(self, analyzer, sample_statement, sample_counter_report):
         """Test that analyze includes analysis metadata."""
-        mock_response = {
-            "message": {
-                "content": '{"verdict": "supports", "confidence": "medium", "rationale": "No contradictory evidence found in literature."}'
-            }
-        }
-        analyzer.client.chat = Mock(return_value=mock_response)
+        verdict_json = (
+            '{"verdict": "supports", "confidence": "medium", "rationale": '
+            '"No contradictory evidence found in literature."}'
+        )
 
-        result = analyzer.analyze(sample_statement, sample_counter_report)
+        with patch_llm(verdict_json):
+            result = analyzer.analyze(sample_statement, sample_counter_report)
 
         assert "model" in result.analysis_metadata
         assert "temperature" in result.analysis_metadata
@@ -641,23 +641,23 @@ class TestAnalyze:
 
     def test_analyze_calls_llm_with_correct_parameters(self, analyzer, sample_statement, sample_counter_report):
         """Test that analyze calls LLM with correct parameters."""
-        mock_response = {
-            "message": {
-                "content": '{"verdict": "undecided", "confidence": "low", "rationale": "Evidence is mixed and inconclusive."}'
-            }
-        }
-        analyzer.client.chat = Mock(return_value=mock_response)
+        verdict_json = (
+            '{"verdict": "undecided", "confidence": "low", "rationale": '
+            '"Evidence is mixed and inconclusive."}'
+        )
 
-        analyzer.analyze(sample_statement, sample_counter_report)
+        with patch_llm(verdict_json) as mock_chat:
+            analyzer.analyze(sample_statement, sample_counter_report)
 
-        # Verify chat was called
-        analyzer.client.chat.assert_called_once()
+        mock_chat.assert_called_once()
 
-        # Check call arguments
-        call_args = analyzer.client.chat.call_args
-        assert call_args.kwargs["model"] == analyzer.model
+        # The provider sees the model qualified with its provider prefix, and
+        # the temperature travels as a named argument rather than an options
+        # dict — both are the LLM layer doing its job.
+        call_args = mock_chat.call_args
+        assert call_args.kwargs["model"] == f"ollama:{analyzer.model}"
         assert "messages" in call_args.kwargs
-        assert call_args.kwargs["options"]["temperature"] == analyzer.temperature
+        assert call_args.kwargs["temperature"] == analyzer.temperature
 
 
 # ==================== Connection Test ====================
@@ -666,38 +666,26 @@ class TestAnalyze:
 class TestTestConnection:
     """Tests for test_connection method."""
 
-    def test_connection_success_with_model_available(self, analyzer):
-        """Test connection when model is available."""
-        analyzer.client.list = Mock(return_value={
-            "models": [
-                {"name": "gpt-oss:20b"},
-                {"name": "llama2:latest"}
-            ]
-        })
+    def test_connection_success_when_provider_reachable(self, analyzer):
+        """Test connection when the provider responds."""
+        with patch.object(LLMClient, "test_provider", return_value=True):
+            assert analyzer.test_connection() is True
 
-        result = analyzer.test_connection()
+    def test_connection_probes_the_provider_the_model_names(self, analyzer):
+        """The provider probed is the one the model string resolves to."""
+        with patch.object(
+            LLMClient, "test_provider", return_value=True
+        ) as mock_probe:
+            analyzer.test_connection()
 
-        assert result is True
-
-    def test_connection_success_without_exact_model_match(self, analyzer):
-        """Test connection succeeds even without exact model match (server is reachable)."""
-        analyzer.client.list = Mock(return_value={
-            "models": [
-                {"name": "other-model:latest"}
-            ]
-        })
-
-        result = analyzer.test_connection()
-
-        assert result is True  # Server is reachable
+        assert mock_probe.call_args.args[0] == Provider.OLLAMA
 
     def test_connection_failure_on_exception(self, analyzer):
         """Test connection returns False on exception."""
-        analyzer.client.list = Mock(side_effect=Exception("Connection refused"))
-
-        result = analyzer.test_connection()
-
-        assert result is False
+        with patch.object(
+            LLMClient, "test_provider", side_effect=Exception("Connection refused")
+        ):
+            assert analyzer.test_connection() is False
 
 
 # ==================== Input Validation Tests ====================

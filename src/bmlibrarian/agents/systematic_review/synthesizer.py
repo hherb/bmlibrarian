@@ -22,8 +22,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-import ollama
 
+from ...llm import LLMClient, LLMMessage
 from ..citation_agent import Citation, CitationFinderAgent
 from .data_models import AssessedPaper, ScoredPaper
 
@@ -264,6 +264,7 @@ class EvidenceSynthesizer:
         self.citation_min_relevance = citation_min_relevance
         self.max_citations_per_paper = max_citations_per_paper
         self.progress_callback = progress_callback
+        self._llm_client = LLMClient()
 
         # Statistics
         self._papers_processed = 0
@@ -407,17 +408,15 @@ class EvidenceSynthesizer:
         )
 
         try:
-            response = ollama.generate(
+            response = self._llm_client.chat(
+                messages=[LLMMessage(role="user", content=prompt)],
                 model=self.model,
-                prompt=prompt,
-                system=SYNTHESIS_SYSTEM_PROMPT,
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": SYNTHESIS_MAX_TOKENS,
-                },
+                system_prompt=SYNTHESIS_SYSTEM_PROMPT,
+                temperature=self.temperature,
+                max_tokens=SYNTHESIS_MAX_TOKENS,
             )
 
-            response_text = response.get("response", "").strip()
+            response_text = (response.content or "").strip()
 
             # Parse JSON response
             synthesis_data = self._parse_synthesis_response(response_text)

@@ -60,6 +60,9 @@ class LLMResponse:
         total_tokens: Total tokens used
         duration_seconds: Time taken for the request
         raw_response: Provider-specific response data
+        thinking: The model's reasoning trace, separated from content, or
+            None when the model emitted none. A thinking-enabled request
+            is not guaranteed to return one.
     """
 
     content: str
@@ -76,6 +79,32 @@ class LLMResponse:
 
     # Provider-specific metadata
     raw_response: Optional[dict[str, Any]] = None
+
+    # Reasoning trace, when the model emitted one separately from content
+    thinking: Optional[str] = None
+
+
+@dataclass
+class BatchEmbeddingResponse:
+    """
+    Unified batch embedding response.
+
+    Returned by :meth:`LLMClient.embed_batch`, which embeds many texts
+    per provider round-trip instead of one request per text.
+
+    Attributes:
+        embeddings: One vector per input text, in input order
+        model: Model name that generated the embeddings
+        provider: Provider that handled the request
+        dimensions: Number of dimensions per vector (0 for an empty batch)
+        prompt_tokens: Total input tokens across the whole batch
+    """
+
+    embeddings: list[list[float]]
+    model: str
+    provider: Provider
+    dimensions: int = 0
+    prompt_tokens: int = 0
 
 
 @dataclass

@@ -8,6 +8,18 @@ Tests cover:
 
 Note: Full Qt GUI tests require a display environment.
 These tests use mocks to test worker logic without Qt event loop.
+
+This module previously loaded constants and validators by file path and
+then wrote stub modules into sys.modules to satisfy their relative
+imports, including `sys.modules['bmlibrarian'] = type(sys)('bmlibrarian')`.
+That replaced the real package for the rest of the session, so every test
+module collected afterwards failed with "'bmlibrarian' is not a package"
+— six collection errors that aborted the whole run, and which vanished
+when any of those files was run on its own.
+
+The gymnastics were never needed: constants and validators import
+cleanly on their own (the package docstring says as much), because
+neither pulls in Qt.
 """
 
 import pytest
@@ -15,61 +27,24 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 import tempfile
 import os
-import sys
-import importlib.util
 
-
-def _import_module_from_path(module_name: str, file_path: Path, package_path: Path = None):
-    """Import a module directly from file path, bypassing package __init__.py."""
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        file_path,
-        submodule_search_locations=[str(package_path)] if package_path else None
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# Get paths to modules
-_src_dir = Path(__file__).parent.parent / 'src' / 'bmlibrarian' / 'lab' / 'paper_weight_lab'
-
-# Import constants first (no dependencies)
-_constants = _import_module_from_path(
-    'bmlibrarian.lab.paper_weight_lab.constants',
-    _src_dir / 'constants.py',
-    _src_dir
+from bmlibrarian.lab.paper_weight_lab.constants import (
+    PMID_MIN_VALUE,
+    PMID_MAX_VALUE,
+    YEAR_MIN_VALUE,
+    YEAR_MAX_VALUE,
+    DOI_PATTERN,
+    PDF_MAX_FILE_SIZE_MB,
+    PDF_MAX_FILE_SIZE_BYTES,
+    WORKER_TERMINATE_TIMEOUT_MS,
 )
-
-# Now import validators (it imports from constants via relative import)
-# We need to make the package structure available
-sys.modules['bmlibrarian'] = type(sys)('bmlibrarian')
-sys.modules['bmlibrarian.lab'] = type(sys)('bmlibrarian.lab')
-sys.modules['bmlibrarian.lab.paper_weight_lab'] = type(sys)('bmlibrarian.lab.paper_weight_lab')
-sys.modules['bmlibrarian.lab.paper_weight_lab'].constants = _constants
-
-_validators = _import_module_from_path(
-    'bmlibrarian.lab.paper_weight_lab.validators',
-    _src_dir / 'validators.py',
-    _src_dir
+from bmlibrarian.lab.paper_weight_lab.validators import (
+    validate_pmid,
+    validate_doi,
+    validate_year,
+    validate_pdf_file_size,
+    validate_title,
 )
-
-# Extract what we need from the imported modules
-validate_pmid = _validators.validate_pmid
-validate_doi = _validators.validate_doi
-validate_year = _validators.validate_year
-validate_pdf_file_size = _validators.validate_pdf_file_size
-validate_title = _validators.validate_title
-
-PMID_MIN_VALUE = _constants.PMID_MIN_VALUE
-PMID_MAX_VALUE = _constants.PMID_MAX_VALUE
-YEAR_MIN_VALUE = _constants.YEAR_MIN_VALUE
-YEAR_MAX_VALUE = _constants.YEAR_MAX_VALUE
-DOI_PATTERN = _constants.DOI_PATTERN
-PDF_MAX_FILE_SIZE_MB = _constants.PDF_MAX_FILE_SIZE_MB
-PDF_MAX_FILE_SIZE_BYTES = _constants.PDF_MAX_FILE_SIZE_BYTES
-WORKER_TERMINATE_TIMEOUT_MS = _constants.WORKER_TERMINATE_TIMEOUT_MS
 
 
 class TestValidatePmid:

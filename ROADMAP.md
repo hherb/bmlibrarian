@@ -47,6 +47,13 @@ are Qt-incomplete:
 - Add per-importer write-path smoke tests against a throwaway schema.
 - Reconcile the ">95% coverage" claim in CLAUDE.md with the actual
   `--cov-fail-under=80` baseline.
+- **Gate on `ruff check --select F821` (undefined names).** The LLM
+  migration (PR #249) shipped two `NameError` crashes on untested paths —
+  one of which killed the whole semantic chunking pipeline. `ruff` had
+  flagged both as `F821`, but they were invisible among ~1,745
+  pre-existing lint errors. A narrow gate on the always-a-bug rules
+  (F821, F811, E999) pays for itself immediately without waiting for the
+  wider backlog to be cleared.
 
 ## 3. Consolidate the 29 top-level entry scripts
 
@@ -86,6 +93,14 @@ are Qt-incomplete:
   `embeddings/embedding_server.py` raw-HTTP Ollama backend (rule 4).
 - Named constants for hardcoded paths/timeouts (queue DB path, discovery
   timeouts).
+- **Revisit `DEFAULT_ANTHROPIC_MAX_TOKENS` (4096).** Anthropic requires a
+  positive `max_tokens`, so `LLMClient._resolve_max_tokens` substitutes
+  this default wherever a call site passes `None` — which most do, since
+  under Ollama `None` means "generate until the model stops". Every such
+  site is therefore silently capped at 4096 tokens on an `anthropic:`
+  model. Fine for extraction and scoring; likely too low for report
+  synthesis and long HyDE abstracts. Needs a per-call-site audit now that
+  PR #249 has made `anthropic:` models actually reachable everywhere.
 - Fix OpenAthens session file TOCTOU (write-then-chmod → `os.open(...,
   0o600)`).
 - Decide the fate of `source_reliability` scoring (currently a no-op
@@ -99,6 +114,15 @@ are Qt-incomplete:
 - [#231](https://github.com/hherb/bmlibrarian/issues/231) — Settings
   categories: Python whitelist and SQL CHECK constraints can drift, no
   hermetic guard.
+- [#250](https://github.com/hherb/bmlibrarian/issues/250) — Three model
+  pickers reach Ollama over raw HTTP, which the AST-based LLM boundary
+  guard cannot see. Extend the guard to the REST endpoints too.
+- [#251](https://github.com/hherb/bmlibrarian/issues/251) — Unmarked tests
+  hitting a live database and a live Ollama; two more collection-error
+  files; assert-free tests that cannot fail. Overlaps §2 above.
+- [#252](https://github.com/hherb/bmlibrarian/issues/252) —
+  `SemanticChunkProcessor` still speaks the old ollama API and is
+  unreachable: wire it onto `LLMClient` or delete it.
 
 ## Out of scope for now
 

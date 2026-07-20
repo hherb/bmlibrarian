@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
-import ollama
 
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.llm import LLMClient
 from bmlibrarian.utils.pdf_manager import PDFManager
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,10 @@ MIN_EXTRACTED_TEXT_LENGTH = 50
 # Maximum text length to send to LLM for metadata extraction
 # First 3000 chars typically contain all metadata (title, authors, DOI, PMID)
 MAX_LLM_TEXT_LENGTH = 3000
+
+# Low temperature so metadata is transcribed from the page, not invented.
+METADATA_EXTRACTION_TEMPERATURE = 0.1
+METADATA_EXTRACTION_TOP_P = 0.9
 
 # Column index for has_full_text in check_document_status query result
 # Query returns: id, title, abstract, authors, doi, pmid, external_id,
@@ -130,7 +134,7 @@ class PDFMatcher:
         self.model = model or self.DEFAULT_MODEL
 
         # Initialize Ollama client with optional custom host
-        self.ollama_client = ollama.Client(host=ollama_host) if ollama_host else ollama.Client()
+        self.ollama_client = LLMClient(ollama_host=ollama_host)
 
         # Initialize PDF manager with database connection
         with self.db_manager.get_connection() as conn:
@@ -477,24 +481,20 @@ Text to analyze:
 
         try:
             response = self.ollama_client.generate(
-                model=self.model,
                 prompt=prompt,
-                options={
-                    "temperature": 0.1,  # Low temperature for factual extraction
-                    "top_p": 0.9
-                }
+                model=self.model,
+                # Low temperature for factual extraction
+                temperature=METADATA_EXTRACTION_TEMPERATURE,
+                top_p=METADATA_EXTRACTION_TOP_P,
             )
 
-            response_text = response.get('response', '').strip()
+            response_text = (response.content or '').strip()
 
             # Try to parse JSON from response
             metadata = self._parse_llm_response(response_text)
             logger.debug(f"Extracted metadata: {metadata}")
             return metadata
 
-        except ollama.ResponseError as e:
-            logger.error(f"Ollama API error: {e}")
-            return self._empty_metadata()
         except ConnectionError:
             logger.error("Cannot connect to Ollama service")
             return self._empty_metadata()

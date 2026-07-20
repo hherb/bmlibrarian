@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
 from bmlibrarian.llm import (
+    list_ollama_models,
     # Data types
     Provider,
     ModelSpec,
@@ -706,3 +707,54 @@ class TestProviderRegistry:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestListOllamaModels:
+    """
+    Cover the reachable/empty distinction in list_ollama_models.
+
+    bmlib's list_models swallows provider errors and returns [], so an
+    empty result on its own cannot tell "server has no models" from
+    "server is not there". Collapsing the two made every caller's error
+    branch dead code: connection-test dialogs reported a dead server as
+    "connected, 0 models found", and pickers silently skipped their
+    fallback model lists.
+    """
+
+    @staticmethod
+    def _patch_bmlib(models, reachable=True):
+        """Patch the bmlib client list_ollama_models constructs."""
+        client = MagicMock()
+        client.list_models.return_value = models
+        client.test_connection.return_value = reachable
+        return patch(
+            "bmlibrarian.llm.client.BmlibLLMClient", return_value=client
+        )
+
+    def test_returns_models_when_server_has_them(self):
+        """A populated listing is returned as a list of names."""
+        with self._patch_bmlib(["gpt-oss:20b", "qwen3:8b"]):
+            assert list_ollama_models("http://host:11434") == [
+                "gpt-oss:20b", "qwen3:8b",
+            ]
+
+    def test_returns_empty_when_server_is_up_but_has_no_models(self):
+        """An empty listing from a reachable server is not an error."""
+        with self._patch_bmlib([], reachable=True):
+            assert list_ollama_models("http://host:11434") == []
+
+    def test_raises_when_server_is_unreachable(self):
+        """An empty listing from a dead server raises, and names the host."""
+        with self._patch_bmlib([], reachable=False):
+            with pytest.raises(ConnectionError, match="http://host:11434"):
+                list_ollama_models("http://host:11434")
+
+    def test_raises_when_listing_itself_fails(self):
+        """A raising client is reported rather than flattened to []."""
+        client = MagicMock()
+        client.list_models.side_effect = OSError("connection refused")
+        with patch(
+            "bmlibrarian.llm.client.BmlibLLMClient", return_value=client
+        ):
+            with pytest.raises(ConnectionError, match="connection refused"):
+                list_ollama_models("http://host:11434")

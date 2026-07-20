@@ -22,8 +22,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-import ollama
 
+from ...llm import LLMClient, LLMMessage
 from .data_models import (
     SearchCriteria,
     PlannedQuery,
@@ -57,6 +57,11 @@ DEFAULT_ESTIMATED_YIELD_PER_QUERY = 100
 # Query refinement settings
 MAX_EFFECTIVE_PATTERNS_TO_USE = 2  # Max effective queries to derive variations from
 MAX_KEY_TERMS_IN_OR_QUERY = 3  # Max terms to combine with OR operator
+
+# LLM generation limits
+PICO_EXTRACTION_TEMPERATURE = 0.1  # Low, so PICO extraction stays consistent
+PICO_EXTRACTION_MAX_TOKENS = 300  # A PICO JSON object is small
+QUERY_GENERATION_MAX_TOKENS = 1000  # Room for several query variations
 
 # LLM prompts
 QUERY_GENERATION_SYSTEM_PROMPT = """You are an expert biomedical literature search strategist.
@@ -241,6 +246,7 @@ class Planner:
         self.temperature = temperature
         self.top_p = top_p
         self.callback = callback
+        self._llm_client = LLMClient(ollama_host=self.host)
 
         # Cache for PICO extraction
         self._pico_cache: Dict[str, PICOComponents] = {}
@@ -487,16 +493,15 @@ class Planner:
         try:
             prompt = PICO_EXTRACTION_PROMPT.format(question=question)
 
-            response = ollama.generate(
-                model=self.model,
+            response = self._llm_client.generate(
                 prompt=prompt,
-                options={
-                    "temperature": 0.1,  # Low temperature for consistent extraction
-                    "num_predict": 300,
-                },
+                model=self.model,
+                # Low temperature keeps PICO extraction consistent.
+                temperature=PICO_EXTRACTION_TEMPERATURE,
+                max_tokens=PICO_EXTRACTION_MAX_TOKENS,
             )
 
-            response_text = response.get("response", "").strip()
+            response_text = (response.content or "").strip()
 
             # Parse JSON response
             # Find JSON object in response (handle markdown code blocks)
@@ -871,18 +876,16 @@ class Planner:
             )
 
         try:
-            response = ollama.generate(
+            response = self._llm_client.chat(
+                messages=[LLMMessage(role="user", content=prompt)],
                 model=self.model,
-                prompt=prompt,
-                system=QUERY_GENERATION_SYSTEM_PROMPT,
-                options={
-                    "temperature": self.temperature,
-                    "top_p": self.top_p,
-                    "num_predict": 1000,
-                },
+                system_prompt=QUERY_GENERATION_SYSTEM_PROMPT,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=QUERY_GENERATION_MAX_TOKENS,
             )
 
-            response_text = response.get("response", "").strip()
+            response_text = (response.content or "").strip()
 
             # Parse JSON response
             # Handle markdown code blocks

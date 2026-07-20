@@ -23,6 +23,21 @@ from bmlibrarian.paperchecker.components.hyde_generator import (
     MIN_ABSTRACT_LENGTH,
 )
 from bmlibrarian.paperchecker.data_models import Statement
+from bmlibrarian.llm import LLMResponse, Provider
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
 
 
 # ==================== INITIALIZATION TESTS ====================
@@ -30,7 +45,7 @@ from bmlibrarian.paperchecker.data_models import Statement
 class TestHyDEGeneratorInit:
     """Test HyDEGenerator initialization."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_init_with_defaults(self, mock_client_class: MagicMock) -> None:
         """Test initialization with default parameters."""
         generator = HyDEGenerator(model="test-model")
@@ -41,7 +56,7 @@ class TestHyDEGeneratorInit:
         assert generator.temperature == DEFAULT_TEMPERATURE
         assert generator.host == DEFAULT_OLLAMA_URL
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_init_with_custom_parameters(self, mock_client_class: MagicMock) -> None:
         """Test initialization with custom parameters."""
         generator = HyDEGenerator(
@@ -82,7 +97,7 @@ class TestHyDEGeneratorConstants:
 class TestInputValidation:
     """Test input validation for generate method."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_generate_raises_on_empty_counter_text(
         self,
         mock_client_class: MagicMock,
@@ -94,7 +109,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="cannot be empty"):
             generator.generate(sample_statement, "")
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_generate_raises_on_whitespace_counter_text(
         self,
         mock_client_class: MagicMock,
@@ -112,7 +127,7 @@ class TestInputValidation:
 class TestPromptConstruction:
     """Test prompt building for HyDE generation."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_prompt_contains_original_statement(
         self,
         mock_client_class: MagicMock,
@@ -126,7 +141,7 @@ class TestPromptConstruction:
 
         assert sample_statement.text in prompt
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_prompt_contains_counter_statement(
         self,
         mock_client_class: MagicMock,
@@ -140,7 +155,7 @@ class TestPromptConstruction:
 
         assert counter_text in prompt
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_prompt_specifies_num_abstracts(
         self,
         mock_client_class: MagicMock,
@@ -153,7 +168,7 @@ class TestPromptConstruction:
 
         assert "3" in prompt
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_prompt_specifies_max_keywords(
         self,
         mock_client_class: MagicMock,
@@ -166,7 +181,7 @@ class TestPromptConstruction:
 
         assert "12" in prompt
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_prompt_requests_json_format(
         self,
         mock_client_class: MagicMock,
@@ -187,7 +202,7 @@ class TestPromptConstruction:
 class TestResponseParsing:
     """Test HyDE response parsing."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_valid_response(
         self,
         mock_client_class: MagicMock,
@@ -203,7 +218,7 @@ class TestResponseParsing:
         assert len(result["hyde_abstracts"]) > 0
         assert len(result["keywords"]) > 0
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_raises_on_missing_hyde_abstracts(
         self,
         mock_client_class: MagicMock
@@ -215,7 +230,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="hyde_abstracts"):
             generator._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_raises_on_missing_keywords(
         self,
         mock_client_class: MagicMock
@@ -227,7 +242,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="keywords"):
             generator._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_filters_short_abstracts(
         self,
         mock_client_class: MagicMock
@@ -247,7 +262,7 @@ class TestResponseParsing:
         assert len(result["hyde_abstracts"]) == 1
         assert "valid abstract" in result["hyde_abstracts"][0]
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_respects_max_limits(
         self,
         mock_client_class: MagicMock
@@ -271,7 +286,7 @@ class TestResponseParsing:
         assert len(result["hyde_abstracts"]) <= 1
         assert len(result["keywords"]) <= 2
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_raises_on_no_valid_abstracts(
         self,
         mock_client_class: MagicMock
@@ -286,7 +301,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="No valid HyDE"):
             generator._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_parse_raises_on_no_valid_keywords(
         self,
         mock_client_class: MagicMock
@@ -307,7 +322,7 @@ class TestResponseParsing:
 class TestJsonExtraction:
     """Test JSON extraction from various response formats."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_extract_json_from_code_block(
         self,
         mock_client_class: MagicMock
@@ -323,7 +338,7 @@ More text'''
         result = generator._extract_json(response)
         assert json.loads(result) == {"test": "value"}
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_extract_json_from_raw_response(
         self,
         mock_client_class: MagicMock
@@ -336,7 +351,7 @@ More text'''
         data = json.loads(result)
         assert "hyde_abstracts" in data
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_extract_json_with_nested_structure(
         self,
         mock_client_class: MagicMock
@@ -355,11 +370,11 @@ More text'''
 class TestConnectionTest:
     """Test connection testing functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_test_connection_success(self, mock_client_class: MagicMock) -> None:
         """Test successful connection test."""
         mock_client = MagicMock()
-        mock_client.list.return_value = {"models": []}
+        mock_client.test_provider.return_value = True
         mock_client_class.return_value = mock_client
 
         generator = HyDEGenerator(model="test-model")
@@ -367,11 +382,11 @@ class TestConnectionTest:
 
         assert result is True
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_test_connection_failure(self, mock_client_class: MagicMock) -> None:
         """Test failed connection test."""
         mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
+        mock_client.test_provider.side_effect = Exception("Connection refused")
         mock_client_class.return_value = mock_client
 
         generator = HyDEGenerator(model="test-model")
@@ -385,7 +400,7 @@ class TestConnectionTest:
 class TestGenerateIntegration:
     """Integration tests for the generate method."""
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_generate_full_workflow(
         self,
         mock_client_class: MagicMock,
@@ -394,9 +409,7 @@ class TestGenerateIntegration:
     ) -> None:
         """Test complete generation workflow."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": hyde_generation_response}
-        }
+        mock_client.chat.return_value = llm_reply(hyde_generation_response)
         mock_client_class.return_value = mock_client
 
         generator = HyDEGenerator(model="test-model")
@@ -407,7 +420,7 @@ class TestGenerateIntegration:
         assert isinstance(result["hyde_abstracts"], list)
         assert isinstance(result["keywords"], list)
 
-    @patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient')
     def test_generate_wraps_llm_errors(
         self,
         mock_client_class: MagicMock,

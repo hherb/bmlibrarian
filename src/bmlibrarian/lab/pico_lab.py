@@ -520,10 +520,9 @@ class PICOLab:
     def _get_available_models(self):
         """Get available models from Ollama."""
         try:
-            import ollama
-            client = ollama.Client(host=self.config.get_ollama_config()['host'])
-            models_response = client.list()
-            return sorted([model.model for model in models_response.models])
+            from bmlibrarian.llm import list_ollama_models
+            host = self.config.get_ollama_config()['host']
+            return sorted(list_ollama_models(host))
         except Exception as e:
             print(f"Warning: Failed to get models from Ollama: {e}")
             return [

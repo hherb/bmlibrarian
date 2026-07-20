@@ -307,14 +307,14 @@ wheels = [
 
 [[package]]
 name = "bmlib"
-version = "0.4.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fc/c2/5c4ecd41a35f3df3f1c0f91aaf816b96acaaa0e3bb93667e9008c664c7de/bmlib-0.4.0.tar.gz", hash = "sha256:794b74ec33388f073b37186959db8cba3b18d05186d24d65eaeffe29d0f967b9", size = 180146, upload-time = "2026-07-19T09:07:17.45Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/af/d557206ea0c39cc8fc8d426e156faf7de28814d8bde00939b13b405289cc/bmlib-0.5.1.tar.gz", hash = "sha256:ef18145f2269e57eedc7734cd7554e5bc810a7ad82db62fdb160eed36d55a33e", size = 213926, upload-time = "2026-07-20T15:30:18.205Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/a9/76cc6a79c7271a2ca1a704a59d9a47b22f740760448951e269ca754893b2/bmlib-0.4.0-py3-none-any.whl", hash = "sha256:95e89ee6126151c4c650dd1115d26f3c0b68c2fd3d008207a06b91427ba525e4", size = 161337, upload-time = "2026-07-19T09:07:15.77Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/0c/77a883fe2361912961ffd8450aa8c4189ee858ec33df66c797a330813bef/bmlib-0.5.1-py3-none-any.whl", hash = "sha256:9936d8deb04ca2f7597935f1d768bca4023472f071eb04f82048943fa2f59b4d", size = 174931, upload-time = "2026-07-20T15:30:17.02Z" },
 ]
 
 [package.optional-dependencies]
@@ -381,13 +381,14 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "pytest-timeout" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "backoff", specifier = ">=2.2.1" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "bmlib", extras = ["ollama"], specifier = ">=0.4.0,<0.5.0" },
+    { name = "bmlib", extras = ["ollama"], specifier = ">=0.5.1,<0.6.0" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.34.0" },
     { name = "chromadb", specifier = ">=1.3.7" },
     { name = "fastembed", specifier = ">=0.7.3" },
@@ -435,6 +436,7 @@ dev = [
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-cov", specifier = ">=4.0" },
     { name = "pytest-mock", specifier = ">=3.10" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
 ]
 
 [[package]]
@@ -3579,6 +3581,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/71/28/67172c96ba684058a4d24ffe144d64783d2a270d0af0d9e792737bddc75c/pytest_mock-3.14.1.tar.gz", hash = "sha256:159e9edac4c451ce77a5cdb9fc5d1100708d2dd4ba3c3df572f14097351af80e", size = 33241, upload-time = "2025-05-26T13:58:45.167Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/05/77b60e520511c53d1c1ca75f1930c7dd8e971d0c4379b7f4b3f9644685ba/pytest_mock-3.14.1-py3-none-any.whl", hash = "sha256:178aefcd11307d874b4cd3100344e7e2d888d9791a6a1d9bfe90fbc1b74fd1d0", size = 9923, upload-time = "2025-05-26T13:58:43.487Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

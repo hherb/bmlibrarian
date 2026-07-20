@@ -278,11 +278,9 @@ class AgentConfigTab:
             List of available model names
         """
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
             host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-            models_response = client.list()
-            return [model.model for model in models_response.models]
+            return list_ollama_models(host)
         except Exception as e:
             print(f"Error fetching models: {e}")
             return ['gpt-oss:20b', 'medgemma4B_it_q8:latest']  # Defaults

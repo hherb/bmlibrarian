@@ -10,6 +10,67 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Longest line still treated as a conversational lead-in rather than an
+# answer. Lead-ins are short ("Here is the query:"); the bound stops a long
+# sentence that happens to end in a colon from being discarded.
+MAX_PREAMBLE_LINE_CHARS = 120
+
+# A conversational lead-in a model emits before the answer it was asked for,
+# e.g. "Here is an alternative query:" or "Sure! The rewritten query:".
+# Anchored on the trailing colon so a genuine single-line answer containing
+# a colon mid-sentence is not mistaken for one.
+_PREAMBLE_LINE = re.compile(rf"^[^\n]{{0,{MAX_PREAMBLE_LINE_CHARS}}}:\s*$")
+
+
+def strip_preamble(text: str) -> str:
+    """
+    Drop a conversational lead-in from a completion, keeping the rest.
+
+    Generation ceilings used to be tight enough (50-150 tokens) that a
+    model had no room to editorialise before answering. Those ceilings were
+    raised so reasoning models could think first, which removed an
+    accidental guard: a chatty model's "Here is the query:" preamble now
+    fits inside the budget and would otherwise be consumed as if it were
+    the answer.
+
+    Only a leading preamble line is removed, and only when something
+    non-empty follows it. Everything after it is returned verbatim, so
+    multi-line answers and fenced code blocks survive intact and this
+    composes with later cleanup steps. Text with no preamble is returned
+    unchanged, so it is safe to apply unconditionally.
+
+    Args:
+        text: Raw completion text
+
+    Returns:
+        The text with any leading preamble line and surrounding
+        whitespace removed
+
+    Examples:
+        >>> strip_preamble("Here is the query:\\n\\nexercise & cardiac")
+        'exercise & cardiac'
+        >>> strip_preamble("exercise & cardiac")
+        'exercise & cardiac'
+        >>> strip_preamble("ratio: 3:1 in favour")
+        'ratio: 3:1 in favour'
+    """
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    head, separator, tail = stripped.partition("\n")
+
+    # Without a following line the head is the answer, preamble-shaped or
+    # not — there is nothing else it could be.
+    if not separator or not tail.strip():
+        return stripped
+
+    if _PREAMBLE_LINE.match(head.strip()):
+        logger.debug("Dropping model preamble: %r", head.strip())
+        return tail.strip()
+
+    return stripped
+
 
 def fix_tsquery_syntax(query: str) -> str:
     """

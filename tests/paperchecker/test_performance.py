@@ -33,6 +33,21 @@ from bmlibrarian.paperchecker.data_models import (
 )
 from bmlibrarian.paperchecker.components.statement_extractor import StatementExtractor
 from bmlibrarian.paperchecker.components.hyde_generator import HyDEGenerator
+from bmlibrarian.llm import LLMResponse, Provider
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
 
 
 # ==================== PERFORMANCE CONSTANTS ====================
@@ -52,7 +67,7 @@ LARGE_KEYWORD_COUNT: int = 100
 class TestJsonParsingPerformance:
     """Benchmark JSON parsing operations."""
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_json_extraction_speed(self, mock_client: MagicMock) -> None:
         """Test that JSON extraction completes within time limit."""
         extractor = StatementExtractor(model="test-model")
@@ -94,7 +109,7 @@ class TestJsonParsingPerformance:
         assert avg_time < MAX_JSON_EXTRACT_TIME, \
             f"JSON extraction took {avg_time:.4f}s avg, expected < {MAX_JSON_EXTRACT_TIME}s"
 
-    @patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient')
     def test_statement_parsing_speed(self, mock_client: MagicMock) -> None:
         """Test that statement parsing completes within time limit."""
         extractor = StatementExtractor(model="test-model", max_statements=10)
@@ -344,18 +359,16 @@ class TestBatchProcessing:
             for i in range(10)
         ]
 
-        with patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": json.dumps({
+            mock_instance.chat.return_value = llm_reply(json.dumps({
                     "statements": [{
                         "text": "Test statement",
                         "context": "Test context",
                         "statement_type": "finding",
                         "confidence": 0.9
                     }]
-                })}
-            }
+                }))
             mock_client.return_value = mock_instance
 
             extractor = StatementExtractor(model="test-model")
@@ -380,18 +393,16 @@ class TestStressConditions:
         # Create a large abstract (10000 chars)
         large_abstract = "This is a test sentence. " * 500
 
-        with patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": json.dumps({
+            mock_instance.chat.return_value = llm_reply(json.dumps({
                     "statements": [{
                         "text": "Test statement",
                         "context": "Test context",
                         "statement_type": "finding",
                         "confidence": 0.9
                     }]
-                })}
-            }
+                }))
             mock_client.return_value = mock_instance
 
             extractor = StatementExtractor(model="test-model")
@@ -405,14 +416,12 @@ class TestStressConditions:
 
     def test_many_keywords_handling(self) -> None:
         """Test handling of many keywords."""
-        with patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": json.dumps({
+            mock_instance.chat.return_value = llm_reply(json.dumps({
                     "hyde_abstracts": ["A" * 150 for _ in range(3)],
                     "keywords": [f"keyword_{i}" for i in range(LARGE_KEYWORD_COUNT)]
-                })}
-            }
+                }))
             mock_client.return_value = mock_instance
 
             generator = HyDEGenerator(model="test-model", max_keywords=LARGE_KEYWORD_COUNT)

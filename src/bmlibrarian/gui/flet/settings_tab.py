@@ -656,15 +656,10 @@ class SettingsTab:
     def _test_connection(self, e):
         """Test connection to Ollama server."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
 
-            # Create client to test connection
             host = self.config.get_ollama_config()['host']
-            client = ollama.Client(host=host)
-
-            # Get available models
-            models_response = client.list()
-            models = [model.model for model in models_response.models]
+            models = list_ollama_models(host)
 
             if models:
                 snack_bar = ft.SnackBar(
