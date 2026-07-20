@@ -410,8 +410,8 @@ class TestPICOAgent:
         assert 'created_at' in data
         assert isinstance(data['created_at'], str)
 
-    def test_text_truncation(self, pico_agent, mock_bmlib_chat):
-        """Test that very long text is truncated."""
+    def test_text_not_truncated(self, pico_agent, mock_bmlib_chat):
+        """Test that very long text is passed through without truncation."""
         # Create document with very long abstract
         long_doc = SAMPLE_DOCUMENT.copy()
         long_doc['abstract'] = "A" * 10000  # 10k characters
@@ -424,8 +424,15 @@ class TestPICOAgent:
             min_confidence=0.5
         )
 
-        # Verify extraction succeeded (text was truncated but processing worked)
+        # Verify extraction succeeded
         assert extraction is not None
+
+        # Verify the chat call received the full, untruncated text - per Golden Rule #14
+        # the agent deliberately no longer truncates (information loss is unacceptable
+        # in the medical domain), so the whole abstract must reach the prompt.
+        prompt = mock_bmlib_chat.call_args.kwargs['messages'][0].content
+        assert long_doc['abstract'] in prompt
+        assert "..." not in prompt
 
     def test_callback_integration(self, pico_agent, mock_bmlib_chat):
         """Test callback function integration."""

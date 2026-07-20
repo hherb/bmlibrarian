@@ -8,7 +8,6 @@ with comprehensive coverage of error conditions and edge cases.
 import pytest
 import tempfile
 import threading
-import time
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timezone
 
@@ -332,12 +331,15 @@ class TestAgentOrchestrator:
             data={"test": "data"}
         )
 
-        # Wait for processing (allow extra time for slower environments)
-        time.sleep(1.0)
+        # Wait for the background worker to drive the task to a terminal state.
+        # Bounded wait rather than a fixed sleep: returns as soon as the task is
+        # done, and yields an empty result if background processing never runs.
+        results = self.orchestrator.wait_for_completion([task_id], timeout=10.0)
 
-        # Check if task was processed
-        task = self.orchestrator.queue.get_task_status(task_id)
-        assert task.status in [TaskStatus.COMPLETED, TaskStatus.PROCESSING, TaskStatus.PENDING]
+        # The task must actually have been picked up and processed
+        assert task_id in results, "Background worker did not process the task"
+        assert results[task_id].status == TaskStatus.COMPLETED
+        assert results[task_id].result == {"result": "success1"}
 
         # Stop processing
         self.orchestrator.stop_processing()

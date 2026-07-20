@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch, MagicMock
 from bmlib.llm import LLMResponse as BmlibResponse
 
 from bmlibrarian.agents import QueryAgent
-from bmlibrarian.llm import LLMClient
+from bmlibrarian.llm import LLMClient, Provider, qualify_model_string
+from bmlibrarian.llm.constants import DEFAULT_MAX_RETRIES
 
 
 class TestQueryAgent:
@@ -49,32 +50,58 @@ class TestQueryAgent:
         )
 
         agent = QueryAgent()
-        result = agent.convert_question("How does diabetes affect kidney function?")
+        question = "How does diabetes affect kidney function?"
+        result = agent.convert_question(question)
 
-        # After query post-processing, key terms should be present
-        assert "diabetes" in result
-        assert "kidney" in result or "renal" in result
-        assert "function" in result
-        mock_chat.assert_called()
+        # Post-processing strips whitespace around the operators
+        assert result == "diabetes&(kidney|renal)&function"
 
+        mock_chat.assert_called_once()
+        kwargs = mock_chat.call_args.kwargs
+        assert kwargs['model'] == qualify_model_string(agent.model)
+        assert kwargs['temperature'] == 0.1
+
+        messages = kwargs['messages']
+        assert len(messages) == 2
+        assert messages[0].role == 'system'
+        assert messages[1].role == 'user'
+        assert messages[1].content == question
+
+    @patch('bmlibrarian.llm.client.time.sleep')  # keep retry backoff instant
     @patch('bmlib.llm.client.LLMClient.chat')
-    def test_convert_question_ollama_error(self, mock_chat):
-        """Test convert_question handles LLM errors."""
-        mock_chat.side_effect = ConnectionError("Connection failed")
+    def test_convert_question_propagates_llm_failure(self, mock_chat, _mock_sleep):
+        """
+        A provider fault must reach the caller, not be swallowed.
+
+        Asserting the retry count as well keeps this from passing trivially:
+        the error type alone would still match if the request were never
+        retried, or if the agent returned a fabricated query instead.
+        """
+        mock_chat.side_effect = RuntimeError("provider unavailable")
 
         agent = QueryAgent()
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(RuntimeError, match="provider unavailable"):
             agent.convert_question("test question")
 
+        assert mock_chat.call_count == DEFAULT_MAX_RETRIES
+
+    @patch('bmlibrarian.llm.client.time.sleep')  # keep retry backoff instant
     @patch('bmlib.llm.client.LLMClient.chat')
-    def test_convert_question_unexpected_error(self, mock_chat):
-        """Test convert_question handles unexpected errors."""
-        mock_chat.side_effect = Exception("Unexpected error")
+    def test_convert_question_propagates_exhausted_providers(
+        self, mock_chat, _mock_sleep,
+    ):
+        """
+        ConnectionError is the LLM layer's "all providers failed" signal.
+
+        It must reach the caller as such rather than being downgraded to a
+        generic failure or an empty query.
+        """
+        mock_chat.side_effect = ConnectionError("all providers exhausted")
 
         agent = QueryAgent()
 
-        with pytest.raises(Exception):
+        with pytest.raises(ConnectionError, match="all providers exhausted"):
             agent.convert_question("test question")
 
     def test_validate_tsquery_valid_queries(self):
@@ -120,6 +147,9 @@ class TestQueryAgent:
         result = agent.test_connection()
 
         assert result is True
+        # The configured model is looked up against its own provider
+        mock_test_provider.assert_called_once_with(Provider.OLLAMA)
+        mock_list_models.assert_called_once_with(Provider.OLLAMA)
 
     @patch('bmlibrarian.llm.client.LLMClient.test_provider')
     @patch('bmlibrarian.llm.client.LLMClient.list_models')

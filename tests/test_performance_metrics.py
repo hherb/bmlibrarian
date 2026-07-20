@@ -152,8 +152,30 @@ class TestPerformanceMetrics:
         # 100 completion tokens / 2 seconds = 50 tokens/sec
         assert metrics.tokens_per_second == 50.0
 
+    def test_tokens_per_second_falls_back_to_wall_time(self) -> None:
+        """
+        Throughput is reported even when the provider gives no model time.
+
+        bmlib's LLMResponse carries only wall-clock duration — Ollama's
+        eval_duration is not surfaced — so without this fallback every
+        agent reports 0 tokens/sec.
+        """
+        metrics = PerformanceMetrics()
+
+        metrics.add_request_metrics(
+            prompt_tokens=100,
+            completion_tokens=100,
+            wall_time_seconds=4.0,
+            model_time_ns=0,  # not available from the provider
+            prompt_eval_ns=0,
+            retries=0
+        )
+
+        # 100 completion tokens / 4 seconds wall clock = 25 tokens/sec
+        assert metrics.tokens_per_second == 25.0
+
     def test_tokens_per_second_zero_time(self) -> None:
-        """Test tokens per second with zero model time returns 0."""
+        """Test tokens per second with no timing data at all returns 0."""
         metrics = PerformanceMetrics()
         assert metrics.tokens_per_second == 0.0
 

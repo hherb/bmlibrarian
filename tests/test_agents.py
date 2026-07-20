@@ -46,6 +46,8 @@ class TestBaseAgent:
         assert agent.host == "http://test:8080"
         assert agent.temperature == 0.5
         assert agent.top_p == 0.8
+        # The host must reach the client, not merely be recorded on the agent
+        assert agent.client.ollama_host == "http://test:8080"
         assert isinstance(agent.client, LLMClient)
 
     @patch('bmlib.llm.client.LLMClient.chat')
@@ -96,10 +98,8 @@ class TestQueryAgent:
         result = agent.convert_question("Effects of aspirin on heart disease")
 
         # After query post-processing (clean_quotes, fix_malformed_syntax),
-        # spaces around parentheses are normalized by fix_tsquery_syntax
-        assert "aspirin" in result
-        assert "cardiovascular" in result or "cardiac" in result
-        assert "disease" in result
+        # spaces around the operators are normalized by fix_tsquery_syntax
+        assert result == "aspirin&(cardiovascular|cardiac)&disease"
 
     @patch('bmlib.llm.client.LLMClient.chat')
     def test_convert_question_empty(self, mock_chat):

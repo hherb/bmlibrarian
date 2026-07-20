@@ -638,6 +638,11 @@ class TestStudyAssessmentAgent:
         # Verify LLM was called
         assert mock_bmlib_chat.called
 
+        # Verify the prompt contained full text (not just abstract)
+        prompt = mock_bmlib_chat.call_args.kwargs['messages'][0].content
+        assert 'full text with much more detail' in prompt
+        assert 'Short abstract' not in prompt
+
     def test_assess_study_by_id_success(self, assessment_agent, mock_bmlib_chat):
         """Test successful assessment using document ID."""
         # Mock connection test
