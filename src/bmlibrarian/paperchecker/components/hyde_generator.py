@@ -13,12 +13,11 @@ real supporting evidence would use.
 import json
 import logging
 import re
-import time
 from typing import Dict, List
 
-import ollama
-
+from ...llm import LLMClient
 from ..data_models import Statement
+from .llm_support import call_llm, probe_llm_connection
 from ...utils.json_repair import repair_json, JSONRepairError
 
 logger = logging.getLogger(__name__)
@@ -43,12 +42,12 @@ class HyDEGenerator:
     semantic similarity better than pure keyword search.
 
     Attributes:
-        model: Ollama model name to use for generation
+        model: Model name to use for generation
         num_abstracts: Number of hypothetical abstracts to generate
         max_keywords: Maximum number of keywords to generate
         temperature: LLM temperature (lower = more deterministic)
         host: Ollama server URL
-        client: Ollama client instance
+        client: LLM client instance
     """
 
     def __init__(
@@ -63,7 +62,7 @@ class HyDEGenerator:
         Initialize HyDEGenerator.
 
         Args:
-            model: Ollama model name (e.g., "gpt-oss:20b")
+            model: Model name (e.g. "gpt-oss:20b")
             num_abstracts: Number of hypothetical abstracts to generate (default: 2)
             max_keywords: Maximum keywords to generate (default: 10)
             temperature: LLM temperature (lower = more deterministic)
@@ -74,7 +73,7 @@ class HyDEGenerator:
         self.max_keywords = max_keywords
         self.temperature = temperature
         self.host = host.rstrip("/")
-        self.client = ollama.Client(host=self.host)
+        self.client = LLMClient(ollama_host=self.host)
 
     def generate(
         self,
@@ -188,102 +187,27 @@ Return ONLY the JSON, nothing else."""
         retry_delay: float = DEFAULT_RETRY_DELAY_SECONDS,
     ) -> str:
         """
-        Call Ollama API with prompt using the ollama library.
+        Send the prompt to the configured model.
 
         Args:
             prompt: The prompt to send to the LLM
-            max_retries: Maximum number of retry attempts
-            retry_delay: Initial delay between retries in seconds
+            max_retries: Attempts made when the completion comes back empty
+            retry_delay: Initial backoff between empty-response retries
 
         Returns:
             LLM response text
 
         Raises:
-            RuntimeError: If API call fails after all retries
+            RuntimeError: If the call fails, or every attempt returns empty
         """
-        last_exception: Exception | None = None
-        current_delay = retry_delay
-
-        for attempt in range(max_retries):
-            start_time = time.time()
-
-            log_msg = f"Ollama request to {self.model}"
-            if attempt > 0:
-                log_msg += f" (retry {attempt}/{max_retries - 1})"
-            logger.info(log_msg)
-
-            try:
-                response = self.client.chat(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    options={
-                        "temperature": self.temperature,
-                    },
-                )
-
-                content = response.get("message", {}).get("content", "")
-                if not content or not content.strip():
-                    raise ValueError("Empty response from model")
-
-                response_time = (time.time() - start_time) * 1000
-                logger.info(f"Ollama response received in {response_time:.2f}ms")
-                return content.strip()
-
-            except ollama.ResponseError as e:
-                last_exception = e
-                response_time = (time.time() - start_time) * 1000
-
-                is_retryable = (
-                    "timeout" in str(e).lower() or "connection" in str(e).lower()
-                )
-
-                if attempt < max_retries - 1 and is_retryable:
-                    logger.warning(
-                        f"Transient error in Ollama request after {response_time:.2f}ms, "
-                        f"retrying in {current_delay:.1f}s: {e}"
-                    )
-                    time.sleep(current_delay)
-                    current_delay *= 2
-                else:
-                    logger.error(
-                        f"Ollama request failed after {response_time:.2f}ms "
-                        f"(attempt {attempt + 1}/{max_retries}): {e}"
-                    )
-
-            except ValueError as e:
-                # Empty response - retry
-                last_exception = e
-                response_time = (time.time() - start_time) * 1000
-
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Empty response after {response_time:.2f}ms, "
-                        f"retrying in {current_delay:.1f}s"
-                    )
-                    time.sleep(current_delay)
-                    current_delay *= 2
-                else:
-                    logger.error(f"Empty response after {max_retries} attempts")
-
-            except Exception as e:
-                last_exception = e
-                response_time = (time.time() - start_time) * 1000
-                logger.error(
-                    f"Unexpected error in Ollama request after {response_time:.2f}ms: {e}"
-                )
-
-                # Check for connection-related errors
-                error_str = str(e).lower()
-                if "connection" in error_str or "refused" in error_str:
-                    raise RuntimeError(
-                        f"Failed to connect to Ollama server at {self.host}"
-                    ) from e
-                raise RuntimeError(f"LLM call failed: {e}") from e
-
-        # All retries exhausted
-        raise RuntimeError(
-            f"Failed to get response from Ollama after {max_retries} attempts: "
-            f"{last_exception}"
+        return call_llm(
+            client=self.client,
+            model=self.model,
+            prompt=prompt,
+            temperature=self.temperature,
+            description="HyDE",
+            max_retries=max_retries,
+            retry_delay=retry_delay,
         )
 
     def _parse_response(self, response: str) -> Dict[str, List[str]]:
@@ -412,13 +336,9 @@ Return ONLY the JSON, nothing else."""
 
     def test_connection(self) -> bool:
         """
-        Test connection to Ollama server.
+        Report whether the provider backing the configured model is reachable.
 
         Returns:
-            True if connection successful, False otherwise
+            True if the provider responded, False otherwise
         """
-        try:
-            self.client.list()
-            return True
-        except Exception:
-            return False
+        return probe_llm_connection(self.client, self.model)

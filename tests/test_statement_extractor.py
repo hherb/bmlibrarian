@@ -10,8 +10,9 @@ import json
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-import ollama
+from llm_test_support import patch_llm
 
+from bmlibrarian.llm import LLMClient
 from bmlibrarian.paperchecker.components import StatementExtractor
 from bmlibrarian.paperchecker.data_models import Statement, VALID_STATEMENT_TYPES
 
@@ -484,20 +485,17 @@ class TestConnectionTesting:
 
     def test_connection_success(self, extractor):
         """Test successful connection check."""
-        mock_client = MagicMock()
-        mock_client.list.return_value = {"models": []}
-        extractor.client = mock_client
+        with patch.object(LLMClient, "test_provider", return_value=True) as probe:
+            assert extractor.test_connection() is True
 
-        assert extractor.test_connection() is True
-        mock_client.list.assert_called_once()
+        probe.assert_called_once()
 
     def test_connection_failure(self, extractor):
         """Test failed connection check."""
-        mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
-        extractor.client = mock_client
-
-        assert extractor.test_connection() is False
+        with patch.object(
+            LLMClient, "test_provider", side_effect=Exception("Connection refused")
+        ):
+            assert extractor.test_connection() is False
 
 
 # Unit Tests - Error Handling
@@ -526,36 +524,26 @@ class TestErrorHandling:
             with pytest.raises(RuntimeError, match="connect"):
                 extractor.extract(sample_abstract)
 
-    def test_llm_ollama_response_error(self, extractor, sample_abstract):
-        """Test handling of Ollama ResponseError."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = ollama.ResponseError("Model not found")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to get response"):
-            extractor.extract(sample_abstract)
+    def test_llm_provider_error_surfaces(self, extractor, sample_abstract):
+        """A provider-side error is reported as a RuntimeError."""
+        with patch_llm(side_effect=RuntimeError("Model not found")):
+            with pytest.raises(RuntimeError, match="Model not found"):
+                extractor.extract(sample_abstract)
 
     def test_llm_connection_error_actual(self, extractor, sample_abstract):
-        """Test actual connection error handling in _call_llm."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("Connection refused")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to connect"):
-            extractor.extract(sample_abstract)
+        """A transport failure is reported as a RuntimeError."""
+        with patch_llm(side_effect=ConnectionError("Connection refused")):
+            with pytest.raises(RuntimeError, match="Connection refused"):
+                extractor.extract(sample_abstract)
 
     def test_llm_empty_response_retries(self, extractor, sample_abstract):
         """Test that empty responses trigger retries."""
-        mock_client = MagicMock()
-        # Return empty response all 3 times (max_retries=3)
-        mock_client.chat.return_value = {"message": {"content": ""}}
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to get response"):
-            extractor.extract(sample_abstract)
+        with patch_llm("") as mock_chat:
+            with pytest.raises(RuntimeError, match="Failed to get response"):
+                extractor._call_llm("prompt", retry_delay=0.0)
 
         # Should have been called 3 times (initial + 2 retries)
-        assert mock_client.chat.call_count == 3
+        assert mock_chat.call_count == 3
 
     def test_llm_generic_error(self, extractor, sample_abstract):
         """Test handling of generic unexpected errors."""

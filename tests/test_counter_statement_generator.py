@@ -7,10 +7,13 @@ Step 5 of the PaperChecker workflow.
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+from bmlibrarian.llm import LLMClient
 from bmlibrarian.paperchecker.data_models import Statement
 from bmlibrarian.paperchecker.components import CounterStatementGenerator, HyDEGenerator
+
+from llm_test_support import patch_llm
 
 
 # =============================================================================
@@ -65,20 +68,6 @@ def statement_conclusion():
     )
 
 
-@pytest.fixture
-def mock_ollama_client():
-    """Mock ollama client for testing without real API calls."""
-    with patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock:
-        yield mock
-
-
-@pytest.fixture
-def mock_hyde_ollama_client():
-    """Mock ollama client for HyDE testing."""
-    with patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client') as mock:
-        yield mock
-
-
 # =============================================================================
 # CounterStatementGenerator Tests
 # =============================================================================
@@ -86,7 +75,7 @@ def mock_hyde_ollama_client():
 class TestCounterStatementGenerator:
     """Tests for CounterStatementGenerator component."""
 
-    def test_initialization(self, mock_ollama_client):
+    def test_initialization(self):
         """Test generator initializes with correct parameters."""
         generator = CounterStatementGenerator(
             model="gpt-oss:20b",
@@ -97,7 +86,7 @@ class TestCounterStatementGenerator:
         assert generator.temperature == 0.3
         assert generator.host == "http://localhost:11434"
 
-    def test_initialization_strips_trailing_slash(self, mock_ollama_client):
+    def test_initialization_strips_trailing_slash(self):
         """Test that trailing slash is stripped from host URL."""
         generator = CounterStatementGenerator(
             model="test-model",
@@ -105,7 +94,7 @@ class TestCounterStatementGenerator:
         )
         assert generator.host == "http://localhost:11434"
 
-    def test_empty_statement_raises_value_error(self, mock_ollama_client):
+    def test_empty_statement_raises_value_error(self):
         """Test that empty statement text raises ValueError."""
         generator = CounterStatementGenerator(model="test-model")
         empty_statement = Statement(
@@ -119,7 +108,7 @@ class TestCounterStatementGenerator:
         with pytest.raises(ValueError, match="Statement text cannot be empty"):
             generator.generate(empty_statement)
 
-    def test_whitespace_only_statement_raises_value_error(self, mock_ollama_client):
+    def test_whitespace_only_statement_raises_value_error(self):
         """Test that whitespace-only statement raises ValueError."""
         generator = CounterStatementGenerator(model="test-model")
         # Create a statement and modify text to whitespace
@@ -134,7 +123,7 @@ class TestCounterStatementGenerator:
         with pytest.raises(ValueError, match="Statement text cannot be empty"):
             generator.generate(stmt)
 
-    def test_parse_response_removes_common_prefixes(self, mock_ollama_client):
+    def test_parse_response_removes_common_prefixes(self):
         """Test that common prefixes are removed from response."""
         generator = CounterStatementGenerator(model="test-model")
 
@@ -150,28 +139,28 @@ class TestCounterStatementGenerator:
             result = generator._parse_response(response)
             assert result == "GLP-1 agonists are superior"
 
-    def test_parse_response_removes_quotes(self, mock_ollama_client):
+    def test_parse_response_removes_quotes(self):
         """Test that surrounding quotes are removed."""
         generator = CounterStatementGenerator(model="test-model")
 
         assert generator._parse_response('"Counter statement here"') == "Counter statement here"
         assert generator._parse_response("'Counter statement here'") == "Counter statement here"
 
-    def test_parse_response_removes_bullet_prefix(self, mock_ollama_client):
+    def test_parse_response_removes_bullet_prefix(self):
         """Test that bullet/dash prefix is removed."""
         generator = CounterStatementGenerator(model="test-model")
 
         result = generator._parse_response("- Counter statement here")
         assert result == "Counter statement here"
 
-    def test_parse_response_rejects_short_response(self, mock_ollama_client):
+    def test_parse_response_rejects_short_response(self):
         """Test that too-short responses are rejected."""
         generator = CounterStatementGenerator(model="test-model")
 
         with pytest.raises(ValueError, match="too short or empty"):
             generator._parse_response("Short")
 
-    def test_parse_response_rejects_empty_response(self, mock_ollama_client):
+    def test_parse_response_rejects_empty_response(self):
         """Test that empty responses are rejected."""
         generator = CounterStatementGenerator(model="test-model")
 
@@ -181,7 +170,7 @@ class TestCounterStatementGenerator:
         with pytest.raises(ValueError, match="too short or empty"):
             generator._parse_response("   ")
 
-    def test_build_negation_prompt_includes_statement_info(self, mock_ollama_client, statement_comparative):
+    def test_build_negation_prompt_includes_statement_info(self, statement_comparative):
         """Test that prompt includes statement text, type, and context."""
         generator = CounterStatementGenerator(model="test-model")
 
@@ -193,7 +182,7 @@ class TestCounterStatementGenerator:
         assert "logical opposite" in prompt.lower()
         assert "semantically precise" in prompt.lower()
 
-    def test_build_negation_prompt_handles_empty_context(self, mock_ollama_client):
+    def test_build_negation_prompt_handles_empty_context(self):
         """Test that prompt handles empty context gracefully."""
         generator = CounterStatementGenerator(model="test-model")
         stmt = Statement(
@@ -207,51 +196,46 @@ class TestCounterStatementGenerator:
         prompt = generator._build_negation_prompt(stmt)
         assert "N/A" in prompt
 
-    def test_generate_success(self, mock_ollama_client, statement_comparative):
+    def test_generate_success(self, statement_comparative):
         """Test successful counter-statement generation."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "GLP-1 agonists are superior or equivalent to metformin in long-term T2DM outcomes"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
-
+        counter = (
+            "GLP-1 agonists are superior or equivalent to metformin in "
+            "long-term T2DM outcomes"
+        )
         generator = CounterStatementGenerator(model="gpt-oss:20b")
-        result = generator.generate(statement_comparative)
+
+        with patch_llm(counter) as mock_chat:
+            result = generator.generate(statement_comparative)
 
         assert len(result) > 10
         assert "GLP-1" in result or "glp" in result.lower()
-        mock_client_instance.chat.assert_called_once()
+        mock_chat.assert_called_once()
 
-    def test_generate_handles_llm_error(self, mock_ollama_client, statement_comparative):
+    def test_generate_handles_llm_error(self, statement_comparative):
         """Test that LLM errors are handled gracefully."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.side_effect = Exception("Connection failed")
-        mock_ollama_client.return_value = mock_client_instance
-
         generator = CounterStatementGenerator(model="gpt-oss:20b")
 
-        with pytest.raises(RuntimeError, match="Failed to generate counter-statement"):
-            generator.generate(statement_comparative)
+        with patch_llm(side_effect=Exception("Connection failed")):
+            with pytest.raises(
+                RuntimeError, match="Failed to generate counter-statement"
+            ):
+                generator.generate(statement_comparative)
 
-    def test_test_connection_success(self, mock_ollama_client):
+    def test_test_connection_success(self):
         """Test connection test when successful."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.list.return_value = {"models": []}
-        mock_ollama_client.return_value = mock_client_instance
-
         generator = CounterStatementGenerator(model="test-model")
-        assert generator.test_connection() is True
 
-    def test_test_connection_failure(self, mock_ollama_client):
+        with patch.object(LLMClient, "test_provider", return_value=True):
+            assert generator.test_connection() is True
+
+    def test_test_connection_failure(self):
         """Test connection test when failed."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.list.side_effect = Exception("Connection refused")
-        mock_ollama_client.return_value = mock_client_instance
-
         generator = CounterStatementGenerator(model="test-model")
-        assert generator.test_connection() is False
+
+        with patch.object(
+            LLMClient, "test_provider", side_effect=Exception("Connection refused")
+        ):
+            assert generator.test_connection() is False
 
 
 # =============================================================================
@@ -261,7 +245,7 @@ class TestCounterStatementGenerator:
 class TestHyDEGenerator:
     """Tests for HyDEGenerator component."""
 
-    def test_initialization(self, mock_hyde_ollama_client):
+    def test_initialization(self):
         """Test generator initializes with correct parameters."""
         generator = HyDEGenerator(
             model="gpt-oss:20b",
@@ -275,14 +259,14 @@ class TestHyDEGenerator:
         assert generator.max_keywords == 10
         assert generator.temperature == 0.3
 
-    def test_initialization_with_defaults(self, mock_hyde_ollama_client):
+    def test_initialization_with_defaults(self):
         """Test generator uses correct defaults."""
         generator = HyDEGenerator(model="test-model")
         assert generator.num_abstracts == 2  # Default
         assert generator.max_keywords == 10  # Default
         assert generator.temperature == 0.3  # Default
 
-    def test_empty_counter_text_raises_value_error(self, mock_hyde_ollama_client, statement_comparative):
+    def test_empty_counter_text_raises_value_error(self, statement_comparative):
         """Test that empty counter text raises ValueError."""
         generator = HyDEGenerator(model="test-model")
 
@@ -292,7 +276,7 @@ class TestHyDEGenerator:
         with pytest.raises(ValueError, match="Counter-statement text cannot be empty"):
             generator.generate(statement_comparative, "   ")
 
-    def test_build_hyde_prompt_includes_required_info(self, mock_hyde_ollama_client, statement_comparative):
+    def test_build_hyde_prompt_includes_required_info(self, statement_comparative):
         """Test that prompt includes original statement and counter-statement."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=10)
         counter_text = "GLP-1 agonists are superior to metformin"
@@ -306,7 +290,7 @@ class TestHyDEGenerator:
         assert "hypothetical" in prompt.lower()
         assert "json" in prompt.lower()
 
-    def test_parse_response_valid_json(self, mock_hyde_ollama_client):
+    def test_parse_response_valid_json(self):
         """Test parsing valid JSON response."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=5)
 
@@ -325,7 +309,7 @@ class TestHyDEGenerator:
         assert len(result["hyde_abstracts"]) == 2
         assert len(result["keywords"]) == 5
 
-    def test_parse_response_extracts_json_from_code_block(self, mock_hyde_ollama_client):
+    def test_parse_response_extracts_json_from_code_block(self):
         """Test parsing JSON from markdown code block."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=3)
 
@@ -345,7 +329,7 @@ class TestHyDEGenerator:
         assert len(result["hyde_abstracts"]) == 1
         assert len(result["keywords"]) == 2
 
-    def test_parse_response_limits_abstracts(self, mock_hyde_ollama_client):
+    def test_parse_response_limits_abstracts(self):
         """Test that abstracts are limited to num_abstracts."""
         generator = HyDEGenerator(model="test-model", num_abstracts=1, max_keywords=10)
 
@@ -361,7 +345,7 @@ class TestHyDEGenerator:
         result = generator._parse_response(response)
         assert len(result["hyde_abstracts"]) == 1
 
-    def test_parse_response_limits_keywords(self, mock_hyde_ollama_client):
+    def test_parse_response_limits_keywords(self):
         """Test that keywords are limited to max_keywords."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=3)
 
@@ -375,7 +359,7 @@ class TestHyDEGenerator:
         result = generator._parse_response(response)
         assert len(result["keywords"]) == 3
 
-    def test_parse_response_filters_short_abstracts(self, mock_hyde_ollama_client):
+    def test_parse_response_filters_short_abstracts(self):
         """Test that abstracts shorter than minimum are filtered."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=5)
 
@@ -390,7 +374,7 @@ class TestHyDEGenerator:
         result = generator._parse_response(response)
         assert len(result["hyde_abstracts"]) == 1
 
-    def test_parse_response_filters_empty_keywords(self, mock_hyde_ollama_client):
+    def test_parse_response_filters_empty_keywords(self):
         """Test that empty keywords are filtered."""
         generator = HyDEGenerator(model="test-model", num_abstracts=2, max_keywords=5)
 
@@ -404,7 +388,7 @@ class TestHyDEGenerator:
         result = generator._parse_response(response)
         assert len(result["keywords"]) == 2
 
-    def test_parse_response_missing_hyde_abstracts_raises_error(self, mock_hyde_ollama_client):
+    def test_parse_response_missing_hyde_abstracts_raises_error(self):
         """Test that missing hyde_abstracts key raises error."""
         generator = HyDEGenerator(model="test-model")
 
@@ -413,7 +397,7 @@ class TestHyDEGenerator:
         with pytest.raises(ValueError, match="missing 'hyde_abstracts'"):
             generator._parse_response(response)
 
-    def test_parse_response_missing_keywords_raises_error(self, mock_hyde_ollama_client):
+    def test_parse_response_missing_keywords_raises_error(self):
         """Test that missing keywords key raises error."""
         generator = HyDEGenerator(model="test-model")
 
@@ -422,7 +406,7 @@ class TestHyDEGenerator:
         with pytest.raises(ValueError, match="missing 'keywords'"):
             generator._parse_response(response)
 
-    def test_parse_response_no_valid_abstracts_raises_error(self, mock_hyde_ollama_client):
+    def test_parse_response_no_valid_abstracts_raises_error(self):
         """Test that having no valid abstracts raises error."""
         generator = HyDEGenerator(model="test-model")
 
@@ -434,7 +418,7 @@ class TestHyDEGenerator:
         with pytest.raises(ValueError, match="No valid HyDE abstracts"):
             generator._parse_response(response)
 
-    def test_parse_response_no_valid_keywords_raises_error(self, mock_hyde_ollama_client):
+    def test_parse_response_no_valid_keywords_raises_error(self):
         """Test that having no valid keywords raises error."""
         generator = HyDEGenerator(model="test-model")
 
@@ -448,75 +432,67 @@ class TestHyDEGenerator:
         with pytest.raises(ValueError, match="No valid keywords"):
             generator._parse_response(response)
 
-    def test_parse_response_invalid_json_raises_error(self, mock_hyde_ollama_client):
+    def test_parse_response_invalid_json_raises_error(self):
         """Test that invalid JSON raises error."""
         generator = HyDEGenerator(model="test-model")
 
         with pytest.raises(ValueError, match="Invalid JSON"):
             generator._parse_response("not valid json {")
 
-    def test_generate_success(self, mock_hyde_ollama_client, statement_comparative):
+    def test_generate_success(self, statement_comparative):
         """Test successful HyDE generation."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": json.dumps({
-                    "hyde_abstracts": [
-                        "Background: Comparative studies of diabetes medications have yielded inconsistent results. We conducted a multi-center randomized trial comparing GLP-1 agonists to metformin in type 2 diabetes mellitus. Methods: Patients were randomized to receive either treatment for 24 months. Results: GLP-1 agonists showed superior HbA1c reduction. Conclusion: GLP-1 agonists are at least equivalent to metformin.",
-                        "Background: Meta-analysis of diabetes treatment outcomes is needed. Methods: Systematic review of RCTs comparing GLP-1 agonists and metformin. Results: Pooled analysis favors GLP-1 agonists for long-term outcomes. Conclusion: Evidence supports non-inferiority of GLP-1 agonists."
-                    ],
-                    "keywords": [
-                        "GLP-1 receptor agonists",
-                        "metformin comparison",
-                        "type 2 diabetes mellitus",
-                        "long-term outcomes",
-                        "cardiovascular outcomes"
-                    ]
-                })
-            }
-        }
-        mock_hyde_ollama_client.return_value = mock_client_instance
-
+        payload = json.dumps({
+            "hyde_abstracts": [
+                "Background: Comparative studies of diabetes medications have yielded inconsistent results. We conducted a multi-center randomized trial comparing GLP-1 agonists to metformin in type 2 diabetes mellitus. Methods: Patients were randomized to receive either treatment for 24 months. Results: GLP-1 agonists showed superior HbA1c reduction. Conclusion: GLP-1 agonists are at least equivalent to metformin.",
+                "Background: Meta-analysis of diabetes treatment outcomes is needed. Methods: Systematic review of RCTs comparing GLP-1 agonists and metformin. Results: Pooled analysis favors GLP-1 agonists for long-term outcomes. Conclusion: Evidence supports non-inferiority of GLP-1 agonists."
+            ],
+            "keywords": [
+                "GLP-1 receptor agonists",
+                "metformin comparison",
+                "type 2 diabetes mellitus",
+                "long-term outcomes",
+                "cardiovascular outcomes"
+            ]
+        })
         generator = HyDEGenerator(model="gpt-oss:20b")
-        result = generator.generate(
-            statement_comparative,
-            "GLP-1 agonists are superior or equivalent to metformin"
-        )
+
+        with patch_llm(payload) as mock_chat:
+            result = generator.generate(
+                statement_comparative,
+                "GLP-1 agonists are superior or equivalent to metformin"
+            )
 
         assert "hyde_abstracts" in result
         assert "keywords" in result
         assert len(result["hyde_abstracts"]) == 2
         assert len(result["keywords"]) == 5
-        mock_client_instance.chat.assert_called_once()
+        mock_chat.assert_called_once()
 
-    def test_generate_handles_llm_error(self, mock_hyde_ollama_client, statement_comparative):
+    def test_generate_handles_llm_error(self, statement_comparative):
         """Test that LLM errors are handled gracefully."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.side_effect = Exception("Connection failed")
-        mock_hyde_ollama_client.return_value = mock_client_instance
-
         generator = HyDEGenerator(model="gpt-oss:20b")
 
-        with pytest.raises(RuntimeError, match="Failed to generate HyDE materials"):
-            generator.generate(statement_comparative, "Counter statement text")
+        with patch_llm(side_effect=Exception("Connection failed")):
+            with pytest.raises(
+                RuntimeError, match="Failed to generate HyDE materials"
+            ):
+                generator.generate(statement_comparative, "Counter statement text")
 
-    def test_test_connection_success(self, mock_hyde_ollama_client):
+    def test_test_connection_success(self):
         """Test connection test when successful."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.list.return_value = {"models": []}
-        mock_hyde_ollama_client.return_value = mock_client_instance
-
         generator = HyDEGenerator(model="test-model")
-        assert generator.test_connection() is True
 
-    def test_test_connection_failure(self, mock_hyde_ollama_client):
+        with patch.object(LLMClient, "test_provider", return_value=True):
+            assert generator.test_connection() is True
+
+    def test_test_connection_failure(self):
         """Test connection test when failed."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.list.side_effect = Exception("Connection refused")
-        mock_hyde_ollama_client.return_value = mock_client_instance
-
         generator = HyDEGenerator(model="test-model")
-        assert generator.test_connection() is False
+
+        with patch.object(
+            LLMClient, "test_provider", side_effect=Exception("Connection refused")
+        ):
+            assert generator.test_connection() is False
 
 
 # =============================================================================
@@ -526,60 +502,45 @@ class TestHyDEGenerator:
 class TestCounterStatementWorkflow:
     """Integration-style tests for the counter-statement generation workflow."""
 
-    def test_comparative_claim_generates_logical_negation(self, mock_ollama_client, statement_comparative):
+    def test_comparative_claim_generates_logical_negation(self, statement_comparative):
         """Test that comparative claims get logical negations."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "GLP-1 agonists are superior or equivalent to metformin in long-term T2DM outcomes"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
+        llm_content = "GLP-1 agonists are superior or equivalent to metformin in long-term T2DM outcomes"
 
         generator = CounterStatementGenerator(model="gpt-oss:20b")
-        result = generator.generate(statement_comparative)
+        with patch_llm(llm_content):
+            result = generator.generate(statement_comparative)
 
         # Should be a logical negation, not just adding "not"
         assert result != f"not {statement_comparative.text}"
         assert len(result) > 10
 
-    def test_effect_claim_generates_logical_negation(self, mock_ollama_client, statement_effect):
+    def test_effect_claim_generates_logical_negation(self, statement_effect):
         """Test that effect claims get appropriate negations."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "Exercise does not significantly reduce cardiovascular risk"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
+        llm_content = "Exercise does not significantly reduce cardiovascular risk"
 
         generator = CounterStatementGenerator(model="gpt-oss:20b")
-        result = generator.generate(statement_effect)
+        with patch_llm(llm_content):
+            result = generator.generate(statement_effect)
 
         assert len(result) > 10
         assert "exercise" in result.lower()
 
-    def test_hyde_abstracts_are_realistic(self, mock_hyde_ollama_client, statement_comparative):
+    def test_hyde_abstracts_are_realistic(self, statement_comparative):
         """Test that HyDE abstracts have realistic structure."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": json.dumps({
-                    "hyde_abstracts": [
-                        "Background: Prior studies show mixed results. Methods: We conducted a randomized controlled trial with 500 patients over 24 months. Results: GLP-1 agonists demonstrated non-inferior glycemic control with additional weight loss benefits. Conclusion: GLP-1 agonists are a viable alternative to metformin for first-line therapy.",
-                        "Background: Systematic review of diabetes treatment. Methods: Meta-analysis of 12 RCTs. Results: Pooled data shows equivalent HbA1c reduction with improved cardiovascular outcomes for GLP-1 agonists. Conclusion: Evidence supports GLP-1 agonists as first-line treatment."
-                    ],
-                    "keywords": ["GLP-1 agonists", "metformin", "type 2 diabetes"]
-                })
-            }
-        }
-        mock_hyde_ollama_client.return_value = mock_client_instance
+        llm_content = json.dumps({
+                "hyde_abstracts": [
+                    "Background: Prior studies show mixed results. Methods: We conducted a randomized controlled trial with 500 patients over 24 months. Results: GLP-1 agonists demonstrated non-inferior glycemic control with additional weight loss benefits. Conclusion: GLP-1 agonists are a viable alternative to metformin for first-line therapy.",
+                    "Background: Systematic review of diabetes treatment. Methods: Meta-analysis of 12 RCTs. Results: Pooled data shows equivalent HbA1c reduction with improved cardiovascular outcomes for GLP-1 agonists. Conclusion: Evidence supports GLP-1 agonists as first-line treatment."
+                ],
+                "keywords": ["GLP-1 agonists", "metformin", "type 2 diabetes"]
+            })
 
         generator = HyDEGenerator(model="gpt-oss:20b")
-        result = generator.generate(
-            statement_comparative,
-            "GLP-1 agonists are superior or equivalent to metformin"
-        )
+        with patch_llm(llm_content):
+            result = generator.generate(
+                statement_comparative,
+                "GLP-1 agonists are superior or equivalent to metformin"
+            )
 
         # Abstracts should have structure
         for abstract in result["hyde_abstracts"]:
@@ -590,32 +551,27 @@ class TestCounterStatementWorkflow:
                 ["background", "methods", "results", "conclusion", "study", "trial"])
             assert has_structure
 
-    def test_keywords_are_relevant(self, mock_hyde_ollama_client, statement_effect):
+    def test_keywords_are_relevant(self, statement_effect):
         """Test that generated keywords are relevant to the statement."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": json.dumps({
-                    "hyde_abstracts": [
-                        "Background: The relationship between physical activity and cardiovascular disease has been extensively studied. Methods: We performed a meta-analysis of cohort studies. Results: Exercise showed no significant reduction in cardiovascular events. Conclusion: The cardioprotective effect of exercise may be overestimated."
-                    ],
-                    "keywords": [
-                        "exercise cardiovascular",
-                        "physical activity heart disease",
-                        "cardiovascular risk reduction",
-                        "exercise ineffective",
-                        "heart disease prevention"
-                    ]
-                })
-            }
-        }
-        mock_hyde_ollama_client.return_value = mock_client_instance
+        llm_content = json.dumps({
+                "hyde_abstracts": [
+                    "Background: The relationship between physical activity and cardiovascular disease has been extensively studied. Methods: We performed a meta-analysis of cohort studies. Results: Exercise showed no significant reduction in cardiovascular events. Conclusion: The cardioprotective effect of exercise may be overestimated."
+                ],
+                "keywords": [
+                    "exercise cardiovascular",
+                    "physical activity heart disease",
+                    "cardiovascular risk reduction",
+                    "exercise ineffective",
+                    "heart disease prevention"
+                ]
+            })
 
         generator = HyDEGenerator(model="gpt-oss:20b")
-        result = generator.generate(
-            statement_effect,
-            "Exercise does not significantly reduce cardiovascular risk"
-        )
+        with patch_llm(llm_content):
+            result = generator.generate(
+                statement_effect,
+                "Exercise does not significantly reduce cardiovascular risk"
+            )
 
         keywords = result["keywords"]
         assert len(keywords) > 0
@@ -630,15 +586,9 @@ class TestCounterStatementWorkflow:
 class TestEdgeCases:
     """Edge case tests for counter-statement generation."""
 
-    def test_statement_with_unicode_characters(self, mock_ollama_client):
+    def test_statement_with_unicode_characters(self):
         """Test handling of unicode characters in statement."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "α-tocopherol does not improve outcomes in β-carotene studies"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
+        llm_content = "α-tocopherol does not improve outcomes in β-carotene studies"
 
         stmt = Statement(
             text="α-tocopherol improves outcomes in β-carotene studies",
@@ -649,19 +599,14 @@ class TestEdgeCases:
         )
 
         generator = CounterStatementGenerator(model="test-model")
-        result = generator.generate(stmt)
+        with patch_llm(llm_content):
+            result = generator.generate(stmt)
 
         assert len(result) > 10
 
-    def test_very_long_statement(self, mock_ollama_client):
+    def test_very_long_statement(self):
         """Test handling of very long statements."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "This counter-statement negates the very long original claim"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
+        llm_content = "This counter-statement negates the very long original claim"
 
         long_text = "This is a very long statement " * 50
         stmt = Statement(
@@ -673,19 +618,14 @@ class TestEdgeCases:
         )
 
         generator = CounterStatementGenerator(model="test-model")
-        result = generator.generate(stmt)
+        with patch_llm(llm_content):
+            result = generator.generate(stmt)
 
         assert len(result) > 10
 
-    def test_statement_with_special_medical_terminology(self, mock_ollama_client):
+    def test_statement_with_special_medical_terminology(self):
         """Test handling of complex medical terminology."""
-        mock_client_instance = MagicMock()
-        mock_client_instance.chat.return_value = {
-            "message": {
-                "content": "Anti-VEGF therapy does not improve outcomes in age-related macular degeneration"
-            }
-        }
-        mock_ollama_client.return_value = mock_client_instance
+        llm_content = "Anti-VEGF therapy does not improve outcomes in age-related macular degeneration"
 
         stmt = Statement(
             text="Anti-VEGF therapy improves visual acuity in age-related macular degeneration",
@@ -696,12 +636,13 @@ class TestEdgeCases:
         )
 
         generator = CounterStatementGenerator(model="test-model")
-        result = generator.generate(stmt)
+        with patch_llm(llm_content):
+            result = generator.generate(stmt)
 
         assert len(result) > 10
         assert "VEGF" in result or "vegf" in result.lower()
 
-    def test_extract_json_handles_malformed_code_blocks(self, mock_hyde_ollama_client):
+    def test_extract_json_handles_malformed_code_blocks(self):
         """Test JSON extraction with malformed code blocks."""
         generator = HyDEGenerator(model="test-model")
 
@@ -710,7 +651,7 @@ class TestEdgeCases:
         result = generator._extract_json(response)
         assert "hyde_abstracts" in result
 
-    def test_extract_json_finds_json_without_code_block(self, mock_hyde_ollama_client):
+    def test_extract_json_finds_json_without_code_block(self):
         """Test JSON extraction when no code block is present."""
         generator = HyDEGenerator(model="test-model")
 
