@@ -38,7 +38,6 @@ LLM_LAYER = "llm"
 KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
     "agents/paper_weight/agent.py",
     "agents/query_generation/generator.py",
-    "agents/semantic_query_agent.py",
     "embeddings/chunk_embedder.py",
     "embeddings/document_embedder.py",
     "gui/flet/config_app.py",

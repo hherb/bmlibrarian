@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Callable, TYPE_CHECKING
 
+from ..llm import LLMClient, LLMMessage
+
 if TYPE_CHECKING:
     from bmlibrarian.database import DatabaseManager
 
@@ -67,6 +69,14 @@ DEFAULT_HYBRID_THRESHOLD = 0.3  # Lower than pure semantic (keyword can boost)
 # LLM configuration for query rephrasing and expansion
 DEFAULT_REPHRASING_MODEL = "medgemma4B_it_q8:latest"  # Fast model for rephrasing
 DEFAULT_REPHRASING_TEMPERATURE = 0.7  # Some creativity for variations
+DEFAULT_EXPANSION_TEMPERATURE = 0.3  # Low, so keyword extraction stays stable
+
+# Generation ceilings. Both are far above the length of the expected answer
+# (a one-line query, a three-line keyword block) because reasoning models
+# spend part of the budget thinking before emitting anything; a tight ceiling
+# truncates them mid-thought and yields an empty completion.
+REPHRASING_MAX_TOKENS = 800
+EXPANSION_MAX_TOKENS = 1000
 
 
 class SearchMode(Enum):
@@ -213,6 +223,8 @@ class SemanticQueryAgent:
             )
         except ImportError:
             self.ollama_host = ollama_host or "http://localhost:11434"
+
+        self._llm_client = LLMClient(ollama_host=self.ollama_host)
 
         logger.info(
             f"SemanticQueryAgent initialized: threshold={initial_threshold}, "
@@ -578,8 +590,6 @@ class SemanticQueryAgent:
             Rephrased query string, or None if generation fails.
         """
         try:
-            import ollama
-
             # Build prompt for query rephrasing
             previous_list = "\n".join(f"- {q}" for q in previous_queries)
 
@@ -598,16 +608,14 @@ Generate a single alternative query that:
 
 Respond with ONLY the new query, nothing else."""
 
-            response = ollama.generate(
-                model=self.rephrasing_model,
+            response = self._llm_client.generate(
                 prompt=prompt,
-                options={
-                    "temperature": self.rephrasing_temperature,
-                    "num_predict": 50,  # Short response
-                },
+                model=self.rephrasing_model,
+                temperature=self.rephrasing_temperature,
+                max_tokens=REPHRASING_MAX_TOKENS,
             )
 
-            rephrased = response.get("response", "").strip()
+            rephrased = (response.content or "").strip()
 
             # Clean up the response
             rephrased = rephrased.strip('"\'')
@@ -644,8 +652,6 @@ Respond with ONLY the new query, nothing else."""
                 - numeric_variants: List of number format variations
         """
         try:
-            import ollama
-
             prompt = f"""Analyze this biomedical search query and extract information to improve keyword search.
 
 Query: "{query}"
@@ -662,16 +668,14 @@ EXPANDED: heart rate cardiac rate pulse 89 bpm beats per minute
 
 Now analyze the query:"""
 
-            response = ollama.generate(
-                model=self.rephrasing_model,
+            response = self._llm_client.generate(
                 prompt=prompt,
-                options={
-                    "temperature": 0.3,  # Low temp for consistency
-                    "num_predict": 150,
-                },
+                model=self.rephrasing_model,
+                temperature=DEFAULT_EXPANSION_TEMPERATURE,
+                max_tokens=EXPANSION_MAX_TOKENS,
             )
 
-            text = response.get("response", "").strip()
+            text = (response.content or "").strip()
 
             # Parse the response
             result = {
