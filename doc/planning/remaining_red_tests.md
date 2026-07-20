@@ -6,8 +6,42 @@ for CI. Fixing it made a large body of pre-existing test debt visible for
 the first time. This note records what each remaining failure is, so the
 next session does not have to re-derive it.
 
-Nothing here is caused by the ollama migration. Everything below either
-pre-dates it or was already failing and merely unreachable.
+## Correction
+
+The first version of this note claimed nothing here was caused by the
+migration. That was wrong, and worth recording as the more useful
+lesson.
+
+Three regressions *were* introduced, and all three were invisible to the
+per-area "no new failures vs baseline" checks run during the migration:
+
+1. **`tests/paperchecker/` — 122 tests.** A second, fuller suite for the
+   four components migrated in Area 1, patching
+   `...components.<module>.ollama.Client` and feeding old-shape dicts.
+   Invisible because the collection error meant it never ran, so every
+   baseline comparison was blind to it. Fixed in `7873cf6`; back to its
+   pre-migration 18 failed / 159 passed with an identical failure list.
+
+2. **`list_ollama_models()` — 82x slower.** Area 7 pointed fifteen model
+   pickers at it; it delegated to bmlib's `list_models()`, which calls
+   `ollama.show()` per model. 0.04s -> 3.53s against a server with 139
+   models, every time a dropdown is populated. Invisible because the
+   check performed was "does it return 139 models", never "how long does
+   it take". It presented as a hang in the Qt tests. Fixed in `f4646f3`.
+
+3. **`test_from_env_missing_credentials`.** Environmental rather than a
+   code change, but it only surfaced once the collection error was
+   fixed: the test clears `os.environ`, then `from_env()` calls
+   `load_dotenv()`, which reads a real `.env` from above the repo root.
+   Fixed in `5c1c25f`.
+
+The common thread: each was verified correct without being verified
+*complete* or *fast*, and a green comparison was reported as evidence
+when the relevant tests were not in the run. A test that cannot run
+tells you nothing, and neither does a timing you never took.
+
+Everything in the sections below is genuinely pre-existing, verified
+file-by-file against a detached worktree at `8615334`.
 
 ## What changed
 
@@ -54,9 +88,12 @@ worse than failing. These tests need their threading boundary mocked,
 not just their agents. That is a design decision about what these tests
 are meant to cover, and belongs with whoever owns the Qt workflow.
 
-**Note on timing.** Each hanging test now burns the 120s ceiling before
-failing, so these two files alone cost ~8 minutes. Worth fixing for
-suite speed, not only for correctness.
+**Note.** These two files were briefly much worse than this — hanging
+rather than failing — because of the `list_ollama_models()` regression
+described in the correction above. With that fixed they fail in ~3s and
+~4s respectively, matching the pre-migration baseline exactly. The
+mock-agents experiment was re-run after the perf fix and still hangs, so
+the threading conclusion stands on its own.
 
 ### 2. `test_prisma2020_lab_plugin.py` — 18 failures
 
