@@ -20,6 +20,7 @@ from bmlib.llm import (
 )
 
 from bmlibrarian.agents.document_interrogation_agent import (
+    DatabaseChunk,
     DocumentInterrogationAgent,
     DocumentAnswer,
     RelevantSection,
@@ -140,6 +141,65 @@ class TestDocumentInterrogationAgentLLMIntegration:
         mock_list.return_value = {"ollama": ["test-model"]}
 
         assert agent.test_connection() is False
+
+
+class TestDatabaseChunkStateIsolation:
+    """
+    Database chunks from one call must not leak into the next.
+
+    The embedding path decides whether to reuse pre-computed database
+    embeddings by checking `hasattr(self, '_db_chunks')`. That attribute is
+    set when processing by document_id and, before this was fixed, was never
+    cleared — so a subsequent document_text call on the same agent silently
+    scored the new document's chunks against the previous document's
+    embeddings, matched up by list index.
+    """
+
+    @pytest.fixture
+    def agent(self):
+        """Create an agent with a stubbed LLM backend."""
+        with patch('bmlib.llm.client.LLMClient.chat'):
+            yield DocumentInterrogationAgent(
+                model="test-model",
+                embedding_model="test-embedding",
+                chunk_size=100,
+                chunk_overlap=20,
+                show_model_info=False,
+            )
+
+    @patch('bmlib.llm.client.LLMClient.embed')
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_text_call_does_not_reuse_previous_document_embeddings(
+        self, mock_chat, mock_embed, agent,
+    ):
+        """A document_text call must embed its own chunks, not inherited ones."""
+        mock_chat.return_value = llm_response('[]')
+        mock_embed.return_value = BmlibEmbeddingResponse(
+            embedding=[0.1, 0.2, 0.3], model="test-embedding", dimensions=3,
+        )
+
+        db_chunks = [
+            DatabaseChunk(chunk_id=1, text="Chunk from document 123", chunk_no=0,
+                          embedding=[1.0, 0.0, 0.0]),
+        ]
+
+        cached_events = []
+        agent.set_callback(
+            lambda step, data: cached_events.append(step)
+            if step == "using_cached_embedding" else None
+        )
+
+        # State as a prior process_document(document_id=123) call would leave it.
+        agent._db_chunks = db_chunks
+
+        agent.process_document(
+            question="What is this?", document_text="B" * 150,
+            mode=ProcessingMode.EMBEDDING,
+        )
+
+        assert cached_events == [], (
+            "document_text call reused embeddings cached from document 123"
+        )
 
 
 class TestProcessingMode:

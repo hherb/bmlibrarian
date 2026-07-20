@@ -150,6 +150,11 @@ class DocumentInterrogationAgent(BaseAgent):
         # Initialize text chunker
         self.chunker = TextChunker(chunk_size=chunk_size, overlap=chunk_overlap)
 
+        # Pre-embedded chunks from the last document_id call, if any. Declared
+        # here so the embedding path can test it directly rather than probing
+        # for the attribute's existence.
+        self._db_chunks: Optional[List[DatabaseChunk]] = None
+
         self.agent_type = "document_interrogation_agent"
 
     def get_agent_type(self) -> str:
@@ -421,7 +426,11 @@ class DocumentInterrogationAgent(BaseAgent):
             # Chunk the document on-the-fly
             chunks = self.chunker.chunk_text(document_text)
             chunk_info = self.chunker.get_chunk_info(document_text)
-            use_database_chunks = False
+            # Drop any chunks cached by an earlier document_id call on this
+            # agent: the embedding path pairs cached embeddings with the
+            # current chunks by index, so stale entries silently score this
+            # document against a previous one.
+            self._db_chunks = None
 
         else:  # document_id provided
             self._call_callback("document_interrogation_start",
@@ -443,7 +452,6 @@ class DocumentInterrogationAgent(BaseAgent):
                 'source': 'database',
                 'document_id': document_id
             }
-            use_database_chunks = True
             # Store db_chunks for later use in embedding mode
             self._db_chunks = db_chunks
 
@@ -540,7 +548,7 @@ class DocumentInterrogationAgent(BaseAgent):
         question_embedding = self._get_embedding(question)
 
         # Check if we have pre-computed embeddings from database
-        use_db_embeddings = hasattr(self, '_db_chunks') and self._db_chunks
+        use_db_embeddings = bool(self._db_chunks)
 
         # Get embeddings for all chunks and calculate similarity
         chunk_similarities = []

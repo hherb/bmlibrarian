@@ -5,7 +5,9 @@ description = "Biomedical Literature Librarian - A Python library for accessing 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "bmlib[ollama]>=0.4.0",
+    # Upper bound is deliberate: bmlib is pre-1.0, so a minor bump may change
+    # the API this package delegates its whole LLM layer to.
+    "bmlib[ollama]>=0.4.0,<0.5.0",
     "psycopg-pool>=3.1.0",
     "psycopg[binary]>=3.2.9",
     "python-dotenv>=1.2.2",
