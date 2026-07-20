@@ -29,12 +29,11 @@ per-area "no new failures vs baseline" checks run during the migration:
    check performed was "does it return 139 models", never "how long does
    it take". It presented as a hang in the Qt tests. Fixed in `f4646f3`.
 
-   Since fixed upstream too: bmlib PR #25 made `context_window` lazy, so
-   `list_models()` costs one request unless a caller reads that field
-   (0.08s measured against main). The bmlibrarian-side workaround is kept
-   only until bmlib 0.5.1 reaches PyPI, because the declared floor is
-   0.5.0 and reverting early would hand anyone on that release the 82x
-   cost back. `list_ollama_models` carries the exact removal steps.
+   Now fixed upstream and the workaround is gone: bmlib PR #25 made
+   `context_window` lazy, so `list_models()` costs one request unless a
+   caller reads that field. Released as 0.5.1; the floor was raised to
+   match and `list_ollama_models` delegates to bmlib again, measuring
+   0.09s cold and 0.03s warm for 139 models.
 
 3. **`test_from_env_missing_credentials`.** Environmental rather than a
    code change, but it only surfaced once the collection error was
