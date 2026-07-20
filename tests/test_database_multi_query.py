@@ -21,17 +21,23 @@ def test_fetch_documents_by_ids_return_type():
     assert result == []
 
 
+@pytest.mark.requires_database
 def test_find_abstract_ids_return_type():
-    """Test that find_abstract_ids returns a set."""
-    # This test doesn't require database connection
-    # Just verifies the function signature and basic behavior
-    try:
-        ids = find_abstract_ids("test", max_rows=1)
-        assert isinstance(ids, set)
-    except Exception:
-        # If database not available, that's OK for this test
-        # We're just checking the function exists and has correct signature
-        pass
+    """
+    Test that find_abstract_ids returns a set.
+
+    This does issue a real query, despite what the previous comment here
+    claimed. The try/except around it did not make it safe: an
+    unreachable database does not raise promptly, it blocks inside
+    psycopg's socket wait, and with no per-test timeout that hung the
+    entire suite indefinitely rather than being caught and skipped.
+
+    Marked requires_database so it can be deselected. The signature
+    checking the old comment described is done, without a database, by
+    test_find_abstract_ids_parameters below.
+    """
+    ids = find_abstract_ids("test", max_rows=1)
+    assert isinstance(ids, set)
 
 
 def test_batch_size_parameter():

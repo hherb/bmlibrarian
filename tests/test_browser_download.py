@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-"""Quick test script for browser-based PDF downloader."""
+"""
+Quick test script for browser-based PDF downloader.
+
+Written as a runnable script, but pytest collects it because of the file
+and function names. Both functions drive a real Playwright browser
+against a live URL, so they are marked integration: unmarked, they hung
+the whole suite indefinitely (pytest has no per-test timeout configured,
+and the hang is inside a blocking selector call that cannot be
+interrupted).
+
+Run them deliberately with:  pytest tests/test_browser_download.py -m integration
+"""
 
 import sys
 import logging
 from pathlib import Path
+
+import pytest
 
 # Add src directory to path
 src_path = Path(__file__).parent / 'src'
@@ -19,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@pytest.mark.integration
 def test_simple_pdf():
     """Test downloading a simple PDF (no Cloudflare)."""
     print("=" * 70)
@@ -61,6 +75,7 @@ def test_simple_pdf():
     print()
 
 
+@pytest.mark.integration
 def test_cloudflare_protected():
     """Test downloading from a Cloudflare-protected site."""
     print("=" * 70)
