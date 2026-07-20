@@ -688,17 +688,36 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
             except ImportError:
                 host = DEFAULT_OLLAMA_HOST
 
-        # Deliberately not bmlib's client.list_models(): that enriches every
-        # entry by calling ollama.show() per model, so listing costs one
-        # request plus one per model. Against a server holding 139 models
-        # that measured 3.53s versus 0.04s for the plain listing — an 82x
-        # cost paid every time a picker is populated, which is all this
-        # helper is for. None of the metadata it fetches is used here.
+        # TEMPORARY, and ready to delete — see below.
+        #
+        # Deliberately not bmlib's client.list_models(): in 0.5.0 that
+        # enriches every entry by calling ollama.show() per model, so
+        # listing costs one request plus one per model. Against a server
+        # holding 139 models that measured 3.53s versus 0.04s for the plain
+        # listing — an 82x cost paid every time a picker is populated,
+        # which is all this helper is for. None of the metadata it fetches
+        # is used here.
         #
         # This module is the LLM layer, the one place permitted to talk to
         # a provider directly, so the plain call belongs here rather than
-        # in the callers. Revert to bmlib once it offers a names-only
-        # listing.
+        # in the fifteen callers.
+        #
+        # bmlib PR #25 has already fixed this on main: context_window
+        # became a lazy attribute, so list_models() costs one request and
+        # only pays for show() if a caller actually reads that field. It
+        # measured 0.08s there — faster than this workaround's 0.26s.
+        #
+        # To remove, once bmlib 0.5.1 is on PyPI: raise the floor in
+        # pyproject.toml to >=0.5.1, then replace this block and the
+        # return below with
+        #
+        #     client = BmlibLLMClient(default_provider="ollama", ollama_host=host)
+        #     models = client.list_models("ollama")
+        #     return list(models) if models else []
+        #
+        # It is kept until then because the declared floor is 0.5.0, and
+        # reverting early would hand anyone on that release the 82x cost
+        # back with no warning.
         import ollama
 
         response = ollama.Client(host=host).list()
