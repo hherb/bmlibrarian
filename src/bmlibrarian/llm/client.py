@@ -665,12 +665,22 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
     Centralized utility function for listing Ollama models.
     Delegates to bmlib's LLMClient.
 
+    An unreachable server raises rather than returning an empty list. The
+    two outcomes are not interchangeable: callers use this to populate
+    model pickers and to back "test connection" dialogs, and reporting a
+    dead server as "connected, 0 models" is a false reassurance. bmlib's
+    ``list_models`` swallows provider errors and returns ``[]`` itself, so
+    an empty result is ambiguous and has to be disambiguated by probing.
+
     Args:
         host: Ollama server URL. If None, uses configured default.
 
     Returns:
-        List of model names available on the server.
-        Returns empty list on connection failure.
+        List of model names available on the server. Empty only when the
+        server is reachable and genuinely has no models installed.
+
+    Raises:
+        ConnectionError: If the server cannot be reached
 
     Examples:
         >>> models = list_ollama_models()
@@ -679,22 +689,38 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
 
         >>> models = list_ollama_models("http://192.168.1.100:11434")
     """
-    try:
-        # Get configured host if not provided
-        if host is None:
-            try:
-                from ..config import get_ollama_host
-                host = get_ollama_host()
-            except ImportError:
-                host = DEFAULT_OLLAMA_HOST
+    # Get configured host if not provided
+    if host is None:
+        try:
+            from ..config import get_ollama_host
+            host = get_ollama_host()
+        except ImportError:
+            host = DEFAULT_OLLAMA_HOST
 
+    try:
         client = BmlibLLMClient(
             default_provider="ollama",
             ollama_host=host,
         )
         models = client.list_models("ollama")
-        return list(models) if models else []
-
     except Exception as e:
-        logger.warning(f"Failed to list Ollama models: {e}")
-        return []
+        raise ConnectionError(
+            f"Could not list models from the Ollama server at {host}: {e}"
+        ) from e
+
+    if models:
+        return list(models)
+
+    # Empty is ambiguous, so ask whether the server is there at all. This
+    # costs a second request only in the empty case, which is rare.
+    try:
+        reachable = client.test_connection("ollama")
+    except Exception as e:
+        raise ConnectionError(
+            f"Could not reach the Ollama server at {host}: {e}"
+        ) from e
+
+    if not reachable:
+        raise ConnectionError(f"Could not reach the Ollama server at {host}")
+
+    return []

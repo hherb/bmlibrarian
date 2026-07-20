@@ -30,13 +30,11 @@ logger = logging.getLogger(__name__)
 # Based on established research and best practices
 DEFAULT_RRF_K = 60  # Standard RRF constant from literature (Cormack et al., 2009)
 DEFAULT_GENERATION_TEMPERATURE = 0.3  # Low temperature for consistent hypothetical documents
-DEFAULT_ABSTRACT_LENGTH = 300  # Typical abstract length in tokens
-
 # Generation ceiling for one hypothetical abstract. This is deliberately far
-# above DEFAULT_ABSTRACT_LENGTH: reasoning models (gpt-oss, deepseek-r1, qwq)
-# spend part of the budget thinking before emitting any prose, so a ceiling of
-# 300 leaves them truncated mid-reasoning with an empty or stub completion —
-# which this module treats as a failed generation.
+# above the ~300 tokens a real abstract runs to: reasoning models (gpt-oss,
+# deepseek-r1, qwq) spend part of the budget thinking before emitting any
+# prose, so a ceiling of 300 leaves them truncated mid-reasoning with an
+# empty or stub completion — which this module treats as a failed generation.
 HYDE_GENERATION_MAX_TOKENS = 1200
 DEFAULT_NUM_HYPOTHETICAL_DOCS = 3  # Number of hypothetical documents to generate
 DEFAULT_EMBEDDING_MODEL_ID = 1  # snowflake-arctic-embed2:latest in database
@@ -272,7 +270,7 @@ def reciprocal_rank_fusion(
 
 def hyde_search(
     question: str,
-    client: Any,  # ollama.Client
+    client: LLMClient,
     generation_model: str,
     embedding_model: str,
     max_results: int = 100,
@@ -284,15 +282,15 @@ def hyde_search(
     Perform HyDE (Hypothetical Document Embeddings) search.
 
     Main entry point for HyDE search. Orchestrates the full pipeline:
-    1. Generate hypothetical documents (via ollama library)
-    2. Embed hypothetical documents (via ollama library)
+    1. Generate hypothetical documents (via the LLM abstraction)
+    2. Embed hypothetical documents (via the LLM abstraction)
     3. Search with each embedding (via database manager)
     4. Fuse results using RRF
     5. Filter by similarity threshold
 
     Args:
         question: The user's research question
-        client: Ollama client instance (ollama.Client)
+        client: LLM client (bmlibrarian.llm.LLMClient)
         generation_model: Model for generating hypothetical docs
         embedding_model: Model for generating embeddings
         max_results: Maximum documents to return

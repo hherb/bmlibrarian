@@ -8,7 +8,7 @@ optionally run against a real Ollama server.
 
 import json
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from llm_test_support import patch_llm
 
@@ -538,27 +538,40 @@ class TestErrorHandling:
 
     def test_llm_empty_response_retries(self, extractor, sample_abstract):
         """Test that empty responses trigger retries."""
+        # Driven through the public entry point rather than _call_llm, so
+        # the retry-exhaustion path a caller actually reaches is covered.
         with patch_llm("") as mock_chat:
             with pytest.raises(RuntimeError, match="Failed to get response"):
-                extractor._call_llm("prompt", retry_delay=0.0)
+                extractor.extract(sample_abstract)
 
         # Should have been called 3 times (initial + 2 retries)
         assert mock_chat.call_count == 3
 
     def test_llm_generic_error(self, extractor, sample_abstract):
         """Test handling of generic unexpected errors."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("Unexpected error occurred")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="LLM call failed"):
-            extractor.extract(sample_abstract)
+        # Patched at the provider boundary rather than by replacing
+        # extractor.client: substituting the client stubs out the very
+        # layer under test, which is how PR #247 shipped a component
+        # calling a removed ollama API with its tests green.
+        with patch_llm(side_effect=Exception("Unexpected error occurred")):
+            with pytest.raises(RuntimeError, match="LLM call failed"):
+                extractor.extract(sample_abstract)
 
 
 # Integration Tests - These require a running Ollama server
 
 
+# The suite-wide --timeout=120 exists to bound tests that stall on an
+# unreachable database or a live browser. These make real generation calls
+# — test_extraction_deterministic makes two, serially — which legitimately
+# run tens of seconds and scale with the model and how loaded the server
+# is. They get their own ceiling so a slow server is not misreported as a
+# hang.
+LIVE_GENERATION_TIMEOUT_SECONDS = 600
+
+
 @pytest.mark.integration
+@pytest.mark.timeout(LIVE_GENERATION_TIMEOUT_SECONDS)
 class TestIntegration:
     """Integration tests requiring a running Ollama server."""
 

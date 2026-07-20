@@ -51,28 +51,13 @@ MIN_ABSTRACT_LENGTH: int = 50
 
 # ==================== MOCK CONFIGURATION FIXTURES ====================
 
-@pytest.fixture
-def mock_ollama_client() -> MagicMock:
-    """Create a mock Ollama client for testing without network calls."""
-    mock_client = MagicMock()
-    mock_client.test_provider.return_value = {
-        "models": [
-            {"name": TEST_MODEL_NAME, "size": 1000000000}
-        ]
-    }
-    return mock_client
-
-
-@pytest.fixture
-def mock_ollama_chat_response() -> Dict[str, Any]:
-    """Return a standard mock response from Ollama chat endpoint."""
-    return {
-        "message": {
-            "role": "assistant",
-            "content": '{"test": "response"}'
-        },
-        "done": True
-    }
+# The mock_ollama_client and mock_ollama_chat_response fixtures were
+# removed with the migration onto the LLM abstraction. Both described the
+# old ollama API — a client whose .list() returned {"models": [...]}, and a
+# raw chat dict — and nothing requested them once the components stopped
+# speaking that shape. To stub model communication, use
+# tests.llm_test_support.patch_llm, which patches at the provider boundary
+# so the abstraction under test stays live.
 
 
 @pytest.fixture

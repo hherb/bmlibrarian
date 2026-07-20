@@ -34,14 +34,14 @@ from .validators import (
     DEFAULT_SIMILARITY_THRESHOLD,
     MIN_SIMILARITY_THRESHOLD,
     THRESHOLD_DECREMENT,
+    EXTRACTION_TEMPERATURE,
 )
 
 logger = logging.getLogger(__name__)
 
 # Default configuration
-# Low, so extraction reports what the passages say rather than improvising.
-EXTRACTION_TEMPERATURE = 0.1
-
+# EXTRACTION_TEMPERATURE is imported from .validators rather than redefined,
+# so the two modules cannot drift apart.
 DEFAULT_MAX_CHUNKS = 5
 
 

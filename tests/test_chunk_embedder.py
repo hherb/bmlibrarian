@@ -5,8 +5,12 @@ Tests the ChunkPosition dataclass and chunk_text function for proper
 character-based text splitting with configurable overlap.
 """
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 from bmlibrarian.embeddings.chunk_embedder import (
+    ChunkEmbedder,
     ChunkPosition,
     chunk_text,
     DEFAULT_CHUNK_SIZE,
@@ -251,3 +255,48 @@ class TestEdgeCases:
 
         assert len(chunks) == 1
         assert chunks[0].extract_text(text) == "X"
+
+
+class TestBatchEmbeddingCallsTheLlmLayer:
+    """
+    Cover the ollama backend's batch path.
+
+    The rest of this module exercises pure chunking functions and never
+    constructs a ChunkEmbedder. That gap let a stale `if ollama is None`
+    guard survive the migration onto the LLM abstraction: the module no
+    longer imports ollama, so the check raised NameError before its own
+    try block, taking out the whole semantic chunking pipeline on its
+    first batch. These tests instantiate the embedder so the batch path
+    is executed at least once.
+    """
+
+    @staticmethod
+    def _embedder() -> ChunkEmbedder:
+        """Build a ChunkEmbedder with its collaborators stubbed out."""
+        embedder = ChunkEmbedder.__new__(ChunkEmbedder)
+        embedder.backend = "ollama"
+        embedder.model_name = "snowflake-arctic-embed2:latest"
+        embedder._llm_client = MagicMock()
+        return embedder
+
+    def test_batch_embedding_returns_one_vector_per_text(self) -> None:
+        """The batch path runs and preserves input order."""
+        embedder = self._embedder()
+        embedder._llm_client.embed_batch.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2], [0.3, 0.4]],
+        )
+
+        result = embedder._create_embeddings_batch_ollama(["first", "second"], 1)
+
+        assert result == [[0.1, 0.2], [0.3, 0.4]]
+
+    def test_batch_embedding_keeps_empty_texts_aligned(self) -> None:
+        """An empty input yields None in place, not a shifted vector."""
+        embedder = self._embedder()
+        embedder._llm_client.embed_batch.return_value = SimpleNamespace(
+            embeddings=[[0.1, 0.2]],
+        )
+
+        result = embedder._create_embeddings_batch_ollama(["", "second"], 1)
+
+        assert result == [None, [0.1, 0.2]]

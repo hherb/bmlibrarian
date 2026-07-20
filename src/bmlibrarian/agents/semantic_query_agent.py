@@ -45,6 +45,7 @@ from enum import Enum
 from typing import List, Optional, Callable, TYPE_CHECKING
 
 from ..llm import LLMClient, LLMMessage
+from .utils.query_syntax import strip_preamble
 
 if TYPE_CHECKING:
     from bmlibrarian.database import DatabaseManager
@@ -617,7 +618,11 @@ Respond with ONLY the new query, nothing else."""
 
             rephrased = (response.content or "").strip()
 
-            # Clean up the response
+            # Clean up the response. REPHRASING_MAX_TOKENS was raised from 50
+            # to 800 so reasoning models can think before answering; at 50 a
+            # preamble did not fit, at 800 it does, and the length check
+            # below is far too permissive to catch one.
+            rephrased = strip_preamble(rephrased)
             rephrased = rephrased.strip('"\'')
             if rephrased and len(rephrased) > 5:
                 return rephrased

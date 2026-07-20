@@ -1,16 +1,26 @@
 """
 Tests for the shared LLM helper behind the PaperChecker components.
 
-These tests deliberately patch ``bmlib.llm.client.LLMClient.chat`` — the
-outermost seam that is still below the abstraction under test — rather
-than substituting a component's ``client`` attribute with a ``Mock()``.
+These tests patch ``LLMClient.chat`` — a real method on a real client —
+rather than substituting a component's ``client`` attribute with a
+``Mock()``. Substituting the client stubs out exactly the layer being
+tested: PR #247 shipped a component calling a removed ollama API with all
+of its tests passing, because the fixture replaced the client wholesale
+and fed it response dicts in the old shape. Patching a named method keeps
+the signature honest, so the same drift would fail here.
 
-Substituting the client stubs out exactly the layer being tested. PR #247
-shipped a component calling a removed ollama API with all of its tests
-passing, because the fixture replaced the client wholesale and fed it
-response dicts in the old shape. Patching bmlib's client keeps
-bmlibrarian's LLMClient — model-string qualification, retry, fallback,
-usage tracking, response adaptation — inside the test.
+The seam is deliberately ``LLMClient.chat`` and not the lower
+``bmlib.llm.client.LLMClient.chat`` that :mod:`tests.llm_test_support`
+uses. What is under test in this module is the helper's own behaviour
+*above* the client — how many times it calls out, what it passes, and
+which failures it retries. Patching one layer lower would leave
+``LLMClient``'s transport retries inside the assertions, so a call count
+would measure the client's loop rather than the helper's.
+
+Tests that exercise a component end to end should use
+:func:`tests.llm_test_support.patch_llm` instead, which patches below
+``LLMClient`` and therefore keeps model-string qualification, retry,
+fallback and response adaptation live.
 """
 
 from unittest.mock import patch

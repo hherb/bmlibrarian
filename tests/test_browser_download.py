@@ -5,9 +5,10 @@ Quick test script for browser-based PDF downloader.
 Written as a runnable script, but pytest collects it because of the file
 and function names. Both functions drive a real Playwright browser
 against a live URL, so they are marked integration: unmarked, they hung
-the whole suite indefinitely (pytest has no per-test timeout configured,
-and the hang is inside a blocking selector call that cannot be
-interrupted).
+the whole suite indefinitely. The suite now sets a per-test timeout, but
+it does not rescue this case — the hang is inside a blocking selector
+call that a signal-based timeout cannot interrupt. The marker is what
+keeps them out of a default run.
 
 Run them deliberately with:  pytest tests/test_browser_download.py -m integration
 """
@@ -24,6 +25,14 @@ sys.path.insert(0, str(src_path))
 
 from bmlibrarian.utils.browser_downloader import download_pdf_with_browser
 
+# The suite-wide --timeout=120 bounds tests that stall. These drive a real
+# browser through navigation plus a Cloudflare wait, which the module's own
+# 60s selector timeout sits on top of, so 120s is too tight for the
+# documented "-m integration" run. Note the signal-based timeout cannot
+# interrupt a blocked browser call anyway; the marker keeps the ceiling
+# honest rather than pretending it enforces one.
+BROWSER_DOWNLOAD_TIMEOUT_SECONDS = 600
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(BROWSER_DOWNLOAD_TIMEOUT_SECONDS)
 def test_simple_pdf():
     """Test downloading a simple PDF (no Cloudflare)."""
     print("=" * 70)
@@ -76,6 +86,7 @@ def test_simple_pdf():
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(BROWSER_DOWNLOAD_TIMEOUT_SECONDS)
 def test_cloudflare_protected():
     """Test downloading from a Cloudflare-protected site."""
     print("=" * 70)

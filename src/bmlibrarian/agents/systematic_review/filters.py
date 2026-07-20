@@ -973,7 +973,7 @@ IMPORTANT:
                 max_tokens=LLM_MAX_TOKENS,
             )
 
-            response_text = response.content
+            response_text = response.content or ""
 
             # Parse response
             decision = self._parse_evaluation_response(response_text)

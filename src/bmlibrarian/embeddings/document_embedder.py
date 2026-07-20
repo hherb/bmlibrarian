@@ -17,11 +17,11 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
+from bmlibrarian.config import get_ollama_host
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.llm import LLMClient, list_ollama_models
 
 logger = logging.getLogger(__name__)
-
-from bmlibrarian.llm import LLMClient, list_ollama_models
 
 try:
     from tqdm import tqdm
@@ -48,7 +48,13 @@ class DocumentEmbedder:
         Args:
             model_name: Name of the Ollama embedding model to use
         """
-        self._llm_client = LLMClient(track_usage=False)
+        # Resolve the host explicitly rather than letting each side pick its
+        # own default: list_ollama_models() reads it from the bmlibrarian
+        # config, while an unconfigured LLMClient falls back to OLLAMA_HOST.
+        # Left implicit, verification and embedding can address different
+        # servers — the model is found on one and missing from the other.
+        self.host = get_ollama_host()
+        self._llm_client = LLMClient(track_usage=False, ollama_host=self.host)
         self.db_manager = get_db_manager()
         self.model_name = model_name
         self.embedding_dimension = None  # Will be determined from first embedding
@@ -79,13 +85,18 @@ class DocumentEmbedder:
 
         Raises:
             RuntimeError: If the configured model is not on the server
+            ConnectionError: If the server cannot be reached. Allowed to
+                propagate: an embedder that cannot reach its server has
+                nothing useful to do, and failing here names the cause
+                rather than leaving every later embed call to fail.
         """
-        available = list_ollama_models()
+        available = list_ollama_models(self.host)
 
         if not available:
             logger.warning(
-                "Could not list models to verify %s is available; "
+                "Server at %s reports no models, so %s could not be verified; "
                 "continuing, embedding calls will fail if it is missing.",
+                self.host,
                 self.model_name,
             )
             return
@@ -181,7 +192,11 @@ class DocumentEmbedder:
 
                 return embedding
             else:
-                logger.error(f"Unexpected response format from Ollama: {response}")
+                logger.error(
+                    "Model %s returned an empty embedding for a %d-character text",
+                    self.model_name,
+                    len(text),
+                )
                 return []
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")

@@ -5,6 +5,7 @@ import logging
 from typing import List, Optional, Callable
 
 from ...llm import LLMClient, LLMMessage
+from ..utils.query_syntax import strip_preamble
 from .data_types import QueryGenerationResult, MultiModelQueryResult
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,12 @@ class MultiModelQueryGenerator:
             Sanitized query string
         """
         query = query.strip()
+
+        # Drop any conversational lead-in. QUERY_GENERATION_MAX_TOKENS was
+        # raised from 100 to 800 so reasoning models can think before
+        # answering; that budget also leaves room for a preamble, which
+        # would otherwise be fed to to_tsquery as if it were the query.
+        query = strip_preamble(query)
 
         # Remove markdown code blocks (``` or ```sql, etc.)
         if query.startswith('```') and query.endswith('```'):

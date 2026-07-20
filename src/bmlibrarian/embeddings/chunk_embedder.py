@@ -36,9 +36,10 @@ from typing import List, Tuple, Optional, Callable, Literal
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
 
-logger = logging.getLogger(__name__)
-
+from ..config import get_ollama_host
 from ..llm import LLMClient
+
+logger = logging.getLogger(__name__)
 
 # Type alias for backend selection
 EmbeddingBackend = Literal["ollama", "ollama_http", "llama_cpp", "sentence_transformers"]
@@ -236,7 +237,12 @@ class ChunkEmbedder:
         self._http_embedder = None
 
         if backend == "ollama":
-            self._llm_client = LLMClient(track_usage=False)
+            # Explicit host: an unconfigured LLMClient reads OLLAMA_HOST,
+            # which need not agree with the bmlibrarian config the rest of
+            # the package uses.
+            self._llm_client = LLMClient(
+                track_usage=False, ollama_host=get_ollama_host(),
+            )
         elif backend == "ollama_http":
             self._init_ollama_http(model_name)
         elif backend == "sentence_transformers":
@@ -610,10 +616,6 @@ class ChunkEmbedder:
             List of embedding vectors (or None for failed texts).
         """
         import time
-
-        if ollama is None:
-            logger.error("Ollama library not available")
-            return [None] * len(texts)
 
         # Filter out empty texts and track their positions
         valid_texts = []

@@ -6,6 +6,50 @@ for CI. Fixing it made a large body of pre-existing test debt visible for
 the first time. This note records what each remaining failure is, so the
 next session does not have to re-derive it.
 
+## Second correction: what code review caught
+
+Review of the PR found two more migration defects that neither the
+per-area checks nor the full-suite run surfaced. Both were unbound
+names on code paths with no test coverage at all, so nothing executed
+them:
+
+1. **`chunk_embedder._create_embeddings_batch_ollama` raised
+   `NameError`.** The `try: import ollama` block was deleted and the
+   matching guard correctly removed from `_create_embedding_ollama`, but
+   the `if ollama is None:` in the batch path survived. It sits before
+   its own `try`, so it propagated uncaught — and `ollama` is the default
+   backend, so the whole semantic chunking pipeline (`chunk_worker.py`,
+   `rechunk_semantic_chunks.py`) died on its first batch. Invisible
+   because `tests/test_chunk_embedder.py` only exercised pure chunking
+   functions and never constructed a `ChunkEmbedder`.
+
+2. **`document_embedder` logged an undefined `response`.** The error
+   branch still interpolated the variable the migration had replaced, so
+   a genuinely empty embedding reported `name 'response' is not defined`
+   instead of its cause.
+
+**`ruff` had already flagged both, as `F821 Undefined name`.** They were
+buried in 1,745 pre-existing lint errors. That is the cheapest available
+lesson here: the tooling caught what the test suite structurally could
+not, and the signal was lost to noise. Worth a `ruff check --select F821`
+gate even while the wider backlog stands.
+
+Three further issues were filed rather than fixed, as out of scope:
+raw-HTTP call sites the AST guard cannot see (#250), pre-existing tests
+that hit a live database and cannot fail (#251), and `SemanticChunkProcessor`
+speaking the old ollama API while unreachable (#252).
+
+### A review finding that did not survive checking
+
+The review also reported that
+`test_transport_failure_is_not_retried_by_the_helper` was vacuous —
+that its `call_count == 1` assertion could not fail at the seam it
+patches. That was wrong. Mutating `call_llm` to retry transport errors
+fails the test, so it constrains real behaviour. Only the module
+docstring was inaccurate, describing a seam one layer below the one the
+file actually uses; it has been corrected. Recorded because a plausible
+review finding is still a hypothesis until it is executed.
+
 ## Correction
 
 The first version of this note claimed nothing here was caused by the
