@@ -38,14 +38,16 @@ from .data_types import (
     EmbeddingResponse,
     Provider,
 )
-from .model_resolver import parse_model_string
+from .model_resolver import parse_model_string, qualify_model_string
 from .token_tracker import get_token_tracker, TokenTracker
 from .constants import (
+    DEFAULT_ANTHROPIC_MAX_TOKENS,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     DEFAULT_MAX_RETRIES,
+    OLLAMA_UNLIMITED_MAX_TOKENS,
     DEFAULT_RETRY_DELAY,
 )
 
@@ -135,6 +137,33 @@ class LLMClient:
             duration_seconds=duration,
         )
 
+    @staticmethod
+    def _resolve_max_tokens(
+        max_tokens: Optional[int],
+        provider: Provider,
+    ) -> int:
+        """
+        Choose the generation ceiling to send to bmlib.
+
+        bmlib always forwards max_tokens to the provider, so omitting a limit
+        is not an option — a value must be chosen. Ollama accepts a sentinel
+        meaning "generate until the model stops", which preserves the previous
+        behaviour of leaving num_predict unset. Providers that require a
+        positive integer (Anthropic) fall back to the documented default.
+
+        Args:
+            max_tokens: Explicitly requested limit, or None
+            provider: Resolved provider for the request
+
+        Returns:
+            Token ceiling to pass to bmlib
+        """
+        if max_tokens is not None:
+            return max_tokens
+        if provider == Provider.OLLAMA:
+            return OLLAMA_UNLIMITED_MAX_TOKENS
+        return DEFAULT_ANTHROPIC_MAX_TOKENS
+
     def _record_usage(
         self,
         response: LLMResponse,
@@ -195,13 +224,53 @@ class LLMClient:
         if system_prompt:
             effective_messages.insert(0, LLMMessage(role="system", content=system_prompt))
 
+        return self._chat_with_fallback(
+            effective_messages, model, temperature, top_p, max_tokens,
+            json_mode, fallback_model, max_retries, retry_delay,
+            operation="chat",
+        )
+
+    def _chat_with_fallback(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+        json_mode: bool,
+        fallback_model: Optional[str],
+        max_retries: int,
+        retry_delay: float,
+        operation: str,
+    ) -> LLMResponse:
+        """
+        Execute a chat request with retries, then Ollama fallback.
+
+        Args:
+            messages: Chat messages, system prompt already prepended
+            model: Model string with optional provider prefix
+            temperature: Sampling temperature
+            top_p: Top-p sampling
+            max_tokens: Maximum tokens to generate
+            json_mode: Request JSON output
+            fallback_model: Model to use on failure (Ollama)
+            max_retries: Maximum retry attempts
+            retry_delay: Initial delay between retries
+            operation: Label recorded against token usage ("chat"/"generate")
+
+        Returns:
+            LLMResponse from the primary provider or the fallback
+
+        Raises:
+            ConnectionError: If both primary and fallback fail
+        """
         # Try primary provider with retries
         try:
             response = self._chat_with_retry(
-                effective_messages, model, temperature, top_p,
+                messages, model, temperature, top_p,
                 max_tokens, json_mode, max_retries, retry_delay,
             )
-            self._record_usage(response, "chat")
+            self._record_usage(response, operation)
             return response
 
         except Exception as e:
@@ -215,10 +284,10 @@ class LLMClient:
                 logger.info(f"Falling back to {fb_model_str}")
                 try:
                     response = self._chat_with_retry(
-                        effective_messages, fb_model_str, temperature, top_p,
+                        messages, fb_model_str, temperature, top_p,
                         max_tokens, json_mode, max_retries, retry_delay,
                     )
-                    self._record_usage(response, "chat")
+                    self._record_usage(response, operation)
                     return response
                 except Exception as fb_error:
                     logger.error(f"Fallback also failed: {fb_error}")
@@ -268,14 +337,21 @@ class LLMClient:
         if json_mode:
             kwargs["json_mode"] = True
 
+        # bmlib splits on the first colon without checking for a known provider
+        # prefix, so an Ollama tag like "gpt-oss:20b" must be qualified first.
+        qualified_model = qualify_model_string(model)
+        effective_max_tokens = self._resolve_max_tokens(
+            max_tokens, parse_model_string(model).provider,
+        )
+
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
                 bmlib_resp = self._bmlib.chat(
                     messages=messages,
-                    model=model,
+                    model=qualified_model,
                     temperature=temperature,
-                    max_tokens=max_tokens or 4096,
+                    max_tokens=effective_max_tokens,
                     **kwargs,
                 )
                 return self._adapt_response(bmlib_resp, model, start_time)
@@ -308,7 +384,9 @@ class LLMClient:
         """
         Send a text generation request.
 
-        Wraps the prompt as a single user message and delegates to chat().
+        Wraps the prompt as a single user message and shares chat()'s retry
+        and fallback path, but records usage against the "generate" operation
+        so cost reporting can distinguish the two.
 
         Args:
             prompt: Text prompt
@@ -328,16 +406,10 @@ class LLMClient:
             ConnectionError: If all providers fail
         """
         messages = [LLMMessage(role="user", content=prompt)]
-        return self.chat(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            fallback_model=fallback_model,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
+        return self._chat_with_fallback(
+            messages, model, temperature, top_p, max_tokens,
+            json_mode, fallback_model, max_retries, retry_delay,
+            operation="generate",
         )
 
     def embed(
@@ -358,8 +430,11 @@ class LLMClient:
         Returns:
             EmbeddingResponse with embedding vector
         """
-        # Always use Ollama for embeddings (consistency + free)
-        embed_model = f"ollama:{model}" if ":" not in model else model
+        # Always use Ollama for embeddings (consistency + free). The prefix is
+        # forced rather than merely added: embedding model names carry tags
+        # (e.g. "snowflake-arctic-embed2:latest") that bmlib would otherwise
+        # read as a provider name.
+        embed_model = f"{Provider.OLLAMA.value}:{parse_model_string(model).model_name}"
         bmlib_resp: BmlibEmbeddingResponse = self._bmlib.embed(text=text, model=embed_model)
 
         response = EmbeddingResponse(
@@ -423,11 +498,9 @@ class LLMClient:
             True if provider is available and connected
         """
         try:
-            result = self._bmlib.test_connection(provider_type.value)
-            if isinstance(result, bool):
-                return result
-            # bmlib returns tuple (bool, str) for single provider
-            return result[0] if isinstance(result, tuple) else bool(result)
+            # Given a provider name, bmlib's client returns a plain bool.
+            # (Its provider objects return (ok, message); its client does not.)
+            return self._bmlib.test_connection(provider_type.value)
         except Exception:
             return False
 

@@ -112,11 +112,9 @@ def is_provider_available(provider_type: Provider) -> bool:
     """
     try:
         provider = get_provider(provider_type)
-        result = provider.test_connection()
-        # bmlib returns (bool, str) tuple
-        if isinstance(result, tuple):
-            return result[0]
-        return bool(result)
+        # bmlib's BaseProvider.test_connection returns (ok, message)
+        connected, _message = provider.test_connection()
+        return connected
     except Exception as e:
         logger.debug(f"Provider {provider_type.value} not available: {e}")
         return False

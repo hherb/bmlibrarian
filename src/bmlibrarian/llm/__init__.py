@@ -61,6 +61,7 @@ from .data_types import (
 from .model_resolver import (
     parse_model_string,
     format_model_string,
+    qualify_model_string,
     is_provider_prefix,
     get_supported_providers,
 )
@@ -113,6 +114,7 @@ __all__ = [
     # Model resolver
     "parse_model_string",
     "format_model_string",
+    "qualify_model_string",
     "is_provider_prefix",
     "get_supported_providers",
     # Token tracking
