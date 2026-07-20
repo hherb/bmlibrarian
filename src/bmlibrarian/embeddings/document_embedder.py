@@ -17,15 +17,11 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
+from bmlibrarian.config import get_ollama_host
 from bmlibrarian.database import get_db_manager
+from bmlibrarian.llm import LLMClient, list_ollama_models
 
 logger = logging.getLogger(__name__)
-
-try:
-    import ollama
-except ImportError:
-    logger.warning("ollama not installed. Embedding generation will not be available.")
-    ollama = None
 
 try:
     from tqdm import tqdm
@@ -52,9 +48,13 @@ class DocumentEmbedder:
         Args:
             model_name: Name of the Ollama embedding model to use
         """
-        if not ollama:
-            raise ImportError("ollama package required for embedding generation. Install with: pip install ollama")
-
+        # Resolve the host explicitly rather than letting each side pick its
+        # own default: list_ollama_models() reads it from the bmlibrarian
+        # config, while an unconfigured LLMClient falls back to OLLAMA_HOST.
+        # Left implicit, verification and embedding can address different
+        # servers — the model is found on one and missing from the other.
+        self.host = get_ollama_host()
+        self._llm_client = LLMClient(track_usage=False, ollama_host=self.host)
         self.db_manager = get_db_manager()
         self.model_name = model_name
         self.embedding_dimension = None  # Will be determined from first embedding
@@ -74,18 +74,39 @@ class DocumentEmbedder:
         logger.info(f"DocumentEmbedder initialized with model: {model_name}")
 
     def _verify_model(self):
-        """Verify that the model is available in Ollama."""
-        try:
-            models = ollama.list()
-            model_names = [model['model'] for model in models.get('models', [])]
+        """
+        Verify that the embedding model is available on the server.
 
-            if self.model_name not in model_names:
-                logger.warning(f"Model {self.model_name} not found. Attempting to pull...")
-                ollama.pull(self.model_name)
-                logger.info(f"Successfully pulled model {self.model_name}")
-        except Exception as e:
-            logger.error(f"Error verifying model: {e}")
-            raise
+        Previously this auto-pulled a missing model. That relied on
+        ollama.pull(), which the LLM abstraction does not expose, and it
+        started a multi-gigabyte download as an implicit side effect of
+        constructing an embedder. A missing model is now reported with
+        the command to fix it.
+
+        Raises:
+            RuntimeError: If the configured model is not on the server
+            ConnectionError: If the server cannot be reached. Allowed to
+                propagate: an embedder that cannot reach its server has
+                nothing useful to do, and failing here names the cause
+                rather than leaving every later embed call to fail.
+        """
+        available = list_ollama_models(self.host)
+
+        if not available:
+            logger.warning(
+                "Server at %s reports no models, so %s could not be verified; "
+                "continuing, embedding calls will fail if it is missing.",
+                self.host,
+                self.model_name,
+            )
+            return
+
+        if self.model_name not in available:
+            raise RuntimeError(
+                f"Embedding model '{self.model_name}' is not available on the "
+                f"Ollama server. Install it with:\n\n"
+                f"    ollama pull {self.model_name}\n"
+            )
 
     def _register_model(self):
         """Register the model in the embedding_models table."""
@@ -158,10 +179,11 @@ class DocumentEmbedder:
             Vector embedding as a list of floats
         """
         try:
-            response = ollama.embeddings(model=self.model_name, prompt=text)
+            embedding = self._llm_client.embed(
+                text=text, model=self.model_name,
+            ).embedding
 
-            if 'embedding' in response:
-                embedding = response['embedding']
+            if embedding:
 
                 # Set embedding dimension from first embedding
                 if self.embedding_dimension is None:
@@ -170,7 +192,11 @@ class DocumentEmbedder:
 
                 return embedding
             else:
-                logger.error(f"Unexpected response format from Ollama: {response}")
+                logger.error(
+                    "Model %s returned an empty embedding for a %d-character text",
+                    self.model_name,
+                    len(text),
+                )
                 return []
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")

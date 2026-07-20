@@ -36,13 +36,10 @@ from typing import List, Tuple, Optional, Callable, Literal
 from bmlibrarian.database import get_db_manager
 from bmlibrarian.embeddings.adaptive_chunker_optimized import adaptive_chunker_with_positions
 
-logger = logging.getLogger(__name__)
+from ..config import get_ollama_host
+from ..llm import LLMClient
 
-try:
-    import ollama
-except ImportError:
-    logger.warning("ollama not installed. Ollama backend will not be available.")
-    ollama = None
+logger = logging.getLogger(__name__)
 
 # Type alias for backend selection
 EmbeddingBackend = Literal["ollama", "ollama_http", "llama_cpp", "sentence_transformers"]
@@ -240,11 +237,12 @@ class ChunkEmbedder:
         self._http_embedder = None
 
         if backend == "ollama":
-            if not ollama:
-                raise ImportError(
-                    "ollama package required for ollama backend. "
-                    "Install with: pip install ollama"
-                )
+            # Explicit host: an unconfigured LLMClient reads OLLAMA_HOST,
+            # which need not agree with the bmlibrarian config the rest of
+            # the package uses.
+            self._llm_client = LLMClient(
+                track_usage=False, ollama_host=get_ollama_host(),
+            )
         elif backend == "ollama_http":
             self._init_ollama_http(model_name)
         elif backend == "sentence_transformers":
@@ -485,14 +483,11 @@ class ChunkEmbedder:
         """
         import time
 
-        if ollama is None:
-            logger.error("Ollama library not available")
-            return None
-
         for attempt in range(max_retries):
             try:
-                response = ollama.embeddings(model=self.model_name, prompt=text)
-                embedding = response.get("embedding")
+                embedding = self._llm_client.embed(
+                    text=text, model=self.model_name,
+                ).embedding
 
                 if embedding:
                     if len(embedding) != EMBEDDING_DIMENSION:
@@ -502,7 +497,7 @@ class ChunkEmbedder:
                         )
                     return embedding
 
-                logger.error(f"No embedding in Ollama response: {response}")
+                logger.error("No embedding returned for text")
 
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -622,10 +617,6 @@ class ChunkEmbedder:
         """
         import time
 
-        if ollama is None:
-            logger.error("Ollama library not available")
-            return [None] * len(texts)
-
         # Filter out empty texts and track their positions
         valid_texts = []
         valid_indices = []
@@ -641,9 +632,9 @@ class ChunkEmbedder:
         # Retry loop for the batch
         for attempt in range(max_retries):
             try:
-                # Use the newer embed() API which supports batching
-                response = ollama.embed(model=self.model_name, input=valid_texts)
-                embeddings = response.get("embeddings", [])
+                embeddings = self._llm_client.embed_batch(
+                    texts=valid_texts, model=self.model_name,
+                ).embeddings
 
                 if len(embeddings) == len(valid_texts):
                     # Build result list with None for invalid texts

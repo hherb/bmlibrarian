@@ -32,6 +32,8 @@ from datetime import datetime
 from typing import Dict, List, Any
 from unittest.mock import MagicMock, patch
 
+from llm_test_support import llm_response
+
 from bmlibrarian.agents.systematic_review import (
     # Enums
     StudyTypeFilter,
@@ -778,7 +780,7 @@ class TestInclusionEvaluator:
         assert "Human studies" in evaluator._system_prompt
         assert "Animal studies" in evaluator._system_prompt
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluate_returns_included(
         self,
         mock_chat: MagicMock,
@@ -786,9 +788,8 @@ class TestInclusionEvaluator:
         sample_paper: PaperData,
     ) -> None:
         """Test evaluation returns INCLUDED decision."""
-        mock_chat.return_value = {
-            "message": {
-                "content": json.dumps({
+        mock_chat.return_value = llm_response(
+                json.dumps({
                     "decision": "INCLUDE",
                     "confidence": 0.95,
                     "inclusion_criteria_met": ["Human studies", "Statin intervention"],
@@ -796,8 +797,7 @@ class TestInclusionEvaluator:
                     "exclusion_criteria_matched": [],
                     "rationale": "Paper meets all inclusion criteria",
                 })
-            }
-        }
+            )
 
         evaluator = InclusionEvaluator(sample_criteria)
         decision = evaluator.evaluate(sample_paper)
@@ -806,7 +806,7 @@ class TestInclusionEvaluator:
         assert decision.confidence == 0.95
         assert len(decision.criteria_matched) == 2
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluate_returns_excluded(
         self,
         mock_chat: MagicMock,
@@ -814,9 +814,8 @@ class TestInclusionEvaluator:
         animal_study_paper: PaperData,
     ) -> None:
         """Test evaluation returns EXCLUDED decision."""
-        mock_chat.return_value = {
-            "message": {
-                "content": json.dumps({
+        mock_chat.return_value = llm_response(
+                json.dumps({
                     "decision": "EXCLUDE",
                     "confidence": 0.9,
                     "inclusion_criteria_met": [],
@@ -824,8 +823,7 @@ class TestInclusionEvaluator:
                     "exclusion_criteria_matched": ["Animal studies"],
                     "rationale": "This is an animal study",
                 })
-            }
-        }
+            )
 
         evaluator = InclusionEvaluator(sample_criteria)
         decision = evaluator.evaluate(animal_study_paper)
@@ -833,7 +831,7 @@ class TestInclusionEvaluator:
         assert decision.status == InclusionStatus.EXCLUDED
         assert "Animal studies" in decision.exclusion_matched
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluate_returns_uncertain(
         self,
         mock_chat: MagicMock,
@@ -841,9 +839,8 @@ class TestInclusionEvaluator:
         sample_paper: PaperData,
     ) -> None:
         """Test evaluation returns UNCERTAIN decision."""
-        mock_chat.return_value = {
-            "message": {
-                "content": json.dumps({
+        mock_chat.return_value = llm_response(
+                json.dumps({
                     "decision": "UNCERTAIN",
                     "confidence": 0.4,
                     "inclusion_criteria_met": ["Statin intervention"],
@@ -851,8 +848,7 @@ class TestInclusionEvaluator:
                     "exclusion_criteria_matched": [],
                     "rationale": "Unclear if study is human-only",
                 })
-            }
-        }
+            )
 
         evaluator = InclusionEvaluator(sample_criteria)
         decision = evaluator.evaluate(sample_paper)
@@ -860,7 +856,7 @@ class TestInclusionEvaluator:
         assert decision.status == InclusionStatus.UNCERTAIN
         assert decision.confidence == 0.4
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluate_handles_error(
         self,
         mock_chat: MagicMock,
@@ -877,7 +873,7 @@ class TestInclusionEvaluator:
         assert decision.confidence == 0.0
         assert "error" in decision.rationale.lower() or "unable" in decision.rationale.lower()
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluate_batch(
         self,
         mock_chat: MagicMock,
@@ -885,9 +881,8 @@ class TestInclusionEvaluator:
         sample_papers: List[PaperData],
     ) -> None:
         """Test batch evaluation."""
-        mock_chat.return_value = {
-            "message": {
-                "content": json.dumps({
+        mock_chat.return_value = llm_response(
+                json.dumps({
                     "decision": "INCLUDE",
                     "confidence": 0.8,
                     "inclusion_criteria_met": ["All"],
@@ -895,8 +890,7 @@ class TestInclusionEvaluator:
                     "exclusion_criteria_matched": [],
                     "rationale": "Meets criteria",
                 })
-            }
-        }
+            )
 
         evaluator = InclusionEvaluator(sample_criteria)
         results = evaluator.evaluate_batch(sample_papers[:2])
@@ -904,7 +898,7 @@ class TestInclusionEvaluator:
         assert len(results) == 2
         assert all(isinstance(r[1], InclusionDecision) for r in results)
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_evaluation_statistics(
         self,
         mock_chat: MagicMock,
@@ -923,17 +917,15 @@ class TestInclusionEvaluator:
         def side_effect(*args: Any, **kwargs: Any) -> Dict[str, Any]:
             result = responses[call_count[0] % 2]
             call_count[0] += 1
-            return {
-                "message": {
-                    "content": json.dumps({
+            return llm_response(
+                    json.dumps({
                         **result,
                         "inclusion_criteria_met": [],
                         "inclusion_criteria_failed": [],
                         "exclusion_criteria_matched": [],
                         "rationale": "Test",
                     })
-                }
-            }
+                )
 
         mock_chat.side_effect = side_effect
 
@@ -1646,7 +1638,7 @@ class TestFilterEdgeCases:
             result = compiled_pattern.search("test text")
             assert result is None or result is not None  # Just verify no crash
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_llm_timeout_handling(
         self,
         mock_chat: MagicMock,
@@ -1684,18 +1676,16 @@ class TestFilterEdgeCases:
         assert decision.confidence == 0.0
         assert "error" in decision.rationale.lower() or "unable" in decision.rationale.lower()
 
-    @patch("bmlibrarian.agents.systematic_review.filters.ollama.chat")
+    @patch("bmlib.llm.client.LLMClient.chat")
     def test_llm_malformed_json_response(
         self,
         mock_chat: MagicMock,
     ) -> None:
         """Test handling of malformed JSON responses from LLM."""
         # Return invalid JSON
-        mock_chat.return_value = {
-            "message": {
-                "content": "This is not valid JSON at all!"
-            }
-        }
+        mock_chat.return_value = llm_response(
+                "This is not valid JSON at all!"
+            )
 
         criteria = SearchCriteria(
             research_question="Test",

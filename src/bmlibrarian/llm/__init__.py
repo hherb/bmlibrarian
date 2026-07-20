@@ -53,6 +53,7 @@ from .data_types import (
     ModelSpec,
     LLMResponse,
     EmbeddingResponse,
+    BatchEmbeddingResponse,
     GenerationParams,
     ProviderConfig,
 )
@@ -109,6 +110,7 @@ __all__ = [
     "LLMMessage",
     "LLMResponse",
     "EmbeddingResponse",
+    "BatchEmbeddingResponse",
     "GenerationParams",
     "ProviderConfig",
     # Model resolver

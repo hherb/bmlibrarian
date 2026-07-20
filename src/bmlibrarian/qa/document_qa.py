@@ -28,7 +28,7 @@ import concurrent.futures
 from pathlib import Path
 from typing import Optional, List, Tuple, TYPE_CHECKING
 
-import ollama
+from bmlibrarian.llm import LLMClient, LLMMessage
 
 if TYPE_CHECKING:
     from bmlibrarian.database import DatabaseManager
@@ -655,56 +655,66 @@ Question: {question}
 
 Please answer the question based on the context provided."""
 
+    client = LLMClient(ollama_host=host)
+    messages = [LLMMessage(role="user", content=user_prompt)]
+
+    def _chat(think: Optional[bool], max_retries: Optional[int] = None):
+        """
+        Send the request, optionally asking for a reasoning trace.
+
+        Args:
+            think: Passed through as the think option, or None to omit it
+            max_retries: Override the client's retry count, or None for
+                its default
+
+        Returns:
+            LLMResponse from the provider
+        """
+        kwargs = {} if max_retries is None else {"max_retries": max_retries}
+        return client.chat(
+            messages=messages,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            think=think,
+            **kwargs,
+        )
+
     try:
-        client = ollama.Client(host=host)
-
-        # Check if model supports thinking
-        # DeepSeek-R1 and similar models support the think parameter
-        thinking_models = ["deepseek-r1", "qwen", "qwq"]
-        model_supports_thinking = any(tm in model.lower() for tm in thinking_models)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        # Use think parameter if supported
-        if use_thinking and model_supports_thinking:
-            response = client.chat(
-                model=model,
-                messages=messages,
-                options={"temperature": temperature},
-                think=True,
-            )
-
-            content = response["message"]["content"]
-            # Check for thinking field in response
-            thinking = response["message"].get("thinking")
-
-            if thinking:
-                return content.strip(), thinking.strip(), None
-
-            # Fallback: extract from content if not in separate field
-            answer, extracted_thinking = _extract_thinking(content)
-            return answer, extracted_thinking, None
-
+        if not use_thinking:
+            response = _chat(think=None)
         else:
-            # Standard chat without thinking
-            response = client.chat(
-                model=model,
-                messages=messages,
-                options={"temperature": temperature},
-            )
+            # Whether a model accepts think is the provider's business, not
+            # something inferable from its name — the previous substring
+            # allowlist ("deepseek-r1", "qwen", "qwq") both missed thinking
+            # models and would have mislabelled others. So ask, and fall
+            # back to a plain request if the attempt fails for any reason.
+            #
+            # The speculative attempt does not retry: a provider's refusal
+            # ("does not support thinking") is deterministic, so retrying it
+            # only spends the backoff before arriving at the same answer.
+            # The fallback below keeps the client's normal retries, so a
+            # genuinely transient failure is still handled — just without a
+            # reasoning trace.
+            try:
+                response = _chat(think=True, max_retries=1)
+            except Exception as e:
+                logger.debug(
+                    f"Thinking request to {model} failed ({e}); "
+                    f"retrying without a reasoning trace"
+                )
+                response = _chat(think=None)
 
-            content = response["message"]["content"]
-            # Still try to extract thinking blocks if present
-            answer, extracted_thinking = _extract_thinking(content)
-            return answer, extracted_thinking, None
+        content = response.content or ""
 
-    except ollama.ResponseError as e:
-        error_msg = f"Ollama error: {e}"
-        logger.error(error_msg)
-        return "", None, error_msg
+        # A thinking-enabled request is not guaranteed to return a trace,
+        # and some models inline it in the content instead.
+        if response.thinking:
+            return content.strip(), response.thinking.strip(), None
+
+        answer, extracted_thinking = _extract_thinking(content)
+        return answer, extracted_thinking, None
+
     except Exception as e:
         error_msg = f"LLM generation error: {e}"
         logger.error(error_msg)

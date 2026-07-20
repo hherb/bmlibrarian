@@ -7,15 +7,18 @@ that import ``ollama`` directly bypass provider selection, fallback,
 retries and token accounting — an ``anthropic:`` model configured by the
 user silently does not apply to them.
 
-A number of modules predate the abstraction and still import ollama
-directly. Migrating them is tracked separately; these tests exist so the
-count can only go down:
+The migration of the modules that predated the abstraction is complete:
+the allowlist below is empty, and nothing under ``src/bmlibrarian/``
+outside the LLM layer imports ollama. These tests keep it that way:
 
-- ``test_no_new_direct_ollama_imports`` fails when a module outside the
-  allowlist starts importing ollama, so the debt cannot grow.
-- ``test_allowlist_contains_no_stale_entries`` fails when an allowlisted
-  module stops importing ollama, forcing the entry to be deleted as part
-  of the migration rather than left to rot.
+- ``test_no_new_direct_ollama_imports`` fails when any module starts
+  importing ollama, so the debt cannot come back.
+- ``test_allowlist_contains_no_stale_entries`` is now vacuous, and stays
+  only so that a temporary entry, should one ever be justified, must be
+  removed again once its module is migrated rather than left to rot.
+
+Scope note: this covers the package only. Standalone tooling under
+``scripts/`` is not part of the shipped library and is not scanned.
 
 Imports are detected by parsing the AST, not by grepping, so ``import
 ollama`` appearing inside a docstring example is correctly ignored.
@@ -32,40 +35,15 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "src" / "bmlibrarian"
 # The LLM abstraction itself is the one place allowed to talk to ollama.
 LLM_LAYER = "llm"
 
-# Modules that still import ollama directly, pending migration.
-# This list may only shrink. Do not add to it — route new code through
-# bmlibrarian.llm.LLMClient or the BaseAgent helpers instead.
-KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
-    "agents/paper_weight/agent.py",
-    "agents/query_generation/generator.py",
-    "agents/semantic_query_agent.py",
-    "agents/systematic_review/executor.py",
-    "agents/systematic_review/filters.py",
-    "agents/systematic_review/planner.py",
-    "agents/systematic_review/synthesizer.py",
-    "embeddings/chunk_embedder.py",
-    "embeddings/document_embedder.py",
-    "gui/flet/config_app.py",
-    "gui/flet/settings_tab.py",
-    "gui/flet/tabs/agent_tab.py",
-    "gui/flet/tabs/document_interrogation_tab.py",
-    "gui/flet/tabs/search_tab.py",
-    "gui/qt/plugins/document_interrogation/document_interrogation_tab.py",
-    "gui/qt/plugins/query_lab/query_lab_tab.py",
-    "gui/qt/tabs/agent_tab.py",
-    "importers/pdf_matcher.py",
-    "lab/paper_checker_lab/tabs/input_tab.py",
-    "lab/paper_reviewer_lab/tabs/input_panel.py",
-    "lab/pico_lab.py",
-    "lab/query_lab.py",
-    "lab/transparency_lab.py",
-    "paperchecker/components.py",
-    "paperchecker/components/counter_statement_generator.py",
-    "paperchecker/components/hyde_generator.py",
-    "paperchecker/components/statement_extractor.py",
-    "paperchecker/components/verdict_analyzer.py",
-    "qa/document_qa.py",
-})
+# Deliberately empty: every module has been migrated onto the LLM layer.
+#
+# Do not add to it. Route model calls through bmlibrarian.llm.LLMClient or
+# the BaseAgent helpers (_make_llm_request / _generate_from_prompt /
+# _generate_embedding), and list models with bmlibrarian.llm.list_ollama_models.
+# Importing ollama directly bypasses provider selection, fallback, retries
+# and token accounting — a configured anthropic: model silently would not
+# apply, which is the failure this guard exists to prevent.
+KNOWN_DIRECT_OLLAMA_MODULES: frozenset[str] = frozenset()
 
 
 def _imports_ollama(source: str) -> bool:

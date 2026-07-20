@@ -8,7 +8,8 @@ validation, and other common agent operations.
 from .query_syntax import (
     fix_tsquery_syntax,
     simplify_query_for_retry,
-    extract_keywords_from_question
+    extract_keywords_from_question,
+    strip_preamble
 )
 from .citation_validation import (
     validate_citation_supports_counterfactual,
@@ -20,6 +21,7 @@ __all__ = [
     'fix_tsquery_syntax',
     'simplify_query_for_retry',
     'extract_keywords_from_question',
+    'strip_preamble',
     'validate_citation_supports_counterfactual',
     'assess_counter_evidence_strength',
     'search_with_retry'

@@ -16,6 +16,9 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from typing import List, Dict, Any
 
+from bmlib.llm import LLMResponse as BmlibLLMResponse
+from llm_test_support import llm_response
+
 from bmlibrarian.agents.systematic_review import (
     # Main agent (Phase 1)
     SystematicReviewAgent,
@@ -132,24 +135,21 @@ def mock_paper_database() -> List[Dict[str, Any]]:
 
 
 @pytest.fixture
-def mock_pico_response() -> Dict[str, Any]:
+def mock_pico_response() -> BmlibLLMResponse:
     """Create mock PICO extraction response."""
-    return {
-        "response": json.dumps({
-            "is_clinical": True,
-            "population": "Adults with pre-diabetes or impaired glucose tolerance",
-            "intervention": "Metformin therapy",
-            "comparison": "Lifestyle intervention (diet and exercise)",
-            "outcome": "Type 2 diabetes incidence and prevention",
-        })
-    }
+    return llm_response(json.dumps({
+        "is_clinical": True,
+        "population": "Adults with pre-diabetes or impaired glucose tolerance",
+        "intervention": "Metformin therapy",
+        "comparison": "Lifestyle intervention (diet and exercise)",
+        "outcome": "Type 2 diabetes incidence and prevention",
+    }))
 
 
 @pytest.fixture
-def mock_query_variations_response() -> Dict[str, Any]:
+def mock_query_variations_response() -> BmlibLLMResponse:
     """Create mock query variations response."""
-    return {
-        "response": json.dumps([
+    return llm_response(json.dumps([
             {
                 "query_text": "metformin diabetes prevention efficacy pre-diabetic",
                 "query_type": "semantic",
@@ -162,8 +162,7 @@ def mock_query_variations_response() -> Dict[str, Any]:
                 "purpose": "Comparator focus",
                 "expected_coverage": "Lifestyle intervention studies"
             },
-        ])
-    }
+        ]))
 
 
 # =============================================================================
@@ -173,7 +172,7 @@ def mock_query_variations_response() -> Dict[str, Any]:
 class TestPlannerExecutorIntegration:
     """Tests for Planner and SearchExecutor integration."""
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_clinical_question_pico_extraction(
         self,
         mock_generate: MagicMock,
@@ -192,7 +191,7 @@ class TestPlannerExecutorIntegration:
         assert "lifestyle" in pico.comparison.lower()
         assert "diabetes" in pico.outcome.lower()
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_search_plan_query_diversity(
         self,
         mock_generate: MagicMock,
@@ -340,7 +339,7 @@ class TestPlannerExecutorIntegration:
 class TestEndToEndWorkflow:
     """End-to-end workflow tests with mocked dependencies."""
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     @patch('bmlibrarian.database.fetch_documents_by_ids')
     @patch('bmlibrarian.database.search_with_semantic')
     def test_complete_search_workflow(
@@ -381,7 +380,7 @@ class TestEndToEndWorkflow:
             assert query_result.planned_query.query_id
             assert query_result.execution_time_seconds >= 0
 
-    @patch('bmlibrarian.agents.systematic_review.planner.ollama.generate')
+    @patch('bmlib.llm.client.LLMClient.chat')
     def test_workflow_with_documenter(
         self,
         mock_llm: MagicMock,
@@ -429,8 +428,8 @@ class TestEndToEndWorkflow:
         def callback(event: str, data: str) -> None:
             events.append((event, data))
 
-        with patch('bmlibrarian.agents.systematic_review.planner.ollama.generate') as mock:
-            mock.return_value = {"response": "{}"}
+        with patch('bmlib.llm.client.LLMClient.chat') as mock:
+            mock.return_value = llm_response("{}")
 
             planner = Planner(callback=callback)
             plan = planner.generate_search_plan(
@@ -456,8 +455,8 @@ class TestDataFlow:
         self, clinical_criteria: SearchCriteria
     ) -> None:
         """Test data flow from SearchCriteria to SearchPlan."""
-        with patch('bmlibrarian.agents.systematic_review.planner.ollama.generate') as mock:
-            mock.return_value = {"response": "{}"}
+        with patch('bmlib.llm.client.LLMClient.chat') as mock:
+            mock.return_value = llm_response("{}")
 
             planner = Planner()
             plan = planner.generate_search_plan(
@@ -578,7 +577,7 @@ class TestErrorHandling:
         self, basic_criteria: SearchCriteria
     ) -> None:
         """Test that Planner gracefully handles LLM failures."""
-        with patch('bmlibrarian.agents.systematic_review.planner.ollama.generate') as mock:
+        with patch('bmlib.llm.client.LLMClient.chat') as mock:
             mock.side_effect = Exception("LLM connection failed")
 
             planner = Planner()

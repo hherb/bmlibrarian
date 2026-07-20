@@ -8,10 +8,11 @@ optionally run against a real Ollama server.
 
 import json
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
-import ollama
+from llm_test_support import patch_llm
 
+from bmlibrarian.llm import LLMClient
 from bmlibrarian.paperchecker.components import StatementExtractor
 from bmlibrarian.paperchecker.data_models import Statement, VALID_STATEMENT_TYPES
 
@@ -484,20 +485,17 @@ class TestConnectionTesting:
 
     def test_connection_success(self, extractor):
         """Test successful connection check."""
-        mock_client = MagicMock()
-        mock_client.list.return_value = {"models": []}
-        extractor.client = mock_client
+        with patch.object(LLMClient, "test_provider", return_value=True) as probe:
+            assert extractor.test_connection() is True
 
-        assert extractor.test_connection() is True
-        mock_client.list.assert_called_once()
+        probe.assert_called_once()
 
     def test_connection_failure(self, extractor):
         """Test failed connection check."""
-        mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
-        extractor.client = mock_client
-
-        assert extractor.test_connection() is False
+        with patch.object(
+            LLMClient, "test_provider", side_effect=Exception("Connection refused")
+        ):
+            assert extractor.test_connection() is False
 
 
 # Unit Tests - Error Handling
@@ -526,51 +524,54 @@ class TestErrorHandling:
             with pytest.raises(RuntimeError, match="connect"):
                 extractor.extract(sample_abstract)
 
-    def test_llm_ollama_response_error(self, extractor, sample_abstract):
-        """Test handling of Ollama ResponseError."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = ollama.ResponseError("Model not found")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to get response"):
-            extractor.extract(sample_abstract)
+    def test_llm_provider_error_surfaces(self, extractor, sample_abstract):
+        """A provider-side error is reported as a RuntimeError."""
+        with patch_llm(side_effect=RuntimeError("Model not found")):
+            with pytest.raises(RuntimeError, match="Model not found"):
+                extractor.extract(sample_abstract)
 
     def test_llm_connection_error_actual(self, extractor, sample_abstract):
-        """Test actual connection error handling in _call_llm."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("Connection refused")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to connect"):
-            extractor.extract(sample_abstract)
+        """A transport failure is reported as a RuntimeError."""
+        with patch_llm(side_effect=ConnectionError("Connection refused")):
+            with pytest.raises(RuntimeError, match="Connection refused"):
+                extractor.extract(sample_abstract)
 
     def test_llm_empty_response_retries(self, extractor, sample_abstract):
         """Test that empty responses trigger retries."""
-        mock_client = MagicMock()
-        # Return empty response all 3 times (max_retries=3)
-        mock_client.chat.return_value = {"message": {"content": ""}}
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="Failed to get response"):
-            extractor.extract(sample_abstract)
+        # Driven through the public entry point rather than _call_llm, so
+        # the retry-exhaustion path a caller actually reaches is covered.
+        with patch_llm("") as mock_chat:
+            with pytest.raises(RuntimeError, match="Failed to get response"):
+                extractor.extract(sample_abstract)
 
         # Should have been called 3 times (initial + 2 retries)
-        assert mock_client.chat.call_count == 3
+        assert mock_chat.call_count == 3
 
     def test_llm_generic_error(self, extractor, sample_abstract):
         """Test handling of generic unexpected errors."""
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = Exception("Unexpected error occurred")
-        extractor.client = mock_client
-
-        with pytest.raises(RuntimeError, match="LLM call failed"):
-            extractor.extract(sample_abstract)
+        # Patched at the provider boundary rather than by replacing
+        # extractor.client: substituting the client stubs out the very
+        # layer under test, which is how PR #247 shipped a component
+        # calling a removed ollama API with its tests green.
+        with patch_llm(side_effect=Exception("Unexpected error occurred")):
+            with pytest.raises(RuntimeError, match="LLM call failed"):
+                extractor.extract(sample_abstract)
 
 
 # Integration Tests - These require a running Ollama server
 
 
+# The suite-wide --timeout=120 exists to bound tests that stall on an
+# unreachable database or a live browser. These make real generation calls
+# — test_extraction_deterministic makes two, serially — which legitimately
+# run tens of seconds and scale with the model and how loaded the server
+# is. They get their own ceiling so a slow server is not misreported as a
+# hang.
+LIVE_GENERATION_TIMEOUT_SECONDS = 600
+
+
 @pytest.mark.integration
+@pytest.mark.timeout(LIVE_GENERATION_TIMEOUT_SECONDS)
 class TestIntegration:
     """Integration tests requiring a running Ollama server."""
 

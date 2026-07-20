@@ -26,6 +26,23 @@ from bmlibrarian.gui.qt.plugins.prisma2020_lab.constants import (
 from bmlibrarian.agents.prisma2020_agent import PRISMA2020Assessment
 
 
+@pytest.fixture(autouse=True)
+def no_modal_dialogs():
+    """
+    Stop QMessageBox from blocking the run.
+
+    A modal dialog waits for a click that never comes in a test, and the
+    wait happens inside Qt's event loop where pytest-timeout's signal
+    method cannot interrupt it — the suite hangs with no output rather
+    than failing. Widgets under test here call QMessageBox.warning on
+    their error paths, so every dialog is stubbed for this module.
+    """
+    prefix = "bmlibrarian.gui.qt.plugins.prisma2020_lab.prisma2020_lab_tab.QMessageBox"
+    with patch(f"{prefix}.warning"), patch(f"{prefix}.critical"), \
+            patch(f"{prefix}.information"), patch(f"{prefix}.question"):
+        yield
+
+
 @pytest.fixture(scope="module")
 def qapp():
     """Create QApplication instance for testing."""

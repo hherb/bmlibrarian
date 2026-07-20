@@ -601,16 +601,13 @@ class DocumentInterrogationTab:
     def _refresh_models(self, e):
         """Refresh the list of available Ollama models."""
         try:
-            import ollama
+            from bmlibrarian.llm import list_ollama_models
 
             # Get Ollama config from app
             ollama_config = self.app.config.get_ollama_config()
             host = ollama_config.get('host', 'http://localhost:11434')
 
-            # Create client and fetch models
-            client = ollama.Client(host=host)
-            models_response = client.list()
-            models = [model.model for model in models_response.models]
+            models = list_ollama_models(host)
 
             # Update dropdown options
             self.model_dropdown.options = [

@@ -16,6 +16,8 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Dict, Any
 
+from llm_test_support import patch_llm
+
 from bmlibrarian.paperchecker import (
     PaperCheckerAgent,
     PaperCheckDB,
@@ -84,15 +86,11 @@ def mock_db():
     return db
 
 
-@pytest.fixture
-def mock_ollama_client():
-    """Create mock Ollama client for testing."""
-    client = MagicMock()
-    client.list.return_value = MagicMock(models=[
-        MagicMock(model="test-model:latest"),
-        MagicMock(model="gpt-oss:20b"),
-    ])
-    return client
+# The mock_ollama_client fixture was removed with the migration onto the
+# LLM abstraction: it described ollama's own client (.list() returning
+# objects with a .model attribute), which nothing under test constructs
+# any more. To stub model communication, use
+# tests.llm_test_support.patch_llm.
 
 
 # ==================== INITIALIZATION TESTS ====================
@@ -108,10 +106,8 @@ class TestPaperCheckerAgentInit:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_init_with_default_config(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -152,10 +148,8 @@ class TestPaperCheckerAgentInit:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_init_with_custom_db(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -190,10 +184,8 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_filter_agent_params(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -234,10 +226,8 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_max_statements_property(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -268,10 +258,8 @@ class TestPaperCheckerAgentConfiguration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_search_config_property(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -314,10 +302,8 @@ class TestPaperCheckerAgentConnection:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_connection_all_pass(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -347,12 +333,6 @@ class TestPaperCheckerAgentConnection:
         mock_citation_instance.test_connection.return_value = True
         mock_citation.return_value = mock_citation_instance
 
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.list.return_value = MagicMock(
-            models=[MagicMock(model="gpt-oss:20b")]
-        )
-        mock_ollama.return_value = mock_ollama_instance
-
         agent = PaperCheckerAgent(show_model_info=False)
 
         assert agent.test_connection() is True
@@ -365,10 +345,8 @@ class TestPaperCheckerAgentConnection:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_connection_db_failure(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -390,12 +368,6 @@ class TestPaperCheckerAgentConnection:
         mock_db_instance.test_connection.return_value = False  # DB fails
         mock_db.return_value = mock_db_instance
 
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.list.return_value = MagicMock(
-            models=[MagicMock(model="gpt-oss:20b")]
-        )
-        mock_ollama.return_value = mock_ollama_instance
-
         agent = PaperCheckerAgent(show_model_info=False)
 
         assert agent.test_connection() is False
@@ -414,10 +386,8 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_check_abstract_empty_raises_error(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -452,10 +422,8 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_check_abstract_none_raises_error(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -487,10 +455,8 @@ class TestPaperCheckerAgentAPI:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_get_agent_type(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -527,10 +493,8 @@ class TestPaperCheckerAgentProgress:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_progress_callback_invoked(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -568,10 +532,8 @@ class TestPaperCheckerAgentProgress:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_progress_callback_none_no_error(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -609,10 +571,8 @@ class TestPaperCheckerComponentInit:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_components_initialized(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -660,10 +620,8 @@ class TestPaperCheckerBatchProcessing:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_batch_empty_list(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -743,10 +701,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_build_scoring_question(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -788,10 +744,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_get_score_explanation_with_title(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -839,10 +793,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_get_score_explanation_long_title_truncated(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -892,10 +844,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_fetch_documents_empty_list(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -931,10 +881,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_score_documents_empty_search_results(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -981,10 +929,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_score_documents_filters_below_threshold(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -1062,10 +1008,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_score_documents_sorted_descending(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -1141,10 +1085,8 @@ class TestPaperCheckerDocumentScoring:
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
     @patch('bmlibrarian.paperchecker.agent.get_db_manager')
-    @patch('ollama.Client')
     def test_score_documents_preserves_provenance(
         self,
-        mock_ollama,
         mock_db_manager,
         mock_search_coord,
         mock_citation,
@@ -1312,10 +1254,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_build_report_prompt(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1363,10 +1303,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_parse_report_response_clean(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1399,10 +1337,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_parse_report_response_with_prefix(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1436,10 +1372,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_parse_report_response_with_code_blocks(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1474,10 +1408,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_parse_report_response_too_short_raises(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1509,10 +1441,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_generate_empty_report(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1554,10 +1484,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_calculate_search_stats(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1604,10 +1532,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_generate_counter_report_with_citations(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1630,30 +1556,23 @@ class TestPaperCheckerCounterReportGeneration:
         mock_db_instance.get_connection.return_value = MagicMock()
         mock_db.return_value = mock_db_instance
 
-        # Mock the ollama client's generate method
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.generate.return_value = {
-            "response": "Evidence from multiple studies supports the efficacy of GLP-1 agonists. "
-                       "In a 2023 study, Smith et al. demonstrated superior HbA1c reduction [1]. "
-                       "Furthermore, a meta-analysis by Jones et al. in 2022 showed improved "
-                       "cardiovascular outcomes [2]. These findings suggest GLP-1 agonists "
-                       "may be preferable for certain patient populations.",
-            "prompt_eval_count": 100,
-            "eval_count": 50,
-            "eval_duration": 1000000000,
-            "prompt_eval_duration": 500000000
-        }
-        mock_ollama.return_value = mock_ollama_instance
+        llm_content = (
+            "Evidence from multiple studies supports the efficacy of GLP-1 agonists. "
+            "In a 2023 study, Smith et al. demonstrated superior HbA1c reduction [1]. "
+            "Furthermore, a meta-analysis by Jones et al. in 2022 showed improved "
+            "cardiovascular outcomes [2]. These findings suggest GLP-1 agonists "
+            "may be preferable for certain patient populations."
+        )
 
         agent = PaperCheckerAgent(show_model_info=False)
-        agent.client = mock_ollama_instance
 
-        report = agent._generate_counter_report(
-            sample_counter_statement,
-            sample_citations,
-            sample_search_results,
-            sample_scored_docs
-        )
+        with patch_llm(llm_content):
+            report = agent._generate_counter_report(
+                sample_counter_statement,
+                sample_citations,
+                sample_search_results,
+                sample_scored_docs
+            )
 
         # Verify report structure
         assert isinstance(report, CounterReport)
@@ -1679,10 +1598,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_generate_counter_report_empty_citations(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1728,10 +1645,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_counter_report_to_markdown(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1754,26 +1669,20 @@ class TestPaperCheckerCounterReportGeneration:
         mock_db_instance.get_connection.return_value = MagicMock()
         mock_db.return_value = mock_db_instance
 
-        # Mock ollama client
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.generate.return_value = {
-            "response": "Multiple studies support GLP-1 efficacy [1][2]. Evidence shows superior outcomes.",
-            "prompt_eval_count": 100,
-            "eval_count": 50,
-            "eval_duration": 1000000000,
-            "prompt_eval_duration": 500000000
-        }
-        mock_ollama.return_value = mock_ollama_instance
+        llm_content = (
+            "Multiple studies support GLP-1 efficacy [1][2]. "
+            "Evidence shows superior outcomes."
+        )
 
         agent = PaperCheckerAgent(show_model_info=False)
-        agent.client = mock_ollama_instance
 
-        report = agent._generate_counter_report(
-            sample_counter_statement,
-            sample_citations,
-            sample_search_results,
-            sample_scored_docs
-        )
+        with patch_llm(llm_content):
+            report = agent._generate_counter_report(
+                sample_counter_statement,
+                sample_citations,
+                sample_search_results,
+                sample_scored_docs
+            )
 
         markdown = report.to_markdown()
 
@@ -1797,10 +1706,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_citation_format_valid(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1833,10 +1740,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_citation_format_missing_logs_warning(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1872,10 +1777,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_coherence_valid(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1908,10 +1811,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_coherence_no_punctuation_raises(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1943,10 +1844,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_coherence_short_fragments_raises(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -1978,10 +1877,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_markdown_valid(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,
@@ -2014,10 +1911,8 @@ class TestPaperCheckerCounterReportGeneration:
     @patch('bmlibrarian.paperchecker.agent.DocumentScoringAgent')
     @patch('bmlibrarian.paperchecker.agent.CitationFinderAgent')
     @patch('bmlibrarian.paperchecker.agent.SearchCoordinator')
-    @patch('ollama.Client')
     def test_validate_markdown_unclosed_code_block_raises(
         self,
-        mock_ollama,
         mock_search_coord,
         mock_citation,
         mock_scoring,

@@ -12,17 +12,16 @@ from src.bmlibrarian.embeddings.document_embedder import DocumentEmbedder
 class TestDocumentEmbedder:
     """Test cases for DocumentEmbedder class."""
 
-    @patch('src.bmlibrarian.embeddings.document_embedder.ollama')
+    @patch('src.bmlibrarian.embeddings.document_embedder.LLMClient')
+    @patch('src.bmlibrarian.embeddings.document_embedder.list_ollama_models')
     @patch('src.bmlibrarian.embeddings.document_embedder.get_db_manager')
-    def test_create_embedding(self, mock_db, mock_ollama):
+    def test_create_embedding(self, mock_db, mock_list_models, mock_llm_client):
         """Test embedding creation."""
         # Mock Ollama response
-        mock_ollama.list.return_value = {
-            'models': [{'model': 'test-model:latest'}]
-        }
-        mock_ollama.embeddings.return_value = {
-            'embedding': [0.1] * 768
-        }
+        mock_list_models.return_value = ['test-model:latest']
+        mock_llm_client.return_value.embed.return_value = Mock(
+            embedding=[0.1] * 768
+        )
 
         # Mock database operations
         mock_conn = MagicMock()
@@ -46,15 +45,14 @@ class TestDocumentEmbedder:
 
         assert len(embedding) == 768
         assert embedder.embedding_dimension == 768
-        mock_ollama.embeddings.assert_called_once()
+        mock_llm_client.return_value.embed.assert_called_once()
 
-    @patch('src.bmlibrarian.embeddings.document_embedder.ollama')
+    @patch('src.bmlibrarian.embeddings.document_embedder.LLMClient')
+    @patch('src.bmlibrarian.embeddings.document_embedder.list_ollama_models')
     @patch('src.bmlibrarian.embeddings.document_embedder.get_db_manager')
-    def test_model_registration(self, mock_db, mock_ollama):
+    def test_model_registration(self, mock_db, mock_list_models, mock_llm_client):
         """Test that model is properly registered."""
-        mock_ollama.list.return_value = {
-            'models': [{'model': 'test-model:latest'}]
-        }
+        mock_list_models.return_value = ['test-model:latest']
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -74,13 +72,12 @@ class TestDocumentEmbedder:
 
         assert embedder.model_id == 2
 
-    @patch('src.bmlibrarian.embeddings.document_embedder.ollama')
+    @patch('src.bmlibrarian.embeddings.document_embedder.LLMClient')
+    @patch('src.bmlibrarian.embeddings.document_embedder.list_ollama_models')
     @patch('src.bmlibrarian.embeddings.document_embedder.get_db_manager')
-    def test_count_documents_without_embeddings(self, mock_db, mock_ollama):
+    def test_count_documents_without_embeddings(self, mock_db, mock_list_models, mock_llm_client):
         """Test counting documents without embeddings."""
-        mock_ollama.list.return_value = {
-            'models': [{'model': 'test-model:latest'}]
-        }
+        mock_list_models.return_value = ['test-model:latest']
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -100,18 +97,17 @@ class TestDocumentEmbedder:
 
         assert count == 42
 
-    @patch('src.bmlibrarian.embeddings.document_embedder.ollama')
+    @patch('src.bmlibrarian.embeddings.document_embedder.LLMClient')
+    @patch('src.bmlibrarian.embeddings.document_embedder.list_ollama_models')
     @patch('src.bmlibrarian.embeddings.document_embedder.get_db_manager')
-    def test_embedding_dimension_detection(self, mock_db, mock_ollama):
+    def test_embedding_dimension_detection(self, mock_db, mock_list_models, mock_llm_client):
         """Test that embedding dimension is correctly detected."""
-        mock_ollama.list.return_value = {
-            'models': [{'model': 'test-model:latest'}]
-        }
+        mock_list_models.return_value = ['test-model:latest']
 
         # Return different dimension
-        mock_ollama.embeddings.return_value = {
-            'embedding': [0.1] * 1024
-        }
+        mock_llm_client.return_value.embed.return_value = Mock(
+            embedding=[0.1] * 1024
+        )
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()

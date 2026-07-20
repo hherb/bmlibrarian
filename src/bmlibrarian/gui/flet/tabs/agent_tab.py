@@ -362,12 +362,10 @@ class AgentConfigTab:
     def _get_available_models(self):
         """Get list of available models from Ollama."""
         try:
-            import ollama
-            
-            # Create client to get models
-            client = ollama.Client(host=self.app.config.get_ollama_config()['host'])
-            models_response = client.list()
-            available_models = [model.model for model in models_response.models]
+            from bmlibrarian.llm import list_ollama_models
+
+            host = self.app.config.get_ollama_config()['host']
+            available_models = list_ollama_models(host)
             
             return sorted(available_models)
             

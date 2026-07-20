@@ -22,6 +22,21 @@ from bmlibrarian.paperchecker.components.counter_statement_generator import (
     MIN_COUNTER_STATEMENT_LENGTH,
 )
 from bmlibrarian.paperchecker.data_models import Statement
+from bmlibrarian.llm import LLMResponse, Provider
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
 
 
 # ==================== INITIALIZATION TESTS ====================
@@ -29,7 +44,7 @@ from bmlibrarian.paperchecker.data_models import Statement
 class TestCounterGeneratorInit:
     """Test CounterStatementGenerator initialization."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_init_with_defaults(self, mock_client_class: MagicMock) -> None:
         """Test initialization with default parameters."""
         generator = CounterStatementGenerator(model="test-model")
@@ -37,9 +52,9 @@ class TestCounterGeneratorInit:
         assert generator.model == "test-model"
         assert generator.temperature == DEFAULT_TEMPERATURE
         assert generator.host == DEFAULT_OLLAMA_URL
-        mock_client_class.assert_called_once_with(host=DEFAULT_OLLAMA_URL)
+        mock_client_class.assert_called_once_with(ollama_host=DEFAULT_OLLAMA_URL)
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_init_with_custom_parameters(self, mock_client_class: MagicMock) -> None:
         """Test initialization with custom parameters."""
         generator = CounterStatementGenerator(
@@ -52,7 +67,7 @@ class TestCounterGeneratorInit:
         assert generator.temperature == 0.5
         assert generator.host == "http://custom-host:11434"
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_init_strips_trailing_slash(self, mock_client_class: MagicMock) -> None:
         """Test that trailing slash is stripped from host URL."""
         generator = CounterStatementGenerator(
@@ -88,7 +103,7 @@ class TestCounterGeneratorConstants:
 class TestInputValidation:
     """Test input validation for generate method."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_generate_raises_on_empty_statement_text(
         self,
         mock_client_class: MagicMock,
@@ -109,7 +124,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="cannot be empty"):
             generator.generate(empty_stmt)
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_generate_raises_on_whitespace_statement(
         self,
         mock_client_class: MagicMock
@@ -134,7 +149,7 @@ class TestInputValidation:
 class TestPromptConstruction:
     """Test prompt building for counter-statement generation."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_prompt_contains_statement_text(
         self,
         mock_client_class: MagicMock,
@@ -147,7 +162,7 @@ class TestPromptConstruction:
 
         assert sample_statement.text in prompt
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_prompt_contains_statement_type(
         self,
         mock_client_class: MagicMock,
@@ -160,7 +175,7 @@ class TestPromptConstruction:
 
         assert sample_statement.statement_type in prompt
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_prompt_includes_negation_examples(
         self,
         mock_client_class: MagicMock,
@@ -174,7 +189,7 @@ class TestPromptConstruction:
         assert "Example" in prompt or "example" in prompt
         assert "Negation" in prompt or "negation" in prompt
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_prompt_includes_context_when_present(
         self,
         mock_client_class: MagicMock,
@@ -193,7 +208,7 @@ class TestPromptConstruction:
 class TestResponseParsing:
     """Test response parsing and cleaning."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_clean_response(self, mock_client_class: MagicMock) -> None:
         """Test parsing a clean response."""
         generator = CounterStatementGenerator(model="test-model")
@@ -202,7 +217,7 @@ class TestResponseParsing:
 
         assert result == "This is a valid counter-statement."
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_removes_common_prefixes(
         self,
         mock_client_class: MagicMock
@@ -220,7 +235,7 @@ class TestResponseParsing:
             result = generator._parse_response(prefixed)
             assert "actual counter-statement" in result.lower() or "counter-statement here" in result.lower()
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_removes_quotes(self, mock_client_class: MagicMock) -> None:
         """Test that surrounding quotes are removed."""
         generator = CounterStatementGenerator(model="test-model")
@@ -231,7 +246,7 @@ class TestResponseParsing:
         result = generator._parse_response("'This is a single-quoted statement.'")
         assert result == "This is a single-quoted statement."
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_removes_leading_dash(self, mock_client_class: MagicMock) -> None:
         """Test that leading dash/bullet is removed."""
         generator = CounterStatementGenerator(model="test-model")
@@ -239,7 +254,7 @@ class TestResponseParsing:
         result = generator._parse_response("- This is a bulleted statement.")
         assert result == "This is a bulleted statement."
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_raises_on_too_short_response(
         self,
         mock_client_class: MagicMock
@@ -252,7 +267,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="too short"):
             generator._parse_response(short_text)
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_parse_raises_on_empty_response(
         self,
         mock_client_class: MagicMock
@@ -269,13 +284,11 @@ class TestResponseParsing:
 class TestLLMCall:
     """Test LLM API call functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_call_llm_success(self, mock_client_class: MagicMock) -> None:
         """Test successful LLM call."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": "Generated counter-statement text."}
-        }
+        mock_client.chat.return_value = llm_reply("Generated counter-statement text.")
         mock_client_class.return_value = mock_client
 
         generator = CounterStatementGenerator(model="test-model")
@@ -284,8 +297,8 @@ class TestLLMCall:
         assert result == "Generated counter-statement text."
         mock_client.chat.assert_called_once()
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.time.sleep')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
+    @patch('bmlibrarian.paperchecker.components.llm_support.time.sleep')
     def test_call_llm_retries_on_empty_response(
         self,
         mock_sleep: MagicMock,
@@ -294,8 +307,8 @@ class TestLLMCall:
         """Test that empty responses trigger retry."""
         mock_client = MagicMock()
         mock_client.chat.side_effect = [
-            {"message": {"content": ""}},
-            {"message": {"content": "Valid counter-statement response."}}
+            llm_reply(""),
+            llm_reply("Valid counter-statement response.")
         ]
         mock_client_class.return_value = mock_client
 
@@ -305,8 +318,8 @@ class TestLLMCall:
         assert result == "Valid counter-statement response."
         assert mock_client.chat.call_count == 2
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.time.sleep')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
+    @patch('bmlibrarian.paperchecker.components.llm_support.time.sleep')
     def test_call_llm_raises_after_max_retries(
         self,
         mock_sleep: MagicMock,
@@ -315,9 +328,9 @@ class TestLLMCall:
         """Test that RuntimeError is raised after max retries."""
         mock_client = MagicMock()
         mock_client.chat.side_effect = [
-            {"message": {"content": ""}},
-            {"message": {"content": ""}},
-            {"message": {"content": ""}}
+            llm_reply(""),
+            llm_reply(""),
+            llm_reply("")
         ]
         mock_client_class.return_value = mock_client
 
@@ -332,11 +345,11 @@ class TestLLMCall:
 class TestConnectionTest:
     """Test connection testing functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_test_connection_success(self, mock_client_class: MagicMock) -> None:
         """Test successful connection test."""
         mock_client = MagicMock()
-        mock_client.list.return_value = {"models": []}
+        mock_client.test_provider.return_value = True
         mock_client_class.return_value = mock_client
 
         generator = CounterStatementGenerator(model="test-model")
@@ -344,11 +357,11 @@ class TestConnectionTest:
 
         assert result is True
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_test_connection_failure(self, mock_client_class: MagicMock) -> None:
         """Test failed connection test."""
         mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
+        mock_client.test_provider.side_effect = Exception("Connection refused")
         mock_client_class.return_value = mock_client
 
         generator = CounterStatementGenerator(model="test-model")
@@ -362,7 +375,7 @@ class TestConnectionTest:
 class TestGenerateIntegration:
     """Integration tests for the generate method."""
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_generate_full_workflow(
         self,
         mock_client_class: MagicMock,
@@ -371,9 +384,7 @@ class TestGenerateIntegration:
     ) -> None:
         """Test complete generation workflow."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": counter_statement_response}
-        }
+        mock_client.chat.return_value = llm_reply(counter_statement_response)
         mock_client_class.return_value = mock_client
 
         generator = CounterStatementGenerator(model="test-model")
@@ -382,7 +393,7 @@ class TestGenerateIntegration:
         assert len(result) >= MIN_COUNTER_STATEMENT_LENGTH
         assert isinstance(result, str)
 
-    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient')
     def test_generate_wraps_llm_errors(
         self,
         mock_client_class: MagicMock,

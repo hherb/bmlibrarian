@@ -3,6 +3,15 @@
 
 Tests the performance of AdaptiveTextChunker on 1000 real documents,
 with frequent console feedback and detailed statistics.
+
+Note: this is a benchmark script, run directly:
+
+    uv run python tests/test_adaptive_chunker_performance.py
+
+Its measurement entry point is deliberately named benchmark_* rather
+than test_*. Named test_*, pytest collected it and then errored with
+"fixture 'documents' not found", because it takes the corpus as a
+required argument — it was never a runnable pytest test.
 """
 
 import time
@@ -179,7 +188,7 @@ def fetch_test_documents(db: DatabaseManager, limit: int = 1000) -> List[Dict[st
     return documents
 
 
-def test_chunker_performance(
+def benchmark_chunker_performance(
     documents: List[Dict[str, Any]],
     max_chars: int = 1800,
     overlap_chars: int = 320
@@ -423,7 +432,7 @@ def main():
 
     # Run performance test
     try:
-        stats = test_chunker_performance(documents, max_chars=1800, overlap_chars=320)
+        stats = benchmark_chunker_performance(documents, max_chars=1800, overlap_chars=320)
     except Exception as e:
         print(f"✗ Performance test failed: {e}")
         import traceback

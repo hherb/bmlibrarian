@@ -24,6 +24,7 @@ from bmlibrarian.paperchecker.components.verdict_analyzer import (
     REQUIRED_JSON_FIELDS,
 )
 from bmlibrarian.paperchecker.data_models import (
+
     Statement,
     CounterReport,
     Verdict,
@@ -31,13 +32,30 @@ from bmlibrarian.paperchecker.data_models import (
     VALID_CONFIDENCE_LEVELS,
 )
 
+from bmlibrarian.llm import LLMResponse, Provider
+
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
+
 
 # ==================== INITIALIZATION TESTS ====================
 
 class TestVerdictAnalyzerInit:
     """Test VerdictAnalyzer initialization."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_init_with_defaults(self, mock_client_class: MagicMock) -> None:
         """Test initialization with default parameters."""
         analyzer = VerdictAnalyzer(model="test-model")
@@ -46,7 +64,7 @@ class TestVerdictAnalyzerInit:
         assert analyzer.temperature == DEFAULT_TEMPERATURE
         assert analyzer.host == DEFAULT_OLLAMA_URL
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_init_with_custom_parameters(self, mock_client_class: MagicMock) -> None:
         """Test initialization with custom parameters."""
         analyzer = VerdictAnalyzer(
@@ -59,7 +77,7 @@ class TestVerdictAnalyzerInit:
         assert analyzer.host == "http://custom:11434"
         assert analyzer.temperature == 0.5
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_init_strips_trailing_slash(self, mock_client_class: MagicMock) -> None:
         """Test that trailing slash is stripped from host URL."""
         analyzer = VerdictAnalyzer(
@@ -91,7 +109,7 @@ class TestVerdictAnalyzerConstants:
 class TestInputValidation:
     """Test input validation for analyze method."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_validate_raises_on_empty_statement_text(
         self,
         mock_client_class: MagicMock,
@@ -111,7 +129,7 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="cannot be empty"):
             analyzer._validate_inputs(empty_stmt, sample_counter_report)
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_validate_raises_on_whitespace_counter_report_summary(
         self,
         mock_client_class: MagicMock,
@@ -140,7 +158,7 @@ class TestInputValidation:
 class TestPromptConstruction:
     """Test prompt building for verdict analysis."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_prompt_contains_statement_text(
         self,
         mock_client_class: MagicMock,
@@ -154,7 +172,7 @@ class TestPromptConstruction:
 
         assert sample_statement.text in prompt
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_prompt_contains_counter_report_summary(
         self,
         mock_client_class: MagicMock,
@@ -168,7 +186,7 @@ class TestPromptConstruction:
 
         assert sample_counter_report.summary in prompt
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_prompt_includes_verdict_options(
         self,
         mock_client_class: MagicMock,
@@ -183,7 +201,7 @@ class TestPromptConstruction:
         for verdict in VALID_VERDICT_VALUES:
             assert verdict in prompt
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_prompt_includes_confidence_options(
         self,
         mock_client_class: MagicMock,
@@ -204,7 +222,7 @@ class TestPromptConstruction:
 class TestResponseParsing:
     """Test verdict response parsing."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_parse_valid_response(
         self,
         mock_client_class: MagicMock,
@@ -219,7 +237,7 @@ class TestResponseParsing:
         assert result["confidence"] == "high"
         assert len(result["rationale"]) >= MIN_RATIONALE_LENGTH
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_parse_raises_on_missing_verdict(
         self,
         mock_client_class: MagicMock
@@ -234,7 +252,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="missing required fields"):
             analyzer._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_parse_raises_on_invalid_verdict(
         self,
         mock_client_class: MagicMock
@@ -250,7 +268,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="Invalid verdict"):
             analyzer._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_parse_raises_on_invalid_confidence(
         self,
         mock_client_class: MagicMock
@@ -266,7 +284,7 @@ class TestResponseParsing:
         with pytest.raises(ValueError, match="Invalid confidence"):
             analyzer._parse_response(response)
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_parse_raises_on_short_rationale(
         self,
         mock_client_class: MagicMock
@@ -288,7 +306,7 @@ class TestResponseParsing:
 class TestJsonExtraction:
     """Test JSON extraction from various response formats."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_extract_from_code_block(self, mock_client_class: MagicMock) -> None:
         """Test extracting JSON from ```json code block."""
         analyzer = VerdictAnalyzer(model="test-model")
@@ -301,7 +319,7 @@ class TestJsonExtraction:
         data = json.loads(result)
         assert data["verdict"] == "supports"
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_extract_from_raw_json(self, mock_client_class: MagicMock) -> None:
         """Test extracting raw JSON response."""
         analyzer = VerdictAnalyzer(model="test-model")
@@ -311,7 +329,7 @@ class TestJsonExtraction:
         data = json.loads(result)
         assert data["verdict"] == "undecided"
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_extract_from_embedded_json(self, mock_client_class: MagicMock) -> None:
         """Test extracting JSON embedded in text."""
         analyzer = VerdictAnalyzer(model="test-model")
@@ -327,7 +345,7 @@ class TestJsonExtraction:
 class TestOverallAssessment:
     """Test overall assessment generation."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_assessment_raises_on_length_mismatch(
         self,
         mock_client_class: MagicMock,
@@ -343,7 +361,7 @@ class TestOverallAssessment:
                 verdicts=[sample_verdict, sample_verdict]  # 2 verdicts for 1 statement
             )
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_assessment_empty_verdicts(
         self,
         mock_client_class: MagicMock
@@ -358,7 +376,7 @@ class TestOverallAssessment:
 
         assert "No statements" in result
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_assessment_all_supported(
         self,
         mock_client_class: MagicMock,
@@ -383,7 +401,7 @@ class TestOverallAssessment:
 
         assert "supported" in result.lower()
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_assessment_all_contradicted(
         self,
         mock_client_class: MagicMock,
@@ -408,7 +426,7 @@ class TestOverallAssessment:
 
         assert "contradicted" in result.lower()
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_assessment_all_undecided(
         self,
         mock_client_class: MagicMock,
@@ -439,13 +457,11 @@ class TestOverallAssessment:
 class TestConnectionTest:
     """Test connection testing functionality."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_test_connection_success(self, mock_client_class: MagicMock) -> None:
         """Test successful connection test."""
         mock_client = MagicMock()
-        mock_client.list.return_value = {
-            "models": [{"name": "test-model"}]
-        }
+        mock_client.test_provider.return_value = True
         mock_client_class.return_value = mock_client
 
         analyzer = VerdictAnalyzer(model="test-model")
@@ -453,11 +469,11 @@ class TestConnectionTest:
 
         assert result is True
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_test_connection_failure(self, mock_client_class: MagicMock) -> None:
         """Test failed connection test."""
         mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
+        mock_client.test_provider.side_effect = Exception("Connection refused")
         mock_client_class.return_value = mock_client
 
         analyzer = VerdictAnalyzer(model="test-model")
@@ -471,7 +487,7 @@ class TestConnectionTest:
 class TestAnalyzeIntegration:
     """Integration tests for the analyze method."""
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_analyze_full_workflow(
         self,
         mock_client_class: MagicMock,
@@ -481,9 +497,7 @@ class TestAnalyzeIntegration:
     ) -> None:
         """Test complete analysis workflow."""
         mock_client = MagicMock()
-        mock_client.chat.return_value = {
-            "message": {"content": verdict_analysis_response}
-        }
+        mock_client.chat.return_value = llm_reply(verdict_analysis_response)
         mock_client_class.return_value = mock_client
 
         analyzer = VerdictAnalyzer(model="test-model")
@@ -494,7 +508,7 @@ class TestAnalyzeIntegration:
         assert result.confidence in VALID_CONFIDENCE_LEVELS
         assert result.counter_report is sample_counter_report
 
-    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client')
+    @patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient')
     def test_analyze_wraps_llm_errors(
         self,
         mock_client_class: MagicMock,

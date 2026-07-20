@@ -30,12 +30,30 @@ from bmlibrarian.paperchecker.data_models import (
     VALID_CONFIDENCE_LEVELS,
 )
 from bmlibrarian.paperchecker.components import (
+
     StatementExtractor,
     CounterStatementGenerator,
     HyDEGenerator,
     SearchCoordinator,
     VerdictAnalyzer,
 )
+
+from bmlibrarian.llm import LLMResponse, Provider
+
+
+def llm_reply(content: str) -> LLMResponse:
+    """
+    Build a response in the shape the LLM layer actually returns.
+
+    Deliberately a real LLMResponse, not a dict: these stubs used the old
+    ollama {"message": {"content": ...}} shape, which kept passing against
+    an API the components no longer call. Constructing the real type means
+    a future change to it breaks these tests instead of hiding in them.
+    """
+    return LLMResponse(
+        content=content, model="test-model", provider=Provider.OLLAMA
+    )
+
 
 
 # ==================== FULL WORKFLOW TESTS ====================
@@ -49,11 +67,9 @@ class TestFullWorkflow:
         statement_extraction_response
     ):
         """Test that statement extraction produces valid Statement objects."""
-        with patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": statement_extraction_response}
-            }
+            mock_instance.chat.return_value = llm_reply(statement_extraction_response)
             mock_client.return_value = mock_instance
 
             extractor = StatementExtractor(model="test-model")
@@ -70,11 +86,9 @@ class TestFullWorkflow:
         counter_statement_response
     ):
         """Test that counter generation produces valid output."""
-        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": counter_statement_response}
-            }
+            mock_instance.chat.return_value = llm_reply(counter_statement_response)
             mock_client.return_value = mock_instance
 
             generator = CounterStatementGenerator(model="test-model")
@@ -89,11 +103,9 @@ class TestFullWorkflow:
         hyde_generation_response
     ):
         """Test that HyDE generation produces valid materials."""
-        with patch('bmlibrarian.paperchecker.components.hyde_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.hyde_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": hyde_generation_response}
-            }
+            mock_instance.chat.return_value = llm_reply(hyde_generation_response)
             mock_client.return_value = mock_instance
 
             generator = HyDEGenerator(model="test-model")
@@ -114,11 +126,9 @@ class TestFullWorkflow:
         verdict_analysis_response
     ):
         """Test that verdict analysis produces valid verdict."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": verdict_analysis_response}
-            }
+            mock_instance.chat.return_value = llm_reply(verdict_analysis_response)
             mock_client.return_value = mock_instance
 
             analyzer = VerdictAnalyzer(model="test-model")
@@ -141,11 +151,9 @@ class TestDataFlowIntegrity:
         counter_statement_response
     ):
         """Test that CounterStatement correctly links to original Statement."""
-        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": counter_statement_response}
-            }
+            mock_instance.chat.return_value = llm_reply(counter_statement_response)
             mock_client.return_value = mock_instance
 
             generator = CounterStatementGenerator(model="test-model")
@@ -288,7 +296,7 @@ class TestErrorHandling:
         sample_abstract
     ):
         """Test that extraction errors propagate as RuntimeError."""
-        with patch('bmlibrarian.paperchecker.components.statement_extractor.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.statement_extractor.LLMClient') as mock_client:
             mock_instance = MagicMock()
             mock_instance.chat.side_effect = Exception("LLM unavailable")
             mock_client.return_value = mock_instance
@@ -303,7 +311,7 @@ class TestErrorHandling:
         sample_statement
     ):
         """Test that counter generation errors propagate as RuntimeError."""
-        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
             mock_instance.chat.side_effect = Exception("LLM unavailable")
             mock_client.return_value = mock_instance
@@ -319,7 +327,7 @@ class TestErrorHandling:
         sample_counter_report
     ):
         """Test that verdict errors propagate as RuntimeError."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient') as mock_client:
             mock_instance = MagicMock()
             mock_instance.chat.side_effect = Exception("LLM unavailable")
             mock_client.return_value = mock_instance
@@ -352,11 +360,9 @@ class TestMultiStatementProcessing:
             for i in range(1, 4)
         ]
 
-        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.ollama.Client') as mock_client:
+        with patch('bmlibrarian.paperchecker.components.counter_statement_generator.LLMClient') as mock_client:
             mock_instance = MagicMock()
-            mock_instance.chat.return_value = {
-                "message": {"content": counter_statement_response}
-            }
+            mock_instance.chat.return_value = llm_reply(counter_statement_response)
             mock_client.return_value = mock_instance
 
             # Verify we can create counter-statements for each
@@ -371,7 +377,7 @@ class TestMultiStatementProcessing:
         sample_counter_report
     ):
         """Test that overall assessment aggregates multiple verdicts."""
-        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.ollama.Client'):
+        with patch('bmlibrarian.paperchecker.components.verdict_analyzer.LLMClient'):
             analyzer = VerdictAnalyzer(model="test-model")
 
         statements = [

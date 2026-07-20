@@ -29,8 +29,8 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple, TYPE_CHECKING
 
-import ollama
 
+from ...llm import LLMClient, LLMMessage
 from .data_models import (
     SearchCriteria,
     PaperData,
@@ -860,6 +860,7 @@ class InclusionEvaluator:
 
         # System prompt for inclusion evaluation
         self._system_prompt = self._build_system_prompt()
+        self._llm_client = LLMClient(ollama_host=self.host)
 
         logger.info(
             f"InclusionEvaluator initialized: model={self.model}, "
@@ -964,19 +965,15 @@ IMPORTANT:
 
         try:
             # Make LLM request
-            response = ollama.chat(
+            response = self._llm_client.chat(
+                messages=[LLMMessage(role="user", content=prompt)],
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                options={
-                    "temperature": self.temperature,
-                    "num_predict": LLM_MAX_TOKENS,
-                },
+                system_prompt=self._system_prompt,
+                temperature=self.temperature,
+                max_tokens=LLM_MAX_TOKENS,
             )
 
-            response_text = response["message"]["content"]
+            response_text = response.content or ""
 
             # Parse response
             decision = self._parse_evaluation_response(response_text)
