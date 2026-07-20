@@ -307,14 +307,14 @@ wheels = [
 
 [[package]]
 name = "bmlib"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fc/c2/5c4ecd41a35f3df3f1c0f91aaf816b96acaaa0e3bb93667e9008c664c7de/bmlib-0.4.0.tar.gz", hash = "sha256:794b74ec33388f073b37186959db8cba3b18d05186d24d65eaeffe29d0f967b9", size = 180146, upload-time = "2026-07-19T09:07:17.45Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/2f/d71b477d59c10982503157279a767ec151f8bedc5c90041d018bdb55aef6/bmlib-0.5.0.tar.gz", hash = "sha256:b8c53e15402e9056afb83918d6783c8236b286df25202b4bc4f6f0187d97050c", size = 193504, upload-time = "2026-07-20T08:36:40.307Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/a9/76cc6a79c7271a2ca1a704a59d9a47b22f740760448951e269ca754893b2/bmlib-0.4.0-py3-none-any.whl", hash = "sha256:95e89ee6126151c4c650dd1115d26f3c0b68c2fd3d008207a06b91427ba525e4", size = 161337, upload-time = "2026-07-19T09:07:15.77Z" },
+    { url = "https://files.pythonhosted.org/packages/43/c3/65db18d2db77d7a5a454f88f76e49e9e5cc6849b5dca32dafbe0e32f4075/bmlib-0.5.0-py3-none-any.whl", hash = "sha256:6d1418fcc26b6bb838216e98fac504c25aa8e933d0c2ac526f1a46ad119011b4", size = 166455, upload-time = "2026-07-20T08:36:37.984Z" },
 ]
 
 [package.optional-dependencies]
@@ -388,7 +388,7 @@ dev = [
 requires-dist = [
     { name = "backoff", specifier = ">=2.2.1" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "bmlib", extras = ["ollama"], specifier = ">=0.4.0,<0.5.0" },
+    { name = "bmlib", extras = ["ollama"], specifier = ">=0.5.0,<0.6.0" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.34.0" },
     { name = "chromadb", specifier = ">=1.3.7" },
     { name = "fastembed", specifier = ">=0.7.3" },

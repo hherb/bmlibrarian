@@ -10,8 +10,14 @@ from pathlib import Path
 import sys
 import os
 
-# Add parent directory to path for importing the script
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add scripts/ to path for importing the script under test.
+#
+# This pointed at the repo root, which was correct until f8971f1
+# ("Organize root directory by moving files to appropriate locations")
+# moved import_pubmedqa_abstracts.py into scripts/. The path was never
+# updated, so the module has been unimportable since — a collection
+# error that aborted the whole suite rather than failing just this file.
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 # Mock the migrations module before importing
 sys.modules['src.bmlibrarian.migrations'] = MagicMock()

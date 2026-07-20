@@ -52,9 +52,22 @@ class TestChunkText:
     """Test chunk_text pure function."""
 
     def test_default_parameters(self) -> None:
-        """Test that defaults are properly set."""
-        assert DEFAULT_CHUNK_SIZE == 350
-        assert DEFAULT_CHUNK_OVERLAP == 50
+        """
+        Test that the chunking defaults are coherent.
+
+        This asserted 350/50 — the values when it was written. They were
+        retuned deliberately since (1800/320, then 1000/100 in 2995951,
+        "smaller chunks provide better semantic granularity"), and the
+        test was never updated, so it has been failing rather than
+        guarding anything.
+
+        Pinning the exact numbers again would just restate the source and
+        re-break on the next tuning pass. What actually matters is the
+        relationship: overlap has to be a real but minor fraction of the
+        chunk, or chunks either lose continuity or duplicate wholesale.
+        """
+        assert DEFAULT_CHUNK_SIZE > 0
+        assert 0 < DEFAULT_CHUNK_OVERLAP < DEFAULT_CHUNK_SIZE // 2
 
     def test_empty_text(self) -> None:
         """Test chunking empty text returns empty list."""

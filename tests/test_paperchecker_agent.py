@@ -16,6 +16,8 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Dict, Any
 
+from llm_test_support import patch_llm
+
 from bmlibrarian.paperchecker import (
     PaperCheckerAgent,
     PaperCheckDB,
@@ -1630,30 +1632,23 @@ class TestPaperCheckerCounterReportGeneration:
         mock_db_instance.get_connection.return_value = MagicMock()
         mock_db.return_value = mock_db_instance
 
-        # Mock the ollama client's generate method
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.generate.return_value = {
-            "response": "Evidence from multiple studies supports the efficacy of GLP-1 agonists. "
-                       "In a 2023 study, Smith et al. demonstrated superior HbA1c reduction [1]. "
-                       "Furthermore, a meta-analysis by Jones et al. in 2022 showed improved "
-                       "cardiovascular outcomes [2]. These findings suggest GLP-1 agonists "
-                       "may be preferable for certain patient populations.",
-            "prompt_eval_count": 100,
-            "eval_count": 50,
-            "eval_duration": 1000000000,
-            "prompt_eval_duration": 500000000
-        }
-        mock_ollama.return_value = mock_ollama_instance
+        llm_content = (
+            "Evidence from multiple studies supports the efficacy of GLP-1 agonists. "
+            "In a 2023 study, Smith et al. demonstrated superior HbA1c reduction [1]. "
+            "Furthermore, a meta-analysis by Jones et al. in 2022 showed improved "
+            "cardiovascular outcomes [2]. These findings suggest GLP-1 agonists "
+            "may be preferable for certain patient populations."
+        )
 
         agent = PaperCheckerAgent(show_model_info=False)
-        agent.client = mock_ollama_instance
 
-        report = agent._generate_counter_report(
-            sample_counter_statement,
-            sample_citations,
-            sample_search_results,
-            sample_scored_docs
-        )
+        with patch_llm(llm_content):
+            report = agent._generate_counter_report(
+                sample_counter_statement,
+                sample_citations,
+                sample_search_results,
+                sample_scored_docs
+            )
 
         # Verify report structure
         assert isinstance(report, CounterReport)
@@ -1754,26 +1749,20 @@ class TestPaperCheckerCounterReportGeneration:
         mock_db_instance.get_connection.return_value = MagicMock()
         mock_db.return_value = mock_db_instance
 
-        # Mock ollama client
-        mock_ollama_instance = MagicMock()
-        mock_ollama_instance.generate.return_value = {
-            "response": "Multiple studies support GLP-1 efficacy [1][2]. Evidence shows superior outcomes.",
-            "prompt_eval_count": 100,
-            "eval_count": 50,
-            "eval_duration": 1000000000,
-            "prompt_eval_duration": 500000000
-        }
-        mock_ollama.return_value = mock_ollama_instance
+        llm_content = (
+            "Multiple studies support GLP-1 efficacy [1][2]. "
+            "Evidence shows superior outcomes."
+        )
 
         agent = PaperCheckerAgent(show_model_info=False)
-        agent.client = mock_ollama_instance
 
-        report = agent._generate_counter_report(
-            sample_counter_statement,
-            sample_citations,
-            sample_search_results,
-            sample_scored_docs
-        )
+        with patch_llm(llm_content):
+            report = agent._generate_counter_report(
+                sample_counter_statement,
+                sample_citations,
+                sample_search_results,
+                sample_scored_docs
+            )
 
         markdown = report.to_markdown()
 

@@ -367,12 +367,27 @@ class TestPlanner:
     def test_generate_hybrid_queries(
         self, sample_planner: Planner, sample_criteria: SearchCriteria
     ) -> None:
-        """Test hybrid query generation."""
+        """
+        Test hybrid query generation.
+
+        This asserted exactly one query, which held when the method only
+        emitted the research question itself. It now also expands drug
+        classes (the statin question yields atorvastatin, simvastatin,
+        rosuvastatin and an OR-combined query) and adds a PICO query for
+        clinical questions, so the count is a property of the expansion
+        rules rather than of this method's contract.
+
+        Pinned instead: it produces queries, they are all HYBRID, and the
+        research question itself is among them.
+        """
         pico = PICOComponents()
         queries = sample_planner._generate_hybrid_queries(sample_criteria, pico)
 
-        assert len(queries) == 1
-        assert queries[0].query_type == QueryType.HYBRID
+        assert len(queries) > 0
+        assert all(q.query_type == QueryType.HYBRID for q in queries)
+        assert any(
+            q.query_text == sample_criteria.research_question for q in queries
+        )
 
     def test_generate_hyde_query(
         self, sample_planner: Planner, sample_criteria: SearchCriteria

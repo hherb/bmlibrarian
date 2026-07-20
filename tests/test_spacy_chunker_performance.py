@@ -4,6 +4,15 @@
 This script tests the performance of the sentence_aware_chunker on 1000 real
 documents from the database, measuring throughput, chunk statistics, and
 identifying potential bottlenecks.
+
+Note: this is a benchmark script, run directly:
+
+    uv run python tests/test_spacy_chunker_performance.py
+
+Its measurement entry point is deliberately named benchmark_* rather
+than test_*. Named test_*, pytest collected it and then errored with
+"fixture 'documents' not found", because it takes the corpus as a
+required argument — it was never a runnable pytest test.
 """
 
 import time
@@ -14,6 +23,13 @@ import sys
 
 # Add src directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+import pytest
+
+# spaCy is an optional extra, not a declared dependency, so importing the
+# chunker unguarded turned a missing optional package into a collection
+# error that aborted the entire suite.
+pytest.importorskip("spacy", reason="spaCy is an optional dependency")
 
 from bmlibrarian.database import DatabaseManager
 from bmlibrarian.embeddings.spacy_chunker import sentence_aware_chunker
@@ -56,7 +72,7 @@ def fetch_test_documents(db: DatabaseManager, limit: int = 1000) -> List[Dict[st
     return documents
 
 
-def test_chunker_performance(
+def benchmark_chunker_performance(
     documents: List[Dict[str, Any]],
     max_chars: int = 1800,
     overlap_chars: int = 320
@@ -267,7 +283,7 @@ def main():
         return 1
 
     # Run performance test
-    stats = test_chunker_performance(documents)
+    stats = benchmark_chunker_performance(documents)
 
     # Print results
     print_statistics(stats)
