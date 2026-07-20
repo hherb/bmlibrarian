@@ -4,6 +4,8 @@ Unified LLM client supporting multiple providers.
 This module provides a high-level interface for interacting with LLMs,
 handling provider selection, fallback logic, retries, and usage tracking.
 
+Internally delegates to bmlib.llm.LLMClient for actual provider communication.
+
 Usage:
     from bmlibrarian.llm import LLMClient, LLMMessage
 
@@ -27,22 +29,25 @@ import logging
 import time
 from typing import Optional, Any
 
+from bmlib.llm import LLMClient as BmlibLLMClient
+from bmlib.llm import LLMMessage
+from bmlib.llm import EmbeddingResponse as BmlibEmbeddingResponse
+
 from .data_types import (
-    LLMMessage,
     LLMResponse,
     EmbeddingResponse,
-    GenerationParams,
     Provider,
 )
-from .model_resolver import parse_model_string
+from .model_resolver import parse_model_string, qualify_model_string
 from .token_tracker import get_token_tracker, TokenTracker
-from .providers import get_provider
-from .providers.base import LLMProvider
 from .constants import (
+    DEFAULT_ANTHROPIC_MAX_TOKENS,
     DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_OLLAMA_HOST,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     DEFAULT_MAX_RETRIES,
+    OLLAMA_UNLIMITED_MAX_TOKENS,
     DEFAULT_RETRY_DELAY,
 )
 
@@ -53,15 +58,12 @@ class LLMClient:
     """
     Unified LLM client supporting multiple providers.
 
-    Provides a simple interface for chat, generation, and embeddings
-    with automatic provider selection based on model string prefix.
-
-    Features:
-        - Automatic provider selection from model string
-        - Fallback to Ollama on external provider failure
-        - Token usage tracking for cost estimation
-        - Retry logic with exponential backoff
-        - Thread-safe design
+    Wraps bmlib.llm.LLMClient and adds bmlibrarian-specific features:
+    - Provider enum integration
+    - Retry logic with exponential backoff
+    - Fallback to Ollama on external provider failure
+    - Token usage tracking with Provider-aware cost estimation
+    - System prompt handling
 
     Attributes:
         default_provider: Provider for unprefixed model names
@@ -95,24 +97,72 @@ class LLMClient:
         self.track_usage = track_usage
         self.ollama_host = ollama_host
 
+        # Create the underlying bmlib client
+        self._bmlib = BmlibLLMClient(
+            default_provider=default_provider.value,
+            ollama_host=ollama_host,
+        )
+
         self._token_tracker: Optional[TokenTracker] = (
             get_token_tracker() if track_usage else None
         )
 
-    def _get_provider(self, provider_type: Provider) -> LLMProvider:
+    def _adapt_response(
+        self,
+        bmlib_resp: Any,
+        model_str: str,
+        start_time: float,
+    ) -> LLMResponse:
         """
-        Get provider instance with configuration.
+        Convert a bmlib LLMResponse to bmlibrarian's LLMResponse format.
 
         Args:
-            provider_type: Which provider to get
+            bmlib_resp: Response from bmlib.llm.LLMClient
+            model_str: Original model string for provider resolution
+            start_time: Wall-clock start time for duration calculation
 
         Returns:
-            Configured provider instance
+            bmlibrarian LLMResponse with Provider enum and field name mapping
         """
-        kwargs: dict[str, Any] = {}
-        if provider_type == Provider.OLLAMA and self.ollama_host:
-            kwargs["host"] = self.ollama_host
-        return get_provider(provider_type, **kwargs)
+        spec = parse_model_string(model_str)
+        duration = time.time() - start_time
+
+        return LLMResponse(
+            content=bmlib_resp.content,
+            model=bmlib_resp.model or spec.model_name,
+            provider=spec.provider,
+            prompt_tokens=bmlib_resp.input_tokens,
+            completion_tokens=bmlib_resp.output_tokens,
+            total_tokens=bmlib_resp.total_tokens,
+            duration_seconds=duration,
+        )
+
+    @staticmethod
+    def _resolve_max_tokens(
+        max_tokens: Optional[int],
+        provider: Provider,
+    ) -> int:
+        """
+        Choose the generation ceiling to send to bmlib.
+
+        bmlib always forwards max_tokens to the provider, so omitting a limit
+        is not an option — a value must be chosen. Ollama accepts a sentinel
+        meaning "generate until the model stops", which preserves the previous
+        behaviour of leaving num_predict unset. Providers that require a
+        positive integer (Anthropic) fall back to the documented default.
+
+        Args:
+            max_tokens: Explicitly requested limit, or None
+            provider: Resolved provider for the request
+
+        Returns:
+            Token ceiling to pass to bmlib
+        """
+        if max_tokens is not None:
+            return max_tokens
+        if provider == Provider.OLLAMA:
+            return OLLAMA_UNLIMITED_MAX_TOKENS
+        return DEFAULT_ANTHROPIC_MAX_TOKENS
 
     def _record_usage(
         self,
@@ -154,7 +204,7 @@ class LLMClient:
         Args:
             messages: Conversation history
             model: Model name with optional provider prefix
-            system_prompt: Optional system message
+            system_prompt: Optional system message (prepended to messages)
             temperature: Sampling temperature
             top_p: Top-p sampling
             max_tokens: Maximum tokens to generate
@@ -169,50 +219,75 @@ class LLMClient:
         Raises:
             ConnectionError: If all providers fail
         """
-        spec = parse_model_string(model)
-        params = GenerationParams(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
+        # Prepend system prompt as a system message if provided
+        effective_messages = list(messages)
+        if system_prompt:
+            effective_messages.insert(0, LLMMessage(role="system", content=system_prompt))
+
+        return self._chat_with_fallback(
+            effective_messages, model, temperature, top_p, max_tokens,
+            json_mode, fallback_model, max_retries, retry_delay,
+            operation="chat",
         )
 
-        # Try primary provider
+    def _chat_with_fallback(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+        json_mode: bool,
+        fallback_model: Optional[str],
+        max_retries: int,
+        retry_delay: float,
+        operation: str,
+    ) -> LLMResponse:
+        """
+        Execute a chat request with retries, then Ollama fallback.
+
+        Args:
+            messages: Chat messages, system prompt already prepended
+            model: Model string with optional provider prefix
+            temperature: Sampling temperature
+            top_p: Top-p sampling
+            max_tokens: Maximum tokens to generate
+            json_mode: Request JSON output
+            fallback_model: Model to use on failure (Ollama)
+            max_retries: Maximum retry attempts
+            retry_delay: Initial delay between retries
+            operation: Label recorded against token usage ("chat"/"generate")
+
+        Returns:
+            LLMResponse from the primary provider or the fallback
+
+        Raises:
+            ConnectionError: If both primary and fallback fail
+        """
+        # Try primary provider with retries
         try:
-            provider = self._get_provider(spec.provider)
             response = self._chat_with_retry(
-                provider,
-                messages,
-                spec.model_name,
-                params,
-                system_prompt,
-                max_retries,
-                retry_delay,
+                messages, model, temperature, top_p,
+                max_tokens, json_mode, max_retries, retry_delay,
             )
-            self._record_usage(response, "chat")
+            self._record_usage(response, operation)
             return response
 
         except Exception as e:
-            logger.warning(f"Primary provider {spec.provider.value} failed: {e}")
+            logger.warning(f"Primary provider failed for model {model}: {e}")
 
             # Fallback to Ollama
             fb_model = fallback_model or self.fallback_model
+            spec = parse_model_string(model)
             if fb_model and spec.provider != self.fallback_provider:
-                logger.info(
-                    f"Falling back to {self.fallback_provider.value}:{fb_model}"
-                )
+                fb_model_str = f"{self.fallback_provider.value}:{fb_model}"
+                logger.info(f"Falling back to {fb_model_str}")
                 try:
-                    fallback = self._get_provider(self.fallback_provider)
                     response = self._chat_with_retry(
-                        fallback,
-                        messages,
-                        fb_model,
-                        params,
-                        system_prompt,
-                        max_retries,
-                        retry_delay,
+                        messages, fb_model_str, temperature, top_p,
+                        max_tokens, json_mode, max_retries, retry_delay,
                     )
-                    self._record_usage(response, "chat")
+                    self._record_usage(response, operation)
                     return response
                 except Exception as fb_error:
                     logger.error(f"Fallback also failed: {fb_error}")
@@ -224,23 +299,25 @@ class LLMClient:
 
     def _chat_with_retry(
         self,
-        provider: LLMProvider,
         messages: list[LLMMessage],
         model: str,
-        params: GenerationParams,
-        system_prompt: Optional[str],
+        temperature: float,
+        top_p: float,
+        max_tokens: Optional[int],
+        json_mode: bool,
         max_retries: int,
         retry_delay: float,
     ) -> LLMResponse:
         """
-        Execute chat with retry logic.
+        Execute chat with retry logic and exponential backoff.
 
         Args:
-            provider: Provider instance
             messages: Chat messages
-            model: Model name
-            params: Generation parameters
-            system_prompt: System prompt
+            model: Model string with optional provider prefix
+            temperature: Sampling temperature
+            top_p: Top-p sampling
+            max_tokens: Maximum tokens to generate
+            json_mode: Request JSON output
             max_retries: Maximum retry attempts
             retry_delay: Initial delay between retries
 
@@ -253,9 +330,31 @@ class LLMClient:
         last_error: Optional[Exception] = None
         current_delay = retry_delay
 
+        # Build kwargs for bmlib
+        kwargs: dict[str, Any] = {}
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if json_mode:
+            kwargs["json_mode"] = True
+
+        # bmlib splits on the first colon without checking for a known provider
+        # prefix, so an Ollama tag like "gpt-oss:20b" must be qualified first.
+        qualified_model = qualify_model_string(model)
+        effective_max_tokens = self._resolve_max_tokens(
+            max_tokens, parse_model_string(model).provider,
+        )
+
         for attempt in range(max_retries):
             try:
-                return provider.chat(messages, model, params, system_prompt)
+                start_time = time.time()
+                bmlib_resp = self._bmlib.chat(
+                    messages=messages,
+                    model=qualified_model,
+                    temperature=temperature,
+                    max_tokens=effective_max_tokens,
+                    **kwargs,
+                )
+                return self._adapt_response(bmlib_resp, model, start_time)
             except Exception as e:
                 last_error = e
                 if attempt < max_retries - 1:
@@ -285,6 +384,10 @@ class LLMClient:
         """
         Send a text generation request.
 
+        Wraps the prompt as a single user message and shares chat()'s retry
+        and fallback path, but records usage against the "generate" operation
+        so cost reporting can distinguish the two.
+
         Args:
             prompt: Text prompt
             model: Model name with optional provider prefix
@@ -302,95 +405,12 @@ class LLMClient:
         Raises:
             ConnectionError: If all providers fail
         """
-        spec = parse_model_string(model)
-        params = GenerationParams(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
+        messages = [LLMMessage(role="user", content=prompt)]
+        return self._chat_with_fallback(
+            messages, model, temperature, top_p, max_tokens,
+            json_mode, fallback_model, max_retries, retry_delay,
+            operation="generate",
         )
-
-        try:
-            provider = self._get_provider(spec.provider)
-            response = self._generate_with_retry(
-                provider,
-                prompt,
-                spec.model_name,
-                params,
-                max_retries,
-                retry_delay,
-            )
-            self._record_usage(response, "generate")
-            return response
-
-        except Exception as e:
-            logger.warning(f"Primary provider failed: {e}")
-
-            fb_model = fallback_model or self.fallback_model
-            if fb_model and spec.provider != self.fallback_provider:
-                logger.info(f"Falling back to Ollama:{fb_model}")
-                try:
-                    fallback = self._get_provider(self.fallback_provider)
-                    response = self._generate_with_retry(
-                        fallback,
-                        prompt,
-                        fb_model,
-                        params,
-                        max_retries,
-                        retry_delay,
-                    )
-                    self._record_usage(response, "generate")
-                    return response
-                except Exception as fb_error:
-                    logger.error(f"Fallback also failed: {fb_error}")
-                    raise ConnectionError(
-                        f"All providers failed. Primary: {e}, Fallback: {fb_error}"
-                    ) from fb_error
-
-            raise
-
-    def _generate_with_retry(
-        self,
-        provider: LLMProvider,
-        prompt: str,
-        model: str,
-        params: GenerationParams,
-        max_retries: int,
-        retry_delay: float,
-    ) -> LLMResponse:
-        """
-        Execute generation with retry logic.
-
-        Args:
-            provider: Provider instance
-            prompt: Text prompt
-            model: Model name
-            params: Generation parameters
-            max_retries: Maximum retry attempts
-            retry_delay: Initial delay between retries
-
-        Returns:
-            LLMResponse from successful call
-        """
-        last_error: Optional[Exception] = None
-        current_delay = retry_delay
-
-        for attempt in range(max_retries):
-            try:
-                return provider.generate(prompt, model, params)
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Attempt {attempt + 1}/{max_retries} failed: {e}. "
-                        f"Retrying in {current_delay:.1f}s..."
-                    )
-                    time.sleep(current_delay)
-                    current_delay *= 2
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("Unexpected state: no error but no response")
 
     def embed(
         self,
@@ -410,9 +430,20 @@ class LLMClient:
         Returns:
             EmbeddingResponse with embedding vector
         """
-        # Always use Ollama for embeddings (consistency + free)
-        provider = self._get_provider(Provider.OLLAMA)
-        response = provider.embed(text, model)
+        # Always use Ollama for embeddings (consistency + free). The prefix is
+        # forced rather than merely added: embedding model names carry tags
+        # (e.g. "snowflake-arctic-embed2:latest") that bmlib would otherwise
+        # read as a provider name.
+        embed_model = f"{Provider.OLLAMA.value}:{parse_model_string(model).model_name}"
+        bmlib_resp: BmlibEmbeddingResponse = self._bmlib.embed(text=text, model=embed_model)
+
+        response = EmbeddingResponse(
+            embedding=bmlib_resp.embedding,
+            model=model,
+            provider=Provider.OLLAMA,
+            dimensions=bmlib_resp.dimensions,
+            prompt_tokens=bmlib_resp.input_tokens,
+        )
 
         if self._token_tracker:
             self._token_tracker.record_usage(
@@ -467,8 +498,9 @@ class LLMClient:
             True if provider is available and connected
         """
         try:
-            provider = self._get_provider(provider_type)
-            return provider.test_connection()
+            # Given a provider name, bmlib's client returns a plain bool.
+            # (Its provider objects return (ok, message); its client does not.)
+            return self._bmlib.test_connection(provider_type.value)
         except Exception:
             return False
 
@@ -484,17 +516,22 @@ class LLMClient:
         """
         result: dict[str, list[str]] = {}
 
-        providers_to_check = (
-            [provider_type] if provider_type else list(Provider)
-        )
-
-        for ptype in providers_to_check:
+        if provider_type:
             try:
-                provider = self._get_provider(ptype)
-                result[ptype.value] = provider.list_models()
+                models = self._bmlib.list_models(provider_type.value)
+                # bmlib returns list[str] for single provider
+                result[provider_type.value] = list(models) if models else []
             except Exception as e:
-                logger.debug(f"Could not list models for {ptype.value}: {e}")
-                result[ptype.value] = []
+                logger.debug(f"Could not list models for {provider_type.value}: {e}")
+                result[provider_type.value] = []
+        else:
+            for ptype in Provider:
+                try:
+                    models = self._bmlib.list_models(ptype.value)
+                    result[ptype.value] = list(models) if models else []
+                except Exception as e:
+                    logger.debug(f"Could not list models for {ptype.value}: {e}")
+                    result[ptype.value] = []
 
         return result
 
@@ -528,8 +565,8 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
     """
     List available Ollama models.
 
-    Centralized utility function for listing Ollama models that handles
-    both old and new Ollama library API formats.
+    Centralized utility function for listing Ollama models.
+    Delegates to bmlib's LLMClient.
 
     Args:
         host: Ollama server URL. If None, uses configured default.
@@ -545,8 +582,6 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
 
         >>> models = list_ollama_models("http://192.168.1.100:11434")
     """
-    import ollama
-
     try:
         # Get configured host if not provided
         if host is None:
@@ -556,20 +591,12 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
             except ImportError:
                 host = DEFAULT_OLLAMA_HOST
 
-        client = ollama.Client(host=host)
-        response = client.list()
-
-        # Ollama library >= 0.4.0 uses ListResponse with .models attribute
-        # containing Model objects with .model attribute
-        if hasattr(response, 'models'):
-            return [m.model for m in response.models]
-
-        # Fallback for older ollama library versions (dict-based response)
-        if isinstance(response, dict) and 'models' in response:
-            return [m["name"] for m in response.get("models", [])]
-
-        logger.warning("Unexpected Ollama list response format")
-        return []
+        client = BmlibLLMClient(
+            default_provider="ollama",
+            ollama_host=host,
+        )
+        models = client.list_models("ollama")
+        return list(models) if models else []
 
     except Exception as e:
         logger.warning(f"Failed to list Ollama models: {e}")

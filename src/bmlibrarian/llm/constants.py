@@ -24,6 +24,11 @@ RETRY_BACKOFF_MULTIPLIER = 2  # exponential backoff multiplier
 # Default max tokens for providers that require it (e.g., Anthropic)
 DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
 
+# Ollama's num_predict sentinel for "generate until the model stops".
+# Used when no explicit max_tokens is requested so that long-form output
+# (research reports, comprehensive edits) is not silently truncated.
+OLLAMA_UNLIMITED_MAX_TOKENS = -1
+
 # Request timeout in seconds
 DEFAULT_REQUEST_TIMEOUT = 120.0
 

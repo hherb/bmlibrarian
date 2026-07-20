@@ -115,9 +115,19 @@ class PerformanceMetrics:
 
     @property
     def tokens_per_second(self) -> float:
-        """Calculate average token generation rate (completion tokens per second)."""
+        """
+        Calculate average token generation rate (completion tokens per second).
+
+        Prefers pure model inference time, which excludes network and queuing
+        overhead. Providers reached through bmlib report only wall-clock
+        duration, so that is used as a fallback — it understates the model's
+        raw speed but reflects the throughput the caller actually observed,
+        which is more useful than reporting nothing.
+        """
         if self.total_model_time_seconds > 0:
             return self.total_completion_tokens / self.total_model_time_seconds
+        if self.total_wall_time_seconds > 0:
+            return self.total_completion_tokens / self.total_wall_time_seconds
         return 0.0
 
     @property

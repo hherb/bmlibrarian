@@ -106,6 +106,39 @@ def format_model_string(provider: Provider, model_name: str) -> str:
     return f"{provider.value}:{model_name}"
 
 
+def qualify_model_string(model_string: str) -> str:
+    """
+    Format a model string with an always-explicit provider prefix.
+
+    Unlike format_model_string(), which omits the prefix for the default
+    provider, this always emits "provider:model_name". Downstream parsers
+    that split on the first colon without checking for a known provider
+    prefix — notably bmlib.llm.LLMClient — would otherwise read the tag in
+    an Ollama name such as "gpt-oss:20b" as a provider named "gpt-oss".
+
+    Args:
+        model_string: Model identifier, optionally prefixed with provider
+
+    Returns:
+        Model string prefixed with its resolved provider
+
+    Raises:
+        ValueError: If model_string is empty
+
+    Examples:
+        >>> qualify_model_string("gpt-oss:20b")
+        'ollama:gpt-oss:20b'
+
+        >>> qualify_model_string("medgemma-27b")
+        'ollama:medgemma-27b'
+
+        >>> qualify_model_string("anthropic:claude-3-opus")
+        'anthropic:claude-3-opus'
+    """
+    spec = parse_model_string(model_string)
+    return f"{spec.provider.value}:{spec.model_name}"
+
+
 def is_provider_prefix(prefix: str) -> bool:
     """
     Check if a string is a recognized provider prefix.

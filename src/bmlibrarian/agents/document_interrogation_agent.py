@@ -150,6 +150,11 @@ class DocumentInterrogationAgent(BaseAgent):
         # Initialize text chunker
         self.chunker = TextChunker(chunk_size=chunk_size, overlap=chunk_overlap)
 
+        # Pre-embedded chunks from the last document_id call, if any. Declared
+        # here so the embedding path can test it directly rather than probing
+        # for the attribute's existence.
+        self._db_chunks: Optional[List[DatabaseChunk]] = None
+
         self.agent_type = "document_interrogation_agent"
 
     def get_agent_type(self) -> str:
@@ -421,7 +426,11 @@ class DocumentInterrogationAgent(BaseAgent):
             # Chunk the document on-the-fly
             chunks = self.chunker.chunk_text(document_text)
             chunk_info = self.chunker.get_chunk_info(document_text)
-            use_database_chunks = False
+            # Drop any chunks cached by an earlier document_id call on this
+            # agent: the embedding path pairs cached embeddings with the
+            # current chunks by index, so stale entries silently score this
+            # document against a previous one.
+            self._db_chunks = None
 
         else:  # document_id provided
             self._call_callback("document_interrogation_start",
@@ -443,7 +452,6 @@ class DocumentInterrogationAgent(BaseAgent):
                 'source': 'database',
                 'document_id': document_id
             }
-            use_database_chunks = True
             # Store db_chunks for later use in embedding mode
             self._db_chunks = db_chunks
 
@@ -540,7 +548,7 @@ class DocumentInterrogationAgent(BaseAgent):
         question_embedding = self._get_embedding(question)
 
         # Check if we have pre-computed embeddings from database
-        use_db_embeddings = hasattr(self, '_db_chunks') and self._db_chunks
+        use_db_embeddings = bool(self._db_chunks)
 
         # Get embeddings for all chunks and calculate similarity
         chunk_similarities = []
@@ -667,16 +675,10 @@ Find all passages in the document that help answer the question.
 Return JSON array format as specified."""
 
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt}
-                ],
-                options=self._get_ollama_options()
-            )
-
-            response_text = response['message']['content'].strip()
+            response_text = self._make_llm_request(
+                messages=[{'role': 'user', 'content': user_prompt}],
+                system_prompt=system_prompt,
+            ).strip()
 
             # Parse JSON response
             # Handle markdown code blocks if present
@@ -762,16 +764,10 @@ Synthesize an answer to the question based on these sections.
 Return JSON format: {{"answer": "...", "confidence": 0.0-1.0}}"""
 
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_prompt}
-                ],
-                options=self._get_ollama_options()
-            )
-
-            response_text = response['message']['content'].strip()
+            response_text = self._make_llm_request(
+                messages=[{'role': 'user', 'content': user_prompt}],
+                system_prompt=system_prompt,
+            ).strip()
 
             # Parse JSON response
             if response_text.startswith('```'):
@@ -857,18 +853,19 @@ Return JSON format: {{"answer": "...", "confidence": 0.0-1.0}}"""
         Returns:
             True if connection successful, False otherwise
         """
+        # BaseAgent verifies provider reachability and the chat model; this
+        # agent additionally depends on a separate embedding model.
+        if not super().test_connection():
+            return False
+
         try:
-            # Test main model
-            models = self.client.list()
-            model_names = [m.model for m in models.models]
+            available_models = self.get_available_models()
 
-            if self.model not in model_names:
-                logger.warning(f"Model {self.model} not found in Ollama")
-                return False
-
-            # Test embedding model
-            if self.embedding_model not in model_names:
-                logger.warning(f"Embedding model {self.embedding_model} not found in Ollama")
+            if self.embedding_model not in available_models:
+                logger.warning(
+                    f"Embedding model {self.embedding_model} not found. "
+                    f"Available models: {available_models}"
+                )
                 return False
 
             return True
