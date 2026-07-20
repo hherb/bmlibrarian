@@ -1194,7 +1194,7 @@ report = reporting_agent.generate_citation_based_report(
 1. **Never trust input from users, external data, network or file data**: Always validate and sanitize input. Never trust that it will be in the expected format or contain the expected data.
 2. **No magic numbers**: Always use constants or configuration for numbers. Never hardcode numbers. Always use named constants for numbers that are used in multiple places.
 3. **No hardcoded paths**: Always use constants or configuration for paths. Never hardcode paths. Always use named constants for paths that are used in multiple places.
-4. **All model communication happens through the python ollama library**: Never use raw HTTP requests to communicate with Ollama. Always use the `ollama` library.
+4. **All model communication happens through the LLM abstraction layer**: Use `bmlibrarian.llm.LLMClient` (which delegates to `bmlib.llm`), or the `BaseAgent` helpers `_make_llm_request()` / `_generate_from_prompt()` / `_generate_embedding()`. To populate a model picker, use `bmlibrarian.llm.list_ollama_models()`. Never `import ollama` outside `src/bmlibrarian/llm/`, and never use raw HTTP. Importing ollama directly bypasses provider selection, fallback, retries and token accounting — a configured `anthropic:` model simply does not apply. `tests/test_llm_layer_boundary.py` enforces this: modules that predate the abstraction are allowlisted there, and that list may only shrink.
 5. **All postgres database communication happens through the database manager**: Never use psycopg connection directly or modify the database structure/schema without proper migration.
 6. **All parameters must have type hints**: No exceptions.
 7. **All functions, methods, and classes must have docstrings**: No exceptions.

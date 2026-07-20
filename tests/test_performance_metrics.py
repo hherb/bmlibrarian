@@ -9,6 +9,8 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch
 
+from bmlib.llm import LLMResponse as BmlibResponse
+
 from bmlibrarian.agents import PerformanceMetrics
 from bmlibrarian.agents.base import BaseAgent, NANOSECONDS_PER_SECOND
 
@@ -150,8 +152,30 @@ class TestPerformanceMetrics:
         # 100 completion tokens / 2 seconds = 50 tokens/sec
         assert metrics.tokens_per_second == 50.0
 
+    def test_tokens_per_second_falls_back_to_wall_time(self) -> None:
+        """
+        Throughput is reported even when the provider gives no model time.
+
+        bmlib's LLMResponse carries only wall-clock duration — Ollama's
+        eval_duration is not surfaced — so without this fallback every
+        agent reports 0 tokens/sec.
+        """
+        metrics = PerformanceMetrics()
+
+        metrics.add_request_metrics(
+            prompt_tokens=100,
+            completion_tokens=100,
+            wall_time_seconds=4.0,
+            model_time_ns=0,  # not available from the provider
+            prompt_eval_ns=0,
+            retries=0
+        )
+
+        # 100 completion tokens / 4 seconds wall clock = 25 tokens/sec
+        assert metrics.tokens_per_second == 25.0
+
     def test_tokens_per_second_zero_time(self) -> None:
-        """Test tokens per second with zero model time returns 0."""
+        """Test tokens per second with no timing data at all returns 0."""
         metrics = PerformanceMetrics()
         assert metrics.tokens_per_second == 0.0
 
@@ -249,16 +273,16 @@ class TestPerformanceMetrics:
 class TestBaseAgentMetrics:
     """Tests for metrics methods on BaseAgent."""
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_agent_has_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_agent_has_metrics(self, mock_chat: MagicMock) -> None:
         """Test that agent initializes with metrics."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
         assert hasattr(agent, '_metrics')
         assert isinstance(agent._metrics, PerformanceMetrics)
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_get_performance_metrics_returns_copy(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_get_performance_metrics_returns_copy(self, mock_chat: MagicMock) -> None:
         """Test that get_performance_metrics returns a copy."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -282,8 +306,8 @@ class TestBaseAgentMetrics:
         metrics.total_tokens = 999
         assert agent._metrics.total_tokens == 150
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_reset_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_reset_metrics(self, mock_chat: MagicMock) -> None:
         """Test resetting metrics on agent."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -301,8 +325,8 @@ class TestBaseAgentMetrics:
         assert agent._metrics.total_tokens == 0
         assert agent._metrics.total_requests == 0
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_start_stop_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_start_stop_metrics(self, mock_chat: MagicMock) -> None:
         """Test start and stop metrics methods."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -315,8 +339,8 @@ class TestBaseAgentMetrics:
         assert agent._metrics.end_time is not None
         assert agent._metrics.elapsed_time_seconds >= 0.05
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_format_metrics_report(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_format_metrics_report(self, mock_chat: MagicMock) -> None:
         """Test formatted metrics report generation."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -343,8 +367,8 @@ class TestBaseAgentMetrics:
         assert "Speed:" in report
         assert "tokens/sec" in report
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_format_metrics_report_no_header(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_format_metrics_report_no_header(self, mock_chat: MagicMock) -> None:
         """Test formatted report without header."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -362,8 +386,8 @@ class TestBaseAgentMetrics:
         assert "=== TestAgent Performance Metrics ===" not in report
         assert "Requests:" in report
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_get_metrics_dict(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_get_metrics_dict(self, mock_chat: MagicMock) -> None:
         """Test getting metrics as dictionary with agent metadata."""
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -387,18 +411,16 @@ class TestBaseAgentMetrics:
 class TestMetricsIntegration:
     """Integration tests for metrics tracking in LLM calls."""
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_make_ollama_request_tracks_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_make_ollama_request_tracks_metrics(self, mock_chat: MagicMock) -> None:
         """Test that _make_ollama_request captures token metrics."""
         # Setup mock response with token counts
-        mock_response = {
-            'message': {'content': 'test response'},
-            'prompt_eval_count': 100,
-            'eval_count': 50,
-            'eval_duration': 1_000_000_000,  # 1 second in ns
-            'prompt_eval_duration': 500_000_000  # 0.5 seconds
-        }
-        mock_client.return_value.chat.return_value = mock_response
+        mock_chat.return_value = BmlibResponse(
+            content='test response',
+            model="test",
+            input_tokens=100,
+            output_tokens=50
+        )
 
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -413,21 +435,17 @@ class TestMetricsIntegration:
         assert metrics.total_completion_tokens == 50
         assert metrics.total_tokens == 150
         assert metrics.total_requests == 1
-        assert metrics.total_model_time_seconds == 1.0
-        assert metrics.total_prompt_eval_seconds == 0.5
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_generate_from_prompt_tracks_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_generate_from_prompt_tracks_metrics(self, mock_chat: MagicMock) -> None:
         """Test that _generate_from_prompt captures token metrics."""
         # Setup mock response with token counts
-        mock_response = {
-            'response': 'test response',
-            'prompt_eval_count': 200,
-            'eval_count': 100,
-            'eval_duration': 2_000_000_000,  # 2 seconds
-            'prompt_eval_duration': 1_000_000_000  # 1 second
-        }
-        mock_client.return_value.generate.return_value = mock_response
+        mock_chat.return_value = BmlibResponse(
+            content='test response',
+            model="test",
+            input_tokens=200,
+            output_tokens=100
+        )
 
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -440,19 +458,16 @@ class TestMetricsIntegration:
         assert metrics.total_completion_tokens == 100
         assert metrics.total_tokens == 300
         assert metrics.total_requests == 1
-        assert metrics.total_model_time_seconds == 2.0
-        assert metrics.total_prompt_eval_seconds == 1.0
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_multiple_requests_accumulate_metrics(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_multiple_requests_accumulate_metrics(self, mock_chat: MagicMock) -> None:
         """Test that multiple requests accumulate metrics."""
-        mock_client.return_value.chat.return_value = {
-            'message': {'content': 'response'},
-            'prompt_eval_count': 100,
-            'eval_count': 50,
-            'eval_duration': 500_000_000,
-            'prompt_eval_duration': 250_000_000
-        }
+        mock_chat.return_value = BmlibResponse(
+            content='response',
+            model="test",
+            input_tokens=100,
+            output_tokens=50
+        )
 
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 
@@ -469,15 +484,14 @@ class TestMetricsIntegration:
         assert metrics.total_tokens == 450  # 150 * 3
         assert metrics.total_requests == 3
 
-    @patch('bmlibrarian.agents.base.ollama.Client')
-    def test_metrics_with_missing_fields(self, mock_client: MagicMock) -> None:
+    @patch('bmlib.llm.client.LLMClient.chat')
+    def test_metrics_with_missing_fields(self, mock_chat: MagicMock) -> None:
         """Test that metrics handles responses with missing fields gracefully."""
-        # Response without token count fields
-        mock_response = {
-            'message': {'content': 'test response'}
-            # No token count fields
-        }
-        mock_client.return_value.chat.return_value = mock_response
+        # Response without explicit token count fields (defaults to 0)
+        mock_chat.return_value = BmlibResponse(
+            content='test response',
+            model="test"
+        )
 
         agent = ConcreteAgent(model="test-model", show_model_info=False)
 

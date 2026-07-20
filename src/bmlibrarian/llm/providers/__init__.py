@@ -1,8 +1,8 @@
 """
-LLM Provider registry and factory.
+LLM Provider registry — delegates to bmlib's provider registry.
 
-This module provides a singleton registry for LLM provider instances,
-ensuring efficient connection reuse across the application.
+This module provides a bmlibrarian-compatible interface using the Provider enum
+while delegating actual provider management to bmlib.llm.providers.
 
 Usage:
     from bmlibrarian.llm.providers import get_provider, Provider
@@ -13,19 +13,20 @@ Usage:
 
 import logging
 import threading
-from typing import Optional, Any
+from typing import Any
+
+from bmlib.llm.providers import (
+    BaseProvider as LLMProvider,
+    get_provider as _bmlib_get_provider,
+)
 
 from ..data_types import Provider
-from .base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
 # Provider instances (singleton pattern per provider type)
 _providers: dict[Provider, LLMProvider] = {}
 _lock = threading.Lock()
-
-# Provider configuration cache (for recreating providers with same config)
-_provider_configs: dict[Provider, dict[str, Any]] = {}
 
 
 def get_provider(
@@ -35,11 +36,8 @@ def get_provider(
     """
     Get or create a provider instance.
 
-    Uses singleton pattern - one instance per provider type.
-    Configuration is cached, so subsequent calls with different
-    kwargs will NOT update the provider configuration.
-
-    To change provider configuration, use reset_provider() first.
+    Uses singleton pattern — one instance per provider type.
+    Delegates to bmlib's provider registry for actual instantiation.
 
     Args:
         provider_type: Which provider to get
@@ -50,64 +48,30 @@ def get_provider(
 
     Raises:
         ValueError: If provider type is unknown
-        ImportError: If required package is not installed
-
-    Example:
-        # Get Ollama provider with custom host
-        ollama = get_provider(Provider.OLLAMA, host="http://gpu-server:11434")
-
-        # Get Anthropic provider (uses ANTHROPIC_API_KEY env var)
-        anthropic = get_provider(Provider.ANTHROPIC)
     """
     with _lock:
         if provider_type not in _providers:
-            _providers[provider_type] = _create_provider(provider_type, **kwargs)
-            _provider_configs[provider_type] = kwargs
-            logger.debug(f"Created {provider_type.value} provider")
+            # Map bmlibrarian kwargs to bmlib kwargs
+            bmlib_kwargs: dict[str, Any] = {}
+            if "host" in kwargs:
+                bmlib_kwargs["base_url"] = kwargs["host"]
+            if "api_key" in kwargs:
+                bmlib_kwargs["api_key"] = kwargs["api_key"]
+            # Pass through any other kwargs
+            for k, v in kwargs.items():
+                if k not in ("host", "api_key"):
+                    bmlib_kwargs[k] = v
+
+            _providers[provider_type] = _bmlib_get_provider(
+                provider_type.value, **bmlib_kwargs
+            )
+            logger.debug(f"Created {provider_type.value} provider via bmlib")
         return _providers[provider_type]
-
-
-def _create_provider(provider_type: Provider, **kwargs: Any) -> LLMProvider:
-    """
-    Create a new provider instance.
-
-    Args:
-        provider_type: Which provider to create
-        **kwargs: Provider-specific configuration
-
-    Returns:
-        New provider instance
-
-    Raises:
-        ValueError: If provider type is unknown
-    """
-    if provider_type == Provider.OLLAMA:
-        from .ollama_provider import OllamaProvider
-
-        return OllamaProvider(**kwargs)
-
-    elif provider_type == Provider.ANTHROPIC:
-        from .anthropic_provider import AnthropicProvider
-
-        return AnthropicProvider(**kwargs)
-
-    elif provider_type == Provider.OPENAI:
-        # OpenAI provider not yet implemented
-        raise NotImplementedError(
-            "OpenAI provider not yet implemented. "
-            "Use ollama or anthropic providers."
-        )
-
-    else:
-        raise ValueError(f"Unknown provider: {provider_type}")
 
 
 def reset_provider(provider_type: Provider) -> None:
     """
     Reset a specific provider instance.
-
-    This removes the cached provider instance, allowing a new one
-    to be created with different configuration on the next get_provider() call.
 
     Args:
         provider_type: Which provider to reset
@@ -116,21 +80,12 @@ def reset_provider(provider_type: Provider) -> None:
         if provider_type in _providers:
             del _providers[provider_type]
             logger.debug(f"Reset {provider_type.value} provider")
-        if provider_type in _provider_configs:
-            del _provider_configs[provider_type]
 
 
 def reset_all_providers() -> None:
-    """
-    Reset all provider instances.
-
-    Clears all cached providers, useful for testing or
-    reconfiguration scenarios.
-    """
-    global _providers, _provider_configs
+    """Reset all provider instances."""
     with _lock:
         _providers.clear()
-        _provider_configs.clear()
         logger.debug("Reset all providers")
 
 
@@ -149,9 +104,6 @@ def is_provider_available(provider_type: Provider) -> bool:
     """
     Check if a provider is available and properly configured.
 
-    This creates the provider if not already created and tests
-    the connection.
-
     Args:
         provider_type: Which provider to check
 
@@ -160,7 +112,9 @@ def is_provider_available(provider_type: Provider) -> bool:
     """
     try:
         provider = get_provider(provider_type)
-        return provider.test_connection()
+        # bmlib's BaseProvider.test_connection returns (ok, message)
+        connected, _message = provider.test_connection()
+        return connected
     except Exception as e:
         logger.debug(f"Provider {provider_type.value} not available: {e}")
         return False

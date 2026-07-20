@@ -5,6 +5,10 @@ This module provides a unified interface for interacting with multiple
 LLM providers (Ollama, Anthropic, OpenAI) with automatic fallback,
 token tracking, and cost estimation.
 
+Internally delegates to bmlib.llm for provider communication while
+adding bmlibrarian-specific features (Provider enum, retry/fallback,
+system prompt handling).
+
 Quick Start:
     from bmlibrarian.llm import LLMClient, LLMMessage
 
@@ -40,11 +44,13 @@ Configuration:
     - OPENAI_API_KEY: OpenAI API key (required for openai: models)
 """
 
-# Data types
+# Core message type — re-exported from bmlib (canonical source)
+from bmlib.llm import LLMMessage  # noqa: F401
+
+# bmlibrarian-specific data types (Provider enum, extended LLMResponse, etc.)
 from .data_types import (
     Provider,
     ModelSpec,
-    LLMMessage,
     LLMResponse,
     EmbeddingResponse,
     GenerationParams,
@@ -55,11 +61,12 @@ from .data_types import (
 from .model_resolver import (
     parse_model_string,
     format_model_string,
+    qualify_model_string,
     is_provider_prefix,
     get_supported_providers,
 )
 
-# Token tracking
+# Token tracking (bmlibrarian-specific with Provider enum and pricing tables)
 from .token_tracker import (
     TokenTracker,
     UsageRecord,
@@ -78,14 +85,14 @@ from .constants import (
     DEFAULT_RETRY_DELAY,
 )
 
-# Client
+# Client (wraps bmlib.llm.LLMClient with bmlibrarian features)
 from .client import (
     LLMClient,
     get_llm_client,
     list_ollama_models,
 )
 
-# Provider access (for advanced use cases)
+# Provider access (delegates to bmlib's provider registry)
 from .providers import (
     LLMProvider,
     get_provider,
@@ -107,6 +114,7 @@ __all__ = [
     # Model resolver
     "parse_model_string",
     "format_model_string",
+    "qualify_model_string",
     "is_provider_prefix",
     "get_supported_providers",
     # Token tracking

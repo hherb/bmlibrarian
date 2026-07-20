@@ -9,7 +9,14 @@ import json
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
+from bmlib.llm import LLMResponse as BmlibResponse
+
 from bmlibrarian.agents import StudyAssessmentAgent, StudyAssessment
+
+
+def _bmlib_response(content: str) -> BmlibResponse:
+    """Helper to create a BmlibResponse for mocking."""
+    return BmlibResponse(content=content, model="test", input_tokens=10, output_tokens=5)
 
 
 # Sample RCT document for testing
@@ -133,25 +140,23 @@ class TestStudyAssessmentAgent:
     """Test suite for StudyAssessmentAgent."""
 
     @pytest.fixture
-    def mock_ollama_client(self):
-        """Create a mock Ollama client."""
-        with patch('bmlibrarian.agents.base.ollama.Client') as mock_client:
-            yield mock_client
+    def mock_bmlib_chat(self):
+        """Mock bmlib LLMClient.chat to prevent real LLM calls."""
+        with patch('bmlib.llm.client.LLMClient.chat') as mock_chat:
+            yield mock_chat
 
     @pytest.fixture
-    def assessment_agent(self, mock_ollama_client):
-        """Create a StudyAssessmentAgent instance with mocked Ollama."""
+    def assessment_agent(self, mock_bmlib_chat):
+        """Create a StudyAssessmentAgent instance with mocked LLM."""
         agent = StudyAssessmentAgent(
             model="gpt-oss:20b",
             show_model_info=False
         )
-        # Mock the client
-        agent.client = Mock()
         return agent
 
     def test_agent_initialization(self):
         """Test StudyAssessmentAgent initialization."""
-        with patch('bmlibrarian.agents.base.ollama.Client'):
+        with patch('bmlib.llm.client.LLMClient.chat'):
             agent = StudyAssessmentAgent(
                 model="gpt-oss:20b",
                 temperature=0.1,
@@ -166,15 +171,13 @@ class TestStudyAssessmentAgent:
             assert agent.max_tokens == 3000
             assert agent.get_agent_type() == "study_assessment_agent"
 
-    def test_assess_rct_success(self, assessment_agent):
+    def test_assess_rct_success(self, assessment_agent, mock_bmlib_chat):
         """Test successful assessment of high-quality RCT."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
 
         # Mock successful LLM response
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
 
         # Perform assessment
         assessment = assessment_agent.assess_study(
@@ -212,15 +215,13 @@ class TestStudyAssessmentAgent:
         assert assessment.pmid == '12345678'
         assert assessment.sample_size == 'N=500'
 
-    def test_assess_case_report(self, assessment_agent):
+    def test_assess_case_report(self, assessment_agent, mock_bmlib_chat):
         """Test assessment of case report (low-quality evidence)."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
 
         # Mock LLM response for case report
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_CASE_REPORT_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_CASE_REPORT_ASSESSMENT))
 
         # Perform assessment
         assessment = assessment_agent.assess_study(
@@ -244,7 +245,7 @@ class TestStudyAssessmentAgent:
         # Verify limitations > strengths (typical for case reports)
         assert len(assessment.limitations) >= len(assessment.strengths)
 
-    def test_assess_missing_text(self, assessment_agent):
+    def test_assess_missing_text(self, assessment_agent, mock_bmlib_chat):
         """Test assessment fails gracefully with missing text."""
         document_no_text = {
             'id': '999',
@@ -256,7 +257,7 @@ class TestStudyAssessmentAgent:
         # Should return None when no text available
         assert assessment is None
 
-    def test_assess_low_confidence_threshold(self, assessment_agent):
+    def test_assess_low_confidence_threshold(self, assessment_agent, mock_bmlib_chat):
         """Test that assessments below confidence threshold are still returned."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
@@ -265,9 +266,7 @@ class TestStudyAssessmentAgent:
         low_confidence_assessment = EXPECTED_RCT_ASSESSMENT.copy()
         low_confidence_assessment['overall_confidence'] = 0.3
 
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(low_confidence_assessment)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(low_confidence_assessment))
 
         # Even with min_confidence=0.5, low confidence assessments are returned
         # (unlike PICOAgent which returns None)
@@ -280,16 +279,16 @@ class TestStudyAssessmentAgent:
         assert assessment is not None
         assert assessment.overall_confidence == 0.3
 
-    def test_assess_batch_success(self, assessment_agent):
+    def test_assess_batch_success(self, assessment_agent, mock_bmlib_chat):
         """Test successful batch assessment."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
 
         # Mock LLM responses
-        assessment_agent.client.generate = Mock(side_effect=[
-            {'response': json.dumps(EXPECTED_RCT_ASSESSMENT)},
-            {'response': json.dumps(EXPECTED_CASE_REPORT_ASSESSMENT)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT)),
+            _bmlib_response(json.dumps(EXPECTED_CASE_REPORT_ASSESSMENT))
+        ]
 
         documents = [SAMPLE_RCT_DOCUMENT, SAMPLE_CASE_REPORT_DOCUMENT]
 
@@ -315,7 +314,7 @@ class TestStudyAssessmentAgent:
         assert progress_calls[0] == (1, 2, SAMPLE_RCT_DOCUMENT['title'])
         assert progress_calls[1] == (2, 2, SAMPLE_CASE_REPORT_DOCUMENT['title'])
 
-    def test_format_assessment_summary(self, assessment_agent):
+    def test_format_assessment_summary(self, assessment_agent, mock_bmlib_chat):
         """Test formatting assessment as human-readable summary."""
         # Create assessment object
         assessment = StudyAssessment(
@@ -350,7 +349,7 @@ class TestStudyAssessmentAgent:
         assert "Short follow-up" in summary
         assert "Selection: low" in summary
 
-    def test_export_to_json(self, assessment_agent, tmp_path):
+    def test_export_to_json(self, assessment_agent, tmp_path, mock_bmlib_chat):
         """Test exporting assessments to JSON file."""
         # Create test assessments
         assessments = [
@@ -401,7 +400,7 @@ class TestStudyAssessmentAgent:
         assert data['assessments'][0]['study_type'] == 'RCT'
         assert data['assessments'][1]['study_type'] == 'Cohort'
 
-    def test_export_to_csv(self, assessment_agent, tmp_path):
+    def test_export_to_csv(self, assessment_agent, tmp_path, mock_bmlib_chat):
         """Test exporting assessments to CSV file."""
         import csv
 
@@ -441,7 +440,7 @@ class TestStudyAssessmentAgent:
         # Lists should be joined with semicolons
         assert 'Strength 1; Strength 2' in rows[0]['strengths']
 
-    def test_get_assessment_stats(self, assessment_agent):
+    def test_get_assessment_stats(self, assessment_agent, mock_bmlib_chat):
         """Test assessment statistics tracking."""
         # Initial stats should be zero
         stats = assessment_agent.get_assessment_stats()
@@ -452,9 +451,7 @@ class TestStudyAssessmentAgent:
         assessment_agent.test_connection = Mock(return_value=True)
 
         # Mock successful assessment
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
 
         # Perform assessment
         assessment_agent.assess_study(SAMPLE_RCT_DOCUMENT)
@@ -465,7 +462,7 @@ class TestStudyAssessmentAgent:
         assert stats['successful_assessments'] == 1
         assert stats['success_rate'] == 1.0
 
-    def test_get_quality_distribution(self, assessment_agent):
+    def test_get_quality_distribution(self, assessment_agent, mock_bmlib_chat):
         """Test quality score distribution calculation."""
         # Create assessments with varying quality scores
         assessments = [
@@ -499,7 +496,7 @@ class TestStudyAssessmentAgent:
         assert distribution['low (3-4)'] == 0
         assert distribution['very_low (0-2)'] == 1
 
-    def test_get_evidence_level_distribution(self, assessment_agent):
+    def test_get_evidence_level_distribution(self, assessment_agent, mock_bmlib_chat):
         """Test evidence level distribution calculation."""
         # Create assessments with varying evidence levels
         assessments = [
@@ -530,25 +527,25 @@ class TestStudyAssessmentAgent:
         assert distribution['Level 1 (high)'] == 2
         assert distribution['Level 3 (moderate)'] == 1
 
-    def test_json_parse_failure_retry(self, assessment_agent):
+    def test_json_parse_failure_retry(self, assessment_agent, mock_bmlib_chat):
         """Test that JSON parse failures trigger retry."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
 
         # Mock responses: first invalid JSON, then valid
-        assessment_agent.client.generate = Mock(side_effect=[
-            {'response': 'This is not valid JSON'},
-            {'response': json.dumps(EXPECTED_RCT_ASSESSMENT)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response('This is not valid JSON'),
+            _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
+        ]
 
         # Should succeed on retry
         assessment = assessment_agent.assess_study(SAMPLE_RCT_DOCUMENT)
 
         # Verify assessment succeeded on retry
         assert assessment is not None
-        assert assessment_agent.client.generate.call_count == 2
+        assert mock_bmlib_chat.call_count == 2
 
-    def test_connection_failure(self, assessment_agent):
+    def test_connection_failure(self, assessment_agent, mock_bmlib_chat):
         """Test assessment handles connection failures gracefully."""
         # Mock connection test failure
         assessment_agent.test_connection = Mock(return_value=False)
@@ -558,7 +555,7 @@ class TestStudyAssessmentAgent:
 
         assert assessment is None
 
-    def test_text_truncation(self, assessment_agent):
+    def test_text_truncation(self, assessment_agent, mock_bmlib_chat):
         """Test that very long texts are truncated appropriately."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
@@ -570,15 +567,13 @@ class TestStudyAssessmentAgent:
             'abstract': 'A' * 20000  # 20,000 characters
         }
 
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
 
         # Should not fail due to text length
         assessment = assessment_agent.assess_study(long_document)
 
         # Verify LLM was called (text was truncated but assessment proceeded)
-        assert assessment_agent.client.generate.called
+        assert mock_bmlib_chat.called
 
     def test_study_assessment_dataclass_to_dict(self):
         """Test StudyAssessment dataclass conversion to dictionary."""
@@ -608,7 +603,7 @@ class TestStudyAssessmentAgent:
         assert 'created_at' in data
         assert isinstance(data['created_at'], str)  # ISO format
 
-    def test_missing_required_fields(self, assessment_agent):
+    def test_missing_required_fields(self, assessment_agent, mock_bmlib_chat):
         """Test that missing required fields in LLM response causes failure."""
         # Mock response missing required fields
         incomplete_assessment = {
@@ -616,16 +611,14 @@ class TestStudyAssessmentAgent:
             # Missing: study_design, quality_score, strengths, limitations, etc.
         }
 
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(incomplete_assessment)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(incomplete_assessment))
 
         # Should return None due to missing fields
         assessment = assessment_agent.assess_study(SAMPLE_RCT_DOCUMENT)
 
         assert assessment is None
 
-    def test_assessment_with_full_text(self, assessment_agent):
+    def test_assessment_with_full_text(self, assessment_agent, mock_bmlib_chat):
         """Test that full text is preferred over abstract when available."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
@@ -638,22 +631,19 @@ class TestStudyAssessmentAgent:
             'full_text': 'This is the full text with much more detail about the methodology...'
         }
 
-        assessment_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
 
         assessment = assessment_agent.assess_study(document_with_full_text)
 
         # Verify LLM was called
-        assert assessment_agent.client.generate.called
+        assert mock_bmlib_chat.called
 
         # Verify the prompt contained full text (not just abstract)
-        call_args = assessment_agent.client.generate.call_args
-        prompt = call_args[1]['prompt']
+        prompt = mock_bmlib_chat.call_args.kwargs['messages'][0].content
         assert 'full text with much more detail' in prompt
         assert 'Short abstract' not in prompt
 
-    def test_assess_study_by_id_success(self, assessment_agent):
+    def test_assess_study_by_id_success(self, assessment_agent, mock_bmlib_chat):
         """Test successful assessment using document ID."""
         # Mock connection test
         assessment_agent.test_connection = Mock(return_value=True)
@@ -663,9 +653,7 @@ class TestStudyAssessmentAgent:
             mock_fetch.return_value = [SAMPLE_RCT_DOCUMENT]
 
             # Mock LLM response
-            assessment_agent.client.generate = Mock(return_value={
-                'response': json.dumps(EXPECTED_RCT_ASSESSMENT)
-            })
+            mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_RCT_ASSESSMENT))
 
             # Call assess_study_by_id
             assessment = assessment_agent.assess_study_by_id(12345678, min_confidence=0.5)
@@ -678,7 +666,7 @@ class TestStudyAssessmentAgent:
             assert assessment.document_id == '12345678'
             assert assessment.quality_score >= 7.0
 
-    def test_assess_study_by_id_not_found(self, assessment_agent):
+    def test_assess_study_by_id_not_found(self, assessment_agent, mock_bmlib_chat):
         """Test assess_study_by_id with non-existent document ID."""
         # Mock fetch_documents_by_ids returning empty list
         with patch('bmlibrarian.database.fetch_documents_by_ids') as mock_fetch:
@@ -688,7 +676,7 @@ class TestStudyAssessmentAgent:
             with pytest.raises(ValueError, match="not found in database"):
                 assessment_agent.assess_study_by_id(999999)
 
-    def test_assess_study_by_id_database_error(self, assessment_agent):
+    def test_assess_study_by_id_database_error(self, assessment_agent, mock_bmlib_chat):
         """Test assess_study_by_id with database connection error."""
         # Mock fetch_documents_by_ids raising exception
         with patch('bmlibrarian.database.fetch_documents_by_ids') as mock_fetch:

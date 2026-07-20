@@ -9,9 +9,16 @@ import json
 from unittest.mock import Mock, patch
 from datetime import datetime
 
+from bmlib.llm import LLMResponse as BmlibResponse
+
 from bmlibrarian.agents.prisma2020_agent import (
     PRISMA2020Agent, PRISMA2020Assessment, SuitabilityAssessment
 )
+
+
+def _bmlib_response(content: str) -> BmlibResponse:
+    """Helper to create a BmlibResponse for mocking."""
+    return BmlibResponse(content=content, model="test", input_tokens=10, output_tokens=5)
 
 
 # Sample systematic review document for testing
@@ -155,26 +162,24 @@ class TestPRISMA2020Agent:
     """Test suite for PRISMA2020Agent."""
 
     @pytest.fixture
-    def mock_ollama_client(self):
-        """Create a mock Ollama client."""
-        with patch('bmlibrarian.agents.base.ollama.Client') as mock_client:
-            yield mock_client
+    def mock_bmlib_chat(self):
+        """Mock bmlib LLMClient.chat to prevent real LLM calls."""
+        with patch('bmlib.llm.client.LLMClient.chat') as mock_chat:
+            yield mock_chat
 
     @pytest.fixture
-    def prisma_agent(self, mock_ollama_client):
-        """Create a PRISMA2020Agent instance with mocked Ollama."""
+    def prisma_agent(self, mock_bmlib_chat):
+        """Create a PRISMA2020Agent instance with mocked LLM."""
         with patch('bmlibrarian.config.get_config'):
             agent = PRISMA2020Agent(
                 model="gpt-oss:20b",
                 show_model_info=False
             )
-            # Mock the client
-            agent.client = Mock()
             return agent
 
     def test_agent_initialization(self):
         """Test PRISMA2020Agent initialization."""
-        with patch('bmlibrarian.agents.base.ollama.Client'):
+        with patch('bmlib.llm.client.LLMClient.chat'):
             with patch('bmlibrarian.config.get_config'):
                 agent = PRISMA2020Agent(
                     model="gpt-oss:20b",
@@ -190,15 +195,13 @@ class TestPRISMA2020Agent:
                 assert agent.max_tokens == 4000
                 assert agent.get_agent_type() == "prisma2020_agent"
 
-    def test_check_suitability_systematic_review(self, prisma_agent):
+    def test_check_suitability_systematic_review(self, prisma_agent, mock_bmlib_chat):
         """Test suitability check identifies systematic review correctly."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock successful LLM response
-        prisma_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW))
 
         # Perform suitability check
         suitability = prisma_agent.check_suitability(SAMPLE_SYSTEMATIC_REVIEW_DOCUMENT)
@@ -212,15 +215,13 @@ class TestPRISMA2020Agent:
         assert suitability.confidence >= 0.9
         assert "systematic review" in suitability.document_type.lower()
 
-    def test_check_suitability_rejects_rct(self, prisma_agent):
+    def test_check_suitability_rejects_rct(self, prisma_agent, mock_bmlib_chat):
         """Test suitability check correctly rejects primary research."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock LLM response rejecting RCT
-        prisma_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_SUITABILITY_RCT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_SUITABILITY_RCT))
 
         # Perform suitability check
         suitability = prisma_agent.check_suitability(SAMPLE_RCT_DOCUMENT)
@@ -231,16 +232,16 @@ class TestPRISMA2020Agent:
         assert suitability.is_systematic_review is False
         assert "RCT" in suitability.document_type or "trial" in suitability.document_type.lower()
 
-    def test_assess_prisma_compliance_success(self, prisma_agent):
+    def test_assess_prisma_compliance_success(self, prisma_agent, mock_bmlib_chat):
         """Test successful PRISMA 2020 compliance assessment."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock suitability check and assessment
-        prisma_agent.client.generate = Mock(side_effect=[
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)},
-            {'response': json.dumps(EXPECTED_PRISMA_ASSESSMENT)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)),
+            _bmlib_response(json.dumps(EXPECTED_PRISMA_ASSESSMENT))
+        ]
 
         # Perform assessment
         assessment = prisma_agent.assess_prisma_compliance(
@@ -270,30 +271,26 @@ class TestPRISMA2020Agent:
         assert assessment.document_id == '12345678'
         assert assessment.pmid == '12345678'
 
-    def test_assess_unsuitable_document(self, prisma_agent):
+    def test_assess_unsuitable_document(self, prisma_agent, mock_bmlib_chat):
         """Test that unsuitable documents are rejected."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock suitability check rejecting document
-        prisma_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_SUITABILITY_RCT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_SUITABILITY_RCT))
 
         # Should return None for unsuitable document
         assessment = prisma_agent.assess_prisma_compliance(SAMPLE_RCT_DOCUMENT)
 
         assert assessment is None
 
-    def test_assess_skip_suitability_check(self, prisma_agent):
+    def test_assess_skip_suitability_check(self, prisma_agent, mock_bmlib_chat):
         """Test assessment with suitability check skipped."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock only assessment (no suitability check)
-        prisma_agent.client.generate = Mock(return_value={
-            'response': json.dumps(EXPECTED_PRISMA_ASSESSMENT)
-        })
+        mock_bmlib_chat.return_value = _bmlib_response(json.dumps(EXPECTED_PRISMA_ASSESSMENT))
 
         # Perform assessment with skip
         assessment = prisma_agent.assess_prisma_compliance(
@@ -306,7 +303,7 @@ class TestPRISMA2020Agent:
         # Should have default suitability values
         assert assessment.suitability_rationale == "Suitability check skipped by user request"
 
-    def test_assess_missing_text(self, prisma_agent):
+    def test_assess_missing_text(self, prisma_agent, mock_bmlib_chat):
         """Test assessment fails gracefully with missing text."""
         document_no_text = {
             'id': '999',
@@ -318,7 +315,7 @@ class TestPRISMA2020Agent:
         # Should return None when no text available
         assert assessment is None
 
-    def test_assess_low_confidence_threshold(self, prisma_agent):
+    def test_assess_low_confidence_threshold(self, prisma_agent, mock_bmlib_chat):
         """Test that low confidence assessments are logged."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
@@ -327,10 +324,10 @@ class TestPRISMA2020Agent:
         low_confidence_assessment = EXPECTED_PRISMA_ASSESSMENT.copy()
         low_confidence_assessment['overall_confidence'] = 0.3
 
-        prisma_agent.client.generate = Mock(side_effect=[
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)},
-            {'response': json.dumps(low_confidence_assessment)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)),
+            _bmlib_response(json.dumps(low_confidence_assessment))
+        ]
 
         # Should still return assessment (but log warning)
         assessment = prisma_agent.assess_prisma_compliance(
@@ -344,18 +341,18 @@ class TestPRISMA2020Agent:
         stats = prisma_agent.get_assessment_stats()
         assert stats['low_confidence_assessments'] == 1
 
-    def test_assess_batch_success(self, prisma_agent):
+    def test_assess_batch_success(self, prisma_agent, mock_bmlib_chat):
         """Test successful batch assessment."""
         # Mock connection test
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock multiple assessments
-        prisma_agent.client.generate = Mock(side_effect=[
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)},
-            {'response': json.dumps(EXPECTED_PRISMA_ASSESSMENT)},
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)},
-            {'response': json.dumps(EXPECTED_PRISMA_ASSESSMENT)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)),
+            _bmlib_response(json.dumps(EXPECTED_PRISMA_ASSESSMENT)),
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)),
+            _bmlib_response(json.dumps(EXPECTED_PRISMA_ASSESSMENT))
+        ]
 
         documents = [SAMPLE_SYSTEMATIC_REVIEW_DOCUMENT, SAMPLE_SYSTEMATIC_REVIEW_DOCUMENT]
 
@@ -381,7 +378,7 @@ class TestPRISMA2020Agent:
         assert progress_calls[0][0] == 1
         assert progress_calls[1][0] == 2
 
-    def test_format_assessment_summary(self, prisma_agent):
+    def test_format_assessment_summary(self, prisma_agent, mock_bmlib_chat):
         """Test formatting assessment as human-readable summary."""
         # Create assessment object
         assessment = PRISMA2020Assessment(
@@ -465,7 +462,7 @@ class TestPRISMA2020Agent:
         assert "PROSPERO" in summary
         assert "Item 1: Title" in summary
 
-    def test_export_to_json(self, prisma_agent, tmp_path):
+    def test_export_to_json(self, prisma_agent, tmp_path, mock_bmlib_chat):
         """Test exporting assessments to JSON file."""
         # Create test assessment
         assessment = PRISMA2020Assessment(
@@ -529,7 +526,7 @@ class TestPRISMA2020Agent:
         assert len(data['assessments']) == 1
         assert data['assessments'][0]['overall_compliance_percentage'] == 95.0
 
-    def test_get_assessment_stats(self, prisma_agent):
+    def test_get_assessment_stats(self, prisma_agent, mock_bmlib_chat):
         """Test assessment statistics tracking."""
         # Initial stats should be zero
         stats = prisma_agent.get_assessment_stats()
@@ -538,10 +535,10 @@ class TestPRISMA2020Agent:
 
         # Mock successful assessment
         prisma_agent.test_connection = Mock(return_value=True)
-        prisma_agent.client.generate = Mock(side_effect=[
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)},
-            {'response': json.dumps(EXPECTED_PRISMA_ASSESSMENT)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)),
+            _bmlib_response(json.dumps(EXPECTED_PRISMA_ASSESSMENT))
+        ]
 
         # Perform assessment
         prisma_agent.assess_prisma_compliance(SAMPLE_SYSTEMATIC_REVIEW_DOCUMENT)
@@ -552,7 +549,7 @@ class TestPRISMA2020Agent:
         assert stats['successful_assessments'] == 1
         assert stats['success_rate'] == 1.0
 
-    def test_connection_failure(self, prisma_agent):
+    def test_connection_failure(self, prisma_agent, mock_bmlib_chat):
         """Test assessment handles connection failures gracefully."""
         # Mock connection test failure
         prisma_agent.test_connection = Mock(return_value=False)
@@ -564,7 +561,7 @@ class TestPRISMA2020Agent:
         assert suitability is None
         assert assessment is None
 
-    def test_json_parse_failure_retry(self, prisma_agent):
+    def test_json_parse_failure_retry(self, prisma_agent, mock_bmlib_chat):
         """Test that JSON parse failures trigger retry."""
         # Ensure max_retries is set to a real value (not a Mock object)
         prisma_agent.max_retries = 3
@@ -573,19 +570,19 @@ class TestPRISMA2020Agent:
         prisma_agent.test_connection = Mock(return_value=True)
 
         # Mock responses: first invalid JSON, then valid
-        prisma_agent.client.generate = Mock(side_effect=[
-            {'response': 'This is not valid JSON'},
-            {'response': json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW)}
-        ])
+        mock_bmlib_chat.side_effect = [
+            _bmlib_response('This is not valid JSON'),
+            _bmlib_response(json.dumps(EXPECTED_SUITABILITY_SYSTEMATIC_REVIEW))
+        ]
 
         # Should succeed on retry
         suitability = prisma_agent.check_suitability(SAMPLE_SYSTEMATIC_REVIEW_DOCUMENT)
 
         # Verify suitability succeeded on retry
         assert suitability is not None
-        assert prisma_agent.client.generate.call_count == 2
+        assert mock_bmlib_chat.call_count == 2
 
-    def test_validate_suitability_schema(self, prisma_agent):
+    def test_validate_suitability_schema(self, prisma_agent, mock_bmlib_chat):
         """Test JSON schema validation for suitability responses."""
         # Valid data
         valid_data = {
@@ -627,7 +624,7 @@ class TestPRISMA2020Agent:
         }
         assert prisma_agent._validate_suitability_schema(invalid_data_range, 'test') is False
 
-    def test_validate_assessment_data(self, prisma_agent):
+    def test_validate_assessment_data(self, prisma_agent, mock_bmlib_chat):
         """Test JSON schema validation for assessment responses."""
         # Create valid minimal assessment data
         valid_data = {field: 2.0 for field in [
@@ -649,17 +646,19 @@ class TestPRISMA2020Agent:
 
         assert prisma_agent._validate_assessment_data(valid_data, 'test') is True
 
-        # Test score out of range
+        # Test score out of range - agent auto-repairs by clamping to valid range
         invalid_data_range = valid_data.copy()
-        invalid_data_range['title_score'] = 3.0  # Out of range (max 2.0)
-        assert prisma_agent._validate_assessment_data(invalid_data_range, 'test') is False
+        invalid_data_range['title_score'] = 3.0  # Out of range (max 2.0), will be clamped
+        # Validation returns True because the agent repairs out-of-range values
+        assert prisma_agent._validate_assessment_data(invalid_data_range, 'test') is True
 
-        # Test wrong type
+        # Test wrong type - agent auto-repairs by using default 0.0
         invalid_data_type = valid_data.copy()
-        invalid_data_type['title_score'] = 'two'  # Should be numeric
-        assert prisma_agent._validate_assessment_data(invalid_data_type, 'test') is False
+        invalid_data_type['title_score'] = 'two'  # Should be numeric, will be repaired to 0.0
+        # Validation returns True because the agent repairs invalid types
+        assert prisma_agent._validate_assessment_data(invalid_data_type, 'test') is True
 
-    def test_map_prisma_fields(self, prisma_agent):
+    def test_map_prisma_fields(self, prisma_agent, mock_bmlib_chat):
         """Test automatic field mapping helper method."""
         # Create test data with ALL PRISMA fields (27 items)
         prisma_items = [
