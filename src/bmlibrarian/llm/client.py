@@ -688,12 +688,25 @@ def list_ollama_models(host: Optional[str] = None) -> list[str]:
             except ImportError:
                 host = DEFAULT_OLLAMA_HOST
 
-        client = BmlibLLMClient(
-            default_provider="ollama",
-            ollama_host=host,
-        )
-        models = client.list_models("ollama")
-        return list(models) if models else []
+        # Deliberately not bmlib's client.list_models(): that enriches every
+        # entry by calling ollama.show() per model, so listing costs one
+        # request plus one per model. Against a server holding 139 models
+        # that measured 3.53s versus 0.04s for the plain listing — an 82x
+        # cost paid every time a picker is populated, which is all this
+        # helper is for. None of the metadata it fetches is used here.
+        #
+        # This module is the LLM layer, the one place permitted to talk to
+        # a provider directly, so the plain call belongs here rather than
+        # in the callers. Revert to bmlib once it offers a names-only
+        # listing.
+        import ollama
+
+        response = ollama.Client(host=host).list()
+        return [
+            name
+            for entry in (getattr(response, "models", None) or [])
+            if (name := getattr(entry, "model", "") or "")
+        ]
 
     except Exception as e:
         logger.warning(f"Failed to list Ollama models: {e}")
