@@ -35,6 +35,23 @@ LLM_LAYER = "llm"
 # Modules that still import ollama directly, pending migration.
 # This list may only shrink. Do not add to it — route new code through
 # bmlibrarian.llm.LLMClient or the BaseAgent helpers instead.
+#
+# Each remaining entry is blocked on a capability the abstraction does not
+# expose yet, not on the migration work itself:
+#
+# - embeddings/*: batch embedding. chunk_embedder calls
+#   ollama.embed(input=[...]); bmlib exposes only single-text embed(), and
+#   looping it measured 7.6x slower over 32 chunks (0.59s -> 4.48s), which
+#   is not acceptable on the bulk-corpus path. document_embedder
+#   additionally calls ollama.pull() to auto-download a missing embedding
+#   model, which has no equivalent in the abstraction.
+# - qa/document_qa.py: reasoning traces. It passes think=True and reads
+#   back message.thinking. bmlib gained cross-provider thinking support
+#   after 0.4.0, so this unblocks on the next bmlib release. Note that
+#   whether a model accepts `think` is provider-specific — Ollama errors
+#   when it is sent to a model without thinking support — so the migrated
+#   code must handle that error path and a None trace rather than assume
+#   every model returns one.
 KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
     "embeddings/chunk_embedder.py",
     "embeddings/document_embedder.py",
