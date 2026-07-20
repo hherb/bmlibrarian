@@ -304,8 +304,8 @@ def hyde_search(
         List of document dictionaries with keys: id, title, score
 
     Example:
-        >>> import ollama
-        >>> client = ollama.Client(host="http://localhost:11434")
+        >>> from bmlibrarian.llm import LLMClient
+        >>> client = LLMClient()
         >>> results = hyde_search(
         ...     "What are the cardiovascular benefits of exercise?",
         ...     client=client,

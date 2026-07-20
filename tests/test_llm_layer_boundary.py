@@ -7,15 +7,18 @@ that import ``ollama`` directly bypass provider selection, fallback,
 retries and token accounting — an ``anthropic:`` model configured by the
 user silently does not apply to them.
 
-A number of modules predate the abstraction and still import ollama
-directly. Migrating them is tracked separately; these tests exist so the
-count can only go down:
+The migration of the modules that predated the abstraction is complete:
+the allowlist below is empty, and nothing under ``src/bmlibrarian/``
+outside the LLM layer imports ollama. These tests keep it that way:
 
-- ``test_no_new_direct_ollama_imports`` fails when a module outside the
-  allowlist starts importing ollama, so the debt cannot grow.
-- ``test_allowlist_contains_no_stale_entries`` fails when an allowlisted
-  module stops importing ollama, forcing the entry to be deleted as part
-  of the migration rather than left to rot.
+- ``test_no_new_direct_ollama_imports`` fails when any module starts
+  importing ollama, so the debt cannot come back.
+- ``test_allowlist_contains_no_stale_entries`` is now vacuous, and stays
+  only so that a temporary entry, should one ever be justified, must be
+  removed again once its module is migrated rather than left to rot.
+
+Scope note: this covers the package only. Standalone tooling under
+``scripts/`` is not part of the shipped library and is not scanned.
 
 Imports are detected by parsing the AST, not by grepping, so ``import
 ollama`` appearing inside a docstring example is correctly ignored.
@@ -32,23 +35,15 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "src" / "bmlibrarian"
 # The LLM abstraction itself is the one place allowed to talk to ollama.
 LLM_LAYER = "llm"
 
-# Modules that still import ollama directly, pending migration.
-# This list may only shrink. Do not add to it — route new code through
-# bmlibrarian.llm.LLMClient or the BaseAgent helpers instead.
+# Deliberately empty: every module has been migrated onto the LLM layer.
 #
-# Each remaining entry is blocked on a capability the abstraction does not
-# expose yet, not on the migration work itself:
-#
-# - qa/document_qa.py: reasoning traces. It passes think=True and reads
-#   back message.thinking. bmlib gained cross-provider thinking support
-#   after 0.4.0, so this unblocks on the next bmlib release. Note that
-#   whether a model accepts `think` is provider-specific — Ollama errors
-#   when it is sent to a model without thinking support — so the migrated
-#   code must handle that error path and a None trace rather than assume
-#   every model returns one.
-KNOWN_DIRECT_OLLAMA_MODULES = frozenset({
-    "qa/document_qa.py",
-})
+# Do not add to it. Route model calls through bmlibrarian.llm.LLMClient or
+# the BaseAgent helpers (_make_llm_request / _generate_from_prompt /
+# _generate_embedding), and list models with bmlibrarian.llm.list_ollama_models.
+# Importing ollama directly bypasses provider selection, fallback, retries
+# and token accounting — a configured anthropic: model silently would not
+# apply, which is the failure this guard exists to prevent.
+KNOWN_DIRECT_OLLAMA_MODULES: frozenset[str] = frozenset()
 
 
 def _imports_ollama(source: str) -> bool:

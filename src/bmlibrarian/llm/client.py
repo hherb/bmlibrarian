@@ -136,6 +136,8 @@ class LLMClient:
             completion_tokens=bmlib_resp.output_tokens,
             total_tokens=bmlib_resp.total_tokens,
             duration_seconds=duration,
+            # Providers without reasoning support omit this attribute.
+            thinking=getattr(bmlib_resp, "thinking", None),
         )
 
     @staticmethod
@@ -198,6 +200,7 @@ class LLMClient:
         fallback_model: Optional[str] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_delay: float = DEFAULT_RETRY_DELAY,
+        think: Optional[bool | str | int] = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -213,9 +216,17 @@ class LLMClient:
             fallback_model: Model to use on failure (Ollama)
             max_retries: Number of retry attempts
             retry_delay: Initial retry delay (exponential backoff)
+            think: Request a reasoning trace. True/False toggles it,
+                "low"/"medium"/"high" sets effort, an int sets a token
+                budget. Left as None the option is not sent at all —
+                whether a model accepts it is the provider's business,
+                and Ollama rejects it outright for models without
+                thinking support.
 
         Returns:
-            LLMResponse with generated content
+            LLMResponse with generated content, and thinking set when the
+            model returned a trace. A thinking-enabled request is not
+            guaranteed to return one.
 
         Raises:
             ConnectionError: If all providers fail
@@ -228,7 +239,7 @@ class LLMClient:
         return self._chat_with_fallback(
             effective_messages, model, temperature, top_p, max_tokens,
             json_mode, fallback_model, max_retries, retry_delay,
-            operation="chat",
+            operation="chat", think=think,
         )
 
     def _chat_with_fallback(
@@ -243,6 +254,7 @@ class LLMClient:
         max_retries: int,
         retry_delay: float,
         operation: str,
+        think: Optional[bool | str | int] = None,
     ) -> LLMResponse:
         """
         Execute a chat request with retries, then Ollama fallback.
@@ -258,6 +270,7 @@ class LLMClient:
             max_retries: Maximum retry attempts
             retry_delay: Initial delay between retries
             operation: Label recorded against token usage ("chat"/"generate")
+            think: Reasoning-trace option, omitted when None
 
         Returns:
             LLMResponse from the primary provider or the fallback
@@ -269,7 +282,7 @@ class LLMClient:
         try:
             response = self._chat_with_retry(
                 messages, model, temperature, top_p,
-                max_tokens, json_mode, max_retries, retry_delay,
+                max_tokens, json_mode, max_retries, retry_delay, think,
             )
             self._record_usage(response, operation)
             return response
@@ -286,7 +299,7 @@ class LLMClient:
                 try:
                     response = self._chat_with_retry(
                         messages, fb_model_str, temperature, top_p,
-                        max_tokens, json_mode, max_retries, retry_delay,
+                        max_tokens, json_mode, max_retries, retry_delay, think,
                     )
                     self._record_usage(response, operation)
                     return response
@@ -308,6 +321,7 @@ class LLMClient:
         json_mode: bool,
         max_retries: int,
         retry_delay: float,
+        think: Optional[bool | str | int] = None,
     ) -> LLMResponse:
         """
         Execute chat with retry logic and exponential backoff.
@@ -321,6 +335,7 @@ class LLMClient:
             json_mode: Request JSON output
             max_retries: Maximum retry attempts
             retry_delay: Initial delay between retries
+            think: Reasoning-trace option, omitted when None
 
         Returns:
             LLMResponse from successful call
@@ -337,6 +352,10 @@ class LLMClient:
             kwargs["top_p"] = top_p
         if json_mode:
             kwargs["json_mode"] = True
+        # Only send think when asked. Providers reject the option on models
+        # without thinking support, so an explicit False is not harmless.
+        if think is not None:
+            kwargs["think"] = think
 
         # bmlib splits on the first colon without checking for a known provider
         # prefix, so an Ollama tag like "gpt-oss:20b" must be qualified first.
