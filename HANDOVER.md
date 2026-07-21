@@ -10,18 +10,44 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Connection/concurrency P1 fixes** (2026-07-21): six findings from the
+  2026-07-19 review. `queue_manager.py` — dequeue is now a single atomic
+  `UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *` (no cross-process
+  double-claim); the SIGINT/SIGTERM handler no longer takes the
+  non-reentrant lock, and handlers register only on the main thread (fixes
+  off-main-thread `ValueError`). `thesaurus/expander.py` routes through the
+  shared `get_db_manager()` instead of leaking a fresh pool per term.
+  `pubmed_bulk_importer._store_article_batch` now stores transparency
+  metadata on a fresh connection (passing `None` instead of the returned-to-
+  pool `conn`), and the metadata method's own-connection path was fixed to
+  return the pooled connection instead of leaking it; `pdf_matcher`'s
+  long-lived `PDFManager` no
+  longer retains a returned-to-pool connection (it only needs `base_dir`).
+  `database.py` source-ID caches are now keyed per-conninfo so a second
+  manager against a different DB can't reuse the first's IDs. The GUI
+  raw-connection item was deferred to ROADMAP §5 (structural; acute risk
+  already mitigated).
+- **LLM-layer consolidation** (through PR #249): the LLM abstraction is now
+  fully delegated to `bmlib.llm` (pinned `bmlib[ollama]>=0.5.1,<0.6.0` in
+  `pyproject.toml`). Every remaining raw `ollama` call site was routed
+  through the LLM layer (#249); `tests/test_llm_layer_boundary.py` enforces
+  the boundary with a shrinking allowlist. A test that queried the
+  production DB was repaired (#247).
+- **Test-suite hang fixes** (2026-07-20): three blockers that made
+  `pytest tests/` never complete are fixed — a Playwright script marked
+  `integration`, a production-DB query marked `requires_database`, and a Qt
+  modal stubbed via autouse fixture. `pytest-timeout` (120s) added in
+  `pyproject.toml`. Gotcha: the signal timeout does NOT interrupt a Qt
+  modal. ~6 pre-existing "'bmlibrarian' is not a package" collection errors
+  still abort a plain run unless `--continue-on-collection-errors` is
+  passed; still no CI workflow.
 - **Whole-project code review, P0 fixes** (2026-07-19, PR #229): broken CLI
-  login, settings-category drift, non-functional PMC bulk import fixed
-  (2f4a8a9); PDF downloads now validated by magic bytes with cleanup of
-  partial downloads (09d69e5); per-record `SAVEPOINT` semantics added to
-  batch importers so one bad record doesn't abort a whole batch (b99af11);
-  `bmlibrarian.cli` name collision resolved and the deprecated Flet
-  paper-checker lab removed (f3d542b). Remaining P1/P2 findings captured in
-  `doc/TODO_code_review_2026-07.md` and reorganized into
+  login, settings-category drift, non-functional PMC bulk import, PDF
+  magic-byte validation, per-record `SAVEPOINT` semantics, `bmlibrarian.cli`
+  name-collision fix, deprecated Flet paper-checker lab removed. Follow-ups
+  in 75aba14 (atomic downloads, validated browser fallback, honest stats).
+  Remaining P1/P2 findings in `doc/TODO_code_review_2026-07.md` and
   [ROADMAP.md](ROADMAP.md).
-- **PR review follow-ups** (2026-07-19, 75aba14): atomic downloads,
-  validated browser fallback, honest stats reporting — closed out review
-  comments from PR #229 before merge.
 - Dead legacy fact-checker modules (`agents/fact_checker_db.py`,
   `agents/fact_checker_agent.py`) noted as unused (superseded by
   `bmlibrarian.factchecker`) but **not yet deleted** — see ROADMAP §5. Two
@@ -35,28 +61,6 @@ off new work. Longer-term structural items live in
 Pick items in whichever order matches what you're touching; they're
 independent unless noted.
 
-- **Queue task-claiming race** — `agents/queue_manager.py:487-523`:
-  SELECT-then-UPDATE dequeue isn't atomic across processes. Fix with a
-  single `UPDATE … WHERE id = (SELECT … ORDER BY priority DESC, created_at
-  ASC LIMIT 1) RETURNING *`, or `BEGIN IMMEDIATE`.
-- **Signal-handler deadlock** — `agents/queue_manager.py:88,101-103,
-  175-196`: SIGINT/SIGTERM handler acquires the same non-reentrant lock the
-  interrupted code may already hold. Don't take the lock in the handler;
-  only register handlers on the main thread (also fixes the
-  off-main-thread `ValueError` from `signal.signal()`).
-- **ThesaurusExpander pool leak** — `thesaurus/expander.py:120-136`: builds
-  a fresh `DatabaseManager()` per uncached term, never closed. Use
-  `get_db_manager()`.
-- **Connections used after return-to-pool** —
-  `importers/pubmed_bulk_importer.py:1048-1127` and
-  `importers/pdf_matcher.py:136-137`. Use `PersistentConnection`
-  (`database.py:242`) or restructure to per-operation acquisition.
-- **GUI session rides one raw unpooled psycopg connection** —
-  `gui/qt/core/application.py:281-387` + `login_dialog.py`. Should come
-  from the pool, as the CLI now does via `acquire_persistent_connection()`.
-- **Class-level source-ID cache** — `database.py:34-36,147-171`: a second
-  `DatabaseManager` against a different database silently reuses the first
-  database's source IDs. Key per-conninfo or make instance-level.
 - **Conninfo built by unescaped string concatenation** (×3) —
   `database.py:71`, `gui/qt/core/application.py:274-280`,
   `login_dialog.py:607-613`. Use `psycopg.conninfo.make_conninfo(**kwargs)`
@@ -128,10 +132,27 @@ have drifted since the 2026-07-19 review. Full details, including the
 
 ### Verify
 
-- `uv run python -m pytest tests/` → check for **no new failures** (two
-  pre-existing ones are expected and unrelated — see above).
-- `ruff check .` / `mypy src/` carry pre-existing debt; the gate is **no
-  new errors**, not a clean baseline.
+- The suite has a **large pre-existing failure baseline**, not "two". Measured
+  2026-07-21 on `master`+this branch with DB/Ollama/GUI-free markers
+  deselected (`.venv/bin/python -m pytest tests/ -m "not integration and not
+  requires_database and not requires_ollama and not slow"
+  --continue-on-collection-errors`): **178 failed, 2885 passed, 43 errors**.
+  Do NOT eyeball the count — it's meaningless against that baseline. To check
+  for regressions, capture the failing node-ID set (`grep -E '^(FAILED|ERROR)
+  tests/'`), `git stash`, re-run, and `diff` the two sets: the gate is **zero
+  nodes failing in your tree that pass on `master`**. (This is why ROADMAP §2
+  "make the test suite protect you" matters — there is no CI and the baseline
+  is badly broken.) Pre-existing clusters: `prisma2020_lab`, `paperchecker/
+  search_coordinator`, `paper_weight*`, `reporting_agent`, `citation_agent`,
+  `fact_checker_agent`, `qt_*`, `ollama_migration`, `openathens_auth`,
+  `europe_pmc_pdf_downloader`.
+- Full-tree runs need `--continue-on-collection-errors` (still ~6 collection
+  errors) and, per the 2026-07-20 fix, avoid the `requires_database`/
+  `integration` hangs by keeping those markers deselected.
+- `ruff check .` / `mypy src/` carry pre-existing debt (~1,745 ruff findings);
+  the gate is **no new errors**, not a clean baseline. Quick regression check:
+  `git stash`, run `ruff check --select F401,F811,F821,F841 <touched files>`,
+  compare to your tree (normalize away line numbers).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
 - Never run destructive tests against the production `knowledgebase`

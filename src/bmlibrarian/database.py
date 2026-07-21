@@ -31,9 +31,11 @@ logger = logging.getLogger('bmlibrarian.database')
 class DatabaseManager:
     """Manages database connections and provides high-level API access."""
     
-    # Class-level cache for source mappings shared across all instances
-    _source_id_cache: Optional[Dict[int, str]] = None
-    _source_ids: Optional[Dict[str, Union[int, List[int]]]] = None
+    # Class-level caches for source mappings, keyed by conninfo so managers
+    # pointed at different databases don't share each other's source IDs
+    # (which would yield wrong/empty search results).
+    _source_id_caches: Dict[str, Dict[int, str]] = {}
+    _source_ids_by_conninfo: Dict[str, Dict[str, Union[int, List[int]]]] = {}
     
     def __init__(self, auto_migrate: bool = True, dry_run_migrations: bool = False):
         """Initialize the database manager with connection pool.
@@ -69,7 +71,10 @@ class DatabaseManager:
         
         # Create connection string
         conninfo = " ".join([f"{k}={v}" for k, v in db_config.items() if v])
-        
+
+        # Retain the conninfo to key the per-database source-ID caches.
+        self._conninfo = conninfo
+
         # Initialize connection pool
         self._pool = ConnectionPool(
             conninfo=conninfo,
@@ -145,30 +150,36 @@ class DatabaseManager:
             return 0
     
     def _cache_source_ids(self):
-        """Cache source IDs for faster queries."""
-        # Use class-level cache if already populated
-        if DatabaseManager._source_id_cache is not None and DatabaseManager._source_ids is not None:
+        """Cache source IDs for faster queries, keyed by this manager's conninfo."""
+        # Reuse the class-level cache only for the same database
+        key = self._conninfo
+        if key in DatabaseManager._source_ids_by_conninfo:
             return
-        
-        DatabaseManager._source_ids = {'others': []}
-        DatabaseManager._source_id_cache = {}
-        
+
+        # Populate local dicts first, then publish atomically, so a concurrent
+        # reader never sees a half-filled cache for this database.
+        source_ids: Dict[str, Union[int, List[int]]] = {'others': []}
+        source_id_cache: Dict[int, str] = {}
+
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT id, name FROM sources")
                 for source_id, name in cur.fetchall():
                     name_lower = name.lower()
                     if 'pubmed' in name_lower:
-                        DatabaseManager._source_ids['pubmed'] = source_id
-                        DatabaseManager._source_id_cache[source_id] = 'pubmed'
+                        source_ids['pubmed'] = source_id
+                        source_id_cache[source_id] = 'pubmed'
                     elif 'medrxiv' in name_lower:
-                        DatabaseManager._source_ids['medrxiv'] = source_id
-                        DatabaseManager._source_id_cache[source_id] = 'medrxiv'
+                        source_ids['medrxiv'] = source_id
+                        source_id_cache[source_id] = 'medrxiv'
                     else:
                         # Store other source IDs
-                        if isinstance(DatabaseManager._source_ids['others'], list):
-                            DatabaseManager._source_ids['others'].append(source_id)
-                        DatabaseManager._source_id_cache[source_id] = 'others'
+                        if isinstance(source_ids['others'], list):
+                            source_ids['others'].append(source_id)
+                        source_id_cache[source_id] = 'others'
+
+        DatabaseManager._source_ids_by_conninfo[key] = source_ids
+        DatabaseManager._source_id_caches[key] = source_id_cache
     
     @contextmanager
     def get_connection(self):
@@ -194,14 +205,18 @@ class DatabaseManager:
                 raise e
     
     def refresh_source_cache(self):
-        """Refresh the cached source IDs."""
-        DatabaseManager._source_id_cache = None
-        DatabaseManager._source_ids = None
+        """Refresh the cached source IDs for this manager's database."""
+        DatabaseManager._source_ids_by_conninfo.pop(self._conninfo, None)
+        DatabaseManager._source_id_caches.pop(self._conninfo, None)
         self._cache_source_ids()
-    
+
     def get_cached_source_ids(self) -> Optional[Dict[str, Union[int, List[int]]]]:
-        """Get the cached source IDs."""
-        return DatabaseManager._source_ids
+        """Get the cached source IDs for this manager's database."""
+        return DatabaseManager._source_ids_by_conninfo.get(self._conninfo)
+
+    def get_cached_source_id_names(self) -> Optional[Dict[int, str]]:
+        """Get the cached source_id -> name mapping for this manager's database."""
+        return DatabaseManager._source_id_caches.get(self._conninfo)
     
     def close(self):
         """Close the connection pool."""
@@ -287,6 +302,21 @@ def get_db_manager() -> DatabaseManager:
     if _db_manager is None:
         _db_manager = DatabaseManager()
     return _db_manager
+
+
+def _default_source_ids() -> Dict[str, Union[int, List[int]]]:
+    """Cached source-name -> id(s) mapping for the default (global) database.
+
+    The module-level search helpers operate on the global DatabaseManager, so
+    they resolve source IDs through it rather than a class-level attribute
+    (which cannot distinguish databases).
+    """
+    return get_db_manager().get_cached_source_ids() or {}
+
+
+def _default_source_id_names() -> Dict[int, str]:
+    """Cached source_id -> source-name mapping for the default (global) database."""
+    return get_db_manager().get_cached_source_id_names() or {}
 
 
 def find_abstracts(
@@ -378,20 +408,21 @@ def find_abstracts(
         'timestamp': time.time()
     }})
     
-    if not all_sources_enabled and DatabaseManager._source_ids:
-        if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
-            pubmed_id = DatabaseManager._source_ids['pubmed']
+    source_id_map = _default_source_ids()
+    if not all_sources_enabled and source_id_map:
+        if use_pubmed and 'pubmed' in source_id_map:
+            pubmed_id = source_id_map['pubmed']
             source_ids.append(pubmed_id)
-        
-        if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
-            medrxiv_id = DatabaseManager._source_ids['medrxiv']
+
+        if use_medrxiv and 'medrxiv' in source_id_map:
+            medrxiv_id = source_id_map['medrxiv']
             source_ids.append(medrxiv_id)
-        
-        if use_others and 'others' in DatabaseManager._source_ids:
-            others_ids = DatabaseManager._source_ids['others']
+
+        if use_others and 'others' in source_id_map:
+            others_ids = source_id_map['others']
             if isinstance(others_ids, list):
                 source_ids.extend(others_ids)
-        
+
         # If no sources selected, return empty
         if not source_ids:
             return
@@ -497,7 +528,11 @@ def find_abstracts(
             query_execution_time = (time.time() - query_start) * 1000  # Convert to milliseconds
             
             logger.info(f"Query executed in {query_execution_time:.2f}ms")
-            
+
+            # Cached source_id -> name mapping for the default database, bound
+            # once so per-row lookups don't re-resolve the manager.
+            source_id_names = _default_source_id_names()
+
             while True:
                 # Fetch a batch of rows
                 batch_start = time.time()
@@ -511,7 +546,7 @@ def find_abstracts(
                 for row in rows:
                     # Add source name mapping using cached mappings
                     source_id = row['source_id']
-                    row['source_name'] = DatabaseManager._source_id_cache.get(source_id, 'unknown') if DatabaseManager._source_id_cache else 'unknown'
+                    row['source_name'] = source_id_names.get(source_id, 'unknown')
                     
                     # Extract PMID from external_id if available
                     external_id = row.get('external_id', '')
@@ -615,13 +650,14 @@ def find_abstract_ids(
     source_ids = []
     all_sources_enabled = use_pubmed and use_medrxiv and use_others
 
-    if not all_sources_enabled and DatabaseManager._source_ids:
-        if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
-            source_ids.append(DatabaseManager._source_ids['pubmed'])
-        if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
-            source_ids.append(DatabaseManager._source_ids['medrxiv'])
-        if use_others and 'others' in DatabaseManager._source_ids:
-            source_ids.extend(DatabaseManager._source_ids['others'])
+    source_id_map = _default_source_ids()
+    if not all_sources_enabled and source_id_map:
+        if use_pubmed and 'pubmed' in source_id_map:
+            source_ids.append(source_id_map['pubmed'])
+        if use_medrxiv and 'medrxiv' in source_id_map:
+            source_ids.append(source_id_map['medrxiv'])
+        if use_others and 'others' in source_id_map:
+            source_ids.extend(source_id_map['others'])
 
     # Build WHERE clause
     where_clauses = []
@@ -821,12 +857,13 @@ def search_with_bm25(
 
     # Build source filter
     source_filters = []
-    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
-        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
-    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
-        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
-    if use_others and 'others' in DatabaseManager._source_ids:
-        others = DatabaseManager._source_ids['others']
+    source_id_map = _default_source_ids()
+    if use_pubmed and 'pubmed' in source_id_map:
+        source_filters.append(f"source_id = {source_id_map['pubmed']}")
+    if use_medrxiv and 'medrxiv' in source_id_map:
+        source_filters.append(f"source_id = {source_id_map['medrxiv']}")
+    if use_others and 'others' in source_id_map:
+        others = source_id_map['others']
         if isinstance(others, list) and len(others) > 0:
             source_filters.append(f"source_id = ANY(ARRAY{others})")
         elif not isinstance(others, list):
@@ -943,12 +980,13 @@ def search_with_fulltext_function(
 
     # Build source filter
     source_filters = []
-    if use_pubmed and 'pubmed' in DatabaseManager._source_ids:
-        source_filters.append(f"source_id = {DatabaseManager._source_ids['pubmed']}")
-    if use_medrxiv and 'medrxiv' in DatabaseManager._source_ids:
-        source_filters.append(f"source_id = {DatabaseManager._source_ids['medrxiv']}")
-    if use_others and 'others' in DatabaseManager._source_ids:
-        others = DatabaseManager._source_ids['others']
+    source_id_map = _default_source_ids()
+    if use_pubmed and 'pubmed' in source_id_map:
+        source_filters.append(f"source_id = {source_id_map['pubmed']}")
+    if use_medrxiv and 'medrxiv' in source_id_map:
+        source_filters.append(f"source_id = {source_id_map['medrxiv']}")
+    if use_others and 'others' in source_id_map:
+        others = source_id_map['others']
         if isinstance(others, list) and len(others) > 0:
             source_filters.append(f"source_id = ANY(ARRAY{others})")
         elif not isinstance(others, list):
