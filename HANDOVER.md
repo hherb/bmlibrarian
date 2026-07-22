@@ -10,6 +10,22 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Injection-surface hardening: shared conninfo helper + bound LIMIT/OFFSET**
+  (2026-07-22): two top P1 findings from the 2026-07-19 review. New pure module
+  `db_conninfo.py` exposes `build_conninfo(**params)` (delegates to
+  `psycopg.conninfo.make_conninfo` — quotes/escapes every value, drops
+  `None`/empty; no import-time side effects so GUI login code can use it before
+  a `DatabaseManager` exists). All **four** hand-concatenated connection strings
+  now route through it: `database.py` `_init_pool`, `gui/qt/core/application.py`
+  auto-login, and `login_dialog.py` ×2 (`_on_test_connection` +
+  `_get_db_connection` — the review said ×3, missed the second login_dialog
+  site). `find_abstracts` no longer f-string-interpolates `max_rows`/`offset`;
+  it uses the pure `build_pagination_clause()` helper returning `%s`
+  placeholders + bound params (matches sibling `find_abstract_ids`). 11 new
+  hermetic unit tests in `tests/test_db_conninfo.py` (escaping, injection
+  attempt, None-dropping, pagination branches). No new ruff/mypy errors
+  (the `query_params: List[Any]` annotation actually cleared 2 pre-existing
+  mypy errors). Assistant guidance: `doc/llm/db_conninfo.md`.
 - **LLM-layer polish: BaseAgent per-call overrides + 2 migrations**
   (2026-07-22): `base.py` `_make_llm_request`/`_generate_from_prompt` now take
   optional `model`/`temperature`/`top_p` overrides (default `None` → `self.*`,
@@ -79,12 +95,11 @@ off new work. Longer-term structural items live in
 Pick items in whichever order matches what you're touching; they're
 independent unless noted.
 
-- **Conninfo built by unescaped string concatenation** (×3) —
-  `database.py:71`, `gui/qt/core/application.py:274-280`,
-  `login_dialog.py:607-613`. Use `psycopg.conninfo.make_conninfo(**kwargs)`
-  in one shared helper.
-- **f-string LIMIT/OFFSET** — `database.py:453-461` (`find_abstracts`);
-  sibling `find_abstract_ids` already binds params properly — match it.
+- **f-string source_id filters** — `database.py`
+  `search_with_bm25`/`search_with_fulltext_function` still interpolate
+  `source_id = {id}` / `ANY(ARRAY{others})`. Not injectable today (IDs are
+  DB-sourced ints), but the same class as the now-fixed LIMIT/OFFSET item —
+  bind them (or build an array param) for consistency.
 - **"Find PDF" freezes the UI** —
   `gui/qt/qt_document_card_factory.py:1053-1177`: synchronous network
   discovery in the click slot. The `PDFFetchWorker` QThread pattern already

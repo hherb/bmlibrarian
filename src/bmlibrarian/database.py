@@ -13,6 +13,8 @@ from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 from pathlib import Path
 
+from bmlibrarian.db_conninfo import build_conninfo
+
 # Load environment variables from .env file
 # Check ~/.bmlibrarian/.env first (primary user configuration location),
 # then fall back to .env in current directory (for development convenience)
@@ -69,8 +71,9 @@ class DatabaseManager:
                 "Database credentials not configured. Please set POSTGRES_USER and POSTGRES_PASSWORD environment variables."
             )
         
-        # Create connection string
-        conninfo = " ".join([f"{k}={v}" for k, v in db_config.items() if v])
+        # Create connection string via the shared escaping helper (never
+        # concatenate — a password/host with a space or quote would break it).
+        conninfo = build_conninfo(**db_config)
 
         # Retain the conninfo to key the per-database source-ID caches.
         self._conninfo = conninfo
@@ -319,6 +322,35 @@ def _default_source_id_names() -> Dict[int, str]:
     return get_db_manager().get_cached_source_id_names() or {}
 
 
+def build_pagination_clause(max_rows: int, offset: int) -> tuple[str, List[int]]:
+    """Build a parameterized ``LIMIT``/``OFFSET`` SQL suffix and its bound values.
+
+    Pagination values are returned as bound parameters (``%s`` placeholders)
+    rather than interpolated into the SQL string, matching the sibling
+    :func:`find_abstract_ids` and honouring golden rule #1 (never trust input).
+
+    Args:
+        max_rows: Maximum number of rows to return. ``0`` (or negative) means
+            no ``LIMIT`` clause is added.
+        offset: Number of rows to skip. ``0`` (or negative) means no ``OFFSET``
+            clause is added.
+
+    Returns:
+        A ``(clause, params)`` tuple where ``clause`` is a SQL suffix beginning
+        with a leading space (or empty string) and ``params`` is the list of
+        values to bind, in the order the placeholders appear.
+    """
+    clause = ""
+    params: List[int] = []
+    if max_rows > 0:
+        clause += " LIMIT %s"
+        params.append(max_rows)
+    if offset > 0:
+        clause += " OFFSET %s"
+        params.append(offset)
+    return clause, params
+
+
 def find_abstracts(
     ts_query_str: str,
     max_rows: int = 100,
@@ -480,18 +512,13 @@ def find_abstracts(
         ORDER BY d.publication_date DESC NULLS LAST, d.id ASC
         """
     
-    # Add limit and offset if specified
-    if max_rows > 0:
-        query = base_query + f" LIMIT {max_rows}"
-        if offset > 0:
-            query += f" OFFSET {offset}"
-    else:
-        if offset > 0:
-            query = base_query + f" OFFSET {offset}"
-        else:
-            query = base_query
+    # Add limit and offset as bound parameters (never interpolate into SQL).
+    pagination_clause, pagination_params = build_pagination_clause(max_rows, offset)
+    query = base_query + pagination_clause
     
-    # Prepare query parameters based on ranking and filtering
+    # Prepare query parameters based on ranking and filtering. Heterogeneous
+    # (tsquery strings, source ids, dates, pagination ints) — bound positionally.
+    query_params: List[Any]
     if use_ranking:
         # Ranking queries need tsquery twice (SELECT and WHERE)
         if all_sources_enabled:
@@ -504,7 +531,11 @@ def find_abstracts(
             query_params = [ts_query_str] + date_params
         else:
             query_params = [ts_query_str] + source_ids + date_params
-    
+
+    # LIMIT/OFFSET placeholders come last in the SQL, so their bound values go
+    # at the end of the positional parameter list.
+    query_params = query_params + pagination_params
+
     # Log the final query and parameters
     logger.info(f"Executing database query", extra={'structured_data': {
         'event_type': 'database_query_execution',
