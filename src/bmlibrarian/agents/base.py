@@ -418,7 +418,7 @@ class BaseAgent(ABC):
             agent_logger.error(f"LLM request failed after {response_time:.2f}ms: {e}", extra={'structured_data': {
                 'event_type': 'agent_llm_error',
                 'agent_type': self.get_agent_type(),
-                'model': self.model,
+                'model': effective_model,
                 'provider': self._model_spec.provider.value,
                 'error_type': type(e).__name__,
                 'error_message': str(e),
@@ -432,7 +432,7 @@ class BaseAgent(ABC):
             agent_logger.error(f"Unexpected error in LLM request after {response_time:.2f}ms: {e}", extra={'structured_data': {
                 'event_type': 'agent_llm_error',
                 'agent_type': self.get_agent_type(),
-                'model': self.model,
+                'model': effective_model,
                 'provider': self._model_spec.provider.value,
                 'error_type': type(e).__name__,
                 'error_message': str(e),
@@ -488,6 +488,11 @@ class BaseAgent(ABC):
                 ``self.temperature`` when None
             top_p: Per-call top_p override; falls back to ``self.top_p`` when None
             **llm_options: Additional LLM options (max_tokens, json_mode, etc.)
+
+        Note:
+            The ``think`` provider option is not supported here (it is dropped
+            silently, like any other unrecognized ``llm_options`` key). Use
+            :meth:`_make_llm_request` if you need a reasoning trace.
 
         Returns:
             The model's response content
@@ -573,7 +578,7 @@ class BaseAgent(ABC):
             agent_logger.error(f"LLM generate failed after {response_time:.2f}ms: {e}", extra={'structured_data': {
                 'event_type': 'agent_llm_error',
                 'agent_type': self.get_agent_type(),
-                'model': self.model,
+                'model': effective_model,
                 'provider': self._model_spec.provider.value,
                 'error_type': type(e).__name__,
                 'error_message': str(e),
@@ -587,7 +592,7 @@ class BaseAgent(ABC):
             agent_logger.error(f"Unexpected error in LLM generate after {response_time:.2f}ms: {e}", extra={'structured_data': {
                 'event_type': 'agent_llm_error',
                 'agent_type': self.get_agent_type(),
-                'model': self.model,
+                'model': effective_model,
                 'provider': self._model_spec.provider.value,
                 'error_type': type(e).__name__,
                 'error_message': str(e),

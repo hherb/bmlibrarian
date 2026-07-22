@@ -142,3 +142,40 @@ def test_chat_omits_think_by_default(mock_chat, agent):
 
     # Either absent, or explicitly None (provider treats None as "don't send").
     assert mock_chat.call_args.kwargs.get("think") is None
+
+
+# --- error-path observability ----------------------------------------------
+
+def _error_model(caplog) -> object:
+    """Pull the model recorded on the first ``agent_llm_error`` log record."""
+    for record in caplog.records:
+        data = getattr(record, "structured_data", {})
+        if data.get("event_type") == "agent_llm_error":
+            return data.get("model")
+    raise AssertionError("no agent_llm_error record was logged")
+
+
+@patch("bmlibrarian.llm.client.LLMClient.chat")
+def test_chat_error_logs_effective_model(mock_chat, agent, caplog):
+    """On failure the error log reports the overridden model, not self.model."""
+    mock_chat.side_effect = ConnectionError("boom")
+
+    with caplog.at_level("ERROR", logger="bmlibrarian.agents"):
+        with pytest.raises(ConnectionError):
+            agent._make_llm_request(
+                [{"role": "user", "content": "hi"}], model="other-model"
+            )
+
+    assert _error_model(caplog) == "other-model"
+
+
+@patch("bmlibrarian.llm.client.LLMClient.generate")
+def test_generate_error_logs_effective_model(mock_generate, agent, caplog):
+    """On failure the error log reports the overridden model, not self.model."""
+    mock_generate.side_effect = ConnectionError("boom")
+
+    with caplog.at_level("ERROR", logger="bmlibrarian.agents"):
+        with pytest.raises(ConnectionError):
+            agent._generate_from_prompt("hello", model="other-model")
+
+    assert _error_model(caplog) == "other-model"

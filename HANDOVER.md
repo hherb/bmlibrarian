@@ -22,6 +22,9 @@ off new work. Longer-term structural items live in
   boundary was already clean (PR #249); this was consistency polish, not a
   correctness fix. Design spec:
   `docs/superpowers/specs/2026-07-22-baseagent-percall-overrides-design.md`.
+  Review follow-up: the four LLM error-path log records in `base.py` now
+  report `effective_model` (they still reported `self.model`, mislabelling
+  failures that used a per-call model override).
 - **Connection/concurrency P1 fixes** (2026-07-21): six findings from the
   2026-07-19 review. `queue_manager.py` — dequeue is now a single atomic
   `UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *` (no cross-process
