@@ -18,6 +18,20 @@ from typing import Optional, Dict, Any, List, Iterator, Callable
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+# The atomic dequeue (get_next_task) relies on the SQL ``RETURNING`` clause,
+# which SQLite added in 3.35.0 (2021-03-12). Guard against older engines so a
+# stale libsqlite3 fails loudly at construction rather than mid-dequeue. The
+# stdlib ``sqlite3`` module links whatever libsqlite3 the interpreter was built
+# against, so this cannot be pinned via packaging — hence a runtime check.
+MIN_SQLITE_VERSION: tuple = (3, 35, 0)
+
+# Milliseconds a queue connection waits for a competing writer to release the
+# database lock before raising ``sqlite3.OperationalError("database is
+# locked")``. Multiple worker processes claim tasks concurrently (each with its
+# own connection), so without this they would fail immediately on contention
+# instead of briefly blocking and retrying.
+QUEUE_BUSY_TIMEOUT_MS: int = 30_000
+
 
 class TaskStatus(Enum):
     """Task processing status."""
@@ -79,7 +93,20 @@ class QueueManager:
         
         Args:
             db_path: Path to SQLite database file. If None, uses default location.
+
+        Raises:
+            RuntimeError: If the linked SQLite engine predates 3.35.0, which is
+                required for the ``RETURNING``-based atomic dequeue.
         """
+        if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
+            required = ".".join(str(p) for p in MIN_SQLITE_VERSION)
+            raise RuntimeError(
+                f"QueueManager requires SQLite >= {required} for atomic task "
+                f"claiming (RETURNING clause), but the linked engine is "
+                f"{sqlite3.sqlite_version}. Upgrade the SQLite library your "
+                f"Python interpreter links against."
+            )
+
         if db_path is None:
             # Use project directory for queue database
             db_path = Path.cwd() / "agent_queue.db"
@@ -107,17 +134,31 @@ class QueueManager:
             signal.signal(signal.SIGINT, self._signal_handler)
     
     def _get_connection(self):
-        """Get database connection, using persistent connection for in-memory databases."""
+        """Get database connection, using persistent connection for in-memory databases.
+
+        Fresh file-based connections get ``busy_timeout`` applied so that a
+        worker contending with another process's claim blocks briefly and
+        retries instead of failing immediately with "database is locked".
+        """
         if self._persistent_conn:
             return self._persistent_conn
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(f"PRAGMA busy_timeout = {QUEUE_BUSY_TIMEOUT_MS}")
+        return conn
     
     def _init_database(self):
         """Initialize SQLite database with required tables."""
         conn = self._get_connection()
         needs_close = not self._persistent_conn
-        
+
         try:
+            # Use WAL journaling for file-based databases so concurrent readers
+            # don't block the writer claiming a task (and vice versa). WAL is a
+            # persistent property of the database file, so setting it once here
+            # applies to every later connection. It is a no-op for :memory:.
+            if self.db_path != ":memory:":
+                conn.execute("PRAGMA journal_mode = WAL")
+
             # Create the main table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS queue_tasks (

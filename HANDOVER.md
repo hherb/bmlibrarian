@@ -13,7 +13,10 @@ off new work. Longer-term structural items live in
 - **Connection/concurrency P1 fixes** (2026-07-21): six findings from the
   2026-07-19 review. `queue_manager.py` — dequeue is now a single atomic
   `UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *` (no cross-process
-  double-claim); the SIGINT/SIGTERM handler no longer takes the
+  double-claim); construction now guards `sqlite3.sqlite_version >= 3.35.0`
+  (RETURNING) and file-based queue DBs run WAL + a 30 s `busy_timeout` so
+  concurrent claims block-and-retry instead of raising "database is locked".
+  The SIGINT/SIGTERM handler no longer takes the
   non-reentrant lock, and handlers register only on the main thread (fixes
   off-main-thread `ValueError`). `thesaurus/expander.py` routes through the
   shared `get_db_manager()` instead of leaking a fresh pool per term.

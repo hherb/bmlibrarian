@@ -16,6 +16,7 @@ review; re-verify line numbers before fixing, they will drift.
 - [x] **Class-level source-ID cache** — `database.py`: `_source_id_caches`/`_source_ids_by_conninfo` are now keyed per-conninfo. (2026-07-21)
 - [ ] **Conninfo built by unescaped string concatenation** (×3) — `database.py:71`, `gui/qt/core/application.py:274-280`, `gui/qt/dialogs/login_dialog.py:607-613`: a password containing a space breaks libpq parsing. Use `psycopg.conninfo.make_conninfo(**kwargs)` in one shared helper.
 - [ ] **f-string LIMIT/OFFSET** — `database.py:453-461` (`find_abstracts`): interpolates `max_rows`/`offset` into SQL; sibling `find_abstract_ids` (`:659-661`) binds them properly. Make them bound parameters.
+- [ ] **f-string source_id filters** — `database.py` `search_with_bm25`/`search_with_fulltext_function`: build `source_id = {id}` / `ANY(ARRAY{others})` clauses via f-string interpolation. Not injectable today (IDs are DB-sourced ints resolved from the source cache), but same class as the LIMIT/OFFSET item — bind them (or build the array param) once the shared query helper lands.
 
 ### Qt / GUI
 - [ ] **"Find PDF" freezes the UI** — `gui/qt/qt_document_card_factory.py:1053-1177`: full network discovery (CrossRef/Unpaywall + optional 60 s browser automation) runs synchronously in the click slot. Wrap in a QThread worker — the correct pattern (`PDFFetchWorker`) already exists in the same file.

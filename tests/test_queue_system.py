@@ -160,6 +160,35 @@ class TestQueueManager:
         except OSError:
             pass
 
+    def test_file_database_uses_wal_journal(self):
+        """A file-based queue DB runs in WAL mode for reader/writer concurrency."""
+        conn = self.queue._get_connection()
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        assert mode.lower() == "wal"
+
+    def test_connection_sets_busy_timeout(self):
+        """Fresh file-based connections apply the configured busy_timeout."""
+        from bmlibrarian.agents.queue_manager import QUEUE_BUSY_TIMEOUT_MS
+
+        conn = self.queue._get_connection()
+        try:
+            timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        finally:
+            conn.close()
+        assert timeout == QUEUE_BUSY_TIMEOUT_MS
+
+    def test_construct_rejects_old_sqlite(self):
+        """Construction fails loudly when the SQLite engine predates RETURNING."""
+        with patch(
+            "bmlibrarian.agents.queue_manager.sqlite3.sqlite_version_info",
+            (3, 34, 0),
+        ):
+            with pytest.raises(RuntimeError, match="requires SQLite"):
+                QueueManager(":memory:")
+
     def test_complete_task(self):
         """Test marking a task as completed."""
         task_id = self.queue.add_task("test_agent", "test_method", {"test": "data"})
