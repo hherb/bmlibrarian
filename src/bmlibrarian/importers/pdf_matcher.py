@@ -23,8 +23,9 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
 
+from bmlibrarian.agents.base import BaseAgent
 from bmlibrarian.database import get_db_manager
-from bmlibrarian.llm import LLMClient
+from bmlibrarian.llm import DEFAULT_OLLAMA_HOST
 from bmlibrarian.utils.pdf_manager import PDFManager
 
 logger = logging.getLogger(__name__)
@@ -103,12 +104,16 @@ class DocumentStatus:
     document: Optional[Dict[str, Any]] = None
 
 
-class PDFMatcher:
+class PDFMatcher(BaseAgent):
     """
     PDF matcher and importer for BMLibrarian.
 
     Analyzes PDF files to extract metadata using LLM, matches them to existing
     documents in the database, and imports them with proper naming and organization.
+
+    Inherits BaseAgent so metadata extraction routes through the shared LLM
+    layer with token accounting, connection testing, and an active fallback
+    model.
     """
 
     DEFAULT_MODEL = "medgemma4B_it_q8:latest"
@@ -118,7 +123,8 @@ class PDFMatcher:
         self,
         pdf_base_dir: Optional[str] = None,
         ollama_host: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        show_model_info: bool = False,
     ):
         """
         Initialize the PDF matcher.
@@ -126,15 +132,24 @@ class PDFMatcher:
         Args:
             pdf_base_dir: Base directory for PDF storage. If None, uses PDF_BASE_DIR
                          environment variable or defaults to ~/knowledgebase/pdf
-            ollama_host: Host URL for Ollama service. If None, uses OLLAMA_HOST
-                        environment variable or defaults to localhost:11434
+            ollama_host: Host URL for Ollama service. If None, uses the default
+                        Ollama host (http://localhost:11434)
             model: LLM model to use for metadata extraction
+            show_model_info: Whether to print the model banner on init
         """
-        self.db_manager = get_db_manager()
-        self.model = model or self.DEFAULT_MODEL
+        # Extraction uses a low, fixed temperature/top_p so metadata is
+        # transcribed from the page rather than invented; carry those as the
+        # instance defaults BaseAgent's helpers apply.
+        super().__init__(
+            model=model or self.DEFAULT_MODEL,
+            host=ollama_host or DEFAULT_OLLAMA_HOST,
+            temperature=METADATA_EXTRACTION_TEMPERATURE,
+            top_p=METADATA_EXTRACTION_TOP_P,
+            fallback_model=self.FALLBACK_MODEL,
+            show_model_info=show_model_info,
+        )
 
-        # Initialize Ollama client with optional custom host
-        self.ollama_client = LLMClient(ollama_host=ollama_host)
+        self.db_manager = get_db_manager()
 
         # Initialize the long-lived PDF manager WITHOUT a pooled connection:
         # this instance is only used for path/base_dir resolution. Every actual
@@ -145,6 +160,10 @@ class PDFMatcher:
 
         logger.info(f"PDF matcher initialized with model: {self.model}")
         logger.info(f"PDF base directory: {self.pdf_manager.base_dir}")
+
+    def get_agent_type(self) -> str:
+        """Return the stable identifier for this agent."""
+        return "pdf_matcher"
 
     def extract_first_page_text(self, pdf_path: Path) -> Optional[str]:
         """
@@ -483,15 +502,9 @@ Text to analyze:
 """
 
         try:
-            response = self.ollama_client.generate(
-                prompt=prompt,
-                model=self.model,
-                # Low temperature for factual extraction
-                temperature=METADATA_EXTRACTION_TEMPERATURE,
-                top_p=METADATA_EXTRACTION_TOP_P,
-            )
-
-            response_text = (response.content or '').strip()
+            # Model, temperature and top_p come from the instance defaults set
+            # in __init__ (metadata-extraction settings).
+            response_text = self._generate_from_prompt(prompt).strip()
 
             # Try to parse JSON from response
             metadata = self._parse_llm_response(response_text)

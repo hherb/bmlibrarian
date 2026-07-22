@@ -300,6 +300,10 @@ class BaseAgent(ABC):
         system_prompt: Optional[str] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_delay: float = DEFAULT_RETRY_DELAY,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        think: Optional[bool] = None,
         **llm_options
     ) -> str:
         """
@@ -313,6 +317,13 @@ class BaseAgent(ABC):
             system_prompt: Optional system prompt to prepend
             max_retries: Maximum number of retry attempts for transient failures
             retry_delay: Initial delay between retries in seconds
+            model: Per-call model override; falls back to ``self.model`` when None
+            temperature: Per-call temperature override; falls back to
+                ``self.temperature`` when None
+            top_p: Per-call top_p override; falls back to ``self.top_p`` when None
+            think: Request a reasoning trace from the provider. Left None the
+                option is not sent (whether a model accepts it is the
+                provider's business).
             **llm_options: Additional LLM options (max_tokens, json_mode, etc.)
 
         Returns:
@@ -325,11 +336,16 @@ class BaseAgent(ABC):
         agent_logger = logging.getLogger('bmlibrarian.agents')
         start_time = time.time()
 
+        # Resolve per-call overrides against the instance defaults.
+        effective_model = model if model is not None else self.model
+        effective_temperature = temperature if temperature is not None else self.temperature
+        effective_top_p = top_p if top_p is not None else self.top_p
+
         # Log the request
-        agent_logger.info(f"LLM request to {self.model}", extra={'structured_data': {
+        agent_logger.info(f"LLM request to {effective_model}", extra={'structured_data': {
             'event_type': 'agent_llm_request',
             'agent_type': self.get_agent_type(),
-            'model': self.model,
+            'model': effective_model,
             'provider': self._model_spec.provider.value,
             'message_count': len(messages),
             'has_system_prompt': system_prompt is not None,
@@ -347,18 +363,23 @@ class BaseAgent(ABC):
             max_tokens = llm_options.pop('num_predict', None)
             json_mode = llm_options.pop('json_mode', False)
 
+            # Only forward think when explicitly set; the provider rejects it
+            # for models without thinking support.
+            think_kwargs = {} if think is None else {'think': think}
+
             # Make request via LLM client
             response: LLMResponse = self._llm_client.chat(
                 messages=llm_messages,
-                model=self.model,
+                model=effective_model,
                 system_prompt=system_prompt,
-                temperature=self.temperature,
-                top_p=self.top_p,
+                temperature=effective_temperature,
+                top_p=effective_top_p,
                 max_tokens=max_tokens,
                 json_mode=json_mode,
                 fallback_model=self.fallback_model,
                 max_retries=max_retries,
                 retry_delay=retry_delay,
+                **think_kwargs,
             )
 
             content = response.content
@@ -447,6 +468,9 @@ class BaseAgent(ABC):
         prompt: str,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_delay: float = DEFAULT_RETRY_DELAY,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         **llm_options
     ) -> str:
         """
@@ -459,6 +483,10 @@ class BaseAgent(ABC):
             prompt: The prompt string
             max_retries: Maximum number of retry attempts for transient failures
             retry_delay: Initial delay between retries in seconds
+            model: Per-call model override; falls back to ``self.model`` when None
+            temperature: Per-call temperature override; falls back to
+                ``self.temperature`` when None
+            top_p: Per-call top_p override; falls back to ``self.top_p`` when None
             **llm_options: Additional LLM options (max_tokens, json_mode, etc.)
 
         Returns:
@@ -476,11 +504,16 @@ class BaseAgent(ABC):
         agent_logger = logging.getLogger('bmlibrarian.agents')
         start_time = time.time()
 
+        # Resolve per-call overrides against the instance defaults.
+        effective_model = model if model is not None else self.model
+        effective_temperature = temperature if temperature is not None else self.temperature
+        effective_top_p = top_p if top_p is not None else self.top_p
+
         # Log the request
-        agent_logger.info(f"LLM generate request to {self.model}", extra={'structured_data': {
+        agent_logger.info(f"LLM generate request to {effective_model}", extra={'structured_data': {
             'event_type': 'agent_llm_generate',
             'agent_type': self.get_agent_type(),
-            'model': self.model,
+            'model': effective_model,
             'provider': self._model_spec.provider.value,
             'prompt_length': len(prompt),
             'timestamp': start_time
@@ -494,9 +527,9 @@ class BaseAgent(ABC):
             # Make request via LLM client
             response: LLMResponse = self._llm_client.generate(
                 prompt=prompt,
-                model=self.model,
-                temperature=self.temperature,
-                top_p=self.top_p,
+                model=effective_model,
+                temperature=effective_temperature,
+                top_p=effective_top_p,
                 max_tokens=max_tokens,
                 json_mode=json_mode,
                 fallback_model=self.fallback_model,
