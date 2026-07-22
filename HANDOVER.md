@@ -10,6 +10,25 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Archive-extraction path-traversal hardening** (2026-07-23): the "zip/tar
+  slip" P1 from the 2026-07-19 review. Factored the existing
+  `_is_safe_zip_member` guard into one shared pure function
+  `utils/path_utils.py::is_safe_archive_member(member_name)` (rejects absolute
+  paths and any `..` component; normalizes `\`→`/` so Windows-style traversal
+  is caught on POSIX — the *old* inline guard did **not**, which is partly why
+  the europe tests were red). Wired it into all three archive extractors:
+  `europe_pmc_pdf_downloader._is_safe_zip_member` now delegates (no behavior
+  change); `pmc_bulk_importer._extract_package` validates each tar member and
+  adds `filter='data'` (defence-in-depth + silences the 3.14 deprecation);
+  `medrxiv_meca_importer.extract_package` replaced a blanket `zf.extractall()`
+  with a validated member-by-member loop. Also **fixed 7 pre-existing red
+  tests** in `test_europe_pmc_pdf_downloader.py` — they targeted a removed
+  tar-based API (`_is_safe_tar_member`, tar.gz packages) when the real format
+  is `PMC#######.zip`; rewrote them against the actual zip path. New hermetic
+  tests: `test_path_utils.py` (the pure guard) + `test_importer_extraction_
+  security.py` (both importers, real malicious archives). No new ruff/mypy
+  (removed 2 stale F401s in the test file while there). Assistant guidance:
+  `doc/llm/archive_extraction_safety.md`.
 - **Dependabot cleanup: drop unused marker-pdf/chromadb/fastembed, major dep
   bumps** (2026-07-22, PR #256): resolves 23/24 alerts. Removed three direct
   deps that were imported nowhere in this repo (`chromadb`/`fastembed` were
@@ -167,10 +186,7 @@ independent unless noted.
   `agents/orchestrator.py` `Workflow.execute_workflow` wedges forever on a
   failed dependency (superseded by `cli/workflow_steps.py` but still
   exported/documented — fix or deprecate + update
-  `doc/users/queue_system_guide.md`); archive extraction without
-  path-traversal guards in `pmc_bulk_importer.py:688-696` (tar) and
-  `medrxiv_meca_importer.py:456-459` (zip) — reuse `_is_safe_zip_member()`
-  from `europe_pmc_pdf_downloader.py:778-810`; ClinicalTrials matching does
+  `doc/users/queue_system_guide.md`); ClinicalTrials matching does
   a per-trial leading-wildcard `LIKE` over full text — needs an indexed
   strategy at scale.
 

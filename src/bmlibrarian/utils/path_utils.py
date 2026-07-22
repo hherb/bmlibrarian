@@ -72,6 +72,49 @@ def ensure_directory(file_path: Union[str, Path]) -> Path:
     return expanded_path
 
 
+def is_safe_archive_member(member_name: str) -> bool:
+    """Check whether an archive member path is safe to extract.
+
+    Guards against path-traversal ("zip slip" / "tar slip") attacks by
+    rejecting member names that could escape the intended extraction
+    directory. This is the single sanctioned safety check for extracting
+    tar and zip archives across BMLibrarian's importers.
+
+    A member is rejected when its path:
+    - is absolute (Unix ``/etc/passwd`` or begins with ``/``), or
+    - contains a ``..`` path component (e.g. ``../../etc/passwd``,
+      ``data/../../secret``, or Windows-style ``..\\..\\system32``).
+
+    A literal ``..`` inside a filename (e.g. ``PMC..123456.pdf``) is *not*
+    a path component and is therefore allowed.
+
+    Args:
+        member_name: Name/path of the archive member as reported by the
+            archive (``ZipInfo.filename`` / ``TarInfo.name``).
+
+    Returns:
+        True if the member path is safe to extract, False otherwise.
+        Rejections are logged at WARNING level.
+    """
+    # Normalize Windows-style separators so traversal via '\\' is caught on
+    # POSIX hosts, where they would otherwise be treated as filename chars.
+    normalized = member_name.replace('\\', '/')
+    member_path = Path(normalized)
+
+    # Reject absolute paths (both PurePath.is_absolute and a leading slash).
+    if member_path.is_absolute() or normalized.startswith('/'):
+        logger.warning(f"Skipping unsafe absolute archive path: {member_name}")
+        return False
+
+    # Reject any '..' traversal component.
+    for part in member_path.parts:
+        if part == '..':
+            logger.warning(f"Skipping archive path traversal attempt: {member_name}")
+            return False
+
+    return True
+
+
 def get_config_dir() -> Path:
     """Get standard configuration directory (~/.bmlibrarian).
 
