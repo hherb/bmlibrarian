@@ -10,6 +10,29 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Dependabot cleanup: drop unused marker-pdf/chromadb/fastembed, major dep
+  bumps** (2026-07-22, PR #256): resolves 23/24 alerts. Removed three direct
+  deps that were imported nowhere in this repo (`chromadb`/`fastembed` were
+  BMLibrarian Lite strays; `marker-pdf` only fed one converter option in
+  `scripts/pdflab.py`, now stripped). This unblocked `pillow` 10→**12.3.0** and
+  `transformers` 4→**5.14.1** (both now purely transitive — no direct
+  `import transformers`/`PIL` anywhere), plus `pymupdf` 1.28.0 / `fonttools`
+  4.63.0. **transformers 5.x validated at runtime**, not just at import: loaded
+  `Snowflake/snowflake-arctic-embed-l-v2.0` through `SentenceTransformerEmbedder`
+  (`embeddings/sentence_transformer_embedder.py`) and confirmed 1024-dim single
+  + batch embeddings — this is the only real consumer of `sentence-transformers`
+  (an opt-in, non-default embedding backend). Also collapsed a pre-existing
+  duplicate `pymupdf-layout` dep (kept `>=1.26.6`). Remaining alert: `diskcache`
+  (transitive via `llama-cpp-python`, no upstream patch yet). Change is
+  metadata-only (pyproject + uv.lock); all 3218 tests collect.
+  - **Heads-up — two pre-existing broken test groups surfaced during
+    verification** (NOT caused by this PR; both patch attributes removed by
+    earlier refactors): `tests/paperchecker/test_search_coordinator.py::`
+    `TestEmbeddingGeneration` (×3) patches `search_coordinator.ollama.embeddings`
+    — `ollama` was removed from that module by the PR #249 LLM-layer migration;
+    `tests/test_paper_weight_persistence.py::TestLLMJSONParsing` (×5 errors) mocks
+    `PaperWeightAssessmentAgent._get_db_connection`, removed by the paper_weight
+    package reorg. Both need their mock targets updated to the LLM-layer APIs.
 - **Injection-surface hardening: shared conninfo helper + bound LIMIT/OFFSET**
   (2026-07-22): two top P1 findings from the 2026-07-19 review. New pure module
   `db_conninfo.py` exposes `build_conninfo(**params)` (delegates to
