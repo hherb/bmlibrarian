@@ -10,6 +10,21 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **LLM-layer polish: BaseAgent per-call overrides + 2 migrations**
+  (2026-07-22): `base.py` `_make_llm_request`/`_generate_from_prompt` now take
+  optional `model`/`temperature`/`top_p` overrides (default `None` → `self.*`,
+  so existing calls are byte-for-byte unchanged), and `_make_llm_request`
+  forwards a `think` option to the chat client instead of dropping it. On top
+  of that, `PDFMatcher` and `SemanticQueryAgent` were migrated off
+  hand-constructed `LLMClient`s onto `BaseAgent` — `PDFMatcher` now activates
+  its previously-dead `FALLBACK_MODEL`; `SemanticQueryAgent`'s keyword
+  expansion uses the new per-call temperature override. The `import ollama`
+  boundary was already clean (PR #249); this was consistency polish, not a
+  correctness fix. Design spec:
+  `docs/superpowers/specs/2026-07-22-baseagent-percall-overrides-design.md`.
+  Review follow-up: the four LLM error-path log records in `base.py` now
+  report `effective_model` (they still reported `self.model`, mislabelling
+  failures that used a per-call model override).
 - **Connection/concurrency P1 fixes** (2026-07-21): six findings from the
   2026-07-19 review. `queue_manager.py` — dequeue is now a single atomic
   `UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *` (no cross-process
@@ -116,9 +131,27 @@ independent unless noted.
   `medrxiv_meca_importer.py:456-459` (zip) — reuse `_is_safe_zip_member()`
   from `europe_pmc_pdf_downloader.py:778-810`; ClinicalTrials matching does
   a per-trial leading-wildcard `LIKE` over full text — needs an indexed
-  strategy at scale; multi-model query generator hardcodes `num_predict:
-  100` (retriggers the documented gpt-oss:20b empty-response bug) and
-  bypasses `BaseAgent`/`LLMClient`.
+  strategy at scale.
+
+## LLM-layer polish follow-up (from 2026-07-22 slice)
+
+The BaseAgent per-call-override work (see "Recently landed") unblocks two
+more standalone-agent migrations that were deferred to keep that slice's
+regression signal clean. Both are optional consistency polish — they already
+route through the LLM layer correctly:
+
+- **`agents/query_generation/generator.py`** (`MultiModelQueryGenerator`):
+  a multi-model fan-out that builds its own `LLMClient`. Now migratable via
+  the new per-call `model`/`temperature` overrides (each `.chat(model=…)`
+  call becomes `self._make_llm_request(..., model=m, temperature=t)`), which
+  would roll all models' token usage into one metrics object. `num_predict`
+  is already fixed (`QUERY_GENERATION_MAX_TOKENS = 800`); it does **not**
+  hardcode 100 as older notes claimed.
+- **`qa/document_qa.py:answer_question`**: a module-level function using
+  `think=`. The `think` passthrough now exists on `_make_llm_request`, so
+  converting it to a small QA agent is possible — but that's a caller-facing
+  API change (callers pass `model`/`host`/`temperature` directly), so weigh
+  the churn before doing it.
 
 Re-verify all line numbers against current `HEAD` before fixing — they will
 have drifted since the 2026-07-19 review. Full details, including the

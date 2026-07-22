@@ -44,7 +44,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Callable, TYPE_CHECKING
 
-from ..llm import LLMClient, LLMMessage
+from ..llm import DEFAULT_OLLAMA_HOST
+from .base import BaseAgent
 from .utils.query_syntax import strip_preamble
 
 if TYPE_CHECKING:
@@ -149,7 +150,7 @@ class SemanticSearchResult:
         )
 
 
-class SemanticQueryAgent:
+class SemanticQueryAgent(BaseAgent):
     """
     Adaptive semantic search agent.
 
@@ -205,27 +206,37 @@ class SemanticQueryAgent:
         self.threshold_step = threshold_step
         self.max_threshold_iterations = max_threshold_iterations
         self.max_query_rephrasings = max_query_rephrasings
-        self.rephrasing_model = rephrasing_model or DEFAULT_REPHRASING_MODEL
-        self.rephrasing_temperature = rephrasing_temperature
-
         # Hybrid search settings
         self.default_search_mode = default_search_mode
         self.semantic_weight = semantic_weight
         self.rrf_k = rrf_k
         self.hybrid_threshold = hybrid_threshold
 
-        # Load config defaults
+        # Load config defaults for the Ollama host.
         try:
             from bmlibrarian.config import get_config
             config = get_config()
             ollama_config = config.get("ollama", {})
-            self.ollama_host = ollama_host or ollama_config.get(
-                "host", "http://localhost:11434"
+            resolved_host = ollama_host or ollama_config.get(
+                "host", DEFAULT_OLLAMA_HOST
             )
         except ImportError:
-            self.ollama_host = ollama_host or "http://localhost:11434"
+            resolved_host = ollama_host or DEFAULT_OLLAMA_HOST
 
-        self._llm_client = LLMClient(ollama_host=self.ollama_host)
+        # The rephrasing model/temperature are the agent's LLM defaults; the
+        # keyword-expansion call overrides temperature per call.
+        super().__init__(
+            model=rephrasing_model or DEFAULT_REPHRASING_MODEL,
+            host=resolved_host,
+            temperature=rephrasing_temperature,
+            show_model_info=False,
+        )
+
+        # Retained as named aliases for readability at the call sites; they
+        # mirror BaseAgent's self.model / self.temperature.
+        self.rephrasing_model = self.model
+        self.rephrasing_temperature = self.temperature
+        self.ollama_host = resolved_host
 
         logger.info(
             f"SemanticQueryAgent initialized: threshold={initial_threshold}, "
@@ -233,6 +244,10 @@ class SemanticQueryAgent:
             f"max_rephrasings={max_query_rephrasings}, "
             f"default_mode={default_search_mode.value}"
         )
+
+    def get_agent_type(self) -> str:
+        """Return the stable identifier for this agent."""
+        return "semantic_query_agent"
 
     def search_document(
         self,
@@ -609,14 +624,12 @@ Generate a single alternative query that:
 
 Respond with ONLY the new query, nothing else."""
 
-            response = self._llm_client.generate(
-                prompt=prompt,
-                model=self.rephrasing_model,
-                temperature=self.rephrasing_temperature,
-                max_tokens=REPHRASING_MAX_TOKENS,
-            )
-
-            rephrased = (response.content or "").strip()
+            # Model and temperature come from the instance defaults
+            # (rephrasing model/temperature).
+            rephrased = self._generate_from_prompt(
+                prompt,
+                num_predict=REPHRASING_MAX_TOKENS,
+            ).strip()
 
             # Clean up the response. REPHRASING_MAX_TOKENS was raised from 50
             # to 800 so reasoning models can think before answering; at 50 a
@@ -673,14 +686,13 @@ EXPANDED: heart rate cardiac rate pulse 89 bpm beats per minute
 
 Now analyze the query:"""
 
-            response = self._llm_client.generate(
-                prompt=prompt,
-                model=self.rephrasing_model,
+            # Keyword expansion uses a lower temperature than rephrasing;
+            # override it per call while keeping the instance model.
+            text = self._generate_from_prompt(
+                prompt,
                 temperature=DEFAULT_EXPANSION_TEMPERATURE,
-                max_tokens=EXPANSION_MAX_TOKENS,
-            )
-
-            text = (response.content or "").strip()
+                num_predict=EXPANSION_MAX_TOKENS,
+            ).strip()
 
             # Parse the response
             result = {
