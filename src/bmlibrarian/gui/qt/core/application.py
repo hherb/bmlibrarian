@@ -247,6 +247,8 @@ class BMLibrarianApplication:
         import socket
         import psycopg
 
+        from ....db_conninfo import build_conninfo
+
         self.logger.info(f"Attempting auto-login for user: {username}")
 
         # Load database config from environment/.env file
@@ -270,13 +272,14 @@ class BMLibrarianApplication:
             return False
 
         try:
-            # Connect to database
-            conn_string = (
-                f"host={db_host} "
-                f"port={db_port} "
-                f"dbname={db_name} "
-                f"user={db_user} "
-                f"password={db_password}"
+            # Connect to database (build the conninfo via the shared escaping
+            # helper — never concatenate credentials into a connection string).
+            conn_string = build_conninfo(
+                host=db_host,
+                port=db_port,
+                dbname=db_name,
+                user=db_user,
+                password=db_password,
             )
             conn = psycopg.connect(conn_string, connect_timeout=10)
 

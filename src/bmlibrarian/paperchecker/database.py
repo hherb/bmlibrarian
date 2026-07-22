@@ -23,6 +23,7 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+from ..db_conninfo import build_conninfo
 from .data_models import PaperCheckResult
 
 
@@ -123,11 +124,15 @@ class PaperCheckDB:
         Raises:
             psycopg.Error: If connection fails
         """
-        conninfo = f"dbname={self.db_name} host={self.db_host} port={self.db_port}"
-        if self._db_user:
-            conninfo += f" user={self._db_user}"
-        if self._db_password:
-            conninfo += f" password={self._db_password}"
+        # Build the conninfo via the shared escaping helper (never concatenate
+        # credentials — a password/host with a space or quote would break it).
+        conninfo = build_conninfo(
+            dbname=self.db_name,
+            host=self.db_host,
+            port=self.db_port,
+            user=self._db_user,
+            password=self._db_password,
+        )
 
         try:
             return psycopg.connect(conninfo, row_factory=dict_row)

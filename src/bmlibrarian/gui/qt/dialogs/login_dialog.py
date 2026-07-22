@@ -460,12 +460,14 @@ class LoginDialog(QDialog):
         try:
             import psycopg
 
-            conn_string = (
-                f"host={db_config.host} "
-                f"port={db_config.port} "
-                f"dbname={db_config.database} "
-                f"user={db_config.user} "
-                f"password={db_config.password}"
+            from ....db_conninfo import build_conninfo
+
+            conn_string = build_conninfo(
+                host=db_config.host,
+                port=db_config.port,
+                dbname=db_config.database,
+                user=db_config.user,
+                password=db_config.password,
             )
 
             with psycopg.connect(conn_string, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS) as conn:
@@ -598,18 +600,20 @@ class LoginDialog(QDialog):
         """
         import psycopg
 
+        from ....db_conninfo import build_conninfo
+
         db_config = self._get_db_config()
 
         # Set environment variables for the DatabaseManager
         for key, value in db_config.to_env_dict().items():
             os.environ[key] = value
 
-        conn_string = (
-            f"host={db_config.host} "
-            f"port={db_config.port} "
-            f"dbname={db_config.database} "
-            f"user={db_config.user} "
-            f"password={db_config.password}"
+        conn_string = build_conninfo(
+            host=db_config.host,
+            port=db_config.port,
+            dbname=db_config.database,
+            user=db_config.user,
+            password=db_config.password,
         )
 
         return psycopg.connect(conn_string, connect_timeout=DB_CONNECTION_TIMEOUT_SECONDS)
