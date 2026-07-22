@@ -2,7 +2,7 @@
 PDF Conversion Lab Application
 
 A PySide6 application for testing PDF to Markdown conversion using multiple
-converters: pymupdf4llm (with/without layout), pymupdf, and marker.
+converters: pymupdf4llm (with/without layout) and pymupdf.
 
 Displays PDF on the left and converted Markdown on the right.
 Includes quality rating system with database persistence.
@@ -60,7 +60,6 @@ class ConverterType(Enum):
     PYMUPDF4LLM_LAYOUT = "pymupdf4llm+layout"
     PYMUPDF4LLM = "pymupdf4llm"
     PYMUPDF = "pymupdf"
-    MARKER = "marker"
 
 
 # Human-readable names for converters
@@ -68,7 +67,6 @@ CONVERTER_DISPLAY_NAMES = {
     ConverterType.PYMUPDF4LLM_LAYOUT: "pymupdf4llm + layout (recommended)",
     ConverterType.PYMUPDF4LLM: "pymupdf4llm (no layout)",
     ConverterType.PYMUPDF: "pymupdf (basic)",
-    ConverterType.MARKER: "marker (AI-powered)",
 }
 
 
@@ -170,36 +168,6 @@ def convert_with_pymupdf(file_path: str) -> str:
 
     doc.close()
     return "\n\n---\n\n".join(text_parts)
-
-
-def convert_with_marker(file_path: str) -> str:
-    """
-    Convert PDF to Markdown using marker (AI-powered).
-
-    Args:
-        file_path: Path to PDF file.
-
-    Returns:
-        Markdown text.
-
-    Raises:
-        ImportError: If marker is not installed.
-    """
-    try:
-        from marker.converters.pdf import PdfConverter
-        from marker.models import create_model_dict
-        from marker.output import text_from_rendered
-    except ImportError as e:
-        raise ImportError(
-            "marker-pdf is not installed. Install with: uv add marker-pdf"
-        ) from e
-
-    converter = PdfConverter(
-        artifact_dict=create_model_dict(),
-    )
-    rendered = converter(file_path)
-    text, _, _ = text_from_rendered(rendered)
-    return text
 
 
 class PDFConversionLabWindow(QMainWindow):
@@ -661,8 +629,6 @@ class PDFConversionLabWindow(QMainWindow):
                 md_text = convert_with_pymupdf4llm(file_path)
             elif converter == ConverterType.PYMUPDF:
                 md_text = convert_with_pymupdf(file_path)
-            elif converter == ConverterType.MARKER:
-                md_text = convert_with_marker(file_path)
             else:
                 raise ValueError(f"Unknown converter: {converter}")
 
