@@ -136,9 +136,12 @@ class PDFMatcher:
         # Initialize Ollama client with optional custom host
         self.ollama_client = LLMClient(ollama_host=ollama_host)
 
-        # Initialize PDF manager with database connection
-        with self.db_manager.get_connection() as conn:
-            self.pdf_manager = PDFManager(base_dir=pdf_base_dir, db_conn=conn)
+        # Initialize the long-lived PDF manager WITHOUT a pooled connection:
+        # this instance is only used for path/base_dir resolution. Every actual
+        # database operation below acquires its own per-operation connection and
+        # builds a short-lived PDFManager for it. Retaining a pooled connection
+        # here would use it long after it was returned to the pool.
+        self.pdf_manager = PDFManager(base_dir=pdf_base_dir)
 
         logger.info(f"PDF matcher initialized with model: {self.model}")
         logger.info(f"PDF base directory: {self.pdf_manager.base_dir}")

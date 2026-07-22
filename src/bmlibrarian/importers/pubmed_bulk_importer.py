@@ -1126,8 +1126,13 @@ class PubMedBulkImporter:
 
         logger.debug(f"Batch stored: {inserted} inserted, {updated} updated")
 
-        # Store transparency metadata for articles that have it
-        self._store_transparency_metadata_batch(articles, conn if 'conn' in dir() else None)
+        # Store transparency metadata on its own fresh connection. The main
+        # insert above has already committed, so the documents are visible for
+        # the metadata lookups. Passing None (rather than the now returned-to-
+        # pool `conn`) both fixes the use-after-return bug and keeps this
+        # best-effort, additive step fully decoupled from the main import
+        # transaction.
+        self._store_transparency_metadata_batch(articles, None)
 
         return inserted + updated
 
@@ -1150,12 +1155,15 @@ class PubMedBulkImporter:
             Number of metadata records stored.
         """
         stored = 0
-        close_conn = False
+        own_cm = None
 
         try:
             if conn is None:
-                conn = self.db_manager.get_connection().__enter__()
-                close_conn = True
+                # Acquire our own pooled connection. Keep the context manager so
+                # the connection is returned to the pool in `finally` (calling
+                # conn.__exit__ instead would leak it).
+                own_cm = self.db_manager.get_connection()
+                conn = own_cm.__enter__()
 
             # Check if transparency schema exists
             with conn.cursor() as cur:
@@ -1234,9 +1242,11 @@ class PubMedBulkImporter:
         except Exception as e:
             logger.debug(f"Transparency metadata storage skipped: {e}")
         finally:
-            if close_conn and conn:
+            if own_cm is not None:
+                # Returns the connection to the pool (get_connection() commits
+                # or rolls back as appropriate on exit).
                 try:
-                    conn.__exit__(None, None, None)
+                    own_cm.__exit__(None, None, None)
                 except Exception:
                     pass
 

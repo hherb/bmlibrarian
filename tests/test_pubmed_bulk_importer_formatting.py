@@ -8,7 +8,7 @@ Tests the new Markdown formatting capabilities added to pubmed_bulk_importer.py:
 
 import xml.etree.ElementTree as ET
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, patch
 from src.bmlibrarian.importers.pubmed_bulk_importer import PubMedBulkImporter
 
 
@@ -20,7 +20,7 @@ class TestTextFormattingExtraction:
         """Create PubMedBulkImporter instance for testing."""
         # Mock the database manager and source_id lookup
         with patch('src.bmlibrarian.importers.pubmed_bulk_importer.get_db_manager') as mock_db:
-            mock_db.return_value = Mock()
+            mock_db.return_value = MagicMock()
             mock_db.return_value.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = [1]
             importer = PubMedBulkImporter(data_dir=str(tmp_path), use_tracking=False)
             return importer
@@ -141,7 +141,7 @@ class TestAbstractMarkdownFormatting:
         """Create PubMedBulkImporter instance for testing."""
         # Mock the database manager and source_id lookup
         with patch('src.bmlibrarian.importers.pubmed_bulk_importer.get_db_manager') as mock_db:
-            mock_db.return_value = Mock()
+            mock_db.return_value = MagicMock()
             mock_db.return_value.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = [1]
             importer = PubMedBulkImporter(data_dir=str(tmp_path), use_tracking=False)
             return importer
@@ -310,7 +310,7 @@ class TestMemoryManagement:
         """Create PubMedBulkImporter instance for testing."""
         # Mock the database manager and source_id lookup
         with patch('src.bmlibrarian.importers.pubmed_bulk_importer.get_db_manager') as mock_db:
-            mock_db.return_value = Mock()
+            mock_db.return_value = MagicMock()
             mock_db.return_value.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = [1]
             importer = PubMedBulkImporter(data_dir=str(tmp_path), use_tracking=False)
             return importer
@@ -332,6 +332,63 @@ class TestMemoryManagement:
 
         # After clearing, element should be empty
         assert len(list(elem)) == 0
+
+
+class TestTransparencyMetadataConnection:
+    """Test connection lifecycle in _store_transparency_metadata_batch()."""
+
+    @pytest.fixture
+    def importer(self, tmp_path):
+        """Create PubMedBulkImporter instance for testing."""
+        with patch('src.bmlibrarian.importers.pubmed_bulk_importer.get_db_manager') as mock_db:
+            mock_db.return_value = MagicMock()
+            mock_db.return_value.get_connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchone.return_value = [1]
+            return PubMedBulkImporter(data_dir=str(tmp_path), use_tracking=False)
+
+    def test_own_connection_is_returned_to_pool(self, importer):
+        """When conn is None, the acquired pooled connection must be released.
+
+        Regression: the method previously called ``conn.__exit__`` on the
+        psycopg connection rather than the pool context manager, leaking the
+        connection. It must exit the context manager returned by
+        ``get_connection()`` instead.
+        """
+        from unittest.mock import MagicMock
+
+        cm = MagicMock(name="get_connection_cm")
+        conn = MagicMock(name="pooled_conn")
+        cm.__enter__.return_value = conn
+        # Schema check returns "table does not exist" for a quick, side-effect-free path.
+        cur = MagicMock(name="cursor")
+        conn.cursor.return_value.__enter__.return_value = cur
+        cur.fetchone.return_value = [False]
+
+        importer.db_manager.get_connection = MagicMock(return_value=cm)
+
+        result = importer._store_transparency_metadata_batch([{'pmid': '123'}], None)
+
+        assert result == 0
+        cm.__enter__.assert_called_once()
+        # The pool context manager — not the raw connection — must be exited.
+        cm.__exit__.assert_called_once()
+
+    def test_passed_connection_is_not_closed(self, importer):
+        """A caller-provided connection must not be released by this method."""
+        from unittest.mock import MagicMock
+
+        conn = MagicMock(name="caller_conn")
+        cur = MagicMock(name="cursor")
+        conn.cursor.return_value.__enter__.return_value = cur
+        cur.fetchone.return_value = [False]
+
+        importer.db_manager.get_connection = MagicMock()
+
+        result = importer._store_transparency_metadata_batch([{'pmid': '123'}], conn)
+
+        assert result == 0
+        # Must not acquire or release any pooled connection when one is supplied.
+        importer.db_manager.get_connection.assert_not_called()
+        conn.__exit__.assert_not_called()
 
 
 if __name__ == '__main__':

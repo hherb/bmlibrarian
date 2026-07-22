@@ -86,6 +86,20 @@ are Qt-incomplete:
 - Split `utils/browser_downloader.py` (2,402 lines) per download strategy.
 - Delete or de-duplicate the dormant `gui/qt/plugins/settings/` +
   `gui/qt/tabs/*` mirror of `gui/qt/plugins/configuration/`.
+- **Pool the Qt GUI session's DB connection.** Login (`gui/qt/core/
+  application.py` + `dialogs/login_dialog.py`) keeps the raw
+  `psycopg.connect()` it opens for authentication as `self._db_connection`
+  and reuses it for every settings operation for the whole session,
+  bypassing the pool. The dialog *must* connect raw (it runs before any
+  `DatabaseManager` exists and the user picks DB params in the dialog), and
+  the acute aborted-transaction wedge is already mitigated by the July 2026
+  rollback guard in `UserSettingsManager` — so this is cleanup, not a live
+  bug. Doing it right means: after login succeeds, stand up a
+  `DatabaseManager` for the chosen params (today it reads only env vars —
+  needs explicit-conninfo support or setting env first), acquire a
+  `PersistentConnection`, thread it through `config.set_user_context()`, and
+  release it on logout/shutdown. Structural; interacts with Qt startup
+  ordering and the fragile Qt test suite.
 - Backfill idempotency (golden rule 15) on migrations 004, 008, 012, 013,
   022.
 - Golden-rule sweeps: inline `setStyleSheet()` calls (rule 9), hardcoded

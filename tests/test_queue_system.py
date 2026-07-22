@@ -105,6 +105,90 @@ class TestQueueManager:
         task4 = self.queue.get_next_task("test_agent")
         assert task4 is None
 
+    def test_get_next_task_populates_worker_tracking(self):
+        """The atomically-claimed task carries its updated tracking fields.
+
+        The dequeue uses a single UPDATE ... RETURNING *; the returned row must
+        already reflect PROCESSING status plus process/worker/started_at.
+        """
+        task_id = self.queue.add_task("test_agent", "method", {"k": "v"})
+
+        task = self.queue.get_next_task("test_agent")
+        assert task is not None
+        assert task.id == task_id
+        assert task.status == TaskStatus.PROCESSING
+        assert task.started_at is not None
+        assert task.process_id == self.queue.process_id
+        assert task.worker_id is not None
+
+        # And the claim is persisted, not just returned in-memory.
+        persisted = self.queue.get_task_status(task_id)
+        assert persisted.status == TaskStatus.PROCESSING
+        assert persisted.worker_id == task.worker_id
+
+    def test_construct_off_main_thread_does_not_raise(self):
+        """QueueManager must be constructible on a worker thread.
+
+        signal.signal() raises ValueError off the main thread, so handler
+        registration must be skipped there (e.g. a Qt background worker).
+        """
+        import tempfile
+
+        errors = []
+        managers = []
+
+        def build():
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+            tmp.close()
+            try:
+                managers.append((QueueManager(tmp.name), tmp.name))
+            except Exception as e:  # pragma: no cover - failure path
+                errors.append(e)
+
+        t = threading.Thread(target=build)
+        t.start()
+        t.join()
+
+        assert not errors, f"Off-main-thread construction raised: {errors}"
+        assert len(managers) == 1
+
+        # Cleanup
+        import os
+        _, path = managers[0]
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def test_file_database_uses_wal_journal(self):
+        """A file-based queue DB runs in WAL mode for reader/writer concurrency."""
+        conn = self.queue._get_connection()
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        assert mode.lower() == "wal"
+
+    def test_connection_sets_busy_timeout(self):
+        """Fresh file-based connections apply the configured busy_timeout."""
+        from bmlibrarian.agents.queue_manager import QUEUE_BUSY_TIMEOUT_MS
+
+        conn = self.queue._get_connection()
+        try:
+            timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        finally:
+            conn.close()
+        assert timeout == QUEUE_BUSY_TIMEOUT_MS
+
+    def test_construct_rejects_old_sqlite(self):
+        """Construction fails loudly when the SQLite engine predates RETURNING."""
+        with patch(
+            "bmlibrarian.agents.queue_manager.sqlite3.sqlite_version_info",
+            (3, 34, 0),
+        ):
+            with pytest.raises(RuntimeError, match="requires SQLite"):
+                QueueManager(":memory:")
+
     def test_complete_task(self):
         """Test marking a task as completed."""
         task_id = self.queue.add_task("test_agent", "test_method", {"test": "data"})

@@ -117,21 +117,28 @@ class ThesaurusExpander:
         # Statistics for tracking expansion effectiveness
         self._stats = ExpansionStats()
 
-    def _get_connection(self) -> psycopg.Connection:
+    def _get_connection(self):
         """
-        Get a database connection using DatabaseManager.
+        Get a pooled database connection context manager.
+
+        Returns the shared ``DatabaseManager``'s ``get_connection()`` context
+        manager (golden rule #5) so the connection is returned to the pool on
+        exit. Use as ``with self._get_connection() as conn:``.
+
+        Constructing a fresh ``DatabaseManager()`` per call (as this method
+        previously did) leaks a whole connection pool on every uncached term —
+        up to ``max_query_terms`` per query — exhausting the database.
 
         Returns:
-            psycopg.Connection instance
+            A context manager yielding a psycopg.Connection instance.
 
         Raises:
             RuntimeError: If connection cannot be established
         """
-        # Always use DatabaseManager (golden rule #5)
+        # Always use the shared DatabaseManager (golden rule #5)
         try:
-            from ..database import DatabaseManager
-            db = DatabaseManager()
-            return db.get_connection()
+            from ..database import get_db_manager
+            return get_db_manager().get_connection()
         except Exception as e:
             raise RuntimeError(f"Failed to get database connection: {e}")
 

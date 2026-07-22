@@ -18,6 +18,20 @@ from typing import Optional, Dict, Any, List, Iterator, Callable
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+# The atomic dequeue (get_next_task) relies on the SQL ``RETURNING`` clause,
+# which SQLite added in 3.35.0 (2021-03-12). Guard against older engines so a
+# stale libsqlite3 fails loudly at construction rather than mid-dequeue. The
+# stdlib ``sqlite3`` module links whatever libsqlite3 the interpreter was built
+# against, so this cannot be pinned via packaging — hence a runtime check.
+MIN_SQLITE_VERSION: tuple = (3, 35, 0)
+
+# Milliseconds a queue connection waits for a competing writer to release the
+# database lock before raising ``sqlite3.OperationalError("database is
+# locked")``. Multiple worker processes claim tasks concurrently (each with its
+# own connection), so without this they would fail immediately on contention
+# instead of briefly blocking and retrying.
+QUEUE_BUSY_TIMEOUT_MS: int = 30_000
+
 
 class TaskStatus(Enum):
     """Task processing status."""
@@ -79,7 +93,20 @@ class QueueManager:
         
         Args:
             db_path: Path to SQLite database file. If None, uses default location.
+
+        Raises:
+            RuntimeError: If the linked SQLite engine predates 3.35.0, which is
+                required for the ``RETURNING``-based atomic dequeue.
         """
+        if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
+            required = ".".join(str(p) for p in MIN_SQLITE_VERSION)
+            raise RuntimeError(
+                f"QueueManager requires SQLite >= {required} for atomic task "
+                f"claiming (RETURNING clause), but the linked engine is "
+                f"{sqlite3.sqlite_version}. Upgrade the SQLite library your "
+                f"Python interpreter links against."
+            )
+
         if db_path is None:
             # Use project directory for queue database
             db_path = Path.cwd() / "agent_queue.db"
@@ -97,23 +124,41 @@ class QueueManager:
         
         self._init_database()
         
-        # Register cleanup handlers
+        # Register cleanup handlers. Signal handlers can only be installed from
+        # the main thread (signal.signal() raises ValueError otherwise), and are
+        # only meaningful there, so skip registration when a QueueManager is
+        # constructed on a worker thread (e.g. a Qt background worker).
         atexit.register(self._cleanup_on_exit)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, self._signal_handler)
+            signal.signal(signal.SIGINT, self._signal_handler)
     
     def _get_connection(self):
-        """Get database connection, using persistent connection for in-memory databases."""
+        """Get database connection, using persistent connection for in-memory databases.
+
+        Fresh file-based connections get ``busy_timeout`` applied so that a
+        worker contending with another process's claim blocks briefly and
+        retries instead of failing immediately with "database is locked".
+        """
         if self._persistent_conn:
             return self._persistent_conn
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(f"PRAGMA busy_timeout = {QUEUE_BUSY_TIMEOUT_MS}")
+        return conn
     
     def _init_database(self):
         """Initialize SQLite database with required tables."""
         conn = self._get_connection()
         needs_close = not self._persistent_conn
-        
+
         try:
+            # Use WAL journaling for file-based databases so concurrent readers
+            # don't block the writer claiming a task (and vice versa). WAL is a
+            # persistent property of the database file, so setting it once here
+            # applies to every later connection. It is a no-op for :memory:.
+            if self.db_path != ":memory:":
+                conn.execute("PRAGMA journal_mode = WAL")
+
             # Create the main table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS queue_tasks (
@@ -173,27 +218,52 @@ class QueueManager:
             pass  # Ignore errors during cleanup
     
     def _signal_handler(self, signum, frame):
-        """Handle termination signals gracefully."""
-        self._mark_process_tasks_as_failed(f"Process terminated by signal {signum}")
+        """Handle termination signals gracefully.
+
+        Runs synchronously on the main thread in the context of whatever code
+        was interrupted, which may already hold ``self.lock``. Acquiring it here
+        would deadlock (threading.Lock is non-reentrant), so mark tasks failed
+        without taking the lock. Any error is swallowed since we are exiting.
+        """
+        try:
+            self._mark_process_tasks_as_failed(
+                f"Process terminated by signal {signum}", acquire_lock=False
+            )
+        except Exception:
+            pass
         exit(0)
-    
-    def _mark_process_tasks_as_failed(self, error_message: str):
-        """Mark all processing tasks for this process as failed."""
-        with self.lock:
-            conn = self._get_connection()
-            needs_close = not self._persistent_conn
-            try:
-                completed_at = datetime.now(timezone.utc).isoformat()
-                conn.execute("""
-                    UPDATE queue_tasks 
-                    SET status = ?, error_message = ?, completed_at = ?
-                    WHERE process_id = ? AND status = ?
-                """, (TaskStatus.FAILED.value, error_message, completed_at, 
-                      self.process_id, TaskStatus.PROCESSING.value))
-                conn.commit()
-            finally:
-                if needs_close:
-                    conn.close()
+
+    def _mark_process_tasks_as_failed(self, error_message: str, acquire_lock: bool = True):
+        """Mark all processing tasks for this process as failed.
+
+        Args:
+            error_message: Reason recorded on each failed task.
+            acquire_lock: Whether to take ``self.lock``. Must be False when
+                called from the signal handler, which may have interrupted code
+                that already holds the lock (non-reentrant → deadlock).
+        """
+        if acquire_lock:
+            with self.lock:
+                self._do_mark_process_tasks_as_failed(error_message)
+        else:
+            self._do_mark_process_tasks_as_failed(error_message)
+
+    def _do_mark_process_tasks_as_failed(self, error_message: str):
+        """Perform the failed-task update. Caller manages locking."""
+        conn = self._get_connection()
+        needs_close = not self._persistent_conn
+        try:
+            completed_at = datetime.now(timezone.utc).isoformat()
+            conn.execute("""
+                UPDATE queue_tasks
+                SET status = ?, error_message = ?, completed_at = ?
+                WHERE process_id = ? AND status = ?
+            """, (TaskStatus.FAILED.value, error_message, completed_at,
+                  self.process_id, TaskStatus.PROCESSING.value))
+            conn.commit()
+        finally:
+            if needs_close:
+                conn.close()
     
     def recover_stuck_tasks(self, stuck_timeout_minutes: int = 30, 
                            mark_as_failed: bool = False) -> int:
@@ -488,38 +558,41 @@ class QueueManager:
             conn = self._get_connection()
             needs_close = not self._persistent_conn
             try:
+                started_at = datetime.now(timezone.utc).isoformat()
+                worker_id = f"{self.process_id}-{threading.current_thread().ident}"
+
+                # Claim the highest-priority pending task in a single atomic
+                # statement. The in-process threading.Lock does not coordinate
+                # separate processes (each with its own SQLite connection), so a
+                # SELECT-then-UPDATE could let two workers claim the same row.
+                # UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING * runs as
+                # one write transaction, so at most one worker claims each task.
                 cursor = conn.execute("""
-                    SELECT * FROM queue_tasks 
-                    WHERE target_agent = ? AND status = ?
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT 1
-                """, (target_agent, TaskStatus.PENDING.value))
-                
+                    UPDATE queue_tasks
+                    SET status = ?, started_at = ?, process_id = ?, worker_id = ?
+                    WHERE id = (
+                        SELECT id FROM queue_tasks
+                        WHERE target_agent = ? AND status = ?
+                        ORDER BY priority DESC, created_at ASC
+                        LIMIT 1
+                    )
+                    RETURNING *
+                """, (
+                    TaskStatus.PROCESSING.value, started_at, self.process_id, worker_id,
+                    target_agent, TaskStatus.PENDING.value
+                ))
+
                 row = cursor.fetchone()
+                conn.commit()
+
                 if row:
-                    # Mark as processing with process and worker tracking
-                    started_at = datetime.now(timezone.utc).isoformat()
-                    worker_id = f"{self.process_id}-{threading.current_thread().ident}"
-                    
-                    conn.execute("""
-                        UPDATE queue_tasks 
-                        SET status = ?, started_at = ?, process_id = ?, worker_id = ?
-                        WHERE id = ?
-                    """, (TaskStatus.PROCESSING.value, started_at, self.process_id, worker_id, row[0]))
-                    
-                    conn.commit()
-                    
-                    # Create task object with updated status
-                    task = self._row_to_task(row)
-                    task.status = TaskStatus.PROCESSING
-                    task.started_at = datetime.fromisoformat(started_at)
-                    task.process_id = self.process_id
-                    task.worker_id = worker_id
-                    return task
+                    # The returned row already reflects the claimed state
+                    # (status=PROCESSING, started_at, process_id, worker_id).
+                    return self._row_to_task(row)
             finally:
                 if needs_close:
                     conn.close()
-        
+
         return None
     
     def complete_task(self, task_id: str, result: Dict[str, Any]):
