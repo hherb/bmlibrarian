@@ -30,7 +30,10 @@ conn = psycopg.connect(conninfo, connect_timeout=...)
 
 Callers as of 2026-07-22: `database.py` (`DatabaseManager._init_pool`),
 `gui/qt/core/application.py` (auto-login), `gui/qt/dialogs/login_dialog.py`
-(test-connection + `_get_db_connection`).
+(test-connection + `_get_db_connection`), `paperchecker/database.py`
+(`PaperCheckDB._create_connection`), and `migrate_config_to_db.py`
+(`get_db_connection`). This is the only sanctioned way to build a libpq
+connection string — do not add new hand-concatenated sites.
 
 ## Pagination and other SQL values
 

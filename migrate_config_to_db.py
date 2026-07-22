@@ -52,6 +52,8 @@ def get_db_connection():
     import os
     import psycopg
 
+    from bmlibrarian.db_conninfo import build_conninfo
+
     # Load from environment
     host = os.environ.get('POSTGRES_HOST', 'localhost')
     port = os.environ.get('POSTGRES_PORT', '5432')
@@ -65,9 +67,10 @@ def get_db_connection():
             "Set POSTGRES_USER and POSTGRES_PASSWORD environment variables."
         )
 
-    conn_string = (
-        f"host={host} port={port} dbname={database} "
-        f"user={user} password={password}"
+    # Build the conninfo via the shared escaping helper (never concatenate
+    # credentials — a password/host with a space or quote would break it).
+    conn_string = build_conninfo(
+        host=host, port=port, dbname=database, user=user, password=password
     )
 
     return psycopg.connect(conn_string)

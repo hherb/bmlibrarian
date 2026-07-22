@@ -4,7 +4,7 @@ import os
 import time
 import logging
 from contextlib import contextmanager
-from typing import Dict, Generator, Optional, List, Union, cast, LiteralString, Any
+from typing import Dict, Generator, Optional, List, Tuple, Union, cast, LiteralString, Any
 from datetime import date
 
 import psycopg
@@ -322,7 +322,7 @@ def _default_source_id_names() -> Dict[int, str]:
     return get_db_manager().get_cached_source_id_names() or {}
 
 
-def build_pagination_clause(max_rows: int, offset: int) -> tuple[str, List[int]]:
+def build_pagination_clause(max_rows: int, offset: int) -> Tuple[str, List[int]]:
     """Build a parameterized ``LIMIT``/``OFFSET`` SQL suffix and its bound values.
 
     Pagination values are returned as bound parameters (``%s`` placeholders)

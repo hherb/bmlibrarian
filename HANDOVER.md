@@ -15,11 +15,14 @@ off new work. Longer-term structural items live in
   `db_conninfo.py` exposes `build_conninfo(**params)` (delegates to
   `psycopg.conninfo.make_conninfo` — quotes/escapes every value, drops
   `None`/empty; no import-time side effects so GUI login code can use it before
-  a `DatabaseManager` exists). All **four** hand-concatenated connection strings
+  a `DatabaseManager` exists). All **six** hand-concatenated connection strings
   now route through it: `database.py` `_init_pool`, `gui/qt/core/application.py`
-  auto-login, and `login_dialog.py` ×2 (`_on_test_connection` +
-  `_get_db_connection` — the review said ×3, missed the second login_dialog
-  site). `find_abstracts` no longer f-string-interpolates `max_rows`/`offset`;
+  auto-login, `login_dialog.py` ×2 (`_on_test_connection` + `_get_db_connection`
+  — the review said ×3, missed the second login_dialog site), plus two more the
+  PR-255 review caught (`paperchecker/database.py` `_create_connection` and
+  `migrate_config_to_db.py` `get_db_connection`) — `build_conninfo` is now the
+  single sanctioned way to build a libpq string.
+  `find_abstracts` no longer f-string-interpolates `max_rows`/`offset`;
   it uses the pure `build_pagination_clause()` helper returning `%s`
   placeholders + bound params (matches sibling `find_abstract_ids`). 11 new
   hermetic unit tests in `tests/test_db_conninfo.py` (escaping, injection
