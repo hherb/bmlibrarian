@@ -10,8 +10,8 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Archive-extraction path-traversal hardening** (2026-07-23): the "zip/tar
-  slip" P1 from the 2026-07-19 review. Factored the existing
+- **Archive-extraction path-traversal hardening** (2026-07-23, PR #259): the
+  "zip/tar slip" P1 from the 2026-07-19 review. Factored the existing
   `_is_safe_zip_member` guard into one shared pure function
   `utils/path_utils.py::is_safe_archive_member(member_name)` (rejects absolute
   paths and any `..` component; normalizes `\`→`/` so Windows-style traversal
