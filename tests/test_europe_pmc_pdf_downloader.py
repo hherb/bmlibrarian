@@ -8,12 +8,8 @@ Tests cover:
 - ReDoS protection in regex patterns
 """
 
-import io
-import tarfile
-import tempfile
+import zipfile
 from pathlib import Path
-from typing import Tuple
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -27,33 +23,32 @@ from src.bmlibrarian.importers.europe_pmc_pdf_downloader import (
 
 
 class TestPathTraversalPrevention:
-    """Tests for path traversal vulnerability fixes."""
+    """Tests for path traversal vulnerability fixes.
+
+    ``_is_safe_zip_member`` delegates to the shared
+    ``bmlibrarian.utils.path_utils.is_safe_archive_member`` guard and takes
+    the member *name* (a string) as reported by the zip archive.
+    """
 
     def test_safe_path_allowed(self, tmp_path: Path) -> None:
         """Normal paths should be allowed."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
-        member = MagicMock()
-        member.name = "PMC123456.pdf"
 
-        assert downloader._is_safe_tar_member(member) is True
+        assert downloader._is_safe_zip_member("PMC123456.pdf") is True
         downloader.close()
 
     def test_nested_safe_path_allowed(self, tmp_path: Path) -> None:
         """Nested paths without traversal should be allowed."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
-        member = MagicMock()
-        member.name = "data/papers/PMC123456.pdf"
 
-        assert downloader._is_safe_tar_member(member) is True
+        assert downloader._is_safe_zip_member("data/papers/PMC123456.pdf") is True
         downloader.close()
 
     def test_absolute_path_blocked(self, tmp_path: Path) -> None:
         """Absolute paths should be blocked."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
-        member = MagicMock()
-        member.name = "/etc/passwd"
 
-        assert downloader._is_safe_tar_member(member) is False
+        assert downloader._is_safe_zip_member("/etc/passwd") is False
         downloader.close()
 
     def test_path_traversal_blocked(self, tmp_path: Path) -> None:
@@ -70,32 +65,24 @@ class TestPathTraversalPrevention:
         ]
 
         for path in traversal_paths:
-            member = MagicMock()
-            member.name = path
-            assert downloader._is_safe_tar_member(member) is False, f"Should block: {path}"
+            assert downloader._is_safe_zip_member(path) is False, f"Should block: {path}"
 
         downloader.close()
 
     def test_dotdot_in_filename_allowed(self, tmp_path: Path) -> None:
         """Filenames containing .. (not as path component) should be allowed."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
-        member = MagicMock()
-        member.name = "PMC..123456.pdf"
 
         # This is safe - '..' in a filename is not a path component
         # We only block '..' when it's a separate path component
-        result = downloader._is_safe_tar_member(member)
-        assert result is True
+        assert downloader._is_safe_zip_member("PMC..123456.pdf") is True
         downloader.close()
 
     def test_dotdot_as_component_blocked(self, tmp_path: Path) -> None:
         """Path component '..' should be blocked."""
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
-        member = MagicMock()
-        member.name = "data/../PMC123456.pdf"
 
-        result = downloader._is_safe_tar_member(member)
-        assert result is False
+        assert downloader._is_safe_zip_member("data/../PMC123456.pdf") is False
         downloader.close()
 
 
@@ -327,37 +314,33 @@ class TestCLIRangeParsing:
             parse_range(f"1-{MAX_PMCID + 1}")
 
 
-class TestTarExtractionSecurity:
-    """Integration tests for secure tar extraction."""
+class TestZipExtractionSecurity:
+    """Integration tests for secure zip extraction.
 
-    def _create_tar_with_member(
+    Europe PMC PDF packages are ``PMC#######.zip`` archives (see
+    ``_extract_pdfs_from_package``); these tests exercise the real zip
+    extraction path end-to-end.
+    """
+
+    def _write_zip_with_member(
         self,
+        zip_path: Path,
         member_name: str,
         content: bytes = b'%PDF-test'
-    ) -> io.BytesIO:
-        """Create an in-memory tar.gz with a single file."""
-        tar_buffer = io.BytesIO()
-        with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
-            info = tarfile.TarInfo(name=member_name)
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-        tar_buffer.seek(0)
-        return tar_buffer
+    ) -> None:
+        """Create a zip archive containing a single member on disk."""
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr(member_name, content)
 
     def test_extract_safe_pdf(self, tmp_path: Path) -> None:
         """Safe PDF paths should be extracted successfully."""
-        # Create a tar with a safe path
-        tar_buffer = self._create_tar_with_member("PMC123456.pdf")
-
-        # Write to packages directory
         packages_dir = tmp_path / 'packages'
         packages_dir.mkdir()
-        tar_path = packages_dir / "test.tar.gz"
-        tar_path.write_bytes(tar_buffer.getvalue())
+        self._write_zip_with_member(packages_dir / "test.zip", "PMC123456.pdf")
 
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
         pkg = PDFPackageInfo(
-            filename="test.tar.gz",
+            filename="test.zip",
             pmcid_start=123456,
             pmcid_end=123456
         )
@@ -365,7 +348,7 @@ class TestTarExtractionSecurity:
         count = downloader._extract_pdfs_from_package(pkg)
         assert count == 1
 
-        # Verify PDF was extracted to correct location
+        # Verify PDF was extracted to correct PMCID-based location
         pdf_path = tmp_path / 'pdf' / '123000' / '123400-123499' / 'PMC123456.pdf'
         assert pdf_path.exists()
 
@@ -373,18 +356,15 @@ class TestTarExtractionSecurity:
 
     def test_extract_blocks_traversal(self, tmp_path: Path) -> None:
         """Path traversal attempts should be blocked."""
-        # Create a tar with a malicious path
-        tar_buffer = self._create_tar_with_member("../../../etc/PMC999999.pdf")
-
-        # Write to packages directory
         packages_dir = tmp_path / 'packages'
         packages_dir.mkdir()
-        tar_path = packages_dir / "malicious.tar.gz"
-        tar_path.write_bytes(tar_buffer.getvalue())
+        self._write_zip_with_member(
+            packages_dir / "malicious.zip", "../../../etc/PMC999999.pdf"
+        )
 
         downloader = EuropePMCPDFDownloader(output_dir=tmp_path)
         pkg = PDFPackageInfo(
-            filename="malicious.tar.gz",
+            filename="malicious.zip",
             pmcid_start=999999,
             pmcid_end=999999
         )

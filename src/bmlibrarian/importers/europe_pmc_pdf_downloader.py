@@ -47,6 +47,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
+from bmlibrarian.utils.path_utils import is_safe_archive_member
+
 logger = logging.getLogger(__name__)
 
 # Europe PMC FTP server details for PDFs
@@ -778,10 +780,9 @@ class EuropePMCPDFDownloader:
     def _is_safe_zip_member(self, member_name: str) -> bool:
         """Check if a zip archive member has a safe path.
 
-        Prevents path traversal attacks by rejecting:
-        - Absolute paths
-        - Paths containing '..' components
-        - Paths starting with '/'
+        Thin wrapper around the shared
+        :func:`bmlibrarian.utils.path_utils.is_safe_archive_member` guard,
+        kept for backwards compatibility with existing call sites.
 
         Args:
             member_name: Name/path of the archive member
@@ -789,25 +790,7 @@ class EuropePMCPDFDownloader:
         Returns:
             True if the path is safe
         """
-        # Normalize path separators
-        member_path = Path(member_name)
-
-        # Reject absolute paths (both Unix and Windows style)
-        if member_path.is_absolute() or member_name.startswith('/'):
-            logger.warning(f"Skipping unsafe absolute path: {member_name}")
-            return False
-
-        # Reject paths with traversal components
-        # Check each path component for '..' or absolute markers
-        for part in member_path.parts:
-            if part == '..':
-                logger.warning(f"Skipping path traversal attempt: {member_name}")
-                return False
-            if part.startswith('/'):
-                logger.warning(f"Skipping unsafe path component: {member_name}")
-                return False
-
-        return True
+        return is_safe_archive_member(member_name)
 
     def _extract_pdfs_from_package(self, pkg: PDFPackageInfo) -> int:
         """Extract PDF files from a downloaded zip package.
