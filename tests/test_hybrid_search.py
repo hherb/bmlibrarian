@@ -5,10 +5,22 @@ Tests the complete workflow including audit trail.
 """
 
 import json
+
+import pytest
+
 from bmlibrarian.database import search_hybrid
 
+
+@pytest.mark.requires_database
 def test_hybrid_search():
-    """Test hybrid search with a simple query."""
+    """Test hybrid search with a simple query.
+
+    This is an end-to-end script that issues real queries via
+    ``search_hybrid``. An unreachable database does not raise promptly, it
+    blocks inside psycopg's socket wait, which hung the whole suite with no
+    per-test output. Marked ``requires_database`` so it can be deselected in
+    environments without a live database.
+    """
     print("=" * 80)
     print("HYBRID SEARCH TEST")
     print("=" * 80)
