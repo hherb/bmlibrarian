@@ -38,6 +38,8 @@ class TestIsSafeArchiveMember:
             "foo/../../bar/../../etc/passwd",    # interleaved traversal
             "./../secret",                       # './' then traversal
             "..",                                # bare traversal component
+            "C:\\Windows\\system32\\evil.dll",   # Windows drive-rooted (backslash)
+            "C:/Windows/system32/evil.dll",      # Windows drive-rooted (forward slash)
         ],
     )
     def test_unsafe_members_blocked(self, member_name: str) -> None:

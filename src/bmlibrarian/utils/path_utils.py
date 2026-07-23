@@ -9,7 +9,7 @@ This module provides reusable utilities for:
 
 import os
 import logging
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Union
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,8 @@ def is_safe_archive_member(member_name: str) -> bool:
     tar and zip archives across BMLibrarian's importers.
 
     A member is rejected when its path:
-    - is absolute (Unix ``/etc/passwd`` or begins with ``/``), or
+    - is absolute — Unix ``/etc/passwd``, or Windows drive-rooted
+      ``C:\\evil`` / ``C:/evil`` (caught even on POSIX hosts), or
     - contains a ``..`` path component (e.g. ``../../etc/passwd``,
       ``data/../../secret``, or Windows-style ``..\\..\\system32``).
 
@@ -101,8 +102,14 @@ def is_safe_archive_member(member_name: str) -> bool:
     normalized = member_name.replace('\\', '/')
     member_path = Path(normalized)
 
-    # Reject absolute paths (both PurePath.is_absolute and a leading slash).
-    if member_path.is_absolute() or normalized.startswith('/'):
+    # Reject absolute paths. Check the native ``is_absolute`` and a leading
+    # slash (POSIX), plus a Windows drive-rooted path (``C:\\evil``) which a
+    # PurePosixPath would otherwise treat as an ordinary relative filename.
+    if (
+        member_path.is_absolute()
+        or normalized.startswith('/')
+        or PureWindowsPath(normalized).is_absolute()
+    ):
         logger.warning(f"Skipping unsafe absolute archive path: {member_name}")
         return False
 

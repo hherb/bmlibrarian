@@ -23,8 +23,10 @@ with zipfile.ZipFile(path) as zf:
         zf.extract(member, dest)
 ```
 
-- Rejects absolute paths (leading `/`, `PurePath.is_absolute`) and any `..`
-  path *component*. A literal `..` inside a filename (`PMC..123.pdf`) is fine.
+- Rejects absolute paths — POSIX (leading `/`, `PurePath.is_absolute`) *and*
+  Windows drive-rooted (`C:\...` / `C:/...`, caught on POSIX via
+  `PureWindowsPath.is_absolute`) — and any `..` path *component*. A literal
+  `..` inside a filename (`PMC..123.pdf`) is fine.
 - Normalizes `\` → `/` first, so Windows-style `..\..\x` traversal is caught
   on POSIX hosts (where `Path("..\\..\\x")` is otherwise a single component).
 - Pure, no side effects beyond a WARNING log on rejection.

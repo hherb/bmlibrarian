@@ -132,6 +132,31 @@ class TestMECAZipExtractionSecurity:
         assert not (tmp_path.parent / "evil.txt").exists()
         assert not (tmp_path / "evil.txt").exists()
 
+    def test_backslash_traversal_member_blocked(self, tmp_path: Path) -> None:
+        """A Windows-style '..\\' zip member is skipped end-to-end on POSIX."""
+        importer = MedRxivMECAImporter(output_dir=tmp_path)
+        archive_path = tmp_path / "winevil.meca"
+        _write_zip(
+            archive_path,
+            {
+                "..\\..\\..\\evil.txt": b"payload",
+                "content/article.xml": b"<article/>",
+            },
+        )
+        package = MECAPackageInfo(
+            key="s3/winevil.meca",
+            filename="winevil.meca",
+            local_path=str(archive_path),
+        )
+
+        importer.extract_package(package)
+
+        extract_dir = tmp_path / "extracted" / "winevil"
+        # Safe member extracted; the backslash-traversal payload never escaped.
+        assert (extract_dir / "content" / "article.xml").exists()
+        assert not (tmp_path.parent / "evil.txt").exists()
+        assert not (tmp_path / "evil.txt").exists()
+
     def test_absolute_member_blocked(self, tmp_path: Path) -> None:
         """An absolute-path zip member is rejected."""
         importer = MedRxivMECAImporter(output_dir=tmp_path)
