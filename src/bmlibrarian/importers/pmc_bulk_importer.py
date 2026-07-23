@@ -43,6 +43,7 @@ from typing import Optional, List, Dict, Any, Callable, Iterator
 from urllib.parse import urlparse
 
 from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.utils.path_utils import is_safe_archive_member
 
 logger = logging.getLogger(__name__)
 
@@ -696,13 +697,26 @@ class PMCBulkImporter:
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         article_count = 0
+        skipped_unsafe = 0
         with tarfile.open(package_path, 'r:gz') as tar:
             for member in tar.getmembers():
-                if member.isfile():
-                    # Extract to flat structure with PMCID prefix
-                    tar.extract(member, extract_dir)
-                    if member.name.endswith('.nxml'):
-                        article_count += 1
+                if not member.isfile():
+                    continue
+                # Security check: reject path-traversal members before extraction.
+                if not is_safe_archive_member(member.name):
+                    skipped_unsafe += 1
+                    continue
+                # 'data' filter is defence-in-depth (blocks absolute paths and
+                # '..' independently) and future-proofs for Python 3.14, which
+                # will filter by default. Available since Python 3.12.
+                tar.extract(member, extract_dir, filter='data')
+                if member.name.endswith('.nxml'):
+                    article_count += 1
+
+        if skipped_unsafe > 0:
+            logger.warning(
+                f"Skipped {skipped_unsafe} unsafe path(s) in {pkg.filename}"
+            )
 
         return article_count
 

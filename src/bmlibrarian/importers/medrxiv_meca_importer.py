@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Iterator
 
 from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.utils.path_utils import is_safe_archive_member
 
 logger = logging.getLogger(__name__)
 
@@ -454,9 +455,21 @@ class MedRxivMECAImporter:
         package.extracted_path = str(extract_dir)
 
         try:
-            # MECA files are ZIP archives
+            # MECA files are ZIP archives. Extract member-by-member and
+            # reject path-traversal entries rather than using extractall(),
+            # which would follow malicious '..'/absolute member paths.
+            skipped_unsafe = 0
             with zipfile.ZipFile(package.local_path, 'r') as zf:
-                zf.extractall(extract_dir)
+                for member in zf.namelist():
+                    if not is_safe_archive_member(member):
+                        skipped_unsafe += 1
+                        continue
+                    zf.extract(member, extract_dir)
+
+            if skipped_unsafe > 0:
+                logger.warning(
+                    f"Skipped {skipped_unsafe} unsafe path(s) in {package.filename}"
+                )
 
             # Find PDF and XML files in content/ directory
             content_dir = extract_dir / 'content'
