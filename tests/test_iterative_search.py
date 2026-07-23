@@ -200,6 +200,11 @@ class TestIterativeSearch:
 
         query_agent.convert_question = Mock(return_value='test & query')
         query_agent.find_abstracts = Mock(side_effect=[batch1, batch2, []])
+        # min_relevant=5 forces retry exhaustion, driving Phase 2 broadening.
+        # Without this mock, _generate_broader_query issues a real Ollama
+        # request that blocks the suite when no LLM is reachable (matching
+        # the sibling exhaustion tests below).
+        query_agent._generate_broader_query = Mock(return_value='broader | query')
 
         # Mock the database find_abstracts as well (for Phase 2 query modification)
         with patch('bmlibrarian.agents.query_agent.find_abstracts') as mock_db_find:
