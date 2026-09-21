@@ -10,7 +10,7 @@ only**: the LLM abstraction layer (`src/bmlibrarian/llm/` wraps
 
 bmlib is now at **0.10.0**. Between 0.5.1 and 0.10.0 it gained seven capability
 areas that bmlibrarian already implements locally — several of them *ported out
-of bmlibrarian itself* and then hardened. That is roughly **7,400 lines of
+of bmlibrarian itself* and then hardened. That is roughly **7,240 lines of
 near-duplicate code** in this repository that upstream now owns, tests and
 type-checks.
 
@@ -34,7 +34,14 @@ LLM layer to"). Checked against the actual releases:
   signatures.
 - bmlib's CHANGELOG marks `Changed — breaking` sections only under 0.4.0 and
   0.5.0. Nothing since.
-- Licensing is a non-issue: both projects are AGPL-3.0.
+- Licensing raises no *compatibility* problem — bmlib declares
+  `license = "AGPL-3.0-or-later"` in its `pyproject.toml`, and bmlibrarian's
+  README states AGPL-3.0 — but bmlibrarian does not actually *declare* a
+  licence anywhere machine-readable: there is no `license` field in
+  `pyproject.toml` and no `LICENSE` file in the repository, even though
+  `README.md` links to one. That should be fixed at the source before this
+  analysis is used to justify taking on more AGPL code — tracked in
+  [#265](https://github.com/hherb/bmlibrarian/issues/265).
 
 **Action:** bump to `bmlib[ollama]>=0.10.0,<0.11.0` and re-run
 `tests/test_llm_module.py`, `tests/test_llm_layer_boundary.py`,
@@ -53,13 +60,47 @@ become deletable or reduce to thin adapters.
 | Local module | LOC | bmlib replacement | Consumers to update |
 |---|---|---|---|
 | `utils/json_repair.py` | 663 | `bmlib.llm.json_repair` (superset: adds `salvage_json_fields`) | 2 (`paperchecker/components/hyde_generator.py`, `utils/__init__.py`) |
-| `agents/text_chunking.py` | 220 | `bmlib.llm.text_utils` (superset: adds `process_with_map_reduce`, `process_with_rolling_summary`, `get_text_with_priority`, `combine_title_and_text`) | 2 (`agents/__init__.py`, `document_interrogation_agent.py`) |
+| `agents/text_chunking.py` | 220 | `bmlib.llm.text_utils` (superset: adds `process_with_map_reduce`, `process_with_rolling_summary`, `get_text_with_priority`, `combine_title_and_text`; **but see the boundary-awareness caveat below — not a drop-in**) | 2 (`agents/__init__.py`, `document_interrogation_agent.py`) |
 | `importers/pdf_converter.py` | 317 | `bmlib.fulltext.pdf_converter` (superset: adds `extract_blocks()`, `LayoutExtractor`, `ConversionResult.title`, password-protected-PDF handling, `pymupdf>=1.28.2`) | 2 (`importers/__init__.py`, `importers/pdf_ingestor.py`) |
 
-`json_repair` and `text_chunking` are function-for-function identical to the
-bmlib versions. Keep `bmlibrarian.utils.json_repair` and
+`json_repair` is function-for-function identical to the bmlib version (the
+only difference is the added `salvage_json_fields`), so that swap really is a
+drop-in. Keep `bmlibrarian.utils.json_repair` and
 `bmlibrarian.agents.text_chunking` as re-export shims for one release so the
 `utils/__init__.py` and `agents/__init__.py` public surfaces don't churn.
+
+**`text_chunking` is *not* a drop-in, despite the identical public surface.**
+`TextChunk` matches field-for-field (including the `size` property) and both
+modules agree on `DEFAULT_CHUNK_SIZE = 10000` / `DEFAULT_CHUNK_OVERLAP = 250`,
+but bmlib's `TextChunker.__init__()` and `chunk_text()` take two parameters the
+local versions do not:
+
+```python
+boundary_aware: bool = True          # prefer paragraph/sentence breaks
+min_chunk_size: int = 500            # DEFAULT_MIN_CHUNK_SIZE
+```
+
+The local chunker has no boundary logic at all — it is a pure fixed-width cut
+(`end_pos = min(position + chunk_size, text_length)`). bmlib defaults
+`boundary_aware` to `True`, so a straight re-export shim would silently change
+the content, offsets and count of every chunk for existing callers. That
+matters most for `agents/document_interrogation_agent.py`, where chunk
+boundaries feed retrieval and a boundary shift changes which passages are
+returned.
+
+Either pin the old behaviour in the shim:
+
+```python
+def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE,
+               overlap: int = DEFAULT_CHUNK_OVERLAP) -> list[TextChunk]:
+    """Preserve bmlibrarian's fixed-width chunking over bmlib's default."""
+    return bmlib_chunk_text(text, chunk_size, overlap, boundary_aware=False)
+```
+
+or adopt boundary-aware chunking deliberately, as its own change, and
+re-baseline anything downstream of the chunk boundaries (semantic chunks and
+their embeddings in particular). What must not happen is adopting it by
+accident because the two modules looked identical.
 
 The tests (`tests/test_pdf_converter.py`, `tests/test_text_chunking.py`) mostly
 transfer as-is and become a useful contract check against upstream.
@@ -115,7 +156,7 @@ pipeline (metadata → cheap-model classification → deep assessment → Cochra
 which is a better-factored version of what
 `agents/systematic_review/quality.py` (1,060 LOC) hand-rolls across four agents.
 
-**`pdf_processor/` → `bmlib.fulltext`** (671 LOC). `SectionType`, `TextBlock`,
+**`pdf_processor/` → `bmlib.fulltext`** (691 LOC). `SectionType`, `TextBlock`,
 `Section` and `Document`→`SegmentedDocument` are all in
 `bmlib.fulltext.models`; `SectionSegmenter` is in `bmlib.fulltext.segmenter`,
 explicitly ported from here with documented improvements (line-granularity
@@ -233,15 +274,21 @@ tier structure.
 
 ### 3.2 Worth considering
 
-- **`exporters/pdf_exporter.py` (568 LOC)** — Markdown → publication-quality
-  PDF via ReportLab. Pure, no bmlibrarian coupling, BSD-licensed deps.
-  Complements bmlib's `render_html()`.
+- **`exporters/pdf_exporter.py` (558 LOC; 568 for the whole `exporters/`
+  package)** — Markdown → publication-quality PDF via ReportLab. Pure, no
+  bmlibrarian coupling, BSD-licensed deps. Complements bmlib's `render_html()`.
 - **`agents/utils/hyde_search.py`** — HyDE (hypothetical document embeddings)
   search, and `agents/utils/query_syntax.py` (2 imports, essentially pure).
-- **`embeddings/` chunkers (3,069 LOC)** — adaptive/semantic/sentence chunkers
+- **`embeddings/` chunkers (~636 LOC)** — adaptive/semantic/sentence chunkers
   with a measured performance comparison (`doc/CHUNKER_PERFORMANCE_COMPARISON.md`).
   bmlib's `TextChunker` is character-window-with-boundary-adjustment only.
-  The chunkers are separable from the embedders (which are backend-specific).
+  The chunkers are separable from the embedders (which are backend-specific),
+  and it is only the chunkers that are candidates here:
+  `adaptive_chunker_optimized.py` (397), `adaptive_chunker.py` (163),
+  `spacy_chunker.py` (39) and `fast_sentence_chunker.py` (37). The
+  `embeddings/` package as a whole is 3,069 LOC, but the bulk of that is
+  `chunk_embedder.py` (1,238), `document_embedder.py` (436) and the
+  backend-specific embedders — none of which should move upstream.
 - **`evaluations/` + `audit/` (4,121 LOC)** — run-scoped, database-backed
   evaluation storage with an evaluator registry and versioning. This is
   infrastructure any LLM-assessment library needs, and bmlib currently returns
@@ -263,7 +310,9 @@ application concerns or are tied to bmlibrarian's schema.
    Update the comment in `pyproject.toml` to record *why* the new ceiling is
    where it is.
 2. **Tier 1 swaps** (`json_repair`, `text_chunking`, `importers/pdf_converter`)
-   behind re-export shims. ~1,200 LOC removed, ~6 files touched.
+   behind re-export shims. ~1,200 LOC removed, ~6 files touched. `json_repair`
+   is the genuine drop-in; `text_chunking` needs `boundary_aware=False` pinned
+   in the shim (see 2.1) or it silently re-chunks every caller.
 3. **`pdf_processor/` → `bmlib.fulltext`** — self-contained, 4 consumers.
 4. **`writing/` → `bmlib.citations`**, keeping `document_store.py` and a
    DB→`DocumentMetadata` adapter.
@@ -287,12 +336,12 @@ here as a test failure rather than as silent behaviour drift.
 | `agents/context_processor/` | 1,817 |
 | `agents/systematic_review/cochrane_*.py` | 1,975 |
 | `writing/` (pure half) | ~1,560 |
-| `pdf_processor/` | 671 |
+| `pdf_processor/` | 691 |
 | `utils/json_repair.py` | 663 |
 | `importers/pdf_converter.py` | 317 |
 | `agents/text_chunking.py` | 220 |
-| **Total near-duplicate** | **~7,400** |
+| **Total near-duplicate** | **~7,240** |
 
-Against roughly 207,000 LOC of `src/`, that is ~3.6% of the codebase that a
+Against roughly 207,000 LOC of `src/`, that is ~3.5% of the codebase that a
 shared library already maintains, tests and type-checks (bmlib ships `py.typed`
 and gates on mypy).
