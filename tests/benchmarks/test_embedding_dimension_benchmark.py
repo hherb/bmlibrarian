@@ -293,6 +293,9 @@ class TestParsers:
         assert rb.resolve_prompt(avail, "query", "X ", False) == (None, "X ")
         assert rb.resolve_prompt(avail, "query", "X ", True) == (None, None)
 
+    def test_resolve_prompt_ignores_empty_model_prompt(self) -> None:
+        assert rb.resolve_prompt({"document": ""}, "document", None, False) == (None, None)
+
 
 # ---------------------------------------------------------------------------- end to end
 

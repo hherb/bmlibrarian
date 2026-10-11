@@ -153,13 +153,13 @@ def resolve_prompt(
     Decide which prompt to apply for ``role``.
 
     Priority: disabled > explicit prefix > a model-defined prompt called
-    ``role`` > nothing. Returns (prompt_name, prompt_text); at most one is set.
+    ``role`` (non-empty) > nothing. Returns (prompt_name, prompt_text); at most one is set.
     """
     if disabled:
         return None, None
     if explicit_prefix is not None:
         return None, explicit_prefix
-    if role in available:
+    if available.get(role):
         return role, None
     return None, None
 
@@ -187,7 +187,10 @@ class SentenceTransformerEncoder:
         if max_seq_length is not None:
             self.model.max_seq_length = max_seq_length
         self.batch_size = batch_size
-        self.native_dim = int(self.model.get_sentence_embedding_dimension())
+        # Renamed in recent sentence-transformers; support both spellings.
+        dim_getter = getattr(self.model, "get_embedding_dimension", None) \
+            or self.model.get_sentence_embedding_dimension
+        self.native_dim = int(dim_getter())
         available = dict(getattr(self.model, "prompts", {}) or {})
         self._prompts = {
             "query": resolve_prompt(available, "query", query_prefix, no_prompts),
