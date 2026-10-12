@@ -396,3 +396,48 @@ class TestEndToEnd:
         code = rb.main(["--datasets", "--custom-dataset", str(ds), "--cache-dir", str(tmp_path / "c"),
                         "--model", "a=x/y", "-o", str(out)])
         assert code == 1 and json.loads(out.read_text())["failures"] == ["a"]
+
+
+class TestResumableEncoding:
+    """Chunked encoding saves progress so a killed run resumes."""
+
+    def test_chunks_match_single_pass_and_partials_are_removed(self, tmp_path: Path) -> None:
+        enc = FakeEncoder()
+        texts = [f"tok{i} shared" for i in range(10)]
+        final = tmp_path / "embeddings" / "abc.npy"
+        out = rb.encode_resumable(enc, texts, "document", final, chunk_size=3)
+        assert enc.calls == 4
+        assert np.allclose(out, enc.encode(texts, "document"))
+        assert len(list((final.parent / rb.PARTIAL_DIR_NAME).glob("abc_*.npy"))) == 4
+        rb.remove_partials(final)
+        assert not list((final.parent / rb.PARTIAL_DIR_NAME).glob("abc_*.npy"))
+
+    def test_resume_skips_saved_chunks(self, tmp_path: Path) -> None:
+        texts = [f"tok{i}" for i in range(7)]
+        final = tmp_path / "embeddings" / "abc.npy"
+        rb.encode_resumable(FakeEncoder(), texts[:3] + texts[3:], "query", final, chunk_size=3)
+        rb.partial_path(final, 2).unlink()  # simulate a kill during the last chunk
+        enc = FakeEncoder()
+        out = rb.encode_resumable(enc, texts, "query", final, chunk_size=3)
+        assert enc.calls == 1
+        assert out.shape == (7, FakeEncoder.native_dim)
+
+    def test_wrong_shape_partial_is_recomputed(self, tmp_path: Path) -> None:
+        final = tmp_path / "embeddings" / "abc.npy"
+        bad = rb.partial_path(final, 0)
+        bad.parent.mkdir(parents=True)
+        np.save(bad, np.zeros((1, 2), dtype=np.float32))
+        enc = FakeEncoder()
+        out = rb.encode_resumable(enc, ["a", "b", "c", "d"], "query", final, chunk_size=2)
+        assert enc.calls == 2 and out.shape == (4, FakeEncoder.native_dim)
+
+    def test_release_memory_hook_is_called_per_encoded_chunk(self, tmp_path: Path) -> None:
+        class Releasing(FakeEncoder):
+            released = 0
+
+            def release_memory(self) -> None:
+                self.released += 1
+
+        enc = Releasing()
+        rb.encode_resumable(enc, ["a", "b", "c"], "query", tmp_path / "x.npy", chunk_size=2)
+        assert enc.released == 2
