@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -29,11 +30,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 SPIKE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SPIKE_DIR))
 import bench_python as b  # noqa: E402
+import pg_import_profile  # noqa: E402
 
 RUST_BIN = SPIKE_DIR / "rust" / "target" / "release" / "pubmed-ingest-spike"
 BUCKET_ROWS = 1_000_000
@@ -45,19 +47,59 @@ ID_SET = """SELECT count(*), count(DISTINCT external_id),
     md5(string_agg(external_id, ',' ORDER BY external_id)) FROM spike_ingest.document"""
 
 
-def prepare(fts: bool, fresh: bool) -> None:
-    """Shape the table for the variant; optionally empty it (and the ledger)."""
+def has_search_vector(conn) -> bool:
+    """Whether the table currently has the generated search_vector column."""
+    return conn.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE "
+                        "table_schema = 'spike_ingest' AND table_name = 'document' AND "
+                        "column_name = 'search_vector')").fetchone()[0]
+
+
+def prepare(fts: bool, fresh: bool, fastupdate: Optional[str]) -> None:
+    """Shape the table for the variant; optionally empty it (and the ledger).
+
+    DDL runs only when something actually changes: even a no-op
+    ``ALTER TABLE … IF NOT EXISTS`` takes an ACCESS EXCLUSIVE lock, which cancels
+    a running autovacuum (that is what preceded the 52-min stall in run 0c).
+    """
     with b.connect() as conn:
         conn.autocommit = True
         conn.execute((SPIKE_DIR / "sql" / "schema.sql").read_text(encoding="utf-8"))
         if fresh:
             conn.execute("TRUNCATE spike_ingest.document, spike_ingest.document_metadata, "
                          "spike_ingest.ingest_ledger RESTART IDENTITY")
-        if fts:
+        present = has_search_vector(conn)
+        if fts and not present:
             conn.execute(SEARCH_VECTOR)
             conn.execute(FTS_INDEX)
-        else:
-            conn.execute("ALTER TABLE spike_ingest.document DROP COLUMN IF EXISTS search_vector")
+        elif not fts and present:
+            conn.execute("ALTER TABLE spike_ingest.document DROP COLUMN search_vector")
+        if fts and fastupdate is not None:
+            conn.execute(f"ALTER INDEX spike_ingest.spike_doc_fts SET (fastupdate = {fastupdate})")
+        if fts:
+            # Start every run with an empty GIN pending list, so variants are comparable.
+            started = time.perf_counter()
+            flushed = conn.execute("SELECT gin_clean_pending_list('spike_ingest.spike_doc_fts')").fetchone()[0]
+            print(json.dumps({"pending_list_pages_flushed": flushed,
+                              "flush_seconds": round(time.perf_counter() - started, 1)}))
+
+
+def checkpoints() -> Dict[str, int]:
+    """Cumulative checkpoint counters (requested = forced by WAL volume)."""
+    with b.connect() as conn:
+        timed, req = conn.execute("SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter").fetchone()
+    return {"timed": timed, "requested": req}
+
+
+def per_file_stats(first: int, count: int) -> Dict[str, float]:
+    """Distribution of per-file seconds for the files of this run (stall detection)."""
+    names = [f"pubmed25n{n:04d}.xml.gz" for n in range(first, first + count)]
+    with b.connect() as conn:
+        secs = sorted(r[0] for r in conn.execute(
+            "SELECT seconds FROM spike_ingest.ingest_ledger WHERE file = ANY(%s)", (names,)).fetchall())
+    if not secs:
+        return {}
+    return {"files": len(secs), "median_s": secs[len(secs) // 2], "p95_s": secs[int(len(secs) * 0.95)],
+            "max_s": secs[-1]}
 
 
 def loader_cmd(args: argparse.Namespace) -> List[str]:
@@ -123,6 +165,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--fts", action="store_true", help="production shape with search_vector + GIN")
     p.add_argument("--fresh", action="store_true", help="empty table and ledger first")
     p.add_argument("--kill-after", type=float, default=20.0)
+    p.add_argument("--fastupdate", choices=("on", "off"), help="GIN fastupdate for spike_doc_fts")
+    p.add_argument("--import-profile", action="store_true",
+                   help="apply the server import profile for the run, then restore it")
     args = p.parse_args(argv)
 
     if args.mode == "curve":
@@ -131,20 +176,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.mode == "run":
-        prepare(args.fts, args.fresh)
-        started = time.perf_counter()
-        subprocess.run(loader_cmd(args), check=True, env=loader_env())
-        for row in curve():
-            print(json.dumps(row))
-        print(json.dumps({"variant": "fts" if args.fts else "no-fts", "size": table_size(),
-                          "wall_seconds": round(time.perf_counter() - started)}))
+        profile = pg_import_profile.import_profile() if args.import_profile else contextlib.nullcontext()
+        with profile:
+            prepare(args.fts, args.fresh, args.fastupdate)
+            cp_before = checkpoints()
+            started = time.perf_counter()
+            subprocess.run(loader_cmd(args), check=True, env=loader_env())
+            wall = time.perf_counter() - started
+            cp_after = checkpoints()
+            print(json.dumps({"variant": "fts" if args.fts else "no-fts", "fastupdate": args.fastupdate,
+                              "import_profile": args.import_profile, "first": args.first,
+                              "files": args.files, "wall_seconds": round(wall),
+                              "checkpoints_timed": cp_after["timed"] - cp_before["timed"],
+                              "checkpoints_requested": cp_after["requested"] - cp_before["requested"],
+                              "per_file": per_file_stats(args.first, args.files), "size": table_size()}))
         return 0
 
     # killtest: reference run, then an interrupted + resumed run of the same files.
-    prepare(args.fts, fresh=True)
+    prepare(args.fts, fresh=True, fastupdate=None)
     subprocess.run(loader_cmd(args), check=True, env=loader_env(), stdout=subprocess.DEVNULL)
     reference = id_set()
-    prepare(args.fts, fresh=True)
+    prepare(args.fts, fresh=True, fastupdate=None)
     proc = subprocess.Popen(loader_cmd(args), env=loader_env(), stdout=subprocess.DEVNULL)
     time.sleep(args.kill_after)
     proc.send_signal(signal.SIGKILL)

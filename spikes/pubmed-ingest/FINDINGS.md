@@ -188,3 +188,34 @@ increasing max_wal_size".
   approval.
 - None of this involves vectors. HNSW maintenance during import is a separate
   and probably larger cost; it is the next measurement.
+
+## 8. Controlled GIN test and the import profile (2026-10-12)
+
+Both arms were appended to the same table (20 M → 25 M → 30 M rows), each
+under the server **import profile** (`pg_import_profile.py`:
+`shared_buffers` 32 GB, `max_wal_size` 64 GB, `min_wal_size` 4 GB, applied by
+`ALTER SYSTEM` plus a restart, restored afterwards). Each arm started with
+`gin_clean_pending_list()`, timed separately.
+
+| Arm | Files | `fastupdate` | Throughput | Median file | p95 | Worst file | Forced checkpoints |
+|---|---|---|---|---|---|---|---|
+| A | 607–773 (5.0 M) | on (default) | 11 359/s (441 s) | 17 s | 32 s | **176 s** | 1 |
+| B | 774–940 (5.0 M) | off | 9 880/s (507 s) | 22 s | 34 s | **51 s** | 2 |
+
+**A's lead is borrowed.** Before arm B, flushing the pending list that A left
+behind took **148 s (846 536 pages ≈ 6.6 GB)**. Counting that, A cost
+441 + 148 = 589 s against B's 507 s. **`fastupdate = off` is ~14 % faster in
+total, has no stalls (worst file 51 s against 176 s here and 3 112 s in §7),
+and leaves no backlog** for the next writer or reader to pay.
+
+**The import profile removes the checkpoint storm**: 1–2 forced checkpoints
+per arm, against ~6 per minute on default settings (§7). The apply → restart →
+restore cycle was verified, and `postgresql.auto.conf` came back unchanged.
+Between-run throughput comparisons with §7 are not clean: the files are from a
+different era, the table is larger, the cache is cold after the restart, and
+an accidental read-only production query overlapped arm A for ~2 min.
+
+**For the port:** create the FTS GIN index with `fastupdate = off` (at least
+for the import path). Run imports inside the import profile, applied and
+restored by the importer itself; a state file keeps the profile across a
+killed and resumed run, and a `restore` command handles abandoned runs.

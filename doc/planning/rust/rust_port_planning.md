@@ -240,25 +240,32 @@ Everything else has a production-ready Rust path.
     at most the files in flight; a restart skips committed files. Verified in
     Phase 0c (SIGKILL mid-run, then resume: identical PMID set, no
     duplicates).
-  - *Indexes:* maintained incrementally (no deferred bulk build). Keep each
-    index small enough to stay in RAM by **partitioning**:
+  - *Indexes:* never one big deferred build. Keep each index small enough to
+    stay in RAM by **partitioning**:
     - `document` by source and publication year (or PMID range);
     - vectors in partitions of a few million rows, each with its own HNSW
       index.
 
-    A partition's index build is then a bounded unit of work (minutes to
-    hours, not weeks), it can be redone alone, and the newest partition takes
-    the incoming rows. pgvector queries over a partitioned table merge
-    per-partition index scans.
+    A partition's index build is then a bounded unit of work (~90 s per 1 M
+    `halfvec(256)`, measured), and it can be redone alone. New vectors go
+    into one small **open** partition without an HNSW index (COPY speed;
+    queried exactly). When it fills, it is **sealed** by building its index.
+    Measured: inserting into an indexed partition runs at only ~200 rows/s,
+    against ~10 k/s for a build. pgvector queries over a partitioned table
+    merge the per-partition index scans (`Merge Append`), which also raises
+    recall.
   - *Derived data* (tsvector, chunks, embeddings) are filled from work
     queues (`semantic.chunk_queue` style). Each batch commits with its queue
     rows, so these steps are resumable and can run behind ingest.
-- **Postgres server tuning first.** The server runs on Postgres.app
-  defaults: `shared_buffers` 128 MB on a 128 GB machine, `max_wal_size`
-  1 GB. Small buffers plus frequent checkpoints are a likely cause of the
-  slowdown past a few million rows, because index pages stop fitting in
-  cache. Tuning applies to the whole server, including `knowledgebase`, so
-  it needs approval.
+- **An import-time server profile, not permanent tuning.** The server runs
+  on Postgres.app defaults (`shared_buffers` 128 MB on a 128 GB machine,
+  `max_wal_size` 1 GB), which caused a checkpoint every 2–3 s during
+  loading. Day-to-day RAM is reserved for model inference, so the importer
+  applies an import profile (large `shared_buffers` and WAL) at start and
+  restores the day-to-day profile at the end. A state file keeps the profile
+  through a killed and resumed import, and a `restore` command cleans up
+  after an abandoned one. Approved 2026-10-12; implemented in the spike as
+  `pg_import_profile.py`.
 - **Ingest pipeline**: tokio for I/O, a rayon pool for parsing, bounded
   channels for backpressure. Use binary COPY into staging tables, then a
   set-based merge (`INSERT … ON CONFLICT`).
@@ -412,15 +419,34 @@ backend agrees to cosine ≥ 0.9995.
   - One file stalled for 52 min, most likely a GIN `fastupdate`
     pending-list flush paid by one inserter.
   - The server log shows 735 WAL-triggered checkpoints in ~2 h.
-- Controlled GIN test: the same append with `fastupdate = off`, against the
-  current behaviour.
+- **Controlled GIN test and import profile: done** (FINDINGS §8).
+  - `fastupdate = off` is ~14 % faster in total once the pending-list
+    flush that `on` defers is counted (148 s, 6.6 GB). The worst file was
+    51 s, against 176 s with `on` and 3 112 s in §7. **Use
+    `fastupdate = off` for the FTS GIN.**
+  - The server **import profile** (`spikes/pubmed-ingest/pg_import_profile.py`:
+    `shared_buffers` 32 GB, `max_wal_size` 64 GB, applied with
+    `ALTER SYSTEM` plus a restart, restored afterwards, kept across a killed
+    and resumed run through a state file) cuts forced checkpoints from ~6 per
+    minute to 1–2 per 5 M rows.
+  - RAM is only borrowed while an import runs (owner requirement:
+    day-to-day RAM goes to inference).
 - Partitioning: the same long run into a `document` partitioned by
   PMID range, to see whether bounded indexes keep throughput flat.
 - Queue-driven tsvector fill behind ingest: throughput and resumability.
-- pgvector with `vector(256)` / `halfvec(256)`: HNSW build time **per
-  partition** (1–5 M vectors), incremental-insert throughput into an indexed
-  partition, and recall vs exact search. Use truncated production vectors,
-  copied into `bmlibrarian_dev`. The server already has pgvector **0.8.6**;
-  the databases are on extension version 0.5.1, so `ALTER EXTENSION vector
-  UPDATE` enables halfvec/subvector (dev now; `knowledgebase` only with
-  approval).
+- **Vector partitions: done** (`spikes/vector-partitions/FINDINGS.md`).
+  5 M production vectors at 256 d, pgvector 0.8.6 in `bmlibrarian_dev`:
+  - **Builds:** one HNSW per 1 M partition takes ~90 s (`halfvec`) to
+    ~105 s (`vector`). Projected for 37.5 M: ~1 h of index builds in total,
+    as 38 independent, restartable units, against ~3 weeks for the old 1024-d
+    build. The old build most likely outgrew `maintenance_work_mem`.
+  - **Recall** with 5 partitions at `ef_search` 200: recall@100 0.973 at a
+    p50 of 36–39 ms. `halfvec` gives the same recall as `vector` with a 40 %
+    smaller index.
+  - **Incremental inserts** into an indexed partition run at only ~200
+    rows/s, 46× slower than building, which leads to the design below.
+  - **Design: "open + sealed" partitions.** New vectors go into a small,
+    unindexed open partition, which queries scan exactly. When it fills, it
+    is sealed with its own bounded index build.
+  - **Still to measure:** query latency at the full partition count, and the
+    best partition size (1–4 M).
