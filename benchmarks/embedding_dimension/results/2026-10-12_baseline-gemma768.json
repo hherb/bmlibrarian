@@ -1,0 +1,383 @@
+{
+  "config": {
+    "models": [
+      {
+        "label": "arctic",
+        "model_id": "Snowflake/snowflake-arctic-embed-l-v2.0"
+      },
+      {
+        "label": "gemma2",
+        "model_id": "google/embeddinggemma-2"
+      }
+    ],
+    "datasets": [
+      "scifact",
+      "nfcorpus"
+    ],
+    "dims": [
+      1024,
+      768,
+      512,
+      256,
+      128
+    ],
+    "baseline": "gemma2@768",
+    "margin": 0.02,
+    "bootstrap_resamples": 10000,
+    "seed": 42,
+    "max_docs": 0,
+    "max_seq_length": null
+  },
+  "prompts": {
+    "arctic": {
+      "query": "model prompt 'query': 'query: '",
+      "document": "none"
+    },
+    "gemma2": {
+      "query": "model prompt 'query': 'task: search result | query: '",
+      "document": "model prompt 'document': 'title: none | text: '"
+    }
+  },
+  "document_encode_seconds": {
+    "arctic": {
+      "scifact": 0.0,
+      "nfcorpus": 0.0
+    },
+    "gemma2": {
+      "scifact": 0.0,
+      "nfcorpus": 0.0
+    }
+  },
+  "failures": [],
+  "results": [
+    {
+      "dataset": "scifact",
+      "model": "arctic",
+      "dim": 1024,
+      "metrics": {
+        "ndcg@10": 0.7097536414370257,
+        "recall@10": 0.8350555555555556,
+        "recall@100": 0.935,
+        "mrr@10": 0.6770449735449735
+      },
+      "delta_ndcg10": {
+        "mean": -0.1528511054514302,
+        "ci_low": -0.19123187886344767,
+        "ci_high": -0.11480623662434183,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "scifact",
+      "model": "arctic",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.6990062219412052,
+        "recall@10": 0.8283888888888888,
+        "recall@100": 0.935,
+        "mrr@10": 0.6651772486772487
+      },
+      "delta_ndcg10": {
+        "mean": -0.16359852494725058,
+        "ci_low": -0.2021850753622387,
+        "ci_high": -0.12646594900912717,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "scifact",
+      "model": "arctic",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.6975193182330408,
+        "recall@10": 0.8250555555555555,
+        "recall@100": 0.9283333333333333,
+        "mrr@10": 0.665015873015873
+      },
+      "delta_ndcg10": {
+        "mean": -0.16508542865541506,
+        "ci_low": -0.20391658680620972,
+        "ci_high": -0.1269357989478191,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "scifact",
+      "model": "arctic",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.7005400278166803,
+        "recall@10": 0.8150555555555555,
+        "recall@100": 0.9216666666666666,
+        "mrr@10": 0.6722936507936508
+      },
+      "delta_ndcg10": {
+        "mean": -0.1620647190717754,
+        "ci_low": -0.2010001198700086,
+        "ci_high": -0.12388033324058566,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "scifact",
+      "model": "arctic",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.6406742511011801,
+        "recall@10": 0.7642777777777777,
+        "recall@100": 0.8722222222222221,
+        "mrr@10": 0.6099537037037036
+      },
+      "delta_ndcg10": {
+        "mean": -0.22193049578727564,
+        "ci_low": -0.2636250193924295,
+        "ci_high": -0.1813320043207359,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "scifact",
+      "model": "gemma2",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.8626047468884559,
+        "recall@10": 0.9442222222222222,
+        "recall@100": 0.98,
+        "mrr@10": 0.8405171957671959
+      },
+      "delta_ndcg10": null,
+      "verdict": "baseline"
+    },
+    {
+      "dataset": "scifact",
+      "model": "gemma2",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.8572278640541323,
+        "recall@10": 0.9342222222222222,
+        "recall@100": 0.9833333333333333,
+        "mrr@10": 0.8369563492063492
+      },
+      "delta_ndcg10": {
+        "mean": -0.005376882834323394,
+        "ci_low": -0.01292471411739014,
+        "ci_high": 0.002137714443913835,
+        "n_queries": 300
+      },
+      "verdict": "non-inferior"
+    },
+    {
+      "dataset": "scifact",
+      "model": "gemma2",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.8424564540396392,
+        "recall@10": 0.9146666666666666,
+        "recall@100": 0.97,
+        "mrr@10": 0.824175925925926
+      },
+      "delta_ndcg10": {
+        "mean": -0.020148292848816578,
+        "ci_low": -0.03227142807796402,
+        "ci_high": -0.008559644847136054,
+        "n_queries": 300
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "scifact",
+      "model": "gemma2",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.793175448345208,
+        "recall@10": 0.8757777777777779,
+        "recall@100": 0.9633333333333334,
+        "mrr@10": 0.7729431216931217
+      },
+      "delta_ndcg10": {
+        "mean": -0.06942929854324767,
+        "ci_low": -0.09203341032520725,
+        "ci_high": -0.04851126722724192,
+        "n_queries": 300
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "arctic",
+      "dim": 1024,
+      "metrics": {
+        "ndcg@10": 0.35275249506673356,
+        "recall@10": 0.1678400139866885,
+        "recall@100": 0.2980509149302448,
+        "mrr@10": 0.5662477271610399
+      },
+      "delta_ndcg10": {
+        "mean": -0.007513353925411186,
+        "ci_low": -0.02394521202312575,
+        "ci_high": 0.008121829494666687,
+        "n_queries": 323
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "arctic",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.34703370055293187,
+        "recall@10": 0.16872097256748989,
+        "recall@100": 0.29795557191940275,
+        "mrr@10": 0.5532286598850066
+      },
+      "delta_ndcg10": {
+        "mean": -0.013232148439212919,
+        "ci_low": -0.030256003474887907,
+        "ci_high": 0.003527079883886925,
+        "n_queries": 323
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "arctic",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.34309890621150324,
+        "recall@10": 0.16556396294959735,
+        "recall@100": 0.299681521787182,
+        "mrr@10": 0.550233426704015
+      },
+      "delta_ndcg10": {
+        "mean": -0.017166942780641604,
+        "ci_low": -0.0340411958941127,
+        "ci_high": -0.001009175167064866,
+        "n_queries": 323
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "arctic",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.3454260800568372,
+        "recall@10": 0.1659964474398624,
+        "recall@100": 0.2932468136075548,
+        "mrr@10": 0.5559609808835815
+      },
+      "delta_ndcg10": {
+        "mean": -0.014839768935307527,
+        "ci_low": -0.03186401640057722,
+        "ci_high": 0.001824905993857777,
+        "n_queries": 323
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "arctic",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.2913680429253008,
+        "recall@10": 0.13973792018635584,
+        "recall@100": 0.264973750681036,
+        "mrr@10": 0.48199051550444744
+      },
+      "delta_ndcg10": {
+        "mean": -0.06889780606684404,
+        "ci_low": -0.08824093979252229,
+        "ci_high": -0.05000957855217979,
+        "n_queries": 323
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "gemma2",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.36026584899214475,
+        "recall@10": 0.17667853306343362,
+        "recall@100": 0.3427575097315046,
+        "mrr@10": 0.5579573934837093
+      },
+      "delta_ndcg10": null,
+      "verdict": "baseline"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "gemma2",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.3568339925677135,
+        "recall@10": 0.1769025143048185,
+        "recall@100": 0.3382715919133152,
+        "mrr@10": 0.5551980441299327
+      },
+      "delta_ndcg10": {
+        "mean": -0.0034318564244313005,
+        "ci_low": -0.009306464474281293,
+        "ci_high": 0.0020568093218415314,
+        "n_queries": 323
+      },
+      "verdict": "non-inferior"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "gemma2",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.3416952520389555,
+        "recall@10": 0.17070113473683943,
+        "recall@100": 0.32324209450624003,
+        "mrr@10": 0.5445304437564499
+      },
+      "delta_ndcg10": {
+        "mean": -0.01857059695318926,
+        "ci_low": -0.02863310757369548,
+        "ci_high": -0.009251026297261159,
+        "n_queries": 323
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "nfcorpus",
+      "model": "gemma2",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.2884921317594413,
+        "recall@10": 0.13712681419019526,
+        "recall@100": 0.2681246712284925,
+        "mrr@10": 0.4855963438006782
+      },
+      "delta_ndcg10": {
+        "mean": -0.07177371723270351,
+        "ci_low": -0.08917710727105337,
+        "ci_high": -0.05524721787806759,
+        "n_queries": 323
+      },
+      "verdict": "worse"
+    }
+  ],
+  "macro_ndcg10": {
+    "arctic": {
+      "1024": 0.5312530682518797,
+      "768": 0.5230199612470685,
+      "512": 0.520309112222272,
+      "256": 0.5229830539367588,
+      "128": 0.4660211470132405
+    },
+    "gemma2": {
+      "768": 0.6114352979403004,
+      "512": 0.6070309283109229,
+      "256": 0.5920758530392973,
+      "128": 0.5408337900523247
+    }
+  }
+}

@@ -81,9 +81,17 @@ a model recommends a different format, pass it explicitly:
 --document-prefix "gemma2=title: none | text: "
 ```
 
-(Those example strings are the EmbeddingGemma v1 format – verify the v2 model
-card before relying on them.) A wrong prompt can cost several nDCG points and
-invalidate the comparison.
+(Those strings match the EmbeddingGemma 2 model card and its built-in `query` /
+`document` prompts, so the defaults already apply them.) A wrong prompt can cost
+several nDCG points and invalidate the comparison.
+
+EmbeddingGemma 2 needs sentence-transformers ≥ 6.1.0, transformers ≥ 5.18 and
+`torchvision`, even for text only. Older versions fail with "model type
+`embedding_gemma2` … not recognized" or "Could not import module
+'EmbeddingGemma2Processor'". `uv sync` installs the right versions.
+
+Results from the first full run (2026-10-12) and the resulting recommendation
+are in `doc/EMBEDDING_MODEL_EVALUATION_2026-10.md`.
 
 ## Interpreting results
 
