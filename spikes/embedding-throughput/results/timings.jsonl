@@ -1,0 +1,8 @@
+{"backend":"candle_metal_bs16","batch":16,"docs":2000,"docs_per_s":10.5,"dtype":"f32","max_seq_length":8192,"seconds":189.94,"tokens":668563,"tokens_per_s":3520.0}
+{"backend":"candle_metal_bs32","batch":32,"docs":2000,"docs_per_s":8.3,"dtype":"f32","max_seq_length":8192,"seconds":240.23,"tokens":668563,"tokens_per_s":2783.0}
+{"backend": "st_bs32", "docs": 2000, "seconds": 137.26, "docs_per_s": 14.6, "device": "mps", "batch": 32, "tokens": 668563, "tokens_per_s": 4871, "max_seq_length": 8192, "dtype": "torch.float32"}
+{"backend": "st_bs16", "docs": 2000, "seconds": 118.04, "docs_per_s": 16.9, "device": "mps", "batch": 16, "tokens": 668563, "tokens_per_s": 5664, "max_seq_length": 8192, "dtype": "torch.float32"}
+{"backend": "st_bs64", "docs": 2000, "seconds": 133.7, "docs_per_s": 15.0, "device": "mps", "batch": 64, "tokens": 668563, "tokens_per_s": 5000, "max_seq_length": 8192, "dtype": "torch.float32"}
+{"backend": "ollama_bs32", "docs": 2000, "seconds": 74.87, "docs_per_s": 26.7, "model": "snowflake-arctic-embed2:latest", "batch": 32}
+{"backend": "st_float16_bs16", "docs": 2000, "seconds": 61.18, "docs_per_s": 32.7, "device": "mps", "batch": 16, "tokens": 668563, "tokens_per_s": 10928, "max_seq_length": 8192, "dtype": "torch.float16"}
+{"backend": "st_bfloat16_bs16", "docs": 2000, "seconds": 62.08, "docs_per_s": 32.2, "device": "mps", "batch": 16, "tokens": 668563, "tokens_per_s": 10770, "max_seq_length": 8192, "dtype": "torch.bfloat16"}
