@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -48,6 +49,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict, List, Tuple, Callable
 import backoff
+from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
 
@@ -56,6 +58,159 @@ logger = logging.getLogger(__name__)
 # CommentsCorrections/@RefType values (lower-cased) that mark a retraction link:
 # RetractionIn on the retracted article, RetractionOf on the retraction notice.
 RETRACTION_REF_TYPES = ('retractionin', 'retractionof')
+
+# ---------------------------------------------------------------------------
+# COPY-based, revision-aware, resumable write path (one transaction per file)
+# ---------------------------------------------------------------------------
+
+LEDGER_SOURCE = 'pubmed_bulk'
+METADATA_SOURCE = 'pubmed_bulk'
+SHA256_CHUNK_BYTES = 1 << 20
+ISO_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+STAGE_DOCUMENT_COLUMNS = (
+    'ord', 'external_id', 'doi', 'title', 'abstract', 'authors', 'publication',
+    'publication_date', 'url', 'mesh_terms', 'keywords', 'date_revised',
+)
+STAGE_METADATA_COLUMNS = (
+    'ord', 'external_id', 'date_revised', 'grants', 'publication_types',
+    'is_retracted', 'author_affiliations',
+)
+
+STAGING_DDL = (
+    """CREATE TEMP TABLE stage_document (
+        ord integer, external_id text, doi text, title text, abstract text,
+        authors text[], publication text, publication_date date, url text,
+        mesh_terms text[], keywords text[], date_revised date) ON COMMIT DROP""",
+    """CREATE TEMP TABLE stage_metadata (
+        ord integer, external_id text, date_revised date, grants jsonb,
+        publication_types text[], is_retracted boolean, author_affiliations jsonb) ON COMMIT DROP""",
+)
+
+# The newest revision of a PMID wins: within the file (DISTINCT ON ordered by
+# date_revised, then file order) and against the stored row (the update only
+# applies when the incoming revision is not older). COALESCE semantics for
+# doi/abstract/publication/date are kept from the row-by-row importer.
+MERGE_DOCUMENTS_SQL = """
+INSERT INTO document (
+    source_id, external_id, doi, title, abstract, authors, publication,
+    publication_date, url, mesh_terms, keywords, date_revised)
+SELECT DISTINCT ON (external_id)
+    %(source_id)s, external_id, doi, title, abstract, authors, publication,
+    publication_date, url, mesh_terms, keywords, date_revised
+FROM stage_document
+ORDER BY external_id, date_revised DESC NULLS LAST, ord DESC
+ON CONFLICT (source_id, external_id) DO UPDATE SET
+    doi = COALESCE(EXCLUDED.doi, document.doi),
+    title = EXCLUDED.title,
+    abstract = COALESCE(EXCLUDED.abstract, document.abstract),
+    authors = EXCLUDED.authors,
+    publication = COALESCE(EXCLUDED.publication, document.publication),
+    publication_date = COALESCE(EXCLUDED.publication_date, document.publication_date),
+    mesh_terms = EXCLUDED.mesh_terms,
+    keywords = EXCLUDED.keywords,
+    date_revised = COALESCE(EXCLUDED.date_revised, document.date_revised),
+    updated_date = CURRENT_TIMESTAMP
+WHERE EXCLUDED.date_revised IS NULL
+   OR document.date_revised IS NULL
+   OR EXCLUDED.date_revised >= document.date_revised
+"""
+
+# Metadata follows the revision that won the document merge.
+MERGE_METADATA_SQL = """
+INSERT INTO transparency.document_metadata (
+    document_id, grants, publication_types, is_retracted, author_affiliations, source)
+SELECT DISTINCT ON (d.id)
+    d.id, m.grants, m.publication_types, m.is_retracted, m.author_affiliations, %(source)s
+FROM stage_metadata m
+JOIN document d ON d.source_id = %(source_id)s AND d.external_id = m.external_id
+WHERE m.date_revised IS NOT DISTINCT FROM d.date_revised
+ORDER BY d.id, m.ord DESC
+ON CONFLICT (document_id) DO UPDATE SET
+    grants = COALESCE(EXCLUDED.grants, transparency.document_metadata.grants),
+    publication_types = COALESCE(EXCLUDED.publication_types, transparency.document_metadata.publication_types),
+    is_retracted = EXCLUDED.is_retracted OR transparency.document_metadata.is_retracted,
+    author_affiliations = COALESCE(EXCLUDED.author_affiliations, transparency.document_metadata.author_affiliations),
+    imported_at = NOW()
+"""
+
+LEDGER_UPSERT_SQL = """
+INSERT INTO ingest.ledger (source, file, sha256, records, seconds)
+VALUES (%(source)s, %(file)s, %(sha256)s, %(records)s, %(seconds)s)
+ON CONFLICT (source, file) DO UPDATE SET
+    sha256 = EXCLUDED.sha256, records = EXCLUDED.records,
+    seconds = EXCLUDED.seconds, finished_at = clock_timestamp()
+"""
+
+TRANSPARENCY_TABLE_EXISTS_SQL = """
+SELECT EXISTS (SELECT FROM information_schema.tables
+               WHERE table_schema = 'transparency' AND table_name = 'document_metadata')
+"""
+
+
+def valid_iso_date(value: Optional[str]) -> Optional[str]:
+    """Return ``value`` if it is a real YYYY-MM-DD date, else None.
+
+    _extract_date passes through month names it does not know (e.g. seasons),
+    which a date column would reject; such values are stored as NULL.
+    """
+    if not value or not ISO_DATE_PATTERN.match(value):
+        return None
+    try:
+        datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        return None
+    return value
+
+
+def has_transparency_metadata(meta: Dict) -> bool:
+    """Same filter as the row-by-row path: store only meaningful metadata."""
+    return bool(meta.get('grants') or meta.get('publication_types')
+                or meta.get('is_retracted') or meta.get('author_affiliations'))
+
+
+def to_staging_rows(articles: List[Dict]) -> Tuple[List[tuple], List[tuple]]:
+    """Convert parsed articles into COPY rows for the staging tables.
+
+    Empty strings become NULL (as in the row-by-row importer); invalid dates
+    become NULL. Column order follows STAGE_DOCUMENT_COLUMNS and
+    STAGE_METADATA_COLUMNS.
+
+    Args:
+        articles: Articles as returned by PubMedBulkImporter._parse_article.
+
+    Returns:
+        (document rows, metadata rows).
+    """
+    docs: List[tuple] = []
+    metas: List[tuple] = []
+    for ord_, a in enumerate(articles):
+        revised = valid_iso_date(a.get('date_revised'))
+        docs.append((
+            ord_, a['pmid'], a.get('doi') or None, a.get('title'), a.get('abstract') or None,
+            a.get('authors', []), a.get('publication') or None,
+            valid_iso_date(a.get('publication_date')), a.get('url'),
+            a.get('mesh_terms', []), a.get('keywords', []), revised,
+        ))
+        meta = a.get('transparency_metadata') or {}
+        if has_transparency_metadata(meta):
+            metas.append((
+                ord_, a['pmid'], revised,
+                Jsonb(meta['grants']) if meta.get('grants') else None,
+                meta.get('publication_types') or None,
+                bool(meta.get('is_retracted', False)),
+                Jsonb(meta['author_affiliations']) if meta.get('author_affiliations') else None,
+            ))
+    return docs, metas
+
+
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(SHA256_CHUNK_BYTES), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 # Type alias for progress callback: (message: str) -> None
 ProgressCallback = Callable[[str], None]
@@ -349,13 +504,19 @@ class PubMedBulkImporter:
     BASELINE_PATH = '/pubmed/baseline'
     UPDATE_PATH = '/pubmed/updatefiles'
 
-    def __init__(self, data_dir: Optional[str] = None, use_tracking: bool = True):
+    def __init__(
+        self,
+        data_dir: Optional[str] = None,
+        use_tracking: bool = True,
+        db_manager: Optional[Any] = None,
+    ):
         """
         Initialize PubMed bulk importer.
 
         Args:
             data_dir: Directory for storing downloaded files (default: ~/knowledgebase/pubmed_data)
             use_tracking: Whether to use database tracking (default: True)
+            db_manager: DatabaseManager to use (default: the shared get_db_manager()).
         """
         self.data_dir = Path(data_dir or os.path.expanduser('~/knowledgebase/pubmed_data'))
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -367,7 +528,7 @@ class PubMedBulkImporter:
 
         self.use_tracking = use_tracking
         self.tracker = DownloadTracker() if use_tracking else None
-        self.db_manager = get_db_manager()
+        self.db_manager = db_manager if db_manager is not None else get_db_manager()
 
         # Get PubMed source_id
         with self.db_manager.get_connection() as conn:
@@ -1263,71 +1424,117 @@ class PubMedBulkImporter:
 
         return stored
 
+    def _is_file_committed(self, filename: str) -> bool:
+        """Whether ``filename`` is recorded in ingest.ledger (already imported)."""
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM ingest.ledger WHERE source = %s AND file = %s",
+                    (LEDGER_SOURCE, filename),
+                )
+                return cur.fetchone() is not None
+
+    def _store_file(self, articles: List[Dict], filename: str, sha256: str, started: float) -> int:
+        """Store one file's articles atomically: COPY, merge, metadata, ledger row.
+
+        Everything happens in one transaction, so an interruption leaves either
+        the whole file (including its ledger row) or none of it, and a resumed
+        import repeats exactly the files that did not commit.
+
+        Args:
+            articles: Parsed articles of the file, in file order.
+            filename: Source file name (ledger key).
+            sha256: Checksum of the source file.
+            started: perf_counter() when processing of the file began.
+
+        Returns:
+            Number of document rows inserted or updated.
+        """
+        docs, metas = to_staging_rows(articles)
+        params = {'source_id': self.source_id, 'source': METADATA_SOURCE}
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                for ddl in STAGING_DDL:
+                    cur.execute(ddl)
+                with cur.copy(f"COPY stage_document ({', '.join(STAGE_DOCUMENT_COLUMNS)}) FROM STDIN") as cp:
+                    for row in docs:
+                        cp.write_row(row)
+                with cur.copy(f"COPY stage_metadata ({', '.join(STAGE_METADATA_COLUMNS)}) FROM STDIN") as cp:
+                    for row in metas:
+                        cp.write_row(row)
+                cur.execute(MERGE_DOCUMENTS_SQL, params)
+                written = cur.rowcount
+                cur.execute(TRANSPARENCY_TABLE_EXISTS_SQL)
+                if cur.fetchone()[0]:
+                    cur.execute(MERGE_METADATA_SQL, params)
+                else:
+                    logger.debug("transparency.document_metadata not found, skipping metadata storage")
+                cur.execute(LEDGER_UPSERT_SQL, {
+                    'source': LEDGER_SOURCE, 'file': filename, 'sha256': sha256,
+                    'records': len(articles), 'seconds': time.perf_counter() - started,
+                })
+        return written
+
     def import_file(
         self,
         filepath: Path,
-        batch_size: int = 100,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        force: bool = False,
     ) -> Dict:
         """
-        Import articles from XML file using memory-efficient streaming.
+        Import one PubMed XML file, resumably.
+
+        The file is parsed completely, then stored in a single transaction
+        (COPY into staging, revision-aware set-based merge, transparency
+        metadata, ingest.ledger row). Files already in the ledger are skipped
+        unless ``force`` is set, so stopping and restarting an import repeats
+        only files that had not committed.
 
         Args:
             filepath: Path to .xml.gz file
-            batch_size: Number of articles to batch before database insertion
             progress_callback: Optional callback for progress messages
+            force: Re-import even if the file is already in the ledger
 
         Returns:
-            Dict with import statistics
+            Dict with import statistics (``skipped`` is True for ledger hits)
         """
-        logger.info(f"Importing {filepath.name}")
-
+        filepath = Path(filepath)
         stats = {
             'filename': filepath.name,
             'articles_parsed': 0,
             'articles_imported': 0,
             'articles_updated': 0,
-            'errors': 0
+            'errors': 0,
+            'skipped': False,
         }
 
-        batch = []
-
         try:
-            with gzip.open(filepath, 'rb') as gz_file:
-                # Use iterparse for memory efficiency
-                context = ET.iterparse(gz_file, events=('end',))
+            if not force and self._is_file_committed(filepath.name):
+                logger.info(f"{filepath.name}: already in ingest.ledger, skipping")
+                stats['skipped'] = True
+                return stats
 
-                for event, elem in context:
+            logger.info(f"Importing {filepath.name}")
+            started = time.perf_counter()
+            articles: List[Dict] = []
+            with gzip.open(filepath, 'rb') as gz_file:
+                # Use iterparse for memory efficiency while parsing
+                for event, elem in ET.iterparse(gz_file, events=('end',)):
                     if elem.tag == 'PubmedArticle':
                         article = self._parse_article(elem)
                         if article:
-                            batch.append(article)
-                            stats['articles_parsed'] += 1
-
-                            if len(batch) >= batch_size:
-                                count = self._store_article_batch(batch)
-                                stats['articles_imported'] += count
-                                batch = []
-
-                                if stats['articles_parsed'] % 1000 == 0:
-                                    msg = f"{filepath.name}: Processed {stats['articles_parsed']:,} articles"
-                                    logger.info(msg)
-                                    if progress_callback:
-                                        progress_callback(f"[IMPORT] {msg}")
+                            articles.append(article)
                         else:
                             stats['errors'] += 1
-
-                        # Clear element to free memory
-                        # Note: Standard library ElementTree doesn't support getparent()/getprevious()
-                        # (those are lxml-specific methods), so we just clear the element itself
                         elem.clear()
+            stats['articles_parsed'] = len(articles)
+            if progress_callback:
+                progress_callback(f"[IMPORT] {filepath.name}: parsed {len(articles):,} articles, storing")
 
-                # Process remaining batch
-                if batch:
-                    count = self._store_article_batch(batch)
-                    stats['articles_imported'] += count
-
-            logger.info(f"{filepath.name}: Import complete - {stats['articles_parsed']} parsed, {stats['articles_imported']} imported")
+            stats['articles_imported'] = self._store_file(
+                articles, filepath.name, file_sha256(filepath), started)
+            logger.info(f"{filepath.name}: Import complete - {stats['articles_parsed']} parsed, "
+                        f"{stats['articles_imported']} imported")
 
             # Mark as processed in tracker
             if self.tracker:
