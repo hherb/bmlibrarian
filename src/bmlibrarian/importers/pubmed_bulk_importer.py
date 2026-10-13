@@ -37,6 +37,7 @@ Usage:
 import ftplib
 import gzip
 import hashlib
+import multiprocessing
 import json
 import logging
 import os
@@ -45,6 +46,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict, List, Tuple, Callable
@@ -211,6 +213,31 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(SHA256_CHUNK_BYTES), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+# Per-process importer for parallel imports (set by _init_import_worker).
+_WORKER_IMPORTER: Optional['PubMedBulkImporter'] = None
+
+
+def _init_import_worker(data_dir: str, conninfo: str) -> None:
+    """Process-pool initializer: an importer bound to exactly the parent's database.
+
+    A fresh process re-imports bmlibrarian.database, which loads the default env
+    file; passing the parent's conninfo explicitly guarantees the worker writes
+    to the same database as the parent (never to whatever that file names).
+    """
+    global _WORKER_IMPORTER
+    from bmlibrarian.database import DatabaseManager
+
+    db = DatabaseManager(auto_migrate=False, conninfo=conninfo)
+    _WORKER_IMPORTER = PubMedBulkImporter(data_dir=data_dir, use_tracking=False, db_manager=db)
+
+
+def _import_file_in_worker(path: str) -> Dict:
+    """Process-pool task: import one file with this process's importer."""
+    if _WORKER_IMPORTER is None:
+        raise RuntimeError("import worker not initialised")
+    return _WORKER_IMPORTER.import_file(Path(path))
 
 # Type alias for progress callback: (message: str) -> None
 ProgressCallback = Callable[[str], None]
@@ -1567,25 +1594,43 @@ class PubMedBulkImporter:
 
         return stats
 
+    def _committed_files(self) -> set:
+        """Names of all files already recorded in ingest.ledger."""
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT file FROM ingest.ledger WHERE source = %s", (LEDGER_SOURCE,))
+                return {row[0] for row in cur.fetchall()}
+
     def import_all_files(
         self,
         file_type: Optional[str] = None,
         progress_callback: Optional[ProgressCallback] = None,
-        cancel_check: Optional[CancelCheck] = None
+        cancel_check: Optional[CancelCheck] = None,
+        workers: int = 1,
     ) -> Dict:
         """
-        Import all downloaded files.
+        Import all downloaded files, resumably and optionally in parallel.
+
+        Files already in ingest.ledger (or marked processed by the download
+        tracker) are skipped, so re-running continues where a stopped import
+        left off. With ``workers > 1`` files are imported by separate
+        processes, each committing whole files; the revision-aware merge makes
+        the result independent of the order in which files finish.
 
         Args:
             file_type: 'baseline', 'update', or None for both
             progress_callback: Optional callback for progress messages
-            cancel_check: Optional callback to check if operation should be cancelled
+            cancel_check: Optional callback to check if operation should be cancelled.
+                Cancelling stops submitting files; files already running finish
+                (each is one transaction).
+            workers: Number of parallel import processes (1 = in this process)
 
         Returns:
             Dict with overall statistics
         """
         overall_stats = {
             'files_processed': 0,
+            'files_skipped': 0,
             'total_articles': 0,
             'total_errors': 0
         }
@@ -1597,37 +1642,60 @@ class PubMedBulkImporter:
         if file_type in (None, 'update'):
             dirs_to_process.append(self.update_dir)
 
-        # Collect all files to process
+        # Collect all files to process, minus those already committed
         all_files = []
         for directory in dirs_to_process:
             all_files.extend(sorted(directory.glob('*.xml.gz')))
-        total_files = len(all_files)
+        committed = self._committed_files()
+        pending = []
+        for filepath in all_files:
+            if filepath.name in committed or (self.tracker and self.tracker.is_file_processed(filepath.name)):
+                overall_stats['files_skipped'] += 1
+            else:
+                pending.append(filepath)
+        total_files = len(pending)
+        if progress_callback:
+            progress_callback(f"[IMPORT] {total_files} files to import "
+                              f"({overall_stats['files_skipped']} already done), {workers} worker(s)")
 
-        for idx, filepath in enumerate(all_files, 1):
-            # Check for cancellation
-            if cancel_check and cancel_check():
-                if progress_callback:
-                    progress_callback("[IMPORT] Cancelled by user")
-                break
-
-            # Skip if already processed
-            if self.tracker and self.tracker.is_file_processed(filepath.name):
-                logger.info(f"{filepath.name}: Already processed, skipping")
-                continue
-
-            if progress_callback:
-                progress_callback(f"[IMPORT] {idx}/{total_files}: {filepath.name}")
-
-            stats = self.import_file(filepath, progress_callback=progress_callback)
+        def record(stats: Dict, idx: int) -> None:
             overall_stats['files_processed'] += 1
             overall_stats['total_articles'] += stats['articles_imported']
             overall_stats['total_errors'] += stats['errors']
-
+            if self.tracker and workers > 1 and stats['errors'] == 0:
+                self.tracker.mark_processed(stats['filename'], stats['articles_parsed'])
             if progress_callback:
-                progress_callback(
-                    f"[IMPORT] {filepath.name}: {stats['articles_imported']} articles imported"
-                )
+                progress_callback(f"[IMPORT] {idx}/{total_files}: {stats['filename']}: "
+                                  f"{stats['articles_imported']} articles imported")
 
+        if workers <= 1:
+            for idx, filepath in enumerate(pending, 1):
+                if cancel_check and cancel_check():
+                    if progress_callback:
+                        progress_callback("[IMPORT] Cancelled by user")
+                    break
+                record(self.import_file(filepath, progress_callback=progress_callback), idx)
+            return overall_stats
+
+        context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=workers, mp_context=context,
+                                 initializer=_init_import_worker,
+                                 initargs=(str(self.data_dir), self.db_manager.conninfo)) as pool:
+            futures = {pool.submit(_import_file_in_worker, str(f)): f for f in pending}
+            done_count = 0
+            for future in as_completed(futures):
+                done_count += 1
+                try:
+                    record(future.result(), done_count)
+                except Exception as e:
+                    logger.error(f"{futures[future].name}: worker failed: {e}", exc_info=True)
+                    overall_stats['total_errors'] += 1
+                if cancel_check and cancel_check():
+                    for f in futures:
+                        f.cancel()
+                    if progress_callback:
+                        progress_callback("[IMPORT] Cancelled by user; running files will finish")
+                    break
         return overall_stats
 
     def _import_worker(

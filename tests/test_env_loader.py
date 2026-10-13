@@ -75,3 +75,20 @@ class TestDatabaseModuleHonoursSelection:
             [sys.executable, "-c", "import os, bmlibrarian.database; print(os.environ['POSTGRES_PORT'])"],
             env=env, capture_output=True, text=True, check=True)
         assert out.stdout.strip() == "5532"
+
+
+class TestDatabaseManagerExplicitConninfo:
+    """An explicit conninfo wins over the environment (used by worker processes)."""
+
+    def test_explicit_conninfo_is_used_and_env_ignored(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        from bmlibrarian import database
+
+        monkeypatch.setenv("POSTGRES_DB", "knowledgebase")
+        monkeypatch.setenv("POSTGRES_USER", "someone")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
+        with patch.object(database, "ConnectionPool") as pool:
+            manager = database.DatabaseManager(auto_migrate=False, conninfo="host=localhost port=5532 dbname=dev_db")
+        assert pool.call_args.kwargs["conninfo"] == "host=localhost port=5532 dbname=dev_db"
+        assert manager.conninfo == "host=localhost port=5532 dbname=dev_db"

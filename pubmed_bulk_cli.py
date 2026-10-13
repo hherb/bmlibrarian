@@ -28,10 +28,23 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from src.bmlibrarian.importers.pubmed_bulk_importer import PubMedBulkImporter, DownloadTracker
+
+# Parallel import processes. 8 measured 3.5x faster than 1 on an M3 Max with
+# PostgreSQL 18 (Phase A, 2026-10-13); capped by the CPU count.
+DEFAULT_IMPORT_WORKERS = max(1, min(8, (os.cpu_count() or 1)))
+
+
+def positive_int(value: str) -> int:
+    """argparse type: an integer >= 1."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {number}")
+    return number
 
 
 def setup_logging(verbose: bool = False):
@@ -134,7 +147,7 @@ def cmd_import(args):
         print(f"Import type: {args.type}")
     else:
         print("Import type: All (baseline + updates)")
-    print(f"Batch size: {args.batch_size}")
+    print(f"Workers: {args.workers}")
     print("=" * 70)
 
     try:
@@ -144,12 +157,13 @@ def cmd_import(args):
         )
 
         print("\nStarting import...")
-        stats = importer.import_all_files(file_type=args.type)
+        stats = importer.import_all_files(file_type=args.type, workers=args.workers)
 
         print("\n" + "=" * 70)
         print("Import Complete!")
         print("=" * 70)
         print(f"Files processed: {stats['files_processed']}")
+        print(f"Files skipped (already imported): {stats.get('files_skipped', 0)}")
         print(f"Total articles: {stats['total_articles']}")
         print(f"Errors: {stats['total_errors']}")
         print("=" * 70)
@@ -307,7 +321,7 @@ def cmd_sync(args):
         elif args.updates_only:
             import_type = 'update'
 
-        stats = importer.import_all_files(file_type=import_type)
+        stats = importer.import_all_files(file_type=import_type, workers=args.workers)
 
         print("\n" + "=" * 70)
         print("Sync Complete!")
@@ -324,8 +338,8 @@ def cmd_sync(args):
         return 1
 
 
-def main():
-    """Main entry point for the CLI."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description='PubMed bulk download and import for complete local mirror',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -391,10 +405,11 @@ def main():
         help='Import only specific file type'
     )
     import_parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=100,
-        help='Articles per database batch (default: 100)'
+        '--workers',
+        type=positive_int,
+        default=DEFAULT_IMPORT_WORKERS,
+        help=f'Parallel import processes; each file is one resumable transaction '
+             f'(default: {DEFAULT_IMPORT_WORKERS})'
     )
 
     # Status command
@@ -433,7 +448,19 @@ def main():
         action='store_true',
         help='Skip confirmation prompts'
     )
+    sync_parser.add_argument(
+        '--workers',
+        type=positive_int,
+        default=DEFAULT_IMPORT_WORKERS,
+        help=f'Parallel import processes (default: {DEFAULT_IMPORT_WORKERS})'
+    )
 
+    return parser
+
+
+def main():
+    """Main entry point for the CLI."""
+    parser = build_parser()
     args = parser.parse_args()
 
     # Setup logging

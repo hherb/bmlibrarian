@@ -186,3 +186,16 @@ def test_failure_mid_store_leaves_nothing_and_resume_retries(dev_importer, tmp_p
     monkeypatch.undo()
     stats = dev_importer.import_file(f)
     assert stats["articles_imported"] == 1 and ledger_files(dev_importer) == ["pbi-test-0006.xml.gz"]
+
+
+def test_parallel_workers_store_all_files_and_newest_revision_wins(dev_importer, tmp_path) -> None:
+    """Two worker processes; the same PMID in two files must still resolve to the newest revision."""
+    baseline = dev_importer.baseline_dir
+    write_file(baseline, "pbi-test-0101.xml.gz", [record_xml(TEST_PMIDS[0], "Newest", "2025-06-01")])
+    write_file(baseline, "pbi-test-0102.xml.gz", [record_xml(TEST_PMIDS[1], "Other", "2024-01-01")])
+    write_file(baseline, "pbi-test-0103.xml.gz", [record_xml(TEST_PMIDS[0], "Stale", "2020-01-01")])
+    stats = dev_importer.import_all_files(file_type="baseline", workers=2)
+    assert stats["files_processed"] == 3
+    assert ledger_files(dev_importer) == ["pbi-test-0101.xml.gz", "pbi-test-0102.xml.gz", "pbi-test-0103.xml.gz"]
+    assert fetch(dev_importer, TEST_PMIDS[0])[0] == "Newest"
+    assert fetch(dev_importer, TEST_PMIDS[1])[0] == "Other"
