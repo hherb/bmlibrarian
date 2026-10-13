@@ -128,3 +128,27 @@ class TestApplyRestore:
         with pytest.raises(dip.ImportProfileError):
             profile.apply({"max_wal_size": "64GB"})
         assert not (tmp_path / "state.json").exists()
+
+
+class TestStartOptions:
+    """Restart must not let a shell expand Postgres.app's literal $system / $libdir."""
+
+    OPTS = ('/Applications/Postgres 2.app/Contents/Versions/18/bin/postgres "-D" "/Users/x/Library/Application '
+            'Support/Postgres/var-18" "-p" "5532" "-c" "shared_preload_libraries=pg_search,auth_permission_dialog" '
+            '"-c" "extension_control_path=$system:/Users/x/Library/Application Support/Postgres/Extensions/18/'
+            'pg_search/share/postgresql" "-c" "dynamic_library_path=$libdir:/Users/x/ext/lib"')
+
+    def test_options_exclude_binary_and_data_dir(self) -> None:
+        opts = dip.server_start_options(self.OPTS)
+        assert opts[:2] == ["-p", "5532"]
+        assert "-D" not in opts
+
+    def test_dollar_paths_survive_shell_quoting(self) -> None:
+        import shlex
+
+        opts = dip.server_start_options(self.OPTS)
+        quoted = dip.shell_quoted_options(opts)
+        assert shlex.split(quoted) == opts
+        assert "extension_control_path=$system:/Users/x/Library/Application Support/Postgres/Extensions/18/" \
+               "pg_search/share/postgresql" in opts
+        assert "'extension_control_path=$system:" in quoted

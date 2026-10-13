@@ -20,6 +20,7 @@ client sessions are connected, unless forced. A superuser connection is needed.
 
 import json
 import re
+import shlex
 import subprocess
 import time
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ STATE_FILE_TEMPLATE = "pg_import_profile_{port}.json"
 AUTO_CONF_NAME = "postgresql.auto.conf"
 POSTMASTER_OPTS_NAME = "postmaster.opts"
 PG_CTL_NAME = "pg_ctl"
+SERVER_LOG_NAME = "postgresql.log"   # Postgres.app's server log in the data directory
 RESTART_TIMEOUT_S = 300
 RECONNECT_ATTEMPTS = 60
 RECONNECT_DELAY_S = 1.0
@@ -104,6 +106,36 @@ def bindir_from_postmaster_opts(text: str) -> Path:
     if unquoted:
         return Path(unquoted.group(1)).parent
     raise ValueError(f"cannot find the server binary in {POSTMASTER_OPTS_NAME}: {text[:80]!r}")
+
+
+def server_start_options(text: str) -> List[str]:
+    """Server options recorded in ``postmaster.opts``, without the binary and ``-D <dir>``.
+
+    ``pg_ctl restart`` replays these through a shell, which expands literal
+    ``$system`` / ``$libdir`` in Postgres.app's ``extension_control_path`` and
+    ``dynamic_library_path`` to empty strings -- the restarted server then cannot
+    find its own libraries. The options are therefore read here and passed back
+    shell-quoted (see :func:`shell_quoted_options`).
+    """
+    tokens = re.findall(r'"((?:[^"\\]|\\.)*)"', text)
+    if text.strip().startswith('"'):
+        tokens = tokens[1:]   # quoted binary path
+    options: List[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "-D":
+            skip_next = True
+            continue
+        options.append(token)
+    return options
+
+
+def shell_quoted_options(options: Sequence[str]) -> str:
+    """Join options for ``pg_ctl -o`` so the shell passes every character literally."""
+    return " ".join(shlex.quote(option) for option in options)
 
 
 def check_no_other_sessions(sessions: Sequence[Session], force: bool) -> None:
@@ -218,8 +250,16 @@ class ImportProfile:
                                          (list(ALLOWED_SETTINGS),)).fetchone()[0])
 
         def restart() -> None:
-            subprocess.run([str(bindir / PG_CTL_NAME), "restart", "-D", str(data_dir), "-m", "fast", "-w",
+            # Not `pg_ctl restart`: it replays postmaster.opts through a shell that
+            # expands Postgres.app's literal $system/$libdir. Read the options first,
+            # stop, then start with every option shell-quoted.
+            options = server_start_options((data_dir / POSTMASTER_OPTS_NAME).read_text(encoding="utf-8"))
+            pg_ctl = str(bindir / PG_CTL_NAME)
+            subprocess.run([pg_ctl, "stop", "-D", str(data_dir), "-m", "fast", "-w",
                             "-t", str(RESTART_TIMEOUT_S)], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run([pg_ctl, "start", "-D", str(data_dir), "-l", str(data_dir / SERVER_LOG_NAME),
+                            "-w", "-t", str(RESTART_TIMEOUT_S), "-o", shell_quoted_options(options)],
+                           check=True, stdout=subprocess.DEVNULL)
             for _ in range(RECONNECT_ATTEMPTS):
                 try:
                     with psycopg.connect(conninfo) as conn:
