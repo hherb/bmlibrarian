@@ -53,6 +53,10 @@ from bmlibrarian.database import get_db_manager
 
 logger = logging.getLogger(__name__)
 
+# CommentsCorrections/@RefType values (lower-cased) that mark a retraction link:
+# RetractionIn on the retracted article, RetractionOf on the retraction notice.
+RETRACTION_REF_TYPES = ('retractionin', 'retractionof')
+
 # Type alias for progress callback: (message: str) -> None
 ProgressCallback = Callable[[str], None]
 
@@ -924,16 +928,13 @@ class PubMedBulkImporter:
             metadata['publication_types'] = pub_types
         metadata['is_retracted'] = is_retracted
 
-        # 3. Check <CommentsCorrectionsList> for retraction references
-        pubmed_data = pubmed_article.find('.//PubmedData')
-        if pubmed_data is not None:
-            for correction in pubmed_data.findall(
-                './/CommentsCorrectionsList/CommentsCorrections'
-            ):
-                ref_type = correction.get('RefType', '')
-                if ref_type.lower() in ('retractionin', 'retractionof'):
-                    is_retracted = True
-                    metadata['is_retracted'] = True
+        # 3. Check <CommentsCorrectionsList> for retraction references.
+        # Per the PubMed DTD it is a child of MedlineCitation (not PubmedData).
+        for correction in medline.findall('CommentsCorrectionsList/CommentsCorrections'):
+            ref_type = correction.get('RefType', '')
+            if ref_type.lower() in RETRACTION_REF_TYPES:
+                is_retracted = True
+                metadata['is_retracted'] = True
 
         # 4. Extract author affiliations from <AffiliationInfo>
         author_affiliations = []
@@ -1000,7 +1001,9 @@ class PubMedBulkImporter:
             doi = None
             pubmed_data = article_elem.find('.//PubmedData')
             if pubmed_data is not None:
-                for article_id in pubmed_data.findall('.//ArticleIdList/ArticleId'):
+                # Direct child only: './/' would also reach the DOIs of cited
+                # references in ReferenceList/Reference/ArticleIdList.
+                for article_id in pubmed_data.findall('ArticleIdList/ArticleId'):
                     if article_id.get('IdType') == 'doi':
                         doi = article_id.text
                         break
@@ -1011,11 +1014,15 @@ class PubMedBulkImporter:
                 if mesh.text:
                     mesh_terms.append(mesh.text)
 
-            # Keywords
+            # Keywords: KeywordList is a child of MedlineCitation, not of Article.
             keywords = []
-            for keyword in article.findall('.//KeywordList/Keyword'):
-                if keyword.text:
-                    keywords.append(keyword.text)
+            for keyword in medline.findall('KeywordList/Keyword'):
+                text = self._get_element_text(keyword).strip()
+                if text:
+                    keywords.append(text)
+
+            # Revision date: orders revised records of the same PMID
+            date_revised = self._extract_date(medline.find('DateRevised'))
 
             # Extract transparency metadata (grants, publication types, affiliations)
             transparency_metadata = self._extract_transparency_metadata(
@@ -1033,6 +1040,7 @@ class PubMedBulkImporter:
                 'url': f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/',
                 'mesh_terms': mesh_terms,
                 'keywords': keywords,
+                'date_revised': date_revised,
                 'transparency_metadata': transparency_metadata,
             }
 
