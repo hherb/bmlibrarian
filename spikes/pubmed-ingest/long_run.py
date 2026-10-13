@@ -54,7 +54,20 @@ def has_search_vector(conn) -> bool:
                         "column_name = 'search_vector')").fetchone()[0]
 
 
-def prepare(fts: bool, fresh: bool, fastupdate: Optional[str]) -> None:
+BM25_TOKENIZER = "pdb.simple('stemmer=english', 'stopwords_language=English')"
+BM25_INDEX = (f"CREATE INDEX IF NOT EXISTS spike_doc_bm25 ON spike_ingest.document USING bm25 "
+              f"(id, (title::{BM25_TOKENIZER}), (abstract::{BM25_TOKENIZER})) WITH (key_field = 'id')")
+
+
+def bm25_consistency() -> Dict[str, int]:
+    """Rows in the table vs rows the pg_search index returns for match-all."""
+    with b.connect() as conn:
+        rows = conn.execute("SELECT count(*) FROM spike_ingest.document").fetchone()[0]
+        indexed = conn.execute("SELECT count(*) FROM spike_ingest.document WHERE id @@@ pdb.all()").fetchone()[0]
+    return {"table_rows": rows, "bm25_rows": indexed}
+
+
+def prepare(fts: bool, fresh: bool, fastupdate: Optional[str], bm25: bool = False) -> None:
     """Shape the table for the variant; optionally empty it (and the ledger).
 
     DDL runs only when something actually changes: even a no-op
@@ -68,6 +81,12 @@ def prepare(fts: bool, fresh: bool, fastupdate: Optional[str]) -> None:
             conn.execute("TRUNCATE spike_ingest.document, spike_ingest.document_metadata, "
                          "spike_ingest.ingest_ledger RESTART IDENTITY")
         present = has_search_vector(conn)
+        if bm25:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS pg_search CASCADE")
+            if present:
+                conn.execute("ALTER TABLE spike_ingest.document DROP COLUMN search_vector")
+            conn.execute(BM25_INDEX)
+            return
         if fts and not present:
             conn.execute(SEARCH_VECTOR)
             conn.execute(FTS_INDEX)
@@ -86,7 +105,10 @@ def prepare(fts: bool, fresh: bool, fastupdate: Optional[str]) -> None:
 def checkpoints() -> Dict[str, int]:
     """Cumulative checkpoint counters (requested = forced by WAL volume)."""
     with b.connect() as conn:
-        timed, req = conn.execute("SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter").fetchone()
+        if conn.info.server_version >= 170000:   # PG 17 moved these to pg_stat_checkpointer
+            timed, req = conn.execute("SELECT num_timed, num_requested FROM pg_stat_checkpointer").fetchone()
+        else:
+            timed, req = conn.execute("SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter").fetchone()
     return {"timed": timed, "requested": req}
 
 
@@ -163,6 +185,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--files", type=int, default=334)
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--fts", action="store_true", help="production shape with search_vector + GIN")
+    p.add_argument("--bm25", action="store_true", help="pg_search BM25 index instead of tsvector/GIN")
     p.add_argument("--fresh", action="store_true", help="empty table and ledger first")
     p.add_argument("--kill-after", type=float, default=20.0)
     p.add_argument("--fastupdate", choices=("on", "off"), help="GIN fastupdate for spike_doc_fts")
@@ -178,13 +201,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.mode == "run":
         profile = pg_import_profile.import_profile() if args.import_profile else contextlib.nullcontext()
         with profile:
-            prepare(args.fts, args.fresh, args.fastupdate)
+            prepare(args.fts, args.fresh, args.fastupdate, args.bm25)
             cp_before = checkpoints()
             started = time.perf_counter()
             subprocess.run(loader_cmd(args), check=True, env=loader_env())
             wall = time.perf_counter() - started
             cp_after = checkpoints()
-            print(json.dumps({"variant": "fts" if args.fts else "no-fts", "fastupdate": args.fastupdate,
+            extra = bm25_consistency() if args.bm25 else {}
+            print(json.dumps({"variant": "bm25" if args.bm25 else ("fts" if args.fts else "no-fts"),
+                              "fastupdate": args.fastupdate, **extra,
                               "import_profile": args.import_profile, "first": args.first,
                               "files": args.files, "wall_seconds": round(wall),
                               "checkpoints_timed": cp_after["timed"] - cp_before["timed"],
@@ -193,10 +218,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     # killtest: reference run, then an interrupted + resumed run of the same files.
-    prepare(args.fts, fresh=True, fastupdate=None)
+    prepare(args.fts, fresh=True, fastupdate=None, bm25=args.bm25)
     subprocess.run(loader_cmd(args), check=True, env=loader_env(), stdout=subprocess.DEVNULL)
     reference = id_set()
-    prepare(args.fts, fresh=True, fastupdate=None)
+    prepare(args.fts, fresh=True, fastupdate=None, bm25=args.bm25)
     proc = subprocess.Popen(loader_cmd(args), env=loader_env(), stdout=subprocess.DEVNULL)
     time.sleep(args.kill_after)
     proc.send_signal(signal.SIGKILL)
@@ -208,7 +233,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     result = {"files": args.files, "committed_files_at_kill": committed_at_kill,
               "rows_at_kill": rows_at_kill[0], "reference": reference, "after_resume": resumed,
               "no_loss_no_duplicates": resumed == reference and resumed[0] == resumed[1],
-              "ledger_files_after_resume": ledger_files()}
+              "ledger_files_after_resume": ledger_files(),
+              **({"bm25": bm25_consistency()} if args.bm25 else {})}
     print(json.dumps(result))
     return 0 if result["no_loss_no_duplicates"] else 1
 

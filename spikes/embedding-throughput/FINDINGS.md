@@ -67,3 +67,43 @@ runs. It reduces storage and index cost only.
   warm-up batch.
 - TEI (HF text-embeddings-inference) was not installed. It is candle-based, so
   on Metal it is likely to share candle's f32 limitation; that is unverified.
+
+## Follow-up (2026-10-13): Rust-native embedding in-process with llama.cpp
+
+**The question.** The owner remembered "a Rust implementation for fast
+embeddings". Research (crates.io/GitHub, Oct 2026) found:
+- That is most likely **fastembed-rs** (`fastembed` 7.1.1). Its built-in
+  "SnowflakeArcticEmbedL" is the **v1** model (BERT-large, English), whose
+  vectors are incompatible with ours; the v2.0 entry (PR #239) was closed
+  unmerged. It also runs ONNX Runtime, whose CoreML path is reported slow for
+  BERT-large on Apple Silicon.
+- HF text-embeddings-inference is server-only (best on CUDA).
+- model2vec-rs (static embeddings) uses a different vector space.
+- The strongest library candidate was **`llama-cpp-2` 0.1.159**: Rust
+  bindings to llama.cpp (the engine inside Ollama), with Metal and CUDA as
+  features.
+
+**The spike.** `llamacpp/`: tokenise, sort by length, pack up to 2 048
+tokens and 16 sequences per batch, CLS pooling inside llama.cpp, then the
+production step (256 d, L2). Same 2 000 abstracts. Ollama's 17-month-old blob
+no longer loads in current llama.cpp ("invalid gguf type for
+tokenizer.ggml.precompiled_charsmap"), so the model came from HF:
+`Casual-Autopsy/snowflake-arctic-embed-l-v2.0-gguf`.
+
+| Backend | Runs (docs/s) | Mean | 256-d cosine vs sentence-transformers (median / min) |
+|---|---|---|---|
+| `llama-cpp-2` F16, in-process, Metal | 37.4, 30.9, 29.0, 26.9 | ~31 | 0.99999 / 0.99965 |
+| PyTorch MPS fp16 (sentence-transformers) | 32.7, 31.7, 28.0, 28.4 | ~30 | 1.0 / 0.99969 |
+| `llama-cpp-2` Q8_0 | 35.1, 30.7 | ~33 | 0.99959 / 0.9992 |
+| Ollama F16 (HTTP, same engine, old build) | 26.7 | — | 0.99999 / 0.99965 |
+
+Larger batches brought no clear benefit (4 096 tokens / 32 sequences: 34.0;
+8 192 / 64: 29.0 docs/s). Runs drifted downward over the session (thermal),
+±10–15 %, so the two leading methods were alternated.
+
+**Verdict.** Rust in-process llama.cpp **matches PyTorch fp16** within noise,
+with essentially identical vectors, and beats Ollama's HTTP path. Q8_0 brings
+no speed gain and slightly lower agreement, so use **F16**. **Recommendation
+for the port:** embed in-process through `llama-cpp-2` (`metal` now, `cuda`
+later), with the GGUF pinned by repository + revision + sha256. No Python
+sidecar and no Ollama dependency for embeddings.

@@ -60,9 +60,11 @@ def connect() -> psycopg.Connection:
     dbname = os.environ.get("SPIKE_DB", ALLOWED_DATABASE)
     if dbname != ALLOWED_DATABASE:
         raise SystemExit(f"refusing to run against {dbname!r}; only {ALLOWED_DATABASE} is allowed")
+    # SPIKE_PG_PORT / SPIKE_PG_USER select another local server (e.g. PG 18 on :5532);
+    # the database is still forced to bmlibrarian_dev.
     return psycopg.connect(dbname=dbname, host=os.environ.get("POSTGRES_HOST", "localhost"),
-                           port=os.environ.get("POSTGRES_PORT", "5432"),
-                           user=os.environ.get("POSTGRES_USER"),
+                           port=os.environ.get("SPIKE_PG_PORT", os.environ.get("POSTGRES_PORT", "5432")),
+                           user=os.environ.get("SPIKE_PG_USER", os.environ.get("POSTGRES_USER")),
                            password=os.environ.get("POSTGRES_PASSWORD"))
 
 

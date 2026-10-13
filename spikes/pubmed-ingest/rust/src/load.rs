@@ -29,8 +29,8 @@ pub fn connection_string() -> Result<String> {
     let mut conn = format!(
         "host={} port={} dbname={db} user={}",
         get("POSTGRES_HOST", "localhost"),
-        get("POSTGRES_PORT", "5432"),
-        get("POSTGRES_USER", "postgres")
+        std::env::var("SPIKE_PG_PORT").unwrap_or_else(|_| get("POSTGRES_PORT", "5432")),
+        std::env::var("SPIKE_PG_USER").unwrap_or_else(|_| get("POSTGRES_USER", "postgres"))
     );
     if let Ok(pw) = std::env::var("POSTGRES_PASSWORD") {
         conn.push_str(&format!(" password='{}'", pw.replace('\'', "\\'")));

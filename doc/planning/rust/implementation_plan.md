@@ -32,7 +32,8 @@ Decided by the owner. Everything below follows from them.
 | Import-time server profile | Works: `shared_buffers` 32 GB and `max_wal_size` 64 GB during the import, restored afterwards; a state file keeps it across a kill and resume. Forced checkpoints dropped from ~6 per minute to 1–2 per 5 M rows. |
 | Vector indexing without multi-week builds | **Measured at full scale:** all 37.5 M production vectors (`halfvec(256)`) in 10 × 4 M partitions, built in 62 min as 10 restartable units (29 GB of HNSW, against 286 GB built in ~3 weeks before). Queries at `ef_search` 400 reach recall@100 0.984 at p50 145 ms / p95 210 ms (§9). Incremental inserts into an indexed partition run at only ~200 rows/s, so new vectors go to a small unindexed *open* partition. |
 | Vector type | `halfvec(256)` matches `vector(256)` on recall at 60 % of the index size. |
-| Embedding inference | Precision matters, language does not: fp16 PyTorch MPS 32.7 docs/s, Ollama F16 26.7, candle f32 10.5. Embedding stays an external service; the existing 37.5 M vectors are truncated, not recomputed (cosine 0.9987 against the HF model at 256 d). |
+| Embedding inference | Precision matters, language does not. **Rust in-process llama.cpp (`llama-cpp-2`, Metal, F16 GGUF) matches PyTorch MPS fp16**: ~31 against ~30 docs/s over 4 alternating runs, 256-d cosine 0.99999 against sentence-transformers. Both beat Ollama over HTTP (26.7); candle f32 is 10.5. The existing 37.5 M vectors are truncated, not recomputed (cosine 0.9987 against the HF model at 256 d). |
+| Lexical search (PG 18) | **pg_search BM25 (stemmed)**: nDCG@10 0.74–0.77 against 0.38–0.40 for `ts_rank_cd` on the PubMedQA sets, ~20× faster queries. Ingest is 3.7× cheaper than tsvector + GIN (17.1 k against 4.6 k rows/s) at 35 % less space, and the index stays consistent through SIGKILL/resume. Vectors stay the best single method; BM25 adds candidates (`spikes/bm25-pg18/FINDINGS.md`). |
 | Production importer defects | Author keywords always dropped (69 % of modern records have them), retraction cross-references never read, DOI lookup can return a reference's DOI, revision handling depends on arrival order, `all_keywords` unordered. |
 
 ## 2. Target architecture
@@ -42,21 +43,21 @@ Decided by the owner. Everything below follows from them.
  PubMed FTP/HTTPS ──▶│ ingest: fetch → parse (rayon) → COPY+merge (tokio) → ledger │
  medRxiv API ───────▶│        per-file transaction · import profile on/off          │
  Europe PMC / PMC OA▶│ fulltext: bmlib FullTextService (JATS first, then PDF)       │
-                     │ index:  chunk queue → embed service → open partition → seal  │
-                     │ search: hybrid SQL (BM25/tsvector + halfvec HNSW, RRF)       │
+                     │ index:  chunk queue → embed (llama.cpp) → open part. → seal  │
+                     │ search: hybrid SQL (pg_search BM25 + halfvec HNSW)           │
                      │ grade:  relevance (LLM) + bmlib quality tiers + transparency │
                      │ review: systematic-review workflow, reports (Typst)          │
                      │ api:    CLI · MCP server (rmcp) · later Tauri GUI            │
                      └───────────────┬──────────────────────────────┬──────────────┘
                                      │ SQL only                     │ HTTP
-                               PostgreSQL 18 (:5532)         embedding service
-                         (document, ledger, chunks,       (Ollama F16 or fp16 PyTorch
-                          partitioned halfvec, FTS)           sidecar), LLMs
+                               PostgreSQL 18 (:5532)              LLMs (bmlib)
+                         (document, ledger, chunks,       embeddings run in-process
+                          partitioned halfvec, BM25)       (llama.cpp, Metal/CUDA)
 ```
 
 ### Workspace layout
 
-A Cargo workspace at `rust/` **in this repository**, so that SQL migrations,
+A Cargo workspace at `rust/` **in this repository** (decided 2026-10-13), so that SQL migrations,
 the Python app (which keeps running during the migration) and the Rust code
 change together.
 
@@ -64,8 +65,8 @@ change together.
 |---|---|---|
 | `bml-db` | Pool (`deadpool-postgres`/`tokio-postgres`), migrations runner (reads `migrations/`), binary COPY helpers, import-profile switcher | pgvector crate |
 | `bml-ingest` | Source adapters (PubMed baseline/updates, medRxiv, Europe PMC, PMC OA), parsers, ledger, revision-aware merge | `bml-db`, bmlib `publications`, `fulltext` |
-| `bml-index` | Chunking, embedding-service client, vector partition manager (open/seal), FTS maintenance | `bml-db`, bmlib `llm` |
-| `bml-search` | Hybrid query builder (BM25 or tsvector + vectors + RRF), filters (date, type, source) | `bml-db` |
+| `bml-index` | Chunking, in-process embedder (`llama-cpp-2`, F16 GGUF pinned by sha256; `metal` / `cuda` features) behind a trait, vector partition manager (open/seal/compact) | `bml-db`, `llama-cpp-2` |
+| `bml-search` | Hybrid retrieval: vector top-K ∪ pg_search BM25 top-K as candidates, ordered by weighted RRF (vector 2×); filters (date, type, source) | `bml-db` |
 | `bml-grade` | Relevance scoring, study-design/quality tiers, transparency/bias | bmlib `quality`, `transparency`, `agents` |
 | `bml-review` | Review workflow (planner → search → screen → grade → synthesise → report), audit trail, checkpoints | the above, bmlib `citations`, `context_processor` |
 | `bml-cli` | `bml import …`, `bml index …`, `bml search …`, `bml review …`, `bml db profile …` | all |
@@ -86,12 +87,13 @@ with `bmlibrarian_dev` first, then `knowledgebase` with approval.
 Measured: no partitioning is needed for the document table. Ingest stayed
 flat to 30 M rows.
 
-- `ALTER INDEX idx_document_fts SET (fastupdate = off)`.
-- Keep the generated `search_vector`. With `fastupdate = off`, ingest with full
-  FTS ran at ~9.9 k rows/s (≈ 1.1 h for the baseline, *projected*), with no
-  stalls. **On PG 18, generated columns default to VIRTUAL**, which cannot be
-  indexed. Migrations must write `GENERATED ALWAYS AS (…) STORED` explicitly.
-  The column stays only if BM25 does not replace it (§3.4).
+- In the current Python app (Phase A, until cutover):
+  `ALTER INDEX idx_document_fts SET (fastupdate = off)`.
+- **Drop the generated `search_vector` and its GIN**; lexical search moves to
+  a `pg_search` index on `(id, title, abstract)`, stemmed (§3.4). Measured on
+  PG 18: 17.1 k rows/s ingest with BM25 against 4.6 k with tsvector + GIN. If
+  a generated column is ever needed, remember that **PG 18 makes generated
+  columns VIRTUAL by default**; write `STORED` explicitly.
 - Add `date_revised date` (from `MedlineCitation/DateRevised`). The merge
   updates only when `EXCLUDED.date_revised >= document.date_revised`, so the
   newest revision wins whatever the arrival order.
@@ -136,28 +138,30 @@ flat to 30 M rows.
 - Query embedding moves out of the plpython3u `ollama_embedding()` into the
   application.
 
-### 3.4 Full-text ranking (BM25 inside Postgres 18)
+### 3.4 Lexical search: pg_search BM25 (measured, recommended)
 
-- **Target: ParadeDB `pg_search`** (real BM25, a tantivy-based index inside
-  Postgres: no second system, updated transactionally and WAL-logged, so it
-  stays in sync). Prebuilt packages exist for Postgres.app 18 (macOS 15/26,
-  arm64). It needs `shared_preload_libraries = 'pg_search'` and, from 0.25,
-  pgvector. **It is not yet installed on the :5532 server;** installing it is an
-  owner action (`sudo installer -pkg …`), plus a restart.
-- **Before committing, run spike 0f:** `pg_search` against `ts_rank_cd`,
-  measuring
-  - ingest cost (index maintenance per file, resumability under SIGKILL,
-    index size);
-  - ranking quality, BM25-only and hybrid with the 256-d vectors (RRF), on the
-    BMLibrarian evaluation sets (PubMedQA source/graded, research
-    questions), which have qrels;
-  - query latency.
-- **Fallback:** `tsvector` + GIN (`fastupdate = off`, `STORED` column),
-  `ts_rank_cd`, RRF in SQL. Measured and works today.
-- If `pg_search` is adopted, the generated `search_vector` and its GIN can
-  be dropped from the ingest path. That would remove the largest Postgres-side
-  ingest cost found in Phase 0 (bare-table load 35.8 k/s against 9.3 k/s with
-  FTS; the gain depends on `pg_search`'s own index cost, which 0f measures).
+- **ParadeDB `pg_search` 0.26.1**, installed on :5532 (the Postgres.app
+  package) and preloaded via `shared_preload_libraries = 'pg_search'` in the
+  server's `postgresql.conf`, which Postgres.app merges into its launch flags.
+- **Index:** `CREATE INDEX … USING bm25 (id, (title::pdb.simple('stemmer=english',
+  'stopwords_language=English')), (abstract::…)) WITH (key_field = 'id')`.
+- **Query:** `WHERE abstract ||| :q ORDER BY pdb.score(id) DESC LIMIT k`, plus
+  the same on title.
+- **Measured** (`spikes/bm25-pg18/FINDINGS.md`):
+  - **Quality:** nDCG@10 0.74–0.77 against 0.38–0.40 for `ts_rank_cd` on
+    the PubMedQA sets; 0.32 against 0.06 on the research questions.
+  - **Speed:** queries take 3–6 ms against 60–112 ms.
+  - **Ingest:** 17.1 k rows/s against 4.6 k for tsvector + GIN (3.7×); 8.4
+    against 13 GB for 2.4 M rows.
+  - **Resumability:** after SIGKILL and resume, the index rows equal the
+    table rows.
+- **Retrieval design:** vectors are the best single method on every set, so
+  BM25 **adds candidates**. The candidate set for LLM scoring is vector top-K
+  ∪ BM25 top-K; display order is weighted RRF (vector 2×, measured +0.013
+  nDCG@10 on PubMedQA-source and neutral on the graded set). BM25 also covers
+  exact terms (gene and drug names, trial IDs).
+- `ts_rank_cd` / tsvector are retired. Their only advantage is that they need
+  no extension.
 
 ### 3.5 Server (Postgres.app 18.1 on :5532)
 
@@ -243,7 +247,8 @@ same database throughout.
 
 1. Fix the four importer defects (keywords, retraction cross-refs, DOI lookup,
    revision order) in `pubmed_bulk_importer.py`, with tests.
-2. Migration: GIN `fastupdate = off`; ordered `all_keywords`.
+2. Migration (for the Python app's current schema on :5432 until cutover):
+   GIN `fastupdate = off`; ordered `all_keywords`.
 3. Switch the importer to COPY + set-based merge + per-file ledger (≈ 6×).
 4. Add the import profile (port `pg_import_profile.py` into `src/`).
 
@@ -273,10 +278,10 @@ importer.
 1. pgvector update in dev; `semantic.emb256` + partition manager.
 2. A resumable truncated copy of the existing 37.5 M vectors; seal all
    partitions.
-3. Chunk queue → embedding service (Ollama F16 now, behind a trait) → open
-   partition → seal.
-4. Hybrid search SQL (tsvector + halfvec + RRF), filters; CLI `bml search` and
-   MCP tools.
+3. Chunk queue → in-process embedder (`llama-cpp-2`, F16 GGUF, behind a trait)
+   → open partition → seal.
+4. Hybrid retrieval (pg_search BM25 ∪ halfvec HNSW candidates, weighted RRF
+   order), filters; CLI `bml search` and MCP tools.
 5. Recall regression test: fixed query set + exact ground truth, run after
    each seal.
 
@@ -353,11 +358,12 @@ bml review run plan.toml                   # checkpointed; re-run resumes
 | Dual maintenance Python ↔ Rust ↔ bmlib | Strangler order; the Python app reads the same schema; parity oracles; generic pieces go to bmlib. |
 | Query latency grows with partition count | Measured: 10 × 4 M at p50 145 ms, against 38 × 1 M at p50 265 ms. Tiers plus compaction keep the count low; the open partition stays ≤ 250 k (+~90 ms at 200 k). |
 | Cold-cache latency (29 GB of HNSW; RAM goes to inference) | Measured first-pass p95 of 1.2–3.3 s. `pg_prewarm` the majors before review sessions; optionally include them in the import or review profile. |
-| GIN cost at 40 M+ rows | `fastupdate = off` measured; partition `document` only if a full-scale import shows degradation. |
+| BM25 index cost at 40 M+ rows | Measured flat to 2.4 M on PG 18 (relational ingest was flat to 30 M on PG 16); verify on the full re-import; partition `document` only if degradation appears. |
 | Embedding throughput (13.5 days for 38 M abstracts at fp16) | Reuse the existing 37.5 M vectors; embed only new chunks; a CUDA box optional. |
 | Disk space during the move (both databases on one volume; 523 GiB free) | Spike data already deleted; carry data over without unpaywall unless space is freed; consider an external volume; retire :5432 only after validation. |
 | ID remapping errors when carrying data to PG 18 | Map by `(source, external_id)`; count and report unmapped rows; checksum carried-over vectors against the source. |
-| `pg_search` maturity, and its index cost on ingest | Spike 0f before adoption; tsvector fallback stays measured and ready. |
+| `pg_search` maturity (pre-1.0; index format changes between versions) | Pin the version; reindex is a bounded, resumable job per table; tsvector + GIN remains a measured fallback. |
+| llama.cpp API and GGUF churn (Ollama's old GGUF no longer loads in current llama.cpp) | Pin `llama-cpp-2` and the GGUF (repository + revision + sha256); re-verify cosine against the reference on every upgrade. |
 | The import profile's restart affects other databases on :5532 | The importer warns, refuses while other databases have active sessions unless `--force`, and runs imports in scheduled windows. |
 | bmlib Rust lag (~10 issues behind Python) | Follow bmlib's "port in the same PR" rule for anything the app depends on. |
 
@@ -365,22 +371,22 @@ bml review run plan.toml                   # checkpointed; re-run resumes
 
 **Decided:**
 - PostgreSQL 18 (:5532) is the target and minimum.
+- Rust code lives in a `rust/` workspace in this repository.
+- `pg_search` 0.26.1 is installed and preloaded on :5532 (§3.4).
 - The plan as a whole is approved in principle (2026-10-13).
 
 **Still needed:**
-1. **Install `pg_search`** on :5532 (ParadeDB package for Postgres.app 18;
-   needs `sudo` and a restart). That enables spike 0f, BM25 against
-   `ts_rank_cd`.
-2. **Repository layout:** a `rust/` workspace in this repo (recommended), or a
-   new repository.
-3. **Phase A first** (fix the Python importer; recommended), targeting PG 18.
-4. **Embedding service:** Ollama F16 (simplest), or an fp16 PyTorch sidecar
-   (~20 % faster).
-5. **Partition design:** tiers with 4 M majors, a ≤ 250 k open partition and
+1. **Adopt pg_search as the only lexical index**, dropping tsvector + GIN
+   (recommended, measured in §3.4).
+2. **Phase A first** (fix the Python importer; recommended), targeting PG 18.
+3. **Embedding:** in-process `llama-cpp-2` (Rust, F16 GGUF; **recommended**,
+   measured at parity with PyTorch fp16 and faster than Ollama), or keep
+   Ollama.
+4. **Partition design:** tiers with 4 M majors, a ≤ 250 k open partition and
    compaction (recommended, measured in §9), or 1 M partitions.
-6. **Data carry-over scope:** is unpaywall (158 GB) still needed? It decides
+5. **Data carry-over scope:** is unpaywall (158 GB) still needed? It decides
    the disk plan (§3.6).
-7. **PG 18 access:** create an application role, or use `hherb`.
+6. **PG 18 access:** create an application role, or use `hherb`.
 
 ## 9. Full-scale vector run (all 37 478 552 production vectors, measured 2026-10-13)
 
