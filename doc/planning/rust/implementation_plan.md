@@ -245,6 +245,24 @@ same database throughout.
 
 ### Phase A — quick wins in the current Python app (independent of the port)
 
+**Status (2026-10-13): items 1–4 implemented and committed.**
+- Parse defects fixed (keywords 0 % → 68–69 %, retraction cross-references,
+  own DOI only, `date_revised`).
+- Migration 031: `ingest.ledger`, `date_revised`, ordered `all_keywords`,
+  GIN `fastupdate = off`.
+- Write path: COPY + revision-aware merge, one transaction per file,
+  resumable.
+- Parallel workers (`--workers`): measured 2 729 articles/s with 8 workers
+  against 782/s single-process, on PG 18 with default settings.
+- Import profile (`--import-profile`, `profile status|apply|restore`).
+- `BMLIBRARIAN_ENV_FILE` env selection.
+- Docs: `doc/users/pubmed_bulk_import_guide.md`,
+  `doc/developers/pubmed_bulk_import_system.md`.
+
+**Open:** the exit-criterion run (full baseline + updates into a PG 18 dev
+database), and a live import-profile test on :5532, which was refused because
+localmail clients were connected, as designed.
+
 1. Fix the four importer defects (keywords, retraction cross-refs, DOI lookup,
    revision order) in `pubmed_bulk_importer.py`, with tests.
 2. Migration (for the Python app's current schema on :5432 until cutover):

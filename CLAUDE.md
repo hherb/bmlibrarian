@@ -101,7 +101,9 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_import_cli.py status` - Show PubMed import statistics
   - `uv run python pubmed_bulk_cli.py download-baseline` - Download complete PubMed baseline (~38M articles, ~400GB, for offline mirroring)
   - `uv run python pubmed_bulk_cli.py download-updates` - Download PubMed daily update files (new articles + metadata updates)
-  - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting)
+  - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting); resumable (re-run continues, `ingest.ledger`), `--workers N` (default 8), `--import-profile` borrows server RAM during the import and restores settings afterwards
+  - `uv run python pubmed_bulk_cli.py profile status|apply|restore` - Inspect/recover the server import profile
+  - `BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18 uv run python ...` - Select the database env file explicitly (no silent fallback)
   - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
   - `uv run python pubmed_repair_cli.py scan` - Scan downloaded PubMed files for gzip corruption
