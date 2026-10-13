@@ -1,6 +1,7 @@
 # BMLibrarian in Rust — feasibility and port plan
 
-Status: **exploration**, started 2026-10-12. Phase 0 measurements were
+Status: **exploration**, started 2026-10-12. The resulting plan:
+[`implementation_plan.md`](implementation_plan.md). Phase 0 measurements were
 completed on 2026-10-12; see [Phase 0 results](#phase-0-results-2026-10-12)
 and `spikes/*/FINDINGS.md`.
 
@@ -391,11 +392,12 @@ backend agrees to cosine ≥ 0.9995.
    backpressure, a single binary, and bmlib Rust for grading. The measured
    speed-ups are modest once the Python design is fixed. If the port stalls,
    the same 5.8× is available in Python by changing the write pattern.
-2. **Keep FTS in Postgres, off the critical path** (superseded the earlier
-   tantivy idea, per constraint 2). The tsvector is filled by a resumable
-   queue rather than a generated column, so ingest stays fast and the FTS
-   work can be paused. Partitioning keeps each GIN small. Whether a BM25
-   extension is worth building for Postgres.app is to be evaluated.
+2. **Keep FTS in Postgres** (per constraint 2; the earlier tantivy idea is
+   superseded). After the GIN test, keep the generated `search_vector` and set
+   the GIN to `fastupdate = off`: ingest with full FTS ran at ~9.9 k rows/s
+   without stalls, so a queue-filled tsvector is unnecessary. Real BM25 via
+   ParadeDB `pg_search` is possible only on Postgres.app 18, so it is an open
+   decision (see `implementation_plan.md` §3.4).
 3. **Embedding stays a service behind a trait**, in half precision: Ollama now
    (already F16), or an fp16 PyTorch sidecar if throughput matters more.
    candle is revisited only if it gains f16 for XLM-R. Vectors are stored at

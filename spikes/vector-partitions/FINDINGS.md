@@ -97,3 +97,74 @@ inserts, but a large factor is unlikely to close the gap.
   HNSW builds use `maintenance_work_mem` (8 GB, session-level), not
   `shared_buffers`.
 - Query latency was measured on a warm cache, from one client, serially.
+
+## 6. Full production scale (2026-10-13): all 37 478 552 vectors, `halfvec(256)`
+
+Run with `full_scale.py`, every step resumable:
+- **Extraction:** keyset-paginated 1 M shards from `knowledgebase`, READ ONLY,
+  in 1 177 s (≈ 20 min).
+- **Load:** COPY BINARY, one transaction per shard plus a ledger row; about
+  5 min for both layouts.
+- **Builds:** one `CREATE INDEX` per partition; a partition is skipped if its
+  index already exists.
+
+Queries: the same 300 real PubMedQA questions; exact top-100 over all 37.5 M
+computed with numpy in 104 s. Server on day-to-day settings (`shared_buffers`
+128 MB), so index pages come from the OS page cache.
+
+### Builds
+
+| Layout | Partitions | Total build | Median per partition | Max | HNSW total |
+|---|---|---|---|---|---|
+| 1 M rows/partition | 38 | 4 685 s (78 min) | 90.5 s | 1 296 s* | 29.0 GB |
+| 4 M rows/partition | 10 | 3 717 s (62 min) | 380 s | 487 s | 29.0 GB |
+
+\* Partition p017 took 1 296 s once, but **88 s when rebuilt alone**. pg_stat
+shows insert-triggered autovacuum on the freshly loaded partitions at the
+same moment. **Seal step rule: `VACUUM (ANALYZE)` the partition explicitly
+before `CREATE INDEX`**, so no autovacuum competes with the build.
+
+Compared with the old 1024-d index: 286 GB, built in ~3 weeks in one
+uninterruptible step. Now: 29 GB, ~1 h, in 10–38 units that can each be
+redone.
+
+### Recall and latency (warm)
+
+| Layout | `ef_search` | recall@10 | recall@100 | p50 | p95 |
+|---|---|---|---|---|---|
+| 38 × 1 M | 200 | 0.993 | 0.985 | 265 ms | 355 ms |
+| 38 × 1 M | 400 | 0.997 | 0.992 | 451 ms | 581 ms |
+| 10 × 4 M | 200 | 0.979 | 0.971 | 123 ms | 194 ms |
+| **10 × 4 M** | **400** | **0.989** | **0.984** | **145 ms** | **210 ms** |
+
+The first `ef_search` series for each layout (not shown) ran on a cold cache:
+p95 of 1.2–3.3 s. With 29 GB of index and RAM given to inference,
+**cold-cache latency is the practical risk**; `pg_prewarm` before a review
+session is an option.
+
+The historical reference is a documented 263 s query on the 1024-d index.
+
+### Open partition (unindexed, 200 k rows, attached to the 1 M layout)
+
+| Query | p50 | p95 |
+|---|---|---|
+| Open partition alone (exact, parallel seq scan) | 26 ms | 29 ms |
+| 38 sealed + open, `ef_search` 200 | 357 ms | 453 ms (vs 265 / 355 without) |
+
+Attached under the partitioned parent, the open partition adds ~90 ms: it is
+scanned without the parallel plan it gets on its own. Keep it small.
+
+### Conclusion: tiered partitions
+
+1. **Major partitions of 4 M rows** with HNSW (build ~6–8 min each, bounded
+   and restartable). Query with `ef_search = 400`: recall@100 0.984 at p50
+   145 ms over all 37.5 M vectors.
+2. **One open partition of ≤ 250 k rows** without an index (exact scan; new
+   embeddings land here at COPY speed).
+3. **When the open partition is full**, seal it as a *minor* partition
+   (`VACUUM ANALYZE`, then HNSW build: ≤ ~30 s at 250 k, by linear scaling
+   from the measured 1 M build).
+4. **Compaction:** when minors add up to 4 M rows, build one new 4 M major
+   offline (a separate table, ~6–8 min, restartable), then swap it in a
+   single transaction (DETACH the minors, ATTACH the major). Queries never
+   see a half-built index; an interrupted compaction is simply restarted.
