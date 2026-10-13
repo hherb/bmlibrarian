@@ -259,9 +259,24 @@ same database throughout.
 - Docs: `doc/users/pubmed_bulk_import_guide.md`,
   `doc/developers/pubmed_bulk_import_system.md`.
 
-**Open:** the exit-criterion run (full baseline + updates into a PG 18 dev
-database), and a live import-profile test on :5532, which was refused because
-localmail clients were connected, as designed.
+**Baseline exit run (2026-10-13/14), PG 18 :5532, `bmlibrarian_dev`:**
+- All 1 334 baseline files are in `ingest.ledger`: 39 994 988 records,
+  10.5 h summed import time (8 workers, import profile active), 0 import
+  errors.
+- **Imports ran while files were still downloading**, in 30-minute rounds that
+  each skipped committed files, so the import was effectively stopped and
+  resumed about 20 times. The final run restored the day-to-day settings
+  (shared_buffers 128 MB, max_wal_size 1 GB).
+- Keywords: 70.5 % of records from 2020 on, 38.5 % for the 2010s, 1–2 % for
+  the 1990s and 2000s (author keywords were rare then). 32.3 % overall.
+- 59 958 records flagged as retracted; `date_revised` on 100 %.
+- **Downloads moved from FTP to HTTPS** (`importers/ncbi_https.py`). The NCBI
+  FTP stream was found to rewind mid-transfer and deliver oversized or
+  corrupted files; HTTPS with `.part` + Range resume + NCBI MD5 checks
+  downloaded all 1 334 files (51 GB) without a single checksum failure.
+  **Phase B's downloader must also use HTTPS with MD5 checks, not FTP.**
+
+**Open:** the update files (`sync --updates-only`).
 
 1. Fix the four importer defects (keywords, retraction cross-refs, DOI lookup,
    revision order) in `pubmed_bulk_importer.py`, with tests.
@@ -278,7 +293,7 @@ modern records.
 
 1. Workspace, CI (fmt, clippy, tests), and the migrations runner reading
    `migrations/`.
-2. PubMed baseline + daily updates: download with checksums (resumable), the
+2. PubMed baseline + daily updates: HTTPS download with NCBI MD5 checks (resumable, no FTP), the
    parser (from the spike, defects fixed), revision-aware merge, ledger,
    import profile.
 3. **Parity harness:** Rust vs the fixed Python parser on a sample of files,
