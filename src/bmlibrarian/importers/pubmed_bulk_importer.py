@@ -1,8 +1,9 @@
 """
-PubMed Bulk Importer - FTP-based complete mirror system
+PubMed Bulk Importer - complete local PubMed mirror
 
-This module provides FTP-based bulk downloading and importing of PubMed
-baseline and update files for maintaining a complete local PubMed mirror.
+This module downloads (over HTTPS, MD5-verified and resumable; see
+ncbi_https.py for why not FTP) and imports PubMed baseline and update files
+for maintaining a complete local PubMed mirror.
 
 Unlike the E-utilities importer (pubmed_importer.py) which is designed for
 targeted imports, this bulk importer:
@@ -34,7 +35,6 @@ Usage:
     importer.import_files()
 """
 
-import ftplib
 import gzip
 import hashlib
 import multiprocessing
@@ -50,10 +50,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict, List, Tuple, Callable
-import backoff
 from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
+from .ncbi_https import NCBI_HTTPS_BASE_URL, HttpsDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -525,17 +525,17 @@ class ImportQueue:
 
 
 class PubMedBulkImporter:
-    """FTP-based PubMed bulk downloader and importer."""
+    """PubMed bulk downloader (HTTPS, MD5-verified) and importer."""
 
-    FTP_HOST = 'ftp.ncbi.nlm.nih.gov'
-    BASELINE_PATH = '/pubmed/baseline'
-    UPDATE_PATH = '/pubmed/updatefiles'
+    BASELINE_URL = f'{NCBI_HTTPS_BASE_URL}/pubmed/baseline/'
+    UPDATE_URL = f'{NCBI_HTTPS_BASE_URL}/pubmed/updatefiles/'
 
     def __init__(
         self,
         data_dir: Optional[str] = None,
         use_tracking: bool = True,
         db_manager: Optional[Any] = None,
+        downloader: Optional[HttpsDownloader] = None,
     ):
         """
         Initialize PubMed bulk importer.
@@ -544,6 +544,7 @@ class PubMedBulkImporter:
             data_dir: Directory for storing downloaded files (default: ~/knowledgebase/pubmed_data)
             use_tracking: Whether to use database tracking (default: True)
             db_manager: DatabaseManager to use (default: the shared get_db_manager()).
+            downloader: HTTPS downloader to use (default: a new HttpsDownloader).
         """
         self.data_dir = Path(data_dir or os.path.expanduser('~/knowledgebase/pubmed_data'))
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -556,6 +557,7 @@ class PubMedBulkImporter:
         self.use_tracking = use_tracking
         self.tracker = DownloadTracker() if use_tracking else None
         self.db_manager = db_manager if db_manager is not None else get_db_manager()
+        self.downloader = downloader if downloader is not None else HttpsDownloader()
 
         # Get PubMed source_id
         with self.db_manager.get_connection() as conn:
@@ -568,207 +570,111 @@ class PubMedBulkImporter:
 
         logger.info(f"Initialized PubMed bulk importer with data_dir: {self.data_dir}")
 
-    @backoff.on_exception(
-        backoff.expo,
-        (ftplib.error_temp, EOFError, ConnectionResetError, TimeoutError),
-        max_tries=3
-    )
-    def _create_ftp_connection(self) -> ftplib.FTP:
-        """Create FTP connection with retry logic."""
-        logger.debug(f"Connecting to {self.FTP_HOST}")
-        ftp = ftplib.FTP(self.FTP_HOST, timeout=120)
-        ftp.login()  # Anonymous login
-        ftp.set_pasv(True)
-
-        # Set socket keepalive (platform-specific options)
-        import socket
-        import sys
-        sock = ftp.sock
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-        # TCP keepalive options differ between platforms
-        if sys.platform == 'darwin':
-            # macOS: TCP_KEEPALIVE sets the idle time before keepalive probes
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60)
-        elif sys.platform.startswith('linux'):
-            # Linux: TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-        # Windows: keepalive options set differently, SO_KEEPALIVE alone is sufficient
-
-        return ftp
-
-    def _get_remote_file_list(self, ftp: ftplib.FTP, path: str) -> List[Tuple[str, int]]:
-        """Get list of XML files from FTP directory."""
-        ftp.cwd(path)
-        files = []
-
-        # Parse MLSD output for file names and sizes
-        for name, facts in ftp.mlsd():
-            if name.endswith('.xml.gz') and name.startswith('pubmed'):
-                size = int(facts.get('size', 0))
-                files.append((name, size))
-
-        return sorted(files)
-
-    def _calculate_checksum(self, filepath: Path) -> str:
-        """Calculate MD5 checksum of file."""
-        md5 = hashlib.md5()
-        with open(filepath, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                md5.update(chunk)
-        return md5.hexdigest()
-
-    def _download_file(
-        self,
-        ftp: ftplib.FTP,
-        filename: str,
-        dest_path: Path,
-        expected_size: int,
-        max_retries: int = 5,
-        current_path: str = None,
-        progress_callback: Optional[ProgressCallback] = None
-    ) -> Tuple[bool, ftplib.FTP]:
+    def _needs_download(self, filename: str, dest_path: Path, skip_existing: bool) -> bool:
         """
-        Download file from FTP with resume capability.
+        Whether a remote file still has to be downloaded.
+
+        A file is skipped only if the tracker records it as downloaded *and* it
+        is still on disk (files at their final name are always MD5-verified).
+        """
+        if not skip_existing or not dest_path.exists():
+            return True
+        return not (self.tracker and self.tracker.is_file_downloaded(filename))
+
+    def _download_one(
+        self,
+        filename: str,
+        directory_url: str,
+        dest_dir: Path,
+        file_type: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Optional[Path]:
+        """
+        Download one file over HTTPS, verify its MD5 and record it in the tracker.
 
         Args:
-            ftp: FTP connection
-            filename: Name of file to download
-            dest_path: Local destination path
-            expected_size: Expected file size in bytes
-            max_retries: Maximum retry attempts
-            current_path: Current FTP directory path for reconnection
-            progress_callback: Optional callback for progress messages
+            filename: Remote file name (from the directory listing).
+            directory_url: Remote directory URL ending in ``/``.
+            dest_dir: Local directory.
+            file_type: 'baseline' or 'update' (tracker category).
+            progress_callback: Optional callback for progress messages.
 
         Returns:
-            Tuple of (success: bool, ftp: FTP connection - may be new if reconnected)
+            The local path of the verified file, or None if the download failed.
         """
-        for attempt in range(max_retries):
-            try:
-                # Test connection health before attempting download
-                try:
-                    ftp.voidcmd('NOOP')
-                except Exception:
-                    logger.info(f"{filename}: Connection stale, reconnecting...")
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                # Check if partial download exists
-                start_pos = dest_path.stat().st_size if dest_path.exists() else 0
+        url = directory_url + filename
+        dest_path = dest_dir / filename
+        try:
+            expected_md5 = self.downloader.fetch_md5(url)
+            if not self.downloader.download(url, dest_path, expected_md5, progress_callback):
+                return None
+        except Exception as e:
+            logger.error(f"{filename}: download failed: {e}")
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD ERROR] {filename}: {e}")
+            return None
+        if self.tracker:
+            self.tracker.mark_downloaded(filename, file_type, dest_path.stat().st_size, expected_md5)
+        return dest_path
 
-                if start_pos == expected_size:
-                    logger.info(f"{filename}: Already downloaded ({expected_size} bytes)")
-                    return True, ftp
-                elif start_pos > expected_size:
-                    logger.warning(f"{filename}: Local file larger than expected, redownloading")
-                    dest_path.unlink()
-                    start_pos = 0
+    def _download_directory(
+        self,
+        directory_url: str,
+        dest_dir: Path,
+        file_type: str,
+        skip_existing: bool = True,
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None,
+        on_downloaded: Optional[Callable[[Path], None]] = None,
+        files: Optional[List[str]] = None,
+    ) -> Tuple[int, int]:
+        """
+        Download every data file of a remote directory that is not yet present.
 
-                # Open file for appending
-                mode = 'ab' if start_pos > 0 else 'wb'
-                if start_pos > 0:
-                    start_mb = start_pos / (1024 * 1024)
-                    msg = f"{filename}: Resuming from {start_mb:.1f} MB"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {msg}")
-                else:
-                    logger.info(f"{filename}: Downloading ({expected_size} bytes)")
+        Args:
+            directory_url: Remote directory URL ending in ``/``.
+            dest_dir: Local directory.
+            file_type: 'baseline' or 'update'.
+            skip_existing: Skip files already downloaded (default: True).
+            progress_callback: Optional callback for progress messages.
+            cancel_check: Optional callback to check if operation should be cancelled.
+            on_downloaded: Optional callback receiving each newly verified file.
+            files: Remote file names if already listed (default: list the directory).
 
-                with open(dest_path, mode) as f:
-                    # Resume from position - must be in binary mode
-                    if start_pos > 0:
-                        ftp.voidcmd('TYPE I')  # Switch to binary mode for REST
-                        ftp.sendcmd(f'REST {start_pos}')
+        Returns:
+            (files downloaded, files failed).
+        """
+        if files is None:
+            files = self.downloader.list_files(directory_url)
+        total_files = len(files)
+        logger.info(f"Found {total_files} {file_type} files at {directory_url}")
+        if progress_callback:
+            progress_callback(f"[INIT] Found {total_files} {file_type} files on server")
 
-                    # Download with progress
-                    downloaded = start_pos
-
-                    def callback(chunk):
-                        nonlocal downloaded
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if downloaded % (1024 * 1024 * 10) == 0:  # Every 10MB
-                            logger.debug(f"{filename}: {downloaded}/{expected_size} bytes")
-
-                    ftp.retrbinary(f'RETR {filename}', callback, blocksize=65536)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                # Verify size
-                actual_size = dest_path.stat().st_size
-                if actual_size != expected_size:
-                    logger.error(f"{filename}: Size mismatch ({actual_size} != {expected_size})")
-                    if attempt < max_retries - 1:
-                        logger.info(f"Retrying download (attempt {attempt + 2}/{max_retries})")
-                        time.sleep(5 * (attempt + 1))  # Exponential backoff
-                        continue
-                    return False, ftp
-
-                # Verify gzip integrity by reading entire file (checks CRC32)
-                try:
-                    with gzip.open(dest_path, 'rb') as gz:
-                        while gz.read(65536):  # Read in 64KB chunks to verify full file
-                            pass
-                    logger.info(f"{filename}: Download complete and verified")
-                    return True, ftp
-                except Exception as e:
-                    logger.error(f"{filename}: Gzip verification failed: {e}")
-                    if attempt < max_retries - 1:
-                        dest_path.unlink()
-                        time.sleep(5 * (attempt + 1))  # Exponential backoff
-                        continue
-                    return False, ftp
-
-            except (BrokenPipeError, ConnectionResetError, EOFError, TimeoutError,
-                    ftplib.error_temp, ftplib.error_reply) as e:
-                # Connection-related errors - always reconnect
-                logger.error(f"{filename}: Connection error: {e}")
-                if attempt < max_retries - 1:
-                    retry_delay = 10 * (attempt + 1)  # Exponential backoff: 10, 20, 30, 40 seconds
-                    msg = f"{filename}: Connection error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
-                    time.sleep(retry_delay)
-                    # Create fresh connection
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                    continue
-                return False, ftp
-
-            except Exception as e:
-                logger.error(f"{filename}: Download error: {e}")
-                if attempt < max_retries - 1:
-                    retry_delay = 5 * (attempt + 1)
-                    msg = f"{filename}: Error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
-                    time.sleep(retry_delay)
-                    # Create fresh connection for safety
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                    continue
-                return False, ftp
-
-        return False, ftp
+        downloaded = failed = 0
+        for idx, filename in enumerate(files, 1):
+            if cancel_check and cancel_check():
+                if progress_callback:
+                    progress_callback("[DOWNLOAD] Cancelled by user")
+                break
+            if not self._needs_download(filename, dest_dir / filename, skip_existing):
+                logger.debug(f"{filename}: Already downloaded, skipping")
+                continue
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename}")
+            path = self._download_one(filename, directory_url, dest_dir, file_type, progress_callback)
+            if path is None:
+                failed += 1
+                logger.error(f"{filename}: Download failed after all retries")
+                if progress_callback:
+                    progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
+                continue
+            downloaded += 1
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD] {filename}: Complete (MD5 verified)")
+            if on_downloaded:
+                on_downloaded(path)
+        return downloaded, failed
 
     def download_baseline(
         self,
@@ -777,7 +683,7 @@ class PubMedBulkImporter:
         cancel_check: Optional[CancelCheck] = None
     ) -> int:
         """
-        Download PubMed baseline files.
+        Download PubMed baseline files (HTTPS, MD5-verified, resumable).
 
         Args:
             skip_existing: Skip files already downloaded (default: True)
@@ -788,68 +694,17 @@ class PubMedBulkImporter:
             Number of files downloaded
         """
         logger.info("Starting baseline download")
+        downloaded, failed = self._download_directory(
+            self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
+            progress_callback, cancel_check)
+        logger.info(f"Baseline download complete: {downloaded} files downloaded, {failed} failed")
         if progress_callback:
-            progress_callback("[DOWNLOAD] Connecting to NCBI FTP server...")
-
-        ftp = self._create_ftp_connection()
-        ftp.cwd(self.BASELINE_PATH)
-        downloaded = 0
-
-        try:
-            files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
-            total_files = len(files)
-            logger.info(f"Found {total_files} baseline files")
-            if progress_callback:
-                progress_callback(f"[INIT] Found {total_files} baseline files on server")
-
-            for idx, (filename, size) in enumerate(files, 1):
-                # Check for cancellation
-                if cancel_check and cancel_check():
-                    if progress_callback:
-                        progress_callback("[DOWNLOAD] Cancelled by user")
-                    break
-
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                # Format size for display
-                size_mb = size / (1024 * 1024)
-                if progress_callback:
-                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
-
-                dest_path = self.baseline_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.BASELINE_PATH,
-                    progress_callback=progress_callback
-                )
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
-                    downloaded += 1
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {filename}: Complete (verified)")
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
-
-        finally:
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
-        logger.info(f"Baseline download complete: {downloaded} files downloaded")
-        if progress_callback:
-            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded")
+            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded, {failed} failed")
         return downloaded
 
     def download_updates(self, skip_existing: bool = True) -> int:
         """
-        Download PubMed update files.
+        Download PubMed update files (HTTPS, MD5-verified, resumable).
 
         Args:
             skip_existing: Skip files already downloaded (default: True)
@@ -858,39 +713,9 @@ class PubMedBulkImporter:
             Number of files downloaded
         """
         logger.info("Starting update files download")
-        ftp = self._create_ftp_connection()
-        ftp.cwd(self.UPDATE_PATH)
-        downloaded = 0
-
-        try:
-            files = self._get_remote_file_list(ftp, self.UPDATE_PATH)
-            logger.info(f"Found {len(files)} update files")
-
-            for filename, size in files:
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                dest_path = self.update_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.UPDATE_PATH
-                )
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'update', size, checksum)
-                    downloaded += 1
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-
-        finally:
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
-        logger.info(f"Update files download complete: {downloaded} files downloaded")
+        downloaded, failed = self._download_directory(
+            self.UPDATE_URL, self.update_dir, 'update', skip_existing)
+        logger.info(f"Update files download complete: {downloaded} files downloaded, {failed} failed")
         return downloaded
 
     def _get_element_text(self, elem: Optional[ET.Element]) -> str:
@@ -1821,25 +1646,16 @@ class PubMedBulkImporter:
         }
 
         if progress_callback:
-            progress_callback("[INIT] Connecting to NCBI FTP server...")
+            progress_callback("[INIT] Listing NCBI baseline files...")
 
-        # Get list of remote files
-        ftp = self._create_ftp_connection()
         try:
-            remote_files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
-            total_files = len(remote_files)
-            logger.info(f"Found {total_files} baseline files on server")
-            if progress_callback:
-                progress_callback(f"[INIT] Found {total_files} baseline files on server")
+            remote_files = self.downloader.list_files(self.BASELINE_URL)
         except Exception as e:
             logger.error(f"Failed to get file list: {e}")
             if progress_callback:
                 progress_callback(f"[ERROR] Failed to get file list: {e}")
-            try:
-                ftp.quit()
-            except Exception:
-                pass
             raise
+        total_files = len(remote_files)
 
         # Create import queue
         import_queue = ImportQueue(start_from=1)
@@ -1885,57 +1701,17 @@ class PubMedBulkImporter:
         logger.info("Import worker thread started")
 
         # Download files in main thread
+        def queue_for_import(path: Path) -> None:
+            stats['files_downloaded'] += 1
+            import_queue.add_downloaded(path)
+
         try:
-            downloaded = 0
-            for idx, (filename, size) in enumerate(remote_files, 1):
-                # Check for cancellation
-                if cancel_check and cancel_check():
-                    if progress_callback:
-                        progress_callback("[DOWNLOAD] Cancelled by user")
-                    break
-
-                # Skip if already downloaded
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                # Report download progress
-                size_mb = size / (1024 * 1024)
-                if progress_callback:
-                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
-
-                dest_path = self.baseline_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.BASELINE_PATH,
-                    progress_callback=progress_callback
-                )
-
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
-                    downloaded += 1
-                    stats['files_downloaded'] += 1
-
-                    # Add to import queue
-                    import_queue.add_downloaded(dest_path)
-
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {filename}: Complete (queued for import)")
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
-                    stats['total_errors'] += 1
-
+            _downloaded, failed = self._download_directory(
+                self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
+                progress_callback, cancel_check, on_downloaded=queue_for_import,
+                files=remote_files)
+            stats['total_errors'] += failed
         finally:
-            # Close FTP connection
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
             # Signal download completion
             import_queue.mark_download_complete()
             if progress_callback:

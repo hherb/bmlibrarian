@@ -3,7 +3,7 @@
 PubMed Bulk Import CLI for BMLibrarian
 
 Command-line interface for downloading and importing complete PubMed baseline
-and update files via FTP. This tool enables maintaining a complete local PubMed
+and update files (over HTTPS, MD5-verified, resumable). This tool enables maintaining a complete local PubMed
 mirror with offline capability.
 
 Usage:

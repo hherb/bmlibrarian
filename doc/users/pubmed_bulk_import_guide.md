@@ -2,7 +2,7 @@
 
 `pubmed_bulk_cli.py` keeps a local mirror of PubMed: it downloads the annual
 baseline (about 1 300 files, about 38 M records) and the daily update files
-from the NCBI FTP server, and imports them into the BMLibrarian database.
+from the NCBI file server, and imports them into the BMLibrarian database.
 
 ## Quick start
 
@@ -25,6 +25,24 @@ its environment file. See "Database Environment File" in
 ```bash
 BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18 uv run python pubmed_bulk_cli.py import --type baseline
 ```
+
+## Downloads
+
+Files are downloaded over HTTPS from `https://ftp.ncbi.nlm.nih.gov/pubmed/`.
+Each file is checked against the MD5 checksum NCBI publishes next to it, and
+only a verified file is given its final name. While a file is in progress it is
+called `<name>.part`; an interrupted download continues where it stopped on
+the next run. You can therefore stop a download at any time, and you can import
+while a download is still running, because the importer only sees verified
+files.
+
+A file that is still wrong after five attempts is reported and skipped; run
+the download again later to fetch it.
+
+> Earlier versions downloaded over FTP. In October 2026 the NCBI FTP service
+> was found to re-send parts of files mid-transfer, which produced oversized
+> or corrupted files. Files left over from an FTP download are checked against
+> NCBI's MD5 and replaced if they don't match.
 
 ## Stopping and resuming
 
@@ -110,4 +128,6 @@ retraction cross-references.
 | `BMLIBRARIAN_ENV_FILE=… does not exist` | The named env file is missing; fix the path (there is deliberately no fallback). |
 | `other client session(s) would be dropped by the restart` | Another application is connected to the server; close it, or use `--force-profile`. |
 | `the import profile needs a superuser connection` | Use a superuser role, or import without `--import-profile`. |
+| `MD5 mismatch after transfer` in the download log | The transfer was damaged; it is retried automatically (up to five times per file). |
+| `XML parsing error` / gzip error during import | The file is incomplete or damaged; nothing from it was stored. Run the download again (it replaces files that fail the MD5 check), then the import. |
 | Import restarts files you thought were done | Only files whose transaction committed are in `ingest.ledger`; files that were in progress are redone, as designed. |

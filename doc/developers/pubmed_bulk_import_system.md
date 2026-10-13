@@ -1,10 +1,42 @@
 # PubMed Bulk Import — Developer Notes
 
-Code: `src/bmlibrarian/importers/pubmed_bulk_importer.py`,
+Code: `src/bmlibrarian/importers/pubmed_bulk_importer.py`, `src/bmlibrarian/importers/ncbi_https.py`,
 `src/bmlibrarian/db_import_profile.py`, `src/bmlibrarian/env_loader.py`, CLI
 `pubmed_bulk_cli.py`. Schema: `migrations/031_ingest_ledger_and_revisions.sql`.
 Background and measurements: `doc/planning/rust/implementation_plan.md`
 (Phase A) and `spikes/pubmed-ingest/FINDINGS.md`.
+
+## Download path (HTTPS, MD5-verified)
+
+`importers/ncbi_https.py`, `HttpsDownloader`:
+
+- Listing: the HTTPS directory page, parsed by `parse_directory_listing()`.
+  Only bare `pubmedNNnNNNN.xml.gz` names are accepted.
+- Each file's expected MD5 comes from NCBI's `<name>.md5`
+  (`parse_md5_file()`).
+- Data goes to `<name>.part`. An interrupted transfer resumes with
+  `Range: bytes=<size>-`. A `206` must start at exactly that offset; a `200`
+  (Range ignored) restarts the file; a `416` means nothing is left and the MD5
+  check decides.
+- If the MD5 matches, the file is moved into place with `os.replace`; if not,
+  the `.part` file is deleted and the download retried. An existing final file
+  is accepted only if its MD5 matches, so files left over from the FTP era are
+  re-checked.
+- The session and the sleep function are injected, and tests use a fake
+  session (`tests/test_ncbi_https.py`).
+
+Importer side: `_download_directory()` (shared by `download_baseline`,
+`download_updates` and `download_and_import_baseline`) and `_download_one()`.
+A file is skipped only if the tracker records it **and** it exists on disk.
+The tracker's checksum column now stores NCBI's MD5.
+
+**Why not FTP:** in October 2026 the NCBI FTP data stream was observed to
+rewind mid-transfer. In a 35.5 MB file, the stream jumped from 6.5 MB back to
+5.0 MB, re-sent that data, and so on; the server still reported
+`226 Transfer complete`. Every received byte was genuine file data, so this is
+a server-side fault that no client can fix. Two of 117 files were left
+truncated at their final names and only the XML parser caught them.
+Over HTTPS the same file downloaded correctly every time, at the same speed.
 
 ## Write path (one transaction per file)
 
@@ -102,6 +134,8 @@ callables; `for_server(conninfo)` builds the real ones.
 
 | File | Covers | Needs DB |
 |---|---|---|
+| `tests/test_ncbi_https.py` | listing/MD5/Content-Range parsing; resume, Range ignored, corrupt stream, stale files | no |
+| `tests/test_pubmed_bulk_download.py` | importer download paths, skipping, tracking, failures | no |
 | `tests/test_pubmed_bulk_importer_parsing.py` | keyword/DOI/retraction/date_revised extraction | no |
 | `tests/test_pubmed_bulk_importer_copy.py` | staging rows (unit); atomic store, idempotency, revisions, resume, rollback, parallel workers | opt-in |
 | `tests/test_migration_031_ingest_ledger.py` | migration 031, applied twice | opt-in |

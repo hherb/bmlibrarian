@@ -99,7 +99,7 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_import_cli.py search "COVID-19 vaccine" --max-results 100` - Import PubMed articles by search query (targeted import)
   - `uv run python pubmed_import_cli.py pmids 12345678 23456789` - Import PubMed articles by PMID list
   - `uv run python pubmed_import_cli.py status` - Show PubMed import statistics
-  - `uv run python pubmed_bulk_cli.py download-baseline` - Download complete PubMed baseline (~38M articles, ~400GB, for offline mirroring)
+  - `uv run python pubmed_bulk_cli.py download-baseline` - Download complete PubMed baseline (~38M articles, ~45GB compressed; HTTPS, MD5-verified, resumable via `.part` files; safe to import while downloading)
   - `uv run python pubmed_bulk_cli.py download-updates` - Download PubMed daily update files (new articles + metadata updates)
   - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting); resumable (re-run continues, `ingest.ledger`), `--workers N` (default 8), `--import-profile` borrows server RAM during the import and restores settings afterwards
   - `uv run python pubmed_bulk_cli.py profile status|apply|restore` - Inspect/recover the server import profile
