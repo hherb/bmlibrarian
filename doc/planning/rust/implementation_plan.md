@@ -369,24 +369,26 @@ bml review run plan.toml                   # checkpointed; re-run resumes
 
 ## 8. Decisions
 
-**Decided:**
-- PostgreSQL 18 (:5532) is the target and minimum.
-- Rust code lives in a `rust/` workspace in this repository.
-- `pg_search` 0.26.1 is installed and preloaded on :5532 (§3.4).
-- The plan as a whole is approved in principle (2026-10-13).
+**Decided (2026-10-13):**
+- **PostgreSQL 18 (:5532)** is the target and minimum.
+- **Rust code** lives in a `rust/` workspace in this repository.
+- **Lexical search:** `pg_search` BM25 is the only lexical index;
+  tsvector + GIN are dropped from the new schema (§3.4). It is installed and
+  preloaded on :5532.
+- **Embeddings** run in-process via `llama-cpp-2` (F16 GGUF, pinned) (§2,
+  `bml-index`).
+- **Vectors:** the resumable tiered partition layout (§3.3).
+- **Order:** start with **Phase A** (fix the Python importer), targeting
+  PG 18.
+- **Unpaywall:** refresh from a current snapshot if obtainable (newer OA
+  locations, no ID remapping needed); otherwise carry it over from :5432.
+- **Database role:** use the existing `bmlibrarian` role on :5532, created by
+  the setup wizard; credentials are in `~/.bmlibrarian/.env_pg18` (mode 600,
+  git-ignored copy in the repo). It is currently a **superuser**. Before
+  production, split it into an unprivileged application role and an admin
+  connection for the import profile and `CREATE EXTENSION`.
 
-**Still needed:**
-1. **Adopt pg_search as the only lexical index**, dropping tsvector + GIN
-   (recommended, measured in §3.4).
-2. **Phase A first** (fix the Python importer; recommended), targeting PG 18.
-3. **Embedding:** in-process `llama-cpp-2` (Rust, F16 GGUF; **recommended**,
-   measured at parity with PyTorch fp16 and faster than Ollama), or keep
-   Ollama.
-4. **Partition design:** tiers with 4 M majors, a ≤ 250 k open partition and
-   compaction (recommended, measured in §9), or 1 M partitions.
-5. **Data carry-over scope:** is unpaywall (158 GB) still needed? It decides
-   the disk plan (§3.6).
-6. **PG 18 access:** create an application role, or use `hherb`.
+**Still open:** none blocking Phase A.
 
 ## 9. Full-scale vector run (all 37 478 552 production vectors, measured 2026-10-13)
 
