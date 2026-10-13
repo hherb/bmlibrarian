@@ -10,21 +10,15 @@ from datetime import date
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
-from dotenv import load_dotenv
 from pathlib import Path
 
 from bmlibrarian.db_conninfo import build_conninfo
+from bmlibrarian.env_loader import load_bmlibrarian_env
 
-# Load environment variables from .env file
-# Check ~/.bmlibrarian/.env first (primary user configuration location),
-# then fall back to .env in current directory (for development convenience)
-# IMPORTANT: Use override=True to ensure user config takes precedence
-# over project-local .env or shell environment variables
-_user_env_path = Path.home() / ".bmlibrarian" / ".env"
-if _user_env_path.exists():
-    load_dotenv(_user_env_path, override=True)
-else:
-    load_dotenv()  # Fallback to current directory .env
+# Load environment variables: the file named by BMLIBRARIAN_ENV_FILE if set
+# (e.g. ~/.bmlibrarian/.env_pg18), else ~/.bmlibrarian/.env, else ./.env.
+# override=True: the user configuration takes precedence over the shell.
+load_bmlibrarian_env(override=True)
 
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
