@@ -202,3 +202,30 @@ class TestRemote:
         base = "https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/"
         assert dl.list_files(base) == ["pubmed26n0001.xml.gz", "pubmed26n0002.xml.gz"]
         assert dl.fetch_md5(base + "pubmed26n0001.xml.gz") == PAYLOAD_MD5
+
+
+class TestMetadataRetries:
+    """A dropped connection on the small listing/.md5 requests must not skip a file."""
+
+    def test_fetch_md5_retries_after_disconnect(self) -> None:
+        md5_text = f"MD5(pubmed26n0001.xml.gz)= {PAYLOAD_MD5}\n".encode()
+
+        class Flaky(FakeSession):
+            calls = 0
+
+            def get(self, url, headers=None, stream=False, timeout=None):
+                Flaky.calls += 1
+                if Flaky.calls == 1:
+                    raise requests.ConnectionError("Remote end closed connection without response")
+                return FakeResponse(200, md5_text, {})
+
+        assert make_downloader(Flaky()).fetch_md5(URL) == PAYLOAD_MD5
+        assert Flaky.calls == 2
+
+    def test_list_files_gives_up_after_max_retries(self) -> None:
+        class Down(FakeSession):
+            def get(self, url, headers=None, stream=False, timeout=None):
+                raise requests.ConnectionError("down")
+
+        with pytest.raises(requests.ConnectionError):
+            make_downloader(Down()).list_files("https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/")

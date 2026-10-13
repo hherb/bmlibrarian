@@ -160,9 +160,7 @@ class HttpsDownloader:
         Returns:
             Sorted data file names.
         """
-        with self.session.get(directory_url, timeout=self.timeout) as resp:
-            resp.raise_for_status()
-            return parse_directory_listing(resp.text)
+        return parse_directory_listing(self._get_text(directory_url))
 
     def fetch_md5(self, file_url: str) -> str:
         """
@@ -174,9 +172,26 @@ class HttpsDownloader:
         Returns:
             The expected hex digest.
         """
-        with self.session.get(file_url + MD5_SUFFIX, timeout=self.timeout) as resp:
-            resp.raise_for_status()
-            return parse_md5_file(resp.text)
+        return parse_md5_file(self._get_text(file_url + MD5_SUFFIX))
+
+    def _get_text(self, url: str) -> str:
+        """
+        GET a small text resource, retrying transient connection/HTTP errors.
+
+        Raises:
+            requests.RequestException: The last error once all attempts fail.
+        """
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                with self.session.get(url, timeout=self.timeout) as resp:
+                    resp.raise_for_status()
+                    return resp.text
+            except requests.RequestException as e:
+                logger.warning(f"GET {url} failed (attempt {attempt}/{self.max_retries}): {e}")
+                if attempt == self.max_retries:
+                    raise
+                self.sleep(RETRY_BASE_DELAY_SECONDS * attempt)
+        raise AssertionError("unreachable")
 
     def download(
         self,
