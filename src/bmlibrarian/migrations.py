@@ -10,6 +10,8 @@ from typing import List, Tuple, Optional
 
 import psycopg
 
+from bmlibrarian.db_test_guard import refuse_if_guarded
+
 logger = logging.getLogger(__name__)
 
 
@@ -252,6 +254,7 @@ class MigrationManager:
     
     def initialize_database(self, baseline_schema_path: Path):
         """Initialize database with baseline schema."""
+        refuse_if_guarded(self.database, "initialize the schema")
         baseline_schema_path = Path(baseline_schema_path)
         
         if not baseline_schema_path.exists():
@@ -306,7 +309,11 @@ class MigrationManager:
 
         Returns:
             Number of migrations applied (or would be applied in dry_run mode)
+
+        Raises:
+            ProtectedDatabaseError: Under pytest, for a protected (production) database.
         """
+        refuse_if_guarded(self.database, "apply migrations")
         migrations_dir = Path(migrations_dir)
 
         if not migrations_dir.exists():

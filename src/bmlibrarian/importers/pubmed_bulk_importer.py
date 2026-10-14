@@ -49,7 +49,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Dict, List, Tuple, Callable
+from typing import Any, Optional, Dict, List, Sequence, Tuple, Callable
 from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
@@ -144,6 +144,32 @@ ON CONFLICT (source, file) DO UPDATE SET
     seconds = EXCLUDED.seconds, finished_at = clock_timestamp()
 """
 
+# Withdrawals (DeleteCitation, migration 032): record the PMIDs, then mark the
+# documents. Marking runs for the file's deletions *and* for its staged records,
+# so a deletion imported before its record still applies (any file order).
+RECORD_WITHDRAWN_SQL = """
+INSERT INTO ingest.withdrawn_pmid (pmid, file)
+SELECT DISTINCT unnest(%(pmids)s::text[]), %(file)s
+ON CONFLICT (pmid) DO NOTHING
+"""
+
+MARK_WITHDRAWN_SQL = """
+UPDATE document d SET withdrawn = w.withdrawn
+FROM ingest.withdrawn_pmid w
+WHERE d.source_id = %(source_id)s AND d.external_id = w.pmid
+  AND d.withdrawn IS NULL AND w.pmid = ANY(%(pmids)s::text[])
+"""
+
+MARK_STAGED_WITHDRAWN_SQL = """
+UPDATE document d SET withdrawn = w.withdrawn
+FROM stage_document s
+JOIN ingest.withdrawn_pmid w ON w.pmid = s.external_id
+WHERE d.source_id = %(source_id)s AND d.external_id = s.external_id
+  AND d.withdrawn IS NULL
+"""
+
+PMID_PATTERN = re.compile(r'^[0-9]+$')
+
 TRANSPARENCY_TABLE_EXISTS_SQL = """
 SELECT EXISTS (SELECT FROM information_schema.tables
                WHERE table_schema = 'transparency' AND table_name = 'document_metadata')
@@ -163,6 +189,25 @@ def valid_iso_date(value: Optional[str]) -> Optional[str]:
     except ValueError:
         return None
     return value
+
+
+def parse_deleted_pmids(elem: ET.Element) -> List[str]:
+    """PMIDs listed in a ``<DeleteCitation>`` element (non-numeric values are dropped).
+
+    Args:
+        elem: The DeleteCitation element.
+
+    Returns:
+        The withdrawn PMIDs, in file order.
+    """
+    pmids = []
+    for pmid in elem.findall('PMID'):
+        text = (pmid.text or '').strip()
+        if PMID_PATTERN.match(text):
+            pmids.append(text)
+        else:
+            logger.warning(f"Ignoring invalid PMID in DeleteCitation: {text!r}")
+    return pmids
 
 
 def has_transparency_metadata(meta: Dict) -> bool:
@@ -1286,8 +1331,9 @@ class PubMedBulkImporter:
                 )
                 return cur.fetchone() is not None
 
-    def _store_file(self, articles: List[Dict], filename: str, sha256: str, started: float) -> int:
-        """Store one file's articles atomically: COPY, merge, metadata, ledger row.
+    def _store_file(self, articles: List[Dict], filename: str, sha256: str, started: float,
+                    withdrawn_pmids: Sequence[str] = ()) -> int:
+        """Store one file atomically: COPY, merge, withdrawals, metadata, ledger row.
 
         Everything happens in one transaction, so an interruption leaves either
         the whole file (including its ledger row) or none of it, and a resumed
@@ -1298,6 +1344,7 @@ class PubMedBulkImporter:
             filename: Source file name (ledger key).
             sha256: Checksum of the source file.
             started: perf_counter() when processing of the file began.
+            withdrawn_pmids: PMIDs the file withdraws (DeleteCitation).
 
         Returns:
             Number of document rows inserted or updated.
@@ -1316,6 +1363,8 @@ class PubMedBulkImporter:
                         cp.write_row(row)
                 cur.execute(MERGE_DOCUMENTS_SQL, params)
                 written = cur.rowcount
+                self._apply_withdrawals(cur, list(withdrawn_pmids), filename)
+                cur.execute(MARK_STAGED_WITHDRAWN_SQL, params)
                 cur.execute(TRANSPARENCY_TABLE_EXISTS_SQL)
                 if cur.fetchone()[0]:
                     cur.execute(MERGE_METADATA_SQL, params)
@@ -1326,6 +1375,60 @@ class PubMedBulkImporter:
                     'records': len(articles), 'seconds': time.perf_counter() - started,
                 })
         return written
+
+    def _apply_withdrawals(self, cur: Any, pmids: List[str], filename: str) -> int:
+        """Record withdrawn PMIDs and mark their documents (inside the caller's transaction).
+
+        Returns:
+            Number of PMIDs newly recorded.
+        """
+        if not pmids:
+            return 0
+        cur.execute(RECORD_WITHDRAWN_SQL, {'pmids': pmids, 'file': filename})
+        recorded = cur.rowcount
+        cur.execute(MARK_WITHDRAWN_SQL, {'pmids': pmids, 'source_id': self.source_id})
+        return recorded
+
+    def backfill_withdrawals(self, file_type: str = 'update',
+                             progress_callback: Optional[ProgressCallback] = None) -> Dict[str, int]:
+        """
+        Apply the DeleteCitation lists of files that were imported before
+        withdrawals were handled (one transaction per file; idempotent, so it
+        can be stopped and re-run).
+
+        Args:
+            file_type: 'update', 'baseline' or None for both.
+            progress_callback: Optional callback for progress messages.
+
+        Returns:
+            Counts: files_scanned, pmids_listed, pmids_recorded.
+        """
+        dirs = []
+        if file_type in (None, 'baseline'):
+            dirs.append(self.baseline_dir)
+        if file_type in (None, 'update'):
+            dirs.append(self.update_dir)
+        result = {'files_scanned': 0, 'pmids_listed': 0, 'pmids_recorded': 0}
+        for directory in dirs:
+            for filepath in sorted(directory.glob('*.xml.gz')):
+                pmids: List[str] = []
+                with gzip.open(filepath, 'rb') as gz_file:
+                    for _event, elem in ET.iterparse(gz_file, events=('end',)):
+                        if elem.tag == 'DeleteCitation':
+                            pmids.extend(parse_deleted_pmids(elem))
+                            elem.clear()
+                        elif elem.tag == 'PubmedArticle':
+                            elem.clear()
+                with self.db_manager.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        recorded = self._apply_withdrawals(cur, pmids, filepath.name)
+                result['files_scanned'] += 1
+                result['pmids_listed'] += len(pmids)
+                result['pmids_recorded'] += recorded
+                if progress_callback and pmids:
+                    progress_callback(f"[WITHDRAW] {filepath.name}: {len(pmids)} listed, {recorded} new")
+        logger.info(f"Withdrawal backfill: {result}")
+        return result
 
     def import_file(
         self,
@@ -1356,6 +1459,7 @@ class PubMedBulkImporter:
             'articles_parsed': 0,
             'articles_imported': 0,
             'articles_updated': 0,
+            'articles_withdrawn': 0,
             'errors': 0,
             'skipped': False,
         }
@@ -1369,6 +1473,7 @@ class PubMedBulkImporter:
             logger.info(f"Importing {filepath.name}")
             started = time.perf_counter()
             articles: List[Dict] = []
+            deleted: List[str] = []
             with gzip.open(filepath, 'rb') as gz_file:
                 # Use iterparse for memory efficiency while parsing
                 for event, elem in ET.iterparse(gz_file, events=('end',)):
@@ -1379,12 +1484,16 @@ class PubMedBulkImporter:
                         else:
                             stats['errors'] += 1
                         elem.clear()
+                    elif elem.tag == 'DeleteCitation':
+                        deleted.extend(parse_deleted_pmids(elem))
+                        elem.clear()
             stats['articles_parsed'] = len(articles)
             if progress_callback:
                 progress_callback(f"[IMPORT] {filepath.name}: parsed {len(articles):,} articles, storing")
 
             stats['articles_imported'] = self._store_file(
-                articles, filepath.name, file_sha256(filepath), started)
+                articles, filepath.name, file_sha256(filepath), started, withdrawn_pmids=deleted)
+            stats['articles_withdrawn'] = len(set(deleted))
             logger.info(f"{filepath.name}: Import complete - {stats['articles_parsed']} parsed, "
                         f"{stats['articles_imported']} imported")
 
@@ -1457,6 +1566,7 @@ class PubMedBulkImporter:
             'files_processed': 0,
             'files_skipped': 0,
             'total_articles': 0,
+            'total_withdrawn': 0,
             'total_errors': 0
         }
 
@@ -1486,6 +1596,7 @@ class PubMedBulkImporter:
         def record(stats: Dict, idx: int) -> None:
             overall_stats['files_processed'] += 1
             overall_stats['total_articles'] += stats['articles_imported']
+            overall_stats['total_withdrawn'] += stats.get('articles_withdrawn', 0)
             overall_stats['total_errors'] += stats['errors']
             if self.tracker and workers > 1 and stats['errors'] == 0:
                 self.tracker.mark_processed(stats['filename'], stats['articles_parsed'])

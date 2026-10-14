@@ -76,6 +76,35 @@ semantics otherwise match the old row-by-row importer: `doi`, `abstract`,
 `publication` and `publication_date` are COALESCEd; title, authors, MeSH and
 keywords are replaced.
 
+### Withdrawals (DeleteCitation)
+
+Migration 032 adds `document.withdrawn date` and `ingest.withdrawn_pmid(pmid
+PK, file, withdrawn)`. `import_file` collects `<DeleteCitation>` PMIDs
+(`parse_deleted_pmids()`, numeric only). Inside the file's transaction,
+`_store_file` then:
+
+1. records them (`RECORD_WITHDRAWN_SQL`, `ON CONFLICT DO NOTHING`);
+2. marks their documents (`MARK_WITHDRAWN_SQL`);
+3. marks the file's own staged records that are already listed as withdrawn
+   (`MARK_STAGED_WITHDRAWN_SQL`).
+
+Step 3 keeps any file order correct: a deletion imported before its record
+still applies. The merge never touches `withdrawn`, so a later revision does
+not clear it. Re-instated PMIDs are not handled; NCBI has no element for
+them.
+
+`backfill_withdrawals(file_type)` (CLI `backfill-withdrawals`) re-scans files
+that were imported before this existed. It runs one transaction per file and
+is idempotent.
+
+**Searches:** `database.py` excludes withdrawn rows in `find_abstracts`,
+`find_abstract_ids`, `search_by_embedding`, `search_with_semantic`,
+`search_with_bm25` and `search_with_fulltext_function`, and therefore in
+`search_hybrid` (`NOT_WITHDRAWN_SQL`, `NOT_WITHDRAWN_EXISTS_SQL`). Other
+modules with their own SQL against `document` (paperchecker, paper_weight,
+fact-checker GUI and others) do not filter yet. Fetching a document by id
+still returns it, which is intended for existing references.
+
 ### Parsing notes (DTD layout)
 
 `KeywordList` and `CommentsCorrectionsList` are children of
@@ -137,8 +166,9 @@ callables; `for_server(conninfo)` builds the real ones.
 | `tests/test_ncbi_https.py` | listing/MD5/Content-Range parsing; resume, Range ignored, corrupt stream, stale files | no |
 | `tests/test_pubmed_bulk_download.py` | importer download paths, skipping, tracking, failures | no |
 | `tests/test_pubmed_bulk_importer_parsing.py` | keyword/DOI/retraction/date_revised extraction | no |
-| `tests/test_pubmed_bulk_importer_copy.py` | staging rows (unit); atomic store, idempotency, revisions, resume, rollback, parallel workers | opt-in |
+| `tests/test_pubmed_bulk_importer_copy.py` | staging rows (unit); atomic store, idempotency, revisions, resume, rollback, parallel workers, withdrawals (either order), backfill, search exclusion | opt-in |
 | `tests/test_migration_031_ingest_ledger.py` | migration 031, applied twice | opt-in |
+| `tests/test_migration_032_withdrawn.py` | migration 032, applied twice | opt-in |
 | `tests/test_env_loader.py` | env selection, explicit conninfo | no |
 | `tests/test_db_import_profile.py` | profile helpers and flow (fake server) | no |
 | `tests/test_pubmed_bulk_cli.py` | CLI arguments and profile ordering | no |

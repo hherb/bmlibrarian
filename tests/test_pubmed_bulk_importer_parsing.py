@@ -126,3 +126,38 @@ class TestDateRevised:
     def test_missing_date_revised_is_none(self, importer) -> None:
         article = importer._parse_article(make_record(date_revised=None))
         assert article["date_revised"] is None
+
+
+class TestDeleteCitation:
+    """Update files list withdrawn PMIDs in DeleteCitation; they are collected, never stored as articles."""
+
+    def test_deleted_pmids_are_extracted(self) -> None:
+        from src.bmlibrarian.importers.pubmed_bulk_importer import parse_deleted_pmids
+        elem = ET.fromstring('<DeleteCitation><PMID Version="1">111</PMID>'
+                             '<PMID Version="1"> 222 </PMID></DeleteCitation>')
+        assert parse_deleted_pmids(elem) == ["111", "222"]
+
+    def test_invalid_pmids_are_dropped(self) -> None:
+        from src.bmlibrarian.importers.pubmed_bulk_importer import parse_deleted_pmids
+        elem = ET.fromstring("<DeleteCitation><PMID>12a</PMID><PMID></PMID><PMID>7</PMID></DeleteCitation>")
+        assert parse_deleted_pmids(elem) == ["7"]
+
+    def test_import_file_passes_deletions_to_store(self, importer, tmp_path) -> None:
+        import gzip
+        path = tmp_path / "pubmed26n9999.xml.gz"
+        record = ET.tostring(make_record()).decode()
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write("<PubmedArticleSet>" + record +
+                     '<DeleteCitation><PMID Version="1">777</PMID></DeleteCitation></PubmedArticleSet>')
+        captured = {}
+
+        def fake_store(articles, filename, sha256, started, withdrawn_pmids=()):
+            captured["pmids"] = [a["pmid"] for a in articles]
+            captured["withdrawn"] = list(withdrawn_pmids)
+            return len(articles)
+
+        importer._is_file_committed = lambda name: False
+        importer._store_file = fake_store
+        stats = importer.import_file(path)
+        assert captured == {"pmids": ["12345"], "withdrawn": ["777"]}
+        assert stats["articles_withdrawn"] == 1

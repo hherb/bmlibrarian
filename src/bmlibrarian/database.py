@@ -13,6 +13,7 @@ from psycopg_pool import ConnectionPool
 from pathlib import Path
 
 from bmlibrarian.db_conninfo import build_conninfo
+from bmlibrarian import db_test_guard
 from bmlibrarian.env_loader import load_bmlibrarian_env
 
 # Load environment variables: the file named by BMLIBRARIAN_ENV_FILE if set
@@ -22,6 +23,12 @@ load_bmlibrarian_env(override=True)
 
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
+
+# Records withdrawn by their source (PubMed DeleteCitation, migration 032) are
+# kept for referential integrity but never returned by searches.
+NOT_WITHDRAWN_SQL = "d.withdrawn IS NULL"
+# Same filter for SQL search functions whose rows carry the document id.
+NOT_WITHDRAWN_EXISTS_SQL = "EXISTS (SELECT 1 FROM document d WHERE d.id = {alias}.id AND d.withdrawn IS NULL)"
 
 
 class DatabaseManager:
@@ -54,7 +61,11 @@ class DatabaseManager:
         self._pool: Optional[ConnectionPool] = None
         self._init_pool(conninfo)
         if auto_migrate:
-            self._apply_pending_migrations(dry_run=dry_run_migrations)
+            if db_test_guard.guard_applies(db_test_guard.database_name(self._conninfo)):
+                logger.warning("Running under pytest: not auto-migrating protected database %s",
+                               db_test_guard.database_name(self._conninfo))
+            else:
+                self._apply_pending_migrations(dry_run=dry_run_migrations)
         self._cache_source_ids()
     
     @property
@@ -94,6 +105,7 @@ class DatabaseManager:
         # Initialize connection pool
         self._pool = ConnectionPool(
             conninfo=conninfo,
+            kwargs=db_test_guard.pool_connection_kwargs(conninfo) or None,
             min_size=2,
             max_size=10,
             timeout=30
@@ -511,6 +523,7 @@ def find_abstracts(
         SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
         FROM document d
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        AND {NOT_WITHDRAWN_SQL}
         {source_filter}
         {date_filter}
         ORDER BY rank_score DESC, d.publication_date DESC NULLS LAST, d.id ASC
@@ -520,6 +533,7 @@ def find_abstracts(
         SELECT d.*
         FROM document d
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        AND {NOT_WITHDRAWN_SQL}
         {source_filter}
         {date_filter}
         ORDER BY d.publication_date DESC NULLS LAST, d.id ASC
@@ -713,6 +727,7 @@ def find_abstract_ids(
     else:
         where_clauses.append("d.search_vector @@ to_tsquery('english', %s)")
     params.append(ts_query_str)
+    where_clauses.append(NOT_WITHDRAWN_SQL)
 
     # Source filtering
     if source_ids:
@@ -859,7 +874,7 @@ def search_by_embedding(
         FROM emb_1024 e
         JOIN chunks c ON e.chunk_id = c.id
         JOIN document d ON c.document_id = d.id
-        WHERE e.model_id = %s
+        WHERE e.model_id = %s AND d.withdrawn IS NULL
         ORDER BY similarity DESC
         LIMIT %s
     """
@@ -926,7 +941,7 @@ def search_with_bm25(
                 SELECT b.*, s.name as source_name
                 FROM bm25(%s, %s) b
                 LEFT JOIN sources s ON b.source_id = s.id
-                WHERE 1=1 {source_filter}
+                WHERE {NOT_WITHDRAWN_EXISTS_SQL.format(alias='b')} {source_filter}
             """
 
             cur.execute(sql, (query_text, max_results))
@@ -986,6 +1001,7 @@ def search_with_semantic(
                 FROM semantic_results sr
                 JOIN document d ON sr.document_id = d.id
                 LEFT JOIN sources s ON d.source_id = s.id
+                WHERE d.withdrawn IS NULL
                 ORDER BY sr.best_score DESC
             """
 
@@ -1049,7 +1065,7 @@ def search_with_fulltext_function(
                 SELECT f.*, s.name as source_name
                 FROM fulltext_search(%s, %s) f
                 LEFT JOIN sources s ON f.source_id = s.id
-                WHERE 1=1 {source_filter}
+                WHERE {NOT_WITHDRAWN_EXISTS_SQL.format(alias='f')} {source_filter}
             """
 
             cur.execute(sql, (query_text, max_results))

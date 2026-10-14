@@ -197,10 +197,54 @@ BMLibrarian migrations don't include automatic rollback. For rollback:
 
 | ID | Filename | Description | Date |
 |----|----------|-------------|------|
-| 003 | 003_create_audit_schema.sql | Create audit schema for research workflow tracking | 2025-11-05 |
-| 004 | 004_update_audit_for_evaluators.sql | Update audit schema for evaluators | 2025-11-05 |
-| 005 | 005_create_fulltext_search_function.sql | Create fulltext_search() function | 2025-11-08 |
-| 006 | 006_create_search_functions.sql | Create bm25() and semantic_search() functions | 2025-11-09 |
+| 003 | 003_create_audit_schema.sql | Create Audit Schema for Research Workflow Tracking | 2025-11-05 |
+| 004 | 004_update_audit_for_evaluators.sql | Update Audit Schema to Use Evaluators | 2025-11-05 |
+| 005 | 005_create_fulltext_search_function.sql | Create Full-Text Search Function | 2025-11-08 |
+| 006 | 006_create_search_functions.sql | Create BM25 and Semantic Search Functions | 2025-11-09 |
+| 007 | 007_create_semantic_docsearch.sql | Create Semantic Document Search Convenience Function | 2025-11-10 |
+| 008 | 008_create_factcheck_schema.sql | Create Factcheck Schema for Biomedical Statement Verification | 2025-11-12 |
+| 009 | 009_add_context_long_answer_to_statements.sql | Add context and long_answer columns to factcheck.statements | 2025-11-19 |
+| 010 | 010_create_papercheck_schema.sql | Create PaperCheck Schema for Paper Abstract Weight Assessment | 2025-11-21 |
+| 011 | 011_add_paper_weight_schema.sql | Create Paper Weight Assessment Schema | 2025-11-21 |
+| 012 | 012_create_bmlsettings_schema.sql | Create BMLibrarian User Settings Schema | 2025-11-22 |
+| 013 | 013_create_debug_schema.sql | Create Debug Schema for PDF Conversion Tracking | 2025-11-22 |
+| 014 | 014_add_pgcrypto_extension.sql | Add pgcrypto extension | 2025-11-22 |
+| 015 | 015_create_semantic_chunking_schema.sql | Create Semantic Chunking Schema | 2025-11-23 |
+| 016 | 016_add_source_metadata_to_abstracts_checked.sql | Add source_metadata column to abstracts_checked | 2025-11-23 |
+| 017 | 017_add_generation_metadata_columns.sql | Add generation_metadata columns to papercheck tables | 2025-11-23 |
+| 018 | 018_create_document_specific_search_functions.sql | Create Document-Specific Semantic Search Functions | 2025-11-24 |
+| 019 | 019_create_pdf_download_history.sql | Create PDF Download History Table | 2025-11-25 |
+| 020 | 020_add_chunk_tsvector_hybrid_search.sql | Add ts_vector to semantic.chunks and create hybrid search function | 2025-11-26 |
+| 021 | 021_create_thesaurus_schema.sql | Create Medical Thesaurus Schema | 2025-11-26 |
+| 022 | 022_create_results_cache_schema.sql | Create Results Cache Schema | 2025-11-26 |
+| 023 | 023_create_writing_schema.sql | Create Writing Schema | 2025-11-27 |
+| 024 | 024_create_benchmarking_schema.sql | Create Benchmarking Schema for Model Performance Evaluation | 2025-11-28 |
+| 025 | 025_create_audit_validation_schema.sql | Create Human Validation Schema for Audit Trail | 2025-11-28 |
+| 026 | 026_create_unified_evaluations_schema.sql | Create Unified Evaluations Schema | 2025-12-07 |
+| 027 | 027_create_pubmed_api_search_tables.sql | Create PubMed API Search Tracking Tables | 2025-12-13 |
+| 028 | 028_create_mesh_schema.sql | Create MeSH (Medical Subject Headings) Schema | 2025-12-13 |
+| 029 | 029_create_transparency_schema.sql | Create transparency schema | 2026-02-13 |
+| 030 | 030_extend_settings_categories.sql | Extend bmlsettings category whitelists | 2026-07-19 |
+| 031 | 031_ingest_ledger_and_revisions.sql | Resumable bulk-import bookkeeping and revision-aware merges | 2026-10-13 |
+| 032 | 032_withdrawn_documents.sql | PubMed withdrawals (DeleteCitation) are marked, not deleted | 2026-10-14 |
+
+031 and 032 carry the PubMed bulk-import changes (resumable ledger,
+revision-aware merges, withdrawals). See
+`doc/developers/pubmed_bulk_import_system.md`. Both are additive: new nullable
+columns (a metadata-only change, no table rewrite), new tables in schema
+`ingest`, a re-defined trigger function and an index storage option.
+
+## The Test Suite Never Migrates Production
+
+While pytest is loaded, `MigrationManager.apply_pending_migrations()` and
+`initialize_database()` raise `ProtectedDatabaseError` for a protected database
+(`knowledgebase`). `DatabaseManager` skips its auto-migration there and opens
+its connections read-only (`bmlibrarian.db_test_guard`). Point tests that need
+a writable database at a development database, either with
+`BMLIBRARIAN_ENV_FILE` or with the opt-in `BMLIBRARIAN_TEST_DB_ENV` tests.
+
+This guard was added after a test run on 2026-10-13/14 auto-applied 031 and
+032 to production. The owner chose to keep both migrations there.
 
 ## Environment Variables
 

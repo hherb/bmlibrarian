@@ -40,11 +40,14 @@ def record_xml(pmid: str, title: str, date_revised: Optional[str], keywords: tup
       <ArticleId IdType="doi">10.9999/{pmid}</ArticleId></ArticleIdList></PubmedData></PubmedArticle>"""
 
 
-def write_file(directory: Path, name: str, records: List[str]) -> Path:
-    """Write a gzip'd PubmedArticleSet file."""
+def write_file(directory: Path, name: str, records: List[str], deleted: tuple = ()) -> Path:
+    """Write a gzip'd PubmedArticleSet file, optionally with a DeleteCitation block."""
     path = directory / name
+    delete = ""
+    if deleted:
+        delete = "<DeleteCitation>" + "".join(f'<PMID Version="1">{p}</PMID>' for p in deleted) + "</DeleteCitation>"
     with gzip.open(path, "wt", encoding="utf-8") as fh:
-        fh.write("<?xml version='1.0'?><PubmedArticleSet>" + "".join(records) + "</PubmedArticleSet>")
+        fh.write("<?xml version='1.0'?><PubmedArticleSet>" + "".join(records) + delete + "</PubmedArticleSet>")
     return path
 
 
@@ -113,6 +116,7 @@ def dev_importer(tmp_path: Path, monkeypatch) -> Iterator[pbi.PubMedBulkImporter
                          "(SELECT id FROM document WHERE external_id = ANY(%s))", (list(TEST_PMIDS),))
             conn.execute("DELETE FROM document WHERE external_id = ANY(%s)", (list(TEST_PMIDS),))
             conn.execute("DELETE FROM ingest.ledger WHERE file LIKE 'pbi-test-%%'")
+            conn.execute("DELETE FROM ingest.withdrawn_pmid WHERE pmid = ANY(%s)", (list(TEST_PMIDS),))
 
     cleanup()
     yield importer
@@ -199,3 +203,71 @@ def test_parallel_workers_store_all_files_and_newest_revision_wins(dev_importer,
     assert ledger_files(dev_importer) == ["pbi-test-0101.xml.gz", "pbi-test-0102.xml.gz", "pbi-test-0103.xml.gz"]
     assert fetch(dev_importer, TEST_PMIDS[0])[0] == "Newest"
     assert fetch(dev_importer, TEST_PMIDS[1])[0] == "Other"
+
+
+def withdrawn(importer: pbi.PubMedBulkImporter, pmid: str) -> Optional[bool]:
+    """Whether the PMID's document is marked withdrawn (None if absent)."""
+    with importer.db_manager.get_connection() as conn:
+        row = conn.execute("SELECT withdrawn IS NOT NULL FROM document WHERE external_id = %s", (pmid,)).fetchone()
+    return row[0] if row else None
+
+
+def test_deletion_after_insert_marks_document_withdrawn(dev_importer, tmp_path) -> None:
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0201.xml.gz",
+                                        [record_xml(TEST_PMIDS[0], "First", "2024-01-01"),
+                                         record_xml(TEST_PMIDS[1], "Other", "2024-01-01")]))
+    stats = dev_importer.import_file(write_file(tmp_path, "pbi-test-0202.xml.gz", [], deleted=(TEST_PMIDS[0],)))
+    assert stats["articles_withdrawn"] == 1
+    assert withdrawn(dev_importer, TEST_PMIDS[0]) is True
+    assert withdrawn(dev_importer, TEST_PMIDS[1]) is False
+    assert ledger_files(dev_importer) == ["pbi-test-0201.xml.gz", "pbi-test-0202.xml.gz"]
+
+
+def test_deletion_before_insert_still_marks_document(dev_importer, tmp_path) -> None:
+    """Files may be imported in any order: a deletion seen first applies when the record arrives."""
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0203.xml.gz", [], deleted=(TEST_PMIDS[0],)))
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0204.xml.gz",
+                                        [record_xml(TEST_PMIDS[0], "Late", "2024-01-01")]))
+    assert withdrawn(dev_importer, TEST_PMIDS[0]) is True
+
+
+def test_later_revision_does_not_clear_withdrawal(dev_importer, tmp_path) -> None:
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0205.xml.gz",
+                                        [record_xml(TEST_PMIDS[0], "First", "2024-01-01")], deleted=(TEST_PMIDS[0],)))
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0206.xml.gz",
+                                        [record_xml(TEST_PMIDS[0], "Revised", "2025-01-01")]))
+    assert fetch(dev_importer, TEST_PMIDS[0])[0] == "Revised"
+    assert withdrawn(dev_importer, TEST_PMIDS[0]) is True
+
+
+def test_backfill_applies_deletions_of_already_imported_files(dev_importer, tmp_path) -> None:
+    updates = dev_importer.update_dir
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0207.xml.gz",
+                                        [record_xml(TEST_PMIDS[0], "First", "2024-01-01")]))
+    write_file(updates, "pbi-test-0208.xml.gz", [], deleted=(TEST_PMIDS[0],))
+    result = dev_importer.backfill_withdrawals(file_type="update")
+    assert result["files_scanned"] == 1 and result["pmids_recorded"] == 1
+    assert withdrawn(dev_importer, TEST_PMIDS[0]) is True
+    assert dev_importer.backfill_withdrawals(file_type="update")["pmids_recorded"] == 0  # idempotent
+
+
+def test_searches_exclude_withdrawn_documents(dev_importer, tmp_path) -> None:
+    """find_abstract_ids must not return withdrawn records (checked on the dev database only)."""
+    from src.bmlibrarian import database
+    word = "zqxwithdrawntestword"
+    rec = record_xml(TEST_PMIDS[0], f"Title {word}", "2024-01-01").replace("Abstract of", f"{word} abstract of")
+    rec2 = record_xml(TEST_PMIDS[1], f"Title {word}", "2024-01-01")
+    dev_importer.import_file(write_file(tmp_path, "pbi-test-0209.xml.gz", [rec, rec2], deleted=(TEST_PMIDS[0],)))
+    database.close_database()
+    try:
+        db = database.get_db_manager()
+        with db.get_connection() as conn:
+            assert conn.execute("SELECT current_database()").fetchone()[0] != PRODUCTION_DATABASE
+            ids = {r[0] for r in conn.execute("SELECT id, external_id FROM document WHERE external_id = ANY(%s)",
+                                              (list(TEST_PMIDS),)).fetchall()}
+        found = set(database.find_abstract_ids(word, max_rows=10))
+        found_docs = {d["external_id"] for d in database.find_abstracts(word, max_rows=10)}
+    finally:
+        database.close_database()
+    assert len(found & ids) == 1
+    assert found_docs == {TEST_PMIDS[1]}

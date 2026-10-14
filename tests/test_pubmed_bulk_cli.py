@@ -69,3 +69,18 @@ def test_cmd_import_with_profile_closes_pool_inside_profile() -> None:
         assert cli.cmd_import(args) == 0
     assert [e[0] for e in events] == ["apply", "open", "import", "close", "restore"]
     assert events[0][1] == "dbname=dev"
+
+
+def test_backfill_withdrawals_parses_with_update_default() -> None:
+    args = cli.build_parser().parse_args(["backfill-withdrawals"])
+    assert args.command == "backfill-withdrawals" and args.type == "update"
+
+
+def test_cmd_backfill_withdrawals_calls_importer() -> None:
+    args = cli.build_parser().parse_args(["backfill-withdrawals", "--type", "all"])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer = MagicMock()
+        importer.backfill_withdrawals.return_value = {"files_scanned": 2, "pmids_listed": 5, "pmids_recorded": 3}
+        importer_cls.return_value = importer
+        assert cli.cmd_backfill_withdrawals(args) == 0
+    assert importer.backfill_withdrawals.call_args.kwargs["file_type"] is None

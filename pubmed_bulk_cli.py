@@ -213,6 +213,28 @@ def cmd_import(args):
         return 1
 
 
+WITHDRAWAL_FILE_TYPES = {'update': 'update', 'baseline': 'baseline', 'all': None}
+
+
+def cmd_backfill_withdrawals(args):
+    """Apply DeleteCitation withdrawals from files imported before they were handled."""
+    print("=" * 70)
+    print("PubMed Withdrawal Backfill")
+    print("=" * 70)
+    try:
+        importer = PubMedBulkImporter(data_dir=args.data_dir, use_tracking=not args.no_tracking)
+        result = importer.backfill_withdrawals(file_type=WITHDRAWAL_FILE_TYPES[args.type],
+                                               progress_callback=print)
+    except Exception as e:
+        logging.error(f"Withdrawal backfill failed: {e}", exc_info=True)
+        print(f"\nError: {e}")
+        return 1
+    print(f"\nFiles scanned:      {result['files_scanned']}")
+    print(f"PMIDs listed:       {result['pmids_listed']}")
+    print(f"PMIDs newly marked: {result['pmids_recorded']}")
+    return 0
+
+
 def cmd_status(args):
     """Show download and import status."""
     print("=" * 70)
@@ -530,6 +552,14 @@ def build_parser() -> argparse.ArgumentParser:
     profile_parser.add_argument('--force', action='store_true',
                                 help='apply: even if other client sessions are connected')
 
+    # Withdrawals from files imported before DeleteCitation was handled
+    withdraw_parser = subparsers.add_parser(
+        'backfill-withdrawals',
+        help='Mark records withdrawn by PubMed (DeleteCitation) in already imported files'
+    )
+    withdraw_parser.add_argument('--type', choices=sorted(WITHDRAWAL_FILE_TYPES), default='update',
+                                 help='Which downloaded files to scan (default: update)')
+
     return parser
 
 
@@ -557,6 +587,8 @@ def main():
         return cmd_sync(args)
     elif args.command == 'profile':
         return cmd_profile(args)
+    elif args.command == 'backfill-withdrawals':
+        return cmd_backfill_withdrawals(args)
     else:
         parser.print_help()
         return 1

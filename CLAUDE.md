@@ -103,6 +103,7 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_bulk_cli.py download-updates` - Download PubMed daily update files (new articles + metadata updates)
   - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting); resumable (re-run continues, `ingest.ledger`), `--workers N` (default 8), `--import-profile` borrows server RAM during the import and restores settings afterwards
   - `uv run python pubmed_bulk_cli.py profile status|apply|restore` - Inspect/recover the server import profile
+  - `uv run python pubmed_bulk_cli.py backfill-withdrawals [--type update|baseline|all]` - Mark PubMed-withdrawn records (DeleteCitation) from already-imported files; withdrawn records are kept but excluded from searches (`document.withdrawn`)
   - `BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18 uv run python ...` - Select the database env file explicitly (no silent fallback)
   - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
@@ -798,6 +799,7 @@ bmlibrarian/
 - **CRITICAL**: Never modify or drop the production database "knowledgebase"
 - **Development**: Use "bmlibrarian_dev" database for testing/migration experiments
 - **Production Access**: Read-only access unless explicitly instructed otherwise
+- **Test guard**: under pytest, `knowledgebase` is never migrated and its `DatabaseManager` connections are read-only (`db_test_guard.py`, see `doc/developers/test_database_guard.md`); tests needing writes use a dev DB via `BMLIBRARIAN_TEST_DB_ENV` / `BMLIBRARIAN_ENV_FILE`
 - **Data Integrity**: All document IDs are programmatically verified to prevent hallucination
 
 ### Code Quality Standards

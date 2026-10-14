@@ -276,7 +276,18 @@ same database throughout.
   downloaded all 1 334 files (51 GB) without a single checksum failure.
   **Phase B's downloader must also use HTTPS with MD5 checks, not FTP.**
 
-**Open:** the update files (`sync --updates-only`).
+**Updates (2026-10-14):** all 347 update files (pubmed26n1335–1681), 6.9 M
+records, 0 errors; 41 246 334 PubMed documents, revisions up to 2026-10-13.
+Without the import profile, so no server restart.
+
+**Withdrawals (migration 032):** `DeleteCitation` was never handled before.
+Withdrawn PMIDs are now recorded in `ingest.withdrawn_pmid` and marked in
+`document.withdrawn`, not deleted, so references stay valid. The
+`database.py` searches exclude them, and marking works in any file order. The
+backfill over the 2026 update files recorded 10 930 PMIDs and marked 7 622
+documents. **Phase B must carry the same semantics.**
+
+**Phase A exit criterion: met.**
 
 1. Fix the four importer defects (keywords, retraction cross-refs, DOI lookup,
    revision order) in `pubmed_bulk_importer.py`, with tests.

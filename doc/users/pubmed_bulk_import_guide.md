@@ -117,6 +117,23 @@ For each record:
 - **author keywords**;
 - the revision date.
 
+**Withdrawn records.** PubMed update files list records that NCBI has
+withdrawn (duplicates, records created in error). They are not deleted, so
+citations, fact-check evidence and embeddings that refer to them keep
+working. Instead they are marked with the date the withdrawal was imported
+(`document.withdrawn`), and BMLibrarian's searches leave them out. This works
+whatever order files are imported in.
+
+If you imported update files with a version from before October 2026, apply
+their withdrawals once:
+
+```bash
+uv run python pubmed_bulk_cli.py backfill-withdrawals          # update files (default)
+uv run python pubmed_bulk_cli.py backfill-withdrawals --type all
+```
+
+It is safe to stop and re-run.
+
 Transparency data goes to `transparency.document_metadata`: grants,
 publication types, author affiliations, and **retraction status**, including
 retraction cross-references.
