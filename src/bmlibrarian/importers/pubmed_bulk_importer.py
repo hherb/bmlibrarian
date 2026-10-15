@@ -1,8 +1,9 @@
 """
-PubMed Bulk Importer - FTP-based complete mirror system
+PubMed Bulk Importer - complete local PubMed mirror
 
-This module provides FTP-based bulk downloading and importing of PubMed
-baseline and update files for maintaining a complete local PubMed mirror.
+This module downloads (over HTTPS, MD5-verified and resumable; see
+ncbi_https.py for why not FTP) and imports PubMed baseline and update files
+for maintaining a complete local PubMed mirror.
 
 Unlike the E-utilities importer (pubmed_importer.py) which is designed for
 targeted imports, this bulk importer:
@@ -34,24 +35,209 @@ Usage:
     importer.import_files()
 """
 
-import ftplib
 import gzip
 import hashlib
+import multiprocessing
 import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict, List, Tuple, Callable
-import backoff
+from psycopg.types.json import Jsonb
 
 from bmlibrarian.database import get_db_manager
+from .ncbi_https import NCBI_HTTPS_BASE_URL, HttpsDownloader
 
 logger = logging.getLogger(__name__)
+
+# CommentsCorrections/@RefType values (lower-cased) that mark a retraction link:
+# RetractionIn on the retracted article, RetractionOf on the retraction notice.
+RETRACTION_REF_TYPES = ('retractionin', 'retractionof')
+
+# ---------------------------------------------------------------------------
+# COPY-based, revision-aware, resumable write path (one transaction per file)
+# ---------------------------------------------------------------------------
+
+LEDGER_SOURCE = 'pubmed_bulk'
+METADATA_SOURCE = 'pubmed_bulk'
+SHA256_CHUNK_BYTES = 1 << 20
+ISO_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+STAGE_DOCUMENT_COLUMNS = (
+    'ord', 'external_id', 'doi', 'title', 'abstract', 'authors', 'publication',
+    'publication_date', 'url', 'mesh_terms', 'keywords', 'date_revised',
+)
+STAGE_METADATA_COLUMNS = (
+    'ord', 'external_id', 'date_revised', 'grants', 'publication_types',
+    'is_retracted', 'author_affiliations',
+)
+
+STAGING_DDL = (
+    """CREATE TEMP TABLE stage_document (
+        ord integer, external_id text, doi text, title text, abstract text,
+        authors text[], publication text, publication_date date, url text,
+        mesh_terms text[], keywords text[], date_revised date) ON COMMIT DROP""",
+    """CREATE TEMP TABLE stage_metadata (
+        ord integer, external_id text, date_revised date, grants jsonb,
+        publication_types text[], is_retracted boolean, author_affiliations jsonb) ON COMMIT DROP""",
+)
+
+# The newest revision of a PMID wins: within the file (DISTINCT ON ordered by
+# date_revised, then file order) and against the stored row (the update only
+# applies when the incoming revision is not older). COALESCE semantics for
+# doi/abstract/publication/date are kept from the row-by-row importer.
+MERGE_DOCUMENTS_SQL = """
+INSERT INTO document (
+    source_id, external_id, doi, title, abstract, authors, publication,
+    publication_date, url, mesh_terms, keywords, date_revised)
+SELECT DISTINCT ON (external_id)
+    %(source_id)s, external_id, doi, title, abstract, authors, publication,
+    publication_date, url, mesh_terms, keywords, date_revised
+FROM stage_document
+ORDER BY external_id, date_revised DESC NULLS LAST, ord DESC
+ON CONFLICT (source_id, external_id) DO UPDATE SET
+    doi = COALESCE(EXCLUDED.doi, document.doi),
+    title = EXCLUDED.title,
+    abstract = COALESCE(EXCLUDED.abstract, document.abstract),
+    authors = EXCLUDED.authors,
+    publication = COALESCE(EXCLUDED.publication, document.publication),
+    publication_date = COALESCE(EXCLUDED.publication_date, document.publication_date),
+    mesh_terms = EXCLUDED.mesh_terms,
+    keywords = EXCLUDED.keywords,
+    date_revised = COALESCE(EXCLUDED.date_revised, document.date_revised),
+    updated_date = CURRENT_TIMESTAMP
+WHERE EXCLUDED.date_revised IS NULL
+   OR document.date_revised IS NULL
+   OR EXCLUDED.date_revised >= document.date_revised
+"""
+
+# Metadata follows the revision that won the document merge.
+MERGE_METADATA_SQL = """
+INSERT INTO transparency.document_metadata (
+    document_id, grants, publication_types, is_retracted, author_affiliations, source)
+SELECT DISTINCT ON (d.id)
+    d.id, m.grants, m.publication_types, m.is_retracted, m.author_affiliations, %(source)s
+FROM stage_metadata m
+JOIN document d ON d.source_id = %(source_id)s AND d.external_id = m.external_id
+WHERE m.date_revised IS NOT DISTINCT FROM d.date_revised
+ORDER BY d.id, m.ord DESC
+ON CONFLICT (document_id) DO UPDATE SET
+    grants = COALESCE(EXCLUDED.grants, transparency.document_metadata.grants),
+    publication_types = COALESCE(EXCLUDED.publication_types, transparency.document_metadata.publication_types),
+    is_retracted = EXCLUDED.is_retracted OR transparency.document_metadata.is_retracted,
+    author_affiliations = COALESCE(EXCLUDED.author_affiliations, transparency.document_metadata.author_affiliations),
+    imported_at = NOW()
+"""
+
+LEDGER_UPSERT_SQL = """
+INSERT INTO ingest.ledger (source, file, sha256, records, seconds)
+VALUES (%(source)s, %(file)s, %(sha256)s, %(records)s, %(seconds)s)
+ON CONFLICT (source, file) DO UPDATE SET
+    sha256 = EXCLUDED.sha256, records = EXCLUDED.records,
+    seconds = EXCLUDED.seconds, finished_at = clock_timestamp()
+"""
+
+TRANSPARENCY_TABLE_EXISTS_SQL = """
+SELECT EXISTS (SELECT FROM information_schema.tables
+               WHERE table_schema = 'transparency' AND table_name = 'document_metadata')
+"""
+
+
+def valid_iso_date(value: Optional[str]) -> Optional[str]:
+    """Return ``value`` if it is a real YYYY-MM-DD date, else None.
+
+    _extract_date passes through month names it does not know (e.g. seasons),
+    which a date column would reject; such values are stored as NULL.
+    """
+    if not value or not ISO_DATE_PATTERN.match(value):
+        return None
+    try:
+        datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        return None
+    return value
+
+
+def has_transparency_metadata(meta: Dict) -> bool:
+    """Same filter as the row-by-row path: store only meaningful metadata."""
+    return bool(meta.get('grants') or meta.get('publication_types')
+                or meta.get('is_retracted') or meta.get('author_affiliations'))
+
+
+def to_staging_rows(articles: List[Dict]) -> Tuple[List[tuple], List[tuple]]:
+    """Convert parsed articles into COPY rows for the staging tables.
+
+    Empty strings become NULL (as in the row-by-row importer); invalid dates
+    become NULL. Column order follows STAGE_DOCUMENT_COLUMNS and
+    STAGE_METADATA_COLUMNS.
+
+    Args:
+        articles: Articles as returned by PubMedBulkImporter._parse_article.
+
+    Returns:
+        (document rows, metadata rows).
+    """
+    docs: List[tuple] = []
+    metas: List[tuple] = []
+    for ord_, a in enumerate(articles):
+        revised = valid_iso_date(a.get('date_revised'))
+        docs.append((
+            ord_, a['pmid'], a.get('doi') or None, a.get('title'), a.get('abstract') or None,
+            a.get('authors', []), a.get('publication') or None,
+            valid_iso_date(a.get('publication_date')), a.get('url'),
+            a.get('mesh_terms', []), a.get('keywords', []), revised,
+        ))
+        meta = a.get('transparency_metadata') or {}
+        if has_transparency_metadata(meta):
+            metas.append((
+                ord_, a['pmid'], revised,
+                Jsonb(meta['grants']) if meta.get('grants') else None,
+                meta.get('publication_types') or None,
+                bool(meta.get('is_retracted', False)),
+                Jsonb(meta['author_affiliations']) if meta.get('author_affiliations') else None,
+            ))
+    return docs, metas
+
+
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(SHA256_CHUNK_BYTES), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+# Per-process importer for parallel imports (set by _init_import_worker).
+_WORKER_IMPORTER: Optional['PubMedBulkImporter'] = None
+
+
+def _init_import_worker(data_dir: str, conninfo: str) -> None:
+    """Process-pool initializer: an importer bound to exactly the parent's database.
+
+    A fresh process re-imports bmlibrarian.database, which loads the default env
+    file; passing the parent's conninfo explicitly guarantees the worker writes
+    to the same database as the parent (never to whatever that file names).
+    """
+    global _WORKER_IMPORTER
+    from bmlibrarian.database import DatabaseManager
+
+    db = DatabaseManager(auto_migrate=False, conninfo=conninfo)
+    _WORKER_IMPORTER = PubMedBulkImporter(data_dir=data_dir, use_tracking=False, db_manager=db)
+
+
+def _import_file_in_worker(path: str) -> Dict:
+    """Process-pool task: import one file with this process's importer."""
+    if _WORKER_IMPORTER is None:
+        raise RuntimeError("import worker not initialised")
+    return _WORKER_IMPORTER.import_file(Path(path))
 
 # Type alias for progress callback: (message: str) -> None
 ProgressCallback = Callable[[str], None]
@@ -339,19 +525,26 @@ class ImportQueue:
 
 
 class PubMedBulkImporter:
-    """FTP-based PubMed bulk downloader and importer."""
+    """PubMed bulk downloader (HTTPS, MD5-verified) and importer."""
 
-    FTP_HOST = 'ftp.ncbi.nlm.nih.gov'
-    BASELINE_PATH = '/pubmed/baseline'
-    UPDATE_PATH = '/pubmed/updatefiles'
+    BASELINE_URL = f'{NCBI_HTTPS_BASE_URL}/pubmed/baseline/'
+    UPDATE_URL = f'{NCBI_HTTPS_BASE_URL}/pubmed/updatefiles/'
 
-    def __init__(self, data_dir: Optional[str] = None, use_tracking: bool = True):
+    def __init__(
+        self,
+        data_dir: Optional[str] = None,
+        use_tracking: bool = True,
+        db_manager: Optional[Any] = None,
+        downloader: Optional[HttpsDownloader] = None,
+    ):
         """
         Initialize PubMed bulk importer.
 
         Args:
             data_dir: Directory for storing downloaded files (default: ~/knowledgebase/pubmed_data)
             use_tracking: Whether to use database tracking (default: True)
+            db_manager: DatabaseManager to use (default: the shared get_db_manager()).
+            downloader: HTTPS downloader to use (default: a new HttpsDownloader).
         """
         self.data_dir = Path(data_dir or os.path.expanduser('~/knowledgebase/pubmed_data'))
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -363,7 +556,8 @@ class PubMedBulkImporter:
 
         self.use_tracking = use_tracking
         self.tracker = DownloadTracker() if use_tracking else None
-        self.db_manager = get_db_manager()
+        self.db_manager = db_manager if db_manager is not None else get_db_manager()
+        self.downloader = downloader if downloader is not None else HttpsDownloader()
 
         # Get PubMed source_id
         with self.db_manager.get_connection() as conn:
@@ -376,207 +570,111 @@ class PubMedBulkImporter:
 
         logger.info(f"Initialized PubMed bulk importer with data_dir: {self.data_dir}")
 
-    @backoff.on_exception(
-        backoff.expo,
-        (ftplib.error_temp, EOFError, ConnectionResetError, TimeoutError),
-        max_tries=3
-    )
-    def _create_ftp_connection(self) -> ftplib.FTP:
-        """Create FTP connection with retry logic."""
-        logger.debug(f"Connecting to {self.FTP_HOST}")
-        ftp = ftplib.FTP(self.FTP_HOST, timeout=120)
-        ftp.login()  # Anonymous login
-        ftp.set_pasv(True)
-
-        # Set socket keepalive (platform-specific options)
-        import socket
-        import sys
-        sock = ftp.sock
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-        # TCP keepalive options differ between platforms
-        if sys.platform == 'darwin':
-            # macOS: TCP_KEEPALIVE sets the idle time before keepalive probes
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60)
-        elif sys.platform.startswith('linux'):
-            # Linux: TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-        # Windows: keepalive options set differently, SO_KEEPALIVE alone is sufficient
-
-        return ftp
-
-    def _get_remote_file_list(self, ftp: ftplib.FTP, path: str) -> List[Tuple[str, int]]:
-        """Get list of XML files from FTP directory."""
-        ftp.cwd(path)
-        files = []
-
-        # Parse MLSD output for file names and sizes
-        for name, facts in ftp.mlsd():
-            if name.endswith('.xml.gz') and name.startswith('pubmed'):
-                size = int(facts.get('size', 0))
-                files.append((name, size))
-
-        return sorted(files)
-
-    def _calculate_checksum(self, filepath: Path) -> str:
-        """Calculate MD5 checksum of file."""
-        md5 = hashlib.md5()
-        with open(filepath, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                md5.update(chunk)
-        return md5.hexdigest()
-
-    def _download_file(
-        self,
-        ftp: ftplib.FTP,
-        filename: str,
-        dest_path: Path,
-        expected_size: int,
-        max_retries: int = 5,
-        current_path: str = None,
-        progress_callback: Optional[ProgressCallback] = None
-    ) -> Tuple[bool, ftplib.FTP]:
+    def _needs_download(self, filename: str, dest_path: Path, skip_existing: bool) -> bool:
         """
-        Download file from FTP with resume capability.
+        Whether a remote file still has to be downloaded.
+
+        A file is skipped only if the tracker records it as downloaded *and* it
+        is still on disk (files at their final name are always MD5-verified).
+        """
+        if not skip_existing or not dest_path.exists():
+            return True
+        return not (self.tracker and self.tracker.is_file_downloaded(filename))
+
+    def _download_one(
+        self,
+        filename: str,
+        directory_url: str,
+        dest_dir: Path,
+        file_type: str,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Optional[Path]:
+        """
+        Download one file over HTTPS, verify its MD5 and record it in the tracker.
 
         Args:
-            ftp: FTP connection
-            filename: Name of file to download
-            dest_path: Local destination path
-            expected_size: Expected file size in bytes
-            max_retries: Maximum retry attempts
-            current_path: Current FTP directory path for reconnection
-            progress_callback: Optional callback for progress messages
+            filename: Remote file name (from the directory listing).
+            directory_url: Remote directory URL ending in ``/``.
+            dest_dir: Local directory.
+            file_type: 'baseline' or 'update' (tracker category).
+            progress_callback: Optional callback for progress messages.
 
         Returns:
-            Tuple of (success: bool, ftp: FTP connection - may be new if reconnected)
+            The local path of the verified file, or None if the download failed.
         """
-        for attempt in range(max_retries):
-            try:
-                # Test connection health before attempting download
-                try:
-                    ftp.voidcmd('NOOP')
-                except Exception:
-                    logger.info(f"{filename}: Connection stale, reconnecting...")
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                # Check if partial download exists
-                start_pos = dest_path.stat().st_size if dest_path.exists() else 0
+        url = directory_url + filename
+        dest_path = dest_dir / filename
+        try:
+            expected_md5 = self.downloader.fetch_md5(url)
+            if not self.downloader.download(url, dest_path, expected_md5, progress_callback):
+                return None
+        except Exception as e:
+            logger.error(f"{filename}: download failed: {e}")
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD ERROR] {filename}: {e}")
+            return None
+        if self.tracker:
+            self.tracker.mark_downloaded(filename, file_type, dest_path.stat().st_size, expected_md5)
+        return dest_path
 
-                if start_pos == expected_size:
-                    logger.info(f"{filename}: Already downloaded ({expected_size} bytes)")
-                    return True, ftp
-                elif start_pos > expected_size:
-                    logger.warning(f"{filename}: Local file larger than expected, redownloading")
-                    dest_path.unlink()
-                    start_pos = 0
+    def _download_directory(
+        self,
+        directory_url: str,
+        dest_dir: Path,
+        file_type: str,
+        skip_existing: bool = True,
+        progress_callback: Optional[ProgressCallback] = None,
+        cancel_check: Optional[CancelCheck] = None,
+        on_downloaded: Optional[Callable[[Path], None]] = None,
+        files: Optional[List[str]] = None,
+    ) -> Tuple[int, int]:
+        """
+        Download every data file of a remote directory that is not yet present.
 
-                # Open file for appending
-                mode = 'ab' if start_pos > 0 else 'wb'
-                if start_pos > 0:
-                    start_mb = start_pos / (1024 * 1024)
-                    msg = f"{filename}: Resuming from {start_mb:.1f} MB"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {msg}")
-                else:
-                    logger.info(f"{filename}: Downloading ({expected_size} bytes)")
+        Args:
+            directory_url: Remote directory URL ending in ``/``.
+            dest_dir: Local directory.
+            file_type: 'baseline' or 'update'.
+            skip_existing: Skip files already downloaded (default: True).
+            progress_callback: Optional callback for progress messages.
+            cancel_check: Optional callback to check if operation should be cancelled.
+            on_downloaded: Optional callback receiving each newly verified file.
+            files: Remote file names if already listed (default: list the directory).
 
-                with open(dest_path, mode) as f:
-                    # Resume from position - must be in binary mode
-                    if start_pos > 0:
-                        ftp.voidcmd('TYPE I')  # Switch to binary mode for REST
-                        ftp.sendcmd(f'REST {start_pos}')
+        Returns:
+            (files downloaded, files failed).
+        """
+        if files is None:
+            files = self.downloader.list_files(directory_url)
+        total_files = len(files)
+        logger.info(f"Found {total_files} {file_type} files at {directory_url}")
+        if progress_callback:
+            progress_callback(f"[INIT] Found {total_files} {file_type} files on server")
 
-                    # Download with progress
-                    downloaded = start_pos
-
-                    def callback(chunk):
-                        nonlocal downloaded
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if downloaded % (1024 * 1024 * 10) == 0:  # Every 10MB
-                            logger.debug(f"{filename}: {downloaded}/{expected_size} bytes")
-
-                    ftp.retrbinary(f'RETR {filename}', callback, blocksize=65536)
-                    f.flush()
-                    os.fsync(f.fileno())
-
-                # Verify size
-                actual_size = dest_path.stat().st_size
-                if actual_size != expected_size:
-                    logger.error(f"{filename}: Size mismatch ({actual_size} != {expected_size})")
-                    if attempt < max_retries - 1:
-                        logger.info(f"Retrying download (attempt {attempt + 2}/{max_retries})")
-                        time.sleep(5 * (attempt + 1))  # Exponential backoff
-                        continue
-                    return False, ftp
-
-                # Verify gzip integrity by reading entire file (checks CRC32)
-                try:
-                    with gzip.open(dest_path, 'rb') as gz:
-                        while gz.read(65536):  # Read in 64KB chunks to verify full file
-                            pass
-                    logger.info(f"{filename}: Download complete and verified")
-                    return True, ftp
-                except Exception as e:
-                    logger.error(f"{filename}: Gzip verification failed: {e}")
-                    if attempt < max_retries - 1:
-                        dest_path.unlink()
-                        time.sleep(5 * (attempt + 1))  # Exponential backoff
-                        continue
-                    return False, ftp
-
-            except (BrokenPipeError, ConnectionResetError, EOFError, TimeoutError,
-                    ftplib.error_temp, ftplib.error_reply) as e:
-                # Connection-related errors - always reconnect
-                logger.error(f"{filename}: Connection error: {e}")
-                if attempt < max_retries - 1:
-                    retry_delay = 10 * (attempt + 1)  # Exponential backoff: 10, 20, 30, 40 seconds
-                    msg = f"{filename}: Connection error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
-                    time.sleep(retry_delay)
-                    # Create fresh connection
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                    continue
-                return False, ftp
-
-            except Exception as e:
-                logger.error(f"{filename}: Download error: {e}")
-                if attempt < max_retries - 1:
-                    retry_delay = 5 * (attempt + 1)
-                    msg = f"{filename}: Error, retrying in {retry_delay}s ({attempt + 2}/{max_retries})"
-                    logger.info(msg)
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {msg}")
-                    time.sleep(retry_delay)
-                    # Create fresh connection for safety
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        pass
-                    ftp = self._create_ftp_connection()
-                    if current_path:
-                        ftp.cwd(current_path)
-                    continue
-                return False, ftp
-
-        return False, ftp
+        downloaded = failed = 0
+        for idx, filename in enumerate(files, 1):
+            if cancel_check and cancel_check():
+                if progress_callback:
+                    progress_callback("[DOWNLOAD] Cancelled by user")
+                break
+            if not self._needs_download(filename, dest_dir / filename, skip_existing):
+                logger.debug(f"{filename}: Already downloaded, skipping")
+                continue
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename}")
+            path = self._download_one(filename, directory_url, dest_dir, file_type, progress_callback)
+            if path is None:
+                failed += 1
+                logger.error(f"{filename}: Download failed after all retries")
+                if progress_callback:
+                    progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
+                continue
+            downloaded += 1
+            if progress_callback:
+                progress_callback(f"[DOWNLOAD] {filename}: Complete (MD5 verified)")
+            if on_downloaded:
+                on_downloaded(path)
+        return downloaded, failed
 
     def download_baseline(
         self,
@@ -585,7 +683,7 @@ class PubMedBulkImporter:
         cancel_check: Optional[CancelCheck] = None
     ) -> int:
         """
-        Download PubMed baseline files.
+        Download PubMed baseline files (HTTPS, MD5-verified, resumable).
 
         Args:
             skip_existing: Skip files already downloaded (default: True)
@@ -596,68 +694,17 @@ class PubMedBulkImporter:
             Number of files downloaded
         """
         logger.info("Starting baseline download")
+        downloaded, failed = self._download_directory(
+            self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
+            progress_callback, cancel_check)
+        logger.info(f"Baseline download complete: {downloaded} files downloaded, {failed} failed")
         if progress_callback:
-            progress_callback("[DOWNLOAD] Connecting to NCBI FTP server...")
-
-        ftp = self._create_ftp_connection()
-        ftp.cwd(self.BASELINE_PATH)
-        downloaded = 0
-
-        try:
-            files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
-            total_files = len(files)
-            logger.info(f"Found {total_files} baseline files")
-            if progress_callback:
-                progress_callback(f"[INIT] Found {total_files} baseline files on server")
-
-            for idx, (filename, size) in enumerate(files, 1):
-                # Check for cancellation
-                if cancel_check and cancel_check():
-                    if progress_callback:
-                        progress_callback("[DOWNLOAD] Cancelled by user")
-                    break
-
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                # Format size for display
-                size_mb = size / (1024 * 1024)
-                if progress_callback:
-                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
-
-                dest_path = self.baseline_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.BASELINE_PATH,
-                    progress_callback=progress_callback
-                )
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
-                    downloaded += 1
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {filename}: Complete (verified)")
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
-
-        finally:
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
-        logger.info(f"Baseline download complete: {downloaded} files downloaded")
-        if progress_callback:
-            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded")
+            progress_callback(f"[DOWNLOAD] Complete: {downloaded} files downloaded, {failed} failed")
         return downloaded
 
     def download_updates(self, skip_existing: bool = True) -> int:
         """
-        Download PubMed update files.
+        Download PubMed update files (HTTPS, MD5-verified, resumable).
 
         Args:
             skip_existing: Skip files already downloaded (default: True)
@@ -666,39 +713,9 @@ class PubMedBulkImporter:
             Number of files downloaded
         """
         logger.info("Starting update files download")
-        ftp = self._create_ftp_connection()
-        ftp.cwd(self.UPDATE_PATH)
-        downloaded = 0
-
-        try:
-            files = self._get_remote_file_list(ftp, self.UPDATE_PATH)
-            logger.info(f"Found {len(files)} update files")
-
-            for filename, size in files:
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                dest_path = self.update_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.UPDATE_PATH
-                )
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'update', size, checksum)
-                    downloaded += 1
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-
-        finally:
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
-        logger.info(f"Update files download complete: {downloaded} files downloaded")
+        downloaded, failed = self._download_directory(
+            self.UPDATE_URL, self.update_dir, 'update', skip_existing)
+        logger.info(f"Update files download complete: {downloaded} files downloaded, {failed} failed")
         return downloaded
 
     def _get_element_text(self, elem: Optional[ET.Element]) -> str:
@@ -924,16 +941,13 @@ class PubMedBulkImporter:
             metadata['publication_types'] = pub_types
         metadata['is_retracted'] = is_retracted
 
-        # 3. Check <CommentsCorrectionsList> for retraction references
-        pubmed_data = pubmed_article.find('.//PubmedData')
-        if pubmed_data is not None:
-            for correction in pubmed_data.findall(
-                './/CommentsCorrectionsList/CommentsCorrections'
-            ):
-                ref_type = correction.get('RefType', '')
-                if ref_type.lower() in ('retractionin', 'retractionof'):
-                    is_retracted = True
-                    metadata['is_retracted'] = True
+        # 3. Check <CommentsCorrectionsList> for retraction references.
+        # Per the PubMed DTD it is a child of MedlineCitation (not PubmedData).
+        for correction in medline.findall('CommentsCorrectionsList/CommentsCorrections'):
+            ref_type = correction.get('RefType', '')
+            if ref_type.lower() in RETRACTION_REF_TYPES:
+                is_retracted = True
+                metadata['is_retracted'] = True
 
         # 4. Extract author affiliations from <AffiliationInfo>
         author_affiliations = []
@@ -1000,7 +1014,9 @@ class PubMedBulkImporter:
             doi = None
             pubmed_data = article_elem.find('.//PubmedData')
             if pubmed_data is not None:
-                for article_id in pubmed_data.findall('.//ArticleIdList/ArticleId'):
+                # Direct child only: './/' would also reach the DOIs of cited
+                # references in ReferenceList/Reference/ArticleIdList.
+                for article_id in pubmed_data.findall('ArticleIdList/ArticleId'):
                     if article_id.get('IdType') == 'doi':
                         doi = article_id.text
                         break
@@ -1011,11 +1027,15 @@ class PubMedBulkImporter:
                 if mesh.text:
                     mesh_terms.append(mesh.text)
 
-            # Keywords
+            # Keywords: KeywordList is a child of MedlineCitation, not of Article.
             keywords = []
-            for keyword in article.findall('.//KeywordList/Keyword'):
-                if keyword.text:
-                    keywords.append(keyword.text)
+            for keyword in medline.findall('KeywordList/Keyword'):
+                text = self._get_element_text(keyword).strip()
+                if text:
+                    keywords.append(text)
+
+            # Revision date: orders revised records of the same PMID
+            date_revised = self._extract_date(medline.find('DateRevised'))
 
             # Extract transparency metadata (grants, publication types, affiliations)
             transparency_metadata = self._extract_transparency_metadata(
@@ -1033,6 +1053,7 @@ class PubMedBulkImporter:
                 'url': f'https://pubmed.ncbi.nlm.nih.gov/{pmid}/',
                 'mesh_terms': mesh_terms,
                 'keywords': keywords,
+                'date_revised': date_revised,
                 'transparency_metadata': transparency_metadata,
             }
 
@@ -1255,71 +1276,117 @@ class PubMedBulkImporter:
 
         return stored
 
+    def _is_file_committed(self, filename: str) -> bool:
+        """Whether ``filename`` is recorded in ingest.ledger (already imported)."""
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM ingest.ledger WHERE source = %s AND file = %s",
+                    (LEDGER_SOURCE, filename),
+                )
+                return cur.fetchone() is not None
+
+    def _store_file(self, articles: List[Dict], filename: str, sha256: str, started: float) -> int:
+        """Store one file's articles atomically: COPY, merge, metadata, ledger row.
+
+        Everything happens in one transaction, so an interruption leaves either
+        the whole file (including its ledger row) or none of it, and a resumed
+        import repeats exactly the files that did not commit.
+
+        Args:
+            articles: Parsed articles of the file, in file order.
+            filename: Source file name (ledger key).
+            sha256: Checksum of the source file.
+            started: perf_counter() when processing of the file began.
+
+        Returns:
+            Number of document rows inserted or updated.
+        """
+        docs, metas = to_staging_rows(articles)
+        params = {'source_id': self.source_id, 'source': METADATA_SOURCE}
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                for ddl in STAGING_DDL:
+                    cur.execute(ddl)
+                with cur.copy(f"COPY stage_document ({', '.join(STAGE_DOCUMENT_COLUMNS)}) FROM STDIN") as cp:
+                    for row in docs:
+                        cp.write_row(row)
+                with cur.copy(f"COPY stage_metadata ({', '.join(STAGE_METADATA_COLUMNS)}) FROM STDIN") as cp:
+                    for row in metas:
+                        cp.write_row(row)
+                cur.execute(MERGE_DOCUMENTS_SQL, params)
+                written = cur.rowcount
+                cur.execute(TRANSPARENCY_TABLE_EXISTS_SQL)
+                if cur.fetchone()[0]:
+                    cur.execute(MERGE_METADATA_SQL, params)
+                else:
+                    logger.debug("transparency.document_metadata not found, skipping metadata storage")
+                cur.execute(LEDGER_UPSERT_SQL, {
+                    'source': LEDGER_SOURCE, 'file': filename, 'sha256': sha256,
+                    'records': len(articles), 'seconds': time.perf_counter() - started,
+                })
+        return written
+
     def import_file(
         self,
         filepath: Path,
-        batch_size: int = 100,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        force: bool = False,
     ) -> Dict:
         """
-        Import articles from XML file using memory-efficient streaming.
+        Import one PubMed XML file, resumably.
+
+        The file is parsed completely, then stored in a single transaction
+        (COPY into staging, revision-aware set-based merge, transparency
+        metadata, ingest.ledger row). Files already in the ledger are skipped
+        unless ``force`` is set, so stopping and restarting an import repeats
+        only files that had not committed.
 
         Args:
             filepath: Path to .xml.gz file
-            batch_size: Number of articles to batch before database insertion
             progress_callback: Optional callback for progress messages
+            force: Re-import even if the file is already in the ledger
 
         Returns:
-            Dict with import statistics
+            Dict with import statistics (``skipped`` is True for ledger hits)
         """
-        logger.info(f"Importing {filepath.name}")
-
+        filepath = Path(filepath)
         stats = {
             'filename': filepath.name,
             'articles_parsed': 0,
             'articles_imported': 0,
             'articles_updated': 0,
-            'errors': 0
+            'errors': 0,
+            'skipped': False,
         }
 
-        batch = []
-
         try:
-            with gzip.open(filepath, 'rb') as gz_file:
-                # Use iterparse for memory efficiency
-                context = ET.iterparse(gz_file, events=('end',))
+            if not force and self._is_file_committed(filepath.name):
+                logger.info(f"{filepath.name}: already in ingest.ledger, skipping")
+                stats['skipped'] = True
+                return stats
 
-                for event, elem in context:
+            logger.info(f"Importing {filepath.name}")
+            started = time.perf_counter()
+            articles: List[Dict] = []
+            with gzip.open(filepath, 'rb') as gz_file:
+                # Use iterparse for memory efficiency while parsing
+                for event, elem in ET.iterparse(gz_file, events=('end',)):
                     if elem.tag == 'PubmedArticle':
                         article = self._parse_article(elem)
                         if article:
-                            batch.append(article)
-                            stats['articles_parsed'] += 1
-
-                            if len(batch) >= batch_size:
-                                count = self._store_article_batch(batch)
-                                stats['articles_imported'] += count
-                                batch = []
-
-                                if stats['articles_parsed'] % 1000 == 0:
-                                    msg = f"{filepath.name}: Processed {stats['articles_parsed']:,} articles"
-                                    logger.info(msg)
-                                    if progress_callback:
-                                        progress_callback(f"[IMPORT] {msg}")
+                            articles.append(article)
                         else:
                             stats['errors'] += 1
-
-                        # Clear element to free memory
-                        # Note: Standard library ElementTree doesn't support getparent()/getprevious()
-                        # (those are lxml-specific methods), so we just clear the element itself
                         elem.clear()
+            stats['articles_parsed'] = len(articles)
+            if progress_callback:
+                progress_callback(f"[IMPORT] {filepath.name}: parsed {len(articles):,} articles, storing")
 
-                # Process remaining batch
-                if batch:
-                    count = self._store_article_batch(batch)
-                    stats['articles_imported'] += count
-
-            logger.info(f"{filepath.name}: Import complete - {stats['articles_parsed']} parsed, {stats['articles_imported']} imported")
+            stats['articles_imported'] = self._store_file(
+                articles, filepath.name, file_sha256(filepath), started)
+            logger.info(f"{filepath.name}: Import complete - {stats['articles_parsed']} parsed, "
+                        f"{stats['articles_imported']} imported")
 
             # Mark as processed in tracker
             if self.tracker:
@@ -1352,25 +1419,43 @@ class PubMedBulkImporter:
 
         return stats
 
+    def _committed_files(self) -> set:
+        """Names of all files already recorded in ingest.ledger."""
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT file FROM ingest.ledger WHERE source = %s", (LEDGER_SOURCE,))
+                return {row[0] for row in cur.fetchall()}
+
     def import_all_files(
         self,
         file_type: Optional[str] = None,
         progress_callback: Optional[ProgressCallback] = None,
-        cancel_check: Optional[CancelCheck] = None
+        cancel_check: Optional[CancelCheck] = None,
+        workers: int = 1,
     ) -> Dict:
         """
-        Import all downloaded files.
+        Import all downloaded files, resumably and optionally in parallel.
+
+        Files already in ingest.ledger (or marked processed by the download
+        tracker) are skipped, so re-running continues where a stopped import
+        left off. With ``workers > 1`` files are imported by separate
+        processes, each committing whole files; the revision-aware merge makes
+        the result independent of the order in which files finish.
 
         Args:
             file_type: 'baseline', 'update', or None for both
             progress_callback: Optional callback for progress messages
-            cancel_check: Optional callback to check if operation should be cancelled
+            cancel_check: Optional callback to check if operation should be cancelled.
+                Cancelling stops submitting files; files already running finish
+                (each is one transaction).
+            workers: Number of parallel import processes (1 = in this process)
 
         Returns:
             Dict with overall statistics
         """
         overall_stats = {
             'files_processed': 0,
+            'files_skipped': 0,
             'total_articles': 0,
             'total_errors': 0
         }
@@ -1382,37 +1467,60 @@ class PubMedBulkImporter:
         if file_type in (None, 'update'):
             dirs_to_process.append(self.update_dir)
 
-        # Collect all files to process
+        # Collect all files to process, minus those already committed
         all_files = []
         for directory in dirs_to_process:
             all_files.extend(sorted(directory.glob('*.xml.gz')))
-        total_files = len(all_files)
+        committed = self._committed_files()
+        pending = []
+        for filepath in all_files:
+            if filepath.name in committed or (self.tracker and self.tracker.is_file_processed(filepath.name)):
+                overall_stats['files_skipped'] += 1
+            else:
+                pending.append(filepath)
+        total_files = len(pending)
+        if progress_callback:
+            progress_callback(f"[IMPORT] {total_files} files to import "
+                              f"({overall_stats['files_skipped']} already done), {workers} worker(s)")
 
-        for idx, filepath in enumerate(all_files, 1):
-            # Check for cancellation
-            if cancel_check and cancel_check():
-                if progress_callback:
-                    progress_callback("[IMPORT] Cancelled by user")
-                break
-
-            # Skip if already processed
-            if self.tracker and self.tracker.is_file_processed(filepath.name):
-                logger.info(f"{filepath.name}: Already processed, skipping")
-                continue
-
-            if progress_callback:
-                progress_callback(f"[IMPORT] {idx}/{total_files}: {filepath.name}")
-
-            stats = self.import_file(filepath, progress_callback=progress_callback)
+        def record(stats: Dict, idx: int) -> None:
             overall_stats['files_processed'] += 1
             overall_stats['total_articles'] += stats['articles_imported']
             overall_stats['total_errors'] += stats['errors']
-
+            if self.tracker and workers > 1 and stats['errors'] == 0:
+                self.tracker.mark_processed(stats['filename'], stats['articles_parsed'])
             if progress_callback:
-                progress_callback(
-                    f"[IMPORT] {filepath.name}: {stats['articles_imported']} articles imported"
-                )
+                progress_callback(f"[IMPORT] {idx}/{total_files}: {stats['filename']}: "
+                                  f"{stats['articles_imported']} articles imported")
 
+        if workers <= 1:
+            for idx, filepath in enumerate(pending, 1):
+                if cancel_check and cancel_check():
+                    if progress_callback:
+                        progress_callback("[IMPORT] Cancelled by user")
+                    break
+                record(self.import_file(filepath, progress_callback=progress_callback), idx)
+            return overall_stats
+
+        context = multiprocessing.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=workers, mp_context=context,
+                                 initializer=_init_import_worker,
+                                 initargs=(str(self.data_dir), self.db_manager.conninfo)) as pool:
+            futures = {pool.submit(_import_file_in_worker, str(f)): f for f in pending}
+            done_count = 0
+            for future in as_completed(futures):
+                done_count += 1
+                try:
+                    record(future.result(), done_count)
+                except Exception as e:
+                    logger.error(f"{futures[future].name}: worker failed: {e}", exc_info=True)
+                    overall_stats['total_errors'] += 1
+                if cancel_check and cancel_check():
+                    for f in futures:
+                        f.cancel()
+                    if progress_callback:
+                        progress_callback("[IMPORT] Cancelled by user; running files will finish")
+                    break
         return overall_stats
 
     def _import_worker(
@@ -1538,25 +1646,16 @@ class PubMedBulkImporter:
         }
 
         if progress_callback:
-            progress_callback("[INIT] Connecting to NCBI FTP server...")
+            progress_callback("[INIT] Listing NCBI baseline files...")
 
-        # Get list of remote files
-        ftp = self._create_ftp_connection()
         try:
-            remote_files = self._get_remote_file_list(ftp, self.BASELINE_PATH)
-            total_files = len(remote_files)
-            logger.info(f"Found {total_files} baseline files on server")
-            if progress_callback:
-                progress_callback(f"[INIT] Found {total_files} baseline files on server")
+            remote_files = self.downloader.list_files(self.BASELINE_URL)
         except Exception as e:
             logger.error(f"Failed to get file list: {e}")
             if progress_callback:
                 progress_callback(f"[ERROR] Failed to get file list: {e}")
-            try:
-                ftp.quit()
-            except Exception:
-                pass
             raise
+        total_files = len(remote_files)
 
         # Create import queue
         import_queue = ImportQueue(start_from=1)
@@ -1602,57 +1701,17 @@ class PubMedBulkImporter:
         logger.info("Import worker thread started")
 
         # Download files in main thread
+        def queue_for_import(path: Path) -> None:
+            stats['files_downloaded'] += 1
+            import_queue.add_downloaded(path)
+
         try:
-            downloaded = 0
-            for idx, (filename, size) in enumerate(remote_files, 1):
-                # Check for cancellation
-                if cancel_check and cancel_check():
-                    if progress_callback:
-                        progress_callback("[DOWNLOAD] Cancelled by user")
-                    break
-
-                # Skip if already downloaded
-                if skip_existing and self.tracker and self.tracker.is_file_downloaded(filename):
-                    logger.debug(f"{filename}: Already downloaded, skipping")
-                    continue
-
-                # Report download progress
-                size_mb = size / (1024 * 1024)
-                if progress_callback:
-                    progress_callback(f"[DOWNLOAD] {idx}/{total_files}: {filename} ({size_mb:.1f} MB)")
-
-                dest_path = self.baseline_dir / filename
-                success, ftp = self._download_file(
-                    ftp, filename, dest_path, size,
-                    current_path=self.BASELINE_PATH,
-                    progress_callback=progress_callback
-                )
-
-                if success:
-                    checksum = self._calculate_checksum(dest_path)
-                    if self.tracker:
-                        self.tracker.mark_downloaded(filename, 'baseline', size, checksum)
-                    downloaded += 1
-                    stats['files_downloaded'] += 1
-
-                    # Add to import queue
-                    import_queue.add_downloaded(dest_path)
-
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD] {filename}: Complete (queued for import)")
-                else:
-                    logger.error(f"{filename}: Download failed after all retries")
-                    if progress_callback:
-                        progress_callback(f"[DOWNLOAD ERROR] {filename}: Failed after all retries")
-                    stats['total_errors'] += 1
-
+            _downloaded, failed = self._download_directory(
+                self.BASELINE_URL, self.baseline_dir, 'baseline', skip_existing,
+                progress_callback, cancel_check, on_downloaded=queue_for_import,
+                files=remote_files)
+            stats['total_errors'] += failed
         finally:
-            # Close FTP connection
-            try:
-                ftp.quit()
-            except Exception:
-                pass
-
             # Signal download completion
             import_queue.mark_download_complete()
             if progress_callback:

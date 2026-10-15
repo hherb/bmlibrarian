@@ -1,0 +1,16 @@
+[package]
+name = "embedding-llamacpp-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Phase 0b follow-up: arctic-embed-l-v2.0 via llama.cpp (llama-cpp-2, Metal) in-process"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+llama-cpp-2 = { version = "=0.1.159", features = ["metal"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
