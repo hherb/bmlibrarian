@@ -388,7 +388,14 @@ def build_source_filter_clause(
 
     Collects the IDs of the selected sources into one list bound as a single
     ``%s`` array parameter (``source_id = ANY(%s)``) instead of interpolating
-    IDs into the SQL string.
+    IDs into the SQL string. Semantics match :func:`find_abstracts`:
+
+    - all three sources selected: no filter;
+    - empty ``source_id_map`` (source cache unavailable): no filter, since
+      the selection cannot be resolved (logged as a warning);
+    - otherwise the selected sources' ids; if they resolve to no id (nothing
+      selected, or only ``'others'`` with no other sources) the clause
+      matches no rows.
 
     Args:
         source_id_map: Source-name -> id mapping, as returned by
@@ -399,28 +406,43 @@ def build_source_filter_clause(
         use_others: Include the ``'others'`` source(s).
 
     Returns:
-        A ``(clause, params)`` tuple. ``clause`` is ``" AND source_id =
-        ANY(%s)"`` with ``params`` holding one list of ints, or ``("", [])``
-        when no selected source is known (no filtering, as before).
+        A ``(clause, params)`` tuple: ``(" AND source_id = ANY(%s)", [ids])``,
+        ``(" AND FALSE", [])`` when the selection matches nothing, or
+        ``("", [])`` when no filtering applies.
 
     Raises:
         ValueError: If a source id cannot be interpreted as an integer.
     """
-    selected: List[Union[int, List[int]]] = []
+    if use_pubmed and use_medrxiv and use_others:
+        return "", []
+    if not source_id_map:
+        logger.warning(
+            "Source id cache is empty; cannot apply the source selection "
+            f"(pubmed={use_pubmed}, medrxiv={use_medrxiv}, others={use_others}) - "
+            "searching all sources"
+        )
+        return "", []
+
+    selected: List[Tuple[str, Union[int, List[int]]]] = []
     if use_pubmed and 'pubmed' in source_id_map:
-        selected.append(source_id_map['pubmed'])
+        selected.append(('pubmed', source_id_map['pubmed']))
     if use_medrxiv and 'medrxiv' in source_id_map:
-        selected.append(source_id_map['medrxiv'])
+        selected.append(('medrxiv', source_id_map['medrxiv']))
     if use_others and 'others' in source_id_map:
-        selected.append(source_id_map['others'])
+        selected.append(('others', source_id_map['others']))
 
     ids: List[int] = []
-    for entry in selected:
-        for value in (entry if isinstance(entry, list) else [entry]):
-            ids.append(int(value))
+    for name, entry in selected:
+        for value in (entry if isinstance(entry, (list, tuple)) else [entry]):
+            if isinstance(value, bool):
+                raise ValueError(f"Invalid source id {value!r} for source '{name}'")
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid source id {value!r} for source '{name}'") from e
 
     if not ids:
-        return "", []
+        return " AND FALSE", []
     return " AND source_id = ANY(%s)", [ids]
 
 

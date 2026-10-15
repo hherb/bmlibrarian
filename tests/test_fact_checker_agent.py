@@ -394,6 +394,30 @@ class TestFactCheckerAgent(unittest.TestCase):
     @patch.object(FactCheckerAgent, '_initialize_agents')
     @patch.object(FactCheckerAgent, '_search_documents')
     @patch.object(FactCheckerAgent, '_score_documents')
+    def test_threshold_override_reaches_citation_extraction(
+        self, mock_score, mock_search, mock_init
+    ):
+        """A per-call threshold below the default is not undone at extraction."""
+        low_scored = (self.sample_documents[0], {'score': 1.0, 'reasoning': 'weak'})
+        mock_search.return_value = self.sample_documents
+        mock_score.return_value = [low_scored]
+        self.agent.citation_agent = Mock()
+        self.agent.citation_agent.process_scored_documents_for_citations.return_value = []
+
+        self.agent.check_statement(statement=self.test_statement, score_threshold=0.0)
+
+        extract_call = self.agent.citation_agent.process_scored_documents_for_citations.call_args
+        self.assertEqual(extract_call.kwargs['score_threshold'], 0.0)
+        self.assertEqual(extract_call.kwargs['scored_documents'], [low_scored])
+
+    def test_check_statement_rejects_negative_max_documents(self):
+        """A negative document limit is a caller error, not 'no limit'."""
+        with self.assertRaises(ValueError):
+            self.agent.check_statement(statement=self.test_statement, max_documents=-1)
+
+    @patch.object(FactCheckerAgent, '_initialize_agents')
+    @patch.object(FactCheckerAgent, '_search_documents')
+    @patch.object(FactCheckerAgent, '_score_documents')
     def test_check_statement_none_overrides_use_defaults(
         self, mock_score, mock_search, mock_init
     ):

@@ -20,7 +20,10 @@ from bmlibrarian.agents.transparency_data import (
     is_likely_industry_funder,
     extract_trial_registry_ids,
     coerce_bounded_float,
+    coerce_data_availability,
+    coerce_optional_bool,
     coerce_str_list,
+    filter_trial_registry_ids,
     score_distribution_label,
 )
 
@@ -596,6 +599,7 @@ class TestLLMOutputCoercion:
             ("NIH", (["NIH"], True)),
             ("  ", ([], True)),
             (["NIH", None, 3], (["NIH", "3"], True)),
+            ([" NIH ", "", "   "], (["NIH"], True)),
             ({"name": "NIH"}, ([], False)),
             (42, ([], False)),
         ],
@@ -603,6 +607,49 @@ class TestLLMOutputCoercion:
     def test_coerce_str_list(self, raw, expected) -> None:
         """Strings and lists become lists of strings; other types are flagged."""
         assert coerce_str_list(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (True, True),
+            (False, False),
+            ("false", False),
+            (" No ", False),
+            ("YES", True),
+            ("true", True),
+            ("unclear", None),
+            (None, None),
+            (1, None),
+            ([], None),
+        ],
+    )
+    def test_coerce_optional_bool(self, raw, expected) -> None:
+        """Only real booleans and true/false/yes/no strings are accepted."""
+        assert coerce_optional_bool(raw) is expected
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("open", "open"),
+            ("Open", "open"),
+            ("On request", "on_request"),
+            ("not-available", "not_available"),
+            ("available", None),
+            (None, None),
+            (3, None),
+        ],
+    )
+    def test_coerce_data_availability(self, raw, expected) -> None:
+        """Values are normalized to DataAvailability values or rejected."""
+        assert coerce_data_availability(raw) == expected
+
+    def test_filter_trial_registry_ids(self) -> None:
+        """Only IDs in a known registry format survive."""
+        valid, rejected = filter_trial_registry_ids(
+            ["NCT12345678", "N/A", "ISRCTN12345678", "registered", "NCT12345678"]
+        )
+        assert valid == ["NCT12345678", "ISRCTN12345678"]
+        assert rejected == ["N/A", "registered"]
 
     def test_score_buckets_match_risk_levels(self) -> None:
         """A score's distribution bucket always agrees with classify_risk()."""
@@ -641,16 +688,106 @@ class TestTransparencyAgentMalformedResponses:
         assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
         assert agent.get_assessment_stats()["failed_assessments"] == 1
 
+    @pytest.mark.parametrize(
+        "response",
+        [
+            ["not", "an", "object"],
+            # A string containing every field name passed the old `in` check
+            "has_funding_disclosure has_coi_disclosure data_availability "
+            "transparency_score overall_confidence",
+            42,
+        ],
+    )
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json')
     def test_non_dict_response_fails_cleanly(
-        self, mock_generate: Mock, mock_conn: Mock,
+        self, mock_generate: Mock, mock_conn: Mock, response,
     ) -> None:
-        """A JSON array instead of an object fails the doc instead of raising."""
-        mock_generate.return_value = ["not", "an", "object"]
+        """A non-object JSON response fails the doc instead of raising."""
+        mock_generate.return_value = response
 
         agent = TransparencyAgent(show_model_info=False)
         assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"transparency_score": 45},        # 0-100 scale, not clamped to 10
+            {"transparency_score": -1},
+            {"overall_confidence": 85},
+            {"has_coi_disclosure": "maybe"},
+            {"has_funding_disclosure": None},
+        ],
+    )
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_invalid_required_value_fails(
+        self, mock_generate: Mock, mock_conn: Mock, overrides,
+    ) -> None:
+        """Out-of-range required numbers and unrecognisable required booleans fail."""
+        mock_generate.return_value = self._response(**overrides)
+
+        agent = TransparencyAgent(show_model_info=False)
+        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+        assert agent.get_assessment_stats()["failed_assessments"] == 1
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_string_booleans_and_enum_normalized(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """String booleans are parsed (not bool()-ed) and data_availability normalized."""
+        mock_generate.return_value = self._response(
+            has_funding_disclosure="false",
+            has_coi_disclosure="Yes",
+            is_industry_funded="unclear",
+            has_author_contributions="no",
+            data_availability="On request",
+        )
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert assessment is not None
+        assert assessment.has_funding_disclosure is False
+        assert assessment.has_coi_disclosure is True
+        # Unrecognisable LLM flag -> pattern match decides (NIH/AHA: not industry)
+        assert assessment.is_industry_funded is False
+        assert assessment.has_author_contributions is False
+        assert assessment.data_availability == DataAvailability.ON_REQUEST.value
+
+    @pytest.mark.parametrize("raw", [None, "available", 7])
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_unknown_data_availability_becomes_not_stated(
+        self, mock_generate: Mock, mock_conn: Mock, raw,
+    ) -> None:
+        """null/unknown data_availability -> not_stated, and the summary still renders."""
+        mock_generate.return_value = self._response(data_availability=raw)
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert assessment is not None
+        assert assessment.data_availability == DataAvailability.NOT_STATED.value
+        assert "Not Stated" in agent.format_assessment_summary(assessment)
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_placeholder_registry_ids_do_not_count_as_registration(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """LLM registry IDs with no known format are dropped."""
+        mock_generate.return_value = self._response(trial_registry_ids=["N/A", ""])
+        document = dict(SAMPLE_TRANSPARENT_DOCUMENT, abstract="No registration mentioned.")
+        document.pop("full_text", None)
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(document)
+
+        assert assessment is not None
+        assert assessment.trial_registry_ids == []
+        assert assessment.has_trial_registration is False
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, '_generate_and_parse_json')
@@ -693,6 +830,7 @@ class TestTransparencyAgentMalformedResponses:
         )
 
         assert len(assessments) == 1
+        assert agent.get_assessment_stats()["failed_assessments"] == 1
 
     @patch.object(TransparencyAgent, 'test_connection', return_value=True)
     @patch.object(TransparencyAgent, 'assess_transparency')
@@ -702,13 +840,31 @@ class TestTransparencyAgentMalformedResponses:
         """An unexpected exception for one document is logged and skipped."""
         good = Mock()
         mock_assess.side_effect = [RuntimeError("boom"), good]
+        progress = Mock()
 
         agent = TransparencyAgent(show_model_info=False)
         assessments = agent.assess_batch(
-            [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT]
+            [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT],
+            progress_callback=progress,
         )
 
         assert assessments == [good]
+        assert agent.get_assessment_stats()["failed_assessments"] == 1
+        assert progress.call_count == 2
+
+    def test_score_distribution_keys_and_counts(self) -> None:
+        """get_score_distribution uses half-open, risk-aligned buckets."""
+        agent = TransparencyAgent(show_model_info=False)
+        assessments = [
+            TransparencyAssessment(document_id=str(i), document_title="t", transparency_score=score)
+            for i, score in enumerate((2.0, 3.0, 4.5, 6.0, 8.0))
+        ]
+
+        assert agent.get_score_distribution(assessments) == {
+            "high_transparency (6-10)": 2,
+            "moderate_transparency (3-<6)": 2,
+            "low_transparency (0-<3)": 1,
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

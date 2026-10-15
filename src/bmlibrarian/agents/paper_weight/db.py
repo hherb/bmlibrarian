@@ -12,7 +12,7 @@ Uses DatabaseManager for PostgreSQL connectivity (golden rule #5).
 
 import json
 import logging
-from typing import Optional, Dict, List
+from typing import TYPE_CHECKING, Optional, Dict, List
 
 from .models import (
     AssessmentDetail,
@@ -25,6 +25,9 @@ from .models import (
     DIMENSION_REPLICATION_STATUS,
 )
 from ...database import get_db_manager
+
+if TYPE_CHECKING:
+    from ...database import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -104,7 +107,7 @@ def get_cached_assessment(
                 return _reconstruct_result_from_db(row, details)
 
     except Exception as e:
-        logger.error(f"Error fetching cached assessment: {e}")
+        logger.error(f"Error fetching cached assessment: {e}", exc_info=True)
         return None
 
 
@@ -297,7 +300,7 @@ def store_assessment(result: PaperWeightResult) -> None:
                 conn.commit()
 
     except Exception as e:
-        logger.error(f"Error storing assessment: {e}")
+        logger.error(f"Error storing assessment: {e}", exc_info=True)
         raise
 
 
@@ -342,7 +345,7 @@ def get_document(document_id: int) -> dict:
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"Error fetching document {document_id}: {e}")
+        logger.error(f"Error fetching document {document_id}: {e}", exc_info=True)
         raise
 
 
@@ -413,7 +416,7 @@ def check_replication_status(document_id: int) -> DimensionScore:
                 return dimension_score
 
     except Exception as e:
-        logger.error(f"Error checking replication status: {e}")
+        logger.error(f"Error checking replication status: {e}", exc_info=True)
 
         # Return zero score on error
         dimension_score = DimensionScore(
@@ -463,8 +466,8 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
 SEARCH_RESULT_LIMIT = 50
 RECENT_ASSESSMENTS_LIMIT = 20
 DEFAULT_SEMANTIC_THRESHOLD = 0.6
-# Fallback only: the real id is resolved per database (see _pubmed_source_id)
-PUBMED_SOURCE_ID = 1
+# Set once the missing-PubMed-source warning has been logged (avoid log spam)
+_warned_no_pubmed_source = False
 
 
 def pmid_select_expr(table_alias: str = "") -> str:
@@ -488,27 +491,32 @@ def pmid_select_expr(table_alias: str = "") -> str:
     )
 
 
-def _pubmed_source_id(db_manager) -> int:
+def _pubmed_source_id(db_manager: "DatabaseManager") -> Optional[int]:
     """Return the PubMed ``source_id`` for ``db_manager``'s database.
 
-    Uses the manager's cached source mapping; falls back to
-    ``PUBMED_SOURCE_ID`` if the mapping has no PubMed entry.
+    Uses the manager's cached source mapping. If it has no PubMed entry,
+    returns ``None``: bound into ``source_id = %s`` that matches no row, so
+    ``pmid`` comes back ``NULL`` and PMID lookups find nothing, rather than
+    guessing an id that may belong to another source.
 
     Args:
         db_manager: The ``DatabaseManager`` whose database is queried.
 
     Returns:
-        The PubMed source id.
+        The PubMed source id, or ``None`` if it is unknown.
     """
+    global _warned_no_pubmed_source
     source_ids = db_manager.get_cached_source_ids() or {}
     pubmed_id = source_ids.get('pubmed')
-    if isinstance(pubmed_id, int):
+    if isinstance(pubmed_id, int) and not isinstance(pubmed_id, bool):
         return pubmed_id
-    logger.warning(
-        "No 'pubmed' entry in cached source ids; using fallback "
-        f"PUBMED_SOURCE_ID={PUBMED_SOURCE_ID}"
-    )
-    return PUBMED_SOURCE_ID
+    if not _warned_no_pubmed_source:
+        logger.warning(
+            "No 'pubmed' entry in cached source ids; PMIDs will be reported "
+            "as unknown and PMID searches will return no results"
+        )
+        _warned_no_pubmed_source = True
+    return None
 
 
 def semantic_search_documents(
@@ -528,7 +536,8 @@ def semantic_search_documents(
 
     Returns:
         List of document dictionaries with id, title, pmid, doi, year, similarity,
-        has_pdf, has_full_text, pdf_filename
+        has_pdf, has_full_text, pdf_filename. ``pmid`` is ``None`` for
+        non-PubMed rows.
     """
     try:
         db_manager = get_db_manager()
@@ -569,7 +578,7 @@ def semantic_search_documents(
                 ]
 
     except Exception as e:
-        logger.error(f"Error in semantic search: {e}")
+        logger.error(f"Error in semantic search: {e}", exc_info=True)
         return []
 
 
@@ -578,7 +587,11 @@ def search_documents(
     limit: int = SEARCH_RESULT_LIMIT
 ) -> List[Dict]:
     """
-    Search documents by PMID (external_id), DOI, or title.
+    Search documents by PMID, DOI, or title.
+
+    An all-digit query is treated as a PMID and matches only PubMed rows
+    (``external_id`` of other sources is not a PMID); it does not fall back
+    to a title search.
 
     Args:
         query: Search query (PMID, DOI, or title keywords)
@@ -586,7 +599,8 @@ def search_documents(
 
     Returns:
         List of document dictionaries with id, title, pmid, doi, year,
-        has_pdf, has_full_text, pdf_filename, pdf_url
+        has_pdf, has_full_text, pdf_filename, pdf_url. ``pmid`` is ``None``
+        for non-PubMed rows.
     """
     try:
         db_manager = get_db_manager()
@@ -646,7 +660,7 @@ def search_documents(
                 ]
 
     except Exception as e:
-        logger.error(f"Error searching documents: {e}")
+        logger.error(f"Error searching documents: {e}", exc_info=True)
         return []
 
 
@@ -659,6 +673,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
 
     Returns:
         List of dictionaries with assessment info and document metadata
+        (``pmid`` is ``None`` for non-PubMed documents)
     """
     try:
         db_manager = get_db_manager()
@@ -694,7 +709,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
                 ]
 
     except Exception as e:
-        logger.error(f"Error fetching recent assessments: {e}")
+        logger.error(f"Error fetching recent assessments: {e}", exc_info=True)
         return []
 
 
@@ -735,7 +750,7 @@ def get_document_for_viewer(document_id: int) -> Optional[Dict]:
                 return None
 
     except Exception as e:
-        logger.error(f"Error fetching document for viewer: {e}")
+        logger.error(f"Error fetching document for viewer: {e}", exc_info=True)
         return None
 
 
@@ -747,7 +762,8 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
         document_id: Database ID of document
 
     Returns:
-        Document metadata dictionary or None if not found
+        Document metadata dictionary or None if not found (``pmid`` is
+        ``None`` for non-PubMed documents)
     """
     try:
         db_manager = get_db_manager()
@@ -775,7 +791,7 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
                 return None
 
     except Exception as e:
-        logger.error(f"Error fetching document metadata: {e}")
+        logger.error(f"Error fetching document metadata: {e}", exc_info=True)
         return None
 
 
@@ -792,6 +808,5 @@ __all__ = [
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',
     'DEFAULT_SEMANTIC_THRESHOLD',
-    'PUBMED_SOURCE_ID',
     'pmid_select_expr',
 ]

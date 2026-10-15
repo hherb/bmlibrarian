@@ -127,6 +127,17 @@ are Qt-incomplete:
 - Decide the fate of `source_reliability` scoring (currently a no-op
   neutral 5.0), `validation/ExperimentService`, and `benchmarking/` if
   their sole callers are removed.
+- **Move `TransparencyAssessment` invariants into the type.** Validation
+  of LLM output lives only in `TransparencyAgent._validate_assessment_data`;
+  any other constructor (CLI reload, tests) bypasses it. Add a cheap
+  `__post_init__` that normalizes `data_availability` through the enum and
+  derives `risk_level` from `classify_risk()` (today it is set by mutation
+  after construction), type `data_availability`/`risk_level` with their
+  `str` enums, and make the distribution buckets a small enum so
+  `get_score_distribution()` cannot `KeyError` on a typo. Related:
+  `paper_weight/db.py`'s `pmid_select_expr()` relies on callers placing the
+  PubMed id at the matching positional `%s` — switch to a named
+  placeholder or return `(expr, params)` like `build_source_filter_clause`.
 
 ## Tracked separately on GitHub
 
@@ -144,6 +155,13 @@ are Qt-incomplete:
 - [#252](https://github.com/hherb/bmlibrarian/issues/252) —
   `SemanticChunkProcessor` still speaks the old ollama API and is
   unreachable: wire it onto `LLMClient` or delete it.
+- [#273](https://github.com/hherb/bmlibrarian/issues/273) — Fact-checker
+  records infrastructure failures (DB/Ollama down) as `maybe` verdicts.
+- [#274](https://github.com/hherb/bmlibrarian/issues/274) —
+  TransparencyAgent failure reasons and batch failures are not surfaced to
+  callers.
+- [#275](https://github.com/hherb/bmlibrarian/issues/275) — `paper_weight/db.py`
+  query helpers return `[]`/`None` on database errors.
 
 ## Out of scope for now
 

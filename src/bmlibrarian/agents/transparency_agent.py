@@ -41,6 +41,7 @@ from .transparency_data import (
     MAX_TEXT_LENGTH,
     MAX_TOTAL_SCORE,
     MAX_UNIT_VALUE,
+    MIN_TRANSPARENCY_SCORE,
     MIN_UNIT_VALUE,
     PATTERN_INDUSTRY_MIN_CONFIDENCE,
     SUMMARY_SEPARATOR_WIDTH,
@@ -50,9 +51,13 @@ from .transparency_data import (
     RiskLevel,
     TransparencyAssessment,
     coerce_bounded_float,
+    coerce_data_availability,
+    coerce_optional_bool,
     coerce_str_list,
     extract_trial_registry_ids,
+    filter_trial_registry_ids,
     is_likely_industry_funder,
+    parse_finite_float,
     score_distribution_label,
 )
 
@@ -68,14 +73,30 @@ REQUIRED_ASSESSMENT_FIELDS = (
 )
 
 # Numeric LLM fields: name -> (minimum, maximum, default if missing/invalid).
-# A default of None means the field is required and invalid data fails the
-# assessment instead of being silently replaced.
+# A default of None means the field is required: a missing, non-numeric or
+# out-of-range value fails the assessment (out of range usually means the
+# model answered on the wrong scale, e.g. 0-100, and clamping would turn that
+# into the most favourable score). Optional fields fall back to the default
+# and out-of-range values are clamped, both with a warning.
 NUMERIC_ASSESSMENT_FIELDS = {
-    "transparency_score": (MIN_UNIT_VALUE, MAX_TOTAL_SCORE, None),
+    "transparency_score": (MIN_TRANSPARENCY_SCORE, MAX_TOTAL_SCORE, None),
     "overall_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, None),
     "industry_funding_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
     "funding_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
     "coi_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+}
+
+# Required boolean LLM fields: an unrecognisable value fails the assessment
+REQUIRED_BOOL_ASSESSMENT_FIELDS = (
+    "has_funding_disclosure",
+    "has_coi_disclosure",
+)
+
+# Optional boolean LLM fields: name -> value used if missing/unrecognisable
+# (None for is_industry_funded means "LLM could not tell")
+OPTIONAL_BOOL_ASSESSMENT_FIELDS = {
+    "is_industry_funded": None,
+    "has_author_contributions": False,
 }
 
 # List-of-string LLM fields
@@ -166,7 +187,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             document: Document dictionary with 'abstract' (required) and optional 'full_text'.
-            min_confidence: Minimum confidence threshold to accept assessment (0-1).
+            min_confidence: Confidence (0-1) below which the assessment is flagged
+                as low-confidence (logged and counted; it is still returned).
 
         Returns:
             TransparencyAssessment object if successful, None on failure.
@@ -236,13 +258,14 @@ class TransparencyAgent(BaseAgent):
             )
             self._assessment_stats["low_confidence_assessments"] += 1
 
-        # Merge LLM-found registry IDs with pattern-extracted ones
+        # Merge LLM-found registry IDs (already format-checked) with
+        # pattern-extracted ones
         llm_registry_ids = assessment_data["trial_registry_ids"]
         all_registry_ids = list(set(pre_extracted_registry_ids + llm_registry_ids))
 
         # Check funding sources for industry involvement
         funding_sources = assessment_data["funding_sources"]
-        llm_industry_flag = assessment_data.get("is_industry_funded")
+        llm_industry_flag = assessment_data["is_industry_funded"]
         pattern_industry_flag = any(is_likely_industry_funder(s) for s in funding_sources)
 
         # Use pattern matching result if LLM didn't identify, or combine
@@ -261,23 +284,19 @@ class TransparencyAgent(BaseAgent):
             document_title=title,
             pmid=document.get("pmid"),
             doi=document.get("doi"),
-            has_funding_disclosure=bool(assessment_data.get("has_funding_disclosure", False)),
+            has_funding_disclosure=assessment_data["has_funding_disclosure"],
             funding_statement=assessment_data.get("funding_statement"),
             funding_sources=funding_sources,
             is_industry_funded=is_industry,
             industry_funding_confidence=industry_confidence,
             funding_disclosure_quality=assessment_data["funding_disclosure_quality"],
-            has_coi_disclosure=bool(assessment_data.get("has_coi_disclosure", False)),
+            has_coi_disclosure=assessment_data["has_coi_disclosure"],
             coi_statement=assessment_data.get("coi_statement"),
             conflicts_identified=assessment_data["conflicts_identified"],
             coi_disclosure_quality=assessment_data["coi_disclosure_quality"],
-            data_availability=assessment_data.get(
-                "data_availability", DataAvailability.NOT_STATED.value
-            ),
+            data_availability=assessment_data["data_availability"],
             data_availability_statement=assessment_data.get("data_availability_statement"),
-            has_author_contributions=bool(
-                assessment_data.get("has_author_contributions", False)
-            ),
+            has_author_contributions=assessment_data["has_author_contributions"],
             contributions_statement=assessment_data.get("contributions_statement"),
             has_trial_registration=bool(len(all_registry_ids) > 0),
             trial_registry_ids=all_registry_ids,
@@ -318,11 +337,21 @@ class TransparencyAgent(BaseAgent):
     ) -> Optional[Dict[str, Any]]:
         """Validate and normalize a parsed LLM transparency response.
 
-        Required fields must be present and the required numeric fields must
-        be numbers; anything else fails the assessment (returns ``None``).
-        Optional numeric fields that are missing or non-numeric fall back to
-        their defaults, numbers are clamped to their documented ranges, and
-        list fields are coerced to lists of strings. Every repair is logged.
+        Fails the assessment (returns ``None``, logged as an error) when the
+        response is not an object, a required field is missing, a required
+        numeric field is not a number (numeric strings are accepted) or is out
+        of range, or a required boolean is unrecognisable.
+
+        Otherwise repairs are applied and logged as warnings: optional numeric
+        fields that are invalid fall back to their defaults and out-of-range
+        ones are clamped; optional booleans that are unrecognisable fall back
+        to their defaults; an unknown ``data_availability`` becomes
+        ``not_stated``; list fields of the wrong type become empty lists and
+        LLM trial registry IDs that match no known registry format are
+        dropped. Silent normalizations: missing optional fields take their
+        defaults (debug log), single strings become one-element lists, list
+        items are stringified and stripped, and blank or ``None`` items are
+        dropped.
 
         Args:
             data: Parsed JSON from the LLM (not trusted to be a dict).
@@ -349,14 +378,52 @@ class TransparencyAgent(BaseAgent):
 
         for name, (minimum, maximum, default) in NUMERIC_ASSESSMENT_FIELDS.items():
             raw = data.get(name)
-            value = coerce_bounded_float(raw, minimum, maximum)
-            if value is None:
-                if default is None:
+            number = parse_finite_float(raw)
+            required = default is None
+            if number is None:
+                if required:
                     logger.error(
                         f"Invalid value {raw!r} for required field '{name}' "
                         f"in assessment response for document {doc_id}"
                     )
                     return None
+                if raw is None:
+                    logger.debug(f"'{name}' missing (document {doc_id}); using {default}")
+                else:
+                    logger.warning(
+                        f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
+                        f"using {default}"
+                    )
+                normalized[name] = default
+                continue
+            if not minimum <= number <= maximum:
+                if required:
+                    logger.error(
+                        f"Out-of-range value {raw!r} for required field '{name}' "
+                        f"(expected {minimum:g}-{maximum:g}) in assessment response "
+                        f"for document {doc_id}"
+                    )
+                    return None
+                logger.warning(
+                    f"Out-of-range value {raw!r} for '{name}' (document {doc_id}); "
+                    f"clamping to {minimum:g}-{maximum:g}"
+                )
+            normalized[name] = coerce_bounded_float(number, minimum, maximum)
+
+        for name in REQUIRED_BOOL_ASSESSMENT_FIELDS:
+            value = coerce_optional_bool(data.get(name))
+            if value is None:
+                logger.error(
+                    f"Invalid value {data.get(name)!r} for required boolean field "
+                    f"'{name}' in assessment response for document {doc_id}"
+                )
+                return None
+            normalized[name] = value
+
+        for name, default in OPTIONAL_BOOL_ASSESSMENT_FIELDS.items():
+            raw = data.get(name)
+            value = coerce_optional_bool(raw)
+            if value is None:
                 if raw is not None:
                     logger.warning(
                         f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
@@ -364,6 +431,16 @@ class TransparencyAgent(BaseAgent):
                     )
                 value = default
             normalized[name] = value
+
+        raw_availability = data.get("data_availability")
+        availability = coerce_data_availability(raw_availability)
+        if availability is None:
+            availability = DataAvailability.NOT_STATED.value
+            logger.warning(
+                f"Unknown data_availability {raw_availability!r} (document {doc_id}); "
+                f"using '{availability}'"
+            )
+        normalized["data_availability"] = availability
 
         for name in LIST_ASSESSMENT_FIELDS:
             items, ok = coerce_str_list(data.get(name))
@@ -373,6 +450,14 @@ class TransparencyAgent(BaseAgent):
                     f"(document {doc_id}); using an empty list"
                 )
             normalized[name] = items
+
+        registry_ids, rejected = filter_trial_registry_ids(normalized["trial_registry_ids"])
+        if rejected:
+            logger.warning(
+                f"Dropping trial registry IDs with no recognised registry format "
+                f"{rejected} (document {doc_id})"
+            )
+        normalized["trial_registry_ids"] = registry_ids
 
         return normalized
 
@@ -388,7 +473,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             document_id: The database ID of the document to assess.
-            min_confidence: Minimum confidence threshold to accept assessment (0-1).
+            min_confidence: Confidence (0-1) below which the assessment is flagged
+                as low-confidence (logged and counted; it is still returned).
 
         Returns:
             TransparencyAssessment object if successful, None otherwise.
@@ -423,7 +509,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             documents: List of document dictionaries.
-            min_confidence: Minimum confidence threshold to accept assessments.
+            min_confidence: Confidence (0-1) below which assessments are flagged
+                as low-confidence (logged and counted; they are still returned).
             progress_callback: Optional callback(current, total, doc_title) for progress.
 
         Returns:
@@ -871,11 +958,13 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         Returns:
             Dictionary with score categories and counts.
         """
-        # Buckets use the same thresholds as classify_risk(), so a document's
-        # bucket always matches its risk level (high transparency = low risk)
+        # Buckets use the same thresholds as classify_risk() on the score
+        # (high transparency = low risk). Ranges are half-open: 3.0 is
+        # moderate, 6.0 is high. Metadata enrichment can raise a document's
+        # risk level (e.g. retraction) without moving it between buckets.
         high = f"{SCORE_THRESHOLD_MEDIUM_RISK:g}-{MAX_TOTAL_SCORE:g}"
-        moderate = f"{SCORE_THRESHOLD_HIGH_RISK:g}-{SCORE_THRESHOLD_MEDIUM_RISK:g}"
-        low = f"0-{SCORE_THRESHOLD_HIGH_RISK:g}"
+        moderate = f"{SCORE_THRESHOLD_HIGH_RISK:g}-<{SCORE_THRESHOLD_MEDIUM_RISK:g}"
+        low = f"{MIN_TRANSPARENCY_SCORE:g}-<{SCORE_THRESHOLD_HIGH_RISK:g}"
         labels = {
             "high_transparency": f"high_transparency ({high})",
             "moderate_transparency": f"moderate_transparency ({moderate})",

@@ -26,6 +26,10 @@ from .formatters.counterfactual_formatter import (
 
 logger = logging.getLogger(__name__)
 
+# Summary 'revised_confidence' when documents were found but none could be
+# scored: the claims were not actually tested against contradictory evidence
+REVISED_CONFIDENCE_UNVERIFIED = "UNVERIFIED"
+
 
 class CounterfactualAgent(BaseAgent):
     """
@@ -455,7 +459,13 @@ SUPPORTING CITATIONS:
             - 'analysis': CounterfactualAnalysis object
             - 'contradictory_evidence': List of contradictory documents with scores
             - 'contradictory_citations': List of extracted citations
-            - 'summary': Summary of findings
+            - 'summary': Summary of findings, including 'documents_failed_scoring'
+              and 'scoring_incomplete'. 'revised_confidence' is
+              REVISED_CONFIDENCE_UNVERIFIED when documents were found but none
+              could be scored.
+
+        Raises:
+            ConnectionError: If the scoring LLM is unreachable.
         """
         result = {
             'analysis': None,
@@ -506,6 +516,8 @@ SUPPORTING CITATIONS:
             return result
 
         all_contradictory_evidence = []
+        total_documents_found = 0
+        total_scoring_failures = 0
 
         if scoring_agent is None:
             from .scoring_agent import DocumentScoringAgent
@@ -536,6 +548,7 @@ SUPPORTING CITATIONS:
             )
 
             num_found = len(results) if results else 0
+            total_documents_found += num_found
             logger.info(f"Documents found: {num_found}")
             self._call_callback("search_results", f"Found {num_found} documents")
 
@@ -546,15 +559,18 @@ SUPPORTING CITATIONS:
                 num_failed = 0
                 for result_doc in results:
                     # One bad document (missing title, LLM/parse error) must not
-                    # abort scoring for the rest - same as batch_evaluate_documents
+                    # abort scoring for the rest - same as batch_evaluate_documents.
+                    # An unreachable LLM is not per-document: let it abort the run.
                     try:
                         score_result = scoring_agent.evaluate_document(
                             query_info['counterfactual_statement'], result_doc
                         )
+                    except ConnectionError:
+                        raise
                     except Exception as e:
                         num_failed += 1
                         doc_id = result_doc.get('id', 'unknown') if isinstance(result_doc, dict) else 'unknown'
-                        logger.error(f"Failed to score document {doc_id}: {e}")
+                        logger.error(f"Failed to score document {doc_id}: {e}", exc_info=True)
                         self._call_callback("scoring_error", f"Failed to score document {doc_id}: {e}")
                         continue
 
@@ -568,6 +584,7 @@ SUPPORTING CITATIONS:
                         })
 
                 logger.info(f"Documents passing score threshold (>={min_relevance_score}): {num_scored}/{num_found}")
+                total_scoring_failures += num_failed
                 if num_failed:
                     logger.warning(f"{num_failed}/{num_found} documents could not be scored")
                     self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found} ({num_failed} failed to score)")
@@ -688,6 +705,24 @@ SUPPORTING CITATIONS:
             assess_counter_evidence_strength
         )
 
+        # If documents were found but every one failed to score, "no
+        # contradictory evidence" would be a false all-clear
+        nothing_scored = total_documents_found > 0 and total_scoring_failures == total_documents_found
+        if result.get('contradictory_citations'):
+            revised_confidence = 'MEDIUM-LOW'
+        elif nothing_scored:
+            revised_confidence = REVISED_CONFIDENCE_UNVERIFIED
+            logger.warning(
+                f"All {total_documents_found} candidate documents failed to score; "
+                "the claims were not tested against contradictory evidence"
+            )
+            self._call_callback(
+                "scoring_error",
+                f"All {total_documents_found} documents failed to score - result is unverified",
+            )
+        else:
+            revised_confidence = analysis.confidence_level
+
         # Keep original result structure for backwards compatibility
         result['summary'] = {
             'document_title': document_title,
@@ -697,9 +732,12 @@ SUPPORTING CITATIONS:
             'high_priority_questions': len(high_priority_questions),
             'database_searches': len(research_queries),
             'contradictory_documents_found': len(all_contradictory_evidence),
+            'documents_found': total_documents_found,
+            'documents_failed_scoring': total_scoring_failures,
+            'scoring_incomplete': total_scoring_failures > 0,
             'contradictory_citations_extracted': len(result.get('contradictory_citations', [])),
             'database_available': True,
-            'revised_confidence': 'MEDIUM-LOW' if result.get('contradictory_citations') else analysis.confidence_level
+            'revised_confidence': revised_confidence
         }
 
         # Add formatted report to result

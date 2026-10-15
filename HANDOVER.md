@@ -16,18 +16,21 @@ off new work. Longer-term structural items live in
   `build_source_filter_clause()` (one `ANY(%s)` array param);
   `CounterfactualAgent.find_contradictory_literature` guards each document's
   scoring (`scoring_error` callback) so one bad doc no longer aborts the
-  search; `factchecker/agent/fact_checker_agent.py` honours explicit
-  `0`/`0.0` overrides; `paper_weight/db.py` labels `external_id` as `pmid`
-  only for PubMed rows (`pmid_select_expr()`, PubMed id from the per-DB
-  source cache) and numeric PMID search is restricted to PubMed;
-  `TransparencyAgent` validates LLM output (`_validate_assessment_data()` +
-  pure `coerce_bounded_float`/`coerce_str_list`), guards each document in
-  `assess_batch`, and its score buckets now share `classify_risk()`'s
-  thresholds (labels `0-3`/`3-6`/`6-10`). Deleted the dead legacy
-  `agents/fact_checker_agent.py` + `agents/fact_checker_db.py`, and rewrote
-  the 7 red `tests/test_fact_checker_agent.py` tests that still targeted the
-  legacy API (one, `_generate_summary`, had no live equivalent and was
-  dropped).
+  search, while an all-failed run reports `revised_confidence: UNVERIFIED`;
+  `factchecker/agent/fact_checker_agent.py` no longer swallows explicit
+  `0`/`0.0` overrides (`max_documents=0` = no limit; the threshold override
+  now also reaches citation extraction); `paper_weight/db.py` labels
+  `external_id` as `pmid` only for PubMed rows (`pmid_select_expr()`, PubMed
+  id from the per-DB source cache, `NULL` if unknown) and numeric PMID search
+  is restricted to PubMed; `TransparencyAgent` validates LLM output
+  (`_validate_assessment_data()` + pure coercion helpers in
+  `transparency_data.py` for numbers, booleans, data availability, lists and
+  registry IDs), guards each document in `assess_batch`, and its score
+  buckets now share `classify_risk()`'s thresholds (labels
+  `0-<3`/`3-<6`/`6-10`). Deleted the dead legacy `agents/fact_checker_agent.py`
+  + `agents/fact_checker_db.py`, and fixed the 7 red
+  `tests/test_fact_checker_agent.py` tests that still targeted the legacy API
+  (6 rewritten; `_generate_summary` had no live equivalent and was dropped).
 
 - **Database state and embedding decision** (2026-10-15): the clean Phase A
   PubMed import (HTTPS + MD5, 41.2 M records, ledger, withdrawals) lives in
@@ -117,7 +120,7 @@ independent unless noted.
 
 ## LLM-layer polish follow-up (from 2026-07-22 slice)
 
-The BaseAgent per-call-override work (see "Recently landed") unblocks two
+The BaseAgent per-call-override work (PR #254) unblocks two
 more standalone-agent migrations that were deferred to keep that slice's
 regression signal clean. Both are optional consistency polish — they already
 route through the LLM layer correctly:

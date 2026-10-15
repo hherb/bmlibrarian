@@ -261,7 +261,7 @@ FactCheckerAgent uses three sub-agents that can be configured independently:
 ### Python API
 
 ```python
-from bmlibrarian.agents import FactCheckerAgent
+from bmlibrarian.factchecker import FactCheckerAgent
 from bmlibrarian.config import get_model, get_agent_config
 
 # Initialize agent
@@ -393,7 +393,8 @@ Each evidence citation is marked as:
 For large batches, use orchestrator for memory-efficient processing:
 
 ```python
-from bmlibrarian.agents import AgentOrchestrator, FactCheckerAgent
+from bmlibrarian.agents import AgentOrchestrator
+from bmlibrarian.factchecker import FactCheckerAgent
 
 orchestrator = AgentOrchestrator(max_workers=4)
 agent = FactCheckerAgent(

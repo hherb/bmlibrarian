@@ -43,5 +43,8 @@ offset)` which returns a `LIMIT %s [OFFSET %s]` suffix plus the ordered param
 list. `search_with_bm25` / `search_with_fulltext_function` use
 `build_source_filter_clause(source_id_map, use_pubmed, use_medrxiv,
 use_others)`, which binds every selected source id as one
-`source_id = ANY(%s)` array parameter (no selected/known source → no filter,
-as before).
+`source_id = ANY(%s)` array parameter. Same semantics as `find_abstracts`:
+all three sources selected → no filter; empty source cache → no filter
+(logged warning, the selection cannot be resolved); a selection that resolves
+to no id (nothing selected, or only an empty `others`) → `AND FALSE`, i.e.
+no rows.
