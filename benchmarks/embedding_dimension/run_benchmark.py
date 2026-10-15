@@ -65,6 +65,9 @@ VECTORS_PER_MILLION = 1_000_000
 RANKING_DEPTH = max(RECALL_CUTOFFS)
 CACHE_KEY_HEX_CHARS = 24
 TABLE_SEPARATOR = "-" * 100
+# Texts per resumable encoding chunk (see encode_resumable).
+ENCODE_CHUNK_SIZE = 4096
+PARTIAL_DIR_NAME = "partial"
 
 
 class Encoder(Protocol):
@@ -216,6 +219,15 @@ class SentenceTransformerEncoder:
         )
         return np.asarray(out, dtype=np.float32)
 
+    def release_memory(self) -> None:
+        """Return cached accelerator memory to the OS between encoding chunks."""
+        import torch
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def describe_prompt(self, role: str) -> str:
         """Describe the prompt in use so results are auditable."""
         name, text = self._prompts[role]
@@ -237,6 +249,58 @@ def cache_path(cache_dir: Path, model_id: str, dataset: str, role: str, prompt: 
         digest.update(text.encode("utf-8"))
         digest.update(b"\x00")
     return cache_dir / "embeddings" / f"{digest.hexdigest()[:CACHE_KEY_HEX_CHARS]}.npy"
+
+
+def partial_path(final_path: Path, chunk_index: int) -> Path:
+    """Location of one saved chunk of an in-progress embedding job."""
+    return final_path.parent / PARTIAL_DIR_NAME / f"{final_path.stem}_{chunk_index:05d}.npy"
+
+
+def encode_resumable(encoder: Encoder, texts: Sequence[str], role: str, final_path: Path,
+                     chunk_size: int = ENCODE_CHUNK_SIZE) -> np.ndarray:
+    """
+    Encode ``texts`` in chunks, saving each chunk so a killed run resumes.
+
+    Large corpora take tens of minutes per model, and the OS can kill the process
+    (e.g. accelerator memory pressure). Finished chunks are kept next to the final
+    cache file and reused; ``remove_partials`` deletes them once the result is cached.
+    Accelerator memory is released between chunks when the encoder supports it.
+    """
+    if len(texts) <= chunk_size:
+        return encoder.encode(texts, role)
+    parts: List[np.ndarray] = []
+    starts = range(0, len(texts), chunk_size)
+    for index, start in enumerate(starts):
+        chunk_texts = texts[start:start + chunk_size]
+        path = partial_path(final_path, index)
+        chunk: Optional[np.ndarray] = None
+        if path.exists():
+            try:
+                chunk = np.load(path)
+                if chunk.shape != (len(chunk_texts), encoder.native_dim):
+                    chunk = None
+            except (OSError, ValueError) as exc:
+                logger.warning("ignoring unreadable partial %s: %s", path, exc)
+                chunk = None
+        if chunk is None:
+            logger.info("encoding %s chunk %d/%d", role, index + 1, len(starts))
+            chunk = np.asarray(encoder.encode(chunk_texts, role), dtype=np.float32)
+            if chunk.shape == (len(chunk_texts), encoder.native_dim) and np.isfinite(chunk).all():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(path, chunk)
+            release = getattr(encoder, "release_memory", None)
+            if callable(release):
+                release()
+        else:
+            logger.info("resumed %s chunk %d/%d from disk", role, index + 1, len(starts))
+        parts.append(chunk)
+    return np.concatenate(parts, axis=0)
+
+
+def remove_partials(final_path: Path) -> None:
+    """Delete the saved chunks of a job whose full result is now cached."""
+    for path in (final_path.parent / PARTIAL_DIR_NAME).glob(f"{final_path.stem}_*.npy"):
+        path.unlink(missing_ok=True)
 
 
 def embed_cached(
@@ -266,7 +330,7 @@ def embed_cached(
         except (OSError, ValueError) as exc:
             logger.warning("ignoring unreadable cache %s: %s", path, exc)
     started = time.perf_counter()
-    embeddings = encoder.encode(texts, role)
+    embeddings = encode_resumable(encoder, texts, role, path)
     elapsed = time.perf_counter() - started
     if embeddings.shape != (len(texts), encoder.native_dim):
         raise ValueError(f"encoder returned shape {embeddings.shape}, expected "
@@ -275,6 +339,7 @@ def embed_cached(
         raise ValueError(f"{spec.label} produced non-finite embeddings")
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, embeddings)
+    remove_partials(path)
     return embeddings, elapsed
 
 

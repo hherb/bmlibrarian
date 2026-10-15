@@ -69,6 +69,32 @@ skips the BEIR downloads). Relevance scores are graded integers; 0 is ignored.
 Include the distractor documents your real searches would see: the corpus must
 contain more than just the relevant papers.
 
+### Building a set from BMLibrarian's own data
+
+`build_bmlibrarian_eval.py` builds three sets from judgements already in the
+database. It only reads and never modifies anything:
+
+```bash
+uv run python benchmarks/embedding_dimension/build_bmlibrarian_eval.py   # --distractors 30000 --seed 42
+E=~/.cache/bmlibrarian/embedding_benchmark/bmlibrarian_eval
+for s in pubmedqa_source pubmedqa_graded research_questions; do
+  uv run python benchmarks/embedding_dimension/run_benchmark.py --datasets \
+      --custom-dataset $E/$s/eval -o results_$s.json
+done
+```
+
+| set | queries | relevant documents |
+|---|---|---|
+| `pubmedqa_source` | the fact-checker's PubMedQA questions | the paper each question was written from |
+| `pubmedqa_graded` | same | source paper, plus fact-checker evidence graded by LLM score |
+| `research_questions` | questions typed into BMLibrarian (audit log) | scoring-agent scores 3/4/5 |
+
+Run the sets one at a time, as above. They share a corpus, so only the first
+run embeds the documents. The graded sets favour the model used in
+BMLibrarian's own semantic search (Arctic), because only documents that search
+found were ever judged. `manifest.json` in the output directory records the
+counts.
+
 ## Prompts matter
 
 Embedding models are trained with task prompts (e.g. `query: `). The tool uses
