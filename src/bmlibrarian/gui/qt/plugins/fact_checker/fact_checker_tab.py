@@ -1022,6 +1022,8 @@ class FactCheckerTabWidget(QWidget):
             text: Message text
             kind: 'info', 'success' or 'error' (selects the style)
         """
+        if self.status_label is None:
+            return
         self.status_label.setText(text)
         self.status_label.setStyleSheet(self._get_status_label_stylesheet(kind))
 
@@ -1038,12 +1040,17 @@ class FactCheckerTabWidget(QWidget):
             total: Number of statements in the database
         """
         self._set_review_enabled(False)
-        self.statement_label.setText("Nothing left to review")
-        self.statement_text.setText("")
+        if self.statement_label is not None:
+            self.statement_label.setText("Nothing left to review")
+        if self.statement_text is not None:
+            self.statement_text.setText("")
         for text_widget in (self.original_text, self.ai_text, self.human_text, self.article_text):
-            text_widget.clear()
-        self.citation_widget.clear()
-        self.timer_widget.stop()
+            if text_widget is not None:
+                text_widget.clear()
+        if self.citation_widget is not None:
+            self.citation_widget.clear()
+        if self.timer_widget is not None:
+            self.timer_widget.stop()
         self._show_status(
             f"✓ {self.annotator_username} has annotated all {total} statements "
             f"— nothing left to review",

@@ -983,6 +983,7 @@ class TestFindPDFSessionRobustness:
         failures = []
 
         def on_discovered(result):
+            """Fail like a handler whose widget was deleted."""
             raise RuntimeError("widget gone")
 
         session = FindPDFSession(
@@ -1018,6 +1019,7 @@ class TestFindPDFSessionRobustness:
         release = threading.Event()
 
         def blocking_discovery(card_data, progress_cb):
+            """Block until released, simulating slow discovery."""
             release.wait(EVENT_PUMP_TIMEOUT_S)
             return 'RESULT'
 
@@ -1057,6 +1059,7 @@ class TestFindPDFSessionRobustness:
         release = threading.Event()
 
         def blocking_discovery(card_data, progress_cb):
+            """Block until released, simulating slow discovery."""
             release.wait(EVENT_PUMP_TIMEOUT_S)
             return 'RESULT'
 

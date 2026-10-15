@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QGroupBox,
 )
 from PySide6.QtCore import Signal, QTimer
+from PySide6.QtGui import QCloseEvent
 from shiboken6 import isValid as is_widget_valid
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
@@ -23,6 +24,7 @@ from bmlibrarian.gui.qt.qt_document_card_factory import (
     FindPDFSession,
     PDFDiscoveryProgressDialog,
     PDFDiscoveryWorker,
+    stop_qthread,
 )
 from bmlibrarian.gui.qt.resources.constants import PDFOperationSettings
 from bmlibrarian.agents.paper_weight import (
@@ -79,6 +81,26 @@ class SearchTab(QWidget):
         self._discovery_sessions: Set[FindPDFSession] = set()
 
         self._setup_ui()
+
+    def _terminate_workers(self) -> None:
+        """Stop running full-text discovery threads (tab or window closing).
+
+        Destroying a running QThread aborts the process; late results are
+        dropped instead of opening dialogs on a closed window.
+        """
+        for session in list(self._discovery_sessions):
+            session.cancel()
+            stop_qthread(session.worker, "Full-text discovery worker")
+        self._discovery_sessions.clear()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Stop discovery threads before the tab closes.
+
+        Args:
+            event: The close event
+        """
+        self._terminate_workers()
+        super().closeEvent(event)
 
     def _setup_ui(self) -> None:
         """Setup tab user interface."""
@@ -581,10 +603,27 @@ class SearchTab(QWidget):
                 return
 
             pdf_path = Path(result.file_path) if has_pdf else None
+            try:
+                if pdf_path is not None:
+                    self._update_pdf_in_database(document_id, pdf_path, doc_data.get('year'))
+                if has_full_text:
+                    self._update_full_text_in_database(document_id, result.full_text)
+            except Exception as e:
+                # Downloaded, but not recorded: say so rather than "not found"
+                logger.error(
+                    f"Could not record full text for document {document_id}: {e}",
+                    exc_info=True
+                )
+                what = f"PDF downloaded to {pdf_path}" if pdf_path else "Full text extracted"
+                self._on_full_text_error(
+                    document_id, progress_dialog,
+                    f"{what}, but it could not be saved to the database: {e}"
+                )
+                return
+
             if pdf_path is not None:
                 if dialog_alive:
                     progress_dialog.set_success(pdf_path)
-                self._update_pdf_in_database(document_id, pdf_path, doc_data.get('year'))
                 doc_data['has_pdf'] = True
                 doc_data['pdf_filename'] = pdf_path.name
                 logger.info(f"Successfully downloaded PDF for document {document_id}: {pdf_path}")
@@ -595,7 +634,6 @@ class SearchTab(QWidget):
                 logger.info(f"Successfully extracted full text from NXML for document {document_id}")
 
             if has_full_text:
-                self._update_full_text_in_database(document_id, result.full_text)
                 doc_data['has_full_text'] = True
                 logger.info(f"Full text available for document {document_id} ({len(result.full_text)} chars)")
 
@@ -625,7 +663,8 @@ class SearchTab(QWidget):
         error_msg: str
     ) -> None:
         """
-        Report a failed discovery (GUI thread) and continue with the abstract.
+        Report a failed (or unrecorded) discovery (GUI thread) and continue
+        with the abstract.
 
         Args:
             document_id: Document being processed
@@ -642,7 +681,7 @@ class SearchTab(QWidget):
         QMessageBox.warning(
             self,
             "Discovery Error",
-            f"Error finding PDF:\n{error_msg}\n\n"
+            f"Full text is not available:\n{error_msg}\n\n"
             "The assessment will proceed using only the abstract."
         )
         self.document_selected.emit(document_id)
@@ -679,28 +718,27 @@ class SearchTab(QWidget):
             doc_id: Document ID
             pdf_path: Path to PDF file
             year: Publication year for relative path calculation
+
+        Raises:
+            Exception: On database errors (the caller reports them)
         """
-        try:
-            from bmlibrarian.database import get_db_manager
-            db_manager = get_db_manager()
+        from bmlibrarian.database import get_db_manager
+        db_manager = get_db_manager()
 
-            # Calculate relative path (year/filename.pdf)
-            if year:
-                relative_path = f"{year}/{pdf_path.name}"
-            else:
-                relative_path = pdf_path.name
+        # Calculate relative path (year/filename.pdf)
+        if year:
+            relative_path = f"{year}/{pdf_path.name}"
+        else:
+            relative_path = pdf_path.name
 
-            with db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE document SET pdf_filename = %s WHERE id = %s",
-                        (relative_path, doc_id)
-                    )
-                    conn.commit()
-                    logger.info(f"Updated pdf_filename for document {doc_id}: {relative_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to update pdf_filename for document {doc_id}: {e}")
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE document SET pdf_filename = %s WHERE id = %s",
+                    (relative_path, doc_id)
+                )
+                conn.commit()
+        logger.info(f"Updated pdf_filename for document {doc_id}: {relative_path}")
 
     def _update_full_text_in_database(self, doc_id: int, full_text: str) -> None:
         """
@@ -709,22 +747,21 @@ class SearchTab(QWidget):
         Args:
             doc_id: Document ID
             full_text: Full text content
+
+        Raises:
+            Exception: On database errors (the caller reports them)
         """
-        try:
-            from bmlibrarian.database import get_db_manager
-            db_manager = get_db_manager()
+        from bmlibrarian.database import get_db_manager
+        db_manager = get_db_manager()
 
-            with db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE document SET full_text = %s WHERE id = %s",
-                        (full_text, doc_id)
-                    )
-                    conn.commit()
-                    logger.info(f"Updated full_text for document {doc_id} ({len(full_text)} chars)")
-
-        except Exception as e:
-            logger.error(f"Failed to update full_text for document {doc_id}: {e}")
+        with db_manager.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE document SET full_text = %s WHERE id = %s",
+                    (full_text, doc_id)
+                )
+                conn.commit()
+        logger.info(f"Updated full_text for document {doc_id} ({len(full_text)} chars)")
 
     def _update_tree_item_status(self, document_id: int, doc_data: Dict) -> None:
         """

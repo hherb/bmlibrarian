@@ -215,19 +215,24 @@ class _FakeCursor:
     """Minimal psycopg cursor stand-in returning one dict row."""
 
     def __init__(self, row):
+        """Store the row to return."""
         self._row = row
         self.executed = []
 
     def __enter__(self):
+        """Enter the cursor context."""
         return self
 
     def __exit__(self, *exc):
+        """Leave the cursor context without suppressing errors."""
         return False
 
     def execute(self, sql, params=None):
+        """Record the executed statement."""
         self.executed.append((sql, params))
 
     def fetchone(self):
+        """Return the configured row."""
         return self._row
 
 
@@ -235,14 +240,17 @@ class _FakeDbManager:
     """DatabaseManager stand-in whose connection yields ``_FakeCursor``."""
 
     def __init__(self, row=None, error=None):
+        """Configure the row to return or the error to raise."""
         self.cursor = _FakeCursor(row)
         self._error = error
 
     def get_connection(self):
+        """Return a context manager like DatabaseManager.get_connection."""
         from contextlib import contextmanager
 
         @contextmanager
         def connection():
+            """Yield a connection whose cursor is the fake cursor (or raise)."""
             if self._error:
                 raise self._error
             conn = MagicMock()
@@ -285,6 +293,7 @@ class TestCanonicalDocumentDetails:
         assert doc is not None and doc['title'] is None
 
     def test_missing_document_is_none(self):
+        """Missing document is none."""
         from bmlibrarian.database import fetch_document_details
         assert fetch_document_details(9, _FakeDbManager(None)) is None
 

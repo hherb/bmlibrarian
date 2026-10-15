@@ -904,6 +904,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         factory_ref = weakref.ref(self)
 
         def shutdown_if_alive() -> None:
+            """Shut the factory down if it still exists."""
             factory = factory_ref()
             if factory is not None:
                 factory.shutdown()

@@ -6,7 +6,8 @@ GUI Module for BMLibrarian.
   factory base class, implemented by ``qt.qt_document_card_factory``
 
 The former Flet GUI was retired in October 2026 (flet 1.0 changed its event
-model; every Flet app had a Qt equivalent).
+model; every Flet app except the Citation lab already had a Qt equivalent —
+remaining gaps: ROADMAP §1).
 """
 
 from .document_card_factory_base import (

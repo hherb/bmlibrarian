@@ -466,6 +466,8 @@ class PaperWeightLab(QMainWindow):
             self.pdf_upload_tab._terminate_workers()
         if hasattr(self.results_tab, '_terminate_workers'):
             self.results_tab._terminate_workers()
+        if hasattr(self.search_tab, '_terminate_workers'):
+            self.search_tab._terminate_workers()
 
         super().closeEvent(event)
 

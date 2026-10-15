@@ -7,8 +7,11 @@ Handles the construction and formatting of comprehensive research reports
 including counterfactual analysis and methodology sections.
 """
 
+import logging
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class ReportBuilder:
@@ -37,13 +40,17 @@ class ReportBuilder:
         Returns:
             Complete formatted research report as markdown string
         """
-        print(f"_build_final_report called with report_content length: {len(report_content) if report_content else 0}")
-        if report_content:
-            print(f"📝 Input report_content ends with: ...{report_content[-200:]}")
+        logger.debug(
+            "build_final_report: report_content length %d",
+            len(report_content) if report_content else 0,
+        )
 
         # Extract counterfactual analysis content
         counterfactual_content = self._format_counterfactual_analysis(counterfactual_analysis)
-        print(f"📊 Counterfactual content length: {len(counterfactual_content) if counterfactual_content else 0}")
+        logger.debug(
+            "Counterfactual content length: %d",
+            len(counterfactual_content) if counterfactual_content else 0,
+        )
 
         # Build research summary section
         summary_section = self._build_summary_section(
@@ -89,7 +96,7 @@ class ReportBuilder:
 *This report was generated using BMLibrarian's AI-powered multi-agent research system with real database queries and LLM analysis.*
 """
         
-        print(f"Returning final report with length: {len(final_report)}")
+        logger.debug("Final report length: %d", len(final_report))
         return final_report
     
     def _format_counterfactual_analysis(self, counterfactual_analysis: Any) -> str:
