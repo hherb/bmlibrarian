@@ -18,8 +18,9 @@ never be able to do this.
 
 The guard is active only while `pytest` is in `sys.modules`. It uses an
 **allow-list**: every database is protected unless it is recognisably a
-test/development database, so a new production database (for example the
-PG18 `bmlibrarian` on port 5532) is protected without anyone having to list it.
+test/development database, so a new production database (for example a
+future PG18 `bmlibrarian` on port 5532) is protected without anyone having to
+list it.
 
 A database is *not* protected if:
 

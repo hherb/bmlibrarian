@@ -10,8 +10,15 @@ it is marked *projected*.
 
 Decided by the owner. Everything below follows from them.
 
-1. **256-d vectors**: arctic-embed-l-v2.0, truncated and renormalised.
-   Non-inferior to 1024 d on every evaluation set with ≥ 300 queries.
+1. **256-d vectors, embedded from scratch**: arctic-embed-l-v2.0, Matryoshka-
+   truncated to 256 d and renormalised. Non-inferior to 1024 d on every
+   evaluation set with ≥ 300 queries; 512 d measured no better (−0.003 to
+   −0.012 nDCG@10 against 1024 d, the same range as 256 d) at twice the
+   storage, so it is adopted only if the Phase C gate (§4, Phase C step 2)
+   shows a major recall gain at PubMed scale. **All vectors are computed from
+   the clean Phase A import; the legacy 1024-d vectors are not carried over**
+   (decided 2026-10-15: legacy downloads had corruption and formatting
+   problems, and their vectors inherit them).
 2. **PostgreSQL is the only data and index system.** No external search engine.
 3. **Every long-running step is stoppable and resumable**, even at the cost of
    speed. No all-or-nothing step longer than minutes.
@@ -32,7 +39,7 @@ Decided by the owner. Everything below follows from them.
 | Import-time server profile | Works: `shared_buffers` 32 GB and `max_wal_size` 64 GB during the import, restored afterwards; a state file keeps it across a kill and resume. Forced checkpoints dropped from ~6 per minute to 1–2 per 5 M rows. |
 | Vector indexing without multi-week builds | **Measured at full scale:** all 37.5 M production vectors (`halfvec(256)`) in 10 × 4 M partitions, built in 62 min as 10 restartable units (29 GB of HNSW, against 286 GB built in ~3 weeks before). Queries at `ef_search` 400 reach recall@100 0.984 at p50 145 ms / p95 210 ms (§9). Incremental inserts into an indexed partition run at only ~200 rows/s, so new vectors go to a small unindexed *open* partition. |
 | Vector type | `halfvec(256)` matches `vector(256)` on recall at 60 % of the index size. |
-| Embedding inference | Precision matters, language does not. **Rust in-process llama.cpp (`llama-cpp-2`, Metal, F16 GGUF) matches PyTorch MPS fp16**: ~31 against ~30 docs/s over 4 alternating runs, 256-d cosine 0.99999 against sentence-transformers. Both beat Ollama over HTTP (26.7); candle f32 is 10.5. The existing 37.5 M vectors are truncated, not recomputed (cosine 0.9987 against the HF model at 256 d). |
+| Embedding inference | Precision matters, language does not. **Rust in-process llama.cpp (`llama-cpp-2`, Metal, F16 GGUF) matches PyTorch MPS fp16**: ~31 against ~30 docs/s over 4 alternating runs, 256-d cosine 0.99999 against sentence-transformers. Both beat Ollama over HTTP (26.7); candle f32 is 10.5. All vectors are computed fresh (2026-10-15): at ~31 docs/s, ~41 M PubMed abstracts take ~15 days of resumable embedding (*projected* from the measured rate). |
 | Lexical search (PG 18) | **pg_search BM25 (stemmed)**: nDCG@10 0.74–0.77 against 0.38–0.40 for `ts_rank_cd` on the PubMedQA sets, ~20× faster queries. Ingest is 3.7× cheaper than tsvector + GIN (17.1 k against 4.6 k rows/s) at 35 % less space, and the index stays consistent through SIGKILL/resume. Vectors stay the best single method; BM25 adds candidates (`spikes/bm25-pg18/FINDINGS.md`). |
 | Production importer defects | Author keywords always dropped (69 % of modern records have them), retraction cross-references never read, DOI lookup can return a reference's DOI, revision handling depends on arrival order, `all_keywords` unordered. |
 
@@ -130,11 +137,17 @@ flat to 30 M rows.
 - **Query:** one SQL statement over the parent with `hnsw.ef_search ≥ k`
   (pgvector returns at most `ef_search` rows per index scan). Postgres merges
   the per-partition scans.
-- **Migration of the existing 37.5 M vectors.** Truncated copy from
-  `emb_1024` by `chunk_id` range: `(embedding::real[])[1:256]`, renormalised,
-  one range per transaction, resumable. Then seal partition by partition.
-  `emb_1024` (484 GB) stays until the new path is validated; dropping it needs
-  approval.
+- **Initial bulk embedding (no legacy copy, decided 2026-10-15).** The clean
+  import is chunked into `semantic.chunks` and queued in `chunk_id` order. The
+  embedder drains the queue in batches: each batch's vectors are COPYed into
+  the current *filling* major partition (unindexed, so COPY speed) and the
+  batch's queue rows are deleted **in the same transaction**, so a kill loses
+  at most the in-flight batch and a re-run continues where it stopped. When a
+  filling partition reaches 4 M rows it is sealed (`VACUUM (ANALYZE)`, then
+  HNSW, ~6–8 min, restartable) and the next one is created. Sealed partitions
+  are searchable while embedding continues. Once the backlog is drained, new
+  chunks follow the open/minor tiers above. The legacy `emb_1024` on
+  `knowledgebase` is not read.
 - Query embedding moves out of the plpython3u `ollama_embedding()` into the
   application.
 
@@ -183,30 +196,34 @@ flat to 30 M rows.
 
 ### 3.6 Moving to PG 18: target database and data carry-over
 
-**State today:**
+**State (2026-10-15):**
 - **:5432 (PG 16), `knowledgebase`, 1.07 TB:** the live database of the
-  Python app. Contents: documents with full texts (Europe PMC 0.73 M, ~15 %
-  of PubMed), 37.5 M 1024-d chunk vectors, user data (audit, factcheck,
-  evaluations, paper weights, settings), MeSH, unpaywall.
-- **:5532 (PG 18), `bmlibrarian`, 115 GB:** a December 2025 test import by
-  the current Python importer. 38.35 M PubMed + 83 k medRxiv records with all
-  27 migrations applied; **no keywords** (importer defect), no full texts, no
-  chunks, no vectors. Update files downloaded to `pubmed25n1585`, the newest
-  not yet imported.
+  Python app, kept for now. Contents: documents with full texts (Europe PMC
+  0.73 M, ~15 % of PubMed), 37.5 M legacy 1024-d chunk vectors (not carried
+  over), user data (audit, factcheck, evaluations, paper weights, settings),
+  MeSH, unpaywall.
+- **:5532 (PG 18), `bmlibrarian_dev`, 173 GB:** the **clean Phase A import**
+  (HTTPS + MD5-verified downloads): 41.2 M PubMed records from the 2026
+  baseline plus updates to 2026-10-13, `ingest.ledger` over 1 693 files,
+  withdrawals marked, keywords and `date_revised` filled. No chunks, no
+  vectors yet. The Phase 0 spike schemas (`spike_ingest`, `bm25_eval`) were
+  dropped on 2026-10-15; their scripts in `spikes/` rebuild them if needed.
+- **:5532 `bmlibrarian`** (the December 2025 test import by the defective
+  importer: no keywords, no ledger, migrations only to 028) was **dropped on
+  2026-10-15**. `~/.bmlibrarian/.env_pg18` still names it.
 
-**Target:** `bmlibrarian` on :5532, **re-imported** with the fixed importer
-(Phase A/B) from the 2026 baseline plus updates. The existing rows were
-written by the defective importer, and re-merging all of them is no cheaper
-than a resumable re-import (~1–2 h, *projected*).
+**Target:** a production database on :5532 built from the clean import:
+either `bmlibrarian_dev` promoted (`ALTER DATABASE … RENAME TO bmlibrarian`,
+with a fresh small dev database for tests) or a Phase B re-import with the
+Rust importer. *Open; decide at Phase B exit.*
 
 **Carried over from :5432, read-only and resumable**, each stream in
 transactional ranges with a ledger:
 
 | Data | How | Note |
 |---|---|---|
-| 37.5 M chunk vectors | `(embedding::real[])[1:256]` → `halfvec(256)` into tiered partitions | measured: 20 min extract, ~1 h builds |
-| Chunks (definitions/offsets) | copied with their document mapping | needed by the vectors |
-| Full texts | `document.full_text` / PDF paths | ~6 M PubMed + 0.42 M Europe PMC records |
+| ~~37.5 M chunk vectors, chunks~~ | **not carried over** (2026-10-15): chunks are re-created from the clean import and embedded from scratch (§3.3) | — |
+| Full texts | prefer re-import from source (Phase B Europe PMC / PMC OA importers), in line with not trusting legacy downloads; copy `document.full_text` / PDF paths only as a fallback | ~6 M PubMed + 0.42 M Europe PMC records |
 | User data (audit, factcheck, evaluations, paper weights, settings, users) | per-schema copy | small; the owner's work |
 | MeSH, thesaurus, unpaywall | re-import from source or copy | unpaywall 158 GB: copy only if still used |
 
@@ -214,20 +231,22 @@ transactional ranges with a ledger:
 remapped through `(source, external_id)` (PMID/DOI) to the PG 18 `document.id`.
 Rows that cannot be mapped are counted and reported, never silently dropped.
 
-**Disk budget** (one 7.3 TB volume; **523 GiB free** on 2026-10-13, after the
-Phase 0 spike data was deleted):
+**Disk budget** (one 7.3 TB volume, shared by both servers; **413 GiB free**
+on 2026-10-15, after the Phase A import into `bmlibrarian_dev`, dropping the
+old :5532 `bmlibrarian` and the spike schemas):
 
 | Item | Size |
 |---|---|
-| :5432 `knowledgebase` (stays until cutover) | 1.07 TB |
-| :5532 `bmlibrarian` today (rebuilt in place) | 115 GB |
-| Phase 0 spike data | deleted 2026-10-13 (~290 GB freed) |
-| **Target `bmlibrarian` (*projected*):** documents with full text (~230 GB) + chunks + `halfvec` vectors (~50 GB) + MeSH/user data (small), + unpaywall only if copied (158 GB) | ~300–450 GB |
+| :5432 `knowledgebase` (kept for now) | 1.07 TB |
+| :5532 `bmlibrarian_dev` (clean import, documents + metadata) | 173 GB |
+| :5532 `bmlibrarian` (Dec 2025 legacy import) | dropped 2026-10-15 (115 GB freed) |
+| Phase 0 spike data | deleted 2026-10-13 (~290 GB) and 2026-10-15 (~13 GB) |
+| **Still to add (*projected*):** chunks + `halfvec(256)` vectors (~25 GB) + HNSW (~30 GB, measured 29 GB for 37.5 M) + full texts (~60–100 GB) + MeSH/user data (small), + unpaywall only if copied (158 GB) | ~120–200 GB |
 
-The target (~300–450 GB) fits in the 523 GiB free, with little headroom, and
-unpaywall (158 GB) does not fit on top unless more space is freed. Freeing more means dropping `emb_1024` (484 GB) on
-:5432, which only becomes possible once the Python app no longer depends on it
-(§ cutover). If unpaywall is needed, plan an external volume or that order.
+Vectors and full texts fit in the 413 GiB free. Unpaywall (158 GB) fits too,
+but leaves little headroom; dropping `knowledgebase` (or at least its 484 GB
+`emb_1024`, which is no longer needed for carry-over) frees much more once the
+Python app no longer depends on it (§ cutover).
 
 ## 4. Phased delivery
 
@@ -282,11 +301,12 @@ Without the import profile, so no server restart.
 
 **Withdrawals (migration 032):** `DeleteCitation` was never handled before.
 Withdrawn PMIDs are now recorded in `ingest.withdrawn_pmid` and marked, not
-deleted, so references stay valid. The backfill over the 2026 update files
-recorded 10 930 PMIDs and marked 7 622 documents. Those marks went into a new
-`document.withdrawn` column that the SQL search functions ignore; migration 033
-(2026-10-15) folds them into the baseline `withdrawn_date` / `withdrawn_reason`
-columns, which every search function already excludes, and drops the column.
+deleted, so references stay valid. The backfill over the 2026 update files in
+`bmlibrarian_dev` recorded 10 930 PMIDs and marked 7 622 documents. Those marks
+first went into a new `document.withdrawn` column that the SQL search functions
+ignore; migration 033 (2026-10-15, already applied in `bmlibrarian_dev`) moved
+them into the baseline `withdrawn_date` / `withdrawn_reason` columns, which
+every search function already excludes, and dropped the column.
 Marking works in any file order, including with parallel workers (a final
 reconcile pass). **Phase B must carry the same semantics: mark
 `withdrawn_date` / `withdrawn_reason`, never delete.**
@@ -323,19 +343,29 @@ importer.
 
 ### Phase C — vectors and search (`bml-index`, `bml-search`, `bml-mcp`)
 
-1. pgvector update in dev; `semantic.emb256` + partition manager.
-2. A resumable truncated copy of the existing 37.5 M vectors; seal all
-   partitions.
-3. Chunk queue → in-process embedder (`llama-cpp-2`, F16 GGUF, behind a trait)
-   → open partition → seal.
+1. ~~pgvector update in dev~~ (0.8.1 on :5532); `semantic.emb256` +
+   partition manager.
+2. **Dimension gate before the long run** (the evaluation corpora held only
+   3.6–5.2 k documents; truncation usually loses more with tens of millions of
+   distractors). Embed a ~1 M-document sample of the clean import once at full
+   1024 d (kept only for this test), and compare top-100 recall of 256-d and
+   512-d HNSW against exact 1024-d search on the PubMedQA and BMLibrarian
+   query sets. Stay at 256 d unless 512 d is materially better (*proposed*
+   threshold: ≥ 2 points recall@100); the scoring agent depends on top-100
+   recall, not top-10 order.
+3. **Bulk embedding from scratch** (§3.3): chunk the clean import, then chunk
+   queue → in-process embedder (`llama-cpp-2`, F16 GGUF, behind a trait) →
+   filling major partitions → seal. Resumable per batch; ~15 days for ~41 M
+   abstracts (*projected*). Afterwards new chunks go to the open partition →
+   seal → compact.
 4. Hybrid retrieval (pg_search BM25 ∪ halfvec HNSW candidates, weighted RRF
    order), filters; CLI `bml search` and MCP tools.
 5. Recall regression test: fixed query set + exact ground truth, run after
    each seal.
 
-Exit criterion: on the PubMedQA query set over all production vectors,
-recall@100 ≥ 0.98 and warm p95 ≤ 250 ms for the vector leg (measured in the
-spike: 0.984 and 210 ms), with the old `emb_1024` untouched.
+Exit criterion: on the PubMedQA query set over all vectors of the clean
+import, recall@100 ≥ 0.98 and warm p95 ≤ 250 ms for the vector leg (measured
+in the spike on 37.5 M legacy vectors: 0.984 and 210 ms).
 
 ### Phase D — grading (`bml-grade`)
 
@@ -359,9 +389,12 @@ fact-checker plugins. Starts only after E.
 
 After Phase C, in this order:
 1. ~~Delete the Phase 0 spike data~~ (done 2026-10-13, ~290 GB freed).
-2. Rebuild `bmlibrarian` on :5532 with the Rust importer (Phase B).
-3. Carry over vectors, chunks, full texts and user data from `knowledgebase`
-   (read-only, remapped, resumable; §3.6).
+2. Make the clean import the production database on :5532 (promote
+   `bmlibrarian_dev`, or the Phase B re-import; §3.6). The old :5532
+   `bmlibrarian` was dropped on 2026-10-15.
+3. Carry over user data (and full texts only if not re-imported) from
+   `knowledgebase` (read-only, remapped, resumable; §3.6). Vectors and chunks
+   are not carried over; they come from Phase C.
 4. Point the Python app's configuration at :5532/`bmlibrarian`. Its query
    embedding must then produce 256-d query vectors (replacing
    `ollama_embedding()` 1024-d).
@@ -377,7 +410,7 @@ Steps 4 and 6 need explicit approval.
 - **Loads:** table checksums (with set-valued columns compared as sets)
   identical between implementations of the same semantics.
 - **Resumability:** an automated kill/resume test for every long-running
-  command (ingest, vector copy, seal), asserting no loss and no duplicates.
+  command (ingest, embed, seal), asserting no loss and no duplicates.
 - **Search quality:** the recall regression suite (§4C.5) and the BMLibrarian
   evaluation sets (`benchmarks/embedding_dimension/build_bmlibrarian_eval.py`).
 - **Database safety:** tests and spikes write only to `bmlibrarian_dev`; production
@@ -407,9 +440,9 @@ bml review run plan.toml                   # checkpointed; re-run resumes
 | Query latency grows with partition count | Measured: 10 × 4 M at p50 145 ms, against 38 × 1 M at p50 265 ms. Tiers plus compaction keep the count low; the open partition stays ≤ 250 k (+~90 ms at 200 k). |
 | Cold-cache latency (29 GB of HNSW; RAM goes to inference) | Measured first-pass p95 of 1.2–3.3 s. `pg_prewarm` the majors before review sessions; optionally include them in the import or review profile. |
 | BM25 index cost at 40 M+ rows | Measured flat to 2.4 M on PG 18 (relational ingest was flat to 30 M on PG 16); verify on the full re-import; partition `document` only if degradation appears. |
-| Embedding throughput (13.5 days for 38 M abstracts at fp16) | Reuse the existing 37.5 M vectors; embed only new chunks; a CUDA box optional. |
-| Disk space during the move (both databases on one volume; 523 GiB free) | Spike data already deleted; carry data over without unpaywall unless space is freed; consider an external volume; retire :5432 only after validation. |
-| ID remapping errors when carrying data to PG 18 | Map by `(source, external_id)`; count and report unmapped rows; checksum carried-over vectors against the source. |
+| Embedding throughput (~15 days for ~41 M abstracts at fp16, all vectors fresh) | Accepted (2026-10-15). Resumable per batch, sealed partitions searchable meanwhile; a CUDA box optional. The dimension gate runs first so the long run is not repeated. |
+| Disk space during the move (both servers on one volume; 413 GiB free) | Legacy :5532 database and spike data dropped; no vector carry-over; copy unpaywall only if needed; consider an external volume; retire :5432 only after validation. |
+| ID remapping errors when carrying data to PG 18 | Map by `(source, external_id)`; count and report unmapped rows. Document IDs differ between all databases (verified 2026-10-15). |
 | `pg_search` maturity (pre-1.0; index format changes between versions) | Pin the version; reindex is a bounded, resumable job per table; tsvector + GIN remains a measured fallback. |
 | llama.cpp API and GGUF churn (Ollama's old GGUF no longer loads in current llama.cpp) | Pin `llama-cpp-2` and the GGUF (repository + revision + sha256); re-verify cosine against the reference on every upgrade. |
 | The import profile's restart affects other databases on :5532 | The importer warns, refuses while other databases have active sessions unless `--force`, and runs imports in scheduled windows. |
@@ -436,7 +469,19 @@ bml review run plan.toml                   # checkpointed; re-run resumes
   production, split it into an unprivileged application role and an admin
   connection for the import profile and `CREATE EXTENSION`.
 
-**Still open:** none blocking Phase A.
+**Decided (2026-10-15):**
+- **Vectors are computed from scratch** from the clean Phase A import; the
+  legacy 1024-d vectors on `knowledgebase` are not copied (legacy downloads
+  untrusted). Resumable, partitioned (§3.3), 256 d unless the Phase C
+  dimension gate shows a major gain for 512 d.
+- The December 2025 :5532 `bmlibrarian` import and the Phase 0 spike schemas
+  in `bmlibrarian_dev` were dropped. `knowledgebase` is kept for now.
+
+**Still open:**
+- Whether production on :5532 is `bmlibrarian_dev` promoted or a Phase B
+  re-import (decide at Phase B exit).
+- The 512-d threshold for the dimension gate (proposed: ≥ 2 points
+  recall@100).
 
 ## 9. Full-scale vector run (all 37 478 552 production vectors, measured 2026-10-13)
 
