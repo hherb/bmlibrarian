@@ -208,3 +208,100 @@ class TestConstants:
         ]
         for const in constants:
             assert 0.0 <= const <= 10.0
+
+
+class TestPmidLabelling:
+    """``external_id`` is only reported as ``pmid`` for PubMed rows."""
+
+    @staticmethod
+    def _mock_manager(source_ids):
+        """Build a mocked DatabaseManager whose cursor returns no rows."""
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        cursor.fetchone.return_value = None
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        manager = MagicMock()
+        manager.get_connection.return_value.__enter__.return_value = conn
+        manager.get_cached_source_ids.return_value = source_ids
+        return manager, cursor
+
+    def test_pmid_select_expr_is_source_conditional(self):
+        """The expression gates external_id on the bound PubMed source id."""
+        from bmlibrarian.agents.paper_weight.db import pmid_select_expr
+
+        assert pmid_select_expr() == (
+            "CASE WHEN source_id = %s THEN external_id ELSE NULL END"
+        )
+        assert pmid_select_expr("d") == (
+            "CASE WHEN d.source_id = %s THEN d.external_id ELSE NULL END"
+        )
+
+    def test_pubmed_source_id_from_cache(self):
+        """The cached id is used."""
+        from bmlibrarian.agents.paper_weight.db import _pubmed_source_id
+
+        assert _pubmed_source_id(self._mock_manager({'pubmed': 7})[0]) == 7
+
+    @pytest.mark.parametrize("source_ids", [None, {}, {'medrxiv': 1}, {'pubmed': True}])
+    def test_unknown_pubmed_source_matches_nothing(self, source_ids):
+        """No PubMed id -> None (binds as NULL, matching no row) - never a guessed id."""
+        from bmlibrarian.agents.paper_weight.db import _pubmed_source_id
+
+        assert _pubmed_source_id(self._mock_manager(source_ids)[0]) is None
+
+    @pytest.mark.parametrize(
+        "query, expected_params",
+        [
+            ("12345678", (7, "12345678", 7, 5)),
+            ("10.1000/xyz", (7, "%10.1000/xyz%", 5)),
+            ("aspirin", (7, "%aspirin%", 5)),
+        ],
+    )
+    def test_search_documents_branches_bind_pubmed_source_first(self, query, expected_params):
+        """PMID/DOI/title branches: placeholders match params, PubMed id first."""
+        from bmlibrarian.agents.paper_weight import db
+
+        manager, cursor = self._mock_manager({'pubmed': 7})
+        with patch.object(db, 'get_db_manager', return_value=manager):
+            db.search_documents(query, limit=5)
+
+        sql, params = cursor.execute.call_args.args
+        assert "external_id ELSE NULL END as pmid" in sql
+        assert sql.count("%s") == len(params)
+        assert params == expected_params
+
+    def test_numeric_search_matches_only_pubmed_rows(self):
+        """A PMID lookup filters on the PubMed source and labels via CASE."""
+        from bmlibrarian.agents.paper_weight import db
+
+        manager, cursor = self._mock_manager({'pubmed': 7})
+        with patch.object(db, 'get_db_manager', return_value=manager):
+            db.search_documents("12345678", limit=5)
+
+        sql, params = cursor.execute.call_args.args
+        assert "external_id as pmid" not in sql
+        assert "AND source_id = %s" in sql
+        assert params == (7, "12345678", 7, 5)
+
+    @pytest.mark.parametrize(
+        "func_name, args, expected_params",
+        [
+            ("get_recent_assessments", (3,), (7, 3)),
+            ("get_document_metadata", (42,), (7, 42)),
+            ("semantic_search_documents", ("q", 5, 0.5), (7, "q", 0.5, 5)),
+        ],
+    )
+    def test_other_queries_bind_pubmed_source(self, func_name, args, expected_params):
+        """Every pmid-returning query binds the resolved PubMed source id."""
+        from bmlibrarian.agents.paper_weight import db
+
+        manager, cursor = self._mock_manager({'pubmed': 7})
+        with patch.object(db, 'get_db_manager', return_value=manager):
+            getattr(db, func_name)(*args)
+
+        sql, params = cursor.execute.call_args.args
+        assert "external_id as pmid" not in sql
+        assert "external_id ELSE NULL END as pmid" in sql
+        assert sql.count("%s") == len(params)
+        assert params == expected_params

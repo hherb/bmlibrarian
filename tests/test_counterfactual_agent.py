@@ -6,11 +6,13 @@ Uses mocked Ollama responses to test parsing logic and error handling.
 """
 
 import json
+from typing import Any, Dict, List
+
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-from bmlibrarian.agents.counterfactual_agent import CounterfactualAgent
+from bmlibrarian.agents.counterfactual_agent import CounterfactualAgent, REVISED_CONFIDENCE_UNVERIFIED
 from bmlibrarian.agents.models.counterfactual import (
     CounterfactualQuestion,
     CounterfactualAnalysis
@@ -441,6 +443,127 @@ class TestCounterfactualAgent:
             # Should be converted to uppercase
             assert result.confidence_level == "LOW"
             assert result.counterfactual_questions[0].priority == "MEDIUM"
+
+
+
+class TestFindContradictoryLiteratureScoringGuard:
+    """A failing document must not abort scoring of the remaining documents."""
+
+    @pytest.fixture
+    def analysis(self):
+        """A minimal analysis with one HIGH-priority question."""
+        question = CounterfactualQuestion(
+            counterfactual_statement="Exercise worsens heart failure",
+            question="Does exercise worsen heart failure?",
+            reasoning="Check for contraindications",
+            target_claim="Exercise improves cardiovascular health",
+            search_keywords=["exercise", "heart failure"],
+            priority="HIGH",
+        )
+        return CounterfactualAnalysis(
+            document_title="Doc",
+            main_claims=["Exercise improves cardiovascular health"],
+            counterfactual_questions=[question],
+            overall_assessment="ok",
+            confidence_level="HIGH",
+        )
+
+    def test_scoring_error_skips_only_that_document(self, analysis):
+        """Docs after a scoring exception are still scored and kept."""
+        agent = CounterfactualAgent(model="test-model")
+        events = []
+        agent.callback = lambda step, data: events.append((step, data))
+
+        docs = [{'id': 1, 'title': 'bad'}, {'id': 2, 'title': 'good'}]
+        scoring_agent = Mock()
+        scoring_agent.evaluate_document.side_effect = [
+            RuntimeError("LLM timeout"),
+            {'score': 4, 'reasoning': 'relevant'},
+        ]
+        citation_agent = Mock()
+        citation_agent.extract_citation_from_document.return_value = None
+        query_info = {
+            'target_claim': analysis.main_claims[0],
+            'counterfactual_statement': "Exercise worsens heart failure",
+            'question': "Does exercise worsen heart failure?",
+            'db_query': 'exercise & heart',
+        }
+
+        with patch.object(agent, 'analyze_document', return_value=analysis), \
+             patch.object(agent, 'generate_research_queries_with_agent', return_value=[query_info]), \
+             patch('bmlibrarian.agents.counterfactual_agent.search_with_retry', return_value=docs), \
+             patch('bmlibrarian.config.get_search_config', return_value={}):
+            result = agent.find_contradictory_literature(
+                "content", query_agent=Mock(),
+                scoring_agent=scoring_agent, citation_agent=citation_agent,
+            )
+
+        assert scoring_agent.evaluate_document.call_count == 2
+        assert [e['document']['id'] for e in result['contradictory_evidence']] == [2]
+        assert any(step == "scoring_error" for step, _ in events)
+
+    def _run(
+        self,
+        agent: CounterfactualAgent,
+        analysis: CounterfactualAnalysis,
+        docs: List[Dict[str, Any]],
+        scoring_agent: Mock,
+    ) -> Dict[str, Any]:
+        """Run find_contradictory_literature with search/query mocked out."""
+        citation_agent = Mock()
+        citation_agent.extract_citation_from_document.return_value = None
+        query_info = {
+            'target_claim': analysis.main_claims[0],
+            'counterfactual_statement': "Exercise worsens heart failure",
+            'question': "Does exercise worsen heart failure?",
+            'db_query': 'exercise & heart',
+        }
+        with patch.object(agent, 'analyze_document', return_value=analysis), \
+             patch.object(agent, 'generate_research_queries_with_agent', return_value=[query_info]), \
+             patch('bmlibrarian.agents.counterfactual_agent.search_with_retry', return_value=docs), \
+             patch('bmlibrarian.config.get_search_config', return_value={}):
+            return agent.find_contradictory_literature(
+                "content", query_agent=Mock(),
+                scoring_agent=scoring_agent, citation_agent=citation_agent,
+            )
+
+    def test_all_scoring_failures_are_not_an_all_clear(self, analysis: CounterfactualAnalysis) -> None:
+        """If no document could be scored the result is UNVERIFIED, not unchanged."""
+        agent = CounterfactualAgent(model="test-model")
+        docs = [{'id': 1, 'title': 'a'}, {'id': 2, 'title': 'b'}]
+        scoring_agent = Mock()
+        scoring_agent.evaluate_document.side_effect = RuntimeError("parse error")
+
+        summary = self._run(agent, analysis, docs, scoring_agent)['summary']
+
+        assert summary['documents_found'] == 2
+        assert summary['documents_failed_scoring'] == 2
+        assert summary['scoring_incomplete'] is True
+        assert summary['revised_confidence'] == REVISED_CONFIDENCE_UNVERIFIED
+
+    def test_partial_scoring_failure_is_reported(self, analysis: CounterfactualAnalysis) -> None:
+        """Some failures are counted but do not mark the result unverified."""
+        agent = CounterfactualAgent(model="test-model")
+        docs = [{'id': 1, 'title': 'a'}, {'id': 2, 'title': 'b'}]
+        scoring_agent = Mock()
+        scoring_agent.evaluate_document.side_effect = [
+            RuntimeError("parse error"), {'score': 1, 'reasoning': 'irrelevant'},
+        ]
+
+        summary = self._run(agent, analysis, docs, scoring_agent)['summary']
+
+        assert summary['documents_failed_scoring'] == 1
+        assert summary['scoring_incomplete'] is True
+        assert summary['revised_confidence'] == analysis.confidence_level
+
+    def test_unreachable_llm_aborts(self, analysis: CounterfactualAnalysis) -> None:
+        """A connection failure is not per-document: it propagates."""
+        agent = CounterfactualAgent(model="test-model")
+        scoring_agent = Mock()
+        scoring_agent.evaluate_document.side_effect = ConnectionError("ollama down")
+
+        with pytest.raises(ConnectionError):
+            self._run(agent, analysis, [{'id': 1, 'title': 'a'}], scoring_agent)
 
 
 if __name__ == "__main__":

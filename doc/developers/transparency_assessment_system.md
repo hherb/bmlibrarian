@@ -149,10 +149,11 @@ Flow:
 3. Pre-extract trial registry IDs via regex
 4. Build structured prompt with scoring rubric
 5. Call `_generate_and_parse_json()` to get LLM response
-6. Parse JSON into `TransparencyAssessment`
+6. Validate and normalize it with `_validate_assessment_data()` (see "Validating LLM output" below)
 7. Merge pattern-matched results (industry funder names, registry IDs)
-8. Classify risk level
-9. Filter by confidence threshold
+8. Build the `TransparencyAssessment`
+9. Classify risk level
+10. Flag low confidence: below `min_confidence` the assessment is logged and counted in `low_confidence_assessments`, but still returned
 
 #### `assess_transparency_by_id(document_id)`
 
@@ -160,7 +161,11 @@ Convenience method that fetches document from database by ID, then calls `assess
 
 #### `assess_batch(documents, progress_callback=None)`
 
-Processes multiple documents sequentially with optional progress callback.
+Processes multiple documents sequentially with optional progress callback. An exception for one document is logged, counted in `failed_assessments`, and skipped; the rest of the batch continues.
+
+#### `get_score_distribution(assessments)`
+
+Counts assessments per transparency bucket. Buckets come from `score_distribution_label()` and use the same thresholds as `classify_risk()` (`SCORE_THRESHOLD_HIGH_RISK`, `SCORE_THRESHOLD_MEDIUM_RISK`), so the bucket matches the risk level computed from the score alone: `low_transparency (0-<3)` = high risk, `moderate_transparency (3-<6)` = medium, `high_transparency (6-10)` = low. Ranges are half-open (3.0 is moderate, 6.0 is high). `enrich_with_metadata()` can raise the risk level afterwards (a retracted paper becomes high risk) without changing its bucket.
 
 #### `enrich_with_metadata(assessment)`
 
@@ -221,11 +226,24 @@ Expected JSON schema from LLM:
 }
 ```
 
+### Validating LLM output
+
+The parsed JSON is untrusted. `_validate_assessment_data()` normalizes it using pure helpers from `transparency_data.py`:
+
+- The response must be a JSON object with all `REQUIRED_ASSESSMENT_FIELDS`; otherwise the document fails (`None`, counted in `failed_assessments`).
+- Numeric fields (`NUMERIC_ASSESSMENT_FIELDS`) are parsed with `parse_finite_float()`: numbers and numeric strings are accepted; booleans, NaN/infinity and non-numbers are rejected. Ranges: `transparency_score` 0-10, confidences and `*_disclosure_quality` 0-1.
+  - Required (`transparency_score`, `overall_confidence`): a rejected **or out-of-range** value fails the document. Out of range usually means the model answered on the wrong scale (e.g. `45` on 0-100); clamping it would produce the most favourable score.
+  - Optional: an invalid value falls back to `0.0` with a warning (a missing one silently, debug log only); an out-of-range value is clamped with a warning.
+- Booleans go through `coerce_optional_bool()`, which accepts real booleans and `true`/`yes`/`false`/`no` strings (plain `bool("false")` would be `True`). An unrecognisable `has_funding_disclosure` / `has_coi_disclosure` fails the document; `is_industry_funded` falls back to `None` (pattern matching decides) and `has_author_contributions` to `False`, with a warning.
+- `data_availability` goes through `coerce_data_availability()` (case-insensitive, spaces/hyphens as underscores); `null` or an unknown value becomes `not_stated` with a warning.
+- List fields (`LIST_ASSESSMENT_FIELDS`) go through `coerce_str_list()`: a single string becomes a one-element list, `None` an empty list, items are stringified and stripped with blank/`None` items dropped; any other type becomes an empty list with a warning.
+- LLM `trial_registry_ids` go through `filter_trial_registry_ids()`: entries in no known registry format (`"N/A"`, `"registered"`) are dropped with a warning, so they cannot set `has_trial_registration`.
+
 ### Pattern-Match Augmentation
 
 After LLM analysis, the agent merges deterministic results:
 
-1. **Industry funding**: If any `funding_sources` match `is_likely_industry_funder()`, sets `is_industry_funded=True` regardless of LLM output
+1. **Industry funding**: If any `funding_sources` match `is_likely_industry_funder()`, sets `is_industry_funded=True` regardless of LLM output, and raises `industry_funding_confidence` to at least `PATTERN_INDUSTRY_MIN_CONFIDENCE` (0.8)
 2. **Trial registry IDs**: Union of regex-extracted and LLM-extracted IDs
 
 This ensures high recall for industry funding and registry ID detection.
@@ -294,12 +312,14 @@ Corresponding heading patterns were added to the segmenter for each type, coveri
 
 ## Testing
 
-43 unit tests in `tests/test_transparency_agent.py`:
+97 unit tests in `tests/test_transparency_agent.py`:
 
 - `TestTransparencyAssessment` — dataclass defaults, serialization, risk classification
 - `TestIndustryFunderDetection` — known companies, corporate indicators, negative cases
 - `TestTrialRegistryExtraction` — all 15 registry patterns, deduplication
 - `TestTransparencyAgent` — transparent/opaque documents, augmentation, batch processing, export
+- `TestLLMOutputCoercion` — pure helpers that sanitize LLM output (numbers, booleans, data availability, lists, registry IDs) and score buckets
+- `TestTransparencyAgentMalformedResponses` — malformed/out-of-range LLM fields, batch resilience, score distribution
 - `TestPDFProcessorExtension` — new section types and segmenter patterns
 
 Run tests:

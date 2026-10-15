@@ -241,17 +241,28 @@ class FactCheckerAgent(BaseAgent):
         Args:
             statement: The biomedical statement to fact-check
             expected_answer: Optional expected answer (yes/no/maybe) for validation
-            max_documents: Maximum number of documents to search (overrides default)
-            score_threshold: Minimum relevance score (overrides default)
+            max_documents: Maximum number of documents to search. ``None`` uses
+                the configured default; ``0`` means no limit (same convention
+                as ``QueryAgent.find_abstracts``).
+            score_threshold: Minimum relevance score for scoring and citation
+                extraction. ``None`` uses the configured default; ``0.0``
+                accepts every scored document.
 
         Returns:
             FactCheckResult with evaluation, reason, and evidence
+
+        Raises:
+            ValueError: If ``max_documents`` is negative.
         """
+        if max_documents is not None and max_documents < 0:
+            raise ValueError(f"max_documents must be >= 0 (0 = no limit), got {max_documents}")
+
         self._initialize_agents()
 
-        # Use provided values or defaults
-        max_docs = max_documents or self.max_search_results
-        threshold = score_threshold or self.score_threshold
+        # Use provided values or defaults (`is None`, so an explicit 0 / 0.0
+        # is not swallowed by `or`)
+        max_docs = self.max_search_results if max_documents is None else max_documents
+        threshold = self.score_threshold if score_threshold is None else score_threshold
 
         self._call_callback("search", f"Searching literature for: {statement}")
 
@@ -292,7 +303,7 @@ class FactCheckerAgent(BaseAgent):
         self._call_callback("extraction", f"Extracting evidence from {len(scored_documents)} documents...")
 
         # Step 3: Extract citations
-        citations = self._extract_citations(statement, scored_documents)
+        citations = self._extract_citations(statement, scored_documents, threshold)
 
         if not citations:
             self._call_callback("warning", "No citations could be extracted")
@@ -408,7 +419,8 @@ class FactCheckerAgent(BaseAgent):
     def _extract_citations(
         self,
         statement: str,
-        scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]]
+        scored_documents: List[tuple[Dict[str, Any], Dict[str, Any]]],
+        score_threshold: Optional[float] = None,
     ) -> List[Citation]:
         """Extract relevant citations from scored documents.
 
@@ -419,17 +431,21 @@ class FactCheckerAgent(BaseAgent):
         Args:
             statement: The statement to fact-check
             scored_documents: List of (document, scoring_result) tuples
+            score_threshold: Minimum relevance score; ``None`` uses the
+                agent default. Must match the threshold used for scoring so a
+                per-call override is not undone here.
         """
+        threshold = self.score_threshold if score_threshold is None else score_threshold
         try:
             # Step 1: Filter by threshold FIRST (most important fix)
             qualifying_docs = [
                 (doc, score_result) for doc, score_result in scored_documents
-                if score_result.get('score', 0) >= self.score_threshold
+                if score_result.get('score', 0) >= threshold
             ]
 
             logger.info(
                 f"Filtered to {len(qualifying_docs)} documents above threshold "
-                f"{self.score_threshold} (from {len(scored_documents)} total)"
+                f"{threshold} (from {len(scored_documents)} total)"
             )
 
             # Step 2: Apply max_citations limit AFTER filtering (if set)
@@ -445,7 +461,7 @@ class FactCheckerAgent(BaseAgent):
 
             if not top_docs:
                 logger.warning(
-                    f"No documents above threshold {self.score_threshold} after filtering. "
+                    f"No documents above threshold {threshold} after filtering. "
                     f"Consider lowering threshold or improving query."
                 )
                 return []
@@ -454,7 +470,7 @@ class FactCheckerAgent(BaseAgent):
             citations = self.citation_agent.process_scored_documents_for_citations(
                 user_question=statement,
                 scored_documents=top_docs,
-                score_threshold=self.score_threshold
+                score_threshold=threshold
             )
 
             logger.info(
@@ -464,7 +480,7 @@ class FactCheckerAgent(BaseAgent):
 
             return citations
         except Exception as e:
-            logger.error(f"Error extracting citations: {e}")
+            logger.error(f"Error extracting citations: {e}", exc_info=True)
             return []
 
     def _evaluate_statement(

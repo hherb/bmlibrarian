@@ -12,7 +12,7 @@ Uses DatabaseManager for PostgreSQL connectivity (golden rule #5).
 
 import json
 import logging
-from typing import Optional, Dict, List
+from typing import TYPE_CHECKING, Optional, Dict, List
 
 from .models import (
     AssessmentDetail,
@@ -25,6 +25,9 @@ from .models import (
     DIMENSION_REPLICATION_STATUS,
 )
 from ...database import get_db_manager
+
+if TYPE_CHECKING:
+    from ...database import DatabaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -104,7 +107,7 @@ def get_cached_assessment(
                 return _reconstruct_result_from_db(row, details)
 
     except Exception as e:
-        logger.error(f"Error fetching cached assessment: {e}")
+        logger.error(f"Error fetching cached assessment: {e}", exc_info=True)
         return None
 
 
@@ -297,7 +300,7 @@ def store_assessment(result: PaperWeightResult) -> None:
                 conn.commit()
 
     except Exception as e:
-        logger.error(f"Error storing assessment: {e}")
+        logger.error(f"Error storing assessment: {e}", exc_info=True)
         raise
 
 
@@ -342,7 +345,7 @@ def get_document(document_id: int) -> dict:
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"Error fetching document {document_id}: {e}")
+        logger.error(f"Error fetching document {document_id}: {e}", exc_info=True)
         raise
 
 
@@ -413,7 +416,7 @@ def check_replication_status(document_id: int) -> DimensionScore:
                 return dimension_score
 
     except Exception as e:
-        logger.error(f"Error checking replication status: {e}")
+        logger.error(f"Error checking replication status: {e}", exc_info=True)
 
         # Return zero score on error
         dimension_score = DimensionScore(
@@ -463,7 +466,57 @@ def _calculate_replication_score(replication_count: int, quality_comparison: str
 SEARCH_RESULT_LIMIT = 50
 RECENT_ASSESSMENTS_LIMIT = 20
 DEFAULT_SEMANTIC_THRESHOLD = 0.6
-PUBMED_SOURCE_ID = 1
+# Set once the missing-PubMed-source warning has been logged (avoid log spam)
+_warned_no_pubmed_source = False
+
+
+def pmid_select_expr(table_alias: str = "") -> str:
+    """SQL expression yielding ``external_id`` only for PubMed rows.
+
+    ``external_id`` holds a PMID only when the row's source is PubMed; for
+    medRxiv/Europe PMC rows it is a DOI or another identifier and must not be
+    labelled ``pmid``. The expression takes one bound parameter: the PubMed
+    ``source_id`` (see :func:`_pubmed_source_id`).
+
+    Args:
+        table_alias: Optional table alias, e.g. ``"d"`` for ``d.source_id``.
+
+    Returns:
+        A ``CASE`` expression with one ``%s`` placeholder.
+    """
+    prefix = f"{table_alias}." if table_alias else ""
+    return (
+        f"CASE WHEN {prefix}source_id = %s "
+        f"THEN {prefix}external_id ELSE NULL END"
+    )
+
+
+def _pubmed_source_id(db_manager: "DatabaseManager") -> Optional[int]:
+    """Return the PubMed ``source_id`` for ``db_manager``'s database.
+
+    Uses the manager's cached source mapping. If it has no PubMed entry,
+    returns ``None``: bound into ``source_id = %s`` that matches no row, so
+    ``pmid`` comes back ``NULL`` and PMID lookups find nothing, rather than
+    guessing an id that may belong to another source.
+
+    Args:
+        db_manager: The ``DatabaseManager`` whose database is queried.
+
+    Returns:
+        The PubMed source id, or ``None`` if it is unknown.
+    """
+    global _warned_no_pubmed_source
+    source_ids = db_manager.get_cached_source_ids() or {}
+    pubmed_id = source_ids.get('pubmed')
+    if isinstance(pubmed_id, int) and not isinstance(pubmed_id, bool):
+        return pubmed_id
+    if not _warned_no_pubmed_source:
+        logger.warning(
+            "No 'pubmed' entry in cached source ids; PMIDs will be reported "
+            "as unknown and PMID searches will return no results"
+        )
+        _warned_no_pubmed_source = True
+    return None
 
 
 def semantic_search_documents(
@@ -483,17 +536,18 @@ def semantic_search_documents(
 
     Returns:
         List of document dictionaries with id, title, pmid, doi, year, similarity,
-        has_pdf, has_full_text, pdf_filename
+        has_pdf, has_full_text, pdf_filename. ``pmid`` is ``None`` for
+        non-PubMed rows.
     """
     try:
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         d.id,
                         d.title,
-                        CASE WHEN d.source_id = %s THEN d.external_id ELSE NULL END as pmid,
+                        {pmid_select_expr('d')} as pmid,
                         d.doi,
                         EXTRACT(YEAR FROM d.publication_date)::INTEGER as year,
                         s.score as similarity,
@@ -504,7 +558,7 @@ def semantic_search_documents(
                     FROM semantic_docsearch(%s, %s, %s) s
                     JOIN public.document d ON s.document_id = d.id
                     ORDER BY s.score DESC
-                """, (PUBMED_SOURCE_ID, query, threshold, limit))
+                """, (_pubmed_source_id(db_manager), query, threshold, limit))
 
                 rows = cur.fetchall()
                 return [
@@ -524,7 +578,7 @@ def semantic_search_documents(
                 ]
 
     except Exception as e:
-        logger.error(f"Error in semantic search: {e}")
+        logger.error(f"Error in semantic search: {e}", exc_info=True)
         return []
 
 
@@ -533,7 +587,11 @@ def search_documents(
     limit: int = SEARCH_RESULT_LIMIT
 ) -> List[Dict]:
     """
-    Search documents by PMID (external_id), DOI, or title.
+    Search documents by PMID, DOI, or title.
+
+    An all-digit query is treated as a PMID and matches only PubMed rows
+    (``external_id`` of other sources is not a PMID); it does not fall back
+    to a title search.
 
     Args:
         query: Search query (PMID, DOI, or title keywords)
@@ -541,15 +599,17 @@ def search_documents(
 
     Returns:
         List of document dictionaries with id, title, pmid, doi, year,
-        has_pdf, has_full_text, pdf_filename, pdf_url
+        has_pdf, has_full_text, pdf_filename, pdf_url. ``pmid`` is ``None``
+        for non-PubMed rows.
     """
     try:
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                # Common SELECT columns
-                select_cols = """
-                    id, title, external_id as pmid, doi,
+                pubmed_id = _pubmed_source_id(db_manager)
+                # Common SELECT columns (first placeholder: PubMed source_id)
+                select_cols = f"""
+                    id, title, {pmid_select_expr()} as pmid, doi,
                     EXTRACT(YEAR FROM publication_date)::INTEGER as year,
                     pdf_filename IS NOT NULL AND pdf_filename != '' as has_pdf,
                     full_text IS NOT NULL AND full_text != '' as has_full_text,
@@ -557,14 +617,14 @@ def search_documents(
                     pdf_url
                 """
 
-                # Try PMID first (numeric) - stored in external_id column
+                # Try PMID first (numeric) - stored in external_id of PubMed rows
                 if query.isdigit():
                     cur.execute(f"""
                         SELECT {select_cols}
                         FROM public.document
-                        WHERE external_id = %s
+                        WHERE external_id = %s AND source_id = %s
                         LIMIT %s
-                    """, (query, limit))
+                    """, (pubmed_id, query, pubmed_id, limit))
                 # Try DOI pattern
                 elif query.startswith('10.') or '/' in query:
                     cur.execute(f"""
@@ -572,7 +632,7 @@ def search_documents(
                         FROM public.document
                         WHERE doi ILIKE %s
                         LIMIT %s
-                    """, (f'%{query}%', limit))
+                    """, (pubmed_id, f'%{query}%', limit))
                 # Title search
                 else:
                     cur.execute(f"""
@@ -581,7 +641,7 @@ def search_documents(
                         WHERE title ILIKE %s
                         ORDER BY publication_date DESC NULLS LAST
                         LIMIT %s
-                    """, (f'%{query}%', limit))
+                    """, (pubmed_id, f'%{query}%', limit))
 
                 rows = cur.fetchall()
                 return [
@@ -600,7 +660,7 @@ def search_documents(
                 ]
 
     except Exception as e:
-        logger.error(f"Error searching documents: {e}")
+        logger.error(f"Error searching documents: {e}", exc_info=True)
         return []
 
 
@@ -613,16 +673,17 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
 
     Returns:
         List of dictionaries with assessment info and document metadata
+        (``pmid`` is ``None`` for non-PubMed documents)
     """
     try:
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         a.document_id,
                         d.title,
-                        d.external_id as pmid,
+                        {pmid_select_expr('d')} as pmid,
                         d.doi,
                         a.final_weight,
                         a.assessed_at,
@@ -631,7 +692,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
                     JOIN public.document d ON a.document_id = d.id
                     ORDER BY a.assessed_at DESC
                     LIMIT %s
-                """, (limit,))
+                """, (_pubmed_source_id(db_manager), limit))
 
                 rows = cur.fetchall()
                 return [
@@ -648,7 +709,7 @@ def get_recent_assessments(limit: int = RECENT_ASSESSMENTS_LIMIT) -> List[Dict]:
                 ]
 
     except Exception as e:
-        logger.error(f"Error fetching recent assessments: {e}")
+        logger.error(f"Error fetching recent assessments: {e}", exc_info=True)
         return []
 
 
@@ -689,7 +750,7 @@ def get_document_for_viewer(document_id: int) -> Optional[Dict]:
                 return None
 
     except Exception as e:
-        logger.error(f"Error fetching document for viewer: {e}")
+        logger.error(f"Error fetching document for viewer: {e}", exc_info=True)
         return None
 
 
@@ -701,19 +762,20 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
         document_id: Database ID of document
 
     Returns:
-        Document metadata dictionary or None if not found
+        Document metadata dictionary or None if not found (``pmid`` is
+        ``None`` for non-PubMed documents)
     """
     try:
         db_manager = get_db_manager()
         with db_manager.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
-                        id, title, abstract, external_id as pmid, doi, authors,
+                        id, title, abstract, {pmid_select_expr()} as pmid, doi, authors,
                         EXTRACT(YEAR FROM publication_date)::INTEGER as year
                     FROM public.document
                     WHERE id = %s
-                """, (document_id,))
+                """, (_pubmed_source_id(db_manager), document_id))
 
                 row = cur.fetchone()
                 if row:
@@ -729,7 +791,7 @@ def get_document_metadata(document_id: int) -> Optional[Dict]:
                 return None
 
     except Exception as e:
-        logger.error(f"Error fetching document metadata: {e}")
+        logger.error(f"Error fetching document metadata: {e}", exc_info=True)
         return None
 
 
@@ -746,5 +808,5 @@ __all__ = [
     'SEARCH_RESULT_LIMIT',
     'RECENT_ASSESSMENTS_LIMIT',
     'DEFAULT_SEMANTIC_THRESHOLD',
-    'PUBMED_SOURCE_ID',
+    'pmid_select_expr',
 ]

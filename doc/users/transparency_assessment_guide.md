@@ -57,8 +57,8 @@ The total transparency score (0-10) determines the risk level:
 
 | Risk Level | Score Range | Description |
 |------------|-------------|-------------|
-| **Low** | > 6.0 | Comprehensive, transparent disclosures |
-| **Medium** | 3.0 - 6.0 | Partial disclosures, some gaps |
+| **Low** | ≥ 6.0 | Comprehensive, transparent disclosures |
+| **Medium** | 3.0 - < 6.0 | Partial disclosures, some gaps |
 | **High** | < 3.0 | Missing critical disclosures |
 | **Unknown** | N/A | Insufficient text for assessment |
 

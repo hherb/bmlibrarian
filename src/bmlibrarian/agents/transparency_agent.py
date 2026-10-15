@@ -35,22 +35,79 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .base import BaseAgent
 from .transparency_data import (
-    DEFAULT_CONFIDENCE_FALLBACK,
     DEFAULT_MAX_RETRIES,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_CONFIDENCE,
     MAX_TEXT_LENGTH,
+    MAX_TOTAL_SCORE,
+    MAX_UNIT_VALUE,
+    MIN_TRANSPARENCY_SCORE,
+    MIN_UNIT_VALUE,
+    PATTERN_INDUSTRY_MIN_CONFIDENCE,
     SUMMARY_SEPARATOR_WIDTH,
     SCORE_THRESHOLD_HIGH_RISK,
     SCORE_THRESHOLD_MEDIUM_RISK,
     DataAvailability,
     RiskLevel,
     TransparencyAssessment,
+    coerce_bounded_float,
+    coerce_data_availability,
+    coerce_optional_bool,
+    coerce_str_list,
     extract_trial_registry_ids,
+    filter_trial_registry_ids,
     is_likely_industry_funder,
+    parse_finite_float,
+    score_distribution_label,
 )
 
 logger = logging.getLogger(__name__)
+
+# Fields the LLM response must contain for an assessment to be usable
+REQUIRED_ASSESSMENT_FIELDS = (
+    "has_funding_disclosure",
+    "has_coi_disclosure",
+    "data_availability",
+    "transparency_score",
+    "overall_confidence",
+)
+
+# Numeric LLM fields: name -> (minimum, maximum, default if missing/invalid).
+# A default of None means the field is required: a missing, non-numeric or
+# out-of-range value fails the assessment (out of range usually means the
+# model answered on the wrong scale, e.g. 0-100, and clamping would turn that
+# into the most favourable score). Optional fields fall back to the default
+# and out-of-range values are clamped, both with a warning.
+NUMERIC_ASSESSMENT_FIELDS = {
+    "transparency_score": (MIN_TRANSPARENCY_SCORE, MAX_TOTAL_SCORE, None),
+    "overall_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, None),
+    "industry_funding_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+    "funding_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+    "coi_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+}
+
+# Required boolean LLM fields: an unrecognisable value fails the assessment
+REQUIRED_BOOL_ASSESSMENT_FIELDS = (
+    "has_funding_disclosure",
+    "has_coi_disclosure",
+)
+
+# Optional boolean LLM fields: name -> value used if missing/unrecognisable
+# (None for is_industry_funded means "LLM could not tell")
+OPTIONAL_BOOL_ASSESSMENT_FIELDS = {
+    "is_industry_funded": None,
+    "has_author_contributions": False,
+}
+
+# List-of-string LLM fields
+LIST_ASSESSMENT_FIELDS = (
+    "funding_sources",
+    "conflicts_identified",
+    "trial_registry_ids",
+    "risk_indicators",
+    "strengths",
+    "weaknesses",
+)
 
 
 class TransparencyAgent(BaseAgent):
@@ -130,7 +187,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             document: Document dictionary with 'abstract' (required) and optional 'full_text'.
-            min_confidence: Minimum confidence threshold to accept assessment (0-1).
+            min_confidence: Confidence (0-1) below which the assessment is flagged
+                as low-confidence (logged and counted; it is still returned).
 
         Returns:
             TransparencyAssessment object if successful, None on failure.
@@ -184,26 +242,14 @@ class TransparencyAgent(BaseAgent):
             self._assessment_stats["failed_assessments"] += 1
             return None
 
-        # Validate required fields
-        required_fields = [
-            "has_funding_disclosure",
-            "has_coi_disclosure",
-            "data_availability",
-            "transparency_score",
-            "overall_confidence",
-        ]
-        if not all(f in assessment_data for f in required_fields):
-            missing = [f for f in required_fields if f not in assessment_data]
-            logger.error(
-                f"Missing required fields {missing} in assessment response for document {doc_id}"
-            )
+        # Validate and normalize the untrusted LLM output
+        validated = self._validate_assessment_data(assessment_data, doc_id)
+        if validated is None:
             self._assessment_stats["failed_assessments"] += 1
             return None
+        assessment_data = validated
 
-        # Parse confidence
-        overall_confidence = float(
-            assessment_data.get("overall_confidence", DEFAULT_CONFIDENCE_FALLBACK)
-        )
+        overall_confidence = assessment_data["overall_confidence"]
 
         if overall_confidence < min_confidence:
             logger.info(
@@ -212,13 +258,14 @@ class TransparencyAgent(BaseAgent):
             )
             self._assessment_stats["low_confidence_assessments"] += 1
 
-        # Merge LLM-found registry IDs with pattern-extracted ones
-        llm_registry_ids = assessment_data.get("trial_registry_ids", [])
+        # Merge LLM-found registry IDs (already format-checked) with
+        # pattern-extracted ones
+        llm_registry_ids = assessment_data["trial_registry_ids"]
         all_registry_ids = list(set(pre_extracted_registry_ids + llm_registry_ids))
 
         # Check funding sources for industry involvement
-        funding_sources = assessment_data.get("funding_sources", [])
-        llm_industry_flag = assessment_data.get("is_industry_funded")
+        funding_sources = assessment_data["funding_sources"]
+        llm_industry_flag = assessment_data["is_industry_funded"]
         pattern_industry_flag = any(is_likely_industry_funder(s) for s in funding_sources)
 
         # Use pattern matching result if LLM didn't identify, or combine
@@ -227,9 +274,9 @@ class TransparencyAgent(BaseAgent):
         else:
             is_industry = llm_industry_flag or pattern_industry_flag
 
-        industry_confidence = float(assessment_data.get("industry_funding_confidence", 0.0))
-        if pattern_industry_flag and industry_confidence < 0.8:
-            industry_confidence = max(industry_confidence, 0.8)
+        industry_confidence = assessment_data["industry_funding_confidence"]
+        if pattern_industry_flag:
+            industry_confidence = max(industry_confidence, PATTERN_INDUSTRY_MIN_CONFIDENCE)
 
         # Build assessment object
         assessment = TransparencyAssessment(
@@ -237,35 +284,27 @@ class TransparencyAgent(BaseAgent):
             document_title=title,
             pmid=document.get("pmid"),
             doi=document.get("doi"),
-            has_funding_disclosure=bool(assessment_data.get("has_funding_disclosure", False)),
+            has_funding_disclosure=assessment_data["has_funding_disclosure"],
             funding_statement=assessment_data.get("funding_statement"),
             funding_sources=funding_sources,
             is_industry_funded=is_industry,
             industry_funding_confidence=industry_confidence,
-            funding_disclosure_quality=float(
-                assessment_data.get("funding_disclosure_quality", 0.0)
-            ),
-            has_coi_disclosure=bool(assessment_data.get("has_coi_disclosure", False)),
+            funding_disclosure_quality=assessment_data["funding_disclosure_quality"],
+            has_coi_disclosure=assessment_data["has_coi_disclosure"],
             coi_statement=assessment_data.get("coi_statement"),
-            conflicts_identified=assessment_data.get("conflicts_identified", []),
-            coi_disclosure_quality=float(
-                assessment_data.get("coi_disclosure_quality", 0.0)
-            ),
-            data_availability=assessment_data.get(
-                "data_availability", DataAvailability.NOT_STATED.value
-            ),
+            conflicts_identified=assessment_data["conflicts_identified"],
+            coi_disclosure_quality=assessment_data["coi_disclosure_quality"],
+            data_availability=assessment_data["data_availability"],
             data_availability_statement=assessment_data.get("data_availability_statement"),
-            has_author_contributions=bool(
-                assessment_data.get("has_author_contributions", False)
-            ),
+            has_author_contributions=assessment_data["has_author_contributions"],
             contributions_statement=assessment_data.get("contributions_statement"),
             has_trial_registration=bool(len(all_registry_ids) > 0),
             trial_registry_ids=all_registry_ids,
-            transparency_score=float(assessment_data.get("transparency_score", 0.0)),
+            transparency_score=assessment_data["transparency_score"],
             overall_confidence=overall_confidence,
-            risk_indicators=assessment_data.get("risk_indicators", []),
-            strengths=assessment_data.get("strengths", []),
-            weaknesses=assessment_data.get("weaknesses", []),
+            risk_indicators=assessment_data["risk_indicators"],
+            strengths=assessment_data["strengths"],
+            weaknesses=assessment_data["weaknesses"],
             model_used=self.model,
             agent_version=self.VERSION,
         )
@@ -291,6 +330,137 @@ class TransparencyAgent(BaseAgent):
 
         return assessment
 
+    def _validate_assessment_data(
+        self,
+        data: Any,
+        doc_id: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and normalize a parsed LLM transparency response.
+
+        Fails the assessment (returns ``None``, logged as an error) when the
+        response is not an object, a required field is missing, a required
+        numeric field is not a number (numeric strings are accepted) or is out
+        of range, or a required boolean is unrecognisable.
+
+        Otherwise repairs are applied and logged as warnings: optional numeric
+        fields that are invalid fall back to their defaults and out-of-range
+        ones are clamped; optional booleans that are unrecognisable fall back
+        to their defaults; an unknown ``data_availability`` becomes
+        ``not_stated``; list fields of the wrong type become empty lists and
+        LLM trial registry IDs that match no known registry format are
+        dropped. Silent normalizations: missing optional fields take their
+        defaults (debug log), single strings become one-element lists, list
+        items are stringified and stripped, and blank or ``None`` items are
+        dropped.
+
+        Args:
+            data: Parsed JSON from the LLM (not trusted to be a dict).
+            doc_id: Document ID for log messages.
+
+        Returns:
+            A normalized copy of ``data``, or ``None`` if it is unusable.
+        """
+        if not isinstance(data, dict):
+            logger.error(
+                f"Transparency response for document {doc_id} is "
+                f"{type(data).__name__}, expected a JSON object"
+            )
+            return None
+
+        missing = [f for f in REQUIRED_ASSESSMENT_FIELDS if f not in data]
+        if missing:
+            logger.error(
+                f"Missing required fields {missing} in assessment response for document {doc_id}"
+            )
+            return None
+
+        normalized = dict(data)
+
+        for name, (minimum, maximum, default) in NUMERIC_ASSESSMENT_FIELDS.items():
+            raw = data.get(name)
+            number = parse_finite_float(raw)
+            required = default is None
+            if number is None:
+                if required:
+                    logger.error(
+                        f"Invalid value {raw!r} for required field '{name}' "
+                        f"in assessment response for document {doc_id}"
+                    )
+                    return None
+                if raw is None:
+                    logger.debug(f"'{name}' missing (document {doc_id}); using {default}")
+                else:
+                    logger.warning(
+                        f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
+                        f"using {default}"
+                    )
+                normalized[name] = default
+                continue
+            if not minimum <= number <= maximum:
+                if required:
+                    logger.error(
+                        f"Out-of-range value {raw!r} for required field '{name}' "
+                        f"(expected {minimum:g}-{maximum:g}) in assessment response "
+                        f"for document {doc_id}"
+                    )
+                    return None
+                logger.warning(
+                    f"Out-of-range value {raw!r} for '{name}' (document {doc_id}); "
+                    f"clamping to {minimum:g}-{maximum:g}"
+                )
+            normalized[name] = coerce_bounded_float(number, minimum, maximum)
+
+        for name in REQUIRED_BOOL_ASSESSMENT_FIELDS:
+            value = coerce_optional_bool(data.get(name))
+            if value is None:
+                logger.error(
+                    f"Invalid value {data.get(name)!r} for required boolean field "
+                    f"'{name}' in assessment response for document {doc_id}"
+                )
+                return None
+            normalized[name] = value
+
+        for name, default in OPTIONAL_BOOL_ASSESSMENT_FIELDS.items():
+            raw = data.get(name)
+            value = coerce_optional_bool(raw)
+            if value is None:
+                if raw is not None:
+                    logger.warning(
+                        f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
+                        f"using {default}"
+                    )
+                value = default
+            normalized[name] = value
+
+        raw_availability = data.get("data_availability")
+        availability = coerce_data_availability(raw_availability)
+        if availability is None:
+            availability = DataAvailability.NOT_STATED.value
+            logger.warning(
+                f"Unknown data_availability {raw_availability!r} (document {doc_id}); "
+                f"using '{availability}'"
+            )
+        normalized["data_availability"] = availability
+
+        for name in LIST_ASSESSMENT_FIELDS:
+            items, ok = coerce_str_list(data.get(name))
+            if not ok:
+                logger.warning(
+                    f"Unexpected type {type(data.get(name)).__name__} for '{name}' "
+                    f"(document {doc_id}); using an empty list"
+                )
+            normalized[name] = items
+
+        registry_ids, rejected = filter_trial_registry_ids(normalized["trial_registry_ids"])
+        if rejected:
+            logger.warning(
+                f"Dropping trial registry IDs with no recognised registry format "
+                f"{rejected} (document {doc_id})"
+            )
+        normalized["trial_registry_ids"] = registry_ids
+
+        return normalized
+
     def assess_transparency_by_id(
         self,
         document_id: int,
@@ -303,7 +473,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             document_id: The database ID of the document to assess.
-            min_confidence: Minimum confidence threshold to accept assessment (0-1).
+            min_confidence: Confidence (0-1) below which the assessment is flagged
+                as low-confidence (logged and counted; it is still returned).
 
         Returns:
             TransparencyAssessment object if successful, None otherwise.
@@ -338,7 +509,8 @@ class TransparencyAgent(BaseAgent):
 
         Args:
             documents: List of document dictionaries.
-            min_confidence: Minimum confidence threshold to accept assessments.
+            min_confidence: Confidence (0-1) below which assessments are flagged
+                as low-confidence (logged and counted; they are still returned).
             progress_callback: Optional callback(current, total, doc_title) for progress.
 
         Returns:
@@ -355,10 +527,19 @@ class TransparencyAgent(BaseAgent):
             if progress_callback:
                 progress_callback(i + 1, total, doc_title)
 
-            assessment = self.assess_transparency(
-                document=document,
-                min_confidence=min_confidence,
-            )
+            # One unexpected failure must not abort the rest of the batch
+            try:
+                assessment = self.assess_transparency(
+                    document=document,
+                    min_confidence=min_confidence,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Transparency assessment failed for document {document.get('id')}: {e}",
+                    exc_info=True,
+                )
+                self._assessment_stats["failed_assessments"] += 1
+                continue
 
             if assessment:
                 assessments.append(assessment)
@@ -777,19 +958,22 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         Returns:
             Dictionary with score categories and counts.
         """
-        distribution = {
-            "high_transparency (7-10)": 0,
-            "moderate_transparency (4-6)": 0,
-            "low_transparency (0-3)": 0,
+        # Buckets use the same thresholds as classify_risk() on the score
+        # (high transparency = low risk). Ranges are half-open: 3.0 is
+        # moderate, 6.0 is high. Metadata enrichment can raise a document's
+        # risk level (e.g. retraction) without moving it between buckets.
+        high = f"{SCORE_THRESHOLD_MEDIUM_RISK:g}-{MAX_TOTAL_SCORE:g}"
+        moderate = f"{SCORE_THRESHOLD_HIGH_RISK:g}-<{SCORE_THRESHOLD_MEDIUM_RISK:g}"
+        low = f"{MIN_TRANSPARENCY_SCORE:g}-<{SCORE_THRESHOLD_HIGH_RISK:g}"
+        labels = {
+            "high_transparency": f"high_transparency ({high})",
+            "moderate_transparency": f"moderate_transparency ({moderate})",
+            "low_transparency": f"low_transparency ({low})",
         }
+        distribution = {label: 0 for label in labels.values()}
 
         for assessment in assessments:
-            score = assessment.transparency_score
-            if score >= SCORE_THRESHOLD_MEDIUM_RISK + 1:
-                distribution["high_transparency (7-10)"] += 1
-            elif score >= SCORE_THRESHOLD_HIGH_RISK:
-                distribution["moderate_transparency (4-6)"] += 1
-            else:
-                distribution["low_transparency (0-3)"] += 1
+            bucket = score_distribution_label(assessment.transparency_score)
+            distribution[labels[bucket]] += 1
 
         return distribution

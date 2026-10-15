@@ -10,11 +10,12 @@ from full-text articles already stored in the database, with optional enrichment
 bulk-imported metadata (PubMed grants, ClinicalTrials.gov sponsors, Retraction Watch).
 """
 
+import math
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -26,7 +27,6 @@ MAX_TEXT_LENGTH = 12000
 
 # Confidence thresholds
 DEFAULT_MIN_CONFIDENCE = 0.4
-DEFAULT_CONFIDENCE_FALLBACK = 0.5
 
 # Formatting
 SUMMARY_SEPARATOR_WIDTH = 80
@@ -34,7 +34,7 @@ SUMMARY_SEPARATOR_WIDTH = 80
 # Transparency score thresholds (0-10 scale)
 SCORE_THRESHOLD_HIGH_RISK = 3.0      # Below this = high risk
 SCORE_THRESHOLD_MEDIUM_RISK = 6.0    # Below this = medium risk
-# Above 6.0 = low risk
+# 6.0 and above = low risk
 
 # Scoring component weights (max points per category)
 MAX_FUNDING_SCORE = 3.0       # 0-3: funding disclosure quality
@@ -42,6 +42,7 @@ MAX_COI_SCORE = 3.0           # 0-3: COI disclosure quality
 MAX_DATA_AVAILABILITY_SCORE = 2.0  # 0-2: data availability
 MAX_TRIAL_REGISTRATION_SCORE = 1.0  # 0-1: trial registration (if applicable)
 MAX_AUTHOR_CONTRIBUTIONS_SCORE = 1.0  # 0-1: author contributions
+MIN_TRANSPARENCY_SCORE = 0.0
 MAX_TOTAL_SCORE = 10.0
 
 # LLM response max tokens
@@ -49,6 +50,19 @@ DEFAULT_MAX_TOKENS = 3000
 
 # Retry configuration
 DEFAULT_MAX_RETRIES = 3
+
+# Range of the 0-1 numeric fields the LLM returns (confidences and
+# *_disclosure_quality; see the agent's prompt)
+MIN_UNIT_VALUE = 0.0
+MAX_UNIT_VALUE = 1.0
+
+# Strings an LLM may use for booleans (compared lower-cased, stripped)
+TRUE_STRINGS = frozenset({"true", "yes"})
+FALSE_STRINGS = frozenset({"false", "no"})
+
+# Minimum industry-funding confidence when pattern matching finds a known
+# industry funder among the disclosed funding sources
+PATTERN_INDUSTRY_MIN_CONFIDENCE = 0.8
 
 
 class RiskLevel(str, Enum):
@@ -278,3 +292,164 @@ def extract_trial_registry_ids(text: str) -> List[str]:
             if cleaned not in found_ids:
                 found_ids.append(cleaned)
     return found_ids
+
+
+def parse_finite_float(value: Any) -> Optional[float]:
+    """Convert an untrusted (LLM-supplied) value to a finite float.
+
+    Accepts ints, floats and numeric strings. Booleans, NaN/infinity and
+    anything non-numeric are rejected.
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        The float, or ``None`` if ``value`` is not a usable number.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def coerce_bounded_float(
+    value: Any,
+    minimum: float,
+    maximum: float,
+) -> Optional[float]:
+    """Convert an untrusted (LLM-supplied) value to a float within bounds.
+
+    Like :func:`parse_finite_float`, but out-of-range values are clamped.
+    Callers that need to know whether clamping happened should compare
+    against :func:`parse_finite_float`.
+
+    Args:
+        value: The raw value.
+        minimum: Lowest allowed value.
+        maximum: Highest allowed value.
+
+    Returns:
+        The clamped float, or ``None`` if ``value`` is not a usable number.
+    """
+    number = parse_finite_float(value)
+    if number is None:
+        return None
+    return min(max(number, minimum), maximum)
+
+
+def coerce_optional_bool(value: Any) -> Optional[bool]:
+    """Convert an untrusted (LLM-supplied) value to a boolean.
+
+    Accepts real booleans and the strings ``true``/``yes``/``false``/``no``
+    (case-insensitive). Plain ``bool()`` is not used because it turns the
+    string ``"false"`` into ``True``.
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        The boolean, or ``None`` if ``value`` is missing or not recognisable.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in TRUE_STRINGS:
+            return True
+        if text in FALSE_STRINGS:
+            return False
+    return None
+
+
+def coerce_data_availability(value: Any) -> Optional[str]:
+    """Normalize an untrusted data-availability value to a ``DataAvailability`` value.
+
+    Matching is case-insensitive and treats spaces and hyphens as
+    underscores (``"On request"`` -> ``"on_request"``).
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        The ``DataAvailability`` value string, or ``None`` if unrecognised.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower().replace("-", "_").replace(" ", "_")
+    try:
+        return DataAvailability(text).value
+    except ValueError:
+        return None
+
+
+def coerce_str_list(value: Any) -> Tuple[List[str], bool]:
+    """Convert an untrusted (LLM-supplied) value to a list of strings.
+
+    ``None`` becomes an empty list and a single string a one-element list.
+    List items are stringified and stripped; ``None`` and blank items are
+    dropped (so a blank string becomes an empty list).
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        ``(items, ok)`` where ``ok`` is ``False`` if ``value`` had an
+        unexpected type and was replaced by an empty list.
+    """
+    if value is None:
+        return [], True
+    if isinstance(value, str):
+        value = [value]
+    if isinstance(value, (list, tuple)):
+        items = (str(item).strip() for item in value if item is not None)
+        return [item for item in items if item], True
+    return [], False
+
+
+def filter_trial_registry_ids(candidates: List[str]) -> Tuple[List[str], List[str]]:
+    """Keep only trial registry IDs that match a known registry format.
+
+    Args:
+        candidates: Candidate IDs (e.g. as returned by an LLM).
+
+    Returns:
+        ``(valid, rejected)``: the IDs found in the candidates by
+        :data:`TRIAL_REGISTRY_PATTERNS` (deduplicated, in order), and the
+        candidates in which no registry ID was found.
+    """
+    valid: List[str] = []
+    rejected: List[str] = []
+    for candidate in candidates:
+        found = extract_trial_registry_ids(candidate)
+        if not found:
+            rejected.append(candidate)
+        for registry_id in found:
+            if registry_id not in valid:
+                valid.append(registry_id)
+    return valid, rejected
+
+
+def score_distribution_label(score: float) -> str:
+    """Bucket a transparency score using the same thresholds as risk levels.
+
+    The bucket matches ``classify_risk()`` for the score alone; metadata
+    enrichment can raise a document's risk level afterwards (e.g. retracted
+    papers become high risk) without changing its bucket.
+
+    Args:
+        score: Transparency score (0-10).
+
+    Returns:
+        ``'low_transparency'`` (high risk), ``'moderate_transparency'``
+        (medium risk) or ``'high_transparency'`` (low risk).
+    """
+    if score < SCORE_THRESHOLD_HIGH_RISK:
+        return "low_transparency"
+    if score < SCORE_THRESHOLD_MEDIUM_RISK:
+        return "moderate_transparency"
+    return "high_transparency"

@@ -681,7 +681,7 @@ bmlibrarian/
 │   ├── test_citation_agent.py # Citation extraction tests
 │   ├── test_reporting_agent.py# Report generation tests
 │   ├── test_counterfactual_agent.py # Counterfactual analysis tests
-│   ├── test_transparency_agent.py # Transparency assessment tests (43 tests)
+│   ├── test_transparency_agent.py # Transparency assessment tests (97 tests)
 │   └── paperchecker/          # PaperChecker test suite
 │       ├── test_statement_extractor.py   # Statement extraction tests
 │       ├── test_counter_generator.py     # Counter-statement tests
