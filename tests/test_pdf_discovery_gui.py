@@ -674,5 +674,53 @@ class TestFindPDFRunsOffGuiThread:
         update_db.assert_called_once()
 
 
+@pytest.mark.skipif(not HAS_QT, reason="Qt not available")
+class TestPaperWeightLabFindFullText:
+    """paper_weight_lab's "find full text" also runs discovery off the GUI thread."""
+
+    @pytest.fixture
+    def app(self):
+        """Create Qt application for tests."""
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+        return app
+
+    def test_find_full_text_does_not_block(self, app, tmp_path):
+        import threading
+        from types import SimpleNamespace
+        from bmlibrarian.lab.paper_weight_lab.tabs.search_tab import SearchTab
+
+        pdf_path = tmp_path / "paper.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        release = threading.Event()
+        result = SimpleNamespace(full_text=None, file_path=str(pdf_path), error_message=None)
+
+        def blocking_discovery(doc_data, progress_cb):
+            progress_cb('pmc', 'resolving')
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return result
+
+        with patch.object(SearchTab, '_setup_ui'):
+            tab = SearchTab()
+        downloaded = []
+        tab.full_text_downloaded.connect(lambda doc_id, path: downloaded.append((doc_id, path)))
+        doc = {'id': 7, 'title': 'T', 'doi': '10.1/x', 'year': 2020}
+
+        with patch.object(tab, '_discover_full_text', side_effect=blocking_discovery), \
+             patch.object(tab, '_update_pdf_in_database') as update_pdf, \
+             patch.object(tab, '_update_tree_item_status'):
+            tab._find_full_text_online(doc)
+            assert not release.is_set()  # returned while discovery still running
+            assert len(tab._discovery_sessions) == 1
+
+            release.set()
+            assert _pump_until(lambda: not tab._discovery_sessions)
+
+        update_pdf.assert_called_once()
+        assert downloaded == [(7, pdf_path)]
+        assert doc['has_pdf'] is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

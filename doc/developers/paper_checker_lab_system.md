@@ -9,10 +9,10 @@ The PaperChecker Laboratory is a PySide6/Qt-based GUI application that provides 
 ### Component Structure
 
 ```
-paper_checker_lab.py (root)              # Entry point script
-├── argparse configuration               # CLI argument handling
+scripts/paper_checker_lab.py             # Entry point script
+├── argparse configuration               # CLI argument handling (--debug)
 ├── logging setup                        # Debug mode configuration
-└── Qt/Flet app launcher                 # --flet flag for legacy mode
+└── Qt app launcher
 
 src/bmlibrarian/lab/paper_checker_lab/   # Main package
 ├── __init__.py                          # Lazy imports, module exports
@@ -274,10 +274,9 @@ def test_main_window():
 
 ## Migration from Flet
 
-The old Flet-based implementation is preserved at:
-`src/bmlibrarian/lab/paper_checker_lab_flet.py`
+The old Flet-based implementation (`src/bmlibrarian/lab/paper_checker_lab_flet.py`) has been removed, along with the `--flet` launcher flag; all Flet GUIs were retired on 2026-10-16.
 
-Key differences:
+Key differences from the Flet version:
 - PySide6 uses signals/slots instead of callbacks
 - QThread instead of ThreadPoolExecutor
 - DPI-aware styling instead of fixed pixel values

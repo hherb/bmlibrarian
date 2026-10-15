@@ -2,7 +2,9 @@
 
 ## Overview
 
-The Fact-Checker Review GUI is a desktop application for human reviewers to annotate and validate AI-generated fact-checking results. Built with the Flet framework, it provides an intuitive interface for reviewing biomedical statements, their AI evaluations, and supporting evidence **directly from PostgreSQL**.
+The Fact-Checker Review GUI is a desktop application for human reviewers to annotate and validate AI-generated fact-checking results. Built with PySide6 (Qt), it provides an intuitive interface for reviewing biomedical statements, their AI evaluations, and supporting evidence **directly from PostgreSQL**.
+
+> **Changed 2026-10-16**: the former Flet-based review app was removed. `fact_checker_review_gui.py` now opens the PySide6/Qt review window - the same review tab as the "Fact Checker" tab of the main Qt application (`uv run python bmlibrarian_qt.py`). The command-line options are unchanged. Parts of the interface walkthrough below were written for the Flet app and may differ in detail from the Qt window (for example, the username is entered in a field in the window header rather than a separate login dialog).
 
 **New in v2.0**: Simplified database-only architecture - all data stored in PostgreSQL factcheck schema with no intermediate files.
 
@@ -25,7 +27,7 @@ The Fact-Checker Review GUI is a desktop application for human reviewers to anno
 - Python ≥3.12
 - BMLibrarian installed with GUI dependencies
 - PostgreSQL with factcheck schema initialized
-- Flet framework (automatically installed with BMLibrarian)
+- PySide6 (automatically installed with BMLibrarian)
 
 ### Installation
 
@@ -54,6 +56,7 @@ The application will open in a desktop window and prompt you to log in (unless `
 - `--user USERNAME`: Skip login dialog and use specified username
 - `--incremental`: Filter to show only statements without your annotations
 - `--blind`: Hide original and AI annotations from human annotator (unbiased mode)
+- `--db-file FILE.db`: Review a portable SQLite review package instead of PostgreSQL (see `FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`)
 
 ## Using the Review Interface
 
@@ -450,13 +453,13 @@ WHERE e.evaluation_id = %s;
 
 ### UI Components
 
-Built using Flet framework:
-- **ExpansionTiles**: Collapsible citation cards for space efficiency
-- **Text Highlighting**: Yellow-highlighted passages in abstracts
-- **Badges**: Color-coded stance and relevance indicators
-- **Dialogs**: Login, export, and error notifications
-- **Database Integration**: Direct PostgreSQL connection with connection pooling
-- **Responsive Layout**: Adapts to different screen sizes
+Built with PySide6/Qt (`src/bmlibrarian/gui/qt/plugins/fact_checker/`):
+- **FactCheckerTabWidget** (`fact_checker_tab.py`): Main review widget (PostgreSQL or SQLite review package)
+- **StatementWidget**: Statement and annotation display, including blind mode
+- **AnnotationWidget**: Human annotation input
+- **CitationListWidget**: Evidence citation cards
+- **NavigationWidget**: Statement navigation
+- **TimerWidget**: Review time tracking
 
 ### Performance Optimization
 
@@ -473,6 +476,10 @@ Built using Flet framework:
 - **PostgreSQL Functions**: `factcheck.sql` migration script
 
 ## Version History
+
+- **2026-10-16**: Flet app replaced by PySide6/Qt
+  - `fact_checker_review_gui.py` now opens the Qt review tab in a standalone window
+  - Same `--user`, `--incremental`, `--blind`, `--db-file` options
 
 - **v2.0.0** (2025-11-12): PostgreSQL Migration
   - Migrated from SQLite to PostgreSQL factcheck schema

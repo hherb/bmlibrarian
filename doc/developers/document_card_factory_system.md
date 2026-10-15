@@ -2,24 +2,21 @@
 
 ## Overview
 
-The Document Card Factory system provides a unified, framework-agnostic interface for creating document cards across different UI frameworks (Flet and Qt). This architecture ensures consistency in appearance and functionality while allowing for framework-specific implementations.
+The Document Card Factory system provides a unified interface for creating document cards. A framework-neutral base class (`DocumentCardFactoryBase`) holds the data structures and shared formatting/PDF-state logic; `QtDocumentCardFactory` (PySide6) is the only implementation. This ensures consistency in appearance and functionality across all GUI components.
+
+> **History**: a Flet implementation (`FletDocumentCardFactory`, wrapping `UnifiedDocumentCard`) existed until the Flet GUIs were retired on 2026-10-16. The base module moved from `gui/flet/document_card_factory_base.py` to `gui/document_card_factory_base.py`.
 
 ## Architecture
 
 ### Key Components
 
-1. **DocumentCardFactoryBase** (`document_card_factory_base.py`)
+1. **DocumentCardFactoryBase** (`src/bmlibrarian/gui/document_card_factory_base.py`)
    - Abstract base class defining the factory interface
    - Common utility methods for formatting metadata, authors, scores
    - PDF state determination logic
-   - Framework-agnostic data structures
+   - Framework-neutral data structures (`DocumentCardData`, `CardContext`, `PDFButtonState`, `PDFButtonConfig`)
 
-2. **FletDocumentCardFactory** (`flet_document_card_factory.py`)
-   - Flet-specific implementation
-   - Wraps existing `UnifiedDocumentCard` class
-   - Provides Flet-style PDF buttons with three states
-
-3. **QtDocumentCardFactory** (`qt/qt_document_card_factory.py`)
+2. **QtDocumentCardFactory** (`src/bmlibrarian/gui/qt/qt_document_card_factory.py`)
    - Qt-specific implementation
    - Integrates with existing Qt card widgets
    - Adds PDF button functionality to Qt cards (previously missing)
@@ -142,41 +139,6 @@ After successful fetch or upload, the button automatically transitions to VIEW s
 
 ## Usage Examples
 
-### Basic Flet Example
-
-```python
-import flet as ft
-from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
-from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
-
-def main(page: ft.Page):
-    # Create factory
-    factory = FletDocumentCardFactory(page=page)
-
-    # Create card data
-    card_data = DocumentCardData(
-        doc_id=12345,
-        title="Example Study on Cardiovascular Health",
-        abstract="This study examines...",
-        authors=["Smith J", "Johnson A"],
-        year=2023,
-        journal="Journal of Cardiology",
-        pmid="12345678",
-        relevance_score=4.5,
-        pdf_url="https://example.com/paper.pdf",
-        context=CardContext.LITERATURE,
-        show_pdf_button=True
-    )
-
-    # Create card
-    card = factory.create_card(card_data)
-
-    # Add to page
-    page.add(card)
-
-ft.app(target=main)
-```
-
 ### Basic Qt Example
 
 ```python
@@ -219,7 +181,6 @@ app.exec()
 
 ```python
 from pathlib import Path
-from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
 from bmlibrarian.gui.document_card_factory_base import DocumentCardData
 
 def custom_pdf_action_handler(action: str, doc_id: int, *args):
@@ -276,22 +237,7 @@ def determine_pdf_state(
     return PDFButtonState.UPLOAD
 ```
 
-### Framework-Specific Implementations
-
-#### Flet Implementation
-
-The Flet factory wraps the existing `UnifiedDocumentCard` class and maps the factory's data structures to Flet's expected format:
-
-```python
-class FletDocumentCardFactory(DocumentCardFactoryBase):
-    def create_card(self, card_data: DocumentCardData) -> ft.ExpansionTile:
-        # Convert CardContext to DocumentCardContext
-        # Prepare document dictionary
-        # Delegate to UnifiedDocumentCard
-        return self._card_creator.create_card(...)
-```
-
-#### Qt Implementation
+### Qt Implementation
 
 The Qt factory integrates with existing Qt card widgets and adds PDF button functionality:
 
@@ -371,7 +317,7 @@ class CardContext(Enum):
     NEW_CONTEXT = "new_context"  # Add new context
 ```
 
-2. Update framework-specific factories to handle new context:
+2. Update `QtDocumentCardFactory` to handle the new context:
 ```python
 def create_card(self, card_data: DocumentCardData):
     if card_data.context == CardContext.NEW_CONTEXT:
@@ -389,7 +335,7 @@ To create a new card variation:
 
 Example:
 ```python
-class CustomFletCardFactory(FletDocumentCardFactory):
+class CustomQtCardFactory(QtDocumentCardFactory):
     def create_card(self, card_data: DocumentCardData):
         # Custom pre-processing
         card_data = self._customize_card_data(card_data)
@@ -418,7 +364,7 @@ The test suite covers:
 - Metadata formatting
 - Score color mapping
 - Abstract truncation
-- Card creation for both frameworks
+- Qt card creation
 - PDF button widget functionality
 - Custom callback handling
 
@@ -442,17 +388,9 @@ def test_determine_pdf_state_view(tmp_path):
 
 Always use the factory pattern when creating new document cards:
 
-❌ **Don't**:
-```python
-# Directly instantiating card classes
-card = UnifiedDocumentCard(page, pdf_manager)
-card.create_card(index, doc, ...)
-```
-
-✅ **Do**:
 ```python
 # Using factory pattern
-factory = FletDocumentCardFactory(page, pdf_manager)
+factory = QtDocumentCardFactory(pdf_manager=pdf_manager)
 card_data = DocumentCardData(doc_id=123, title="Example")
 card = factory.create_card(card_data)
 ```
@@ -500,57 +438,13 @@ metadata = factory.format_metadata(year, journal, pmid, doi)
 # Don't reinvent formatting logic
 ```
 
-### 5. Test Both Frameworks
+### 5. Test Changes
 
-When making changes to the factory system, test both Flet and Qt implementations:
+When making changes to the factory system, run the unit tests and the Qt demo:
 
 ```bash
-# Test Flet
-uv run python examples/document_card_factory_demo.py --framework flet
-
-# Test Qt
-uv run python examples/document_card_factory_demo.py --framework qt
-```
-
-## Migration Guide
-
-### Migrating Existing Code to Factory Pattern
-
-#### Before (Direct Card Creation)
-
-```python
-# Old Flet code
-card_creator = UnifiedDocumentCard(page, pdf_manager)
-card = card_creator.create_card(
-    index=0,
-    doc=doc_dict,
-    context="literature",
-    ai_score=4.5,
-    show_scoring_controls=False
-)
-```
-
-#### After (Factory Pattern)
-
-```python
-# New factory-based code
-from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
-from bmlibrarian.gui.document_card_factory_base import DocumentCardData, CardContext
-
-factory = FletDocumentCardFactory(page, pdf_manager)
-card_data = DocumentCardData(
-    doc_id=doc_dict['id'],
-    title=doc_dict['title'],
-    abstract=doc_dict.get('abstract'),
-    authors=doc_dict.get('authors'),
-    year=doc_dict.get('year'),
-    journal=doc_dict.get('publication'),
-    pmid=doc_dict.get('pmid'),
-    doi=doc_dict.get('doi'),
-    relevance_score=4.5,
-    context=CardContext.LITERATURE
-)
-card = factory.create_card(card_data)
+uv run python -m pytest tests/test_document_card_factory.py -v
+uv run python examples/document_card_factory_demo.py
 ```
 
 ## Performance Considerations
@@ -566,14 +460,14 @@ The factory pattern adds minimal overhead:
 
 - Factory instances are lightweight (shared utilities)
 - Card data structures use dataclasses (efficient)
-- Recommended: Create one factory instance per page/window
+- Recommended: Create one factory instance per window
 
 ### Optimization Tips
 
 1. **Reuse Factory Instances**:
 ```python
 # Create once
-factory = FletDocumentCardFactory(page)
+factory = QtDocumentCardFactory()
 
 # Reuse for multiple cards
 for doc in documents:
@@ -639,5 +533,4 @@ card = factory.create_card(card_data)  # PDF button included
 
 See inline documentation in:
 - `src/bmlibrarian/gui/document_card_factory_base.py`
-- `src/bmlibrarian/gui/flet_document_card_factory.py`
 - `src/bmlibrarian/gui/qt/qt_document_card_factory.py`

@@ -542,8 +542,8 @@ The **Document Interrogation** interface provides an interactive chat experience
 ### Example Usage
 
 ```bash
-# Launch the Configuration GUI (includes Document Interrogation tab)
-uv run python bmlibrarian_config_gui.py
+# Launch the Qt GUI (includes the Document Interrogation tab)
+uv run python bmlibrarian_qt.py
 
 # Workflow:
 # 1. Navigate to "Document Interrogation" tab
@@ -727,25 +727,21 @@ uv run python bmlibrarian_cli.py --auto "What are the cardiovascular benefits of
 
 #### Desktop Research Application
 ```bash
-# Launch the GUI research application
-uv run python bmlibrarian_research_gui.py
+# Launch the Qt GUI and open the Research tab
+uv run python bmlibrarian_qt.py
 
 # Features:
-# - Visual workflow progress with collapsible step cards
+# - Sub-tabs for each workflow stage: Search, Literature, Scoring, Citations,
+#   Preliminary report, Counterfactual analysis, Report
 # - Real-time agent execution with model configuration
-# - Multi-model query generation with smart pagination and result tracking
-# - Query performance statistics showing model effectiveness
-# - Progressive counterfactual audit trail showing claims, queries, searches, and results
-# - Formatted markdown report preview with scrolling
-# - Direct file save functionality
-# - Complete transparency into citation validation and rejection reasoning
-# - Automatic audit trail persistence to PostgreSQL database
+# - Formatted markdown report preview
+# - Save the final report as Markdown or export it as JSON
 ```
 
 #### Configuration GUI
 ```bash
-# Launch the configuration interface
-uv run python bmlibrarian_config_gui.py
+# Launch the Qt GUI and open the Configuration (or Settings) tab
+uv run python bmlibrarian_qt.py
 
 # Configure agents, models, and parameters through GUI:
 # - Model selection with live refresh from Ollama
@@ -948,7 +944,7 @@ The fact-checking command-line tool (`fact_checker_cli.py`) provides:
 - **Detailed output** - comprehensive metadata, statistics, and evidence lists
 
 ### Fact-Checker Review GUI
-The human review desktop application (`fact_checker_review_gui.py`) provides:
+The human review desktop application (`fact_checker_review_gui.py`, PySide6/Qt; also available as the "Fact Checker" tab of `bmlibrarian_qt.py`) provides:
 - **Interactive review interface** with statement-by-statement navigation
 - **Blind mode** - hide AI evaluations to prevent annotation bias for unbiased human judgments
 - **Incremental mode** - filter to show only unannotated statements for efficient review
@@ -961,19 +957,15 @@ The human review desktop application (`fact_checker_review_gui.py`) provides:
 - **Quality control** - perfect for training data validation and model evaluation
 
 ### Desktop Research Application
-The GUI research application (`bmlibrarian_research_gui.py`) offers:
+The Research tab of the Qt GUI (`bmlibrarian_qt.py`) offers:
 - Native cross-platform desktop interface built with PySide6/Qt
-- Visual workflow progress with collapsible step cards
-- Multi-model query generation with smart pagination and result tracking
-- Progressive counterfactual audit trail with real-time updates
-- PostgreSQL audit trail for persistent session tracking
+- Sub-tabs for each workflow stage (search, literature, scoring, citations, preliminary report, counterfactual analysis, final report)
 - Real-time agent execution with configured AI models
-- Formatted markdown report preview with scrollable display
-- Direct file save functionality
-- Complete transparency into citation validation and rejection reasoning
+- Formatted markdown report preview
+- Save the final report as Markdown or export it as JSON
 
 ### Configuration Interface
-The configuration GUI (`bmlibrarian_config_gui.py`) provides:
+The Configuration and Settings tabs of the Qt GUI (`bmlibrarian_qt.py`) provide:
 - Tabbed interface for agent-specific configuration
 - Model selection with live refresh from Ollama server
 - Parameter adjustment with interactive sliders and visual value displays
@@ -991,7 +983,6 @@ The configuration GUI (`bmlibrarian_config_gui.py`) provides:
 - **PRISMA 2020 Lab** (`prisma2020_lab.py`): Systematic review compliance assessment against 27-item checklist
 - **Transparency Lab** (`transparency_lab.py`): Undisclosed bias risk assessment for research papers
 - **Study Assessment Lab** (`study_assessment_lab.py`): Research quality and trustworthiness evaluation
-- **Citation Lab** (`citation_lab.py`): Citation extraction experimentation
 - **Agent Demonstrations**: Examples showcasing multi-agent capabilities in `examples/` directory
 
 ## Configuration System
@@ -1189,8 +1180,8 @@ uv run python -m pytest tests/ -m integration
 
 # Test CLI and GUI applications
 uv run python bmlibrarian_cli.py --quick
-uv run python bmlibrarian_research_gui.py --auto "test question" --quick
-uv run python bmlibrarian_config_gui.py --debug
+uv run python bmlibrarian_cli.py --auto "test question" --quick
+uv run python bmlibrarian_qt.py
 ```
 
 Test suite: **145 test files** across all modules
@@ -1205,12 +1196,11 @@ uv run python examples/reporting_demo.py
 uv run python examples/counterfactual_demo.py
 
 # Launch laboratory tools
-uv run python query_lab.py  # QueryAgent experimental interface
+uv run python scripts/query_lab.py  # QueryAgent experimental interface (Qt)
 
 # Run applications in development mode
 uv run python bmlibrarian_cli.py --debug
-uv run python bmlibrarian_research_gui.py --debug
-uv run python bmlibrarian_config_gui.py --debug
+uv run python bmlibrarian_qt.py --env .env  # Qt GUI with an explicit env file
 ```
 
 ### Development Principles

@@ -1,5 +1,18 @@
 # Migration Guide: Flet GUI to Qt GUI
 
+> **The Flet GUIs were removed on 2026-10-16.** flet 1.0 (pulled in by a dependency update) changed
+> its event model, which would have required a behavioural rewrite of the entire Flet GUI, and every
+> Flet application already had a PySide6/Qt equivalent. `flet` is no longer a BMLibrarian dependency.
+> The rest of this guide is kept as historical context; commands referring to Flet apps no longer work.
+>
+> | Removed (Flet) | Use instead (PySide6/Qt) |
+> |---|---|
+> | `bmlibrarian_research_gui.py` | `uv run python bmlibrarian_qt.py` → **Research** tab (the `--auto`/`--quick`/`--max-results`/`--score-threshold` flags have no Qt equivalent) |
+> | `bmlibrarian_config_gui.py` | `uv run python bmlibrarian_qt.py` → **Configuration** / **Settings** tabs |
+> | Flet fact-checker review app | `uv run python fact_checker_review_gui.py` (now Qt; same `--user`, `--blind`, `--incremental`, `--db-file` options) or the **Fact Checker** tab |
+> | Flet Query / PICO / PRISMA 2020 / Study Assessment labs | `scripts/query_lab.py`, `scripts/pico_lab.py`, `scripts/prisma2020_lab.py`, `scripts/study_assessment_lab.py` (now open the Qt plugin in a standalone window) |
+> | `scripts/citation_lab.py` (Citation lab) | Removed; no Qt equivalent yet |
+
 ## Table of Contents
 
 1. [Introduction](#introduction)

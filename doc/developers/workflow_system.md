@@ -6,7 +6,7 @@ BMLibrarian's workflow system provides flexible, enum-based orchestration for mu
 
 The workflow system is integrated across multiple interfaces:
 - **CLI Interface**: Interactive command-line workflow execution with `bmlibrarian_cli.py`
-- **GUI Interface**: Visual workflow progress with real-time updates in `bmlibrarian_research_gui.py`
+- **GUI Interface**: the former Flet Research GUI (`bmlibrarian_research_gui.py`) used this system; it was removed on 2026-10-16. The Qt Research tab (`bmlibrarian_qt.py`) runs its own threaded workflow in `src/bmlibrarian/gui/qt/plugins/research/workflow_thread.py` and does not use the `WorkflowStep` enum
 - **Programmatic API**: Direct workflow execution for custom applications
 
 ## Architecture
@@ -416,91 +416,7 @@ When migrating from numbered step systems:
 
 ## GUI Integration
 
-### Visual Workflow Progress
-
-The GUI system (`gui/research_app.py`) provides real-time visual feedback for workflow execution:
-
-```python
-class ResearchGUI:
-    def __init__(self):
-        self.step_cards: Dict[WorkflowStep, StepCard] = {}
-        
-    def create_workflow_steps(self):
-        """Create visual cards for each workflow step."""
-        steps = [
-            WorkflowStep.COLLECT_RESEARCH_QUESTION,
-            WorkflowStep.GENERATE_AND_EDIT_QUERY,
-            # ... all workflow steps
-        ]
-        
-        for step in steps:
-            card = StepCard(step, self.page)
-            self.step_cards[step] = card
-            
-    def update_step_status(self, step: WorkflowStep, status: StepStatus, message: str = ""):
-        """Update visual status of workflow step."""
-        if step in self.step_cards:
-            self.step_cards[step].update_status(status, message)
-            self.page.update()
-```
-
-### Step Status Management
-
-Visual workflow steps use the `StepStatus` enum for GUI updates:
-
-```python
-class StepStatus(Enum):
-    PENDING = "pending"      # Step not yet started (gray)
-    RUNNING = "running"      # Step currently executing (blue with spinner)
-    COMPLETED = "completed"  # Step finished successfully (green)
-    ERROR = "error"          # Step failed with error (red)
-    SKIPPED = "skipped"      # Step was skipped (yellow)
-```
-
-### Async Workflow Execution
-
-GUI workflows execute asynchronously to prevent UI blocking:
-
-```python
-async def start_research_workflow(self):
-    """Start the research workflow asynchronously."""
-    self.workflow_running = True
-    
-    try:
-        # Initialize workflow executor
-        workflow_executor = WorkflowExecutor(self)
-        
-        # Execute workflow steps
-        success = await workflow_executor.execute_complete_workflow(
-            research_question=self.research_question,
-            human_in_loop=self.human_in_loop
-        )
-        
-        if success:
-            self.show_completion_dialog()
-        else:
-            self.show_error_dialog("Workflow execution failed")
-            
-    except Exception as e:
-        logger.error(f"Workflow error: {e}")
-        self.show_error_dialog(f"Workflow error: {str(e)}")
-    finally:
-        self.workflow_running = False
-```
-
-### Thread Safety
-
-GUI workflow execution must handle thread safety:
-
-```python
-def update_step_status_safely(self, step: WorkflowStep, status: StepStatus, message: str = ""):
-    """Thread-safe step status update."""
-    def update():
-        self.update_step_status(step, status, message)
-    
-    # Schedule update on UI thread
-    self.page.run_thread_safe(update)
-```
+The visual workflow integration previously documented here (`gui/research_app.py`, `ResearchGUI`, `StepCard`, `StepStatus`) belonged to the Flet Research GUI, which was removed on 2026-10-16. The Qt Research tab (`src/bmlibrarian/gui/qt/plugins/research/`) runs the research workflow on a `QThread` (`workflow_thread.py`, `workflow_executor.py`) and reports progress via Qt signals; it does not use the `WorkflowStep` enum. See [GUI Architecture](gui_architecture.md).
 
 ## Configuration Integration
 

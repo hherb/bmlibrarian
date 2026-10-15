@@ -26,12 +26,12 @@ Start here if you're new to BMLibrarian:
 
 **Launch**: `uv run python bmlibrarian_qt.py`
 
-### Legacy GUIs (Deprecated)
+### Retired Flet GUIs
 
-⚠️ **Note**: The Flet-based GUI applications are deprecated and will be removed in future versions. Please migrate to the Qt GUI.
+The Flet-based GUI applications (`bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`, the Flet fact-checker review app and labs) were removed on 2026-10-16. Use the Qt GUI above; `fact_checker_review_gui.py` and the `scripts/*_lab.py` launchers now open Qt windows.
 
-📖 **[Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)**
-- How to transition from Flet to Qt GUI
+📖 **[Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)** (historical)
+- List of removed applications and their Qt replacements
 - Feature comparison and workflow changes
 - Configuration migration steps
 

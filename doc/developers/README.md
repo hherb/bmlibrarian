@@ -119,29 +119,17 @@ bmlibrarian/
 │   │   │   ├── dialogs/       # Dialog windows
 │   │   │   ├── resources/     # Stylesheets, icons, themes
 │   │   │   └── utils/         # Qt utility functions
-│   │   ├── config_app.py      # Legacy Flet config GUI (deprecated)
-│   │   ├── research_app.py    # Legacy Flet research GUI (deprecated)
-│   │   ├── components.py      # Legacy Flet components
-│   │   ├── dialogs.py         # Legacy Flet dialogs
-│   │   ├── workflow.py        # Real agent orchestration
-│   │   └── tabs/              # Legacy Flet tab components
+│   │   └── document_card_factory_base.py # Framework-neutral document card data/base factory
 │   ├── factchecker/           # Fact-checking system
 │   │   ├── __init__.py        # Fact-checker module exports
 │   │   ├── agent/             # Fact-checking agent
 │   │   │   └── fact_checker_agent.py  # Multi-agent orchestration
 │   │   ├── db/                # Database operations
 │   │   │   └── database.py    # PostgreSQL factcheck schema
-│   │   ├── cli/               # CLI application
-│   │   │   ├── app.py         # Main CLI entry point
-│   │   │   ├── commands.py    # Command handlers
-│   │   │   └── formatters.py  # Output formatting
-│   │   └── gui/               # Review GUI (standalone Flet app)
-│   │       ├── review_app.py  # Main review application
-│   │       ├── data_manager.py    # Database queries
-│   │       ├── annotation_manager.py  # Annotation logic
-│   │       ├── statement_display.py   # Statement UI
-│   │       ├── citation_display.py    # Citation cards
-│   │       └── dialogs.py     # Login/export dialogs
+│   │   └── cli/               # CLI application
+│   │       ├── app.py         # Main CLI entry point
+│   │       ├── commands.py    # Command handlers
+│   │       └── formatters.py  # Output formatting
 │   └── lab/                   # Experimental tools and interfaces
 ├── tests/                     # Comprehensive test suite
 ├── doc/                       # Documentation
@@ -200,10 +188,10 @@ Current test coverage: **>95%** across all agent modules
   - Reusable widgets in `widgets/`
   - Theme and resource management in `resources/`
 
-### Legacy GUI (Deprecated)
-- **Directory**: `src/bmlibrarian/gui/` (Flet-based files)
-- **Status**: Deprecated, maintenance mode only
-- **Note**: Will be removed in future versions. Use Qt GUI instead.
+### Retired: Flet GUI
+- The Flet-based GUIs (research, configuration, fact-checker review, labs) were removed on 2026-10-16; flet 1.0 changed its event model and every Flet app already had a Qt equivalent.
+- Standalone launchers (`fact_checker_review_gui.py`, `scripts/{query,pico,prisma2020,study_assessment}_lab.py`) now open a single Qt plugin or widget in its own window via `run_plugin_standalone()` / `run_widget_standalone()` in `src/bmlibrarian/gui/qt/core/standalone.py`.
+- Agent setup/teardown helpers (`initialize_agents_in_main_thread`, `cleanup_agents`) live in `src/bmlibrarian/agents/lifecycle.py`.
 
 ### Fact-Checking System
 - **Directory**: `src/bmlibrarian/factchecker/`
@@ -212,7 +200,7 @@ Current test coverage: **>95%** across all agent modules
   - `FactCheckerAgent` - Multi-agent orchestration for statement verification
   - `FactCheckerDB` - PostgreSQL storage with factcheck schema
   - CLI interface in `cli/`
-  - GUI review interface in `gui/` (standalone Flet app)
+  - Review GUI: Qt `fact_checker` plugin (`src/bmlibrarian/gui/qt/plugins/fact_checker/`), launched standalone by `fact_checker_review_gui.py`
 - **Features**:
   - Batch processing from JSON files
   - Literature evidence extraction

@@ -77,7 +77,7 @@ uv run python bmlibrarian_cli.py
 
 #### Example with GUI
 
-The Research GUI (`bmlibrarian_research_gui.py`) automatically uses multi-model generation if enabled in your configuration. No additional steps required.
+The former Flet Research GUI (`bmlibrarian_research_gui.py`) used multi-model generation automatically; it was removed on 2026-10-16. The Qt Research tab (`uv run python bmlibrarian_qt.py`) does not currently use multi-model query generation. The settings can still be edited in the Qt Configuration tab.
 
 ## Configuration
 

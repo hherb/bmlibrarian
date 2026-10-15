@@ -7,18 +7,24 @@ Includes PDF/full-text availability indicators and full-text discovery.
 
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Any, Callable, Optional, List, Dict, Set
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTreeWidget, QTreeWidgetItem,
-    QMessageBox, QGroupBox, QApplication,
+    QMessageBox, QGroupBox,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QTimer
+from shiboken6 import isValid as is_widget_valid
 
 from bmlibrarian.gui.qt.resources.styles.dpi_scale import get_font_scale
 from bmlibrarian.gui.qt.resources.styles.stylesheet_generator import get_stylesheet_generator
-from bmlibrarian.gui.qt.qt_document_card_factory import PDFDiscoveryProgressDialog
+from bmlibrarian.gui.qt.qt_document_card_factory import (
+    FindPDFSession,
+    PDFDiscoveryProgressDialog,
+    PDFDiscoveryWorker,
+)
+from bmlibrarian.gui.qt.resources.constants import PDFOperationSettings
 from bmlibrarian.agents.paper_weight import (
     search_documents,
     semantic_search_documents,
@@ -69,6 +75,8 @@ class SearchTab(QWidget):
         self.styles = get_stylesheet_generator()
 
         self.search_results: List[Dict] = []
+        # Running full-text discovery sessions, kept referenced until done
+        self._discovery_sessions: Set[FindPDFSession] = set()
 
         self._setup_ui()
 
@@ -413,162 +421,156 @@ class SearchTab(QWidget):
         """
         Find full text online using PDF discovery.
 
-        Shows progress dialog and handles download + ingestion.
+        Shows a progress dialog and runs discovery on a ``PDFDiscoveryWorker``
+        thread so the UI stays responsive; the outcome is handled on the GUI
+        thread by ``_on_full_text_result`` / ``_on_full_text_error``.
 
         Args:
             doc_data: Document dictionary with identifiers
         """
-        from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
-        from bmlibrarian.discovery.resolvers import CrossRefTitleResolver
-        from bmlibrarian.config import get_config
-        from pathlib import Path
-
         document_id = doc_data['id']
         title = doc_data.get('title') or "Unknown"
 
-        # Create and show progress dialog
         progress_dialog = PDFDiscoveryProgressDialog(
             doc_id=document_id,
             title=title,
             parent=self.window()
         )
         progress_dialog.show()
-        QApplication.processEvents()
 
-        try:
-            # Get configuration
-            config = get_config()
-            discovery_config = config.get('discovery') or {}
-
-            # Track discovered DOI (from CrossRef title search)
-            discovered_doi = doc_data.get('doi')
-
-            # If no DOI but we have a title, try CrossRef title search first
-            if not doc_data.get('doi') and doc_data.get('title'):
-                progress_dialog.add_step('crossref_title', 'resolving')
-
-                try:
-                    title_resolver = CrossRefTitleResolver(
-                        timeout=discovery_config.get('timeout', 30),
-                        min_similarity=discovery_config.get('crossref_min_similarity', 0.85)
-                    )
-
-                    identifiers = DocumentIdentifiers(
-                        doc_id=document_id,
-                        title=doc_data.get('title')
-                    )
-
-                    result = title_resolver.resolve(identifiers)
-
-                    if result.status.value == 'success' and result.metadata.get('discovered_doi'):
-                        discovered_doi = result.metadata['discovered_doi']
-                        progress_dialog.add_step('crossref_title', 'found')
-                        logger.info(f"Discovered DOI {discovered_doi} for document {document_id}")
-
-                        # Update database with discovered DOI
-                        self._update_doi_in_database(document_id, discovered_doi)
-                    else:
-                        progress_dialog.add_step('crossref_title', 'not_found')
-
-                except Exception as e:
-                    progress_dialog.add_step('crossref_title', 'error')
-                    logger.warning(f"CrossRef title search error: {e}")
-
-            # Get PDF base directory from config
-            pdf_config = config.get('pdf') or {}
-            pdf_base_dir_str = pdf_config.get('base_dir', '~/knowledgebase/pdf') if isinstance(pdf_config, dict) else '~/knowledgebase/pdf'
-            pdf_base_dir = Path(pdf_base_dir_str).expanduser()
-            pdf_base_dir.mkdir(parents=True, exist_ok=True)
-
-            # Get unpaywall email from config
-            unpaywall_email = config.get('unpaywall_email')
-            unpaywall_email_str = str(unpaywall_email) if unpaywall_email else None
-
-            # Create finder
-            finder = FullTextFinder(
-                unpaywall_email=unpaywall_email_str,
-                timeout=int(discovery_config.get('timeout', 30)),
-                prefer_open_access=bool(discovery_config.get('prefer_open_access', True)),
-            )
-
-            # Build document dictionary
-            document = {
-                'id': document_id,
-                'doi': discovered_doi,
-                'pmid': doc_data.get('pmid'),
-                'pdf_url': doc_data.get('pdf_url'),
-                'title': doc_data.get('title'),
-                'year': doc_data.get('year'),
-            }
-
-            # Progress callback
-            def progress_callback(stage: str, status: str) -> None:
+        def on_progress(stage: str, status: str) -> None:
+            if is_widget_valid(progress_dialog):
                 progress_dialog.add_step(stage, status)
 
-            # Execute discovery and download
-            result = finder.download_for_document(
-                document=document,
-                output_dir=pdf_base_dir,
-                use_browser_fallback=discovery_config.get('use_browser_fallback', True),
-                progress_callback=progress_callback
-            )
+        worker = PDFDiscoveryWorker(
+            lambda progress_cb: self._discover_full_text(doc_data, progress_cb)
+        )
+        session = FindPDFSession(
+            worker,
+            on_progress=on_progress,
+            on_discovered=lambda result: self._on_full_text_result(
+                doc_data, progress_dialog, result
+            ),
+            on_failed=lambda error_msg: self._on_full_text_error(
+                document_id, progress_dialog, error_msg
+            ),
+            on_done=self._discovery_sessions.discard,
+        )
+        self._discovery_sessions.add(session)
+        session.start()
 
-            # Check if we got full text (from NXML) or PDF
+    def _discover_full_text(
+        self,
+        doc_data: Dict,
+        progress_callback: Callable[[str, str], None]
+    ) -> Any:
+        """
+        Discover and download full text (worker thread; must not touch widgets).
+
+        Args:
+            doc_data: Document dictionary with identifiers
+            progress_callback: Callback(stage, status) for progress updates
+
+        Returns:
+            The FullTextFinder download result
+        """
+        from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
+        from bmlibrarian.discovery.resolvers import CrossRefTitleResolver
+        from bmlibrarian.config import get_config
+
+        document_id = doc_data['id']
+        config = get_config()
+        discovery_config = config.get('discovery') or {}
+
+        # Track discovered DOI (from CrossRef title search)
+        discovered_doi = doc_data.get('doi')
+
+        # If no DOI but we have a title, try CrossRef title search first
+        if not doc_data.get('doi') and doc_data.get('title'):
+            progress_callback('crossref_title', 'resolving')
+            try:
+                title_resolver = CrossRefTitleResolver(
+                    timeout=discovery_config.get('timeout', 30),
+                    min_similarity=discovery_config.get('crossref_min_similarity', 0.85)
+                )
+                identifiers = DocumentIdentifiers(
+                    doc_id=document_id,
+                    title=doc_data.get('title')
+                )
+                title_result = title_resolver.resolve(identifiers)
+
+                if (title_result.status.value == 'success'
+                        and title_result.metadata.get('discovered_doi')):
+                    discovered_doi = title_result.metadata['discovered_doi']
+                    progress_callback('crossref_title', 'found')
+                    logger.info(f"Discovered DOI {discovered_doi} for document {document_id}")
+                    self._update_doi_in_database(document_id, discovered_doi)
+                else:
+                    progress_callback('crossref_title', 'not_found')
+            except Exception as e:
+                progress_callback('crossref_title', 'error')
+                logger.warning(f"CrossRef title search error: {e}")
+
+        # Get PDF base directory from config
+        pdf_config = config.get('pdf') or {}
+        pdf_base_dir_str = pdf_config.get('base_dir', '~/knowledgebase/pdf') if isinstance(pdf_config, dict) else '~/knowledgebase/pdf'
+        pdf_base_dir = Path(pdf_base_dir_str).expanduser()
+        pdf_base_dir.mkdir(parents=True, exist_ok=True)
+
+        unpaywall_email = config.get('unpaywall_email')
+        finder = FullTextFinder(
+            unpaywall_email=str(unpaywall_email) if unpaywall_email else None,
+            timeout=int(discovery_config.get('timeout', 30)),
+            prefer_open_access=bool(discovery_config.get('prefer_open_access', True)),
+        )
+
+        document = {
+            'id': document_id,
+            'doi': discovered_doi,
+            'pmid': doc_data.get('pmid'),
+            'pdf_url': doc_data.get('pdf_url'),
+            'title': doc_data.get('title'),
+            'year': doc_data.get('year'),
+        }
+
+        return finder.download_for_document(
+            document=document,
+            output_dir=pdf_base_dir,
+            use_browser_fallback=discovery_config.get('use_browser_fallback', True),
+            progress_callback=progress_callback
+        )
+
+    def _on_full_text_result(
+        self,
+        doc_data: Dict,
+        progress_dialog: PDFDiscoveryProgressDialog,
+        result: Any
+    ) -> None:
+        """
+        Apply a finished discovery (GUI thread): update DB, tree and dialog.
+
+        Args:
+            doc_data: Document dictionary (updated in place)
+            progress_dialog: The discovery progress dialog
+            result: Download result from ``_discover_full_text``
+        """
+        document_id = doc_data['id']
+        dialog_alive = is_widget_valid(progress_dialog)
+        try:
             # NXML is superior to PDF - structured XML with clean text extraction
             has_full_text = bool(result.full_text)
             has_pdf = bool(result.file_path)
 
-            if has_full_text or has_pdf:
-                # Success - we got content (full text from NXML, PDF, or both)
-
-                if has_pdf:
-                    pdf_path = Path(result.file_path)
-                    progress_dialog.set_success(pdf_path)
-
-                    # Update database with pdf_filename
-                    self._update_pdf_in_database(document_id, pdf_path, doc_data.get('year'))
-
-                    # Update local search results
-                    doc_data['has_pdf'] = True
-                    doc_data['pdf_filename'] = pdf_path.name
-
-                    logger.info(f"Successfully downloaded PDF for document {document_id}: {pdf_path}")
-                else:
-                    # NXML only (no PDF) - this is still a success!
-                    progress_dialog.set_success(None, message="Full text extracted from NXML")
-                    logger.info(f"Successfully extracted full text from NXML for document {document_id}")
-
-                # If we got full text from PMC NXML, update database
-                if has_full_text:
-                    self._update_full_text_in_database(document_id, result.full_text)
-                    doc_data['has_full_text'] = True
-                    logger.info(f"Full text available for document {document_id} ({len(result.full_text)} chars)")
-
-                # Update tree item status
-                self._update_tree_item_status(document_id, doc_data)
-
-                # Close dialog after delay then emit signal
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(1500, progress_dialog.accept)
-
-                # Emit signal to trigger ingestion (chunking and embedding)
-                # For NXML-only, pass None as pdf_path - the full_text is already in DB
-                if has_pdf:
-                    self.full_text_downloaded.emit(document_id, Path(result.file_path))
-                else:
-                    # Full text already saved to DB, just need to create embeddings
-                    # Emit with None to indicate no PDF to process, just embedding needed
-                    self.full_text_downloaded.emit(document_id, None)
-
-            else:
-                progress_dialog.set_failure(result.error_message or "No PDF or full text sources found")
+            if not (has_full_text or has_pdf):
+                if dialog_alive:
+                    progress_dialog.set_failure(
+                        result.error_message or "No PDF or full text sources found"
+                    )
+                    QTimer.singleShot(
+                        PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
+                        progress_dialog.reject
+                    )
                 logger.warning(f"PDF/full text discovery failed for document {document_id}")
-
-                # Close dialog after delay
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(2000, progress_dialog.reject)
-
-                # Still emit document_selected so user can proceed without full text
                 QMessageBox.information(
                     self,
                     "Full Text Not Found",
@@ -576,21 +578,74 @@ class SearchTab(QWidget):
                     "The assessment will proceed using only the abstract."
                 )
                 self.document_selected.emit(document_id)
+                return
+
+            pdf_path = Path(result.file_path) if has_pdf else None
+            if pdf_path is not None:
+                if dialog_alive:
+                    progress_dialog.set_success(pdf_path)
+                self._update_pdf_in_database(document_id, pdf_path, doc_data.get('year'))
+                doc_data['has_pdf'] = True
+                doc_data['pdf_filename'] = pdf_path.name
+                logger.info(f"Successfully downloaded PDF for document {document_id}: {pdf_path}")
+            else:
+                # NXML only (no PDF) - this is still a success!
+                if dialog_alive:
+                    progress_dialog.set_success(None, message="Full text extracted from NXML")
+                logger.info(f"Successfully extracted full text from NXML for document {document_id}")
+
+            if has_full_text:
+                self._update_full_text_in_database(document_id, result.full_text)
+                doc_data['has_full_text'] = True
+                logger.info(f"Full text available for document {document_id} ({len(result.full_text)} chars)")
+
+            self._update_tree_item_status(document_id, doc_data)
+
+            if dialog_alive:
+                QTimer.singleShot(
+                    PDFOperationSettings.DIALOG_CLOSE_SUCCESS_DELAY_MS,
+                    progress_dialog.accept
+                )
+
+            # Trigger ingestion (chunking and embedding); None = NXML only,
+            # the full text is already in the database
+            self.full_text_downloaded.emit(document_id, pdf_path)
 
         except Exception as e:
-            progress_dialog.set_failure(str(e))
-            logger.error(f"Error during PDF discovery for document {document_id}: {e}")
-
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(2000, progress_dialog.reject)
-
-            QMessageBox.warning(
-                self,
-                "Discovery Error",
-                f"Error finding PDF:\n{str(e)}\n\n"
-                "The assessment will proceed using only the abstract."
+            logger.error(
+                f"Error applying discovery result for document {document_id}: {e}",
+                exc_info=True
             )
-            self.document_selected.emit(document_id)
+            self._on_full_text_error(document_id, progress_dialog, str(e) or type(e).__name__)
+
+    def _on_full_text_error(
+        self,
+        document_id: int,
+        progress_dialog: PDFDiscoveryProgressDialog,
+        error_msg: str
+    ) -> None:
+        """
+        Report a failed discovery (GUI thread) and continue with the abstract.
+
+        Args:
+            document_id: Document being processed
+            progress_dialog: The discovery progress dialog
+            error_msg: Error message
+        """
+        logger.error(f"Error during PDF discovery for document {document_id}: {error_msg}")
+        if is_widget_valid(progress_dialog):
+            progress_dialog.set_failure(error_msg)
+            QTimer.singleShot(
+                PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
+                progress_dialog.reject
+            )
+        QMessageBox.warning(
+            self,
+            "Discovery Error",
+            f"Error finding PDF:\n{error_msg}\n\n"
+            "The assessment will proceed using only the abstract."
+        )
+        self.document_selected.emit(document_id)
 
     def _update_doi_in_database(self, doc_id: int, doi: str) -> None:
         """

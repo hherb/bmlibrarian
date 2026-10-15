@@ -25,10 +25,6 @@ uv run python paper_checker_lab.py
 
 # Enable debug logging
 uv run python paper_checker_lab.py --debug
-
-# Legacy Flet-based interface (deprecated)
-uv run python paper_checker_lab.py --flet
-uv run python paper_checker_lab.py --flet --view web --port 8080
 ```
 
 ### Basic Usage

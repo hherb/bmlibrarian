@@ -198,7 +198,8 @@ For each task:
 # Run test suite
 python test_human_edit_logging.py
 
-# Test in GUI
+# Test in GUI (former Flet Research GUI - removed 2026-10-16;
+# the Qt Research tab does not currently offer approve/override controls)
 python bmlibrarian_research_gui.py
 # 1. Enter research question
 # 2. Review document scores

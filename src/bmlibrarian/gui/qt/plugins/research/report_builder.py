@@ -1,5 +1,7 @@
 """
-Report Builder for BMLibrarian Research GUI
+Report Builder for the BMLibrarian Qt research workflow
+
+(Moved from the retired Flet GUI, October 2026.)
 
 Handles the construction and formatting of comprehensive research reports
 including counterfactual analysis and methodology sections.

@@ -121,8 +121,8 @@ report = reporting_agent.generate_citation_based_report(
 # Use CLI for complete workflow
 # uv run python bmlibrarian_cli.py
 
-# Use GUI for visual workflow
-# uv run python bmlibrarian_research_gui.py
+# Use the Qt GUI (Research tab) for visual workflow
+# uv run python bmlibrarian_qt.py
 
 # Use workflow orchestrator programmatically
 from bmlibrarian.cli import WorkflowOrchestrator, CLIConfig, UserInterface

@@ -12,29 +12,30 @@ file tracks *what* and *why*, HANDOVER tracks *in-flight, right now*.
 
 ---
 
-## 1. Finish the Flet → Qt migration, then delete Flet (~20k lines)
+## 1. Close the remaining Qt gaps left by the Flet retirement
 
-The Qt GUI (`gui/qt/`) has superseded the older Flet GUI (`gui/flet/` +
-`factchecker/gui/`), but Flet cannot be deleted yet — several features
-are Qt-incomplete:
+The Flet GUI was deleted on 2026-10-16 (flet 1.0's event-model change would
+have meant a behavioural rewrite; see HANDOVER). Relocation, launcher
+repointing, SQLite review packages, `--user`/`--blind`/`--incremental` in the
+Qt review tab are done. Features that existed only in Flet and are now gone:
 
-1. **Qt fact-checker review tab is a partial port**: no SQLite
-   review-package support, blind mode dead, `--incremental` label-only, no
-   confidence dropdown, no inter-rater agreement dialog, missing "unclear"
-   annotation option.
-2. **`lab/citation_lab.py` has no Qt port.**
-3. **Relocate framework-agnostic modules** Qt still imports out of
-   `gui/flet/` (`report_builder.py`, `document_card_factory_base.py`) into
-   e.g. `gui/shared/`.
-4. **Remove the eager `from .flet import …`** in `gui/__init__.py` so the
-   Qt app doesn't require flet installed.
-5. **Repoint the four Flet lab launchers** (`scripts/{pico,prisma2020,
-   query,study_assessment}_lab.py`) to the Qt plugins.
-6. Then delete `gui/flet/` (minus relocated files), `factchecker/gui/`,
-   the Flet shims in `gui/` root, Flet `lab/*` modules, the two Flet-only
-   entry points, and drop `flet[all]` from pyproject. Accept the loss of
-   `--web`/`--port` browser mode and `--auto`/`--quick` (consider porting
-   auto-run flags to `bmlibrarian_qt.py` first).
+1. **Qt fact-checker review tab**: no confidence dropdown, no inter-rater
+   agreement dialog, no "unclear" annotation option (the SQLite schema and
+   `human_annotations` CHECK allow it).
+2. **Citation lab** (`lab/citation_lab.py`, deleted) had no Qt port —
+   port it as a `gui/qt/plugins/` tab if still wanted (git history has the
+   Flet version).
+3. **Research GUI automation flags** (`--auto "question"`, `--quick`,
+   `--max-results`, `--score-threshold`) and browser mode (`--web/--port`)
+   of `bmlibrarian_research_gui.py` have no Qt equivalent; `bmlibrarian_cli.py`
+   covers headless runs.
+4. **Multi-model query generation is unwired.** `QueryAgent.find_abstracts_multi_query`
+   (config `query_generation.multi_model_enabled`, plus query performance
+   tracking) was only called by the Flet research workflow; the Qt research
+   tab (`WorkflowThread` → `executor.generate_query`) uses single-model
+   `convert_question`. Wire it into the Qt executor (and the CLI) or drop it.
+5. **Citation accept/refuse review and approve/override controls** existed
+   only in the Flet research GUI (backend `human_edit_logger.py` remains).
 
 ## 2. Make the test suite protect you
 

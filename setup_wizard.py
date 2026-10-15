@@ -115,7 +115,7 @@ def main() -> int:
             print("\nSetup completed successfully!")
             print("You can now run BMLibrarian using:")
             print("  uv run python bmlibrarian_cli.py")
-            print("  uv run python bmlibrarian_research_gui.py")
+            print("  uv run python bmlibrarian_qt.py")
         else:
             logger.info("Setup wizard was cancelled")
             print("\nSetup was cancelled.")

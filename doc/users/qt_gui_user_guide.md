@@ -656,7 +656,7 @@ pandoc report.md -o report.pdf
 A: The system is optimized for biomedical literature but can be adapted for other domains by importing different article sources.
 
 **Q: Is there a web interface?**
-A: Currently, only desktop Qt GUI is available. The legacy Flet web-based GUI is deprecated.
+A: No. Only the desktop Qt GUI is available; the former Flet GUI (which had a web mode) was removed on 2026-10-16.
 
 ## Getting Help
 

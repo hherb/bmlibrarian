@@ -1,5 +1,7 @@
 # Citation Extraction Progress Enhancements
 
+> **Note (2026-10-16)**: this describes the Citations tab of the former Flet Research GUI (`bmlibrarian_research_gui.py`), which has been removed together with all Flet GUIs. It is kept as a historical record; the Qt Research tab (`bmlibrarian_qt.py`) has its own implementation.
+
 ## Overview
 Enhanced the Citations tab with improved progress feedback during citation extraction.
 
@@ -142,16 +144,9 @@ Expected output:
 - Callback signature validation
 
 ### Integration Testing
-To test in the GUI:
+The Flet GUI used for these tests has been removed (2026-10-16). Citation extraction progress can be observed in the Citations sub-tab of the Qt Research tab:
 ```bash
-# Normal mode with progress display
-uv run python bmlibrarian_research_gui.py
-
-# Quick mode (limits documents for faster testing)
-uv run python bmlibrarian_research_gui.py --quick
-
-# Automated mode with sample question
-uv run python bmlibrarian_research_gui.py --auto "What are the cardiovascular benefits of exercise?"
+uv run python bmlibrarian_qt.py
 ```
 
 ## Performance Impact

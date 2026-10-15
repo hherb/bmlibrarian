@@ -224,7 +224,7 @@ class TestDocumentCardFactoryBase:
         assert truncated == abstract
 
     def test_truncate_abstract_long(self):
-        """Test abstract truncation with long text."""
+        """Long abstracts are returned in full (golden rule 14: no truncation)."""
         class TestFactory(DocumentCardFactoryBase):
             def create_card(self, card_data):
                 pass
@@ -234,10 +234,9 @@ class TestDocumentCardFactoryBase:
 
         factory = TestFactory()
         abstract = "This is a very long abstract. " * 50  # Create long text
-        truncated = factory.truncate_abstract(abstract, max_length=100)
+        result = factory.truncate_abstract(abstract, max_length=100)
 
-        assert len(truncated) <= 103  # 100 + "..."
-        assert truncated.endswith("...") or truncated.endswith(".")
+        assert result == abstract
 
     def test_truncate_abstract_none(self):
         """Test abstract truncation with None."""
@@ -360,46 +359,6 @@ class TestPDFButtonConfig:
         assert config.on_upload == upload_callback
 
 
-# Flet Factory Tests (requires mocking Flet components)
-@pytest.mark.skipif(
-    not pytest.importorskip("flet", minversion="0.24.0"),
-    reason="Flet not installed"
-)
-class TestFletDocumentCardFactory:
-    """Tests for FletDocumentCardFactory."""
-
-    @patch('bmlibrarian.gui.flet_document_card_factory.UnifiedDocumentCard')
-    def test_create_card(self, mock_unified_card, tmp_path):
-        """Test creating Flet card."""
-        from bmlibrarian.gui.flet_document_card_factory import FletDocumentCardFactory
-        import flet as ft
-
-        # Mock page
-        page = Mock(spec=ft.Page)
-
-        # Create factory
-        factory = FletDocumentCardFactory(
-            page=page,
-            base_pdf_dir=tmp_path
-        )
-
-        # Create card data
-        card_data = DocumentCardData(
-            doc_id=12345,
-            title="Test Document",
-            abstract="Test abstract",
-            authors=["Smith J"],
-            year=2023,
-            context=CardContext.LITERATURE
-        )
-
-        # Create card
-        card = factory.create_card(card_data)
-
-        # Verify UnifiedDocumentCard was called
-        assert mock_unified_card.return_value.create_card.called
-
-
 # Qt Factory Tests (requires Qt components)
 @pytest.mark.skipif(
     not pytest.importorskip("PySide6"),
@@ -442,7 +401,7 @@ class TestQtDocumentCardFactory:
 
         button = PDFButtonWidget(config)
 
-        assert "View Full Text" in button.text()
+        assert "View" in button.text()
 
     def test_pdf_button_widget_fetch(self, qapp):
         """Test PDF button widget in FETCH state."""
@@ -455,7 +414,7 @@ class TestQtDocumentCardFactory:
 
         button = PDFButtonWidget(config)
 
-        assert "Fetch Full Text" in button.text()
+        assert "Find" in button.text()
 
     def test_pdf_button_widget_upload(self, qapp):
         """Test PDF button widget in UPLOAD state."""
@@ -467,7 +426,7 @@ class TestQtDocumentCardFactory:
 
         button = PDFButtonWidget(config)
 
-        assert "Upload Full Text" in button.text()
+        assert "Upload" in button.text()
 
 
 # Fixtures

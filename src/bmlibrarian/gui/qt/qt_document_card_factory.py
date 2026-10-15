@@ -2,8 +2,8 @@
 Qt implementation of the document card factory.
 
 This module provides a Qt-specific implementation of the DocumentCardFactoryBase,
-integrating with existing Qt document card classes and adding PDF button functionality
-that matches the Flet implementation.
+integrating with existing Qt document card classes and adding three-state PDF
+button functionality.
 """
 
 from PySide6.QtWidgets import (
@@ -735,7 +735,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
     Qt-specific document card factory.
 
     This class provides Qt widgets for document cards with integrated PDF button
-    functionality, matching the Flet implementation's three-state PDF buttons.
+    functionality with three-state (View / Find / Upload) PDF buttons.
 
     Features:
     - Centralized stylesheet styling (no inline styles)

@@ -4,7 +4,8 @@ Main Fact-Checker Review Tab Widget.
 Coordinates all components for reviewing and annotating fact-check results.
 """
 
-from typing import Optional, Dict, Any, List
+import logging
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget,
@@ -27,10 +28,66 @@ from .timer_widget import TimerWidget
 
 # Import fact-checker database components
 from .....factchecker.db import get_fact_checker_db, Annotator, HumanAnnotation
+from .....factchecker.db.postgresql_db import PostgreSQLFactCheckerDB
 
 # Import DPI-aware styling
 from ...resources.styles import get_font_scale, StylesheetGenerator
 from ...resources.constants import ScoreColors
+
+
+
+logger = logging.getLogger(__name__)
+
+
+def reviews_for_annotator(
+    results: List[Dict[str, Any]],
+    annotator_id: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Build the per-statement review state for one annotator.
+
+    Args:
+        results: Statements in display format, each with 'human_annotations'
+        annotator_id: The current annotator's id (None: no annotations)
+
+    Returns:
+        One dict per statement (a distinct object each): the annotator's
+        existing annotation fields, or empty if they have none
+    """
+    reviews: List[Dict[str, Any]] = []
+    for result in results:
+        review: Dict[str, Any] = {}
+        for annot in result.get('human_annotations', []):
+            if annotator_id is not None and annot.get('annotator_id') == annotator_id:
+                review = {
+                    'human_annotation': annot.get('annotation'),
+                    'human_explanation': annot.get('explanation', ''),
+                    'confidence': annot.get('confidence', ''),
+                    'review_duration_seconds': annot.get('review_duration_seconds'),
+                }
+                break
+        reviews.append(review)
+    return reviews
+
+
+def filter_unannotated(
+    results: List[Dict[str, Any]],
+    reviews: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Keep only statements the annotator has not annotated (incremental mode).
+
+    Args:
+        results: Statements in display format
+        reviews: Matching per-statement review state (same order)
+
+    Returns:
+        The filtered (results, reviews) pair, still aligned
+    """
+    kept = [
+        (result, review)
+        for result, review in zip(results, reviews)
+        if not review.get('human_annotation')
+    ]
+    return [r for r, _ in kept], [v for _, v in kept]
 
 
 class FactCheckerTabWidget(QWidget):
@@ -85,12 +142,26 @@ class FactCheckerTabWidget(QWidget):
     COLOR_ERROR_RED = "#c62828"
 
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        db_file: Optional[str] = None,
+        default_username: Optional[str] = None,
+        blind_mode: bool = False,
+        incremental: bool = False,
+    ):
         """
         Initialize fact-checker tab.
 
         Args:
             parent: Optional parent widget
+            db_file: SQLite review-package file; None uses PostgreSQL
+            default_username: Annotator username to start with (skips the
+                PostgreSQL single-annotator auto-detection)
+            blind_mode: Hide the original and AI annotations from the reviewer
+            incremental: Only show statements this annotator has not yet
+                annotated
         """
         super().__init__(parent)
 
@@ -99,9 +170,9 @@ class FactCheckerTabWidget(QWidget):
         self.style_gen = StylesheetGenerator(self.scale)
 
         # Configuration
-        self.incremental = False
-        self.blind_mode = False
-        self.db_file: Optional[str] = None
+        self.incremental = incremental
+        self.blind_mode = blind_mode
+        self.db_file: Optional[str] = db_file
         self.show_review_enabled = True  # Show original/AI columns by default
         self.show_citations_enabled = True  # Show citations by default
 
@@ -112,7 +183,7 @@ class FactCheckerTabWidget(QWidget):
 
         # Database
         self.fact_checker_db = None
-        self.db_type = "postgresql"
+        self.db_type = "sqlite" if db_file else "postgresql"
         self.annotator_id: Optional[int] = None
         self.annotator_username: Optional[str] = None
 
@@ -143,6 +214,8 @@ class FactCheckerTabWidget(QWidget):
         self.ai_col: Optional[QWidget] = None
 
         self._setup_ui()
+        if default_username and self.username_field is not None:
+            self.username_field.setText(default_username)
 
         # Connect username field changes (only when focus leaves field)
         self.username_field.editingFinished.connect(self._on_username_changed)
@@ -758,18 +831,14 @@ class FactCheckerTabWidget(QWidget):
             )
             self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
 
+            if self.incremental:
+                # The incremental subset depends on the annotator: reload it
+                # rather than re-mapping rows onto the filtered list by index
+                self._load_from_database()
+                return
+
             # Reload reviews for this user
-            self.reviews = [{}] * len(self.results)
-            for i, result in enumerate(self.results):
-                for annot in result.get('human_annotations', []):
-                    if annot.get('annotator_id') == self.annotator_id:
-                        self.reviews[i] = {
-                            'human_annotation': annot.get('annotation'),
-                            'human_explanation': annot.get('explanation', ''),
-                            'confidence': annot.get('confidence', ''),
-                            'review_duration_seconds': annot.get('review_duration_seconds'),
-                        }
-                        break
+            self.reviews = reviews_for_annotator(self.results, self.annotator_id)
 
             # Reload the database to get fresh annotations
             all_data = self.fact_checker_db.get_all_statements_with_evaluations()
@@ -778,17 +847,7 @@ class FactCheckerTabWidget(QWidget):
                     self.results[i]['human_annotations'] = row.get('human_annotations', [])
 
             # Update reviews with fresh data
-            self.reviews = [{}] * len(self.results)
-            for i, result in enumerate(self.results):
-                for annot in result.get('human_annotations', []):
-                    if annot.get('annotator_id') == self.annotator_id:
-                        self.reviews[i] = {
-                            'human_annotation': annot.get('annotation'),
-                            'human_explanation': annot.get('explanation', ''),
-                            'confidence': annot.get('confidence', ''),
-                            'review_duration_seconds': annot.get('review_duration_seconds'),
-                        }
-                        break
+            self.reviews = reviews_for_annotator(self.results, self.annotator_id)
 
             # Refresh the current display
             self._display_current_statement()
@@ -807,26 +866,11 @@ class FactCheckerTabWidget(QWidget):
             )
 
     def _auto_load_data(self):
-        """Auto-load data from PostgreSQL database on startup."""
-        # Use PostgreSQL by default (no dialogs)
-        self.db_file = None
-        self.db_type = "postgresql"
-
-        # Try to get existing annotators
-        try:
-            temp_db = get_fact_checker_db(self.db_file)
-            with temp_db.db_manager.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT username FROM factcheck.annotators ORDER BY created_at DESC")
-                    annotators = cur.fetchall()
-
-                    # If there's exactly one annotator, use it automatically
-                    if len(annotators) == 1:
-                        username = annotators[0][0]
-                        self.username_field.setText(username)
-                        self.annotator_username = username
-        except Exception as e:
-            print(f"Note: Could not check for existing annotators: {e}")
+        """Auto-load data on startup from the SQLite package or PostgreSQL."""
+        # With PostgreSQL and no username given, pick the annotator
+        # automatically when there is exactly one
+        if self.db_file is None and not self.username_field.text().strip():
+            self._autodetect_single_annotator()
 
         # Get username from text field if set
         username = self.username_field.text().strip()
@@ -834,6 +878,25 @@ class FactCheckerTabWidget(QWidget):
             self.annotator_username = username
 
         self._load_from_database()
+
+    def _autodetect_single_annotator(self) -> None:
+        """Fill the username field if PostgreSQL has exactly one annotator."""
+        try:
+            temp_db = get_fact_checker_db(self.db_file)
+            if not isinstance(temp_db, PostgreSQLFactCheckerDB):
+                return
+            with temp_db.db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username FROM factcheck.annotators ORDER BY created_at DESC")
+                    annotators = cur.fetchall()
+
+            # If there's exactly one annotator, use it automatically
+            if len(annotators) == 1 and self.username_field is not None:
+                username = annotators[0][0]
+                self.username_field.setText(username)
+                self.annotator_username = username
+        except Exception as e:
+            logger.info(f"Could not check for existing annotators: {e}")
 
     def _load_from_database(self):
         """Load fact-check results from database."""
@@ -903,18 +966,21 @@ class FactCheckerTabWidget(QWidget):
 
                 self.results.append(result)
 
-            # Initialize reviews
-            self.reviews = [{}] * len(self.results)
-            for i, result in enumerate(self.results):
-                for annot in result.get('human_annotations', []):
-                    if annot.get('annotator_id') == self.annotator_id:
-                        self.reviews[i] = {
-                            'human_annotation': annot.get('annotation'),
-                            'human_explanation': annot.get('explanation', ''),
-                            'confidence': annot.get('confidence', ''),
-                            'review_duration_seconds': annot.get('review_duration_seconds'),
-                        }
-                        break
+            # Initialize reviews for the current annotator
+            self.reviews = reviews_for_annotator(self.results, self.annotator_id)
+
+            if self.incremental:
+                total = len(self.results)
+                self.results, self.reviews = filter_unannotated(self.results, self.reviews)
+                if not self.results:
+                    raise ValueError(
+                        f"No unannotated statements left: you have already "
+                        f"annotated all {total} statements."
+                    )
+                logger.info(
+                    f"Incremental mode: {len(self.results)} of {total} statements "
+                    f"not yet annotated by {self.annotator_username}"
+                )
 
             # Update UI
             mode_indicator = " [INCREMENTAL]" if self.incremental else ""

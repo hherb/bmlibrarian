@@ -12,11 +12,11 @@ BMLibrarian features a modern Qt-based desktop application built with PySide6 (Q
 - **Architecture**: Plugin-based tabbed interface
 - **Status**: **Active development**, all new features
 
-### Legacy: Flet GUI (Deprecated)
-- **Entry Points**: `bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`
-- **Framework**: Flet (web-based framework)
-- **Status**: **Deprecated**, maintenance mode only, will be removed in future versions
-- **Migration**: See `doc/users/flet_to_qt_migration_guide.md`
+### Retired: Flet GUI
+- **Removed**: 2026-10-16 (former entry points `bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`, the Flet fact-checker review app and Flet labs)
+- **Reason**: flet 1.0 changed its event model, which would have required a behavioural rewrite; every Flet app already had a Qt equivalent. `flet` is no longer a dependency.
+- **Standalone windows**: `fact_checker_review_gui.py` and `scripts/{query,pico,prisma2020,study_assessment}_lab.py` open a single Qt plugin or widget via `run_plugin_standalone()` / `run_widget_standalone()` in `src/bmlibrarian/gui/qt/core/standalone.py`
+- **History**: See `doc/users/flet_to_qt_migration_guide.md`
 
 ## Architecture Principles
 
@@ -787,76 +787,6 @@ class MyPlugin(BaseTab):
 - Test with both light and dark themes
 - Test keyboard shortcuts
 
-## Migration from Flet
-
-For developers maintaining legacy Flet code or migrating features:
-
-### Key Differences
-
-| Aspect | Flet | Qt |
-|--------|------|-----|
-| **Framework** | Web-based (Flutter) | Native desktop |
-| **Language** | Python only | Python + QSS |
-| **Threading** | Async/await | QThread |
-| **Styling** | Inline properties | QSS stylesheets |
-| **Events** | Callbacks | Signal/slot |
-| **Performance** | Web overhead | Native performance |
-
-### Migration Strategy
-
-1. **Identify functionality**: Understand what the Flet component does
-2. **Find Qt equivalent**: Map to equivalent Qt widget
-3. **Reimplement UI**: Build UI using Qt widgets
-4. **Port business logic**: Keep logic, change UI code
-5. **Test thoroughly**: Ensure feature parity
-
-### Example Migration
-
-**Flet Code**:
-```python
-def build_document_card(doc):
-    return ft.ExpansionTile(
-        title=ft.Text(doc["title"]),
-        subtitle=ft.Text(doc["authors"]),
-        controls=[
-            ft.Text(doc["abstract"])
-        ]
-    )
-```
-
-**Qt Code**:
-```python
-def build_document_card(doc):
-    card = QFrame()
-    card.setObjectName("document-card")
-
-    layout = QVBoxLayout(card)
-
-    title = QLabel(doc["title"])
-    title.setStyleSheet("font-weight: bold;")
-    layout.addWidget(title)
-
-    authors = QLabel(doc["authors"])
-    authors.setStyleSheet("color: #666;")
-    layout.addWidget(authors)
-
-    # Collapsible abstract
-    abstract_button = QToolButton()
-    abstract_button.setText("Show Abstract")
-    abstract_button.setCheckable(True)
-
-    abstract_text = QLabel(doc["abstract"])
-    abstract_text.setWordWrap(True)
-    abstract_text.setVisible(False)
-
-    abstract_button.toggled.connect(abstract_text.setVisible)
-
-    layout.addWidget(abstract_button)
-    layout.addWidget(abstract_text)
-
-    return card
-```
-
 ## Resources
 
 ### Qt Documentation
@@ -867,7 +797,7 @@ def build_document_card(doc):
 ### BMLibrarian Documentation
 - [Qt GUI User Guide](../users/qt_gui_user_guide.md)
 - [Qt Plugin Development Guide](qt_plugin_development_guide.md)
-- [Flet to Qt Migration Guide](../users/flet_to_qt_migration_guide.md)
+- [Flet to Qt Migration Guide](../users/flet_to_qt_migration_guide.md) (historical)
 
 ### Example Code
 - Example plugin: `src/bmlibrarian/gui/qt/plugins/example/`

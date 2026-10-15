@@ -43,7 +43,7 @@ The interface is divided into two main areas:
 
 1. **Launch the GUI**
    ```bash
-   uv run python bmlibrarian_config_gui.py
+   uv run python bmlibrarian_qt.py
    ```
 
 2. **Navigate to Document Interrogation Tab**
@@ -210,23 +210,21 @@ doc_tab.clear_chat()
 
 ### Component Architecture
 
-**File**: `src/bmlibrarian/gui/tabs/document_interrogation_tab.py`
+**File**: `src/bmlibrarian/gui/qt/plugins/document_interrogation/document_interrogation_tab.py`
 
-**Main Class**: `DocumentInterrogationTab`
+**Main Class**: `DocumentInterrogationTabWidget` (PySide6; the former Flet `DocumentInterrogationTab` was removed on 2026-10-16)
 
 **Key Methods**:
-- `build()`: Constructs the UI layout
-- `_build_top_bar()`: Creates file selector and model dropdown
-- `_build_split_pane()`: Creates two-pane layout
-- `_build_document_viewer_pane()`: Left pane for documents
-- `_build_chat_interface_pane()`: Right pane for chat
-- `_load_document()`: Loads and displays documents
-- `_create_message_bubble()`: Creates styled chat bubbles
-- `load_document_programmatically()`: API for external integration
+- `_setup_ui()`: Constructs the UI layout
+- `_create_top_bar()`: Creates file selector and model dropdown
+- `_create_split_pane()`: Creates two-pane layout
+- `_create_document_pane()`: Left pane for documents
+- `_create_chat_pane()`: Right pane for chat
+- `_add_chat_bubble()`: Adds a styled chat bubble (`ChatBubble`)
 
 ### Dependencies
 
-- **Flet**: UI framework
+- **PySide6 (Qt)**: UI framework
 - **Ollama**: LLM model provider
 - **Python pathlib**: File path handling
 - **Future**: PyMuPDF for PDF rendering
