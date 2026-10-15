@@ -21,10 +21,10 @@ The laboratory interface allows you to watch this process unfold in real-time an
 
 ```bash
 # Desktop mode (default, using PySide6/Qt)
-uv run python paper_checker_lab.py
+uv run python scripts/paper_checker_lab.py
 
 # Enable debug logging
-uv run python paper_checker_lab.py --debug
+uv run python scripts/paper_checker_lab.py --debug
 ```
 
 ### Basic Usage

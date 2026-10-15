@@ -15,7 +15,7 @@ The Paper Weight Assessment Laboratory is a graphical application for evaluating
 ### Launching the Laboratory
 
 ```bash
-uv run python paper_weight_lab.py
+uv run python scripts/paper_weight_lab.py
 ```
 
 ### System Requirements

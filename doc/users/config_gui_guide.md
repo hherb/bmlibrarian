@@ -1,9 +1,10 @@
 # Configuration GUI User Guide (retired)
 
-> **Retired on 2026-10-16.** The Flet-based Configuration GUI (`bmlibrarian_config_gui.py`) has been
-> removed from BMLibrarian, together with all other Flet applications and the `flet` dependency.
+> **Retired.** The Flet-based Configuration GUI launcher (`bmlibrarian_config_gui.py`) was deleted on
+> 2025-11-13; the remaining Flet applications and the `flet` dependency were removed on 2026-10-16.
 > flet 1.0 changed its event model in a way that would have required rewriting the whole Flet GUI,
-> and every Flet application already had a PySide6/Qt equivalent.
+> and every Flet application except the Citation lab already had a PySide6/Qt equivalent
+> (remaining gaps: [ROADMAP §1](../../ROADMAP.md)).
 
 ## Use instead
 

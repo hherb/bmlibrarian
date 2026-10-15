@@ -9,12 +9,14 @@ The PRISMA 2020 assessment system provides automated evaluation of systematic re
 ### Core Components
 
 ```
-bmlibrarian/
+src/bmlibrarian/
 ├── agents/
 │   └── prisma2020_agent.py          # Main PRISMA 2020 assessment agent
-├── lab/
-│   └── prisma2020_lab.py            # Interactive GUI laboratory
-└── prisma2020_lab.py                # Lab entry point script
+└── gui/qt/plugins/prisma2020_lab/   # Interactive Qt laboratory (plugin tab)
+    ├── plugin.py                    # Plugin registration
+    └── prisma2020_lab_tab.py        # Tab widget
+scripts/
+└── prisma2020_lab.py                # Launcher: opens the plugin tab in a standalone window
 ```
 
 ### PRISMA2020Agent Class
@@ -305,7 +307,7 @@ stats = agent.get_assessment_stats()
 
 ## GUI Laboratory
 
-The PRISMA 2020 Lab (`prisma2020_lab.py`) provides an interactive interface:
+The PRISMA 2020 Lab (Qt plugin `gui/qt/plugins/prisma2020_lab/`, also available as a tab in `bmlibrarian_qt.py`) provides an interactive interface:
 
 ### Features
 
@@ -319,7 +321,7 @@ The PRISMA 2020 Lab (`prisma2020_lab.py`) provides an interactive interface:
 ### Usage
 
 ```bash
-uv run python prisma2020_lab.py
+uv run python scripts/prisma2020_lab.py
 ```
 
 ## Testing
@@ -428,5 +430,5 @@ Potential improvements for the PRISMA 2020 system:
 
 For issues or questions about the PRISMA 2020 system:
 - Check documentation: `doc/users/prisma2020_guide.md`
-- Review examples in `prisma2020_lab.py`
+- Review the lab implementation in `src/bmlibrarian/gui/qt/plugins/prisma2020_lab/`
 - File issues on GitHub

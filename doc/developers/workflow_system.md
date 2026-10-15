@@ -183,28 +183,10 @@ def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> 
         return StepResult.FAILURE
 ```
 
-**GUI Interface** (`gui/workflow.py`):
-```python
-async def _handle_workflow_step(self, step: WorkflowStep, context: Dict[str, Any]) -> StepResult:
-    """Handle execution of a workflow step with GUI updates."""
-    try:
-        # Update GUI status
-        self.gui.update_step_status(step, StepStatus.RUNNING)
-        
-        if step == WorkflowStep.MY_NEW_STEP:
-            result = self._handle_my_new_step(context)
-        # ... existing handlers ...
-        
-        # Update GUI with result
-        status = StepStatus.COMPLETED if result == StepResult.SUCCESS else StepStatus.ERROR
-        self.gui.update_step_status(step, status)
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error executing step {step}: {e}")
-        self.gui.update_step_status(step, StepStatus.ERROR, str(e))
-        return StepResult.FAILURE
-```
+**GUI Interface**: the former Flet handler (`gui/workflow.py`) was removed on 2026-10-16. The Qt
+Research tab does not use `WorkflowStep` handlers; it drives the agents from
+`gui/qt/plugins/research/workflow_executor.py` on a `WorkflowThread`, so a new step must be added
+there separately.
 
 ## Context Management
 

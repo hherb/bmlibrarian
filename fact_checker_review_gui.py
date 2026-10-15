@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -25,6 +26,10 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Review packages are SQLite files with this extension (export_review_package.py)
 REVIEW_PACKAGE_SUFFIX = ".db"
+# Tables every review package has (factchecker/db/sqlite_schema.sql)
+REVIEW_PACKAGE_TABLES = frozenset({
+    "package_metadata", "statements", "annotators", "human_annotations",
+})
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -79,6 +84,38 @@ def validate_db_file(db_file: Optional[str]) -> Optional[str]:
         return f"SQLite database file not found: {db_file}"
     if db_path.suffix != REVIEW_PACKAGE_SUFFIX:
         return f"Database file must have {REVIEW_PACKAGE_SUFFIX} extension: {db_file}"
+    return check_review_package_tables(db_path)
+
+
+def check_review_package_tables(db_path: Path) -> Optional[str]:
+    """Check that a SQLite file is a review package, without modifying it.
+
+    Opens the file read-only, so pointing --db-file at an unrelated database
+    neither changes it nor fails later with a cryptic "no such table".
+
+    Args:
+        db_path: Path to an existing file
+
+    Returns:
+        Error message, or None if the file has the review-package tables
+    """
+    try:
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return f"Cannot read {db_path} as a SQLite database: {e}"
+    missing = REVIEW_PACKAGE_TABLES - {row[0] for row in rows}
+    if missing:
+        return (
+            f"{db_path} is not a BMLibrarian review package (missing tables: "
+            f"{', '.join(sorted(missing))}). Create one with "
+            f"scripts/export_review_package.py"
+        )
     return None
 
 

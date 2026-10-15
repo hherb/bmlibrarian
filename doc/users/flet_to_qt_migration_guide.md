@@ -2,13 +2,14 @@
 
 > **The Flet GUIs were removed on 2026-10-16.** flet 1.0 (pulled in by a dependency update) changed
 > its event model, which would have required a behavioural rewrite of the entire Flet GUI, and every
-> Flet application already had a PySide6/Qt equivalent. `flet` is no longer a BMLibrarian dependency.
+> Flet application except the Citation lab already had a PySide6/Qt equivalent (remaining gaps:
+> [ROADMAP §1](../../ROADMAP.md)). `flet` is no longer a BMLibrarian dependency.
 > The rest of this guide is kept as historical context; commands referring to Flet apps no longer work.
 >
 > | Removed (Flet) | Use instead (PySide6/Qt) |
 > |---|---|
 > | `bmlibrarian_research_gui.py` | `uv run python bmlibrarian_qt.py` → **Research** tab (the `--auto`/`--quick`/`--max-results`/`--score-threshold` flags have no Qt equivalent) |
-> | `bmlibrarian_config_gui.py` | `uv run python bmlibrarian_qt.py` → **Configuration** / **Settings** tabs |
+> | `bmlibrarian_config_gui.py` (deleted earlier, 2025-11-13) | `uv run python bmlibrarian_qt.py` → **Configuration** / **Settings** tabs |
 > | Flet fact-checker review app | `uv run python fact_checker_review_gui.py` (now Qt; same `--user`, `--blind`, `--incremental`, `--db-file` options) or the **Fact Checker** tab |
 > | Flet Query / PICO / PRISMA 2020 / Study Assessment labs | `scripts/query_lab.py`, `scripts/pico_lab.py`, `scripts/prisma2020_lab.py`, `scripts/study_assessment_lab.py` (now open the Qt plugin in a standalone window) |
 > | `scripts/citation_lab.py` (Citation lab) | Removed; no Qt equivalent yet |
@@ -370,16 +371,18 @@ Qt introduces a new GUI configuration file: `~/.bmlibrarian/gui_config.json`
 
 **Flet Workflow**:
 1. Prepare JSON file with statements
-2. Launch `fact_checker_review_gui.py --input-file statements.json`
+2. Launch the Flet review app on that file (its `--input-file` option no longer exists)
 3. Review and annotate
 4. Export results
 
 **Qt Workflow**:
 1. Launch `bmlibrarian_qt.py`
 2. Go to Fact-Checker tab
-3. Load JSON or database file
+3. Review statements from the PostgreSQL `factcheck` schema (run `fact_checker_cli.py` first), or open an
+   offline SQLite package with `fact_checker_review_gui.py --db-file review_package.db`
+   (packages are made with `scripts/export_review_package.py`)
 4. Review and annotate (same as Flet)
-5. Export results
+5. Export annotations from a package with `scripts/export_human_evaluations.py`
 
 **Improvements**:
 - ✅ Integrated into main application
@@ -468,7 +471,8 @@ See the full keyboard shortcuts reference in the [Qt GUI User Guide](qt_gui_user
 
 **Issue**: Can't find a feature from Flet
 
-**Solution**: All Flet features are in Qt:
+**Solution**: Most Flet features are in Qt; the known gaps (Citation lab, some research-GUI flags,
+some fact-checker review features) are listed in [ROADMAP §1](../../ROADMAP.md):
 
 - **Research workflow**: Research tab
 - **Configuration**: Configuration tab
@@ -517,7 +521,7 @@ A: Not immediately, but yes eventually (by May 2025). The Flet GUI will be remov
 
 **Q: Can I use both GUIs?**
 
-A: Yes, currently both work. But we recommend switching to Qt GUI as soon as possible.
+A: No longer: the Flet GUIs were removed on 2026-10-16.
 
 **Q: Will my data be affected?**
 
@@ -531,7 +535,7 @@ A: Yes! Agent configurations (`~/.bmlibrarian/config.json`) work with both GUIs 
 
 **Q: Is feature X available in Qt GUI?**
 
-A: Yes! All Flet features are in Qt GUI, plus many new features (search tab, themes, keyboard shortcuts, etc.).
+A: Most likely: nearly all Flet features are in the Qt GUI, plus many new features (search tab, themes, keyboard shortcuts, etc.). The remaining gaps are listed in [ROADMAP §1](../../ROADMAP.md).
 
 **Q: Can I still use the CLI?**
 
@@ -574,7 +578,7 @@ A: Report them! Qt GUI is mature but if you find issues, please report them so w
 
 **Q: Can I go back to Flet?**
 
-A: Yes, until May 2025 when Flet code is removed. But we strongly recommend staying on Qt GUI.
+A: No. The Flet GUIs were removed on 2026-10-16 and `flet` is no longer a dependency. Missing features are tracked in [ROADMAP §1](../../ROADMAP.md).
 
 ## Getting Help
 

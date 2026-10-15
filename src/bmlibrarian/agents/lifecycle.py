@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 def cleanup_agents(agents: Optional[Dict[str, Any]]) -> None:
-    """Release agent resources, returning the audit connection to the pool.
+    """Return the audit-tracking connection borrowed by
+    ``initialize_agents_in_main_thread()`` to the pool.
 
     Args:
         agents: Dictionary from ``initialize_agents_in_main_thread()``
@@ -58,8 +59,9 @@ def _acquire_audit_connection(db_manager: Any) -> Optional[Any]:
 
     if not audit_exists:
         logger.warning(
-            "Audit schema not found - audit tracking disabled. Run migrations "
-            "to enable it: uv run python -m bmlibrarian.migrations run"
+            "Audit schema not found - audit tracking disabled. Apply the "
+            "database migrations to enable it: uv run bmlibrarian migrate apply "
+            "(see --help for connection options)"
         )
         return None
 
@@ -72,8 +74,9 @@ def initialize_agents_in_main_thread() -> Optional[Dict[str, Any]]:
     """Create all agents (call from the GUI main thread to avoid signal issues).
 
     Returns:
-        Dictionary of agents keyed by name, plus ``_db_manager`` and
-        ``_audit_conn`` entries for ``cleanup_agents``; None if creation failed
+        Dictionary of agents keyed by name; when ``get_db_manager()``
+        succeeded it also has ``_db_manager`` and ``_audit_conn`` entries for
+        ``cleanup_agents``. None if creation failed.
     """
     try:
         logger.info("Initializing BMLibrarian agents with config.json settings...")
@@ -89,7 +92,13 @@ def initialize_agents_in_main_thread() -> Optional[Dict[str, Any]]:
             logger.warning(f"Could not initialize audit tracking, continuing without it: {e}")
             audit_conn = None
 
-        agents = AgentFactory.create_all_agents(auto_register=True, audit_conn=audit_conn)
+        try:
+            agents = AgentFactory.create_all_agents(auto_register=True, audit_conn=audit_conn)
+        except Exception:
+            # Don't leak the borrowed connection when agent creation fails
+            if audit_conn is not None and db_manager is not None:
+                cleanup_agents({'_audit_conn': audit_conn, '_db_manager': db_manager})
+            raise
 
         # Keep the pool handle for cleanup on shutdown
         if db_manager:

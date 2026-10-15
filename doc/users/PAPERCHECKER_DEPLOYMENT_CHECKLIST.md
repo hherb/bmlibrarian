@@ -113,7 +113,7 @@ This checklist ensures PaperChecker is properly deployed and operational. Comple
 
 - [ ] **Laboratory GUI launches**
   ```bash
-  uv run python paper_checker_lab.py &
+  uv run python scripts/paper_checker_lab.py &
   sleep 5
   kill %1
 

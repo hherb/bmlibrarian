@@ -23,7 +23,7 @@ PRISMA 2020 is an evidence-based minimum set of items for reporting in systemati
 The easiest way to assess systematic reviews is through the interactive laboratory interface:
 
 ```bash
-uv run python prisma2020_lab.py
+uv run python scripts/prisma2020_lab.py
 ```
 
 **Step-by-step:**
@@ -567,7 +567,7 @@ Configure which Ollama model to use in `~/.bmlibrarian/config.json`:
 See the PRISMA 2020 Lab for interactive examples:
 
 ```bash
-uv run python prisma2020_lab.py
+uv run python scripts/prisma2020_lab.py
 ```
 
 For code examples, see `doc/developers/prisma2020_system.md`

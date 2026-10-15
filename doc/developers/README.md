@@ -189,7 +189,7 @@ Current test coverage: **>95%** across all agent modules
   - Theme and resource management in `resources/`
 
 ### Retired: Flet GUI
-- The Flet-based GUIs (research, configuration, fact-checker review, labs) were removed on 2026-10-16; flet 1.0 changed its event model and every Flet app already had a Qt equivalent.
+- The Flet-based GUIs (research, configuration, fact-checker review, labs) were removed on 2026-10-16; flet 1.0 changed its event model and every Flet app except the Citation lab already had a Qt equivalent (remaining gaps: [ROADMAP §1](../../ROADMAP.md)).
 - Standalone launchers (`fact_checker_review_gui.py`, `scripts/{query,pico,prisma2020,study_assessment}_lab.py`) now open a single Qt plugin or widget in its own window via `run_plugin_standalone()` / `run_widget_standalone()` in `src/bmlibrarian/gui/qt/core/standalone.py`.
 - Agent setup/teardown helpers (`initialize_agents_in_main_thread`, `cleanup_agents`) live in `src/bmlibrarian/agents/lifecycle.py`.
 

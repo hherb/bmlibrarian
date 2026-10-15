@@ -19,9 +19,12 @@ have meant a behavioural rewrite; see HANDOVER). Relocation, launcher
 repointing, SQLite review packages, `--user`/`--blind`/`--incremental` in the
 Qt review tab are done. Features that existed only in Flet and are now gone:
 
-1. **Qt fact-checker review tab**: no confidence dropdown, no inter-rater
-   agreement dialog, no "unclear" annotation option (the SQLite schema and
-   `human_annotations` CHECK allow it).
+1. **Qt fact-checker review tab**: no confidence dropdown, no
+   agreement-statistics dialog (AI/original/human agreement %; the Qt
+   Statistics box only shows annotated/remaining counts), no `session_id`
+   stamping on annotations (the Flet review app stamped
+   `gui_session_YYYYMMDD`; the Qt tab does not). (The "unclear" option was
+   added in PR #277.)
 2. **Citation lab** (`lab/citation_lab.py`, deleted) had no Qt port —
    port it as a `gui/qt/plugins/` tab if still wanted (git history has the
    Flet version).

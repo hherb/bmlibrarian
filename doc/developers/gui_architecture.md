@@ -13,8 +13,8 @@ BMLibrarian features a modern Qt-based desktop application built with PySide6 (Q
 - **Status**: **Active development**, all new features
 
 ### Retired: Flet GUI
-- **Removed**: 2026-10-16 (former entry points `bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`, the Flet fact-checker review app and Flet labs)
-- **Reason**: flet 1.0 changed its event model, which would have required a behavioural rewrite; every Flet app already had a Qt equivalent. `flet` is no longer a dependency.
+- **Removed**: 2026-10-16 (former entry points `bmlibrarian_research_gui.py`, the Flet fact-checker review app and Flet labs; the `bmlibrarian_config_gui.py` launcher was already deleted on 2025-11-13)
+- **Reason**: flet 1.0 changed its event model, which would have required a behavioural rewrite; every Flet app except the Citation lab already had a Qt equivalent (remaining gaps: [ROADMAP §1](../../ROADMAP.md)). `flet` is no longer a dependency.
 - **Standalone windows**: `fact_checker_review_gui.py` and `scripts/{query,pico,prisma2020,study_assessment}_lab.py` open a single Qt plugin or widget via `run_plugin_standalone()` / `run_widget_standalone()` in `src/bmlibrarian/gui/qt/core/standalone.py`
 - **History**: See `doc/users/flet_to_qt_migration_guide.md`
 
@@ -54,8 +54,7 @@ src/bmlibrarian/gui/qt/
 │   ├── main_window.py               # Main application window
 │   ├── plugin_manager.py            # Plugin discovery and loading
 │   ├── config_manager.py            # Configuration management
-│   ├── theme_manager.py             # Theme switching and stylesheet management
-│   └── status_bar.py                # Status bar with messages
+│   └── standalone.py                # Run one plugin/widget in its own window (lab launchers)
 ├── plugins/                         # Plugin-based tab system
 │   ├── __init__.py
 │   ├── base_tab.py                  # Abstract base class for all plugins
@@ -69,6 +68,7 @@ src/bmlibrarian/gui/qt/
 │   │   ├── workflow_executor.py     # Qt workflow executor (agents, scoring, reports)
 │   │   ├── workflow_handlers.py     # Workflow event handlers and signal connections
 │   │   ├── workflow_thread.py       # QThread-based background workflow execution
+│   │   ├── report_builder.py        # Comprehensive report construction and formatting
 │   │   └── export_utils.py          # Report export functionality
 │   ├── search/                      # Document search plugin
 │   │   ├── __init__.py
@@ -157,8 +157,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.plugin_manager = PluginManager()
-        self.theme_manager = ThemeManager()
-        self.config_manager = ConfigManager()
+        self.config_manager = GUIConfigManager()
 
     def setup_ui(self):
         """Initialize UI components."""
@@ -208,35 +207,24 @@ class PluginManager:
         """Disable an active plugin."""
 ```
 
-### Theme Manager (`core/theme_manager.py`)
+### Theming (`resources/styles/`)
 
-Manages application-wide theming and stylesheets.
+There is no theme-manager class. The theme name comes from
+`GUIConfigManager().get_theme()` (`core/config_manager.py`) and the
+application stylesheet is generated, not loaded from files:
 
-**Key Features**:
-- Light and dark theme support
-- QSS stylesheet loading and parsing
-- Runtime theme switching
-- Color scheme management
-- Per-widget style overrides
-
-**Theme Architecture**:
 ```python
-class ThemeManager:
-    """Manages application themes and stylesheets."""
+from bmlibrarian.gui.qt.resources.styles import (
+    generate_default_theme, generate_dark_theme
+)
 
-    def __init__(self):
-        self.current_theme = "light"
-        self.themes = self._load_themes()
-
-    def apply_theme(self, theme_name: str):
-        """Apply a theme to the application."""
-        stylesheet = self._load_stylesheet(theme_name)
-        QApplication.instance().setStyleSheet(stylesheet)
-
-    def get_color(self, role: str) -> QColor:
-        """Get a color from current theme."""
-        return self.themes[self.current_theme].colors[role]
+stylesheet = generate_dark_theme() if theme == "dark" else generate_default_theme()
+QApplication.instance().setStyleSheet(stylesheet)
 ```
+
+`gui/qt/core/standalone.py:build_theme_stylesheet()` wraps exactly this for
+the standalone launchers. Widget-level styles come from
+`resources/styles/stylesheet_generator.py` (golden rule 9).
 
 ## Plugin Architecture
 
@@ -388,6 +376,7 @@ The Research plugin demonstrates best practices for complex plugin organization,
 | `workflow_executor.py` | Agent coordination, workflow state, business logic |
 | `workflow_handlers.py` | Signal connections, event response handlers |
 | `workflow_thread.py` | Background thread execution, cancellation support |
+| `report_builder.py` | Comprehensive report construction (counterfactual analysis, methodology sections) |
 | `export_utils.py` | Report export, file operations |
 
 **Architecture Diagram**:
@@ -650,20 +639,8 @@ QFrame.document-card {
 ### Applying Themes
 
 ```python
-# In ThemeManager
-def apply_theme(self, theme_name: str):
-    """Apply theme to application."""
-    stylesheet_path = f":/styles/{theme_name}.qss"
-    with open(stylesheet_path, 'r') as f:
-        stylesheet = f.read()
-    QApplication.instance().setStyleSheet(stylesheet)
-
-    # Update color palette
-    palette = self._create_palette(theme_name)
-    QApplication.instance().setPalette(palette)
-
-    # Notify plugins
-    signal_bus.theme_changed.emit(theme_name)
+# See core/standalone.py:build_theme_stylesheet()
+QApplication.instance().setStyleSheet(build_theme_stylesheet(theme_name))
 ```
 
 ## Configuration Management

@@ -4,7 +4,7 @@
 
 The Fact-Checker Review GUI is a desktop application for human reviewers to annotate and validate AI-generated fact-checking results. Built with PySide6 (Qt), it provides an intuitive interface for reviewing biomedical statements, their AI evaluations, and supporting evidence **directly from PostgreSQL**.
 
-> **Changed 2026-10-16**: the former Flet-based review app was removed. `fact_checker_review_gui.py` now opens the PySide6/Qt review window - the same review tab as the "Fact Checker" tab of the main Qt application (`uv run python bmlibrarian_qt.py`). The command-line options are unchanged. Parts of the interface walkthrough below were written for the Flet app and may differ in detail from the Qt window (for example, the username is entered in a field in the window header rather than a separate login dialog).
+> **Changed 2026-10-16**: the former Flet-based review app was removed. `fact_checker_review_gui.py` now opens the PySide6/Qt review window - the same review tab as the "Fact Checker" tab of the main Qt application (`uv run python bmlibrarian_qt.py`). The command-line options are unchanged. Parts of the interface walkthrough below were written for the Flet app and may differ in detail from the Qt window (for example, the username is entered in a field in the window header rather than a separate login dialog). Known gaps in the Qt window: there is no confidence rating, no "Export to JSON" button, and the Statistics box shows only total/annotated/remaining counts (no agreement statistics); see [ROADMAP §1](../../ROADMAP.md).
 
 **New in v2.0**: Simplified database-only architecture - all data stored in PostgreSQL factcheck schema with no intermediate files.
 
@@ -36,10 +36,10 @@ The Fact-Checker Review GUI is included with BMLibrarian. No additional installa
 ### Running the Application
 
 ```bash
-# Start the Fact-Checker Review GUI (with login)
+# Start the Fact-Checker Review GUI (enter your username in the window header)
 uv run python fact_checker_review_gui.py
 
-# Skip login dialog with username
+# Pre-fill the annotator username
 uv run python fact_checker_review_gui.py --user alice
 
 # Incremental mode: only show statements you haven't annotated yet
@@ -49,29 +49,25 @@ uv run python fact_checker_review_gui.py --user alice --incremental
 uv run python fact_checker_review_gui.py --user bob --blind
 ```
 
-The application will open in a desktop window and prompt you to log in (unless `--user` is specified).
+The application opens in a desktop window. `--user` pre-fills the annotator username field in the window header; without it, enter your username there. With PostgreSQL and exactly one existing annotator, the field is filled in automatically.
+
+A username that does not exist yet is not created silently (a typo would otherwise become a new annotator): the status line asks you to press Enter in the username field, which asks for confirmation before creating it. Annotations are recorded only once the annotator exists. In incremental mode, when you have annotated every statement the window says so instead of showing an error.
 
 ### Command-Line Options
 
-- `--user USERNAME`: Skip login dialog and use specified username
+- `--user USERNAME`: Pre-fill the annotator username field
 - `--incremental`: Filter to show only statements without your annotations
 - `--blind`: Hide original and AI annotations from human annotator (unbiased mode)
 - `--db-file FILE.db`: Review a portable SQLite review package instead of PostgreSQL (see `FACT_CHECKER_DISTRIBUTION_QUICKSTART.md`)
 
 ## Using the Review Interface
 
-### 1. Login and User Profile
+### 1. Username
 
-Upon launch, you'll see a login dialog:
-
-**Login Dialog:**
-- **Username**: Required (used for annotation tracking)
-- **Full Name**: Optional (display name)
-- **Email**: Optional (contact information)
-- **Expertise Level**: Optional (expert/intermediate/novice)
-- **Institution**: Optional (affiliation)
-
-Your profile is stored in the `factcheck.annotators` table and can be updated on subsequent logins.
+There is no login dialog. Enter your username in the **Username** field in the window header (or
+pass `--user`); it is used for annotation tracking. With PostgreSQL and exactly one existing
+annotator, the field is filled in automatically. Annotator profiles are stored in the
+`factcheck.annotators` table.
 
 ### 2. Main Review Interface
 
@@ -102,9 +98,9 @@ The review interface displays:
 - **Hidden in blind mode**
 
 **Column 3 - Human Review**
-- **Your Annotation**: Dropdown to select yes/no/maybe
+- **Your Annotation**: Dropdown to select yes/no/maybe/unclear
 - **Explanation**: Optional text field for justification
-- **Confidence**: Optional confidence rating (high/medium/low)
+- **Confidence**: Optional confidence rating (high/medium/low) - Flet app only; not available in the Qt window
 - Green section highlights this is your input
 - **Always visible** (even in blind mode)
 
@@ -128,9 +124,9 @@ The review interface displays:
 For each statement:
 
 1. **Review the evidence**: Read the statement, AI evaluation (if visible), rationale, and citations
-2. **Select your annotation**: Choose yes/no/maybe from the dropdown
+2. **Select your annotation**: Choose yes/no/maybe/unclear from the dropdown
 3. **Add explanation (recommended)**: Describe your reasoning, especially if you disagree with the AI
-4. **Set confidence (optional)**: Rate your confidence in the annotation
+4. **Set confidence (optional)**: Rate your confidence in the annotation (Flet app only; not available in the Qt window)
 5. **Navigate**: Use Previous/Next buttons to move between statements
 6. **Auto-save**: Your annotation is automatically saved to PostgreSQL when you navigate away
 
@@ -159,19 +155,21 @@ For each statement:
 
 ### 5. Export Annotations
 
-The Review GUI provides two export options:
+The Qt review window has no export button; annotations are saved automatically:
 
-**Database Export** (recommended):
+**Database** (recommended):
 - All annotations are automatically saved to PostgreSQL in real-time
-- Use CLI to export database to JSON:
+- The fact-checker CLI writes the AI results of a run to JSON with `--output`:
   ```bash
-  python fact_checker_cli.py --export results.json
+  uv run python fact_checker_cli.py statements.json --output results.json
   ```
+- Analyze annotations with `uv run python fact_checker_stats.py` (or query the `factcheck` schema)
 
-**Direct JSON Export** (from GUI):
-- Click **"Export to JSON"** button
-- Select export type (full/ai_only/human_annotated/summary)
-- Choose output file location
+**SQLite review packages** (`--db-file`):
+- Export one annotator's annotations to JSON:
+  ```bash
+  uv run python scripts/export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
+  ```
 
 ## Data Storage Architecture
 
@@ -455,11 +453,10 @@ WHERE e.evaluation_id = %s;
 
 Built with PySide6/Qt (`src/bmlibrarian/gui/qt/plugins/fact_checker/`):
 - **FactCheckerTabWidget** (`fact_checker_tab.py`): Main review widget (PostgreSQL or SQLite review package)
-- **StatementWidget**: Statement and annotation display, including blind mode
-- **AnnotationWidget**: Human annotation input
-- **CitationListWidget**: Evidence citation cards
-- **NavigationWidget**: Statement navigation
-- **TimerWidget**: Review time tracking
+- **CitationListWidget** (`citation_widget.py`): Evidence citation cards
+- **TimerWidget** (`timer_widget.py`): Review time tracking
+
+The statement, annotation and navigation areas are built directly in `FactCheckerTabWidget`; blind mode is applied by `FactCheckerTabWidget._apply_blind_mode`.
 
 ### Performance Optimization
 

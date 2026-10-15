@@ -96,6 +96,9 @@ class FactCheckerTabWidget(QWidget):
     # Signals
     status_changed = Signal(str)
 
+    AUTO_SAVE_OK_TEXT = "✓ Annotations saved automatically"
+    AUTO_SAVE_FAILED_TEXT = "⚠ Last annotation was NOT saved (see status above)"
+
     # Color constants (DPI-independent)
     COLOR_PRIMARY_BLUE = "#1976d2"
     COLOR_DARK_BLUE = "#0d47a1"
@@ -123,8 +126,6 @@ class FactCheckerTabWidget(QWidget):
     COLOR_AI_BORDER = "#d1c4e9"
     COLOR_HUMAN_BG = "#e8f5e9"
     COLOR_HUMAN_BORDER = "#66bb6a"
-    COLOR_BLIND_BG = "#e0e0e0"
-    COLOR_BLIND_BORDER = "#bdbdbd"
 
     # Content area colors
     COLOR_INPUT_BG = "#f5f5f5"
@@ -160,8 +161,11 @@ class FactCheckerTabWidget(QWidget):
             default_username: Annotator username to start with (skips the
                 PostgreSQL single-annotator auto-detection)
             blind_mode: Hide the original and AI annotations from the reviewer
+                (the columns are hidden and never filled; the review toggle
+                is removed so they cannot be shown)
             incremental: Only show statements this annotator has not yet
-                annotated
+                annotated (requires an annotator; without one all statements
+                are shown)
         """
         super().__init__(parent)
 
@@ -180,6 +184,7 @@ class FactCheckerTabWidget(QWidget):
         self.results: List[Dict[str, Any]] = []
         self.reviews: List[Dict[str, Any]] = []
         self.current_index = 0
+        self._load_failed = False
 
         # Database
         self.fact_checker_db = None
@@ -212,6 +217,7 @@ class FactCheckerTabWidget(QWidget):
         self.next_button: Optional[QPushButton] = None
         self.original_col: Optional[QWidget] = None
         self.ai_col: Optional[QWidget] = None
+        self.auto_save_label: Optional[QLabel] = None
 
         self._setup_ui()
         if default_username and self.username_field is not None:
@@ -476,20 +482,6 @@ class FactCheckerTabWidget(QWidget):
             }}
         """
 
-    def _get_blind_mode_column_stylesheet(self) -> str:
-        """Generate stylesheet for columns in blind mode (grayed out)."""
-        s = self.scale
-        return f"""
-            QWidget {{
-                background-color: {self.COLOR_BLIND_BG};
-                border: 1px solid {self.COLOR_BLIND_BORDER};
-                border-radius: {s['radius_medium']}px;
-                opacity: 0.5;
-            }}
-        """
-
-
-
     def _get_statement_label_stylesheet(self) -> str:
         """Generate stylesheet for statement number label."""
         s = self.scale
@@ -690,6 +682,7 @@ class FactCheckerTabWidget(QWidget):
         self.human_dropdown.addItem("Yes", "yes")
         self.human_dropdown.addItem("No", "no")
         self.human_dropdown.addItem("Maybe", "maybe")
+        self.human_dropdown.addItem("Unclear", "unclear")
         self.human_dropdown.setCurrentIndex(0)
         self.human_dropdown.currentIndexChanged.connect(self._on_annotation_change)
         self.human_dropdown.setFixedHeight(int(s['control_height_small'] * 0.83))
@@ -765,9 +758,9 @@ class FactCheckerTabWidget(QWidget):
         footer_layout.addStretch()
 
         # Auto-save indicator
-        auto_save_label = QLabel("✓ Annotations saved automatically")
-        auto_save_label.setStyleSheet(self._get_auto_save_label_stylesheet())
-        footer_layout.addWidget(auto_save_label)
+        self.auto_save_label = QLabel(self.AUTO_SAVE_OK_TEXT)
+        self.auto_save_label.setStyleSheet(self._get_auto_save_label_stylesheet())
+        footer_layout.addWidget(self.auto_save_label)
 
         layout.addLayout(footer_layout)
 
@@ -781,12 +774,17 @@ class FactCheckerTabWidget(QWidget):
     def _on_username_changed(self):
         """Handle username field changes - switch to that user's annotations."""
         username = self.username_field.text().strip()
-
-        if not username or not self.fact_checker_db or not self.results:
+        if not username:
             return
 
-        # Don't trigger if username hasn't actually changed
-        if username == self.annotator_username:
+        if self._load_failed:
+            # Nothing usable is loaded: confirming a username retries the load
+            self.annotator_username = username
+            self._load_from_database()
+            return
+
+        # Don't trigger if nothing is loaded or the username hasn't changed
+        if not self.fact_checker_db or username == self.annotator_username:
             return
 
         # Save current annotation before switching users
@@ -831,7 +829,7 @@ class FactCheckerTabWidget(QWidget):
             )
             self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
 
-            if self.incremental:
+            if self.incremental or not self.results:
                 # The incremental subset depends on the annotator: reload it
                 # rather than re-mapping rows onto the filtered list by index
                 self._load_from_database()
@@ -856,14 +854,8 @@ class FactCheckerTabWidget(QWidget):
             self.status_label.setStyleSheet(self._get_status_label_stylesheet('success'))
 
         except Exception as e:
-            print(f"ERROR switching user: {e}")
-            import traceback
-            traceback.print_exc()
-            QMessageBox.warning(
-                self,
-                "Error Switching User",
-                f"Failed to switch to user '{username}':\n\n{str(e)}",
-            )
+            logger.exception(f"Failed to switch to user '{username}'")
+            self._show_status(f"✗ Failed to switch to user '{username}': {e}", 'error')
 
     def _auto_load_data(self):
         """Auto-load data on startup from the SQLite package or PostgreSQL."""
@@ -896,7 +888,8 @@ class FactCheckerTabWidget(QWidget):
                 self.username_field.setText(username)
                 self.annotator_username = username
         except Exception as e:
-            logger.info(f"Could not check for existing annotators: {e}")
+            # Optional convenience: the user can still type a username
+            logger.warning(f"Could not check for existing annotators: {e}", exc_info=True)
 
     def _load_from_database(self):
         """Load fact-check results from database."""
@@ -907,27 +900,30 @@ class FactCheckerTabWidget(QWidget):
             # Get database instance
             self.fact_checker_db = get_fact_checker_db(self.db_file)
 
-            # Register annotator only if username is provided
+            # Use the annotator only if it already exists: an unknown name
+            # (e.g. a --user typo) must be confirmed before it is created
+            unknown_username: Optional[str] = None
+            self.annotator_id = None
             if self.annotator_username:
-                annotator = Annotator(
-                    username=self.annotator_username,
-                    full_name=self.annotator_username,
-                    email=None,
-                    expertise_level=None,
-                )
-                self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
-            else:
-                # No username provided yet - will prompt when user tries to annotate
-                self.annotator_id = None
+                existing = self.fact_checker_db.get_annotator(self.annotator_username)
+                if existing:
+                    self.annotator_id = existing.annotator_id
+                else:
+                    unknown_username = self.annotator_username
+                    self.annotator_username = None
 
             # Load all statements with evaluations
             all_data = self.fact_checker_db.get_all_statements_with_evaluations()
 
             if not all_data:
+                if self.db_type == "sqlite":
+                    raise ValueError(
+                        "The review package contains no statements; ask for a "
+                        "new package (scripts/export_review_package.py)"
+                    )
                 raise ValueError(
-                    "No statements found in database.\n\n"
-                    "Please import fact-checker data first using:\n"
-                    "uv run python fact_checker_cli.py statements.json"
+                    "No statements found in database. Import fact-checker data "
+                    "first: uv run python fact_checker_cli.py statements.json"
                 )
 
             # Convert to display format
@@ -967,48 +963,93 @@ class FactCheckerTabWidget(QWidget):
                 self.results.append(result)
 
             # Initialize reviews for the current annotator
-            self.reviews = reviews_for_annotator(self.results, self.annotator_id)
-
-            if self.incremental:
-                total = len(self.results)
-                self.results, self.reviews = filter_unannotated(self.results, self.reviews)
-                if not self.results:
-                    raise ValueError(
-                        f"No unannotated statements left: you have already "
-                        f"annotated all {total} statements."
-                    )
+            reviews = reviews_for_annotator(self.results, self.annotator_id)
+            results = self.results
+            total = len(results)
+            if self.incremental and self.annotator_id is not None:
+                results, reviews = filter_unannotated(results, reviews)
                 logger.info(
-                    f"Incremental mode: {len(self.results)} of {total} statements "
+                    f"Incremental mode: {len(results)} of {total} statements "
                     f"not yet annotated by {self.annotator_username}"
                 )
+            self.results, self.reviews = results, reviews
+            self.current_index = 0
+            self._load_failed = False
+
+            if not self.results:
+                # Incremental mode with everything annotated: a finished state
+                self._show_nothing_to_review(total)
+                return
 
             # Update UI
             mode_indicator = " [INCREMENTAL]" if self.incremental else ""
             db_source = self.db_type.upper()
+            if unknown_username:
+                self._show_status(
+                    f"⚠ Unknown annotator '{unknown_username}': press Enter in the "
+                    f"username field to create it (annotations are not recorded "
+                    f"until then). Loaded {len(self.results)} statements from "
+                    f"{db_source}{mode_indicator}",
+                    'error'
+                )
+            else:
+                self._show_status(
+                    f"✓ Loaded {len(self.results)} statements from {db_source}{mode_indicator}",
+                    'success'
+                )
 
-            self.status_label.setText(
-                f"✓ Loaded {len(self.results)} statements from {db_source}{mode_indicator}"
-            )
-            self.status_label.setStyleSheet(self._get_status_label_stylesheet('success'))
-
-            # Display first statement
-            self.current_index = 0
+            self._set_review_enabled(True)
             self._display_current_statement()
 
             self.status_changed.emit(f"Loaded {len(self.results)} statements")
 
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"ERROR loading database:\n{error_details}")
-
-            QMessageBox.critical(
-                self,
-                "Error Loading Data",
-                f"Failed to load from database:\n\n{str(e)}",
+            logger.exception("Failed to load fact-check data")
+            self._load_failed = True
+            self.results, self.reviews, self.current_index = [], [], 0
+            self._set_review_enabled(False)
+            self._show_status(
+                f"✗ Error loading data: {e} — fix the problem, then press Enter "
+                f"in the username field to retry",
+                'error'
             )
-            self.status_label.setText("Error loading data")
-            self.status_label.setStyleSheet(self._get_status_label_stylesheet('error'))
+            self.status_changed.emit(f"Error loading fact-check data: {e}")
+
+    def _show_status(self, text: str, kind: str) -> None:
+        """Show a message in the status line.
+
+        Args:
+            text: Message text
+            kind: 'info', 'success' or 'error' (selects the style)
+        """
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(self._get_status_label_stylesheet(kind))
+
+    def _set_review_enabled(self, enabled: bool) -> None:
+        """Enable or disable annotation input and navigation."""
+        for widget in (self.human_dropdown, self.human_text, self.prev_button, self.next_button):
+            if widget is not None:
+                widget.setEnabled(enabled)
+
+    def _show_nothing_to_review(self, total: int) -> None:
+        """Show the incremental-mode "all statements annotated" state.
+
+        Args:
+            total: Number of statements in the database
+        """
+        self._set_review_enabled(False)
+        self.statement_label.setText("Nothing left to review")
+        self.statement_text.setText("")
+        for text_widget in (self.original_text, self.ai_text, self.human_text, self.article_text):
+            text_widget.clear()
+        self.citation_widget.clear()
+        self.timer_widget.stop()
+        self._show_status(
+            f"✓ {self.annotator_username} has annotated all {total} statements "
+            f"— nothing left to review",
+            'success'
+        )
+        self.status_changed.emit("All statements annotated")
 
     def _display_current_statement(self):
         """Display the current statement and its annotations."""
@@ -1021,17 +1062,17 @@ class FactCheckerTabWidget(QWidget):
         self.statement_label.setText(f"Statement #{self.current_index + 1}:")
         self.statement_text.setText(result.get('statement', 'N/A'))
 
-        # Update original answer column
-        original_answer = result.get('expected_answer', 'N/A')
-        self._update_tag(self.original_tag, original_answer)
-        # Display long_answer from database
-        long_answer = result.get('long_answer', '')
-        self.original_text.setPlainText(long_answer if long_answer else 'No explanation available')
+        # Original answer and AI evaluation columns; never filled in blind
+        # mode, so the reviewer cannot see them even if the columns were shown
+        if not self.blind_mode:
+            original_answer = result.get('expected_answer', 'N/A')
+            self._update_tag(self.original_tag, original_answer)
+            long_answer = result.get('long_answer', '')
+            self.original_text.setPlainText(long_answer if long_answer else 'No explanation available')
 
-        # Update AI evaluation column
-        ai_evaluation = result.get('evaluation', 'N/A')
-        self._update_tag(self.ai_tag, ai_evaluation)
-        self.ai_text.setPlainText(result.get('reason', 'No rationale provided'))
+            ai_evaluation = result.get('evaluation', 'N/A')
+            self._update_tag(self.ai_tag, ai_evaluation)
+            self.ai_text.setPlainText(result.get('reason', 'No rationale provided'))
 
         # Update human evaluation column
         saved_review = self.reviews[self.current_index]
@@ -1090,18 +1131,6 @@ class FactCheckerTabWidget(QWidget):
         annotation = self.human_dropdown.currentData()
         explanation = self.human_text.toPlainText()
 
-        # Check if user is trying to annotate without a username
-        if annotation and annotation != "n/a" and not self.annotator_id:
-            username = self.username_field.text().strip()
-            if not username:
-                QMessageBox.warning(
-                    self,
-                    "Username Required",
-                    "Annotations will only be recorded if you enter a username.\n\n"
-                    "Please enter your username in the field at the top of the page.",
-                )
-                return
-
         # Only record time if an evaluation has been selected
         review_duration = None
         if annotation and annotation != "n/a":
@@ -1121,39 +1150,24 @@ class FactCheckerTabWidget(QWidget):
         if not self.fact_checker_db or self.current_index >= len(self.results):
             return
 
-        # Ensure annotator is registered (safety check)
         if annotation and annotation != "n/a" and not self.annotator_id:
-            # Get username from field
-            username = self.username_field.text().strip()
+            # Annotators are created only through the username field, which
+            # confirms unknown names (a typo must not become a new annotator)
+            self._show_status(
+                "⚠ Annotation not recorded: enter your username and press Enter first",
+                'error'
+            )
+            return
 
-            # If no username, don't save (should have been caught earlier)
-            if not username:
-                return
-
-            # Register annotator
-            self.annotator_username = username
-            try:
-                annotator = Annotator(
-                    username=username,
-                    full_name=username,
-                    email=None,
-                    expertise_level=None,
-                )
-                self.annotator_id = self.fact_checker_db.insert_or_get_annotator(annotator)
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"Failed to register annotator: {str(e)}",
-                )
-                return
+        if not annotation or annotation == "n/a" or not self.annotator_id:
+            # Nothing chosen (or no annotator yet): the schema only accepts
+            # yes/no/maybe/unclear, so there is nothing to record
+            return
 
         try:
             result = self.results[self.current_index]
             statement_id = result['statement_id']
-
-            # Convert 'n/a' to empty string for database
-            db_annotation = "" if annotation == "n/a" else annotation
+            db_annotation = annotation
             # Convert empty string or 'n/a' to None for confidence (database constraint requires NULL not empty string)
             db_confidence = None if (not confidence or confidence == "n/a" or confidence == "") else confidence
 
@@ -1177,11 +1191,14 @@ class FactCheckerTabWidget(QWidget):
                 'confidence': db_confidence,
                 'review_duration_seconds': review_duration,
             }
+            if self.auto_save_label is not None:
+                self.auto_save_label.setText(self.AUTO_SAVE_OK_TEXT)
 
         except Exception as e:
-            print(f"ERROR saving annotation: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"Failed to save annotation for statement index {self.current_index}")
+            self._show_status(f"✗ Annotation NOT saved: {e}", 'error')
+            if self.auto_save_label is not None:
+                self.auto_save_label.setText(self.AUTO_SAVE_FAILED_TEXT)
 
     @Slot()
     def _on_previous(self):
@@ -1258,24 +1275,25 @@ Progress: {(annotated / total * 100):.1f}%
             stats_text,
         )
 
-    def _apply_blind_mode(self):
-        """Apply visual graying to original and AI columns in blind mode."""
-        if not self.original_col or not self.ai_col:
-            return
+    def _apply_blind_mode(self) -> None:
+        """Hide the original and AI columns for unbiased (blind) review.
 
-        s = self.scale
-
-        # Gray out original column
-        self.original_col.setEnabled(False)
-        self.original_col.setStyleSheet(self._get_blind_mode_column_stylesheet())
-
-        # Gray out AI column
-        self.ai_col.setEnabled(False)
-        self.ai_col.setStyleSheet(self._get_blind_mode_column_stylesheet())
+        The columns are hidden and ``_display_current_statement`` never fills
+        them; the review toggle is removed so they cannot be brought back.
+        """
+        self.show_review_enabled = False
+        for column in (self.original_col, self.ai_col):
+            if column is not None:
+                column.setVisible(False)
+        if self.show_review_toggle is not None:
+            self.show_review_toggle.setVisible(False)
+            self.show_review_toggle.setEnabled(False)
 
     @Slot()
     def _on_toggle_review(self):
         """Toggle visibility of original and AI review columns."""
+        if self.blind_mode:
+            return
         # Toggle state
         self.show_review_enabled = not self.show_review_toggle.isChecked()
 

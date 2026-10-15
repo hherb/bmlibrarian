@@ -525,5 +525,5 @@ citations = citation_agent.process_scored_documents_for_citations(
 For issues or questions:
 - Check the troubleshooting section above
 - Review examples in `examples/study_assessment_demo.py` (when available)
-- Try the interactive laboratory: `uv run python study_assessment_lab.py` (when available)
+- Try the interactive laboratory: `uv run python scripts/study_assessment_lab.py`
 - Report bugs at: https://github.com/hherb/bmlibrarian/issues

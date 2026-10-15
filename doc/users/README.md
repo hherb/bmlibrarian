@@ -28,7 +28,7 @@ Start here if you're new to BMLibrarian:
 
 ### Retired Flet GUIs
 
-The Flet-based GUI applications (`bmlibrarian_research_gui.py`, `bmlibrarian_config_gui.py`, the Flet fact-checker review app and labs) were removed on 2026-10-16. Use the Qt GUI above; `fact_checker_review_gui.py` and the `scripts/*_lab.py` launchers now open Qt windows.
+The Flet-based GUI applications (`bmlibrarian_research_gui.py`, the Flet fact-checker review app and labs) were removed on 2026-10-16; the `bmlibrarian_config_gui.py` launcher had already been deleted on 2025-11-13. Use the Qt GUI above; `fact_checker_review_gui.py` and the `scripts/*_lab.py` launchers now open Qt windows.
 
 📖 **[Flet to Qt Migration Guide](flet_to_qt_migration_guide.md)** (historical)
 - List of removed applications and their Qt replacements

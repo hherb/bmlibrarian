@@ -47,14 +47,11 @@ uv run python paper_checker_cli.py abstracts.json --quick
 ### Laboratory Usage
 
 ```bash
-# Launch interactive laboratory (desktop mode)
-uv run python paper_checker_lab.py
-
-# Web browser mode
-uv run python paper_checker_lab.py --view web
+# Launch interactive laboratory (PySide6/Qt desktop app)
+uv run python scripts/paper_checker_lab.py
 
 # Enable debug logging
-uv run python paper_checker_lab.py --debug
+uv run python scripts/paper_checker_lab.py --debug
 ```
 
 ## Understanding Results

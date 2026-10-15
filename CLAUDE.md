@@ -204,8 +204,7 @@ Since this project uses `uv` for package management:
   - `uv run python scripts/export_human_evaluations.py --db-file review.db --annotator alice -o alice.json` - Export human annotations to JSON
   - `uv run python scripts/import_human_evaluations.py alice.json bob.json charlie.json` - Re-import human evaluations to PostgreSQL
 - **Laboratory Tools**:
-  - `uv run python scripts/query_lab.py` / `pico_lab.py` / `study_assessment_lab.py` / `prisma2020_lab.py` - open the matching Qt plugin tab in a standalone window (`gui/qt/core/standalone.py`)
-  - `uv run python scripts/query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion
+  - `uv run python scripts/query_lab.py` - Interactive QueryAgent laboratory for experimenting with natural language to PostgreSQL query conversion (opens the Qt plugin tab in a standalone window via `gui/qt/core/standalone.py`, as do the PICO, Study Assessment and PRISMA 2020 labs below)
   - `uv run python scripts/pico_lab.py` - Interactive PICO laboratory for extracting Population, Intervention, Comparison, and Outcome components from documents
   - `uv run python scripts/study_assessment_lab.py` - Interactive Study Assessment laboratory for evaluating research quality and trustworthiness
   - `uv run python scripts/prisma2020_lab.py` - Interactive PRISMA 2020 laboratory for assessing systematic review compliance with PRISMA reporting guidelines
@@ -489,10 +488,10 @@ card = factory.create_card(card_data)
 
 BMLibrarian supports using multiple AI models to generate diverse database queries for improved document retrieval. This feature leverages the strengths of different models to create query variations that often find more relevant literature than single-model approaches.
 
-> **Not currently wired into any app** (since 2026-10-16): its only caller,
-> `QueryAgent.find_abstracts_multi_query`, was used by the retired Flet
-> research GUI. The Qt research tab uses single-model `convert_question`.
-> See ROADMAP §1.
+> **Not currently wired into any app** (since 2026-10-16): its entry point
+> `QueryAgent.find_abstracts_multi_query` was only used, outside demos and
+> benchmark scripts, by the retired Flet research GUI; the Qt research tab
+> and the CLI use single-model `convert_question`. See ROADMAP §1.
 
 **Key Features**:
 - **Query Diversity**: Generate 1-3 queries per model using up to 3 different models
@@ -582,6 +581,7 @@ bmlibrarian/
 │   │   ├── editor_agent.py    # Comprehensive report editing and integration
 │   │   ├── queue_manager.py   # SQLite-based task queue system
 │   │   ├── orchestrator.py    # Multi-agent workflow coordination
+│   │   ├── lifecycle.py       # Create/clean up the full agent set for GUI apps
 │   │   ├── transparency_data.py # Transparency assessment data models and constants
 │   │   ├── transparency_agent.py # TransparencyAgent for undisclosed bias risk detection
 │   │   └── query_generation/  # Multi-model query generation system
@@ -631,9 +631,11 @@ bmlibrarian/
 │       └── workflow_steps.py  # Enum-based workflow step definitions
 │   └── gui/                   # Graphical user interfaces (PySide6/Qt)
 │       ├── __init__.py        # GUI module exports
+│       ├── document_card_factory_base.py # Framework-neutral document card factory base
 │       └── qt/                # Qt/PySide6-based GUI components
 │           ├── __init__.py    # Qt module entry point
 │           ├── core/          # Core application infrastructure
+│           │   └── standalone.py # Open a plugin tab in its own window (lab launchers)
 │           ├── plugins/       # Plugin system (research, fact_checker, etc.)
 │           ├── widgets/       # Reusable Qt widgets
 │           ├── resources/     # Resources and styling (dpi_scale, stylesheets)
@@ -848,7 +850,8 @@ GUI thread.
 
 The Flet GUIs (`bmlibrarian_research_gui.py`, the Flet config app and review
 app, Flet labs) were **retired on 2026-10-16**: flet 1.0 changed its event model
-and every Flet app had a Qt equivalent. Do not reintroduce Flet.
+and every Flet app except the Citation lab already had a Qt equivalent
+(remaining gaps: ROADMAP §1). Do not reintroduce Flet.
 
 ### Fact-Checker Review GUI Application
 
@@ -873,7 +876,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 1. **Export Review Package** (PostgreSQL → SQLite):
    ```bash
-   uv run python export_review_package.py --output review_package.db --exported-by username
+   uv run python scripts/export_review_package.py --output review_package.db --exported-by username
    ```
    - Creates self-contained SQLite database with:
      - All statements and AI evaluations
@@ -884,7 +887,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
    - Ready for distribution via file sharing
 
 2. **Distribute to External Reviewers**:
-   - Send the `.db` file to reviewers (they run `fact_checker_review_gui.py` from a BMLibrarian checkout; needs Python + PySide6)
+   - Send the `.db` file to reviewers (they run `fact_checker_review_gui.py` from a BMLibrarian checkout set up with `uv sync`; no PostgreSQL server needed)
    - No PostgreSQL installation required
    - Works offline with full functionality
 
@@ -899,7 +902,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 4. **Export Human Evaluations** (SQLite → JSON):
    ```bash
-   uv run python export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
+   uv run python scripts/export_human_evaluations.py --db-file review_package.db --annotator alice -o alice.json
    ```
    - Lightweight JSON export (1-10 KB per statement)
    - Contains: statement_id, statement_text, annotation, explanation
@@ -907,7 +910,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 
 5. **Re-import to PostgreSQL** (JSON → PostgreSQL):
    ```bash
-   uv run python import_human_evaluations.py alice.json bob.json charlie.json
+   uv run python scripts/import_human_evaluations.py alice.json bob.json charlie.json
    ```
    - Creates/updates annotator records with username tagging
    - Validates statements match by ID and text
@@ -925,7 +928,7 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 **Key Features**:
 - **Database Abstraction**: Unified interface supporting both PostgreSQL and SQLite backends
 - **Self-Contained Packages**: All data needed for review in single `.db` file
-- **No Dependencies**: Reviewers don't need PostgreSQL, just Python + PySide6
+- **No Dependencies**: Reviewers don't need a PostgreSQL server, just a BMLibrarian checkout set up with `uv sync`
 - **Validation**: Statement text matching prevents mismatches during import
 - **Multi-Reviewer Support**: Track annotations by username for inter-rater analysis
 - **Security**: Audit trail via export_history, encrypted distribution recommended
@@ -940,9 +943,9 @@ BMLibrarian includes a complete distribution system for sending fact-check resul
 - `src/bmlibrarian/factchecker/db/sqlite_db.py`: SQLite implementation
 - `src/bmlibrarian/factchecker/db/postgresql_db.py`: PostgreSQL wrapper
 - `src/bmlibrarian/factchecker/db/sqlite_schema.sql`: Complete SQLite schema
-- `export_review_package.py`: Review package export script
-- `export_human_evaluations.py`: Human annotations export script
-- `import_human_evaluations.py`: PostgreSQL import script
+- `scripts/export_review_package.py`: Review package export script
+- `scripts/export_human_evaluations.py`: Human annotations export script
+- `scripts/import_human_evaluations.py`: PostgreSQL import script
 
 ### Fact-Checker Statistical Analysis
 

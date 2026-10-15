@@ -626,17 +626,14 @@ the same review widget that the main Qt application (`bmlibrarian_qt.py`) shows 
 
 **Location**: `src/bmlibrarian/gui/qt/plugins/fact_checker/`
 
-- `fact_checker_tab.py` - `FactCheckerTabWidget` (main review widget; PostgreSQL or SQLite review package)
-- `statement_widget.py` - `StatementWidget` (statement and annotations, blind mode)
-- `annotation_widget.py` - `AnnotationWidget` (human annotation input)
+- `fact_checker_tab.py` - `FactCheckerTabWidget` (main review widget; PostgreSQL or SQLite review package). Builds the statement, annotation and navigation areas itself; blind mode is applied in `FactCheckerTabWidget._apply_blind_mode`
 - `citation_widget.py` - `CitationListWidget` (evidence citation cards)
-- `navigation_widget.py` - `NavigationWidget` (statement navigation)
 - `timer_widget.py` - `TimerWidget` (review time tracking)
 - `plugin.py` - `FactCheckerPlugin` (registers the tab in the main Qt app)
 
 **Command-Line Arguments**:
 
-- `--user USERNAME`: Annotator username to start with (skips login)
+- `--user USERNAME`: Pre-fill the annotator username field (there is no login dialog)
 - `--incremental`: Show only statements you haven't annotated yet
 - `--blind`: Hide AI and original annotations
 - `--db-file FILE.db`: Use a SQLite review package instead of PostgreSQL
