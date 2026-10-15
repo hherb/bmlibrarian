@@ -379,33 +379,6 @@ class WorkflowHandlersMixin:
 
         self.status_message.emit(f"Found {doc_count} documents")
 
-    @Slot(int, int)
-    def _on_scoring_progress(self: 'ResearchTabWidget', current: int, total: int) -> None:
-        """
-        Handle scoring progress signal.
-
-        Updates the progress bar in the Scoring tab.
-
-        Args:
-            current: Current document number being scored
-            total: Total number of documents to score
-        """
-        if hasattr(self, 'scoring_refs') and self.scoring_refs and 'progress_bar' in self.scoring_refs.widgets:
-            progress_bar = self.scoring_refs.widgets['progress_bar']
-            # Show progress bar if it's hidden
-            if not progress_bar.isVisible():
-                progress_bar.setVisible(True)
-
-            # Update progress
-            progress_bar.setMaximum(total)
-            progress_bar.setValue(current)
-
-            # Update summary label with live count
-            if 'summary_label' in self.scoring_refs.widgets:
-                self.scoring_refs.widgets['summary_label'].setText(
-                    f"Scoring document {current}/{total}..."
-                )
-
     @Slot(list)
     def _on_documents_scored(self: 'ResearchTabWidget', scored_documents: list) -> None:
         """

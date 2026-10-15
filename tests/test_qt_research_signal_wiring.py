@@ -24,6 +24,7 @@ DUPLICATED_STEP_SIGNALS = (
     "documents_scored(QVariantList)",
     "citations_extracted(QVariantList)",
     "preliminary_report_generated(QString)",
+    "scoring_progress(int,int)",
 )
 
 
@@ -43,6 +44,8 @@ def test_executor_step_signals_not_connected_to_tab(app):
         executor = widget.workflow_executor
         assert executor is not None
         for signature in DUPLICATED_STEP_SIGNALS:
+            # A renamed signal would make the receiver count vacuously 0
+            assert hasattr(executor, signature.split("(")[0]), signature
             assert executor.receivers(SIGNAL(signature)) == 0, signature
         # Executor-level lifecycle signals remain connected
         assert executor.receivers(SIGNAL("status_message(QString)")) == 1

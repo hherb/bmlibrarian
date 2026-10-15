@@ -166,9 +166,10 @@ class TestCitationEnrichment:
         from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
             CitationListWidget,
         )
-        enriched = CitationListWidget._enrich_citation(
+        enriched, failed = CitationListWidget._enrich_citation(
             MagicMock(), {'document_id': 2}, review_db
         )
+        assert not failed
         assert enriched['title'] == 'Preprint'
         assert enriched['pmid'] == 'N/A'
         assert enriched['authors'] == 'Roe R'
@@ -181,4 +182,130 @@ class TestCitationEnrichment:
         db = MagicMock()
         db.get_document_details.side_effect = RuntimeError("db down")
         citation = {'document_id': 5}
-        assert CitationListWidget._enrich_citation(MagicMock(), citation, db) is citation
+        enriched, failed = CitationListWidget._enrich_citation(MagicMock(), citation, db)
+        assert enriched is citation
+        assert failed  # reported, not mistaken for "no details"
+
+    def test_enrich_citation_skips_complete_citation(self):
+        """A complete citation never queries the database."""
+        from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
+            CitationListWidget,
+        )
+        db = MagicMock()
+        citation = {
+            'document_id': 5, 'abstract': 'A', 'pmid': '1', 'title': 'T',
+            'authors': 'X Y', 'journal': 'J', 'pub_year': 2020,
+        }
+        enriched, failed = CitationListWidget._enrich_citation(MagicMock(), citation, db)
+        assert enriched is citation and not failed
+        db.get_document_details.assert_not_called()
+
+    def test_identifier_placeholders_are_not_identifiers(self):
+        """'N/A' must not reach PDF discovery as a PMID."""
+        from bmlibrarian.gui.qt.plugins.fact_checker.citation_widget import (
+            identifier_or_none,
+        )
+        assert identifier_or_none({'pmid': 'N/A'}, 'pmid') is None
+        assert identifier_or_none({'pmid': ''}, 'pmid') is None
+        assert identifier_or_none({'pmid': 123}, 'pmid') == '123'
+        assert identifier_or_none({'doi': '10.1/x'}, 'doi') == '10.1/x'
+
+
+class _FakeCursor:
+    """Minimal psycopg cursor stand-in returning one dict row."""
+
+    def __init__(self, row):
+        self._row = row
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeDbManager:
+    """DatabaseManager stand-in whose connection yields ``_FakeCursor``."""
+
+    def __init__(self, row=None, error=None):
+        self.cursor = _FakeCursor(row)
+        self._error = error
+
+    def get_connection(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def connection():
+            if self._error:
+                raise self._error
+            conn = MagicMock()
+            conn.cursor.return_value = self.cursor
+            yield conn
+        return connection()
+
+
+def _document_row(**overrides):
+    """A document row as the canonical query returns it."""
+    row = {
+        'id': 9, 'title': 'T', 'abstract': 'A', 'authors': ['A B'],
+        'journal': 'J', 'publication_date': None, 'year': 2020, 'doi': None,
+        'external_id': '123', 'source_id': 7, 'url': None, 'pdf_url': None,
+        'pdf_filename': None, 'full_text': None, 'keywords': None,
+        'mesh_terms': None, 'source_name': 'pubmed',
+    }
+    row.update(overrides)
+    return row
+
+
+class TestCanonicalDocumentDetails:
+    """``database.fetch_document_details`` / ``get_document_details``."""
+
+    def test_pmid_derived_from_source_name(self):
+        """The joined source name (not source_id) decides the PMID."""
+        from bmlibrarian.database import fetch_document_details
+        doc = fetch_document_details(9, _FakeDbManager(_document_row()))
+        assert doc['pmid'] == '123'
+
+        doc = fetch_document_details(
+            9, _FakeDbManager(_document_row(source_name='medrxiv', source_id=1))
+        )
+        assert doc['pmid'] is None
+
+    def test_null_title_is_still_found(self):
+        """A NULL title used to raise inside a debug f-string -> None."""
+        from bmlibrarian.database import fetch_document_details
+        doc = fetch_document_details(9, _FakeDbManager(_document_row(title=None)))
+        assert doc is not None and doc['title'] is None
+
+    def test_missing_document_is_none(self):
+        from bmlibrarian.database import fetch_document_details
+        assert fetch_document_details(9, _FakeDbManager(None)) is None
+
+    def test_fetch_raises_but_get_returns_none_on_db_error(self, monkeypatch):
+        """Only the raising variant lets callers tell an outage from a miss."""
+        import bmlibrarian.database as database
+        failing = _FakeDbManager(error=RuntimeError("connection refused"))
+        with pytest.raises(RuntimeError):
+            database.fetch_document_details(9, failing)
+
+        monkeypatch.setattr(database, 'get_db_manager', lambda: failing)
+        assert database.get_document_details(9) is None
+
+    def test_postgres_backend_uses_own_connection_and_raises(self):
+        """The fact-checker backend queries self.db.db_manager and raises."""
+        from bmlibrarian.factchecker.db.postgresql_db import PostgreSQLFactCheckerDB
+        backend = PostgreSQLFactCheckerDB.__new__(PostgreSQLFactCheckerDB)
+        backend.db = MagicMock()
+        backend.db.db_manager = _FakeDbManager(_document_row())
+        assert backend.get_document_details(9)['pmid'] == '123'
+
+        backend.db.db_manager = _FakeDbManager(error=RuntimeError("down"))
+        with pytest.raises(RuntimeError):
+            backend.get_document_details(9)

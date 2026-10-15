@@ -295,7 +295,15 @@ Both button paths run them on a `QThread`:
   the GUI thread — receives the worker's signals, so its slots (progress
   dialog updates, `_finalize_discovery_result()` with its modal verification
   prompt, button/DB/cache updates) all run on the GUI thread. The factory keeps
-  each session referenced until its thread finishes.
+  each session referenced until its thread finishes, and `shutdown()` (also
+  connected to `QCoreApplication.aboutToQuit`) stops running sessions, since
+  destroying a running `QThread` aborts the process. Each click ends in a
+  `FindPdfOutcome`: the Find button shows its label and the reason as a
+  tooltip; a failed database write is reported as "⚠ Not Saved" rather than
+  "✓ Found".
+
+Note: the default FETCH handler still passes `prompt_on_mismatch=True` from
+the worker thread; see the known issue in `pdf_verification_system.md`.
 
 Rules for new code: worker callables must not touch widgets; receive worker
 signals on methods of a `QObject` that lives on the GUI thread, so the

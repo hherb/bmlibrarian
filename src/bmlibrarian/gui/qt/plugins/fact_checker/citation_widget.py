@@ -5,7 +5,7 @@ Displays citation cards using the standard CitationCard widget with data convers
 """
 
 import logging
-from typing import Optional, List, Dict, Any, Tuple
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt
 from pathlib import Path
@@ -20,11 +20,17 @@ from bmlibrarian.utils.pdf_manager import PDFManager
 
 # Import DPI-aware styling
 from ...resources.styles import get_font_scale
+from ...resources.styles.stylesheet_generator import get_stylesheet_generator
+from ...resources.styles.theme_colors import MaterialColors
+
+if TYPE_CHECKING:
+    from bmlibrarian.factchecker.db.abstract_db import AbstractFactCheckerDB
 
 logger = logging.getLogger(__name__)
 
-# Placeholder values the fact-checker uses for missing citation fields; a
-# field holding one of these is treated as missing and enriched from the DB.
+# Placeholder strings written for missing citation fields (by
+# merge_document_details below, and possibly present in older data); a field
+# holding one of these is treated as missing and enriched from the DB.
 CITATION_PLACEHOLDERS: Dict[str, Tuple[str, ...]] = {
     'abstract': ('No abstract', 'No abstract available'),
     'pmid': ('N/A',),
@@ -42,15 +48,34 @@ def _is_missing(citation: Dict[str, Any], field: str) -> bool:
 
 
 def citation_needs_enrichment(citation: Dict[str, Any]) -> bool:
-    """Return True if any displayable citation field is missing.
+    """Return True if any field in CITATION_PLACEHOLDERS is empty or a placeholder.
 
     Args:
         citation: Citation in fact-checker format
 
     Returns:
-        Whether database enrichment would fill something in
+        Whether a database lookup is worth attempting
     """
     return any(_is_missing(citation, field) for field in CITATION_PLACEHOLDERS)
+
+
+def identifier_or_none(citation: Dict[str, Any], field: str) -> Optional[str]:
+    """Return a citation identifier field, or None if it is missing.
+
+    Placeholders such as ``'N/A'`` are display text, not identifiers; passing
+    them on would make discovery resolve, and verification compare against, a
+    PMID or title that does not exist.
+
+    Args:
+        citation: Citation in fact-checker format
+        field: Field name (e.g. 'pmid', 'title', 'doi')
+
+    Returns:
+        The field's value as a string, or None if empty or a placeholder
+    """
+    if _is_missing(citation, field):
+        return None
+    return str(citation[field])
 
 
 def merge_document_details(
@@ -140,13 +165,18 @@ class CitationListWidget(QWidget):
         )
         self.layout.addWidget(self.empty_label)
 
-    def set_citations(self, citations: List[Dict[str, Any]], db=None):
+    def set_citations(
+        self,
+        citations: List[Dict[str, Any]],
+        db: Optional["AbstractFactCheckerDB"] = None
+    ) -> None:
         """
         Set the list of citations to display.
 
         Args:
             citations: List of citation dictionaries (fact-checker format)
-            db: Optional database connection for enriching citation data
+            db: Fact-checker database (AbstractFactCheckerDB) used to fill in
+                missing citation fields, or None
         """
         s = self.scale
 
@@ -168,20 +198,52 @@ class CitationListWidget(QWidget):
             )
             self.layout.addWidget(self.empty_label)
         else:
+            # Enrich first so a database problem can be reported above the cards
+            enrichment_failures = 0
+            enriched_citations = []
+            for citation in citations:
+                enriched, failed = self._enrich_citation(citation, db)
+                enriched_citations.append(enriched)
+                enrichment_failures += failed
+
+            if enrichment_failures:
+                self.layout.addWidget(
+                    self._create_enrichment_warning(enrichment_failures)
+                )
+
             # Create citation cards using document card factory
-            for index, citation in enumerate(citations, start=1):
-                # Enrich citation with database data if needed
-                enriched_citation = self._enrich_citation(citation, db)
-
-                # Convert to DocumentCardData format
+            for enriched_citation in enriched_citations:
                 card_data = self._convert_to_card_data(enriched_citation)
-
-                # Create and add card using factory
                 card = self.card_factory.create_card(card_data)
                 self.layout.addWidget(card)
 
             # Add stretch at the end
             self.layout.addStretch()
+
+    def _create_enrichment_warning(self, failure_count: int) -> QLabel:
+        """Create the notice shown when document details could not be loaded.
+
+        Without it, a database outage looks exactly like citations whose
+        documents have no abstract or authors.
+
+        Args:
+            failure_count: Number of citations whose details failed to load
+
+        Returns:
+            A word-wrapped warning label
+        """
+        label = QLabel(
+            f"⚠ Could not load document details for {failure_count} "
+            f"citation(s) from the database; showing the stored citation "
+            f"values. See the log for details."
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            get_stylesheet_generator().label_stylesheet(
+                color=MaterialColors.WARNING_800, bold=True
+            )
+        )
+        return label
 
     def _convert_to_card_data(self, citation: Dict[str, Any]) -> DocumentCardData:
         """
@@ -240,6 +302,8 @@ class CitationListWidget(QWidget):
         # Get PDF URL for download capability
         pdf_url = citation.get('pdf_url', '')
 
+        # Identifier fields feed PDF discovery and verification, so display
+        # placeholders such as 'N/A' must not reach them as data
         return DocumentCardData(
             doc_id=doc_id,
             title=citation.get('title', 'Untitled'),
@@ -247,15 +311,19 @@ class CitationListWidget(QWidget):
             journal=citation.get('journal', 'Unknown journal'),
             year=year,
             abstract=citation.get('abstract', 'No abstract available'),
-            pmid=citation.get('pmid', ''),
-            doi=citation.get('doi', ''),
+            pmid=identifier_or_none(citation, 'pmid'),
+            doi=identifier_or_none(citation, 'doi'),
             pdf_path=pdf_path,
             pdf_url=pdf_url,
             pdf_filename=citation.get('pdf_filename'),  # Relative path from database (e.g., "2022/paper.pdf")
             show_pdf_button=True  # Show PDF button if available
         )
 
-    def _enrich_citation(self, citation: Dict[str, Any], db) -> Dict[str, Any]:
+    def _enrich_citation(
+        self,
+        citation: Dict[str, Any],
+        db: Optional["AbstractFactCheckerDB"]
+    ) -> Tuple[Dict[str, Any], bool]:
         """
         Enrich citation with data from database if fields are missing.
 
@@ -269,25 +337,28 @@ class CitationListWidget(QWidget):
             db: Fact-checker database (AbstractFactCheckerDB) or None
 
         Returns:
-            Enriched citation dictionary (the input unchanged on failure)
+            ``(citation, failed)``: the enriched citation (the input unchanged
+            if nothing could be loaded) and whether the database lookup raised
         """
         doc_id = citation.get('document_id')
         if not db or doc_id is None or not citation_needs_enrichment(citation):
-            return citation
+            return citation, False
 
         try:
             details = db.get_document_details(doc_id)
         except Exception as e:
-            logger.warning(
+            logger.error(
                 f"Failed to enrich citation for document {doc_id} from database: {e}",
                 exc_info=True
             )
-            return citation
+            return citation, True
 
         if not details:
-            logger.debug(f"Document {doc_id} not found while enriching citation")
-            return citation
-        return merge_document_details(citation, details)
+            # A citation pointing at a nonexistent document is a data-integrity
+            # problem, not routine
+            logger.warning(f"Document {doc_id} not found while enriching citation")
+            return citation, False
+        return merge_document_details(citation, details), False
 
     def clear(self):
         """Clear all citations."""
