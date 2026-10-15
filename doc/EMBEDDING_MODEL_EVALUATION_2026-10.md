@@ -17,7 +17,11 @@ quality?
 - **No re-embedding is needed.** Production vectors (Ollama
   `snowflake-arctic-embed2`) match the benchmarked HuggingFace model: median
   cosine 0.9985 on 20 random production chunks. The existing 37.5 M vectors
-  can be truncated and re-normalised in place.
+  can be truncated and re-normalised in place. *(Superseded 2026-10-15: the
+  owner decided to re-embed everything from the clean Phase A import instead,
+  because the legacy downloads behind these vectors are untrusted. The
+  dimension finding, 256 d, stands; see
+  `doc/planning/rust/implementation_plan.md`.)*
 
 Run date: 2026-10-12. Tools: `benchmarks/embedding_dimension/run_benchmark.py`
 and `build_bmlibrarian_eval.py` (see `doc/users/embedding_dimension_benchmark.md`).
@@ -330,8 +334,10 @@ both BEIR collections too: −0.009 on SciFact and −0.007 on NFCorpus.
    lower CI bound stays inside the 0.02 margin. Vector storage drops 4×. If
    that point matters, 512 d is the fallback at 2× savings (−0.003 to −0.012;
    inconclusive on SciFact, non-inferior elsewhere).
-3. **No re-embedding**: truncate and re-normalise the existing vectors (see
-   Storage and migration notes in Part 2). Queries get the same treatment.
+3. ~~**No re-embedding**: truncate and re-normalise the existing vectors (see
+   Storage and migration notes in Part 2).~~ *Superseded 2026-10-15: all
+   vectors are re-embedded from the clean import, Matryoshka-truncated to
+   256 d.* Queries get the same treatment.
 4. **Before switching search over:** on `bmlibrarian_dev`, compare top-100
    results of HNSW@256 against exact search@1024 for a batch of real queries.
    Truncation loss and HNSW approximation stack, and the scoring agent depends

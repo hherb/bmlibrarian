@@ -249,7 +249,7 @@ the column, 033 is a no-op.
 While pytest is loaded, `MigrationManager.apply_pending_migrations()`,
 `initialize_database()` and `mark_migration_applied()` raise
 `ProtectedDatabaseError` for a protected database: every database whose name
-does not mark it as dev/test (`knowledgebase`, the PG18 `bmlibrarian`, …; see
+does not mark it as dev/test (`knowledgebase`, a production `bmlibrarian`, …; see
 `doc/developers/test_database_guard.md`). `DatabaseManager` skips its
 auto-migration there, and both managers open their connections read-only
 (`bmlibrarian.db_test_guard`). Point tests that need a writable database at a

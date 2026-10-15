@@ -104,7 +104,7 @@ Since this project uses `uv` for package management:
   - `uv run python pubmed_bulk_cli.py import --type baseline` - Import downloaded baseline files into database (with Markdown abstract formatting); resumable (re-run continues, `ingest.ledger`), `--workers N` (default 8), `--import-profile` borrows server RAM during the import and restores settings afterwards
   - `uv run python pubmed_bulk_cli.py profile status|apply|restore` - Inspect/recover the server import profile
   - `uv run python pubmed_bulk_cli.py backfill-withdrawals [--type update|baseline|all]` - Mark PubMed-withdrawn records (DeleteCitation) from already-imported files; withdrawn records are kept but excluded from searches (`document.withdrawn_date`); prints records newly marked, exits non-zero if any file was unreadable
-  - `BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18 uv run python ...` - Select the database env file explicitly (no silent fallback)
+  - `BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18_dev uv run python ...` - Select the database env file explicitly (no silent fallback); the clean PG18 PubMed import is `bmlibrarian_dev` on :5532 (the old PG18 `bmlibrarian` was dropped 2026-10-15)
   - `uv run python pubmed_bulk_cli.py sync --updates-only` - Download and import PubMed updates (incremental sync)
   - `uv run python pubmed_bulk_cli.py status` - Show PubMed bulk download/import status
   - `uv run python pubmed_repair_cli.py scan` - Scan downloaded PubMed files for gzip corruption
@@ -799,7 +799,7 @@ bmlibrarian/
 - **CRITICAL**: Never modify or drop the production database "knowledgebase"
 - **Development**: Use "bmlibrarian_dev" database for testing/migration experiments
 - **Production Access**: Read-only access unless explicitly instructed otherwise
-- **Test guard**: under pytest, every database whose name doesn't mark it as dev/test (allow-list: a `dev`/`test*` name token, or `BMLIBRARIAN_TEST_ALLOWED_DATABASES`) is protected — `knowledgebase` and PG18 `bmlibrarian` included: no migrations, read-only `DatabaseManager`/`MigrationManager` connections (`db_test_guard.py`, see `doc/developers/test_database_guard.md`; direct `psycopg.connect()` callers are not covered); tests needing writes use a dev DB via `BMLIBRARIAN_TEST_DB_ENV` / `BMLIBRARIAN_ENV_FILE`
+- **Test guard**: under pytest, every database whose name doesn't mark it as dev/test (allow-list: a `dev`/`test*` name token, or `BMLIBRARIAN_TEST_ALLOWED_DATABASES`) is protected — e.g. `knowledgebase` or a production `bmlibrarian`: no migrations, read-only `DatabaseManager`/`MigrationManager` connections (`db_test_guard.py`, see `doc/developers/test_database_guard.md`; direct `psycopg.connect()` callers are not covered); tests needing writes use a dev DB via `BMLIBRARIAN_TEST_DB_ENV` / `BMLIBRARIAN_ENV_FILE`
 - **Data Integrity**: All document IDs are programmatically verified to prevent hallucination
 
 ### Code Quality Standards

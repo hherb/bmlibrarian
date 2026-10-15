@@ -5,6 +5,11 @@ Status: **exploration**, started 2026-10-12. The resulting plan:
 completed on 2026-10-12; see [Phase 0 results](#phase-0-results-2026-10-12)
 and `spikes/*/FINDINGS.md`.
 
+> **Superseded 2026-10-15:** the existing 37.5 M vectors are **not** reused or
+> truncated. All vectors are embedded from scratch from the clean Phase A
+> import (legacy downloads had corruption and formatting problems), still at
+> 256 d. See `implementation_plan.md` §0, §3.3 and Phase C.
+
 ## Goal
 
 A from-scratch Rust implementation of BMLibrarian, built on the Rust port of
