@@ -14,7 +14,7 @@ off new work. Longer-term structural items live in
   on `fix/p1-gui-correctness`): flet 1.0 runs sync handlers on the event
   loop (0.28 used a thread pool), makes dialogs/FilePicker async services
   and splits Tabs — a behavioural rewrite of ~25k lines, while every Flet
-  app had a Qt plugin equivalent. Owner chose to retire Flet. Deleted
+  app except the Citation lab had a Qt plugin equivalent. Owner chose to retire Flet. Deleted
   `gui/flet/`, `factchecker/gui/`, the `gui/*.py` shims, the Flet labs and
   `bmlibrarian_research_gui.py`; dropped `flet` (24 packages, incl.
   oauthlib). Kept/relocated: `gui/document_card_factory_base.py`,
@@ -27,6 +27,13 @@ off new work. Longer-term structural items live in
   `paper_weight_lab` "find full text" now runs on `PDFDiscoveryWorker`
   too. Remaining Flet-only features → ROADMAP §1 — notably multi-model
   query generation, whose only caller was the Flet workflow, is now unwired.
+  Review follow-ups (PR #277): `--blind` really hides the AI/original
+  columns (they were only greyed out — rerun any blind annotation done with
+  the Qt tab before this fix); incremental "all annotated" is a finished
+  state; "n/a" is never written (it violated the CHECK constraint); unknown
+  `--user` names must be confirmed; "unclear" option added;
+  `standalone.py` runs plugin `cleanup()` on quit; `tests/test_no_flet.py`
+  guards against flet or deleted-module imports coming back.
 - **P1 GUI batch + Qt/Flet decoupling** (2026-10-16, branch
   `fix/p1-gui-correctness`): dependabot's oauthlib 4 bump (#267) dragged
   `flet` 0.28.3 → 1.0.3, and `bmlibrarian/gui/__init__.py` eagerly imported
@@ -45,7 +52,14 @@ off new work. Longer-term structural items live in
   replaces a query on a non-existent `pdf_filename` column), and
   `database.get_document_details` derives `pmid` via the pure
   `extract_pmid(external_id, source_name)` — numeric ids from non-PubMed
-  sources are no longer reported as PMIDs.
+  sources are no longer reported as PMIDs. Review follow-ups (PR #276):
+  `_finalize_discovery_result` returns a `FindPdfOutcome` (real reason
+  shown; failed DB write → "Not Saved"); `QtDocumentCardFactory.shutdown()`
+  stops discovery threads on quit; `fetch_document_details()` raises on DB
+  errors so citation enrichment can report an outage. Pre-existing issues
+  filed: #278 (FETCH verification prompt on a worker thread), #279
+  (CrossRef DOI written before verification), #280 (review packages assume
+  PubMed is source id 1).
 
 - **P1 backend correctness batch** (2026-10-15, PR #272): parameterised
   source filters, per-document guards in counterfactual + transparency
