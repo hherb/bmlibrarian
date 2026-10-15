@@ -10,7 +10,7 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **P1 backend correctness batch** (2026-10-15, branch
+- **P1 backend correctness batch** (2026-10-15, PR #272, branch
   `fix/p1-backend-correctness`): six items from the 2026-07-19 review.
   `database.py` BM25/fulltext search now bind source ids via the pure
   `build_source_filter_clause()` (one `ANY(%s)` array param);
