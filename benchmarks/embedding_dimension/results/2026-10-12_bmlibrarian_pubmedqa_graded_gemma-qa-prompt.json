@@ -1,0 +1,223 @@
+{
+  "config": {
+    "models": [
+      {
+        "label": "arctic",
+        "model_id": "Snowflake/snowflake-arctic-embed-l-v2.0"
+      },
+      {
+        "label": "gemma2",
+        "model_id": "google/embeddinggemma-2"
+      }
+    ],
+    "datasets": [
+      "custom:eval"
+    ],
+    "dims": [
+      1024,
+      768,
+      512,
+      256,
+      128
+    ],
+    "baseline": "arctic@native",
+    "margin": 0.02,
+    "bootstrap_resamples": 10000,
+    "seed": 42,
+    "max_docs": 0,
+    "max_seq_length": null
+  },
+  "prompts": {
+    "arctic": {
+      "query": "model prompt 'query': 'query: '",
+      "document": "none"
+    },
+    "gemma2": {
+      "query": "explicit prefix: 'task: question answering | query: '",
+      "document": "model prompt 'document': 'title: none | text: '"
+    }
+  },
+  "document_encode_seconds": {
+    "arctic": {
+      "custom:eval": 0.0
+    },
+    "gemma2": {
+      "custom:eval": 0.0
+    }
+  },
+  "failures": [],
+  "results": [
+    {
+      "dataset": "custom:eval",
+      "model": "arctic",
+      "dim": 1024,
+      "metrics": {
+        "ndcg@10": 0.8383753625872093,
+        "recall@10": 0.6910621037338879,
+        "recall@100": 0.9984371908184407,
+        "mrr@10": 0.9622277777777778
+      },
+      "delta_ndcg10": null,
+      "verdict": "baseline"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "arctic",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.8349030955862526,
+        "recall@10": 0.687546467130794,
+        "recall@100": 0.9984371908184407,
+        "mrr@10": 0.9583333333333333
+      },
+      "delta_ndcg10": {
+        "mean": -0.0034722670009566096,
+        "ci_low": -0.005843143405774377,
+        "ci_high": -0.0011314633184486874,
+        "n_queries": 1000
+      },
+      "verdict": "non-inferior"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "arctic",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.8349562913727676,
+        "recall@10": 0.6879852324819132,
+        "recall@100": 0.9984371908184407,
+        "mrr@10": 0.9584000000000001
+      },
+      "delta_ndcg10": {
+        "mean": -0.0034190712144416555,
+        "ci_low": -0.005981603140932977,
+        "ci_high": -0.00094164584291785,
+        "n_queries": 1000
+      },
+      "verdict": "non-inferior"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "arctic",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.8334666894522105,
+        "recall@10": 0.6880767663279009,
+        "recall@100": 0.9984371908184407,
+        "mrr@10": 0.9589678571428571
+      },
+      "delta_ndcg10": {
+        "mean": -0.004908673134998804,
+        "ci_low": -0.007727903903247367,
+        "ci_high": -0.002153668340298373,
+        "n_queries": 1000
+      },
+      "verdict": "non-inferior"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "arctic",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.8177716165021647,
+        "recall@10": 0.6755948646263196,
+        "recall@100": 0.9963201826152913,
+        "mrr@10": 0.9471499999999998
+      },
+      "delta_ndcg10": {
+        "mean": -0.020603746085044655,
+        "ci_low": -0.02615326067809192,
+        "ci_high": -0.015171932047696717,
+        "n_queries": 1000
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "gemma2",
+      "dim": 768,
+      "metrics": {
+        "ndcg@10": 0.81682856902957,
+        "recall@10": 0.6733012034537103,
+        "recall@100": 0.9968085014221373,
+        "mrr@10": 0.9548984126984127
+      },
+      "delta_ndcg10": {
+        "mean": -0.021546793557639367,
+        "ci_low": -0.028458041285927372,
+        "ci_high": -0.014684710571497506,
+        "n_queries": 1000
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "gemma2",
+      "dim": 512,
+      "metrics": {
+        "ndcg@10": 0.8130898823451943,
+        "recall@10": 0.6693509026454161,
+        "recall@100": 0.996304378196211,
+        "mrr@10": 0.9500857142857142
+      },
+      "delta_ndcg10": {
+        "mean": -0.025285480242015042,
+        "ci_low": -0.03244031280828317,
+        "ci_high": -0.01822369194558585,
+        "n_queries": 1000
+      },
+      "verdict": "inconclusive"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "gemma2",
+      "dim": 256,
+      "metrics": {
+        "ndcg@10": 0.803447944954627,
+        "recall@10": 0.6607274584801712,
+        "recall@100": 0.9938579927519884,
+        "mrr@10": 0.9446011904761905
+      },
+      "delta_ndcg10": {
+        "mean": -0.034927417632582405,
+        "ci_low": -0.04256634818526061,
+        "ci_high": -0.027329141719513044,
+        "n_queries": 1000
+      },
+      "verdict": "worse"
+    },
+    {
+      "dataset": "custom:eval",
+      "model": "gemma2",
+      "dim": 128,
+      "metrics": {
+        "ndcg@10": 0.7769484640838493,
+        "recall@10": 0.6414420128402291,
+        "recall@100": 0.9761495546448137,
+        "mrr@10": 0.9266373015873016
+      },
+      "delta_ndcg10": {
+        "mean": -0.06142689850335998,
+        "ci_low": -0.07033641791294881,
+        "ci_high": -0.05281187209849623,
+        "n_queries": 1000
+      },
+      "verdict": "worse"
+    }
+  ],
+  "macro_ndcg10": {
+    "arctic": {
+      "1024": 0.8383753625872093,
+      "768": 0.8349030955862526,
+      "512": 0.8349562913727676,
+      "256": 0.8334666894522105,
+      "128": 0.8177716165021647
+    },
+    "gemma2": {
+      "768": 0.81682856902957,
+      "512": 0.8130898823451943,
+      "256": 0.803447944954627,
+      "128": 0.7769484640838493
+    }
+  }
+}

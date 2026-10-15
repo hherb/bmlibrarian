@@ -10,21 +10,15 @@ from datetime import date
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
-from dotenv import load_dotenv
 from pathlib import Path
 
 from bmlibrarian.db_conninfo import build_conninfo
+from bmlibrarian.env_loader import load_bmlibrarian_env
 
-# Load environment variables from .env file
-# Check ~/.bmlibrarian/.env first (primary user configuration location),
-# then fall back to .env in current directory (for development convenience)
-# IMPORTANT: Use override=True to ensure user config takes precedence
-# over project-local .env or shell environment variables
-_user_env_path = Path.home() / ".bmlibrarian" / ".env"
-if _user_env_path.exists():
-    load_dotenv(_user_env_path, override=True)
-else:
-    load_dotenv()  # Fallback to current directory .env
+# Load environment variables: the file named by BMLIBRARIAN_ENV_FILE if set
+# (e.g. ~/.bmlibrarian/.env_pg18), else ~/.bmlibrarian/.env, else ./.env.
+# override=True: the user configuration takes precedence over the shell.
+load_bmlibrarian_env(override=True)
 
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
@@ -39,7 +33,12 @@ class DatabaseManager:
     _source_id_caches: Dict[str, Dict[int, str]] = {}
     _source_ids_by_conninfo: Dict[str, Dict[str, Union[int, List[int]]]] = {}
     
-    def __init__(self, auto_migrate: bool = True, dry_run_migrations: bool = False):
+    def __init__(
+        self,
+        auto_migrate: bool = True,
+        dry_run_migrations: bool = False,
+        conninfo: Optional[str] = None,
+    ):
         """Initialize the database manager with connection pool.
 
         Args:
@@ -47,15 +46,27 @@ class DatabaseManager:
                          Set to False for testing or when migrations should be handled manually.
             dry_run_migrations: If True, only show what migrations would be applied
                                without making changes. Requires auto_migrate=True.
+            conninfo: Explicit libpq connection string. When given, the POSTGRES_*
+                      environment is ignored for the pool -- used to hand a worker
+                      process exactly the parent's database. Migrations still read
+                      the environment, so pass auto_migrate=False with it.
         """
         self._pool: Optional[ConnectionPool] = None
-        self._init_pool()
+        self._init_pool(conninfo)
         if auto_migrate:
             self._apply_pending_migrations(dry_run=dry_run_migrations)
         self._cache_source_ids()
     
-    def _init_pool(self):
-        """Initialize the connection pool using environment variables."""
+    @property
+    def conninfo(self) -> str:
+        """The libpq connection string of this manager's pool."""
+        return self._conninfo
+
+    def _init_pool(self, conninfo: Optional[str] = None):
+        """Initialize the connection pool from ``conninfo`` or environment variables."""
+        if conninfo is not None:
+            self._open_pool(conninfo)
+            return
         # Get database configuration from environment
         db_config = {
             "host": os.getenv("POSTGRES_HOST", "localhost"),
@@ -73,8 +84,10 @@ class DatabaseManager:
         
         # Create connection string via the shared escaping helper (never
         # concatenate — a password/host with a space or quote would break it).
-        conninfo = build_conninfo(**db_config)
+        self._open_pool(build_conninfo(**db_config))
 
+    def _open_pool(self, conninfo: str):
+        """Open the connection pool for ``conninfo`` and warm it up."""
         # Retain the conninfo to key the per-database source-ID caches.
         self._conninfo = conninfo
 

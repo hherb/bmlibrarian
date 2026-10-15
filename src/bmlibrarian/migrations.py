@@ -38,14 +38,10 @@ class MigrationManager:
             MigrationManager instance or None if credentials missing
         """
         try:
-            from dotenv import load_dotenv
-            # Check ~/.bmlibrarian/.env first (primary user configuration location),
-            # then fall back to .env in current directory (for development convenience)
-            user_env_path = Path.home() / ".bmlibrarian" / ".env"
-            if user_env_path.exists():
-                load_dotenv(user_env_path)
-            else:
-                load_dotenv()
+            from bmlibrarian.env_loader import load_bmlibrarian_env
+            # Same file selection as bmlibrarian.database (BMLIBRARIAN_ENV_FILE,
+            # else ~/.bmlibrarian/.env, else ./.env); existing values are kept.
+            load_bmlibrarian_env(override=False)
 
             user = os.getenv("POSTGRES_USER")
             password = os.getenv("POSTGRES_PASSWORD")

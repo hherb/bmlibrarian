@@ -51,12 +51,8 @@ class PDFManager:
             # Read from environment
             # Check ~/.bmlibrarian/.env first (primary user configuration location),
             # then fall back to .env in current directory (for development convenience)
-            from dotenv import load_dotenv
-            user_env_path = Path.home() / ".bmlibrarian" / ".env"
-            if user_env_path.exists():
-                load_dotenv(user_env_path)
-            else:
-                load_dotenv()
+            from bmlibrarian.env_loader import load_bmlibrarian_env
+            load_bmlibrarian_env(override=False)
             base_dir = os.getenv('PDF_BASE_DIR', '~/knowledgebase/pdf')
 
         self.base_dir = Path(base_dir).expanduser()
