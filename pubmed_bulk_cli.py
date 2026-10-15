@@ -3,7 +3,7 @@
 PubMed Bulk Import CLI for BMLibrarian
 
 Command-line interface for downloading and importing complete PubMed baseline
-and update files via FTP. This tool enables maintaining a complete local PubMed
+and update files (over HTTPS, MD5-verified, resumable). This tool enables maintaining a complete local PubMed
 mirror with offline capability.
 
 Usage:
@@ -28,10 +28,66 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
+from contextlib import nullcontext
+from typing import Dict, Optional
+
 from src.bmlibrarian.importers.pubmed_bulk_importer import PubMedBulkImporter, DownloadTracker
+from bmlibrarian.database import close_database
+from bmlibrarian.db_conninfo import build_conninfo
+from bmlibrarian.db_import_profile import ImportProfile, import_profile
+
+# Parallel import processes. 8 measured 3.5x faster than 1 on an M3 Max with
+# PostgreSQL 18 (Phase A, 2026-10-13); capped by the CPU count.
+DEFAULT_IMPORT_WORKERS = max(1, min(8, (os.cpu_count() or 1)))
+
+
+def current_conninfo() -> str:
+    """libpq connection string from the selected env file (BMLIBRARIAN_ENV_FILE or ~/.bmlibrarian/.env)."""
+    return build_conninfo(
+        host=os.getenv("POSTGRES_HOST", "localhost"), port=os.getenv("POSTGRES_PORT", "5432"),
+        user=os.getenv("POSTGRES_USER"), password=os.getenv("POSTGRES_PASSWORD"),
+        dbname=os.getenv("POSTGRES_DB", "knowledgebase"))
+
+
+def run_import(args, file_type: Optional[str]) -> Dict:
+    """Import downloaded files, optionally inside the server import profile.
+
+    The profile restarts the server on apply and restore, so the importer's
+    connection pool is opened inside the profile and closed before it ends.
+    """
+    profile = import_profile(current_conninfo(), force=args.force_profile) if args.import_profile else nullcontext()
+    with profile:
+        importer = PubMedBulkImporter(data_dir=args.data_dir, use_tracking=not args.no_tracking)
+        try:
+            return importer.import_all_files(file_type=file_type, workers=args.workers)
+        finally:
+            if args.import_profile:
+                importer.db_manager.close()
+                close_database()
+
+
+def cmd_profile(args) -> int:
+    """Show, apply or restore the server import profile (manual control and recovery)."""
+    controller = ImportProfile.for_server(current_conninfo())
+    if args.profile_action == "status":
+        print(f"Import profile active: {controller.is_active} (state file: {controller.state_file})")
+    elif args.profile_action == "apply":
+        print(controller.apply(force=args.force))
+    else:
+        print(controller.restore())
+    return 0
+
+
+def positive_int(value: str) -> int:
+    """argparse type: an integer >= 1."""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {number}")
+    return number
 
 
 def setup_logging(verbose: bool = False):
@@ -134,22 +190,18 @@ def cmd_import(args):
         print(f"Import type: {args.type}")
     else:
         print("Import type: All (baseline + updates)")
-    print(f"Batch size: {args.batch_size}")
+    print(f"Workers: {args.workers}")
     print("=" * 70)
 
     try:
-        importer = PubMedBulkImporter(
-            data_dir=args.data_dir,
-            use_tracking=not args.no_tracking
-        )
-
         print("\nStarting import...")
-        stats = importer.import_all_files(file_type=args.type)
+        stats = run_import(args, args.type)
 
         print("\n" + "=" * 70)
         print("Import Complete!")
         print("=" * 70)
         print(f"Files processed: {stats['files_processed']}")
+        print(f"Files skipped (already imported): {stats.get('files_skipped', 0)}")
         print(f"Total articles: {stats['total_articles']}")
         print(f"Errors: {stats['total_errors']}")
         print("=" * 70)
@@ -307,7 +359,13 @@ def cmd_sync(args):
         elif args.updates_only:
             import_type = 'update'
 
-        stats = importer.import_all_files(file_type=import_type)
+        if args.import_profile:
+            # The profile restarts the server: release the download-phase pool first.
+            importer.db_manager.close()
+            close_database()
+            stats = run_import(args, import_type)
+        else:
+            stats = importer.import_all_files(file_type=import_type, workers=args.workers)
 
         print("\n" + "=" * 70)
         print("Sync Complete!")
@@ -324,8 +382,8 @@ def cmd_sync(args):
         return 1
 
 
-def main():
-    """Main entry point for the CLI."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description='PubMed bulk download and import for complete local mirror',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -391,10 +449,22 @@ def main():
         help='Import only specific file type'
     )
     import_parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=100,
-        help='Articles per database batch (default: 100)'
+        '--workers',
+        type=positive_int,
+        default=DEFAULT_IMPORT_WORKERS,
+        help=f'Parallel import processes; each file is one resumable transaction '
+             f'(default: {DEFAULT_IMPORT_WORKERS})'
+    )
+    import_parser.add_argument(
+        '--import-profile',
+        action='store_true',
+        help='Borrow RAM for the import: apply the server import profile (restarts the server) '
+             'and restore the day-to-day settings afterwards'
+    )
+    import_parser.add_argument(
+        '--force-profile',
+        action='store_true',
+        help='Apply the import profile even if other client sessions are connected'
     )
 
     # Status command
@@ -433,7 +503,39 @@ def main():
         action='store_true',
         help='Skip confirmation prompts'
     )
+    sync_parser.add_argument(
+        '--workers',
+        type=positive_int,
+        default=DEFAULT_IMPORT_WORKERS,
+        help=f'Parallel import processes (default: {DEFAULT_IMPORT_WORKERS})'
+    )
+    sync_parser.add_argument(
+        '--import-profile',
+        action='store_true',
+        help='Borrow RAM for the import: apply the server import profile (restarts the server) '
+             'and restore the day-to-day settings afterwards'
+    )
+    sync_parser.add_argument(
+        '--force-profile',
+        action='store_true',
+        help='Apply the import profile even if other client sessions are connected'
+    )
 
+    # Import-profile command (manual control / recovery after an abandoned import)
+    profile_parser = subparsers.add_parser(
+        'profile',
+        help='Show, apply or restore the server import profile'
+    )
+    profile_parser.add_argument('profile_action', choices=['status', 'apply', 'restore'])
+    profile_parser.add_argument('--force', action='store_true',
+                                help='apply: even if other client sessions are connected')
+
+    return parser
+
+
+def main():
+    """Main entry point for the CLI."""
+    parser = build_parser()
     args = parser.parse_args()
 
     # Setup logging
@@ -453,6 +555,8 @@ def main():
         return cmd_status(args)
     elif args.command == 'sync':
         return cmd_sync(args)
+    elif args.command == 'profile':
+        return cmd_profile(args)
     else:
         parser.print_help()
         return 1

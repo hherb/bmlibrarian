@@ -1,0 +1,7 @@
+{"run": "parse-python-1", "result": {"variant": "python-parse", "files": 8, "workers": 1, "articles": 240000, "seconds": 87.92, "articles_per_s": 2729.8}, "checksum": }
+{"run": "parse-rust-1", "result": {"variant": "rust-parse", "files": 8, "workers": 1, "articles": 240000, "parse_errors": 0, "seconds": 14.09, "articles_per_s": 17034.1}, "checksum": }
+{"run": "parse-rust-4", "result": {"variant": "rust-parse", "files": 8, "workers": 4, "articles": 240000, "parse_errors": 0, "seconds": 5.77, "articles_per_s": 41582.0}, "checksum": }
+{"run": "parse-rust-8", "result": {"variant": "rust-parse", "files": 8, "workers": 8, "articles": 240000, "parse_errors": 0, "seconds": 2.53, "articles_per_s": 94921.8}, "checksum": }
+{"run": "parse-rust-12", "result": {"variant": "rust-parse", "files": 8, "workers": 12, "articles": 240000, "parse_errors": 0, "seconds": 2.40, "articles_per_s": 99940.4}, "checksum": }
+{"run": "p1-cold", "result": {"variant": "python-p1", "files": 8, "workers": 1, "articles": 240000, "seconds": 213.79, "articles_per_s": 1122.6}, "checksum": {"docs": 239916, "doc_md5": "ed7fdcefbc32b45c453106339f2f67cc", "meta": 239916, "meta_md5": "1b4eae6c26969fd8bb3fba7b320dba31"}}
+{"run": "p1-warm", "result": {"variant": "python-p1", "files": 8, "workers": 1, "articles": 240000, "seconds": 233.55, "articles_per_s": 1027.6}, "checksum": {"docs": 239916, "doc_md5": "ed7fdcefbc32b45c453106339f2f67cc", "meta": 239916, "meta_md5": "1b4eae6c26969fd8bb3fba7b320dba31"}}

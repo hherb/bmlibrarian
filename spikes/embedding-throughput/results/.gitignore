@@ -1,0 +1,3 @@
+# Large/regenerable outputs: embeddings and the text sample (PubMed abstracts)
+*.npy
+texts.jsonl

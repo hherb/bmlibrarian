@@ -35,6 +35,29 @@ bmlibrarian_config.json  # In current working directory
 
 **Priority**: Primary location takes precedence over legacy fallback.
 
+### Database Environment File (`.env`)
+
+Database connection settings (`POSTGRES_HOST`, `POSTGRES_PORT`,
+`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`) and `PDF_BASE_DIR` come
+from an environment file:
+
+1. the file named by **`BMLIBRARIAN_ENV_FILE`**, if that variable is set;
+2. otherwise `~/.bmlibrarian/.env`;
+3. otherwise a `.env` in the current directory.
+
+The selected file's values take precedence over variables already set in your
+shell. To work against a different database, name its file explicitly:
+
+```bash
+# PostgreSQL 18 server (e.g. Postgres.app on port 5532)
+BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18 uv run python pubmed_bulk_cli.py status
+```
+
+If `BMLIBRARIAN_ENV_FILE` names a file that does not exist, BMLibrarian stops
+with an error instead of falling back to `~/.bmlibrarian/.env`, because a
+silent fallback would connect to whatever database that file names. Keep env
+files readable only by you (`chmod 600`).
+
 ## Initial Configuration Setup
 
 ### Prerequisites

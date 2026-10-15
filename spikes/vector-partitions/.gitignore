@@ -1,0 +1,2 @@
+# Regenerable: production vectors and query embeddings
+*.npy

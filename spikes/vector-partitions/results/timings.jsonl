@@ -1,0 +1,127 @@
+{"step": "queries", "queries": 300}
+{"step": "extract", "vectors": 5000000, "seconds": 161.1}
+{"step": "load-emb", "pgvector": "0.8.6", "rows": 5000000, "seconds": 20.2}
+{"step": "load-emb_half", "pgvector": "0.8.6", "rows": 5000000, "seconds": 11.6}
+{"step": "build-partition", "table": "emb", "partition": "emb_p0", "seconds": 101.8, "index_size": "1302 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb", "partition": "emb_p1", "seconds": 104.3, "index_size": "1302 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb", "partition": "emb_p2", "seconds": 105.6, "index_size": "1302 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb", "partition": "emb_p3", "seconds": 106.5, "index_size": "1302 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb", "partition": "emb_p4", "seconds": 105.1, "index_size": "1302 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb_half", "partition": "emb_half_p0", "seconds": 86.9, "index_size": "794 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb_half", "partition": "emb_half_p1", "seconds": 87.7, "index_size": "793 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb_half", "partition": "emb_half_p2", "seconds": 94.3, "index_size": "793 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb_half", "partition": "emb_half_p3", "seconds": 91.9, "index_size": "794 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-partition", "table": "emb_half", "partition": "emb_half_p4", "seconds": 90.1, "index_size": "793 MB", "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "build-whole", "rows": 5000000, "seconds": 550.9, "maintenance_work_mem": "8GB", "workers": 8}
+{"step": "recall", "table": "emb", "ef_search": 40, "recall@10": 0.9307, "recall@100": 0.8887, "p50_ms": 58.7, "p95_ms": 213.6, "plan": "Limit  (cost=2737.63..2984.32 rows=100 width=16) / ->  Merge Append  (cost=2737.63..12337584.03 rows=5000103 width=16) / Sort Key: ((emb.embedding <=> '[0.005608942,-0.0270477,-0.03994894,-0.03130985,"}
+{"step": "recall", "table": "emb", "ef_search": 100, "recall@10": 0.9693, "recall@100": 0.95, "p50_ms": 26.9, "p95_ms": 43.6, "plan": "Limit  (cost=5489.76..5736.40 rows=100 width=16) / ->  Merge Append  (cost=5489.76..12337584.03 rows=5000103 width=16) / Sort Key: ((emb.embedding <=> '[0.005608942,-0.0270477,-0.03994894,-0.03130985,"}
+{"step": "recall", "table": "emb", "ef_search": 200, "recall@10": 0.9817, "recall@100": 0.9728, "p50_ms": 39.2, "p95_ms": 54.4, "plan": "Limit  (cost=9602.90..9849.46 rows=100 width=16) / ->  Merge Append  (cost=9602.90..12337584.03 rows=5000103 width=16) / Sort Key: ((emb.embedding <=> '[0.005608942,-0.0270477,-0.03994894,-0.03130985,"}
+{"step": "recall", "table": "emb", "ef_search": 400, "recall@10": 0.991, "recall@100": 0.987, "p50_ms": 69.5, "p95_ms": 91.2, "plan": "Limit  (cost=17128.71..17375.11 rows=100 width=16) / ->  Merge Append  (cost=17128.71..12337584.03 rows=5000103 width=16) / Sort Key: ((emb.embedding <=> '[0.005608942,-0.0270477,-0.03994894,-0.031309"}
+{"step": "recall", "table": "emb_half", "ef_search": 40, "recall@10": 0.9323, "recall@100": 0.8934, "p50_ms": 19.1, "p95_ms": 25.1, "plan": "Limit  (cost=1680.17..1753.01 rows=100 width=16) / ->  Merge Append  (cost=1680.17..3644040.26 rows=5000000 width=16) / Sort Key: ((emb_half.embedding <=> '[0.005607605,-0.027053833,-0.03994751,-0.031"}
+{"step": "recall", "table": "emb_half", "ef_search": 100, "recall@10": 0.9653, "recall@100": 0.9507, "p50_ms": 20.2, "p95_ms": 29.3, "plan": "Limit  (cost=3369.21..3442.02 rows=100 width=16) / ->  Merge Append  (cost=3369.21..3644040.26 rows=5000000 width=16) / Sort Key: ((emb_half.embedding <=> '[0.005607605,-0.027053833,-0.03994751,-0.031"}
+{"step": "recall", "table": "emb_half", "ef_search": 200, "recall@10": 0.9807, "recall@100": 0.9731, "p50_ms": 35.5, "p95_ms": 48.2, "plan": "Limit  (cost=5893.54..5966.30 rows=100 width=16) / ->  Merge Append  (cost=5893.54..3644040.26 rows=5000000 width=16) / Sort Key: ((emb_half.embedding <=> '[0.005607605,-0.027053833,-0.03994751,-0.031"}
+{"step": "recall", "table": "emb_half", "ef_search": 400, "recall@10": 0.9927, "recall@100": 0.9874, "p50_ms": 62.7, "p95_ms": 85.3, "plan": "Limit  (cost=10512.29..10584.96 rows=100 width=16) / ->  Merge Append  (cost=10512.29..3644040.26 rows=5000000 width=16) / Sort Key: ((emb_half.embedding <=> '[0.005607605,-0.027053833,-0.03994751,-0."}
+{"step": "recall", "table": "emb_whole", "ef_search": 40, "recall@10": 0.8663, "recall@100": 0.3708, "p50_ms": 6.1, "p95_ms": 9.4, "plan": "Limit  (cost=616.98..954.06 rows=100 width=16) / ->  Index Scan using emb_whole_hnsw on emb_whole  (cost=616.98..16854476.00 rows=5000000 width=16) / Order By: (embedding <=> '[0.005608942,-0.0270477,"}
+{"step": "recall", "table": "emb_whole", "ef_search": 100, "recall@10": 0.9383, "recall@100": 0.8736, "p50_ms": 9.3, "p95_ms": 14.4, "plan": "Limit  (cost=1231.45..1568.52 rows=100 width=16) / ->  Index Scan using emb_whole_hnsw on emb_whole  (cost=1231.45..16854476.00 rows=5000000 width=16) / Order By: (embedding <=> '[0.005608942,-0.02704"}
+{"step": "recall", "table": "emb_whole", "ef_search": 200, "recall@10": 0.9597, "recall@100": 0.9261, "p50_ms": 7.4, "p95_ms": 12.5, "plan": "Limit  (cost=2149.80..2486.85 rows=100 width=16) / ->  Index Scan using emb_whole_hnsw on emb_whole  (cost=2149.80..16854476.00 rows=5000000 width=16) / Order By: (embedding <=> '[0.005608942,-0.02704"}
+{"step": "recall", "table": "emb_whole", "ef_search": 400, "recall@10": 0.9733, "recall@100": 0.9569, "p50_ms": 12.2, "p95_ms": 19.4, "plan": "Limit  (cost=3830.10..4167.11 rows=100 width=16) / ->  Index Scan using emb_whole_hnsw on emb_whole  (cost=3830.10..16854476.00 rows=5000000 width=16) / Order By: (embedding <=> '[0.005608942,-0.02704"}
+{"step": "insert-into-indexed", "table": "emb", "partition": "emb_p4", "rows": 200000, "seconds": 973.2, "rows_per_s": 206}
+{"step": "insert-into-indexed", "table": "emb_half", "partition": "emb_half_p4", "rows": 200000, "seconds": 1068.9, "rows_per_s": 187}
+{"step": "full-extract", "shard": 0, "rows": 1000000, "seconds": 34.0}
+{"step": "full-extract", "shard": 1, "rows": 1000000, "seconds": 34.7}
+{"step": "full-extract", "shard": 2, "rows": 1000000, "seconds": 33.9}
+{"step": "full-extract", "shard": 3, "rows": 1000000, "seconds": 35.0}
+{"step": "full-extract", "shard": 4, "rows": 1000000, "seconds": 33.5}
+{"step": "full-extract", "shard": 5, "rows": 1000000, "seconds": 33.4}
+{"step": "full-extract", "shard": 6, "rows": 1000000, "seconds": 35.5}
+{"step": "full-extract", "shard": 7, "rows": 1000000, "seconds": 33.5}
+{"step": "full-extract", "shard": 8, "rows": 1000000, "seconds": 35.8}
+{"step": "full-extract", "shard": 9, "rows": 1000000, "seconds": 34.3}
+{"step": "full-extract", "shard": 10, "rows": 1000000, "seconds": 33.8}
+{"step": "full-extract", "shard": 11, "rows": 1000000, "seconds": 35.4}
+{"step": "full-extract", "shard": 12, "rows": 1000000, "seconds": 29.7}
+{"step": "full-extract", "shard": 13, "rows": 1000000, "seconds": 31.6}
+{"step": "full-extract", "shard": 14, "rows": 1000000, "seconds": 31.5}
+{"step": "full-extract", "shard": 15, "rows": 1000000, "seconds": 30.0}
+{"step": "full-extract", "shard": 16, "rows": 1000000, "seconds": 30.5}
+{"step": "full-extract", "shard": 17, "rows": 1000000, "seconds": 30.2}
+{"step": "full-extract", "shard": 18, "rows": 1000000, "seconds": 30.4}
+{"step": "full-extract", "shard": 19, "rows": 1000000, "seconds": 29.8}
+{"step": "full-extract", "shard": 20, "rows": 1000000, "seconds": 30.8}
+{"step": "full-extract", "shard": 21, "rows": 1000000, "seconds": 29.3}
+{"step": "full-extract", "shard": 22, "rows": 1000000, "seconds": 29.6}
+{"step": "full-extract", "shard": 23, "rows": 1000000, "seconds": 29.5}
+{"step": "full-extract", "shard": 24, "rows": 1000000, "seconds": 28.8}
+{"step": "full-extract", "shard": 25, "rows": 1000000, "seconds": 29.5}
+{"step": "full-extract", "shard": 26, "rows": 1000000, "seconds": 29.8}
+{"step": "full-extract", "shard": 27, "rows": 1000000, "seconds": 29.4}
+{"step": "full-extract", "shard": 28, "rows": 1000000, "seconds": 28.7}
+{"step": "full-extract", "shard": 29, "rows": 1000000, "seconds": 28.8}
+{"step": "full-extract", "shard": 30, "rows": 1000000, "seconds": 29.8}
+{"step": "full-extract", "shard": 31, "rows": 1000000, "seconds": 29.6}
+{"step": "full-extract", "shard": 32, "rows": 1000000, "seconds": 29.3}
+{"step": "full-extract", "shard": 33, "rows": 1000000, "seconds": 29.8}
+{"step": "full-extract", "shard": 34, "rows": 1000000, "seconds": 29.6}
+{"step": "full-extract", "shard": 35, "rows": 1000000, "seconds": 29.7}
+{"step": "full-extract", "shard": 36, "rows": 1000000, "seconds": 29.5}
+{"step": "full-extract", "shard": 37, "rows": 478552, "seconds": 19.0}
+{"step": "full-load", "layout": "full_1m", "rows": 37478552}
+{"step": "full-load", "layout": "full_4m", "rows": 37478552}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p000", "rows": 1000000, "seconds": 85.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p001", "rows": 1000000, "seconds": 88.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p002", "rows": 1000000, "seconds": 90.1, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p003", "rows": 1000000, "seconds": 97.5, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p004", "rows": 1000000, "seconds": 97.7, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p005", "rows": 1000000, "seconds": 107.3, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p006", "rows": 1000000, "seconds": 102.1, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p007", "rows": 1000000, "seconds": 103.3, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p008", "rows": 1000000, "seconds": 93.1, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p009", "rows": 1000000, "seconds": 93.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p010", "rows": 1000000, "seconds": 99.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p011", "rows": 1000000, "seconds": 96.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p012", "rows": 1000000, "seconds": 97.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p013", "rows": 1000000, "seconds": 94.4, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p014", "rows": 1000000, "seconds": 89.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p015", "rows": 1000000, "seconds": 87.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p016", "rows": 1000000, "seconds": 131.8, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p017", "rows": 1000000, "seconds": 1296.1, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p018", "rows": 1000000, "seconds": 88.1, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p019", "rows": 1000000, "seconds": 88.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p020", "rows": 1000000, "seconds": 88.2, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p021", "rows": 1000000, "seconds": 88.8, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p022", "rows": 1000000, "seconds": 87.7, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p023", "rows": 1000000, "seconds": 88.3, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p024", "rows": 1000000, "seconds": 87.7, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p025", "rows": 1000000, "seconds": 95.5, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p026", "rows": 1000000, "seconds": 89.8, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p027", "rows": 1000000, "seconds": 90.5, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p028", "rows": 1000000, "seconds": 89.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p029", "rows": 1000000, "seconds": 91.6, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p030", "rows": 1000000, "seconds": 86.9, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p031", "rows": 1000000, "seconds": 86.7, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p032", "rows": 1000000, "seconds": 80.8, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p033", "rows": 1000000, "seconds": 74.5, "index_mb": 793}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p034", "rows": 1000000, "seconds": 91.7, "index_mb": 792}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p035", "rows": 1000000, "seconds": 97.6, "index_mb": 792}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p036", "rows": 1000000, "seconds": 98.8, "index_mb": 792}
+{"step": "full-build", "layout": "full_1m", "partition": "full_1m_p037", "rows": 478552, "seconds": 43.1, "index_mb": 379}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p000", "rows": 4000000, "seconds": 360.2, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p001", "rows": 4000000, "seconds": 380.1, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p002", "rows": 4000000, "seconds": 367.3, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p003", "rows": 4000000, "seconds": 387.7, "index_mb": 3174}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p004", "rows": 4000000, "seconds": 372.0, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p005", "rows": 4000000, "seconds": 486.9, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p006", "rows": 4000000, "seconds": 445.0, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p007", "rows": 4000000, "seconds": 392.8, "index_mb": 3173}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p008", "rows": 4000000, "seconds": 378.6, "index_mb": 3170}
+{"step": "full-build", "layout": "full_4m", "partition": "full_4m_p009", "rows": 1478552, "seconds": 146.3, "index_mb": 1171}
+{"step": "full-exact", "queries": 300, "seconds": 103.7}
+{"step": "full-recall", "partitions": 38, "table": "full_1m", "ef_search": 100, "p50_ms": 254.6, "p95_ms": 3300.3, "recall@10": 0.983, "recall@100": 0.9721}
+{"step": "full-recall", "partitions": 38, "table": "full_1m", "ef_search": 200, "p50_ms": 264.6, "p95_ms": 354.8, "recall@10": 0.9933, "recall@100": 0.9846}
+{"step": "full-recall", "partitions": 38, "table": "full_1m", "ef_search": 400, "p50_ms": 450.9, "p95_ms": 581.4, "recall@10": 0.997, "recall@100": 0.9916}
+{"step": "full-recall", "partitions": 10, "table": "full_4m", "ef_search": 100, "p50_ms": 419.9, "p95_ms": 1249.9, "recall@10": 0.962, "recall@100": 0.9484}
+{"step": "full-recall", "partitions": 10, "table": "full_4m", "ef_search": 200, "p50_ms": 123.3, "p95_ms": 194.2, "recall@10": 0.979, "recall@100": 0.9705}
+{"step": "full-recall", "partitions": 10, "table": "full_4m", "ef_search": 400, "p50_ms": 144.9, "p95_ms": 209.8, "recall@10": 0.9893, "recall@100": 0.9837}
+{"step": "open-only", "table": "full_1m_open", "ef_search": 100, "p50_ms": 26.0, "p95_ms": 28.7, "plan": "Limit  (cost=19562.62..19574.28 rows=100 width=16) / ->  Gather Merge  (cost=19562.62..39008.34 rows=166666 width=16) / Workers Planned: 2"}
+{"step": "sealed+open", "table": "full_1m", "ef_search": 100, "p50_ms": 297.5, "p95_ms": 1254.6}
+{"step": "sealed+open", "table": "full_1m", "ef_search": 200, "p50_ms": 357.4, "p95_ms": 452.7}
