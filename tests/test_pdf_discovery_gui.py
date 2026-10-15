@@ -633,12 +633,9 @@ class TestFindPDFRunsOffGuiThread:
     def test_click_handler_returns_before_discovery_finishes(self, app, tmp_path):
         """The click slot must not block on network discovery."""
         import threading
-        from PySide6.QtWidgets import QPushButton
-        from bmlibrarian.gui.document_card_factory_base import (
-            DocumentCardData, PDFButtonConfig, PDFButtonState
-        )
+        from bmlibrarian.gui.document_card_factory_base import PDFButtonState
         from bmlibrarian.gui.qt.qt_document_card_factory import (
-            PDFButtonWidget, QtDocumentCardFactory
+            FindPdfOutcome, FindPdfStatus
         )
 
         pdf_path = tmp_path / "found.pdf"
@@ -649,29 +646,406 @@ class TestFindPDFRunsOffGuiThread:
             release.wait(EVENT_PUMP_TIMEOUT_S)
             return 'RESULT'
 
-        factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
-        find_button = QPushButton("Find PDF")
-        primary = PDFButtonWidget(PDFButtonConfig(state=PDFButtonState.UPLOAD))
-        card = DocumentCardData(doc_id=42, title="A paper", doi="10.1/x")
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
 
-        with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
-             patch.object(factory, '_finalize_discovery_result', return_value=pdf_path), \
-             patch.object(factory, '_update_pdf_filename_in_database') as update_db:
-            factory._handle_find_pdf_click(find_button, primary, card)
+        try:
+            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+                 patch.object(factory, '_update_pdf_filename_in_database',
+                              return_value=True) as update_db:
+                factory._handle_find_pdf_click(find_button, primary, card)
 
-            # Returned while discovery is still blocked on the worker
-            assert not release.is_set()
-            assert not find_button.isEnabled()
-            assert len(factory._find_pdf_sessions) == 1
+                # Returned while discovery is still blocked on the worker
+                assert not release.is_set()
+                assert not find_button.isEnabled()
+                assert len(factory._find_pdf_sessions) == 1
 
+                release.set()
+                assert _pump_until(lambda: not factory._find_pdf_sessions)
+        finally:
+            # Never leave a blocked worker behind for later tests
             release.set()
-            assert _pump_until(lambda: not factory._find_pdf_sessions)
+            factory.shutdown()
 
         assert find_button.text() == "✓ Found"
         assert primary.config.state == PDFButtonState.VIEW
         assert primary.config.pdf_path == pdf_path
         assert factory._pdf_path_cache[42] == pdf_path
         update_db.assert_called_once()
+
+
+def _make_find_pdf_widgets(tmp_path):
+    """Create a factory, Find button, primary PDF button and card data."""
+    from PySide6.QtWidgets import QPushButton
+    from bmlibrarian.gui.document_card_factory_base import (
+        DocumentCardData, PDFButtonConfig, PDFButtonState
+    )
+    from bmlibrarian.gui.qt.qt_document_card_factory import (
+        PDFButtonWidget, QtDocumentCardFactory
+    )
+
+    factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
+    find_button = QPushButton("Find PDF")
+    primary = PDFButtonWidget(PDFButtonConfig(state=PDFButtonState.UPLOAD))
+    card = DocumentCardData(doc_id=42, title="A paper", doi="10.1/x", year=2021)
+    return factory, find_button, primary, card
+
+
+def _download_result(**overrides):
+    """Build a stand-in for discovery's DownloadResult."""
+    from types import SimpleNamespace
+
+    fields = dict(
+        success=False, file_path=None, verified=None, verification_warnings=[],
+        source=None, full_text=None, error_message=None,
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class TestFindPDFOutcomes:
+    """The Find PDF result handler reports what actually happened."""
+
+    @pytest.fixture
+    def app(self):
+        """Create QApplication for tests."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def _run(self, app, tmp_path, outcome=None, finalize_error=None, db_ok=True):
+        """Run a click whose discovery returns immediately; return widgets."""
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        finalize = (
+            {'side_effect': finalize_error} if finalize_error
+            else {'return_value': outcome}
+        )
+        with patch.object(factory, '_discover_and_download', return_value='RESULT'), \
+             patch.object(factory, '_finalize_discovery_result', **finalize), \
+             patch.object(factory, '_update_pdf_filename_in_database',
+                          return_value=db_ok) as update_db, \
+             patch('bmlibrarian.gui.qt.qt_document_card_factory.QTimer.singleShot'):
+            factory._handle_find_pdf_click(find_button, primary, card)
+            assert _pump_until(lambda: not factory._find_pdf_sessions)
+        return factory, find_button, primary, update_db
+
+    def test_not_found_writes_nothing(self, app, tmp_path):
+        """No PDF: no DB write, no cache entry, the reason in the tooltip."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus
+        )
+        outcome = FindPdfOutcome(FindPdfStatus.NOT_FOUND, "Playwright is not installed")
+        factory, find_button, _, update_db = self._run(app, tmp_path, outcome)
+
+        update_db.assert_not_called()
+        assert 42 not in factory._pdf_path_cache
+        assert find_button.text() == "✗ Not Found"
+        assert "Playwright" in find_button.toolTip()
+
+    def test_reassigned_is_not_reported_as_not_found(self, app, tmp_path):
+        """A PDF reassigned to another document gets its own state."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus
+        )
+        outcome = FindPdfOutcome(FindPdfStatus.REASSIGNED, "PDF attached to document 7")
+        factory, find_button, _, update_db = self._run(app, tmp_path, outcome)
+
+        update_db.assert_not_called()
+        assert find_button.text() == "↪ Reassigned"
+        assert 42 not in factory._pdf_path_cache
+
+    def test_failed_database_write_is_reported(self, app, tmp_path):
+        """The PDF is viewable, but the user is told the link was not saved."""
+        from bmlibrarian.gui.document_card_factory_base import PDFButtonState
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus
+        )
+        pdf_path = tmp_path / "found.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
+        factory, find_button, primary, update_db = self._run(
+            app, tmp_path, outcome, db_ok=False
+        )
+
+        update_db.assert_called_once()
+        assert find_button.text() == "⚠ Not Saved"
+        assert "database" in find_button.toolTip()
+        assert primary.config.state == PDFButtonState.VIEW
+
+    def test_finalize_exception_goes_to_error_path(self, app, tmp_path):
+        """An exception while finalizing shows an error, never hangs."""
+        factory, find_button, primary, update_db = self._run(
+            app, tmp_path, finalize_error=RuntimeError("dialog crashed")
+        )
+        errors = []
+        primary.error_occurred.connect(errors.append)
+
+        update_db.assert_not_called()
+        assert find_button.text() == "✗ Error"
+        assert "dialog crashed" in find_button.toolTip()
+        # No duplicate modal via the PDF button's error signal
+        assert errors == []
+
+
+class TestFinalizeDiscoveryResult:
+    """``_finalize_discovery_result`` maps each verification decision."""
+
+    @pytest.fixture
+    def app(self):
+        """Create QApplication for tests."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def _finalize(self, tmp_path, result, decision=None, save_path=None, reassign_id=None):
+        """Run finalize with the verification prompt patched to ``decision``."""
+        factory, _, _, card = _make_find_pdf_widgets(tmp_path)
+        prompt = MagicMock(return_value=(decision, save_path, reassign_id))
+        with patch('bmlibrarian.discovery.verification_prompt.prompt_gui_verification', prompt), \
+             patch('bmlibrarian.discovery.verification_prompt.find_alternative_document',
+                   return_value=None), \
+             patch.object(factory, '_update_pdf_filename_in_database',
+                          return_value=True) as update_pdf, \
+             patch.object(factory, '_update_full_text_in_database',
+                          return_value=True) as update_text:
+            outcome = factory._finalize_discovery_result(card, result)
+        return outcome, prompt, update_pdf, update_text
+
+    def test_success_with_full_text(self, app, tmp_path):
+        """A verified download is ATTACHED and its full text stored."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        pdf = tmp_path / "ok.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        outcome, prompt, update_pdf, update_text = self._finalize(
+            tmp_path, _download_result(success=True, file_path=str(pdf), full_text="body")
+        )
+        assert outcome.status == FindPdfStatus.ATTACHED
+        assert outcome.pdf_path == pdf
+        prompt.assert_not_called()
+        update_text.assert_called_once_with(42, "body")
+        # The caller records pdf_filename for ATTACHED
+        update_pdf.assert_not_called()
+
+    def test_success_but_file_missing(self, app, tmp_path):
+        """Reported success with no file on disk is NOT_FOUND."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        outcome, *_ = self._finalize(
+            tmp_path, _download_result(success=True, file_path=str(tmp_path / "gone.pdf"))
+        )
+        assert outcome.status == FindPdfStatus.NOT_FOUND
+        assert "missing" in outcome.message
+
+    def test_download_error_message_reaches_user(self, app, tmp_path):
+        """The download's own error text is kept, not replaced."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        outcome, *_ = self._finalize(
+            tmp_path,
+            _download_result(error_message="Browser downloader not available "
+                                           "(playwright not installed)")
+        )
+        assert outcome.status == FindPdfStatus.NOT_FOUND
+        assert "playwright" in outcome.message
+
+    def test_verification_failed_without_file(self, app, tmp_path):
+        """A failed verification with no file never prompts."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        outcome, prompt, *_ = self._finalize(tmp_path, _download_result(verified=False))
+        assert outcome.status == FindPdfStatus.NOT_FOUND
+        prompt.assert_not_called()
+
+    def test_reassign_updates_the_other_document_only(self, app, tmp_path):
+        """REASSIGN writes the PDF (and full text) to the chosen document."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        pdf = tmp_path / "2021" / "wrong.pdf"
+        pdf.parent.mkdir()
+        pdf.write_bytes(b"%PDF-1.4")
+        outcome, _, update_pdf, update_text = self._finalize(
+            tmp_path,
+            _download_result(verified=False, file_path=str(pdf), full_text="body"),
+            decision=VerificationDecision.REASSIGN, reassign_id=7,
+        )
+        assert outcome.status == FindPdfStatus.REASSIGNED
+        assert outcome.pdf_path is None
+        assert update_pdf.call_args[0][0] == 7
+        update_text.assert_called_once_with(7, "body")
+
+    @pytest.mark.parametrize("decision_name,status_name", [
+        ("REJECT", "DECLINED"),
+        ("RETRY", "DECLINED"),
+        ("SAVE_AS", "SAVED_COPY"),
+    ])
+    def test_discarding_decisions_delete_the_temp_file(
+        self, app, tmp_path, decision_name, status_name
+    ):
+        """REJECT, RETRY and SAVE_AS remove the downloaded file."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        pdf = tmp_path / "wrong.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        outcome, _, update_pdf, _ = self._finalize(
+            tmp_path, _download_result(verified=False, file_path=str(pdf)),
+            decision=VerificationDecision[decision_name],
+            save_path=tmp_path / "copy.pdf",
+        )
+        assert outcome.status == FindPdfStatus[status_name]
+        assert not pdf.exists()
+        update_pdf.assert_not_called()
+
+    def test_manual_upload_copies_into_year_directory(self, app, tmp_path):
+        """MANUAL_UPLOAD copies the chosen file under YYYY/ and attaches it."""
+        from bmlibrarian.discovery.verification_prompt import VerificationDecision
+        from bmlibrarian.gui.qt.qt_document_card_factory import FindPdfStatus
+        wrong = tmp_path / "wrong.pdf"
+        wrong.write_bytes(b"%PDF-1.4")
+        chosen = tmp_path / "chosen.pdf"
+        chosen.write_bytes(b"%PDF-1.4 chosen")
+        with patch('bmlibrarian.utils.pdf_manager.PDFManager.get_pdf_path',
+                   return_value=tmp_path / "2021" / "chosen.pdf") as get_path:
+            (tmp_path / "2021").mkdir()
+            outcome, _, update_pdf, _ = self._finalize(
+                tmp_path, _download_result(verified=False, file_path=str(wrong)),
+                decision=VerificationDecision.MANUAL_UPLOAD, save_path=chosen,
+            )
+        assert get_path.call_args[0][0]['publication_date'] == "2021"
+        assert outcome.status == FindPdfStatus.ATTACHED
+        assert outcome.pdf_path == tmp_path / "2021" / "chosen.pdf"
+        assert outcome.pdf_path.read_bytes() == b"%PDF-1.4 chosen"
+        assert not wrong.exists()
+        # Recorded once, by the caller
+        update_pdf.assert_not_called()
+
+
+class TestFindPDFSessionRobustness:
+    """Sessions always end the UI's searching state, and stop on shutdown."""
+
+    @pytest.fixture
+    def app(self):
+        """Create QApplication for tests."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def test_handler_exception_reported_via_failed(self, app):
+        """An exception in on_discovered is reported through on_failed."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPDFSession, PDFDiscoveryWorker
+        )
+        failures = []
+
+        def on_discovered(result):
+            raise RuntimeError("widget gone")
+
+        session = FindPDFSession(
+            PDFDiscoveryWorker(lambda cb: None),
+            on_progress=lambda *a: None,
+            on_discovered=on_discovered,
+            on_failed=failures.append,
+            on_done=lambda s: None,
+        )
+        session._handle_discovered('RESULT')
+        assert failures == ["widget gone"]
+
+    def test_thread_stopping_silently_is_a_failure(self, app):
+        """``finished`` without ``discovered``/``failed`` reports a failure."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPDFSession, PDFDiscoveryWorker
+        )
+        events = []
+        session = FindPDFSession(
+            PDFDiscoveryWorker(lambda cb: None),
+            on_progress=lambda *a: None,
+            on_discovered=lambda r: events.append('discovered'),
+            on_failed=lambda msg: events.append(('failed', msg)),
+            on_done=lambda s: events.append('done'),
+        )
+        session._handle_thread_finished()
+        assert events == [('failed', FindPDFSession.UNEXPECTED_STOP_MESSAGE), 'done']
+
+    def test_shutdown_stops_running_discovery(self, app, tmp_path):
+        """shutdown() waits for the worker and drops its late result."""
+        import threading
+
+        release = threading.Event()
+
+        def blocking_discovery(card_data, progress_cb):
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return 'RESULT'
+
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
+             patch.object(factory, '_finalize_discovery_result') as finalize:
+            factory._handle_find_pdf_click(find_button, primary, card)
+            session = next(iter(factory._find_pdf_sessions))
+            worker = session.worker
+            timer = threading.Timer(0.2, release.set)
+            timer.start()
+            try:
+                factory.shutdown()
+            finally:
+                release.set()
+                timer.join()
+
+            assert not worker.isRunning()
+            assert not factory._find_pdf_sessions
+            _pump_until(lambda: False, timeout_s=0.3)
+            finalize.assert_not_called()
+
+    def test_widgets_deleted_mid_discovery(self, app, tmp_path, monkeypatch):
+        """Closing the card while discovery runs must not raise; the PDF is
+        still recorded for the document."""
+        import sys
+        import threading
+        import shiboken6
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPdfOutcome, FindPdfStatus
+        )
+
+        slot_errors = []
+        monkeypatch.setattr(sys, 'excepthook', lambda *exc: slot_errors.append(exc))
+        pdf_path = tmp_path / "found.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        release = threading.Event()
+
+        def blocking_discovery(card_data, progress_cb):
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return 'RESULT'
+
+        factory, find_button, primary, card = _make_find_pdf_widgets(tmp_path)
+        outcome = FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", pdf_path)
+        try:
+            with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
+                 patch.object(factory, '_finalize_discovery_result', return_value=outcome), \
+                 patch.object(factory, '_update_pdf_filename_in_database',
+                              return_value=True) as update_db:
+                factory._handle_find_pdf_click(find_button, primary, card)
+                shiboken6.delete(find_button)
+                shiboken6.delete(primary)
+                release.set()
+                assert _pump_until(lambda: not factory._find_pdf_sessions)
+        finally:
+            release.set()
+            factory.shutdown()
+
+        assert slot_errors == []
+        update_db.assert_called_once()
+        assert factory._pdf_path_cache[42] == pdf_path
+
+
+class TestDescribeDiscoveryError:
+    """User-facing discovery error text."""
+
+    def test_known_error_uses_friendly_wording(self):
+        """HTTP 403 gets the standard access-restricted message."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import describe_discovery_error
+        assert "Access restricted" in describe_discovery_error("HTTP 403 Forbidden")
+
+    def test_unknown_error_keeps_the_reason(self):
+        """An unrecognised error keeps its raw text."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import describe_discovery_error
+        message = describe_discovery_error("playwright not installed")
+        assert "playwright not installed" in message
 
 
 if __name__ == "__main__":

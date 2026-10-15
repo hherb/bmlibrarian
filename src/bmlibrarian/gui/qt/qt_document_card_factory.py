@@ -10,13 +10,18 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel,
     QDialog
 )
-from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer
+from PySide6.QtCore import (
+    Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer, QCoreApplication
+)
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from shiboken6 import isValid as is_widget_valid
 from typing import Optional, Callable, Dict, Any, Set, TYPE_CHECKING
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 import logging
+import weakref
 
 from bmlibrarian.gui.document_card_factory_base import (
     DocumentCardFactoryBase,
@@ -32,12 +37,88 @@ from bmlibrarian.gui.qt.resources.constants import (
     FileSystemDefaults,
     PDFButtonColors
 )
-from bmlibrarian.utils.error_messages import format_pdf_download_error
+from bmlibrarian.utils.error_messages import ErrorCategory, format_pdf_download_error
 
 if TYPE_CHECKING:
     from bmlibrarian.discovery import DownloadResult
 
 logger = logging.getLogger(__name__)
+
+
+class FindPdfStatus(Enum):
+    """How a "Find PDF" attempt ended for the requested document."""
+
+    ATTACHED = "attached"        # PDF linked to this document
+    UNSAVED = "unsaved"          # PDF on disk, but the database link failed
+    REASSIGNED = "reassigned"    # User attached the PDF to another document
+    SAVED_COPY = "saved_copy"    # User saved a copy elsewhere instead
+    DECLINED = "declined"        # User rejected the PDF or chose to retry
+    NOT_FOUND = "not_found"      # Discovery or download produced no PDF
+
+
+@dataclass(frozen=True)
+class FindPdfOutcome:
+    """Result of finalizing a "Find PDF" discovery on the GUI thread.
+
+    Attributes:
+        status: How the attempt ended
+        message: User-facing explanation (shown in the progress dialog)
+        pdf_path: The PDF now on disk for this document (ATTACHED/UNSAVED)
+    """
+
+    status: FindPdfStatus
+    message: str
+    pdf_path: Optional[Path] = None
+
+
+# Find button label shown for each outcome
+FIND_PDF_BUTTON_LABELS: Dict[FindPdfStatus, str] = {
+    FindPdfStatus.ATTACHED: "✓ Found",
+    FindPdfStatus.UNSAVED: "⚠ Not Saved",
+    FindPdfStatus.REASSIGNED: "↪ Reassigned",
+    FindPdfStatus.SAVED_COPY: "💾 Copy Saved",
+    FindPdfStatus.DECLINED: "✗ Declined",
+    FindPdfStatus.NOT_FOUND: "✗ Not Found",
+}
+
+
+def describe_discovery_error(error_msg: str) -> str:
+    """Turn a raw discovery/download error into a message for the user.
+
+    Known errors (HTTP 403/404, timeouts, network) get the standard friendly
+    wording. Anything else keeps the raw reason, since "Download failed" alone
+    cannot tell a missing Playwright install from a paywall.
+
+    Args:
+        error_msg: Raw error text from discovery, download or finalization
+
+    Returns:
+        User-facing message
+    """
+    friendly = format_pdf_download_error(Exception(error_msg))
+    if friendly.category == ErrorCategory.INTERNAL and error_msg:
+        return f"{friendly.user_message} ({error_msg})"
+    return friendly.user_message
+
+
+def stop_qthread(thread: QThread, label: str) -> None:
+    """Wait for a QThread to stop, terminating it if it does not.
+
+    Destroying a running QThread aborts the process, so threads that may
+    still be running must be stopped before their owner goes away.
+
+    Args:
+        thread: The thread to stop (its own abort/cancel, if any, should
+            already have been requested)
+        label: Name used in the log message if termination is needed
+    """
+    if not thread.isRunning():
+        return
+    if thread.wait(PDFOperationSettings.THREAD_GRACEFUL_SHUTDOWN_MS):
+        return
+    logger.warning(f"{label} did not stop gracefully, terminating")
+    thread.terminate()
+    thread.wait(PDFOperationSettings.THREAD_TERMINATE_CLEANUP_MS)
 
 
 class PDFFetchWorker(QThread):
@@ -117,7 +198,8 @@ class PDFDiscoveryWorker(QThread):
     Runs the network-bound part of discovery (CrossRef title search,
     resolvers, HTTP/browser download) off the GUI thread. Anything that
     needs the GUI (verification prompt, button and dialog updates) is left
-    to the receivers of ``discovered``, which run on the GUI thread.
+    to the receivers of its signals; ``FindPDFSession`` receives them on the
+    GUI thread.
 
     Signals:
         progress: (stage, status) progress update from the discovery workflow
@@ -162,8 +244,16 @@ class FindPDFSession(QObject):
 
     Owns the ``PDFDiscoveryWorker`` and receives its signals. Because this
     object lives on the GUI thread, Qt queues the worker's signals to it, so
-    every slot here runs on the GUI thread and may touch widgets.
+    every slot here runs on the GUI thread and may touch widgets. It must
+    therefore be constructed on the GUI thread (it has no parent and is
+    never moved).
+
+    Exactly one of ``on_discovered`` / ``on_failed`` is called per session:
+    an exception in ``on_discovered`` is reported through ``on_failed``, and
+    a thread that stops without reporting anything counts as a failure.
     """
+
+    UNEXPECTED_STOP_MESSAGE = "PDF discovery stopped unexpectedly"
 
     def __init__(
         self,
@@ -181,8 +271,8 @@ class FindPDFSession(QObject):
             on_progress: Called with (stage, status) on the GUI thread
             on_discovered: Called with the download result on the GUI thread
             on_failed: Called with an error message on the GUI thread
-            on_done: Called with this session once the worker thread has
-                stopped, so the owner can drop its reference
+            on_done: Called with this session after ``QThread.finished``
+                (``run()`` has returned), so the owner can drop its reference
         """
         super().__init__()
         self.worker = worker
@@ -192,6 +282,8 @@ class FindPDFSession(QObject):
         self._on_done = on_done
         self._handling_result = False
         self._release_pending = False
+        self._outcome_delivered = False
+        self._cancelled = False
 
         worker.progress.connect(self._handle_progress)
         worker.discovered.connect(self._handle_discovered)
@@ -202,20 +294,37 @@ class FindPDFSession(QObject):
         """Start the discovery worker thread."""
         self.worker.start()
 
+    def cancel(self) -> None:
+        """Stop forwarding worker signals (e.g. because the app is quitting).
+
+        A result that arrives afterwards is dropped: no verification prompt,
+        no widget updates, no database writes.
+        """
+        self._cancelled = True
+
     def _handle_progress(self, stage: str, status: str) -> None:
         """Forward a progress update (GUI thread)."""
-        self._on_progress(stage, status)
+        if not self._cancelled:
+            self._on_progress(stage, status)
 
     def _handle_discovered(self, result: Any) -> None:
         """Forward the discovery result (GUI thread).
 
         The handler may open a modal verification dialog, whose nested event
         loop can deliver the worker's ``finished`` signal before the handler
-        returns; releasing is deferred until it does.
+        returns; releasing is deferred until it does. If the handler raises,
+        the error is reported through ``on_failed`` so the UI never stays in
+        its "searching" state.
         """
+        self._outcome_delivered = True
+        if self._cancelled:
+            return
         self._handling_result = True
         try:
             self._on_discovered(result)
+        except Exception as e:
+            logger.error(f"Error handling PDF discovery result: {e}", exc_info=True)
+            self._report_failure(str(e) or type(e).__name__)
         finally:
             self._handling_result = False
             if self._release_pending:
@@ -223,10 +332,28 @@ class FindPDFSession(QObject):
 
     def _handle_failed(self, error_msg: str) -> None:
         """Forward a discovery error (GUI thread)."""
-        self._on_failed(error_msg)
+        self._outcome_delivered = True
+        if not self._cancelled:
+            self._report_failure(error_msg)
+
+    def _report_failure(self, error_msg: str) -> None:
+        """Call ``on_failed``, logging (not raising) if it fails itself."""
+        try:
+            self._on_failed(error_msg)
+        except Exception as e:
+            logger.error(f"Error reporting PDF discovery failure: {e}", exc_info=True)
 
     def _handle_thread_finished(self) -> None:
-        """Release the worker and this session once the thread has stopped."""
+        """Release the worker and this session once the thread has stopped.
+
+        Worker signals are queued in emission order, so ``discovered`` or
+        ``failed`` is always handled before ``finished``; if neither arrived,
+        the thread stopped without reporting and that is a failure.
+        """
+        if not self._outcome_delivered and not self._cancelled:
+            self._outcome_delivered = True
+            logger.error(self.UNEXPECTED_STOP_MESSAGE)
+            self._report_failure(self.UNEXPECTED_STOP_MESSAGE)
         if self._handling_result:
             self._release_pending = True
             return
@@ -452,18 +579,9 @@ class PDFButtonWidget(QPushButton):
         forcefully terminated.
         """
         if self._fetch_worker is not None:
-            # Wait for thread to finish if still running
             if self._fetch_worker.isRunning():
                 self._fetch_worker.abort()
-                # Wait for graceful shutdown using configured timeout
-                if not self._fetch_worker.wait(PDFOperationSettings.THREAD_GRACEFUL_SHUTDOWN_MS):
-                    # Thread didn't stop gracefully, force terminate
-                    logger.warning(
-                        "PDF fetch worker did not stop gracefully, terminating"
-                    )
-                    self._fetch_worker.terminate()
-                    # Brief wait after terminate to ensure cleanup
-                    self._fetch_worker.wait(PDFOperationSettings.THREAD_TERMINATE_CLEANUP_MS)
+                stop_qthread(self._fetch_worker, "PDF fetch worker")
 
             self._fetch_worker.deleteLater()
             self._fetch_worker = None
@@ -688,7 +806,6 @@ class PDFDiscoveryProgressDialog(QDialog):
             self.status_label.setText(f"Found PDF via {display_name}!")
             self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
 
-
     def set_downloading(self, source: str) -> None:
         """
         Update status to show downloading.
@@ -723,9 +840,8 @@ class PDFDiscoveryProgressDialog(QDialog):
         Args:
             error_msg: Error message to display
         """
-        # Truncate long error messages
-        if len(error_msg) > 80:
-            error_msg = error_msg[:77] + "..."
+        # Wrap rather than truncate: the reason is what the user needs to see
+        self.status_label.setWordWrap(True)
         self.status_label.setText(f"❌ {error_msg}")
         self.status_label.setStyleSheet("font-weight: bold; color: #f44336;")
 
@@ -774,6 +890,37 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         self._pdf_path_cache: Dict[int, Optional[Path]] = {}  # Performance optimization
         # Running "Find PDF" sessions, kept referenced until their thread stops
         self._find_pdf_sessions: Set[FindPDFSession] = set()
+        self._stop_sessions_on_quit()
+
+    def _stop_sessions_on_quit(self) -> None:
+        """Stop running discovery threads when the application quits.
+
+        Holds only a weak reference, so the connection does not keep the
+        factory alive.
+        """
+        app = QCoreApplication.instance()
+        if app is None:
+            return
+        factory_ref = weakref.ref(self)
+
+        def shutdown_if_alive() -> None:
+            factory = factory_ref()
+            if factory is not None:
+                factory.shutdown()
+
+        app.aboutToQuit.connect(shutdown_if_alive)
+
+    def shutdown(self) -> None:
+        """Stop all running "Find PDF" discovery threads.
+
+        Results that arrive afterwards are dropped. Call this before the
+        factory's owner is destroyed; it also runs automatically when the
+        application quits.
+        """
+        for session in list(self._find_pdf_sessions):
+            session.cancel()
+            stop_qthread(session.worker, "PDF discovery worker")
+        self._find_pdf_sessions.clear()
 
     def create_card(self, card_data: DocumentCardData) -> QFrame:
         """
@@ -1266,7 +1413,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             original_text: Find button text to restore on failure
         """
         try:
-            pdf_path = self._finalize_discovery_result(card_data, result)
+            outcome = self._finalize_discovery_result(card_data, result)
         except Exception as e:
             logger.error(
                 f"Error finalizing PDF discovery for document {card_data.doc_id}: {e}",
@@ -1278,14 +1425,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             )
             return
 
-        if pdf_path and pdf_path.exists():
-            if is_widget_valid(progress_dialog):
-                progress_dialog.set_success(pdf_path)
-
-            if is_widget_valid(primary_button):
-                primary_button._transition_to_view(pdf_path)
-
-            # Update database with pdf_filename
+        pdf_path = outcome.pdf_path
+        if outcome.status == FindPdfStatus.ATTACHED and pdf_path:
             document = {
                 'id': card_data.doc_id,
                 'doi': card_data.doi,
@@ -1296,39 +1437,47 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 'year': card_data.year,
                 'pdf_filename': pdf_path.name,
             }
-            self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
+            if not self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document):
+                outcome = FindPdfOutcome(
+                    FindPdfStatus.UNSAVED,
+                    f"Downloaded {pdf_path.name}, but the link could not be "
+                    f"saved to the database (see log)",
+                    pdf_path,
+                )
+
+        logger.info(
+            f"Find PDF for document {card_data.doc_id}: "
+            f"{outcome.status.value} - {outcome.message}"
+        )
+
+        if pdf_path and outcome.status in (FindPdfStatus.ATTACHED, FindPdfStatus.UNSAVED):
+            # The file is on disk either way, so it can be viewed
             self._pdf_path_cache[card_data.doc_id] = pdf_path
-
-            logger.info(
-                f"Successfully found and downloaded PDF for document "
-                f"{card_data.doc_id}: {pdf_path}"
-            )
-
             if is_widget_valid(primary_button):
+                primary_button._transition_to_view(pdf_path)
                 primary_button.pdf_discovered.emit(pdf_path)
 
-            if is_widget_valid(find_button):
-                find_button.setText("✓ Found")
-                find_button.setEnabled(False)
-
-            if is_widget_valid(progress_dialog):
-                QTimer.singleShot(
-                    PDFOperationSettings.DIALOG_CLOSE_SUCCESS_DELAY_MS,
-                    progress_dialog.accept
-                )
-            return
-
-        # Discovery found nothing (or the user rejected the PDF)
         if is_widget_valid(progress_dialog):
-            progress_dialog.set_failure("No PDF sources found")
-        logger.warning(f"PDF discovery failed for document {card_data.doc_id}")
-        if is_widget_valid(find_button):
-            find_button.setText("✗ Not Found")
-        if is_widget_valid(progress_dialog):
+            if outcome.status == FindPdfStatus.ATTACHED:
+                progress_dialog.set_success(pdf_path)
+            elif outcome.status in (FindPdfStatus.REASSIGNED, FindPdfStatus.SAVED_COPY):
+                progress_dialog.set_success(None, outcome.message)
+            else:
+                progress_dialog.set_failure(outcome.message)
+            succeeded = outcome.status == FindPdfStatus.ATTACHED
             QTimer.singleShot(
-                PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
-                progress_dialog.reject
+                PDFOperationSettings.DIALOG_CLOSE_SUCCESS_DELAY_MS if succeeded
+                else PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
+                progress_dialog.accept if succeeded else progress_dialog.reject
             )
+
+        if is_widget_valid(find_button):
+            find_button.setText(FIND_PDF_BUTTON_LABELS[outcome.status])
+            find_button.setToolTip(outcome.message)
+
+        if pdf_path and outcome.status in (FindPdfStatus.ATTACHED, FindPdfStatus.UNSAVED):
+            # This document has its PDF; the Find button stays disabled
+            return
         QTimer.singleShot(
             PDFOperationSettings.BUTTON_RESET_DELAY_MS,
             lambda: self._reset_find_button(find_button, original_text)
@@ -1349,7 +1498,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         Args:
             error_msg: Error message from the worker or finalization
             find_button: The "Find PDF" button
-            primary_button: The primary PDF button (its error signal is emitted)
+            primary_button: The primary PDF button (unused; kept for symmetry
+                with ``_on_find_pdf_result``)
             card_data: Document card data with identifiers
             progress_dialog: The discovery progress dialog
             original_text: Find button text to restore
@@ -1357,20 +1507,22 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         logger.error(
             f"Error during PDF discovery for document {card_data.doc_id}: {error_msg}"
         )
+        # The progress dialog and the button tooltip carry the message; no
+        # extra modal (primary_button.error_occurred would open one)
+        user_message = describe_discovery_error(error_msg)
         if is_widget_valid(progress_dialog):
-            progress_dialog.set_failure(error_msg)
+            progress_dialog.set_failure(user_message)
             QTimer.singleShot(
                 PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
                 progress_dialog.reject
             )
         if is_widget_valid(find_button):
             find_button.setText("✗ Error")
+            find_button.setToolTip(user_message)
         QTimer.singleShot(
             PDFOperationSettings.BUTTON_RESET_DELAY_MS,
             lambda: self._reset_find_button(find_button, original_text)
         )
-        if is_widget_valid(primary_button):
-            primary_button.error_occurred.emit(error_msg)
 
     def _reset_find_button(self, button: QPushButton, original_text: str) -> None:
         """Reset the Find PDF button to its original state.
@@ -1394,6 +1546,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         This is the network-bound half of "Find PDF" and runs on a
         ``PDFDiscoveryWorker`` thread: it must not touch GUI objects. The
         result is handed to ``_finalize_discovery_result`` on the GUI thread.
+        It also persists a CrossRef-discovered DOI via
+        ``_update_doi_in_database`` (on the worker thread).
 
         Uses FullTextFinder to discover and download PDFs from:
         1. CrossRef title search (to discover DOI if missing)
@@ -1401,7 +1555,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         3. Unpaywall
         4. DOI resolution
         5. Direct URL
-        6. OpenAthens (if enabled in config)
+        6. OpenAthens (if both ``discovery.use_openathens_proxy`` and
+           ``openathens.enabled`` are set)
 
         Args:
             card_data: Document card data with identifiers
@@ -1465,7 +1620,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             except Exception as e:
                 if progress_callback:
                     progress_callback('crossref_title', 'error')
-                logger.warning(f"CrossRef title search error: {e}")
+                logger.warning(f"CrossRef title search error: {e}", exc_info=True)
 
         # Determine if OpenAthens should be used for discovery
         use_openathens_for_discovery = discovery_config.get(
@@ -1526,20 +1681,24 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         self,
         card_data: DocumentCardData,
         result: "DownloadResult"
-    ) -> Optional[Path]:
+    ) -> FindPdfOutcome:
         """
-        Turn a download result into the document's PDF path (GUI thread).
+        Decide what a download result means for the document (GUI thread).
 
         If content verification failed, asks the user what to do via the
         modal verification dialog, so this must run on the GUI thread.
-        Stores PMC full text in the database when the download provided it.
+        Side effects: stores PMC full text for the document when the download
+        provided it; deletes the temporary PDF on REJECT, RETRY, SAVE_AS and
+        MANUAL_UPLOAD; on REASSIGN writes ``pdf_filename`` (and full text) to
+        the *other* document. The caller writes ``pdf_filename`` for an
+        ATTACHED outcome.
 
         Args:
             card_data: Document card data with identifiers
             result: Result from ``_discover_and_download``
 
         Returns:
-            Path to the PDF to attach to this document, or None
+            The outcome; ``pdf_path`` is set only for ATTACHED
         """
         # Check for verification failure
         if result.verified is False:
@@ -1560,7 +1719,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     f"Verification failed for document {card_data.doc_id} "
                     f"but the download result has no file path"
                 )
-                return None
+                return FindPdfOutcome(
+                    FindPdfStatus.NOT_FOUND,
+                    "The downloaded PDF failed verification and was not kept"
+                )
             pdf_path = Path(result.file_path)
 
             # Look up alternative document if we have an extracted DOI
@@ -1593,7 +1755,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
 
             if decision == VerificationDecision.ACCEPT:
                 logger.info(f"User ACCEPTED mismatched PDF for document {card_data.doc_id}")
-                # Continue to return the path and update full_text
+                # Fall through to attach the path and store full_text
             elif decision == VerificationDecision.MANUAL_UPLOAD:
                 # User manually selected a different PDF file
                 logger.info(f"User chose MANUAL_UPLOAD for document {card_data.doc_id}")
@@ -1618,47 +1780,60 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     target_path = pdf_manager.get_pdf_path(document, create_dirs=True)
                     if target_path:
                         shutil.copy2(save_path, target_path)
-                        # Update database with the new filename
-                        self._update_pdf_filename_in_database(
-                            card_data.doc_id, target_path, document
-                        )
                         logger.info(
                             f"User MANUALLY UPLOADED PDF for document {card_data.doc_id}: "
                             f"{save_path} -> {target_path}"
                         )
-                        return target_path
-                    else:
-                        logger.error(
-                            f"Could not determine target path for manual upload"
+                        # The caller records target_path in the database
+                        return FindPdfOutcome(
+                            FindPdfStatus.ATTACHED, "PDF uploaded", Path(target_path)
                         )
-                        return None
-                else:
-                    logger.warning("Manual upload selected but no valid path provided")
-                    return None
+                    logger.error("Could not determine target path for manual upload")
+                    return FindPdfOutcome(
+                        FindPdfStatus.NOT_FOUND,
+                        "Could not determine where to store the uploaded PDF"
+                    )
+                logger.warning("Manual upload selected but no valid path provided")
+                return FindPdfOutcome(
+                    FindPdfStatus.DECLINED, "No file was selected for upload"
+                )
             elif decision == VerificationDecision.REASSIGN:
                 logger.info(
                     f"User chose to REASSIGN PDF to document {reassign_doc_id} "
                     f"(original request was for document {card_data.doc_id})"
                 )
-                # Assign PDF to the alternative document
-                if reassign_doc_id:
-                    self._update_pdf_filename_in_database(
-                        reassign_doc_id, pdf_path,
-                        {'id': reassign_doc_id, 'pdf_filename': pdf_path.name}
+                if not reassign_doc_id:
+                    return FindPdfOutcome(
+                        FindPdfStatus.DECLINED, "No document was chosen to reassign to"
                     )
-                    # If we got full text, update that too
-                    if result.full_text:
-                        self._update_full_text_in_database(reassign_doc_id, result.full_text)
-                # Return None since we didn't assign to the original document
-                return None
+                # Assign PDF to the alternative document, not this one
+                saved = self._update_pdf_filename_in_database(
+                    reassign_doc_id, pdf_path,
+                    {'id': reassign_doc_id, 'pdf_filename': pdf_path.name}
+                )
+                if result.full_text:
+                    self._update_full_text_in_database(reassign_doc_id, result.full_text)
+                if not saved:
+                    return FindPdfOutcome(
+                        FindPdfStatus.UNSAVED,
+                        f"Could not attach the PDF to document {reassign_doc_id} "
+                        f"in the database (see log)"
+                    )
+                return FindPdfOutcome(
+                    FindPdfStatus.REASSIGNED,
+                    f"PDF attached to document {reassign_doc_id} instead"
+                )
             elif decision == VerificationDecision.SAVE_AS:
-                # Dialog already saved the file, just delete temp and return None
+                # Dialog already saved the file, just delete the temp copy
                 logger.info(f"User saved PDF copy for document {card_data.doc_id}")
                 try:
                     pdf_path.unlink()
                 except Exception as e:
                     logger.warning(f"Failed to delete temp PDF: {e}")
-                return None
+                return FindPdfOutcome(
+                    FindPdfStatus.SAVED_COPY,
+                    f"Copy saved to {save_path}" if save_path else "Copy saved"
+                )
             elif decision == VerificationDecision.RETRY:
                 logger.info(f"User chose to RETRY for document {card_data.doc_id}")
                 # Delete the mismatched file
@@ -1666,29 +1841,45 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     pdf_path.unlink()
                 except Exception as e:
                     logger.warning(f"Failed to delete temp PDF: {e}")
-                # Note: Retry would need to be handled at a higher level
-                # For now, return None to indicate failure
-                return None
+                # The Find button re-enables after a short delay; clicking it
+                # again is the retry
+                return FindPdfOutcome(
+                    FindPdfStatus.DECLINED,
+                    "Mismatched PDF discarded; click Find again to retry"
+                )
             else:  # REJECT
                 logger.info(f"User REJECTED mismatched PDF for document {card_data.doc_id}")
                 try:
                     pdf_path.unlink()
                 except Exception as e:
                     logger.warning(f"Failed to delete rejected PDF: {e}")
-                return None
+                return FindPdfOutcome(FindPdfStatus.DECLINED, "Mismatched PDF rejected")
 
         if result.success and result.file_path:
+            file_path = Path(result.file_path)
+            if not file_path.exists():
+                logger.error(
+                    f"Download for document {card_data.doc_id} reported success "
+                    f"but {file_path} does not exist"
+                )
+                return FindPdfOutcome(
+                    FindPdfStatus.NOT_FOUND,
+                    f"The downloaded file is missing: {file_path}"
+                )
             # If we got full text from a PMC package, store it in the database
             if result.full_text:
                 self._update_full_text_in_database(card_data.doc_id, result.full_text)
-
-            return Path(result.file_path)
+            return FindPdfOutcome(FindPdfStatus.ATTACHED, "PDF found", file_path)
 
         logger.warning(
             f"PDF discovery failed for document {card_data.doc_id}: "
             f"{result.error_message}"
         )
-        return None
+        return FindPdfOutcome(
+            FindPdfStatus.NOT_FOUND,
+            describe_discovery_error(result.error_message)
+            if result.error_message else "No PDF sources found"
+        )
 
     def _update_doi_in_database(self, doc_id: int, doi: str) -> None:
         """
@@ -1956,7 +2147,11 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 'pdf_filename': target_filename,
                 'year': year,
             }
-            self._update_pdf_filename_in_database(doc_id, target_path, document)
+            if not self._update_pdf_filename_in_database(doc_id, target_path, document):
+                raise RuntimeError(
+                    f"PDF stored at {target_path}, but the database link could "
+                    f"not be saved (see log)"
+                )
 
             # Update cache
             self._pdf_path_cache[doc_id] = target_path
@@ -1970,13 +2165,16 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             # Re-raise so the error signal is emitted
             raise
 
-    def _update_full_text_in_database(self, doc_id: int, full_text: str) -> None:
+    def _update_full_text_in_database(self, doc_id: int, full_text: str) -> bool:
         """
         Update the full_text column in the database after extracting from NXML.
 
         Args:
             doc_id: Document ID
             full_text: Extracted full text content from NXML
+
+        Returns:
+            True if the database was updated, False otherwise (logged)
         """
         try:
             from bmlibrarian.database import get_db_manager
@@ -1993,63 +2191,73 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                         f"Updated document.full_text for doc {doc_id} "
                         f"({len(full_text)} chars)"
                     )
+            return True
 
-        except Exception as e:
-            logger.error(
-                f"Failed to update full_text in database for document {doc_id}: {e}"
+        except Exception:
+            # Don't raise - the PDF itself was downloaded; full text is secondary
+            logger.exception(
+                f"Failed to update full_text in database for document {doc_id}"
             )
-            # Don't raise - the PDF was successfully downloaded, database update is secondary
+            return False
 
-    def _update_pdf_filename_in_database(self, doc_id: int, pdf_path: Path, document: Dict[str, Any]) -> None:
+    def _update_pdf_filename_in_database(
+        self,
+        doc_id: int,
+        pdf_path: Path,
+        document: Dict[str, Any]
+    ) -> bool:
         """
         Update the pdf_filename in the database after downloading a PDF.
+
+        The stored path is relative to ``base_pdf_dir`` and taken from where
+        the file actually is, so it stays correct when the document dict
+        lacks the year (e.g. a PDF reassigned to another document).
 
         Args:
             doc_id: Document ID
             pdf_path: Path to the downloaded PDF file
-            document: Document dictionary (for PDFManager's get_relative_pdf_path)
+            document: Document dictionary (for PDFManager's
+                get_relative_pdf_path when the file is outside base_pdf_dir)
+
+        Returns:
+            True if the database was updated, False otherwise (logged)
         """
         try:
-            # Get relative path using PDFManager's method
-            # Update document dict with the actual pdf_filename for relative path calculation
-            document['pdf_filename'] = pdf_path.name
-            relative_path = self.pdf_manager.get_relative_pdf_path(document)
-
-            if not relative_path:
-                logger.error(f"PDFManager.get_relative_pdf_path returned None for document {doc_id}")
-                # Fallback: calculate manually
-                if self.base_pdf_dir and pdf_path.is_relative_to(self.base_pdf_dir):
-                    relative_path = str(pdf_path.relative_to(self.base_pdf_dir))
-                else:
-                    relative_path = pdf_path.name
-
-            logger.info(f"[PDF DEBUG] Document ID: {doc_id}")
-            logger.info(f"[PDF DEBUG] PDF saved to absolute path: {pdf_path}")
-            logger.info(f"[PDF DEBUG] Relative path for database: {relative_path}")
-
-            # Update database using PDFManager's method if it has db connection
-            if hasattr(self.pdf_manager, 'db_conn') and self.pdf_manager.db_conn:
-                success = self.pdf_manager.update_database_pdf_path(doc_id, relative_path)
-                if success:
-                    logger.info(f"[PDF DEBUG] Successfully updated document.pdf_filename in database via PDFManager")
-                else:
-                    logger.error(f"[PDF DEBUG] PDFManager.update_database_pdf_path failed for document {doc_id}")
+            if self.base_pdf_dir and pdf_path.is_relative_to(self.base_pdf_dir):
+                relative_path: Optional[str] = str(pdf_path.relative_to(self.base_pdf_dir))
             else:
-                # Fallback: update directly
-                from bmlibrarian.database import get_db_manager
-                db_manager = get_db_manager()
+                document['pdf_filename'] = pdf_path.name
+                relative_path = self.pdf_manager.get_relative_pdf_path(document) or pdf_path.name
 
-                with db_manager.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE document SET pdf_filename = %s WHERE id = %s",
-                            (relative_path, doc_id)
-                        )
-                        conn.commit()
-                        logger.info(f"[PDF DEBUG] Successfully updated document.pdf_filename in database directly")
+            logger.info(
+                f"Recording PDF for document {doc_id}: {pdf_path} "
+                f"(stored as {relative_path})"
+            )
 
-        except Exception as e:
-            logger.error(f"[PDF DEBUG] Failed to update pdf_filename in database for document {doc_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Don't raise - the PDF was successfully downloaded, database update is secondary
+            if hasattr(self.pdf_manager, 'db_conn') and self.pdf_manager.db_conn:
+                if not self.pdf_manager.update_database_pdf_path(doc_id, relative_path):
+                    logger.error(
+                        f"PDFManager.update_database_pdf_path failed for document {doc_id}"
+                    )
+                    return False
+                return True
+
+            from bmlibrarian.database import get_db_manager
+            db_manager = get_db_manager()
+            with db_manager.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE document SET pdf_filename = %s WHERE id = %s",
+                        (relative_path, doc_id)
+                    )
+                    updated = cur.rowcount > 0
+                    conn.commit()
+            if not updated:
+                logger.error(f"No document {doc_id} to record pdf_filename on")
+            return updated
+
+        except Exception:
+            logger.exception(
+                f"Failed to update pdf_filename in database for document {doc_id}"
+            )
+            return False

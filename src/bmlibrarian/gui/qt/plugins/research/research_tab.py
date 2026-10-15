@@ -155,11 +155,14 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.workflow_executor.workflow_error.connect(self._on_workflow_error)
         self.workflow_executor.status_message.connect(self._on_workflow_status)
 
-        # Step-data signals (query_generated, documents_found, ...) are NOT
-        # connected here: WorkflowThread drives the executor and re-emits each
-        # step's result itself (see _connect_workflow_thread_signals). The
-        # executor helpers it calls also emit some of them, so connecting both
-        # would run every handler twice per search.
+        # Step-data signals are NOT connected here: WorkflowThread re-emits
+        # query_generated/documents_found/documents_scored/citations_extracted/
+        # preliminary_report_generated itself (see
+        # _connect_workflow_thread_signals), and per-document scoring progress
+        # comes from its document_scored signal. Some executor helpers it calls
+        # also emit these, so connecting both would run handlers twice.
+        # (QtWorkflowExecutor.start_workflow() is unused; reviving it would
+        # need its own wiring.)
 
         self.logger.info("Workflow executor initialized with agents")
 

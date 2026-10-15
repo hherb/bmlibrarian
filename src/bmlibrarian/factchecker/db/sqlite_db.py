@@ -13,14 +13,20 @@ from typing import Dict, List, Optional, Any
 from dataclasses import asdict
 from datetime import datetime
 
+from bmlibrarian.database import extract_pmid
+
 from .abstract_db import (
     AbstractFactCheckerDB, Statement, Annotator, HumanAnnotation
 )
 
 logger = logging.getLogger(__name__)
 
-# source_id the review-package exporter preserves for PubMed documents
+# PubMed's sources.id in the exporting PostgreSQL database. The exporter
+# copies source_id verbatim and packages carry no sources table, so this
+# assumes PubMed is id 1 there (true for setup-wizard-seeded databases).
 PUBMED_SOURCE_ID = 1
+# Source name passed to extract_pmid for documents with PUBMED_SOURCE_ID
+PUBMED_SOURCE_NAME = "pubmed"
 # Length of the year prefix in an ISO 8601 date ("YYYY-MM-DD")
 ISO_YEAR_LENGTH = 4
 
@@ -40,6 +46,10 @@ def parse_authors_json(authors_text: Optional[str]) -> List[str]:
     try:
         parsed = json.loads(authors_text)
     except (json.JSONDecodeError, TypeError):
+        logger.warning(
+            "documents.authors is not a JSON array; using it as one author: %.80r",
+            authors_text,
+        )
         return [str(authors_text)]
     if isinstance(parsed, list):
         return [str(a) for a in parsed if a]
@@ -414,9 +424,11 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         """
         Get full display metadata for a document from the review package.
 
-        Mirrors the keys of ``bmlibrarian.database.get_document_details``.
-        Review packages carry no ``sources`` table or PDF files, so the PMID
-        uses the exporter's PubMed ``source_id`` convention (as
+        Returns the subset of ``bmlibrarian.database.get_document_details``'s
+        keys that a review package can supply (no source_name, keywords,
+        mesh_terms or full text; ``authors`` is not truncated). Review
+        packages carry no ``sources`` table or PDF files, so the PMID uses the
+        exporter's PubMed ``source_id`` convention (as
         ``get_document_metadata`` does) and ``pdf_filename`` is always None.
 
         Args:
@@ -448,7 +460,10 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
             'year': year_from_iso_date(row['publication_date']),
             'publication_date': row['publication_date'],
             'doi': row['doi'],
-            'pmid': external_id if row['source_id'] == PUBMED_SOURCE_ID and external_id else None,
+            'pmid': extract_pmid(
+                external_id,
+                PUBMED_SOURCE_NAME if row['source_id'] == PUBMED_SOURCE_ID else None,
+            ),
             'external_id': external_id,
             'source_id': row['source_id'],
             'url': row['url'],
