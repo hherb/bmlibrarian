@@ -42,7 +42,9 @@ dependencies = [
     "pymupdf-layout>=1.26.6",
     "opencv-python>=4.11.0.86",
     "llama-cpp-python>=0.3.16",
-    "sentence-transformers>=5.1.2",
+    "sentence-transformers>=6.1.0",
+    "transformers>=5.18.0",
+    "torchvision>=0.28.0",
     "reportlab>=4.4.5",
     # Sentence boundary detection
     "pysbd>=0.3.4",
