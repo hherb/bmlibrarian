@@ -249,9 +249,10 @@ class FactCheckerAgent(BaseAgent):
         """
         self._initialize_agents()
 
-        # Use provided values or defaults
-        max_docs = max_documents or self.max_search_results
-        threshold = score_threshold or self.score_threshold
+        # Use provided values or defaults (`is None`, so an explicit 0 / 0.0
+        # is honoured rather than swallowed by `or`)
+        max_docs = self.max_search_results if max_documents is None else max_documents
+        threshold = self.score_threshold if score_threshold is None else score_threshold
 
         self._call_callback("search", f"Searching literature for: {statement}")
 

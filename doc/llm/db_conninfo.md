@@ -40,7 +40,8 @@ connection string — do not add new hand-concatenated sites.
 Same principle inside SQL: bind values as `%s` parameters, never interpolate.
 `database.py`'s `find_abstracts` uses `build_pagination_clause(max_rows,
 offset)` which returns a `LIMIT %s [OFFSET %s]` suffix plus the ordered param
-list. The f-string source-id filters in `search_with_bm25` /
-`search_with_fulltext_function` are the remaining interpolation site (not
-injectable — IDs are DB-sourced ints — but tracked in
-`doc/TODO_code_review_2026-07.md`).
+list. `search_with_bm25` / `search_with_fulltext_function` use
+`build_source_filter_clause(source_id_map, use_pubmed, use_medrxiv,
+use_others)`, which binds every selected source id as one
+`source_id = ANY(%s)` array parameter (no selected/known source → no filter,
+as before).

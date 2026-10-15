@@ -35,22 +35,58 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .base import BaseAgent
 from .transparency_data import (
-    DEFAULT_CONFIDENCE_FALLBACK,
     DEFAULT_MAX_RETRIES,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_CONFIDENCE,
     MAX_TEXT_LENGTH,
+    MAX_TOTAL_SCORE,
+    MAX_UNIT_VALUE,
+    MIN_UNIT_VALUE,
+    PATTERN_INDUSTRY_MIN_CONFIDENCE,
     SUMMARY_SEPARATOR_WIDTH,
     SCORE_THRESHOLD_HIGH_RISK,
     SCORE_THRESHOLD_MEDIUM_RISK,
     DataAvailability,
     RiskLevel,
     TransparencyAssessment,
+    coerce_bounded_float,
+    coerce_str_list,
     extract_trial_registry_ids,
     is_likely_industry_funder,
+    score_distribution_label,
 )
 
 logger = logging.getLogger(__name__)
+
+# Fields the LLM response must contain for an assessment to be usable
+REQUIRED_ASSESSMENT_FIELDS = (
+    "has_funding_disclosure",
+    "has_coi_disclosure",
+    "data_availability",
+    "transparency_score",
+    "overall_confidence",
+)
+
+# Numeric LLM fields: name -> (minimum, maximum, default if missing/invalid).
+# A default of None means the field is required and invalid data fails the
+# assessment instead of being silently replaced.
+NUMERIC_ASSESSMENT_FIELDS = {
+    "transparency_score": (MIN_UNIT_VALUE, MAX_TOTAL_SCORE, None),
+    "overall_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, None),
+    "industry_funding_confidence": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+    "funding_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+    "coi_disclosure_quality": (MIN_UNIT_VALUE, MAX_UNIT_VALUE, 0.0),
+}
+
+# List-of-string LLM fields
+LIST_ASSESSMENT_FIELDS = (
+    "funding_sources",
+    "conflicts_identified",
+    "trial_registry_ids",
+    "risk_indicators",
+    "strengths",
+    "weaknesses",
+)
 
 
 class TransparencyAgent(BaseAgent):
@@ -184,26 +220,14 @@ class TransparencyAgent(BaseAgent):
             self._assessment_stats["failed_assessments"] += 1
             return None
 
-        # Validate required fields
-        required_fields = [
-            "has_funding_disclosure",
-            "has_coi_disclosure",
-            "data_availability",
-            "transparency_score",
-            "overall_confidence",
-        ]
-        if not all(f in assessment_data for f in required_fields):
-            missing = [f for f in required_fields if f not in assessment_data]
-            logger.error(
-                f"Missing required fields {missing} in assessment response for document {doc_id}"
-            )
+        # Validate and normalize the untrusted LLM output
+        validated = self._validate_assessment_data(assessment_data, doc_id)
+        if validated is None:
             self._assessment_stats["failed_assessments"] += 1
             return None
+        assessment_data = validated
 
-        # Parse confidence
-        overall_confidence = float(
-            assessment_data.get("overall_confidence", DEFAULT_CONFIDENCE_FALLBACK)
-        )
+        overall_confidence = assessment_data["overall_confidence"]
 
         if overall_confidence < min_confidence:
             logger.info(
@@ -213,11 +237,11 @@ class TransparencyAgent(BaseAgent):
             self._assessment_stats["low_confidence_assessments"] += 1
 
         # Merge LLM-found registry IDs with pattern-extracted ones
-        llm_registry_ids = assessment_data.get("trial_registry_ids", [])
+        llm_registry_ids = assessment_data["trial_registry_ids"]
         all_registry_ids = list(set(pre_extracted_registry_ids + llm_registry_ids))
 
         # Check funding sources for industry involvement
-        funding_sources = assessment_data.get("funding_sources", [])
+        funding_sources = assessment_data["funding_sources"]
         llm_industry_flag = assessment_data.get("is_industry_funded")
         pattern_industry_flag = any(is_likely_industry_funder(s) for s in funding_sources)
 
@@ -227,9 +251,9 @@ class TransparencyAgent(BaseAgent):
         else:
             is_industry = llm_industry_flag or pattern_industry_flag
 
-        industry_confidence = float(assessment_data.get("industry_funding_confidence", 0.0))
-        if pattern_industry_flag and industry_confidence < 0.8:
-            industry_confidence = max(industry_confidence, 0.8)
+        industry_confidence = assessment_data["industry_funding_confidence"]
+        if pattern_industry_flag:
+            industry_confidence = max(industry_confidence, PATTERN_INDUSTRY_MIN_CONFIDENCE)
 
         # Build assessment object
         assessment = TransparencyAssessment(
@@ -242,15 +266,11 @@ class TransparencyAgent(BaseAgent):
             funding_sources=funding_sources,
             is_industry_funded=is_industry,
             industry_funding_confidence=industry_confidence,
-            funding_disclosure_quality=float(
-                assessment_data.get("funding_disclosure_quality", 0.0)
-            ),
+            funding_disclosure_quality=assessment_data["funding_disclosure_quality"],
             has_coi_disclosure=bool(assessment_data.get("has_coi_disclosure", False)),
             coi_statement=assessment_data.get("coi_statement"),
-            conflicts_identified=assessment_data.get("conflicts_identified", []),
-            coi_disclosure_quality=float(
-                assessment_data.get("coi_disclosure_quality", 0.0)
-            ),
+            conflicts_identified=assessment_data["conflicts_identified"],
+            coi_disclosure_quality=assessment_data["coi_disclosure_quality"],
             data_availability=assessment_data.get(
                 "data_availability", DataAvailability.NOT_STATED.value
             ),
@@ -261,11 +281,11 @@ class TransparencyAgent(BaseAgent):
             contributions_statement=assessment_data.get("contributions_statement"),
             has_trial_registration=bool(len(all_registry_ids) > 0),
             trial_registry_ids=all_registry_ids,
-            transparency_score=float(assessment_data.get("transparency_score", 0.0)),
+            transparency_score=assessment_data["transparency_score"],
             overall_confidence=overall_confidence,
-            risk_indicators=assessment_data.get("risk_indicators", []),
-            strengths=assessment_data.get("strengths", []),
-            weaknesses=assessment_data.get("weaknesses", []),
+            risk_indicators=assessment_data["risk_indicators"],
+            strengths=assessment_data["strengths"],
+            weaknesses=assessment_data["weaknesses"],
             model_used=self.model,
             agent_version=self.VERSION,
         )
@@ -290,6 +310,71 @@ class TransparencyAgent(BaseAgent):
         )
 
         return assessment
+
+    def _validate_assessment_data(
+        self,
+        data: Any,
+        doc_id: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and normalize a parsed LLM transparency response.
+
+        Required fields must be present and the required numeric fields must
+        be numbers; anything else fails the assessment (returns ``None``).
+        Optional numeric fields that are missing or non-numeric fall back to
+        their defaults, numbers are clamped to their documented ranges, and
+        list fields are coerced to lists of strings. Every repair is logged.
+
+        Args:
+            data: Parsed JSON from the LLM (not trusted to be a dict).
+            doc_id: Document ID for log messages.
+
+        Returns:
+            A normalized copy of ``data``, or ``None`` if it is unusable.
+        """
+        if not isinstance(data, dict):
+            logger.error(
+                f"Transparency response for document {doc_id} is "
+                f"{type(data).__name__}, expected a JSON object"
+            )
+            return None
+
+        missing = [f for f in REQUIRED_ASSESSMENT_FIELDS if f not in data]
+        if missing:
+            logger.error(
+                f"Missing required fields {missing} in assessment response for document {doc_id}"
+            )
+            return None
+
+        normalized = dict(data)
+
+        for name, (minimum, maximum, default) in NUMERIC_ASSESSMENT_FIELDS.items():
+            raw = data.get(name)
+            value = coerce_bounded_float(raw, minimum, maximum)
+            if value is None:
+                if default is None:
+                    logger.error(
+                        f"Invalid value {raw!r} for required field '{name}' "
+                        f"in assessment response for document {doc_id}"
+                    )
+                    return None
+                if raw is not None:
+                    logger.warning(
+                        f"Invalid value {raw!r} for '{name}' (document {doc_id}); "
+                        f"using {default}"
+                    )
+                value = default
+            normalized[name] = value
+
+        for name in LIST_ASSESSMENT_FIELDS:
+            items, ok = coerce_str_list(data.get(name))
+            if not ok:
+                logger.warning(
+                    f"Unexpected type {type(data.get(name)).__name__} for '{name}' "
+                    f"(document {doc_id}); using an empty list"
+                )
+            normalized[name] = items
+
+        return normalized
 
     def assess_transparency_by_id(
         self,
@@ -355,10 +440,19 @@ class TransparencyAgent(BaseAgent):
             if progress_callback:
                 progress_callback(i + 1, total, doc_title)
 
-            assessment = self.assess_transparency(
-                document=document,
-                min_confidence=min_confidence,
-            )
+            # One unexpected failure must not abort the rest of the batch
+            try:
+                assessment = self.assess_transparency(
+                    document=document,
+                    min_confidence=min_confidence,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Transparency assessment failed for document {document.get('id')}: {e}",
+                    exc_info=True,
+                )
+                self._assessment_stats["failed_assessments"] += 1
+                continue
 
             if assessment:
                 assessments.append(assessment)
@@ -777,19 +871,20 @@ Respond ONLY with valid JSON. Do not include any explanatory text outside the JS
         Returns:
             Dictionary with score categories and counts.
         """
-        distribution = {
-            "high_transparency (7-10)": 0,
-            "moderate_transparency (4-6)": 0,
-            "low_transparency (0-3)": 0,
+        # Buckets use the same thresholds as classify_risk(), so a document's
+        # bucket always matches its risk level (high transparency = low risk)
+        high = f"{SCORE_THRESHOLD_MEDIUM_RISK:g}-{MAX_TOTAL_SCORE:g}"
+        moderate = f"{SCORE_THRESHOLD_HIGH_RISK:g}-{SCORE_THRESHOLD_MEDIUM_RISK:g}"
+        low = f"0-{SCORE_THRESHOLD_HIGH_RISK:g}"
+        labels = {
+            "high_transparency": f"high_transparency ({high})",
+            "moderate_transparency": f"moderate_transparency ({moderate})",
+            "low_transparency": f"low_transparency ({low})",
         }
+        distribution = {label: 0 for label in labels.values()}
 
         for assessment in assessments:
-            score = assessment.transparency_score
-            if score >= SCORE_THRESHOLD_MEDIUM_RISK + 1:
-                distribution["high_transparency (7-10)"] += 1
-            elif score >= SCORE_THRESHOLD_HIGH_RISK:
-                distribution["moderate_transparency (4-6)"] += 1
-            else:
-                distribution["low_transparency (0-3)"] += 1
+            bucket = score_distribution_label(assessment.transparency_score)
+            distribution[labels[bucket]] += 1
 
         return distribution

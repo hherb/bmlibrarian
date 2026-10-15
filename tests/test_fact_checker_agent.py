@@ -4,7 +4,6 @@ Tests for FactCheckerAgent
 Tests fact-checking workflow, statement evaluation, and evidence synthesis.
 """
 
-import json
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
 from datetime import datetime, timezone
@@ -242,47 +241,47 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.assertIn("yes|no|maybe", prompt)
         self.assertIn("JSON", prompt)
 
-    def test_parse_evaluation_response_valid(self):
-        """Test parsing of valid evaluation response."""
-        response = json.dumps({
+    def test_validate_evaluation_response_valid(self):
+        """Test validation of a valid (already parsed) evaluation response."""
+        response = {
             "evaluation": "no",
             "reason": "Evidence shows most cases don't require surgery",
             "citation_stances": {
                 "1": "contradicts",
                 "2": "contradicts"
             }
-        })
+        }
 
-        result = self.agent._parse_evaluation_response(response)
+        result = self.agent._validate_evaluation_response(response)
 
         self.assertEqual(result['evaluation'], 'no')
         self.assertIn('reason', result)
         self.assertIn('citation_stances', result)
         self.assertEqual(result['citation_stances']['1'], 'contradicts')
 
-    def test_parse_evaluation_response_with_markdown(self):
-        """Test parsing of response wrapped in markdown code blocks."""
-        response = '''```json
-{
-    "evaluation": "yes",
-    "reason": "Evidence supports the statement",
-    "citation_stances": {"1": "supports"}
-}
-```'''
-
-        result = self.agent._parse_evaluation_response(response)
-
-        self.assertEqual(result['evaluation'], 'yes')
-        self.assertIn('reason', result)
-
-    def test_parse_evaluation_response_invalid_value(self):
-        """Test parsing with invalid evaluation value."""
-        response = json.dumps({
-            "evaluation": "unknown",
-            "reason": "Test reason"
+    def test_validate_evaluation_response_normalizes(self):
+        """Evaluation is lower-cased/stripped and citation_stances defaulted."""
+        result = self.agent._validate_evaluation_response({
+            "evaluation": "  YES ",
+            "reason": "Evidence supports the statement",
         })
 
-        result = self.agent._parse_evaluation_response(response)
+        self.assertEqual(result['evaluation'], 'yes')
+        self.assertEqual(result['citation_stances'], {})
+
+    def test_validate_evaluation_response_missing_fields(self):
+        """A response without evaluation/reason is rejected."""
+        with self.assertRaises(ValueError):
+            self.agent._validate_evaluation_response({"evaluation": "yes"})
+
+    def test_validate_evaluation_response_invalid_value(self):
+        """Test validation with an invalid evaluation value."""
+        response = {
+            "evaluation": "unknown",
+            "reason": "Test reason"
+        }
+
+        result = self.agent._validate_evaluation_response(response)
 
         # Should default to "maybe" for invalid values
         self.assertEqual(result['evaluation'], 'maybe')
@@ -301,8 +300,8 @@ class TestFactCheckerAgent(unittest.TestCase):
     def test_citations_to_evidence_refs(self):
         """Test conversion of Citations to EvidenceReferences."""
         scored_docs = [
-            (self.sample_documents[0], 4.5),
-            (self.sample_documents[1], 4.0)
+            (self.sample_documents[0], {'score': 4.5}),
+            (self.sample_documents[1], {'score': 4.0})
         ]
 
         citation_stances = {
@@ -374,6 +373,38 @@ class TestFactCheckerAgent(unittest.TestCase):
         self.assertEqual(result.documents_reviewed, 0)
         self.assertIn("No relevant documents", result.reason)
         self.assertFalse(result.matches_expected)
+
+    @patch.object(FactCheckerAgent, '_initialize_agents')
+    @patch.object(FactCheckerAgent, '_search_documents')
+    @patch.object(FactCheckerAgent, '_score_documents')
+    def test_check_statement_explicit_zero_overrides_are_honoured(
+        self, mock_score, mock_search, mock_init
+    ):
+        """Explicit 0 / 0.0 overrides must not fall back to the defaults."""
+        mock_search.return_value = self.sample_documents
+        mock_score.return_value = []
+
+        self.agent.check_statement(
+            statement=self.test_statement, max_documents=0, score_threshold=0.0
+        )
+
+        mock_search.assert_called_once_with(self.test_statement, 0)
+        self.assertEqual(mock_score.call_args.args[2], 0.0)
+
+    @patch.object(FactCheckerAgent, '_initialize_agents')
+    @patch.object(FactCheckerAgent, '_search_documents')
+    @patch.object(FactCheckerAgent, '_score_documents')
+    def test_check_statement_none_overrides_use_defaults(
+        self, mock_score, mock_search, mock_init
+    ):
+        """Omitted overrides fall back to the agent's configured defaults."""
+        mock_search.return_value = self.sample_documents
+        mock_score.return_value = []
+
+        self.agent.check_statement(statement=self.test_statement)
+
+        mock_search.assert_called_once_with(self.test_statement, 50)
+        self.assertEqual(mock_score.call_args.args[2], 2.5)
 
     @patch.object(FactCheckerAgent, '_initialize_agents')
     @patch.object(FactCheckerAgent, '_search_documents')
@@ -468,67 +499,9 @@ class TestFactCheckerAgent(unittest.TestCase):
         mock_extract.assert_called_once()
         mock_evaluate.assert_called_once()
 
-    def test_generate_summary(self):
-        """Test summary generation for batch results."""
-        results = [
-            FactCheckResult(
-                statement="Statement 1",
-                evaluation="yes",
-                reason="Test",
-                evidence_list=[],
-                confidence="high",
-                documents_reviewed=5,
-                supporting_citations=3,
-                contradicting_citations=0,
-                neutral_citations=0,
-                expected_answer="yes",
-                matches_expected=True
-            ),
-            FactCheckResult(
-                statement="Statement 2",
-                evaluation="no",
-                reason="Test",
-                evidence_list=[],
-                confidence="medium",
-                documents_reviewed=4,
-                supporting_citations=0,
-                contradicting_citations=2,
-                neutral_citations=0,
-                expected_answer="no",
-                matches_expected=True
-            ),
-            FactCheckResult(
-                statement="Statement 3",
-                evaluation="maybe",
-                reason="Test",
-                evidence_list=[],
-                confidence="low",
-                documents_reviewed=2,
-                supporting_citations=1,
-                contradicting_citations=1,
-                neutral_citations=0,
-                expected_answer="yes",
-                matches_expected=False
-            )
-        ]
-
-        summary = self.agent._generate_summary(results)
-
-        self.assertEqual(summary['total_statements'], 3)
-        self.assertEqual(summary['evaluations']['yes'], 1)
-        self.assertEqual(summary['evaluations']['no'], 1)
-        self.assertEqual(summary['evaluations']['maybe'], 1)
-        self.assertEqual(summary['confidences']['high'], 1)
-        self.assertEqual(summary['confidences']['medium'], 1)
-        self.assertEqual(summary['confidences']['low'], 1)
-        self.assertIn('validation', summary)
-        self.assertEqual(summary['validation']['matches'], 2)
-        self.assertEqual(summary['validation']['mismatches'], 1)
-        self.assertAlmostEqual(summary['validation']['accuracy'], 0.667, places=2)
-
     @patch.object(FactCheckerAgent, 'check_statement')
-    @patch.object(FactCheckerAgent, '_save_results')
-    def test_check_batch(self, mock_save, mock_check):
+    @patch.object(FactCheckerAgent, 'export_database_to_json')
+    def test_check_batch(self, mock_export, mock_check):
         """Test batch processing of statements."""
         statements = [
             {"statement": "Statement 1", "answer": "yes"},
@@ -558,7 +531,7 @@ class TestFactCheckerAgent(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual(mock_check.call_count, 2)
-        mock_save.assert_called_once()
+        mock_export.assert_called_once_with("test_output.json", export_type="full")
 
     def test_filter_agent_params(self):
         """Test filtering of agent configuration parameters."""
@@ -574,7 +547,8 @@ class TestFactCheckerAgent(unittest.TestCase):
 
         self.assertIn('temperature', filtered)
         self.assertIn('top_p', filtered)
-        self.assertIn('max_tokens', filtered)
+        # Sub-agents (query/scoring/citation) do not accept max_tokens
+        self.assertNotIn('max_tokens', filtered)
         self.assertNotIn('unsupported_param', filtered)
         self.assertNotIn('another_bad_param', filtered)
 

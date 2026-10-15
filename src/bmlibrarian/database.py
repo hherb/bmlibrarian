@@ -378,6 +378,52 @@ def build_pagination_clause(max_rows: int, offset: int) -> Tuple[str, List[int]]
     return clause, params
 
 
+def build_source_filter_clause(
+    source_id_map: Dict[str, Union[int, List[int]]],
+    use_pubmed: bool = True,
+    use_medrxiv: bool = True,
+    use_others: bool = True,
+) -> Tuple[str, List[List[int]]]:
+    """Build a parameterized ``source_id`` filter and its bound value.
+
+    Collects the IDs of the selected sources into one list bound as a single
+    ``%s`` array parameter (``source_id = ANY(%s)``) instead of interpolating
+    IDs into the SQL string.
+
+    Args:
+        source_id_map: Source-name -> id mapping, as returned by
+            ``DatabaseManager.get_cached_source_ids()``. ``'others'`` may be a
+            single id or a list of ids.
+        use_pubmed: Include the ``'pubmed'`` source.
+        use_medrxiv: Include the ``'medrxiv'`` source.
+        use_others: Include the ``'others'`` source(s).
+
+    Returns:
+        A ``(clause, params)`` tuple. ``clause`` is ``" AND source_id =
+        ANY(%s)"`` with ``params`` holding one list of ints, or ``("", [])``
+        when no selected source is known (no filtering, as before).
+
+    Raises:
+        ValueError: If a source id cannot be interpreted as an integer.
+    """
+    selected: List[Union[int, List[int]]] = []
+    if use_pubmed and 'pubmed' in source_id_map:
+        selected.append(source_id_map['pubmed'])
+    if use_medrxiv and 'medrxiv' in source_id_map:
+        selected.append(source_id_map['medrxiv'])
+    if use_others and 'others' in source_id_map:
+        selected.append(source_id_map['others'])
+
+    ids: List[int] = []
+    for entry in selected:
+        for value in (entry if isinstance(entry, list) else [entry]):
+            ids.append(int(value))
+
+    if not ids:
+        return "", []
+    return " AND source_id = ANY(%s)", [ids]
+
+
 def find_abstracts(
     ts_query_str: str,
     max_rows: int = 100,
@@ -916,23 +962,9 @@ def search_with_bm25(
     """
     db_manager = get_db_manager()
 
-    # Build source filter
-    source_filters = []
-    source_id_map = _default_source_ids()
-    if use_pubmed and 'pubmed' in source_id_map:
-        source_filters.append(f"source_id = {source_id_map['pubmed']}")
-    if use_medrxiv and 'medrxiv' in source_id_map:
-        source_filters.append(f"source_id = {source_id_map['medrxiv']}")
-    if use_others and 'others' in source_id_map:
-        others = source_id_map['others']
-        if isinstance(others, list) and len(others) > 0:
-            source_filters.append(f"source_id = ANY(ARRAY{others})")
-        elif not isinstance(others, list):
-            source_filters.append(f"source_id = {others}")
-
-    source_filter = ""
-    if source_filters:
-        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+    source_filter, source_params = build_source_filter_clause(
+        _default_source_ids(), use_pubmed, use_medrxiv, use_others
+    )
 
     logger.info(f"BM25 search: '{query_text}', max_results={max_results}")
 
@@ -943,10 +975,10 @@ def search_with_bm25(
                 SELECT b.*, s.name as source_name
                 FROM bm25(%s, %s) b
                 LEFT JOIN sources s ON b.source_id = s.id
-                WHERE 1=1 {source_filter}
+                WHERE 1=1{source_filter}
             """
 
-            cur.execute(sql, (query_text, max_results))
+            cur.execute(sql, (query_text, max_results, *source_params))
 
             for row in cur:
                 yield dict(row)
@@ -1040,23 +1072,9 @@ def search_with_fulltext_function(
     """
     db_manager = get_db_manager()
 
-    # Build source filter
-    source_filters = []
-    source_id_map = _default_source_ids()
-    if use_pubmed and 'pubmed' in source_id_map:
-        source_filters.append(f"source_id = {source_id_map['pubmed']}")
-    if use_medrxiv and 'medrxiv' in source_id_map:
-        source_filters.append(f"source_id = {source_id_map['medrxiv']}")
-    if use_others and 'others' in source_id_map:
-        others = source_id_map['others']
-        if isinstance(others, list) and len(others) > 0:
-            source_filters.append(f"source_id = ANY(ARRAY{others})")
-        elif not isinstance(others, list):
-            source_filters.append(f"source_id = {others}")
-
-    source_filter = ""
-    if source_filters:
-        source_filter = "AND (" + " OR ".join(source_filters) + ")"
+    source_filter, source_params = build_source_filter_clause(
+        _default_source_ids(), use_pubmed, use_medrxiv, use_others
+    )
 
     logger.info(f"Fulltext search: '{query_text}', max_results={max_results}")
 
@@ -1067,10 +1085,10 @@ def search_with_fulltext_function(
                 SELECT f.*, s.name as source_name
                 FROM fulltext_search(%s, %s) f
                 LEFT JOIN sources s ON f.source_id = s.id
-                WHERE 1=1 {source_filter}
+                WHERE 1=1{source_filter}
             """
 
-            cur.execute(sql, (query_text, max_results))
+            cur.execute(sql, (query_text, max_results, *source_params))
 
             for row in cur:
                 yield dict(row)

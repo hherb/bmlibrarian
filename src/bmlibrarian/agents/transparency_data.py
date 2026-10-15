@@ -10,11 +10,12 @@ from full-text articles already stored in the database, with optional enrichment
 bulk-imported metadata (PubMed grants, ClinicalTrials.gov sponsors, Retraction Watch).
 """
 
+import math
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -49,6 +50,14 @@ DEFAULT_MAX_TOKENS = 3000
 
 # Retry configuration
 DEFAULT_MAX_RETRIES = 3
+
+# Ranges of the numeric fields the LLM returns (see the agent's prompt)
+MIN_UNIT_VALUE = 0.0
+MAX_UNIT_VALUE = 1.0  # confidences and *_disclosure_quality are 0.0-1.0
+
+# Minimum industry-funding confidence when pattern matching finds a known
+# industry funder among the disclosed funding sources
+PATTERN_INDUSTRY_MIN_CONFIDENCE = 0.8
 
 
 class RiskLevel(str, Enum):
@@ -278,3 +287,71 @@ def extract_trial_registry_ids(text: str) -> List[str]:
             if cleaned not in found_ids:
                 found_ids.append(cleaned)
     return found_ids
+
+
+def coerce_bounded_float(
+    value: Any,
+    minimum: float,
+    maximum: float,
+) -> Optional[float]:
+    """Convert an untrusted (LLM-supplied) value to a float within bounds.
+
+    Accepts ints, floats and numeric strings; out-of-range values are clamped.
+    Booleans, NaN/infinity and anything non-numeric are rejected.
+
+    Args:
+        value: The raw value.
+        minimum: Lowest allowed value.
+        maximum: Highest allowed value.
+
+    Returns:
+        The clamped float, or ``None`` if ``value`` is not a usable number.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return min(max(number, minimum), maximum)
+
+
+def coerce_str_list(value: Any) -> Tuple[List[str], bool]:
+    """Convert an untrusted (LLM-supplied) value to a list of strings.
+
+    ``None`` becomes an empty list, a single string a one-element list, and
+    non-string list items are stringified (``None`` items dropped).
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        ``(items, ok)`` where ``ok`` is ``False`` if ``value`` had an
+        unexpected type and was replaced by an empty list.
+    """
+    if value is None:
+        return [], True
+    if isinstance(value, str):
+        return ([value] if value.strip() else []), True
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item is not None], True
+    return [], False
+
+
+def score_distribution_label(score: float) -> str:
+    """Bucket a transparency score using the same thresholds as risk levels.
+
+    Args:
+        score: Transparency score (0-10).
+
+    Returns:
+        ``'low_transparency'`` (high risk), ``'moderate_transparency'``
+        (medium risk) or ``'high_transparency'`` (low risk).
+    """
+    if score < SCORE_THRESHOLD_HIGH_RISK:
+        return "low_transparency"
+    if score < SCORE_THRESHOLD_MEDIUM_RISK:
+        return "moderate_transparency"
+    return "high_transparency"

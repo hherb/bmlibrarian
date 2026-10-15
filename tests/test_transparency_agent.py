@@ -19,6 +19,9 @@ from bmlibrarian.agents.transparency_data import (
     TRIAL_REGISTRY_PATTERNS,
     is_likely_industry_funder,
     extract_trial_registry_ids,
+    coerce_bounded_float,
+    coerce_str_list,
+    score_distribution_label,
 )
 
 
@@ -562,6 +565,150 @@ class TestTransparencyAgent:
         with open(output_file, "r") as f:
             lines = f.readlines()
         assert len(lines) == 2  # header + 1 row
+
+
+class TestLLMOutputCoercion:
+    """Pure helpers that sanitize untrusted LLM output."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (0.5, 0.5),
+            (7, 1.0),          # clamped to max
+            (-2, 0.0),         # clamped to min
+            ("0.25", 0.25),    # numeric string
+            ("high", None),
+            (None, None),
+            ([0.5], None),
+            (True, None),      # bool is not a score
+            (float("nan"), None),
+            (float("inf"), None),
+        ],
+    )
+    def test_coerce_bounded_float(self, raw, expected) -> None:
+        """Numbers are clamped; non-numbers are rejected with None."""
+        assert coerce_bounded_float(raw, 0.0, 1.0) == expected
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (None, ([], True)),
+            ("NIH", (["NIH"], True)),
+            ("  ", ([], True)),
+            (["NIH", None, 3], (["NIH", "3"], True)),
+            ({"name": "NIH"}, ([], False)),
+            (42, ([], False)),
+        ],
+    )
+    def test_coerce_str_list(self, raw, expected) -> None:
+        """Strings and lists become lists of strings; other types are flagged."""
+        assert coerce_str_list(raw) == expected
+
+    def test_score_buckets_match_risk_levels(self) -> None:
+        """A score's distribution bucket always agrees with classify_risk()."""
+        bucket_for_risk = {
+            "high": "low_transparency",
+            "medium": "moderate_transparency",
+            "low": "high_transparency",
+        }
+        for score in (0.0, 2.9, SCORE_THRESHOLD_HIGH_RISK, 4.5, 5.9,
+                      SCORE_THRESHOLD_MEDIUM_RISK, 6.5, 10.0):
+            risk = TransparencyAssessment(
+                document_id="1", document_title="t", transparency_score=score
+            ).classify_risk()
+            assert score_distribution_label(score) == bucket_for_risk[risk], score
+
+
+class TestTransparencyAgentMalformedResponses:
+    """Malformed LLM fields must not crash an assessment or a batch."""
+
+    @staticmethod
+    def _response(**overrides):
+        """Copy of the transparent response with fields overridden."""
+        data = dict(EXPECTED_TRANSPARENT_RESPONSE)
+        data.update(overrides)
+        return data
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_non_numeric_required_field_fails_cleanly(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """A non-numeric transparency_score fails the doc instead of raising."""
+        mock_generate.return_value = self._response(transparency_score="high")
+
+        agent = TransparencyAgent(show_model_info=False)
+        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+        assert agent.get_assessment_stats()["failed_assessments"] == 1
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_non_dict_response_fails_cleanly(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """A JSON array instead of an object fails the doc instead of raising."""
+        mock_generate.return_value = ["not", "an", "object"]
+
+        agent = TransparencyAgent(show_model_info=False)
+        assert agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT) is None
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_optional_fields_repaired(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """Bad optional fields get defaults/clamping; lists are coerced."""
+        mock_generate.return_value = self._response(
+            coi_disclosure_quality="n/a",
+            funding_disclosure_quality=3,
+            overall_confidence="0.9",
+            funding_sources="National Institutes of Health",
+            risk_indicators={"bad": "shape"},
+        )
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessment = agent.assess_transparency(SAMPLE_TRANSPARENT_DOCUMENT)
+
+        assert assessment is not None
+        assert assessment.coi_disclosure_quality == 0.0
+        assert assessment.funding_disclosure_quality == 1.0
+        assert assessment.overall_confidence == 0.9
+        assert assessment.funding_sources == ["National Institutes of Health"]
+        assert assessment.risk_indicators == []
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, '_generate_and_parse_json')
+    def test_batch_continues_after_bad_document(
+        self, mock_generate: Mock, mock_conn: Mock,
+    ) -> None:
+        """A malformed response for one document does not abort the batch."""
+        mock_generate.side_effect = [
+            self._response(overall_confidence="very"),
+            EXPECTED_TRANSPARENT_RESPONSE,
+        ]
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessments = agent.assess_batch(
+            [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT]
+        )
+
+        assert len(assessments) == 1
+
+    @patch.object(TransparencyAgent, 'test_connection', return_value=True)
+    @patch.object(TransparencyAgent, 'assess_transparency')
+    def test_batch_survives_unexpected_exception(
+        self, mock_assess: Mock, mock_conn: Mock,
+    ) -> None:
+        """An unexpected exception for one document is logged and skipped."""
+        good = Mock()
+        mock_assess.side_effect = [RuntimeError("boom"), good]
+
+        agent = TransparencyAgent(show_model_info=False)
+        assessments = agent.assess_batch(
+            [SAMPLE_TRANSPARENT_DOCUMENT, SAMPLE_TRANSPARENT_DOCUMENT]
+        )
+
+        assert assessments == [good]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

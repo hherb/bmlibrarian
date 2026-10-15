@@ -543,10 +543,20 @@ SUPPORTING CITATIONS:
                 # Score documents for relevance using the counterfactual statement
                 # (since that's what we searched for)
                 num_scored = 0
+                num_failed = 0
                 for result_doc in results:
-                    score_result = scoring_agent.evaluate_document(
-                        query_info['counterfactual_statement'], result_doc
-                    )
+                    # One bad document (missing title, LLM/parse error) must not
+                    # abort scoring for the rest - same as batch_evaluate_documents
+                    try:
+                        score_result = scoring_agent.evaluate_document(
+                            query_info['counterfactual_statement'], result_doc
+                        )
+                    except Exception as e:
+                        num_failed += 1
+                        doc_id = result_doc.get('id', 'unknown') if isinstance(result_doc, dict) else 'unknown'
+                        logger.error(f"Failed to score document {doc_id}: {e}")
+                        self._call_callback("scoring_error", f"Failed to score document {doc_id}: {e}")
+                        continue
 
                     if score_result and score_result['score'] >= min_relevance_score:
                         num_scored += 1
@@ -558,7 +568,11 @@ SUPPORTING CITATIONS:
                         })
 
                 logger.info(f"Documents passing score threshold (>={min_relevance_score}): {num_scored}/{num_found}")
-                self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found}")
+                if num_failed:
+                    logger.warning(f"{num_failed}/{num_found} documents could not be scored")
+                    self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found} ({num_failed} failed to score)")
+                else:
+                    self._call_callback("scoring_complete", f"Passed scoring: {num_scored}/{num_found}")
 
         result['contradictory_evidence'] = all_contradictory_evidence
 

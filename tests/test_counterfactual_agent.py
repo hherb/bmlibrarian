@@ -445,3 +445,59 @@ class TestCounterfactualAgent:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+class TestFindContradictoryLiteratureScoringGuard:
+    """A failing document must not abort scoring of the remaining documents."""
+
+    @pytest.fixture
+    def analysis(self):
+        """A minimal analysis with one HIGH-priority question."""
+        question = CounterfactualQuestion(
+            counterfactual_statement="Exercise worsens heart failure",
+            question="Does exercise worsen heart failure?",
+            reasoning="Check for contraindications",
+            target_claim="Exercise improves cardiovascular health",
+            search_keywords=["exercise", "heart failure"],
+            priority="HIGH",
+        )
+        return CounterfactualAnalysis(
+            document_title="Doc",
+            main_claims=["Exercise improves cardiovascular health"],
+            counterfactual_questions=[question],
+            overall_assessment="ok",
+            confidence_level="HIGH",
+        )
+
+    def test_scoring_error_skips_only_that_document(self, analysis):
+        """Docs after a scoring exception are still scored and kept."""
+        agent = CounterfactualAgent(model="test-model")
+        events = []
+        agent.callback = lambda step, data: events.append((step, data))
+
+        docs = [{'id': 1, 'title': 'bad'}, {'id': 2, 'title': 'good'}]
+        scoring_agent = Mock()
+        scoring_agent.evaluate_document.side_effect = [
+            RuntimeError("LLM timeout"),
+            {'score': 4, 'reasoning': 'relevant'},
+        ]
+        citation_agent = Mock()
+        citation_agent.extract_citation_from_document.return_value = None
+        query_info = {
+            'target_claim': analysis.main_claims[0],
+            'counterfactual_statement': "Exercise worsens heart failure",
+            'question': "Does exercise worsen heart failure?",
+            'db_query': 'exercise & heart',
+        }
+
+        with patch.object(agent, 'analyze_document', return_value=analysis), \
+             patch.object(agent, 'generate_research_queries_with_agent', return_value=[query_info]), \
+             patch('bmlibrarian.agents.counterfactual_agent.search_with_retry', return_value=docs), \
+             patch('bmlibrarian.config.get_search_config', return_value={}):
+            result = agent.find_contradictory_literature(
+                "content", query_agent=Mock(),
+                scoring_agent=scoring_agent, citation_agent=citation_agent,
+            )
+
+        assert scoring_agent.evaluate_document.call_count == 2
+        assert [e['document']['id'] for e in result['contradictory_evidence']] == [2]
+        assert any(step == "scoring_error" for step, _ in events)

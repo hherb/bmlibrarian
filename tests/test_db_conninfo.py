@@ -2,15 +2,22 @@
 
 These guard the injection-surface hardening that replaced hand-concatenated
 libpq connection strings (``build_conninfo``) and the f-string ``LIMIT``/
-``OFFSET`` in ``find_abstracts`` (``build_pagination_clause``).
+``OFFSET`` in ``find_abstracts`` (``build_pagination_clause``), and the
+f-string ``source_id`` filters in the BM25/fulltext search helpers
+(``build_source_filter_clause``).
 
 Hermetic: no Ollama or PostgreSQL required.
 """
 
+from typing import Any, Dict, Tuple
+from unittest.mock import MagicMock, patch
+
+import pytest
 from psycopg.conninfo import conninfo_to_dict
 
 from bmlibrarian.db_conninfo import build_conninfo
-from bmlibrarian.database import build_pagination_clause
+from bmlibrarian import database
+from bmlibrarian.database import build_pagination_clause, build_source_filter_clause
 
 
 class TestBuildConninfo:
@@ -98,3 +105,73 @@ class TestBuildPaginationClause:
         assert "100" not in clause
         assert "20" not in clause
         assert params == [100, 20]
+
+
+SOURCE_IDS: Dict[str, Any] = {"pubmed": 1, "medrxiv": 2, "others": [3, 4]}
+
+
+class TestBuildSourceFilterClause:
+    """Tests for :func:`bmlibrarian.database.build_source_filter_clause`."""
+
+    def test_all_sources_bound_as_one_array(self) -> None:
+        """All selected ids are collected into a single bound array param."""
+        clause, params = build_source_filter_clause(SOURCE_IDS)
+        assert clause == " AND source_id = ANY(%s)"
+        assert params == [[1, 2, 3, 4]]
+
+    def test_subset_of_sources(self) -> None:
+        """Deselected sources are left out of the bound ids."""
+        _, params = build_source_filter_clause(
+            SOURCE_IDS, use_pubmed=True, use_medrxiv=False, use_others=False
+        )
+        assert params == [[1]]
+
+    def test_scalar_others(self) -> None:
+        """A scalar 'others' id is accepted as well as a list."""
+        _, params = build_source_filter_clause({"others": 7})
+        assert params == [[7]]
+
+    def test_no_known_sources_means_no_filter(self) -> None:
+        """Empty map, empty 'others' list or nothing selected -> no clause."""
+        assert build_source_filter_clause({}) == ("", [])
+        assert build_source_filter_clause({"others": []}) == ("", [])
+        assert build_source_filter_clause(
+            SOURCE_IDS, use_pubmed=False, use_medrxiv=False, use_others=False
+        ) == ("", [])
+
+    def test_ids_never_appear_in_sql(self) -> None:
+        """The clause is a placeholder; ids only travel as parameters."""
+        clause, _ = build_source_filter_clause({"pubmed": 12345})
+        assert "12345" not in clause
+
+    def test_non_integer_id_rejected(self) -> None:
+        """A non-integer id raises instead of reaching the SQL layer."""
+        with pytest.raises(ValueError):
+            build_source_filter_clause({"pubmed": "1); DROP TABLE document; --"})
+
+
+def _capture_search_sql(search_fn: Any) -> Tuple[str, Tuple[Any, ...]]:
+    """Run a search generator against a mocked cursor; return (sql, params)."""
+    cursor = MagicMock()
+    cursor.__iter__.return_value = iter([])
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    manager = MagicMock()
+    manager.get_connection.return_value.__enter__.return_value = conn
+    manager.get_cached_source_ids.return_value = SOURCE_IDS
+    with patch.object(database, "get_db_manager", return_value=manager):
+        list(search_fn("diabetes & treatment", max_results=10))
+    sql, params = cursor.execute.call_args.args
+    return sql, params
+
+
+@pytest.mark.parametrize(
+    "search_fn",
+    [database.search_with_bm25, database.search_with_fulltext_function],
+)
+def test_search_helpers_bind_source_ids(search_fn: Any) -> None:
+    """BM25/fulltext search bind source ids instead of interpolating them."""
+    sql, params = _capture_search_sql(search_fn)
+    assert "source_id = ANY(%s)" in sql
+    assert "ARRAY[" not in sql
+    assert params == ("diabetes & treatment", 10, [1, 2, 3, 4])

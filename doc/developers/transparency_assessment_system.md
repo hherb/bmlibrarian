@@ -149,10 +149,11 @@ Flow:
 3. Pre-extract trial registry IDs via regex
 4. Build structured prompt with scoring rubric
 5. Call `_generate_and_parse_json()` to get LLM response
-6. Parse JSON into `TransparencyAssessment`
-7. Merge pattern-matched results (industry funder names, registry IDs)
-8. Classify risk level
-9. Filter by confidence threshold
+6. Validate and normalize it with `_validate_assessment_data()` (see "Validating LLM output" below)
+7. Build the `TransparencyAssessment`
+8. Merge pattern-matched results (industry funder names, registry IDs)
+9. Classify risk level
+10. Filter by confidence threshold
 
 #### `assess_transparency_by_id(document_id)`
 
@@ -160,7 +161,11 @@ Convenience method that fetches document from database by ID, then calls `assess
 
 #### `assess_batch(documents, progress_callback=None)`
 
-Processes multiple documents sequentially with optional progress callback.
+Processes multiple documents sequentially with optional progress callback. An exception for one document is logged, counted in `failed_assessments`, and skipped; the rest of the batch continues.
+
+#### `get_score_distribution(assessments)`
+
+Counts assessments per transparency bucket. Buckets come from `score_distribution_label()` and use the same thresholds as `classify_risk()` (`SCORE_THRESHOLD_HIGH_RISK`, `SCORE_THRESHOLD_MEDIUM_RISK`), so a document's bucket always matches its risk level: `low_transparency (0-3)` = high risk, `moderate_transparency (3-6)` = medium, `high_transparency (6-10)` = low.
 
 #### `enrich_with_metadata(assessment)`
 
@@ -221,11 +226,19 @@ Expected JSON schema from LLM:
 }
 ```
 
+### Validating LLM output
+
+The parsed JSON is untrusted. `_validate_assessment_data()` normalizes it using pure helpers from `transparency_data.py`:
+
+- The response must be a JSON object with all `REQUIRED_ASSESSMENT_FIELDS`; otherwise the document fails (`None`, counted in `failed_assessments`).
+- Numeric fields (`NUMERIC_ASSESSMENT_FIELDS`) go through `coerce_bounded_float()`: numbers and numeric strings are clamped to range (`transparency_score` 0-10, confidences and `*_disclosure_quality` 0-1); booleans, NaN/infinity and non-numbers are rejected. A rejected `transparency_score` or `overall_confidence` fails the document; the optional fields fall back to `0.0` with a warning.
+- List fields (`LIST_ASSESSMENT_FIELDS`) go through `coerce_str_list()`: a single string becomes a one-element list, `None` an empty list, any other type an empty list with a warning.
+
 ### Pattern-Match Augmentation
 
 After LLM analysis, the agent merges deterministic results:
 
-1. **Industry funding**: If any `funding_sources` match `is_likely_industry_funder()`, sets `is_industry_funded=True` regardless of LLM output
+1. **Industry funding**: If any `funding_sources` match `is_likely_industry_funder()`, sets `is_industry_funded=True` regardless of LLM output, and raises `industry_funding_confidence` to at least `PATTERN_INDUSTRY_MIN_CONFIDENCE` (0.8)
 2. **Trial registry IDs**: Union of regex-extracted and LLM-extracted IDs
 
 This ensures high recall for industry funding and registry ID detection.
