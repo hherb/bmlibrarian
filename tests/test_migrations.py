@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, call, mock_open, patch
 
 import pytest
 
+from bmlibrarian.db_test_guard import READ_ONLY_OPTIONS
 from bmlibrarian.migrations import MigrationManager
 
 
@@ -42,7 +43,7 @@ class TestMigrationManager:
 
     @patch('bmlibrarian.migrations.psycopg.connect')
     def test_get_connection_default(self, mock_connect):
-        """Test getting database connection without specifying database."""
+        """Without a database name the test guard cannot vouch for it: read-only under pytest."""
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
         
@@ -52,7 +53,8 @@ class TestMigrationManager:
             host="localhost",
             port="5432",
             user="testuser",
-            password="testpass"
+            password="testpass",
+            options=READ_ONLY_OPTIONS,
         )
         assert result == mock_conn
 
@@ -62,14 +64,14 @@ class TestMigrationManager:
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
         
-        result = self.manager._get_connection("specific_db")
+        result = self.manager._get_connection("specific_test_db")
         
         mock_connect.assert_called_once_with(
             host="localhost",
             port="5432",
             user="testuser",
             password="testpass",
-            dbname="specific_db"
+            dbname="specific_test_db"
         )
         assert result == mock_conn
 
@@ -85,7 +87,7 @@ class TestMigrationManager:
         result = self.manager._database_exists("test_db")
         
         assert result is True
-        mock_get_connection.assert_called_once_with("postgres")
+        mock_get_connection.assert_called_once_with("postgres", guard_as="test_db")
         mock_cursor.execute.assert_called_once_with(
             "SELECT 1 FROM pg_database WHERE datname = %s",
             ("test_db",)
@@ -120,7 +122,7 @@ class TestMigrationManager:
         
         self.manager._create_database("test_db")
         
-        mock_get_connection.assert_called_once_with("postgres")
+        mock_get_connection.assert_called_once_with("postgres", guard_as="test_db")
         assert mock_conn.autocommit is True
         mock_identifier.assert_called_once_with("test_db")
         mock_cursor.execute.assert_called_once_with(mock_sql_instance)

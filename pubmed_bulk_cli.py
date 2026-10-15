@@ -203,6 +203,7 @@ def cmd_import(args):
         print(f"Files processed: {stats['files_processed']}")
         print(f"Files skipped (already imported): {stats.get('files_skipped', 0)}")
         print(f"Total articles: {stats['total_articles']}")
+        print(f"Withdrawn records marked: {stats.get('total_documents_withdrawn', 0)}")
         print(f"Errors: {stats['total_errors']}")
         print("=" * 70)
 
@@ -216,8 +217,12 @@ def cmd_import(args):
 WITHDRAWAL_FILE_TYPES = {'update': 'update', 'baseline': 'baseline', 'all': None}
 
 
-def cmd_backfill_withdrawals(args):
-    """Apply DeleteCitation withdrawals from files imported before they were handled."""
+def cmd_backfill_withdrawals(args: argparse.Namespace) -> int:
+    """Apply DeleteCitation withdrawals from files imported before they were handled.
+
+    Returns:
+        0 on success; 1 if the backfill failed or any file was unreadable.
+    """
     print("=" * 70)
     print("PubMed Withdrawal Backfill")
     print("=" * 70)
@@ -229,9 +234,18 @@ def cmd_backfill_withdrawals(args):
         logging.error(f"Withdrawal backfill failed: {e}", exc_info=True)
         print(f"\nError: {e}")
         return 1
-    print(f"\nFiles scanned:      {result['files_scanned']}")
-    print(f"PMIDs listed:       {result['pmids_listed']}")
-    print(f"PMIDs newly marked: {result['pmids_recorded']}")
+    print(f"\nFiles scanned:          {result['files_scanned']}")
+    print(f"PMIDs listed:           {result['pmids_listed']}")
+    print(f"PMIDs newly recorded:   {result['pmids_recorded']}")
+    print(f"Documents newly marked: {result['documents_marked']}")
+    if result['pmids_invalid']:
+        print(f"Invalid PMIDs skipped:  {result['pmids_invalid']}")
+    if result['files_failed']:
+        print(f"\nUnreadable files ({len(result['files_failed'])}), not processed:")
+        for name in result['files_failed']:
+            print(f"  {name}")
+        print("Repair them (pubmed_repair_cli.py) and re-run; the backfill is idempotent.")
+        return 1
     return 0
 
 
@@ -394,6 +408,7 @@ def cmd_sync(args):
         print("=" * 70)
         print(f"Files processed: {stats['files_processed']}")
         print(f"Total articles: {stats['total_articles']}")
+        print(f"Withdrawn records marked: {stats.get('total_documents_withdrawn', 0)}")
         print(f"Errors: {stats['total_errors']}")
         print("=" * 70)
 

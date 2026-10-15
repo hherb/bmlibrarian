@@ -24,11 +24,11 @@ load_bmlibrarian_env(override=True)
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
 
-# Records withdrawn by their source (PubMed DeleteCitation, migration 032) are
-# kept for referential integrity but never returned by searches.
-NOT_WITHDRAWN_SQL = "d.withdrawn IS NULL"
-# Same filter for SQL search functions whose rows carry the document id.
-NOT_WITHDRAWN_EXISTS_SQL = "EXISTS (SELECT 1 FROM document d WHERE d.id = {alias}.id AND d.withdrawn IS NULL)"
+# Records withdrawn by their source (e.g. PubMed DeleteCitation, migration 032)
+# are kept for referential integrity but never returned by searches. The SQL
+# search functions (fulltext_search, bm25, semantic_docsearch, chunk searches)
+# apply the same filter on withdrawn_date internally.
+NOT_WITHDRAWN_SQL = "d.withdrawn_date IS NULL"
 
 
 class DatabaseManager:
@@ -61,9 +61,9 @@ class DatabaseManager:
         self._pool: Optional[ConnectionPool] = None
         self._init_pool(conninfo)
         if auto_migrate:
-            if db_test_guard.guard_applies(db_test_guard.database_name(self._conninfo)):
-                logger.warning("Running under pytest: not auto-migrating protected database %s",
-                               db_test_guard.database_name(self._conninfo))
+            dbname = db_test_guard.database_name(self._conninfo)
+            if db_test_guard.guard_applies(dbname):
+                logger.warning("Running under pytest: not auto-migrating protected database %r", dbname)
             else:
                 self._apply_pending_migrations(dry_run=dry_run_migrations)
         self._cache_source_ids()
@@ -99,13 +99,15 @@ class DatabaseManager:
 
     def _open_pool(self, conninfo: str):
         """Open the connection pool for ``conninfo`` and warm it up."""
-        # Retain the conninfo to key the per-database source-ID caches.
+        # Under pytest a protected database gets read-only connections. The
+        # option lives in the conninfo itself, so worker processes handed
+        # self.conninfo stay read-only too. Also keys the source-ID caches.
+        conninfo = db_test_guard.guarded_conninfo(conninfo)
         self._conninfo = conninfo
 
         # Initialize connection pool
         self._pool = ConnectionPool(
             conninfo=conninfo,
-            kwargs=db_test_guard.pool_connection_kwargs(conninfo) or None,
             min_size=2,
             max_size=10,
             timeout=30
@@ -874,7 +876,7 @@ def search_by_embedding(
         FROM emb_1024 e
         JOIN chunks c ON e.chunk_id = c.id
         JOIN document d ON c.document_id = d.id
-        WHERE e.model_id = %s AND d.withdrawn IS NULL
+        WHERE e.model_id = %s AND d.withdrawn_date IS NULL
         ORDER BY similarity DESC
         LIMIT %s
     """
@@ -941,7 +943,7 @@ def search_with_bm25(
                 SELECT b.*, s.name as source_name
                 FROM bm25(%s, %s) b
                 LEFT JOIN sources s ON b.source_id = s.id
-                WHERE {NOT_WITHDRAWN_EXISTS_SQL.format(alias='b')} {source_filter}
+                WHERE 1=1 {source_filter}
             """
 
             cur.execute(sql, (query_text, max_results))
@@ -1001,7 +1003,7 @@ def search_with_semantic(
                 FROM semantic_results sr
                 JOIN document d ON sr.document_id = d.id
                 LEFT JOIN sources s ON d.source_id = s.id
-                WHERE d.withdrawn IS NULL
+                WHERE d.withdrawn_date IS NULL
                 ORDER BY sr.best_score DESC
             """
 
@@ -1065,7 +1067,7 @@ def search_with_fulltext_function(
                 SELECT f.*, s.name as source_name
                 FROM fulltext_search(%s, %s) f
                 LEFT JOIN sources s ON f.source_id = s.id
-                WHERE {NOT_WITHDRAWN_EXISTS_SQL.format(alias='f')} {source_filter}
+                WHERE 1=1 {source_filter}
             """
 
             cur.execute(sql, (query_text, max_results))

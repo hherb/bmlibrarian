@@ -10,6 +10,7 @@ children of MedlineCitation; ReferenceList lives in PubmedData).
 """
 
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -132,32 +133,93 @@ class TestDeleteCitation:
     """Update files list withdrawn PMIDs in DeleteCitation; they are collected, never stored as articles."""
 
     def test_deleted_pmids_are_extracted(self) -> None:
+        """Valid PMIDs are returned stripped, in file order."""
         from src.bmlibrarian.importers.pubmed_bulk_importer import parse_deleted_pmids
         elem = ET.fromstring('<DeleteCitation><PMID Version="1">111</PMID>'
                              '<PMID Version="1"> 222 </PMID></DeleteCitation>')
-        assert parse_deleted_pmids(elem) == ["111", "222"]
+        assert parse_deleted_pmids(elem) == (["111", "222"], 0)
 
-    def test_invalid_pmids_are_dropped(self) -> None:
+    def test_invalid_pmids_are_dropped_and_counted(self) -> None:
+        """Non-numeric and empty PMIDs are dropped and counted."""
         from src.bmlibrarian.importers.pubmed_bulk_importer import parse_deleted_pmids
         elem = ET.fromstring("<DeleteCitation><PMID>12a</PMID><PMID></PMID><PMID>7</PMID></DeleteCitation>")
-        assert parse_deleted_pmids(elem) == ["7"]
+        assert parse_deleted_pmids(elem) == (["7"], 2)
 
-    def test_import_file_passes_deletions_to_store(self, importer, tmp_path) -> None:
+    def test_import_file_passes_deletions_to_store(self, importer: PubMedBulkImporter, tmp_path: Path) -> None:
+        """Deletions reach _store_file; stats separate PMIDs listed from documents marked."""
         import gzip
         path = tmp_path / "pubmed26n9999.xml.gz"
         record = ET.tostring(make_record()).decode()
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             fh.write("<PubmedArticleSet>" + record +
                      '<DeleteCitation><PMID Version="1">777</PMID></DeleteCitation></PubmedArticleSet>')
+        from src.bmlibrarian.importers.pubmed_bulk_importer import StoreResult
         captured = {}
 
         def fake_store(articles, filename, sha256, started, withdrawn_pmids=()):
             captured["pmids"] = [a["pmid"] for a in articles]
             captured["withdrawn"] = list(withdrawn_pmids)
-            return len(articles)
+            return StoreResult(written=len(articles), withdrawals_recorded=1, documents_withdrawn=0)
 
         importer._is_file_committed = lambda name: False
         importer._store_file = fake_store
         stats = importer.import_file(path)
         assert captured == {"pmids": ["12345"], "withdrawn": ["777"]}
-        assert stats["articles_withdrawn"] == 1
+        # 777 is listed but not in the database: listed counts it, marked does not.
+        assert stats["withdrawals_listed"] == 1
+        assert stats["documents_withdrawn"] == 0
+        assert stats["articles_imported"] == 1
+
+
+def write_gz(path: Path, content: str) -> None:
+    """Write ``content`` gzip'd to ``path``."""
+    import gzip
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+class TestReadDeletedPmids:
+    """Reading only the DeleteCitation lists of a file (used by the backfill)."""
+
+    def test_reads_deletions_and_skips_articles(self, tmp_path: Path) -> None:
+        """All DeleteCitation blocks are read; articles are ignored; invalid entries counted."""
+        from src.bmlibrarian.importers.pubmed_bulk_importer import read_deleted_pmids
+        path = tmp_path / "f.xml.gz"
+        write_gz(path, "<PubmedArticleSet>" + ET.tostring(make_record()).decode() +
+                 "<DeleteCitation><PMID>5</PMID><PMID>x</PMID></DeleteCitation>"
+                 "<DeleteCitation><PMID>6</PMID></DeleteCitation></PubmedArticleSet>")
+        assert read_deleted_pmids(path) == (["5", "6"], 1)
+
+
+class TestBackfillWithoutDatabase:
+    """Backfill failure reporting: nothing to scan, unreadable files."""
+
+    def test_no_files_raises(self, importer: PubMedBulkImporter) -> None:
+        """Nothing downloaded is an error, not 'Files scanned: 0'."""
+        with pytest.raises(FileNotFoundError):
+            importer.backfill_withdrawals(file_type=None)
+
+    def test_unreadable_file_is_listed_and_others_still_processed(self, importer: PubMedBulkImporter) -> None:
+        """A corrupt file is reported and skipped; the rest are still applied."""
+        importer.update_dir.mkdir(parents=True, exist_ok=True)
+        (importer.update_dir / "a-corrupt.xml.gz").write_bytes(b"not gzip at all")
+        write_gz(importer.update_dir / "b-good.xml.gz",
+                 "<PubmedArticleSet><DeleteCitation><PMID>9</PMID></DeleteCitation></PubmedArticleSet>")
+        applied = []
+        importer._apply_withdrawals = lambda cur, pmids, name: applied.append((name, pmids)) or (1, 1)
+        messages = []
+        result = importer.backfill_withdrawals(file_type="update", progress_callback=messages.append)
+        assert result["files_failed"] == ["a-corrupt.xml.gz"]
+        assert applied == [("b-good.xml.gz", ["9"])]
+        assert result["files_scanned"] == 1
+        assert result["pmids_recorded"] == 1 and result["documents_marked"] == 1
+        assert any("unreadable" in m for m in messages)
+
+    def test_file_without_deletions_opens_no_connection(self, importer: PubMedBulkImporter) -> None:
+        """Files with nothing to withdraw do not touch the database."""
+        importer.update_dir.mkdir(parents=True, exist_ok=True)
+        write_gz(importer.update_dir / "c.xml.gz", "<PubmedArticleSet></PubmedArticleSet>")
+        importer.db_manager = MagicMock()
+        result = importer.backfill_withdrawals(file_type="update")
+        importer.db_manager.get_connection.assert_not_called()
+        assert result["files_scanned"] == 1 and result["pmids_listed"] == 0

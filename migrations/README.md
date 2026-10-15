@@ -227,6 +227,7 @@ BMLibrarian migrations don't include automatic rollback. For rollback:
 | 030 | 030_extend_settings_categories.sql | Extend bmlsettings category whitelists | 2026-07-19 |
 | 031 | 031_ingest_ledger_and_revisions.sql | Resumable bulk-import bookkeeping and revision-aware merges | 2026-10-13 |
 | 032 | 032_withdrawn_documents.sql | PubMed withdrawals (DeleteCitation) are marked, not deleted | 2026-10-14 |
+| 033 | 033_fold_withdrawn_into_withdrawn_date.sql | Fold 032's first-revision `document.withdrawn` into the baseline `withdrawn_date` | 2026-10-15 |
 
 031 and 032 carry the PubMed bulk-import changes (resumable ledger,
 revision-aware merges, withdrawals). See
@@ -234,14 +235,27 @@ revision-aware merges, withdrawals). See
 columns (a metadata-only change, no table rewrite), new tables in schema
 `ingest`, a re-defined trigger function and an index storage option.
 
+032 was revised after it reached production: its first revision added a
+`document.withdrawn` column, although the baseline schema already had
+`withdrawn_date` / `withdrawn_reason`, which every search function filters on.
+The revised 032 no longer adds that column (applied migrations are not
+re-checksummed, so databases that ran the first revision are unaffected), and
+033 copies any marks from `withdrawn` into `withdrawn_date` / `withdrawn_reason`
+via `ingest.withdrawn_pmid` and drops the column. On databases that never had
+the column, 033 is a no-op.
+
 ## The Test Suite Never Migrates Production
 
-While pytest is loaded, `MigrationManager.apply_pending_migrations()` and
-`initialize_database()` raise `ProtectedDatabaseError` for a protected database
-(`knowledgebase`). `DatabaseManager` skips its auto-migration there and opens
-its connections read-only (`bmlibrarian.db_test_guard`). Point tests that need
-a writable database at a development database, either with
-`BMLIBRARIAN_ENV_FILE` or with the opt-in `BMLIBRARIAN_TEST_DB_ENV` tests.
+While pytest is loaded, `MigrationManager.apply_pending_migrations()`,
+`initialize_database()` and `mark_migration_applied()` raise
+`ProtectedDatabaseError` for a protected database: every database whose name
+does not mark it as dev/test (`knowledgebase`, the PG18 `bmlibrarian`, …; see
+`doc/developers/test_database_guard.md`). `DatabaseManager` skips its
+auto-migration there, and both managers open their connections read-only
+(`bmlibrarian.db_test_guard`). Point tests that need a writable database at a
+development database with `BMLIBRARIAN_ENV_FILE`; the opt-in tests that read
+`BMLIBRARIAN_TEST_DB_ENV` (bulk-import copy tests, migration 031/032–033
+tests) use it too.
 
 This guard was added after a test run on 2026-10-13/14 auto-applied 031 and
 032 to production. The owner chose to keep both migrations there.

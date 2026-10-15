@@ -281,11 +281,15 @@ records, 0 errors; 41 246 334 PubMed documents, revisions up to 2026-10-13.
 Without the import profile, so no server restart.
 
 **Withdrawals (migration 032):** `DeleteCitation` was never handled before.
-Withdrawn PMIDs are now recorded in `ingest.withdrawn_pmid` and marked in
-`document.withdrawn`, not deleted, so references stay valid. The
-`database.py` searches exclude them, and marking works in any file order. The
-backfill over the 2026 update files recorded 10 930 PMIDs and marked 7 622
-documents. **Phase B must carry the same semantics.**
+Withdrawn PMIDs are now recorded in `ingest.withdrawn_pmid` and marked, not
+deleted, so references stay valid. The backfill over the 2026 update files
+recorded 10 930 PMIDs and marked 7 622 documents. Those marks went into a new
+`document.withdrawn` column that the SQL search functions ignore; migration 033
+(2026-10-15) folds them into the baseline `withdrawn_date` / `withdrawn_reason`
+columns, which every search function already excludes, and drops the column.
+Marking works in any file order, including with parallel workers (a final
+reconcile pass). **Phase B must carry the same semantics: mark
+`withdrawn_date` / `withdrawn_reason`, never delete.**
 
 **Phase A exit criterion: met.**
 

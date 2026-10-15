@@ -470,6 +470,7 @@ class SearchCoordinator:
                                ) AS rank
                         FROM document
                         WHERE search_vector @@ to_tsquery('english', %s)
+                          AND withdrawn_date IS NULL
                           AND abstract IS NOT NULL
                           AND abstract != ''
                         ORDER BY rank DESC

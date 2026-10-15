@@ -3,22 +3,20 @@
 -- PubMed update files list PMIDs that NCBI has withdrawn (duplicates, records
 -- created in error) in <DeleteCitation>. Deleting those rows would break
 -- references to them (citations, fact-check evidence, embeddings), so they are
--- kept and marked instead:
+-- kept and marked instead, in the baseline schema's existing columns
+-- document.withdrawn_date / document.withdrawn_reason. Every search function
+-- (fulltext_search, bm25, semantic_docsearch, the chunk searches) already
+-- excludes rows where withdrawn_date is set.
 --
--- 1. document.withdrawn: the date the withdrawal was imported (NULL = current).
---    Searches exclude rows where it is set.
--- 2. ingest.withdrawn_pmid: every withdrawn PMID with the file that listed it.
---    The importer marks documents from this table both when a deletion is
---    imported and when a record arrives, so files can still be imported in any
---    order (a deletion seen before its record still applies).
+-- ingest.withdrawn_pmid records every withdrawn PMID with the file that listed
+-- it. The importer marks documents from this table both when a deletion is
+-- imported and when a record arrives, so files can still be imported in any
+-- order (a deletion seen before its record still applies).
 --
--- ADD COLUMN without a default is a metadata-only change (no table rewrite).
+-- An earlier revision of this migration also added a separate
+-- document.withdrawn column; migration 033 folds it into withdrawn_date.
+--
 -- Idempotent: safe to run repeatedly.
-
-ALTER TABLE public.document ADD COLUMN IF NOT EXISTS withdrawn date;
-
-COMMENT ON COLUMN public.document.withdrawn IS
-    'Date the source withdrew this record (PubMed DeleteCitation); NULL = current. Searches exclude withdrawn rows.';
 
 CREATE SCHEMA IF NOT EXISTS ingest;
 
@@ -29,4 +27,4 @@ CREATE TABLE IF NOT EXISTS ingest.withdrawn_pmid (
 );
 
 COMMENT ON TABLE ingest.withdrawn_pmid IS
-    'PMIDs withdrawn by PubMed (DeleteCitation), with the update file that listed them.';
+    'PMIDs withdrawn by PubMed (DeleteCitation), with the file that listed them and the date BMLibrarian recorded the withdrawal.';

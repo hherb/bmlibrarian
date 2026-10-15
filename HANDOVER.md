@@ -10,6 +10,20 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **PubMed withdrawals + pytest production guard** (2026-10-15, PR #270):
+  DeleteCitation PMIDs are recorded in `ingest.withdrawn_pmid` (migration 032)
+  and marked in the baseline `document.withdrawn_date` / `withdrawn_reason`,
+  which every SQL search function already excludes. 032's first revision
+  (already on production) used a separate `document.withdrawn` column that the
+  search functions ignored; **migration 033 copies those marks into
+  `withdrawn_date` and drops the column — it auto-applies on the next
+  non-test connection to `knowledgebase` and PG18 `bmlibrarian`** (tested on
+  `bmlibrarian_dev`). `db_test_guard.py` is now an allow-list: under pytest
+  every DB without a `dev`/`test*` name token is protected (no migrations,
+  read-only conninfo, also in spawned import workers).
+  `tests/test_withdrawn_search_filters.py` pins the search filters.
+  Remaining gap: direct `psycopg.connect()` callers (ROADMAP §2).
+
 - **Archive-extraction path-traversal hardening** (2026-07-23, PR #259): the
   "zip/tar slip" P1 from the 2026-07-19 review. Factored the existing
   `_is_safe_zip_member` guard into one shared pure function
@@ -248,5 +262,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   compare to your tree (normalize away line numbers).
 - `uv run python bmlibrarian_cli.py --quick` still runs end-to-end for a
   manual smoke check when touching the core agent workflow.
-- Never run destructive tests against the production `knowledgebase`
-  database — use `bmlibrarian_dev` (see CLAUDE.md "Database Safety").
+- Never run destructive tests against the production `knowledgebase` (or
+  PG18 `bmlibrarian`) database — use `bmlibrarian_dev` (see CLAUDE.md
+  "Database Safety"). Opt-in DB tests: `BMLIBRARIAN_ENV_FILE=~/.bmlibrarian/.env_pg18_dev
+  BMLIBRARIAN_TEST_DB_ENV=~/.bmlibrarian/.env_pg18_dev uv run python -m pytest …`.
