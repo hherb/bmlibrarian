@@ -29,6 +29,8 @@ PUBMED_SOURCE_ID = 1
 PUBMED_SOURCE_NAME = "pubmed"
 # Length of the year prefix in an ISO 8601 date ("YYYY-MM-DD")
 ISO_YEAR_LENGTH = 4
+# Characters of a malformed authors value quoted in the warning log
+AUTHORS_LOG_PREVIEW_CHARS = 80
 
 
 def parse_authors_json(authors_text: Optional[str]) -> List[str]:
@@ -47,8 +49,8 @@ def parse_authors_json(authors_text: Optional[str]) -> List[str]:
         parsed = json.loads(authors_text)
     except (json.JSONDecodeError, TypeError):
         logger.warning(
-            "documents.authors is not a JSON array; using it as one author: %.80r",
-            authors_text,
+            "documents.authors is not a JSON array; using it as one author: %r",
+            str(authors_text)[:AUTHORS_LOG_PREVIEW_CHARS],
         )
         return [str(authors_text)]
     if isinstance(parsed, list):
