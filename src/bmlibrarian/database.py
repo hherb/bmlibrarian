@@ -1,6 +1,7 @@
 """Database access layer for BMLibrarian with connection pooling."""
 
 import os
+import re
 import time
 import logging
 from contextlib import contextmanager
@@ -1441,6 +1442,33 @@ def search_hybrid(
     return documents, strategy_metadata
 
 
+_PMID_PREFIX_PATTERN = re.compile(r'pmid:\s*(\d+)', re.IGNORECASE)
+
+
+def extract_pmid(external_id: Optional[str], source_name: Optional[str]) -> Optional[str]:
+    """Return the PubMed ID encoded in a document's ``external_id``, if any.
+
+    ``external_id`` is only a PMID for documents whose source is PubMed; for
+    other sources (medRxiv DOIs, PMC ids, trial registry ids, ...) a numeric
+    value is *not* a PMID. An explicit ``PMID:<digits>`` prefix is honoured for
+    any source.
+
+    Args:
+        external_id: The document's ``external_id`` column value
+        source_name: Name of the document's source (``sources.name``), or None
+
+    Returns:
+        The PMID as a string, or None if the document has no known PMID
+    """
+    if not external_id:
+        return None
+    external_id = str(external_id).strip()
+    if source_name and 'pubmed' in source_name.lower() and external_id.isdigit():
+        return external_id
+    match = _PMID_PREFIX_PATTERN.search(external_id)
+    return match.group(1) if match else None
+
+
 def get_document_details(document_id: int) -> Optional[Dict[str, Any]]:
     """
     Fetch comprehensive document details by ID.
@@ -1534,24 +1562,7 @@ def get_document_details(document_id: int) -> Optional[Dict[str, Any]]:
                     doc['authors'] = None
                 doc['authors_list'] = authors_list
 
-                # Extract PMID from external_id for PubMed sources
-                # source_id=1 is typically PubMed
-                external_id = doc.get('external_id', '')
-                pmid = None
-                if external_id:
-                    if doc.get('source_id') == 1:
-                        # PubMed source - external_id is the PMID
-                        pmid = external_id
-                    elif external_id.isdigit():
-                        # Simple numeric ID
-                        pmid = external_id
-                    elif 'pmid:' in external_id.lower():
-                        # Handle "PMID:12345678" format
-                        import re
-                        pmid_match = re.search(r'pmid:(\d+)', external_id.lower())
-                        if pmid_match:
-                            pmid = pmid_match.group(1)
-                doc['pmid'] = pmid
+                doc['pmid'] = extract_pmid(doc.get('external_id'), doc.get('source_name'))
 
                 # Convert publication_date to ISO string
                 pub_date = doc.get('publication_date')

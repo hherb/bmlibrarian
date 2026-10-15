@@ -8,30 +8,55 @@ Provides graphical interfaces for both Flet and Qt frameworks.
 For backwards compatibility, Flet exports are re-exported from this module.
 """
 
-# Re-export Flet components for backwards compatibility
-from .flet import (
-    BMLibrarianConfigApp,
-    ResearchGUI,
-    StepCard,
-    DialogManager,
-    WorkflowExecutor,
-    initialize_agents_in_main_thread,
-    cleanup_agents,
-    InteractiveHandler,
-    QueryProcessor,
-    WorkflowStepsHandler,
-    ReportBuilder,
-    UnifiedDocumentCard,
-    DocumentCardContext,
-    create_literature_card,
-    create_scored_card,
-    create_citation_card,
-    CardFactory,
-    create_document_cards_for_tab
+import importlib
+from typing import Any
+
+# Flet components are re-exported for backwards compatibility, but resolved
+# lazily (PEP 562): the Qt GUI imports ``bmlibrarian.gui.qt`` through this
+# package and must keep working when Flet is missing or incompatible.
+_FLET_EXPORTS = (
+    'BMLibrarianConfigApp',
+    'ResearchGUI',
+    'StepCard',
+    'DialogManager',
+    'WorkflowExecutor',
+    'initialize_agents_in_main_thread',
+    'cleanup_agents',
+    'InteractiveHandler',
+    'QueryProcessor',
+    'WorkflowStepsHandler',
+    'ReportBuilder',
+    'UnifiedDocumentCard',
+    'DocumentCardContext',
+    'create_literature_card',
+    'create_scored_card',
+    'create_citation_card',
+    'CardFactory',
+    'create_document_cards_for_tab',
 )
 
+
+def __getattr__(name: str) -> Any:
+    """Resolve a Flet re-export on first access (PEP 562 module ``__getattr__``).
+
+    Args:
+        name: Attribute requested from this package
+
+    Returns:
+        The exported object from ``bmlibrarian.gui.flet``
+
+    Raises:
+        AttributeError: If ``name`` is not a known export
+    """
+    if name not in _FLET_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module('.flet', __name__), name)
+    globals()[name] = value  # cache for subsequent lookups
+    return value
+
+
 # Re-export shared base classes used by both Flet and Qt (backwards compatibility)
-from .flet.document_card_factory_base import (
+from .document_card_factory_base import (
     CardContext,
     PDFButtonState,
     DocumentCardData,

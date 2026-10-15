@@ -327,11 +327,12 @@ class TestFullTextFinderSecureConfig:
         """Test that from_config validates OpenAthens URLs."""
         from bmlibrarian.discovery import FullTextFinder
 
-        # Valid HTTPS URL
+        # Valid HTTPS redirector URL (a bare portal host is deliberately not
+        # treated as a proxy by FullTextFinder)
         config = {
             "openathens": {
                 "enabled": True,
-                "institution_url": "https://myinst.openathens.net"
+                "institution_url": "https://go.openathens.net/redirector/myinst.edu"
             }
         }
         finder = FullTextFinder.from_config(config)
@@ -413,6 +414,8 @@ class TestPDFFetchWorkerThreadSafety:
         worker.error.connect(lambda msg: error_received.append(msg))
         worker.start()
         worker.wait(1000)
+        # Cross-thread signals are queued to the GUI thread: deliver them
+        _pump_until(lambda: bool(error_received))
 
         assert len(error_received) == 1
         # Should be user-friendly message
@@ -494,7 +497,8 @@ class TestPDFButtonStateTransitions:
         button = PDFButtonWidget(config)
 
         assert button.config.state == PDFButtonState.FETCH
-        assert "Fetch" in button.text()
+        # FETCH state is labelled "Find" since it runs the discovery workflow
+        assert "Find" in button.text()
 
     def test_button_creation_upload_only(self, app):
         """Test PDF button shows UPLOAD when no PDF and no URL."""
@@ -510,6 +514,164 @@ class TestPDFButtonStateTransitions:
 
         assert button.config.state == PDFButtonState.UPLOAD
         assert "Upload" in button.text()
+
+
+# Generous upper bound for worker threads in tests; they finish in milliseconds.
+EVENT_PUMP_TIMEOUT_S = 5.0
+EVENT_PUMP_INTERVAL_S = 0.01
+
+
+def _pump_until(predicate, timeout_s: float = EVENT_PUMP_TIMEOUT_S) -> bool:
+    """Process Qt events until predicate() is true or the timeout expires."""
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while not predicate() and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(EVENT_PUMP_INTERVAL_S)
+    QApplication.processEvents()
+    return predicate()
+
+
+@pytest.mark.skipif(not HAS_QT, reason="Qt not available")
+class TestFindPDFRunsOffGuiThread:
+    """"Find PDF" discovery must run on a worker thread, outcome on the GUI thread."""
+
+    @pytest.fixture
+    def app(self):
+        """Create Qt application for tests."""
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+        return app
+
+    def _make_session(self, discovery_fn, calls):
+        """Build a FindPDFSession recording which thread each callback ran on."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPDFSession, PDFDiscoveryWorker
+        )
+
+        def record(kind):
+            def callback(*args):
+                calls.append((kind, args, QThread.currentThread()))
+            return callback
+
+        worker = PDFDiscoveryWorker(discovery_fn)
+        return FindPDFSession(
+            worker,
+            on_progress=record('progress'),
+            on_discovered=record('discovered'),
+            on_failed=record('failed'),
+            on_done=record('done'),
+        )
+
+    def test_discovery_runs_on_worker_and_callbacks_on_gui_thread(self, app):
+        """Discovery runs off the GUI thread; every callback runs on it."""
+        gui_thread = QThread.currentThread()
+        discovery_threads = []
+        calls = []
+
+        def discovery_fn(progress_cb):
+            discovery_threads.append(QThread.currentThread())
+            progress_cb('pmc', 'resolving')
+            return 'RESULT'
+
+        session = self._make_session(discovery_fn, calls)
+        session.start()
+
+        assert _pump_until(lambda: any(c[0] == 'done' for c in calls))
+        assert discovery_threads and discovery_threads[0] != gui_thread
+        assert [c[0] for c in calls] == ['progress', 'discovered', 'done']
+        assert calls[0][1] == ('pmc', 'resolving')
+        assert calls[1][1] == ('RESULT',)
+        assert all(c[2] == gui_thread for c in calls)
+
+    def test_discovery_exception_reported_via_failed(self, app):
+        """An exception in discovery reaches on_failed, not on_discovered."""
+        calls = []
+
+        def discovery_fn(progress_cb):
+            raise RuntimeError("resolver exploded")
+
+        session = self._make_session(discovery_fn, calls)
+        session.start()
+
+        assert _pump_until(lambda: any(c[0] == 'done' for c in calls))
+        kinds = [c[0] for c in calls]
+        assert kinds == ['failed', 'done']
+        assert calls[0][1] == ('resolver exploded',)
+
+    def test_release_deferred_while_result_is_handled(self, app):
+        """A thread-finished signal during result handling (e.g. from a modal
+        dialog's nested event loop) must not release the session early."""
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            FindPDFSession, PDFDiscoveryWorker
+        )
+
+        events = []
+        session_ref = []
+
+        def on_discovered(result):
+            # Simulate the worker's finished signal arriving mid-handling
+            session_ref[0]._handle_thread_finished()
+            events.append('handled')
+
+        worker = PDFDiscoveryWorker(lambda cb: None)
+        session = FindPDFSession(
+            worker,
+            on_progress=lambda *a: None,
+            on_discovered=on_discovered,
+            on_failed=lambda *a: None,
+            on_done=lambda s: events.append('done'),
+        )
+        session_ref.append(session)
+
+        session._handle_discovered('RESULT')
+
+        assert events == ['handled', 'done']
+
+    def test_click_handler_returns_before_discovery_finishes(self, app, tmp_path):
+        """The click slot must not block on network discovery."""
+        import threading
+        from PySide6.QtWidgets import QPushButton
+        from bmlibrarian.gui.document_card_factory_base import (
+            DocumentCardData, PDFButtonConfig, PDFButtonState
+        )
+        from bmlibrarian.gui.qt.qt_document_card_factory import (
+            PDFButtonWidget, QtDocumentCardFactory
+        )
+
+        pdf_path = tmp_path / "found.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+        release = threading.Event()
+
+        def blocking_discovery(card_data, progress_cb):
+            release.wait(EVENT_PUMP_TIMEOUT_S)
+            return 'RESULT'
+
+        factory = QtDocumentCardFactory(base_pdf_dir=tmp_path)
+        find_button = QPushButton("Find PDF")
+        primary = PDFButtonWidget(PDFButtonConfig(state=PDFButtonState.UPLOAD))
+        card = DocumentCardData(doc_id=42, title="A paper", doi="10.1/x")
+
+        with patch.object(factory, '_discover_and_download', side_effect=blocking_discovery), \
+             patch.object(factory, '_finalize_discovery_result', return_value=pdf_path), \
+             patch.object(factory, '_update_pdf_filename_in_database') as update_db:
+            factory._handle_find_pdf_click(find_button, primary, card)
+
+            # Returned while discovery is still blocked on the worker
+            assert not release.is_set()
+            assert not find_button.isEnabled()
+            assert len(factory._find_pdf_sessions) == 1
+
+            release.set()
+            assert _pump_until(lambda: not factory._find_pdf_sessions)
+
+        assert find_button.text() == "✓ Found"
+        assert primary.config.state == PDFButtonState.VIEW
+        assert primary.config.pdf_path == pdf_path
+        assert factory._pdf_path_cache[42] == pdf_path
+        update_db.assert_called_once()
 
 
 if __name__ == "__main__":

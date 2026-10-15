@@ -185,11 +185,16 @@ else:  # 'reject'
 
 #### QtDocumentCardFactory (`gui/qt/qt_document_card_factory.py`)
 
-Integrates with the FETCH button workflow in document cards:
+Integrates with the "Find PDF" button workflow in document cards. Discovery
+is split across threads: `_discover_and_download()` runs the network-bound
+CrossRef/resolver/download work on a `PDFDiscoveryWorker` (QThread) and must
+not touch widgets; its result is delivered (via `FindPDFSession`, a GUI-thread
+QObject) to `_finalize_discovery_result()`, which shows the modal verification
+prompt on the GUI thread:
 
 ```python
-def _execute_pdf_discovery(self, card_data, progress_callback):
-    # ... download and verify ...
+def _finalize_discovery_result(self, card_data, result):
+    # GUI thread: result comes from _discover_and_download() on the worker
 
     if result.verified is False:
         # Build VerificationPromptData with source_url

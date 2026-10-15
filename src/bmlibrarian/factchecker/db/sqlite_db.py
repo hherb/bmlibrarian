@@ -19,6 +19,47 @@ from .abstract_db import (
 
 logger = logging.getLogger(__name__)
 
+# source_id the review-package exporter preserves for PubMed documents
+PUBMED_SOURCE_ID = 1
+# Length of the year prefix in an ISO 8601 date ("YYYY-MM-DD")
+ISO_YEAR_LENGTH = 4
+
+
+def parse_authors_json(authors_text: Optional[str]) -> List[str]:
+    """Parse the JSON-array-as-TEXT ``documents.authors`` column.
+
+    Args:
+        authors_text: Stored value, e.g. '["Smith J", "Doe A"]'; plain text is
+            tolerated and returned as a single author
+
+    Returns:
+        List of author names (empty if none)
+    """
+    if not authors_text:
+        return []
+    try:
+        parsed = json.loads(authors_text)
+    except (json.JSONDecodeError, TypeError):
+        return [str(authors_text)]
+    if isinstance(parsed, list):
+        return [str(a) for a in parsed if a]
+    return [str(parsed)] if parsed else []
+
+
+def year_from_iso_date(date_text: Optional[str]) -> Optional[int]:
+    """Extract the year from an ISO 8601 date string.
+
+    Args:
+        date_text: e.g. "2023-05-01"
+
+    Returns:
+        The year, or None if the value has no leading 4-digit year
+    """
+    if not date_text:
+        return None
+    prefix = str(date_text)[:ISO_YEAR_LENGTH]
+    return int(prefix) if prefix.isdigit() and len(prefix) == ISO_YEAR_LENGTH else None
+
 
 class SQLiteFactCheckerDB(AbstractFactCheckerDB):
     """
@@ -369,6 +410,52 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         result = cursor.fetchone()
         return result['abstract'] if result else None
 
+    def get_document_details(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get full display metadata for a document from the review package.
+
+        Mirrors the keys of ``bmlibrarian.database.get_document_details``.
+        Review packages carry no ``sources`` table or PDF files, so the PMID
+        uses the exporter's PubMed ``source_id`` convention (as
+        ``get_document_metadata`` does) and ``pdf_filename`` is always None.
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            Document details dictionary or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, source_id, external_id, doi, title, abstract, authors,
+                   publication, publication_date, url, pdf_url
+            FROM documents
+            WHERE id = ?
+        """, (document_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        authors_list = parse_authors_json(row['authors'])
+        external_id = row['external_id']
+        return {
+            'id': row['id'],
+            'title': row['title'],
+            'abstract': row['abstract'],
+            'authors': ', '.join(authors_list) if authors_list else None,
+            'authors_list': authors_list,
+            'journal': row['publication'],
+            'year': year_from_iso_date(row['publication_date']),
+            'publication_date': row['publication_date'],
+            'doi': row['doi'],
+            'pmid': external_id if row['source_id'] == PUBMED_SOURCE_ID and external_id else None,
+            'external_id': external_id,
+            'source_id': row['source_id'],
+            'url': row['url'],
+            'pdf_url': row['pdf_url'],
+            'pdf_filename': None,
+        }
+
     def get_document_metadata(self, document_id: int) -> Optional[Dict[str, Any]]:
         """
         Get document metadata (title, pmid, doi, etc.).
@@ -389,7 +476,7 @@ class SQLiteFactCheckerDB(AbstractFactCheckerDB):
         result = cursor.fetchone()
         if result:
             # For PubMed (source_id=1), external_id is the PMID
-            pmid = result['external_id'] if result['source_id'] == 1 else None
+            pmid = result['external_id'] if result['source_id'] == PUBMED_SOURCE_ID else None
             return {
                 'id': result['id'],
                 'title': result['title'],

@@ -8,13 +8,13 @@ that matches the Flet implementation.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QLabel,
-    QDialog, QApplication
+    QDialog
 )
 from PySide6.QtCore import Qt, Signal, QObject, QMutex, QMutexLocker, QThread, QTimer
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from shiboken6 import isValid as is_widget_valid
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, Set, TYPE_CHECKING
 from pathlib import Path
 import logging
 
@@ -33,6 +33,9 @@ from bmlibrarian.gui.qt.resources.constants import (
     PDFButtonColors
 )
 from bmlibrarian.utils.error_messages import format_pdf_download_error
+
+if TYPE_CHECKING:
+    from bmlibrarian.discovery import DownloadResult
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,136 @@ class PDFFetchWorker(QThread):
             friendly_error = format_pdf_download_error(e)
             friendly_error.log()  # Log technical details
             self.error.emit(friendly_error.user_message)
+
+
+class PDFDiscoveryWorker(QThread):
+    """
+    Worker thread for the "Find PDF" discovery and download workflow.
+
+    Runs the network-bound part of discovery (CrossRef title search,
+    resolvers, HTTP/browser download) off the GUI thread. Anything that
+    needs the GUI (verification prompt, button and dialog updates) is left
+    to the receivers of ``discovered``, which run on the GUI thread.
+
+    Signals:
+        progress: (stage, status) progress update from the discovery workflow
+        discovered: Discovery finished; carries the raw download result
+        failed: Discovery raised; carries the error message
+    """
+
+    progress = Signal(str, str)
+    discovered = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        discovery_fn: Callable[[Callable[[str, str], None]], Any],
+        parent: Optional[QObject] = None
+    ):
+        """
+        Initialize the discovery worker.
+
+        Args:
+            discovery_fn: Callable taking a progress callback ``(stage, status)``
+                and returning the download result. Must not touch GUI objects.
+            parent: Optional parent QObject
+        """
+        super().__init__(parent)
+        self._discovery_fn = discovery_fn
+
+    def run(self) -> None:
+        """Execute discovery in the worker thread and report the outcome."""
+        try:
+            result = self._discovery_fn(self.progress.emit)
+        except Exception as e:
+            logger.error(f"PDF discovery failed: {e}", exc_info=True)
+            self.failed.emit(str(e) or type(e).__name__)
+            return
+        self.discovered.emit(result)
+
+
+class FindPDFSession(QObject):
+    """
+    GUI-thread side of one "Find PDF" click.
+
+    Owns the ``PDFDiscoveryWorker`` and receives its signals. Because this
+    object lives on the GUI thread, Qt queues the worker's signals to it, so
+    every slot here runs on the GUI thread and may touch widgets.
+    """
+
+    def __init__(
+        self,
+        worker: PDFDiscoveryWorker,
+        on_progress: Callable[[str, str], None],
+        on_discovered: Callable[[Any], None],
+        on_failed: Callable[[str], None],
+        on_done: Callable[["FindPDFSession"], None],
+    ):
+        """
+        Initialize the session and wire it to the worker.
+
+        Args:
+            worker: The discovery worker (not yet started)
+            on_progress: Called with (stage, status) on the GUI thread
+            on_discovered: Called with the download result on the GUI thread
+            on_failed: Called with an error message on the GUI thread
+            on_done: Called with this session once the worker thread has
+                stopped, so the owner can drop its reference
+        """
+        super().__init__()
+        self.worker = worker
+        self._on_progress = on_progress
+        self._on_discovered = on_discovered
+        self._on_failed = on_failed
+        self._on_done = on_done
+        self._handling_result = False
+        self._release_pending = False
+
+        worker.progress.connect(self._handle_progress)
+        worker.discovered.connect(self._handle_discovered)
+        worker.failed.connect(self._handle_failed)
+        worker.finished.connect(self._handle_thread_finished)
+
+    def start(self) -> None:
+        """Start the discovery worker thread."""
+        self.worker.start()
+
+    def _handle_progress(self, stage: str, status: str) -> None:
+        """Forward a progress update (GUI thread)."""
+        self._on_progress(stage, status)
+
+    def _handle_discovered(self, result: Any) -> None:
+        """Forward the discovery result (GUI thread).
+
+        The handler may open a modal verification dialog, whose nested event
+        loop can deliver the worker's ``finished`` signal before the handler
+        returns; releasing is deferred until it does.
+        """
+        self._handling_result = True
+        try:
+            self._on_discovered(result)
+        finally:
+            self._handling_result = False
+            if self._release_pending:
+                self._release()
+
+    def _handle_failed(self, error_msg: str) -> None:
+        """Forward a discovery error (GUI thread)."""
+        self._on_failed(error_msg)
+
+    def _handle_thread_finished(self) -> None:
+        """Release the worker and this session once the thread has stopped."""
+        if self._handling_result:
+            self._release_pending = True
+            return
+        self._release()
+
+    def _release(self) -> None:
+        """Notify the owner and schedule deletion of the worker and session."""
+        self._release_pending = False
+        self._on_done(self)
+        self.worker.deleteLater()
+        self.deleteLater()
 
 
 class PDFButtonWidget(QPushButton):
@@ -555,8 +688,6 @@ class PDFDiscoveryProgressDialog(QDialog):
             self.status_label.setText(f"Found PDF via {display_name}!")
             self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
 
-        # Process events to update UI
-        QApplication.processEvents()
 
     def set_downloading(self, source: str) -> None:
         """
@@ -568,7 +699,6 @@ class PDFDiscoveryProgressDialog(QDialog):
         display_name = self.RESOLVER_NAMES.get(source, source.title())
         self.status_label.setText(f"Downloading from {display_name}...")
         self.status_label.setStyleSheet("font-weight: bold; color: #FF9800;")
-        QApplication.processEvents()
 
     def set_success(self, file_path: Optional[Path], message: Optional[str] = None) -> None:
         """
@@ -585,7 +715,6 @@ class PDFDiscoveryProgressDialog(QDialog):
         else:
             self.status_label.setText("✅ Success")
         self.status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-        QApplication.processEvents()
 
     def set_failure(self, error_msg: str) -> None:
         """
@@ -599,7 +728,6 @@ class PDFDiscoveryProgressDialog(QDialog):
             error_msg = error_msg[:77] + "..."
         self.status_label.setText(f"❌ {error_msg}")
         self.status_label.setStyleSheet("font-weight: bold; color: #f44336;")
-        QApplication.processEvents()
 
 
 class QtDocumentCardFactory(DocumentCardFactoryBase):
@@ -644,6 +772,8 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         self.use_discovery = use_discovery
         self.unpaywall_email = unpaywall_email
         self._pdf_path_cache: Dict[int, Optional[Path]] = {}  # Performance optimization
+        # Running "Find PDF" sessions, kept referenced until their thread stops
+        self._find_pdf_sessions: Set[FindPDFSession] = set()
 
     def create_card(self, card_data: DocumentCardData) -> QFrame:
         """
@@ -1059,7 +1189,10 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         """
         Handle click on the "Find PDF" button.
 
-        Shows a progress dialog and initiates PDF discovery and download.
+        Shows a progress dialog and starts PDF discovery and download on a
+        ``PDFDiscoveryWorker`` thread so the UI stays responsive. The outcome
+        is handled on the GUI thread by ``_on_find_pdf_result`` /
+        ``_on_find_pdf_error``.
 
         Args:
             find_button: The "Find PDF" button (to disable during operation)
@@ -1078,103 +1211,166 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             parent=find_button.window()
         )
         progress_dialog.show()
-        QApplication.processEvents()
 
+        def on_progress(stage: str, status: str) -> None:
+            if is_widget_valid(progress_dialog):
+                progress_dialog.add_step(stage, status)
+
+        def on_discovered(result: Any) -> None:
+            self._on_find_pdf_result(
+                result, find_button, primary_button, card_data,
+                progress_dialog, original_text
+            )
+
+        def on_failed(error_msg: str) -> None:
+            self._on_find_pdf_error(
+                error_msg, find_button, primary_button, card_data,
+                progress_dialog, original_text
+            )
+
+        worker = PDFDiscoveryWorker(
+            lambda progress_cb: self._discover_and_download(card_data, progress_cb)
+        )
+        session = FindPDFSession(
+            worker,
+            on_progress=on_progress,
+            on_discovered=on_discovered,
+            on_failed=on_failed,
+            on_done=self._find_pdf_sessions.discard,
+        )
+        self._find_pdf_sessions.add(session)
+        session.start()
+
+    def _on_find_pdf_result(
+        self,
+        result: Any,
+        find_button: QPushButton,
+        primary_button: PDFButtonWidget,
+        card_data: DocumentCardData,
+        progress_dialog: PDFDiscoveryProgressDialog,
+        original_text: str
+    ) -> None:
+        """
+        Apply a finished discovery to the UI and database (GUI thread).
+
+        Runs the verification prompt if needed, then updates the dialog,
+        buttons, database and cache. Widgets may have been deleted while the
+        worker ran, so each is checked before use.
+
+        Args:
+            result: Download result returned by ``_discover_and_download``
+            find_button: The "Find PDF" button
+            primary_button: The primary PDF button to update on success
+            card_data: Document card data with identifiers
+            progress_dialog: The discovery progress dialog
+            original_text: Find button text to restore on failure
+        """
         try:
-            # Execute discovery with progress callback
-            def progress_callback(stage: str, status: str) -> None:
-                if is_widget_valid(progress_dialog):
-                    progress_dialog.add_step(stage, status)
-
-            result = self._execute_pdf_discovery(card_data, progress_callback)
-
-            if result and result.exists():
-                # Success - update progress dialog (check validity first)
-                if is_widget_valid(progress_dialog):
-                    progress_dialog.set_success(result)
-
-                # Update primary button to VIEW state (check validity first)
-                if is_widget_valid(primary_button):
-                    primary_button._transition_to_view(result)
-
-                # Update database with pdf_filename
-                document = {
-                    'id': card_data.doc_id,
-                    'doi': card_data.doi,
-                    'pmid': card_data.pmid,
-                    'pdf_url': card_data.pdf_url,
-                    'title': card_data.title,
-                    'authors': card_data.authors,
-                    'year': card_data.year,
-                    'pdf_filename': result.name,
-                }
-                self._update_pdf_filename_in_database(card_data.doc_id, result, document)
-
-                # Update cache
-                self._pdf_path_cache[card_data.doc_id] = result
-
-                logger.info(
-                    f"Successfully found and downloaded PDF for document "
-                    f"{card_data.doc_id}: {result}"
-                )
-
-                # Emit signal (check validity first)
-                if is_widget_valid(primary_button):
-                    primary_button.pdf_discovered.emit(result)
-
-                # Update button to indicate success (check validity first)
-                if is_widget_valid(find_button):
-                    find_button.setText("✓ Found")
-                    find_button.setEnabled(False)
-
-                # Close dialog after a short delay (check validity first)
-                if is_widget_valid(progress_dialog):
-                    QTimer.singleShot(1500, progress_dialog.accept)
-
-            else:
-                # Discovery failed (check widget validity before accessing)
-                if is_widget_valid(progress_dialog):
-                    progress_dialog.set_failure("No PDF sources found")
-                logger.warning(
-                    f"PDF discovery failed for document {card_data.doc_id}"
-                )
-                if is_widget_valid(find_button):
-                    find_button.setText("✗ Not Found")
-
-                # Close dialog after a delay (check validity first)
-                if is_widget_valid(progress_dialog):
-                    QTimer.singleShot(2000, progress_dialog.reject)
-
-                # Re-enable button after a delay (check validity in callback)
-                QTimer.singleShot(
-                    PDFOperationSettings.BUTTON_RESET_DELAY_MS,
-                    lambda: self._reset_find_button(find_button, original_text)
-                )
-
+            pdf_path = self._finalize_discovery_result(card_data, result)
         except Exception as e:
-            error_msg = str(e)
-            # Check widget validity before accessing (widgets may have been deleted)
-            if is_widget_valid(progress_dialog):
-                progress_dialog.set_failure(error_msg)
             logger.error(
-                f"Error during PDF discovery for document {card_data.doc_id}: {e}"
+                f"Error finalizing PDF discovery for document {card_data.doc_id}: {e}",
+                exc_info=True
             )
-            if is_widget_valid(find_button):
-                find_button.setText("✗ Error")
+            self._on_find_pdf_error(
+                str(e) or type(e).__name__, find_button, primary_button,
+                card_data, progress_dialog, original_text
+            )
+            return
 
-            # Close dialog after a delay (check validity first)
+        if pdf_path and pdf_path.exists():
             if is_widget_valid(progress_dialog):
-                QTimer.singleShot(2000, progress_dialog.reject)
+                progress_dialog.set_success(pdf_path)
 
-            # Re-enable button after a delay (check validity in callback)
-            QTimer.singleShot(
-                PDFOperationSettings.BUTTON_RESET_DELAY_MS,
-                lambda: self._reset_find_button(find_button, original_text)
+            if is_widget_valid(primary_button):
+                primary_button._transition_to_view(pdf_path)
+
+            # Update database with pdf_filename
+            document = {
+                'id': card_data.doc_id,
+                'doi': card_data.doi,
+                'pmid': card_data.pmid,
+                'pdf_url': card_data.pdf_url,
+                'title': card_data.title,
+                'authors': card_data.authors,
+                'year': card_data.year,
+                'pdf_filename': pdf_path.name,
+            }
+            self._update_pdf_filename_in_database(card_data.doc_id, pdf_path, document)
+            self._pdf_path_cache[card_data.doc_id] = pdf_path
+
+            logger.info(
+                f"Successfully found and downloaded PDF for document "
+                f"{card_data.doc_id}: {pdf_path}"
             )
 
-            # Emit error signal through primary button (check validity first)
             if is_widget_valid(primary_button):
-                primary_button.error_occurred.emit(error_msg)
+                primary_button.pdf_discovered.emit(pdf_path)
+
+            if is_widget_valid(find_button):
+                find_button.setText("✓ Found")
+                find_button.setEnabled(False)
+
+            if is_widget_valid(progress_dialog):
+                QTimer.singleShot(
+                    PDFOperationSettings.DIALOG_CLOSE_SUCCESS_DELAY_MS,
+                    progress_dialog.accept
+                )
+            return
+
+        # Discovery found nothing (or the user rejected the PDF)
+        if is_widget_valid(progress_dialog):
+            progress_dialog.set_failure("No PDF sources found")
+        logger.warning(f"PDF discovery failed for document {card_data.doc_id}")
+        if is_widget_valid(find_button):
+            find_button.setText("✗ Not Found")
+        if is_widget_valid(progress_dialog):
+            QTimer.singleShot(
+                PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
+                progress_dialog.reject
+            )
+        QTimer.singleShot(
+            PDFOperationSettings.BUTTON_RESET_DELAY_MS,
+            lambda: self._reset_find_button(find_button, original_text)
+        )
+
+    def _on_find_pdf_error(
+        self,
+        error_msg: str,
+        find_button: QPushButton,
+        primary_button: PDFButtonWidget,
+        card_data: DocumentCardData,
+        progress_dialog: PDFDiscoveryProgressDialog,
+        original_text: str
+    ) -> None:
+        """
+        Report a failed discovery to the user (GUI thread).
+
+        Args:
+            error_msg: Error message from the worker or finalization
+            find_button: The "Find PDF" button
+            primary_button: The primary PDF button (its error signal is emitted)
+            card_data: Document card data with identifiers
+            progress_dialog: The discovery progress dialog
+            original_text: Find button text to restore
+        """
+        logger.error(
+            f"Error during PDF discovery for document {card_data.doc_id}: {error_msg}"
+        )
+        if is_widget_valid(progress_dialog):
+            progress_dialog.set_failure(error_msg)
+            QTimer.singleShot(
+                PDFOperationSettings.DIALOG_CLOSE_FAILURE_DELAY_MS,
+                progress_dialog.reject
+            )
+        if is_widget_valid(find_button):
+            find_button.setText("✗ Error")
+        QTimer.singleShot(
+            PDFOperationSettings.BUTTON_RESET_DELAY_MS,
+            lambda: self._reset_find_button(find_button, original_text)
+        )
+        if is_widget_valid(primary_button):
+            primary_button.error_occurred.emit(error_msg)
 
     def _reset_find_button(self, button: QPushButton, original_text: str) -> None:
         """Reset the Find PDF button to its original state.
@@ -1187,13 +1383,17 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
         button.setText(original_text)
         button.setEnabled(True)
 
-    def _execute_pdf_discovery(
+    def _discover_and_download(
         self,
         card_data: DocumentCardData,
         progress_callback: Optional[Callable[[str, str], None]] = None
-    ) -> Optional[Path]:
+    ) -> "DownloadResult":
         """
-        Execute PDF discovery for a document.
+        Discover and download a PDF for a document (worker-thread safe).
+
+        This is the network-bound half of "Find PDF" and runs on a
+        ``PDFDiscoveryWorker`` thread: it must not touch GUI objects. The
+        result is handed to ``_finalize_discovery_result`` on the GUI thread.
 
         Uses FullTextFinder to discover and download PDFs from:
         1. CrossRef title search (to discover DOI if missing)
@@ -1208,7 +1408,7 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             progress_callback: Optional callback(stage, status) for progress updates
 
         Returns:
-            Path to downloaded PDF if successful, None otherwise
+            The FullTextFinder download result (success, file path, verification)
         """
         from bmlibrarian.discovery import FullTextFinder, DocumentIdentifiers
         from bmlibrarian.discovery.resolvers import CrossRefTitleResolver
@@ -1238,11 +1438,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     title=card_data.title
                 )
 
-                result = title_resolver.resolve(identifiers)
+                title_result = title_resolver.resolve(identifiers)
 
-                if result.status.value == 'success' and result.metadata.get('discovered_doi'):
-                    discovered_doi = result.metadata['discovered_doi']
-                    similarity = result.metadata.get('similarity', 0)
+                if (title_result.status.value == 'success'
+                        and title_result.metadata.get('discovered_doi')):
+                    discovered_doi = title_result.metadata['discovered_doi']
+                    similarity = title_result.metadata.get('similarity', 0)
 
                     if progress_callback:
                         progress_callback('crossref_title', 'found')
@@ -1319,7 +1520,27 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
             verify_content=discovery_config.get('verify_content', True),
             delete_on_mismatch=discovery_config.get('delete_on_mismatch', False)
         )
+        return result
 
+    def _finalize_discovery_result(
+        self,
+        card_data: DocumentCardData,
+        result: "DownloadResult"
+    ) -> Optional[Path]:
+        """
+        Turn a download result into the document's PDF path (GUI thread).
+
+        If content verification failed, asks the user what to do via the
+        modal verification dialog, so this must run on the GUI thread.
+        Stores PMC full text in the database when the download provided it.
+
+        Args:
+            card_data: Document card data with identifiers
+            result: Result from ``_discover_and_download``
+
+        Returns:
+            Path to the PDF to attach to this document, or None
+        """
         # Check for verification failure
         if result.verified is False:
             logger.warning(
@@ -1334,6 +1555,12 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                 find_alternative_document
             )
 
+            if not result.file_path:
+                logger.error(
+                    f"Verification failed for document {card_data.doc_id} "
+                    f"but the download result has no file path"
+                )
+                return None
             pdf_path = Path(result.file_path)
 
             # Look up alternative document if we have an extracted DOI
@@ -1383,7 +1610,9 @@ class QtDocumentCardFactory(DocumentCardFactoryBase):
                     pdf_manager = PDFManager()
                     document = {
                         'id': card_data.doc_id,
-                        'publication_date': card_data.publication_date,
+                        # DocumentCardData has no publication_date; PDFManager
+                        # only needs the year for its YYYY/ subdirectory
+                        'publication_date': str(card_data.year) if card_data.year else None,
                         'pdf_filename': save_path.name
                     }
                     target_path = pdf_manager.get_pdf_path(document, create_dirs=True)

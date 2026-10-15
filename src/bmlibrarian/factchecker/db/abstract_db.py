@@ -169,6 +169,23 @@ class AbstractFactCheckerDB(ABC):
         pass
 
     @abstractmethod
+    def get_document_details(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get full display metadata for a document (citation cards, enrichment).
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            Dictionary with at least the keys of
+            ``bmlibrarian.database.get_document_details``: id, title, abstract,
+            authors_list, journal, year, publication_date, doi, pmid (None
+            unless the document is from PubMed), external_id, pdf_url,
+            pdf_filename. None if the document is not found.
+        """
+        pass
+
+    @abstractmethod
     def calculate_statistics(self) -> Dict[str, Any]:
         """
         Calculate review statistics.
