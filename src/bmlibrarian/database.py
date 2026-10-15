@@ -13,6 +13,7 @@ from psycopg_pool import ConnectionPool
 from pathlib import Path
 
 from bmlibrarian.db_conninfo import build_conninfo
+from bmlibrarian import db_test_guard
 from bmlibrarian.env_loader import load_bmlibrarian_env
 
 # Load environment variables: the file named by BMLIBRARIAN_ENV_FILE if set
@@ -22,6 +23,12 @@ load_bmlibrarian_env(override=True)
 
 # Get logger for database operations
 logger = logging.getLogger('bmlibrarian.database')
+
+# Records withdrawn by their source (e.g. PubMed DeleteCitation, migration 032)
+# are kept for referential integrity but never returned by searches. The SQL
+# search functions (fulltext_search, bm25, semantic_docsearch, chunk searches)
+# apply the same filter on withdrawn_date internally.
+NOT_WITHDRAWN_SQL = "d.withdrawn_date IS NULL"
 
 
 class DatabaseManager:
@@ -54,7 +61,11 @@ class DatabaseManager:
         self._pool: Optional[ConnectionPool] = None
         self._init_pool(conninfo)
         if auto_migrate:
-            self._apply_pending_migrations(dry_run=dry_run_migrations)
+            dbname = db_test_guard.database_name(self._conninfo)
+            if db_test_guard.guard_applies(dbname):
+                logger.warning("Running under pytest: not auto-migrating protected database %r", dbname)
+            else:
+                self._apply_pending_migrations(dry_run=dry_run_migrations)
         self._cache_source_ids()
     
     @property
@@ -88,7 +99,10 @@ class DatabaseManager:
 
     def _open_pool(self, conninfo: str):
         """Open the connection pool for ``conninfo`` and warm it up."""
-        # Retain the conninfo to key the per-database source-ID caches.
+        # Under pytest a protected database gets read-only connections. The
+        # option lives in the conninfo itself, so worker processes handed
+        # self.conninfo stay read-only too. Also keys the source-ID caches.
+        conninfo = db_test_guard.guarded_conninfo(conninfo)
         self._conninfo = conninfo
 
         # Initialize connection pool
@@ -511,6 +525,7 @@ def find_abstracts(
         SELECT d.*, ts_rank_cd(d.search_vector, {tsquery_func}('english', %s)) AS rank_score
         FROM document d
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        AND {NOT_WITHDRAWN_SQL}
         {source_filter}
         {date_filter}
         ORDER BY rank_score DESC, d.publication_date DESC NULLS LAST, d.id ASC
@@ -520,6 +535,7 @@ def find_abstracts(
         SELECT d.*
         FROM document d
         WHERE d.search_vector @@ {tsquery_func}('english', %s)
+        AND {NOT_WITHDRAWN_SQL}
         {source_filter}
         {date_filter}
         ORDER BY d.publication_date DESC NULLS LAST, d.id ASC
@@ -713,6 +729,7 @@ def find_abstract_ids(
     else:
         where_clauses.append("d.search_vector @@ to_tsquery('english', %s)")
     params.append(ts_query_str)
+    where_clauses.append(NOT_WITHDRAWN_SQL)
 
     # Source filtering
     if source_ids:
@@ -859,7 +876,7 @@ def search_by_embedding(
         FROM emb_1024 e
         JOIN chunks c ON e.chunk_id = c.id
         JOIN document d ON c.document_id = d.id
-        WHERE e.model_id = %s
+        WHERE e.model_id = %s AND d.withdrawn_date IS NULL
         ORDER BY similarity DESC
         LIMIT %s
     """
@@ -986,6 +1003,7 @@ def search_with_semantic(
                 FROM semantic_results sr
                 JOIN document d ON sr.document_id = d.id
                 LEFT JOIN sources s ON d.source_id = s.id
+                WHERE d.withdrawn_date IS NULL
                 ORDER BY sr.best_score DESC
             """
 

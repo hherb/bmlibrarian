@@ -450,6 +450,7 @@ Respond ONLY with valid JSON."""
                 FROM document d
                 LEFT JOIN sources s ON d.source_id = s.id
                 WHERE d.search_vector @@ plainto_tsquery('english', %s)
+                  AND d.withdrawn_date IS NULL
                   AND d.id != %s
                 ORDER BY rank DESC
                 LIMIT %s
@@ -462,6 +463,7 @@ Respond ONLY with valid JSON."""
                 FROM document d
                 LEFT JOIN sources s ON d.source_id = s.id
                 WHERE d.search_vector @@ plainto_tsquery('english', %s)
+                  AND d.withdrawn_date IS NULL
                 ORDER BY rank DESC
                 LIMIT %s
             """

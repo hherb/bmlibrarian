@@ -76,6 +76,64 @@ semantics otherwise match the old row-by-row importer: `doi`, `abstract`,
 `publication` and `publication_date` are COALESCEd; title, authors, MeSH and
 keywords are replaced.
 
+### Withdrawals (DeleteCitation)
+
+Withdrawn documents are marked in the baseline schema's existing columns
+`document.withdrawn_date` / `withdrawn_reason` (`'PubMed DeleteCitation'`,
+`WITHDRAWN_REASON`). Migration 032 adds `ingest.withdrawn_pmid(pmid PK, file,
+withdrawn)`; `withdrawn` is the date BMLibrarian recorded the withdrawal (the
+import or backfill run), not a date published by NCBI. Migration 033 folds the
+`document.withdrawn` column of 032's first revision into `withdrawn_date` and
+drops it.
+
+`import_file` collects `<DeleteCitation>` PMIDs (`parse_deleted_pmids()`,
+numeric only; invalid entries are counted in `withdrawals_invalid`). Inside the
+file's transaction, `_store_file` then:
+
+1. records them (`RECORD_WITHDRAWN_SQL`, `ON CONFLICT DO NOTHING`);
+2. marks their documents (`MARK_WITHDRAWN_SQL`);
+3. marks the file's own staged records that are already listed as withdrawn
+   (`MARK_STAGED_WITHDRAWN_SQL`).
+
+Step 3 keeps any serial file order correct: a deletion imported before its
+record still applies. With `--workers > 1`, a record and its deletion in two
+files committed at the same moment cannot see each other (READ COMMITTED), so
+`import_all_files` ends with one set-based pass over all recorded withdrawals
+(`_reconcile_withdrawals`, `RECONCILE_WITHDRAWN_SQL`; reported as
+`withdrawals_reconciled`). Such concurrent files can also deadlock; PostgreSQL
+aborts one, the worker failure is logged, the file is not in the ledger, and a
+re-run imports it.
+
+The merge never touches `withdrawn_date`, so a later revision does not clear
+it, and a record that reappears in a later file is marked again: withdrawals
+are permanent, matching NCBI, which never reuses or re-instates a deleted PMID
+(there is no element for it).
+
+Per-file stats: `withdrawals_listed` (distinct PMIDs in DeleteCitation),
+`withdrawals_invalid`, `documents_withdrawn` (documents newly marked; PMIDs not
+in the database are recorded but mark nothing). `import_all_files` sums them
+into `total_withdrawals_listed` / `total_documents_withdrawn`.
+
+`backfill_withdrawals(file_type)` (CLI `backfill-withdrawals`) re-scans files
+that were imported before this existed. It runs one transaction per file
+(files without deletions open no connection) and is idempotent. It returns
+`files_scanned`, `pmids_listed`, `pmids_invalid`, `pmids_recorded` (newly added
+to `ingest.withdrawn_pmid`), `documents_marked` and `files_failed`. An
+unreadable file is logged, listed and skipped; the CLI then exits 1. If none of
+the selected directories holds a file it raises `FileNotFoundError`.
+
+**Searches:** every SQL search function (`fulltext_search`, `bm25`,
+`semantic_docsearch`, `semantic.chunksearch`, `chunksearch_document`,
+`hybrid_chunksearch_document`) has always filtered on `withdrawn_date IS
+NULL`. In `database.py`, `find_abstracts`, `find_abstract_ids`,
+`search_by_embedding` and `search_with_semantic` filter too
+(`NOT_WITHDRAWN_SQL`), as do the raw full-text queries in PaperChecker's search
+coordinator and the paper reviewer's contradictory finder.
+`tests/test_withdrawn_search_filters.py` pins this: it checks the latest
+definition of each SQL function, and scans `src/` for full-text queries on
+`document` without the filter. Fetching a document by id still returns it,
+which is intended for existing references.
+
 ### Parsing notes (DTD layout)
 
 `KeywordList` and `CommentsCorrectionsList` are children of
@@ -137,8 +195,10 @@ callables; `for_server(conninfo)` builds the real ones.
 | `tests/test_ncbi_https.py` | listing/MD5/Content-Range parsing; resume, Range ignored, corrupt stream, stale files | no |
 | `tests/test_pubmed_bulk_download.py` | importer download paths, skipping, tracking, failures | no |
 | `tests/test_pubmed_bulk_importer_parsing.py` | keyword/DOI/retraction/date_revised extraction | no |
-| `tests/test_pubmed_bulk_importer_copy.py` | staging rows (unit); atomic store, idempotency, revisions, resume, rollback, parallel workers | opt-in |
+| `tests/test_pubmed_bulk_importer_copy.py` | staging rows (unit); atomic store, idempotency, revisions, resume, rollback, parallel workers, withdrawals (either order), backfill, search exclusion | opt-in |
 | `tests/test_migration_031_ingest_ledger.py` | migration 031, applied twice | opt-in |
+| `tests/test_migration_032_033_withdrawn.py` | migrations 032 and 033, applied twice; 033 copies first-revision marks before dropping the column | opt-in |
+| `tests/test_withdrawn_search_filters.py` | SQL search functions and Python full-text queries exclude withdrawn rows | hermetic |
 | `tests/test_env_loader.py` | env selection, explicit conninfo | no |
 | `tests/test_db_import_profile.py` | profile helpers and flow (fake server) | no |
 | `tests/test_pubmed_bulk_cli.py` | CLI arguments and profile ordering | no |

@@ -10,6 +10,8 @@ from typing import List, Tuple, Optional
 
 import psycopg
 
+from bmlibrarian.db_test_guard import guarded_connect_kwargs, refuse_if_guarded
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,16 +63,25 @@ class MigrationManager:
             logger.warning(f"Could not create MigrationManager from environment: {e}")
             return None
 
-    def _get_connection(self, database: str = None) -> psycopg.Connection:
-        """Get a database connection."""
+    def _get_connection(self, database: Optional[str] = None,
+                        guard_as: Optional[str] = None) -> psycopg.Connection:
+        """Get a database connection (read-only for a protected database under pytest).
+
+        Args:
+            database: Database to connect to.
+            guard_as: Database the test guard judges instead of ``database``; for
+                maintenance connections to ``postgres`` made on behalf of another
+                database.
+        """
         params = self._conn_params.copy()
         if database:
             params["dbname"] = database
+        params.update(guarded_connect_kwargs(guard_as or database))
         return psycopg.connect(**params)
     
     def _database_exists(self, database_name: str) -> bool:
         """Check if a database exists."""
-        with self._get_connection("postgres") as conn:
+        with self._get_connection("postgres", guard_as=database_name) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT 1 FROM pg_database WHERE datname = %s",
@@ -80,7 +91,7 @@ class MigrationManager:
     
     def _create_database(self, database_name: str):
         """Create a new database."""
-        with self._get_connection("postgres") as conn:
+        with self._get_connection("postgres", guard_as=database_name) as conn:
             conn.autocommit = True
             with conn.cursor() as cur:
                 # Use identifier to safely quote the database name
@@ -189,7 +200,11 @@ class MigrationManager:
 
         Returns:
             True if successfully marked, False if already applied
+
+        Raises:
+            ProtectedDatabaseError: Under pytest, for a protected (production) database.
         """
+        refuse_if_guarded(self.database, "mark a migration as applied")
         migration_file = Path(migration_file)
         if not migration_file.exists():
             raise FileNotFoundError(f"Migration file not found: {migration_file}")
@@ -252,6 +267,7 @@ class MigrationManager:
     
     def initialize_database(self, baseline_schema_path: Path):
         """Initialize database with baseline schema."""
+        refuse_if_guarded(self.database, "initialize the schema")
         baseline_schema_path = Path(baseline_schema_path)
         
         if not baseline_schema_path.exists():
@@ -306,7 +322,11 @@ class MigrationManager:
 
         Returns:
             Number of migrations applied (or would be applied in dry_run mode)
+
+        Raises:
+            ProtectedDatabaseError: Under pytest, for a protected (production) database.
         """
+        refuse_if_guarded(self.database, "apply migrations")
         migrations_dir = Path(migrations_dir)
 
         if not migrations_dir.exists():

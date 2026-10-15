@@ -3,7 +3,7 @@ Integration tests for migrations/031_ingest_ledger_and_revisions.sql.
 
 Opt-in: set BMLIBRARIAN_TEST_DB_ENV to an env file for a *development* database
 that already has the BMLibrarian schema (e.g. ~/.bmlibrarian/.env_pg18_dev).
-The tests refuse to run against the production database `knowledgebase`.
+The tests refuse to run against any database the test guard protects (production).
 Data written by a test is rolled back; the migration itself is applied (twice,
 to prove idempotency) and stays applied, as migrations do.
 """
@@ -16,11 +16,12 @@ import psycopg
 import pytest
 from dotenv import dotenv_values
 
+from bmlibrarian.db_test_guard import is_protected_database
+
 pytestmark = pytest.mark.requires_database
 
 MIGRATION = Path(__file__).resolve().parents[1] / "migrations" / "031_ingest_ledger_and_revisions.sql"
 TEST_DB_ENV_VARIABLE = "BMLIBRARIAN_TEST_DB_ENV"
-PRODUCTION_DATABASE = "knowledgebase"
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def dev_conn() -> Iterator[psycopg.Connection]:
     if not env_file:
         pytest.skip(f"{TEST_DB_ENV_VARIABLE} not set")
     cfg = dotenv_values(Path(env_file).expanduser())
-    if cfg.get("POSTGRES_DB") in (None, PRODUCTION_DATABASE):
+    if is_protected_database(cfg.get("POSTGRES_DB")):
         pytest.fail(f"refusing to run migration tests against {cfg.get('POSTGRES_DB')!r}")
     conn = psycopg.connect(host=cfg.get("POSTGRES_HOST", "localhost"), port=cfg.get("POSTGRES_PORT", "5432"),
                            dbname=cfg["POSTGRES_DB"], user=cfg.get("POSTGRES_USER"),

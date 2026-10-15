@@ -38,6 +38,13 @@ are Qt-incomplete:
 
 ## 2. Make the test suite protect you
 
+- **Route the remaining direct `psycopg.connect()` callers through
+  `DatabaseManager`** so the pytest production guard (`db_test_guard.py`,
+  PR #270) covers them: `db_import_profile.py` (ALTER SYSTEM / restart),
+  `app.py`, `fulltext_discovery_cli.py`, `paperchecker/database.py`, the Qt
+  login in `gui/qt/core/application.py`, and ~10 more. Today the guard only
+  makes `DatabaseManager` / `MigrationManager` connections read-only; these
+  paths could still write to production under pytest. Also golden rule 5.
 - Fix 5 files with unconditional pytest collection errors (manual scripts
   masquerading as `test_*` functions with required args).
 - Adopt `requires_database`/`requires_ollama` markers project-wide (only

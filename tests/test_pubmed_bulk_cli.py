@@ -2,7 +2,10 @@
 
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pubmed_bulk_cli as cli  # noqa: E402
@@ -69,3 +72,54 @@ def test_cmd_import_with_profile_closes_pool_inside_profile() -> None:
         assert cli.cmd_import(args) == 0
     assert [e[0] for e in events] == ["apply", "open", "import", "close", "restore"]
     assert events[0][1] == "dbname=dev"
+
+
+def test_backfill_withdrawals_parses_with_update_default() -> None:
+    """The subcommand exists and scans update files by default."""
+    args = cli.build_parser().parse_args(["backfill-withdrawals"])
+    assert args.command == "backfill-withdrawals" and args.type == "update"
+
+
+def backfill_result(**overrides: object) -> dict:
+    """A backfill_withdrawals() result with all counters."""
+    result = {"files_scanned": 2, "pmids_listed": 5, "pmids_invalid": 0, "pmids_recorded": 3,
+              "documents_marked": 2, "files_failed": []}
+    result.update(overrides)
+    return result
+
+
+def run_backfill(argv: List[str], result: Optional[dict] = None,
+                 error: Optional[Exception] = None) -> Tuple[int, MagicMock]:
+    """Run cmd_backfill_withdrawals with a mocked importer; returns (exit code, importer mock)."""
+    args = cli.build_parser().parse_args(["backfill-withdrawals", *argv])
+    with patch.object(cli, "PubMedBulkImporter") as importer_cls:
+        importer = MagicMock()
+        if error is not None:
+            importer.backfill_withdrawals.side_effect = error
+        else:
+            importer.backfill_withdrawals.return_value = result or backfill_result()
+        importer_cls.return_value = importer
+        return cli.cmd_backfill_withdrawals(args), importer
+
+
+@pytest.mark.parametrize("cli_type, file_type", [("all", None), ("baseline", "baseline"), ("update", "update")])
+def test_cmd_backfill_withdrawals_maps_type(cli_type: str, file_type: Optional[str]) -> None:
+    """--type all/baseline/update reach the importer as None/'baseline'/'update'."""
+    code, importer = run_backfill(["--type", cli_type])
+    assert code == 0
+    assert importer.backfill_withdrawals.call_args.kwargs["file_type"] == file_type
+
+
+def test_cmd_backfill_withdrawals_reports_failure(capsys: pytest.CaptureFixture) -> None:
+    """An exception is printed and exits 1."""
+    code, _ = run_backfill([], error=FileNotFoundError("no downloaded PubMed files"))
+    assert code == 1
+    assert "no downloaded PubMed files" in capsys.readouterr().out
+
+
+def test_cmd_backfill_withdrawals_unreadable_files_exit_nonzero(capsys: pytest.CaptureFixture) -> None:
+    """Unreadable files are listed and make the command exit 1."""
+    code, _ = run_backfill([], result=backfill_result(files_failed=["bad.xml.gz"]))
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "bad.xml.gz" in out and "Documents newly marked: 2" in out
