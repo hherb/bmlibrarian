@@ -20,10 +20,14 @@ the evaluations it already saved instead of paying for them again.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple, TYPE_CHECKING
+from types import MappingProxyType
+from typing import (
+    Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple,
+    TYPE_CHECKING,
+)
 
 from .config import (
     CHECKPOINT_TITLE_TRUNCATE_LENGTH,
@@ -64,7 +68,8 @@ from .exceptions import (
 )
 
 if TYPE_CHECKING:
-    from bmlibrarian.evaluations import EvaluationRun, EvaluationStore
+    from bmlibrarian.database import DatabaseManager
+    from bmlibrarian.evaluations import EvaluationRun, EvaluationStore, EvaluationType
     from ..orchestrator import AgentOrchestrator
     from .config import SystematicReviewConfig
     from .executor import SearchExecutor
@@ -72,6 +77,7 @@ if TYPE_CHECKING:
     from .scorer import RelevanceScorer, CompositeScorer
     from .quality import QualityAssessor
     from .reporter import Reporter
+    from .synthesizer import EvidenceSynthesis
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +102,14 @@ class ReviewStage(IntEnum):
 
 # The stage a resume starts at, for each checkpoint type. A checkpoint is
 # written after its phase finished, so the resume starts at the next stage.
-RESUME_STAGE_BY_CHECKPOINT: Dict[str, ReviewStage] = {
+# This is the single source of the checkpoint order; the pipeline passes each
+# checkpoint just before the stage it maps to (pinned by a test).
+RESUME_STAGE_BY_CHECKPOINT: Mapping[str, ReviewStage] = MappingProxyType({
     CHECKPOINT_SEARCH_STRATEGY: ReviewStage.EXECUTE_SEARCH,
     CHECKPOINT_INITIAL_RESULTS: ReviewStage.SCORE_RELEVANCE,
     CHECKPOINT_SCORING_COMPLETE: ReviewStage.ASSESS_QUALITY,
     CHECKPOINT_QUALITY_ASSESSMENT: ReviewStage.FINALIZE,
-}
+})
 
 # Stages that read evaluations saved by earlier stages. Resuming at one of
 # these without the original evaluation run would silently report nothing.
@@ -110,13 +118,15 @@ STAGES_REQUIRING_SAVED_EVALUATIONS: FrozenSet[ReviewStage] = frozenset({
     ReviewStage.FINALIZE,
 })
 
-# Abort reasons reported in the empty result when a checkpoint is rejected.
-ABORT_REASON_BY_CHECKPOINT: Dict[str, str] = {
-    CHECKPOINT_SEARCH_STRATEGY: "Aborted at search strategy",
-    CHECKPOINT_INITIAL_RESULTS: "Aborted at initial results",
-    CHECKPOINT_SCORING_COMPLETE: "Aborted at scoring",
-    CHECKPOINT_QUALITY_ASSESSMENT: "Aborted at quality assessment",
-}
+# Progress event for problems the user must know about although the review
+# carries on (papers that could not be evaluated or restored, a checkpoint
+# file that could not be saved, a run status that could not be recorded).
+EVENT_REVIEW_WARNING = "review_warning"
+
+# Reasons recorded on papers flagged for manual review because their
+# evaluation failed. Neither failure is saved, so a resume retries them.
+SCORING_FAILED_REASON = "Relevance scoring failed"
+ASSESSMENT_FAILED_REASON = "Quality assessment failed"
 
 
 # =============================================================================
@@ -140,19 +150,25 @@ class ReviewRunOptions:
 
     @property
     def output_dir(self) -> Optional[str]:
-        """Directory checkpoint files are saved in (the report's directory)."""
+        """
+        Base directory for checkpoint files: the report's directory.
+
+        Checkpoint files go in its ``checkpoints/`` subdirectory.
+        """
         if not self.output_path:
             return None
         return str(Path(self.output_path).expanduser().parent)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PipelineComponents:
     """
-    Workers used by the pipeline stages.
+    Workers used by the pipeline stages after search.
+
+    The search executor is not part of this set: it is built by the search
+    stage itself, which is the only stage that uses it.
 
     Attributes:
-        executor: Search executor; only built when the search stage runs.
         initial_filter: Heuristic pre-filter.
         scorer: LLM relevance scorer.
         quality_assessor: Study quality assessor.
@@ -160,7 +176,6 @@ class PipelineComponents:
         reporter: Report builder.
     """
 
-    executor: Optional["SearchExecutor"]
     initial_filter: "InitialFilter"
     scorer: "RelevanceScorer"
     quality_assessor: "QualityAssessor"
@@ -185,6 +200,19 @@ class ReviewAborted(Exception):
 # =============================================================================
 # Pure helpers
 # =============================================================================
+
+def abort_reason(checkpoint_type: str) -> str:
+    """
+    Abort reason recorded when the user rejects a checkpoint.
+
+    Args:
+        checkpoint_type: The rejected checkpoint's type constant.
+
+    Returns:
+        A human-readable reason naming the checkpoint.
+    """
+    return f"Review stopped at the {checkpoint_type.replace('_', ' ')} checkpoint"
+
 
 def average_relevance(scored_papers: List[ScoredPaper]) -> float:
     """
@@ -239,6 +267,86 @@ def exclude_at_initial_filter(paper: PaperData, reason: str) -> ScoredPaper:
     )
 
 
+def flag_unscored(paper: PaperData) -> ScoredPaper:
+    """
+    Represent a paper whose relevance scoring failed as needing manual review.
+
+    Args:
+        paper: The paper that has no saved relevance score.
+
+    Returns:
+        A zero-score ScoredPaper with an UNCERTAIN decision.
+    """
+    return ScoredPaper(
+        paper=paper,
+        relevance_score=0.0,
+        relevance_rationale=SCORING_FAILED_REASON,
+        inclusion_decision=InclusionDecision(
+            status=InclusionStatus.UNCERTAIN,
+            stage=ExclusionStage.RELEVANCE_SCORING,
+            reasons=[SCORING_FAILED_REASON],
+            rationale=f"{SCORING_FAILED_REASON}; the paper needs manual screening",
+            confidence=0.0,
+        ),
+    )
+
+
+def flag_unassessed(scored_paper: ScoredPaper) -> ScoredPaper:
+    """
+    Represent a relevant paper whose quality assessment failed as needing review.
+
+    Args:
+        scored_paper: The above-threshold paper that has no saved assessment.
+
+    Returns:
+        A copy with an UNCERTAIN decision at the quality-gate stage.
+    """
+    return replace(
+        scored_paper,
+        inclusion_decision=InclusionDecision(
+            status=InclusionStatus.UNCERTAIN,
+            stage=ExclusionStage.QUALITY_GATE,
+            reasons=[ASSESSMENT_FAILED_REASON],
+            rationale=f"{ASSESSMENT_FAILED_REASON}; the paper needs manual appraisal",
+            confidence=0.0,
+        ),
+    )
+
+
+def find_unevaluated(
+    all_papers: Iterable[PaperData],
+    rejected_ids: Set[int],
+    scored_ids: Set[int],
+    above_threshold: Iterable[ScoredPaper],
+    assessed_ids: Set[int],
+) -> Tuple[List[PaperData], List[ScoredPaper]]:
+    """
+    Papers that should have been evaluated but have no saved evaluation.
+
+    Failed evaluations are never saved, so these are the papers whose
+    scoring or assessment failed (in this session or an earlier one).
+
+    Args:
+        all_papers: Every paper the search found.
+        rejected_ids: Document IDs rejected by the initial filter.
+        scored_ids: Document IDs with a saved relevance score.
+        above_threshold: Papers above the current relevance threshold.
+        assessed_ids: Document IDs with a saved quality assessment.
+
+    Returns:
+        (papers that passed the filter but were never scored,
+        above-threshold papers that were never assessed)
+    """
+    unscored = [
+        p for p in all_papers
+        if p.document_id not in rejected_ids and p.document_id not in scored_ids
+    ]
+    unassessed = [
+        sp for sp in above_threshold if sp.paper.document_id not in assessed_ids
+    ]
+    return unscored, unassessed
+
+
 # =============================================================================
 # Host declarations
 # =============================================================================
@@ -247,14 +355,17 @@ class ReviewHost:
     """
     Declares the SystematicReviewAgent state and methods the review mixins use.
 
-    Annotations only: nothing here exists at runtime. SystematicReviewAgent
-    sets the attributes in ``__init__`` and defines the methods.
+    The attribute annotations and the ``TYPE_CHECKING`` method stubs exist
+    for the type checker only: SystematicReviewAgent sets the attributes in
+    ``__init__`` and defines the methods. The ``_active_*`` accessors and
+    ``_warn`` below are real, shared runtime methods.
     """
 
     config: "SystematicReviewConfig"
     documenter: Documenter
     callback: Optional[Callable[[str, str], None]]
     orchestrator: Optional["AgentOrchestrator"]
+    _db_manager: "DatabaseManager"
     _criteria: Optional[SearchCriteria]
     _weights: Optional[ScoringWeights]
     _search_plan: Optional[SearchPlan]
@@ -358,6 +469,36 @@ class ReviewHost:
             raise SystematicReviewError("No review in progress: scoring weights are not set")
         return self._weights
 
+    def _active_run(self) -> "EvaluationRun":
+        """
+        The evaluation run the review saves its evaluations in.
+
+        Returns:
+            The current EvaluationRun.
+
+        Raises:
+            SystematicReviewError: If there is no active evaluation run.
+        """
+        if self._evaluation_run is None:
+            raise SystematicReviewError(
+                "No active evaluation run: evaluations cannot be saved or reused"
+            )
+        return self._evaluation_run
+
+    def _warn(self, message: str) -> None:
+        """
+        Report a problem the review continues despite.
+
+        Logged as a warning and sent to the progress callback as
+        ``EVENT_REVIEW_WARNING`` so the user sees it.
+
+        Args:
+            message: What went wrong and what it means for the review.
+        """
+        logger.warning(message)
+        if self.callback:
+            self.callback(EVENT_REVIEW_WARNING, message)
+
 
 # =============================================================================
 # Pipeline mixin
@@ -381,13 +522,15 @@ class ReviewPipelineMixin(ReviewHost):
 
         Success completes the run; a rejected checkpoint or a user interrupt
         pauses it (it can be resumed from its checkpoint file); an error marks
-        it failed and is re-raised as a SystematicReviewError subclass.
+        it failed and is re-raised as a SystematicReviewError (or one of its
+        subclasses).
 
         Args:
             body: Callable executing the review and returning its result.
 
         Returns:
-            The review result, or an empty result if a checkpoint was rejected.
+            The review result, or an empty result carrying ``abort_reason``
+            if a checkpoint was rejected.
 
         Raises:
             SystematicReviewError: On any failure (connection, timeout,
@@ -460,7 +603,7 @@ class ReviewPipelineMixin(ReviewHost):
                 rationale="Unexpected error - please report this issue",
                 metrics={
                     "error_type": error_type,
-                    "phase": self.documenter._current_phase,
+                    "phase": self.documenter.current_phase,
                 },
             )
             raise SystematicReviewError(error_msg) from e
@@ -485,13 +628,14 @@ class ReviewPipelineMixin(ReviewHost):
 
         Raises:
             ReviewAborted: If the user rejects a checkpoint.
+            SystematicReviewError: If there is no active evaluation run (every
+                stage saves to or reads from it).
         """
-        components = self._build_pipeline_components(
-            include_executor=start <= ReviewStage.EXECUTE_SEARCH,
-        )
+        self._active_run()
+        components = self._build_pipeline_components()
 
         if start <= ReviewStage.EXECUTE_SEARCH:
-            total_before_dedup = self._stage_execute_search(components.executor)
+            total_before_dedup = self._stage_execute_search(self._build_search_executor())
             self._require_checkpoint(
                 CHECKPOINT_INITIAL_RESULTS,
                 {
@@ -528,7 +672,7 @@ class ReviewPipelineMixin(ReviewHost):
     # Stages
     # -------------------------------------------------------------------------
 
-    def _stage_execute_search(self, executor: Optional["SearchExecutor"]) -> int:
+    def _stage_execute_search(self, executor: "SearchExecutor") -> int:
         """
         Execute the search plan, phased or standard per configuration.
 
@@ -542,10 +686,10 @@ class ReviewPipelineMixin(ReviewHost):
             Total results before de-duplication.
 
         Raises:
-            SystematicReviewError: If there is no executor or search plan.
+            SystematicReviewError: If there is no search plan.
         """
-        if executor is None or self._search_plan is None:
-            raise SystematicReviewError("Search stage needs a search plan and executor")
+        if self._search_plan is None:
+            raise SystematicReviewError("Search stage needs a search plan")
 
         self.documenter.set_phase("search_execution")
         query_count = len(self._search_plan.queries)
@@ -694,6 +838,10 @@ class ReviewPipelineMixin(ReviewHost):
                     "average_score": round(scoring_result.average_score, 2),
                     "failed_scoring": len(scoring_result.failed_papers),
                 })
+                if scoring_result.failed_papers:
+                    timer.set_error(
+                        f"{len(scoring_result.failed_papers)} papers could not be scored"
+                    )
             else:
                 timer.set_output(f"All {cached_count} papers already scored (cached)")
                 timer.add_metrics({
@@ -786,7 +934,8 @@ class ReviewPipelineMixin(ReviewHost):
             quality_assessor: The quality assessor.
 
         Returns:
-            The quality-checkpoint state.
+            The quality-checkpoint state; ``papers_assessed`` counts the
+            assessed papers above the current relevance threshold.
         """
         from bmlibrarian.evaluations import EvaluationType
 
@@ -828,6 +977,10 @@ class ReviewPipelineMixin(ReviewHost):
                     "failed_assessment": len(quality_result.failed_papers),
                     **assessment_stats,
                 })
+                if quality_result.failed_papers:
+                    timer.set_error(
+                        f"{len(quality_result.failed_papers)} papers could not be assessed"
+                    )
             else:
                 timer.set_output(f"All {cached_count} papers already assessed (cached)")
                 timer.add_metrics({
@@ -836,8 +989,13 @@ class ReviewPipelineMixin(ReviewHost):
                     "failed_assessment": 0,
                 })
 
+        above_ids = {sp.paper.document_id for sp in above}
+        assessed_above = [
+            ap for ap in self.get_assessed_papers()
+            if ap.scored_paper.paper.document_id in above_ids
+        ]
         return {
-            "papers_assessed": len(self.get_assessed_papers()),
+            "papers_assessed": len(assessed_above),
             "assessment_stats": assessment_stats,
         }
 
@@ -912,6 +1070,10 @@ class ReviewPipelineMixin(ReviewHost):
             if sp.inclusion_decision
             and sp.inclusion_decision.status == InclusionStatus.UNCERTAIN
         ]
+        uncertain.extend(self._flag_failed_evaluations(
+            scored_papers, above, assessed_papers,
+            already_flagged={sp.paper.document_id for sp in uncertain},
+        ))
 
         evidence_synthesis = self._synthesize_evidence(included)
 
@@ -962,7 +1124,9 @@ class ReviewPipelineMixin(ReviewHost):
         )
         return result
 
-    def _synthesize_evidence(self, included: List[AssessedPaper]) -> Optional[Any]:
+    def _synthesize_evidence(
+        self, included: List[AssessedPaper],
+    ) -> Optional["EvidenceSynthesis"]:
         """
         Run optional evidence synthesis over the included papers.
 
@@ -1002,8 +1166,16 @@ class ReviewPipelineMixin(ReviewHost):
                     included_papers=included,
                 )
             except Exception as e:
-                logger.warning(f"Evidence synthesis failed, continuing without: {e}")
+                # Synthesis is optional: any failure (LLM outage or a bug,
+                # told apart by the logged traceback and error type) leaves
+                # the review without a synthesis rather than failing it.
+                error_type = type(e).__name__
+                logger.warning(
+                    f"Evidence synthesis failed ({error_type}), continuing without: {e}",
+                    exc_info=True,
+                )
                 timer.set_output(f"Evidence synthesis failed: {e}")
+                timer.add_metrics({"synthesis_error_type": error_type})
                 if self.callback:
                     self.callback("synthesis_failed", f"Evidence synthesis failed: {e}")
                 return None
@@ -1049,17 +1221,30 @@ class ReviewPipelineMixin(ReviewHost):
     # Helpers
     # -------------------------------------------------------------------------
 
-    def _build_pipeline_components(self, include_executor: bool) -> PipelineComponents:
+    def _build_search_executor(self) -> "SearchExecutor":
         """
-        Build the pipeline workers for the current criteria and weights.
+        Build the search executor for the search stage.
 
-        Args:
-            include_executor: Whether the search stage will run.
+        Returns:
+            A SearchExecutor using the current configuration and the agent's
+            database manager.
+        """
+        from .executor import SearchExecutor
+
+        return SearchExecutor(
+            config=self.config,
+            results_per_query=self.config.max_results_per_query,
+            callback=self.callback,
+            db_manager=self._db_manager,
+        )
+
+    def _build_pipeline_components(self) -> PipelineComponents:
+        """
+        Build the post-search pipeline workers for the current criteria and weights.
 
         Returns:
             The pipeline components.
         """
-        from .executor import SearchExecutor
         from .filters import InitialFilter
         from .scorer import RelevanceScorer, CompositeScorer
         from .quality import QualityAssessor
@@ -1067,15 +1252,7 @@ class ReviewPipelineMixin(ReviewHost):
 
         criteria = self._active_criteria()
         weights = self._active_weights()
-        executor = None
-        if include_executor:
-            executor = SearchExecutor(
-                config=self.config,
-                results_per_query=self.config.max_results_per_query,
-                callback=self.callback,
-            )
         return PipelineComponents(
-            executor=executor,
             initial_filter=InitialFilter(criteria=criteria, callback=self.callback),
             scorer=RelevanceScorer(
                 research_question=criteria.research_question,
@@ -1097,7 +1274,7 @@ class ReviewPipelineMixin(ReviewHost):
             ),
         )
 
-    def _evaluated_document_ids(self, evaluation_type: Any) -> Set[int]:
+    def _evaluated_document_ids(self, evaluation_type: "EvaluationType") -> Set[int]:
         """
         Document IDs already evaluated in the current run.
 
@@ -1110,16 +1287,61 @@ class ReviewPipelineMixin(ReviewHost):
         Raises:
             SystematicReviewError: If there is no active evaluation run.
         """
-        if not self._evaluation_run:
-            raise SystematicReviewError(
-                "No active evaluation run: evaluations cannot be saved or reused"
-            )
         return set(
             self._evaluation_store.get_evaluated_document_ids(
-                run_id=self._evaluation_run.run_id,
+                run_id=self._active_run().run_id,
                 evaluation_type=evaluation_type,
             )
         )
+
+    def _flag_failed_evaluations(
+        self,
+        scored_papers: List[ScoredPaper],
+        above: List[ScoredPaper],
+        assessed_papers: List[AssessedPaper],
+        already_flagged: Set[int],
+    ) -> List[ScoredPaper]:
+        """
+        Flag papers whose scoring or assessment failed for manual review.
+
+        Failed evaluations are not saved, so without this such papers would
+        be in no list of the report at all. Warns the user with how to
+        retry them.
+
+        Args:
+            scored_papers: Every scored paper of the run.
+            above: Papers above the current relevance threshold.
+            assessed_papers: Assessed papers above the threshold.
+            already_flagged: Document IDs already in the uncertain list.
+
+        Returns:
+            The flagged papers, to add to the uncertain list.
+        """
+        unscored, unassessed = find_unevaluated(
+            all_papers=self._all_papers,
+            rejected_ids={p.document_id for p, _ in self._rejected_initial_filter},
+            scored_ids={sp.paper.document_id for sp in scored_papers},
+            above_threshold=above,
+            assessed_ids={ap.scored_paper.paper.document_id for ap in assessed_papers},
+        )
+        if unscored:
+            self._warn(
+                f"{len(unscored)} papers could not be scored for relevance and are "
+                "listed for manual review. Resume from the search strategy or "
+                "initial results checkpoint to retry them."
+            )
+        if unassessed:
+            self._warn(
+                f"{len(unassessed)} relevant papers could not be quality-assessed and "
+                "are listed for manual review. Resume from the scoring or quality "
+                "assessment checkpoint to retry them."
+            )
+        flagged = [flag_unscored(p) for p in unscored]
+        flagged.extend(
+            flag_unassessed(sp) for sp in unassessed
+            if sp.paper.document_id not in already_flagged
+        )
+        return flagged
 
     def _require_checkpoint(
         self,
@@ -1146,9 +1368,7 @@ class ReviewPipelineMixin(ReviewHost):
             output_dir=options.output_dir,
         )
         if not approved:
-            raise ReviewAborted(
-                ABORT_REASON_BY_CHECKPOINT.get(checkpoint_type, f"Aborted at {checkpoint_type}")
-            )
+            raise ReviewAborted(abort_reason(checkpoint_type))
 
     def _record_review_failure(
         self,

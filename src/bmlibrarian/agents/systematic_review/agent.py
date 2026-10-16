@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKIN
 from ..base import BaseAgent
 
 from .config import (
+    AGENT_VERSION,
     SystematicReviewConfig,
     get_systematic_review_config,
 )
@@ -68,8 +69,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # =============================================================================
 
-AGENT_VERSION = "1.0.0"
-
+# AGENT_VERSION lives in config.py (shared with the checkpoint loader).
 # Action and checkpoint names live in documenter.py (single source of truth)
 
 
@@ -89,17 +89,20 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
     1. Search Strategy: Generate diverse queries for comprehensive coverage
     2. Search Execution: Run queries and deduplicate results
     3. Initial Filtering: Fast heuristic-based paper filtering
-    4. Relevance Scoring: LLM-based relevance assessment
-    5. Inclusion Evaluation: Apply inclusion/exclusion criteria
-    6. Quality Assessment: Detailed quality and methodology evaluation
-    7. Final Ranking: Calculate composite scores and rank papers
+    4. Relevance Scoring: LLM-based relevance assessment, including the
+       inclusion/exclusion criteria decision
+    5. Quality Assessment: Detailed quality and methodology evaluation
+    6. Final Ranking: Calculate composite scores, rank papers and apply the
+       quality gate
+    7. Evidence Synthesis (optional): Extract citations and write a narrative
     8. Report Generation: Generate comprehensive output report
 
     Attributes:
         config: SystematicReviewConfig with agent settings
         documenter: Audit trail logging component
-        criteria: Current SearchCriteria (set when run_review is called)
-        weights: Current ScoringWeights (set when run_review is called)
+        criteria: Current SearchCriteria (set by run_review or restored by
+            run_review_from_checkpoint)
+        weights: Current ScoringWeights (likewise)
 
     Example:
         >>> agent = SystematicReviewAgent()
@@ -152,7 +155,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self._db_manager = db_manager
         self._init_evaluation_store()
 
-        # Current review state (set when run_review is called)
+        # Current review state (set by run_review, restored by
+        # run_review_from_checkpoint)
         self._criteria: Optional[SearchCriteria] = None
         self._weights: Optional[ScoringWeights] = None
         self._search_plan: Optional[SearchPlan] = None
@@ -677,9 +681,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 error_message=error_message,
             )
         except Exception as e:
-            # Never let a status update mask the review's own outcome
-            logger.error(f"Failed to mark evaluation run {run_id} {status.value}: {e}")
+            # Never let a status update mask the review's own outcome, but
+            # tell the user: the run's recorded status is now wrong.
+            logger.exception(f"Failed to mark evaluation run {run_id} {status.value}")
+            self._report_run_status_failure(run_id, status.value, e)
             return
+        self._evaluation_run.status = status.value
+        self._evaluation_run.error_message = error_message
         logger.info(f"Completed evaluation run: id={run_id}, status={status.value}")
 
     def _pause_evaluation_run(self) -> None:
@@ -691,13 +699,40 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         if not self._evaluation_run:
             return
 
+        from bmlibrarian.evaluations import RunStatus
+
         run_id = self._evaluation_run.run_id
         try:
             self._evaluation_store.pause_run(run_id)
         except Exception as e:
-            logger.error(f"Failed to mark evaluation run {run_id} paused: {e}")
+            logger.exception(f"Failed to mark evaluation run {run_id} paused")
+            self._report_run_status_failure(run_id, RunStatus.PAUSED.value, e)
             return
+        self._evaluation_run.status = RunStatus.PAUSED.value
         logger.info(f"Paused evaluation run: id={run_id}")
+
+    def _report_run_status_failure(self, run_id: int, status: str, error: Exception) -> None:
+        """
+        Tell the user an evaluation run's status could not be recorded.
+
+        Args:
+            run_id: The run whose status update failed.
+            status: The status that could not be recorded.
+            error: The store error.
+        """
+        self._warn(
+            f"Evaluation run {run_id} could not be marked {status} in the database "
+            f"({error}); its recorded status is out of date. The review result is "
+            "not affected."
+        )
+        self.documenter.log_step(
+            action="evaluation_run_status_failed",
+            tool=None,
+            input_summary=f"Mark evaluation run {run_id} {status}",
+            output_summary="Status update failed",
+            decision_rationale="A failed status update must not mask the review outcome",
+            error=str(error),
+        )
 
     # =========================================================================
     # Main Entry Point
@@ -860,7 +895,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             reason: Why the review was aborted
 
         Returns:
-            SystematicReviewResult with zero papers and abort reason
+            SystematicReviewResult with zero papers and ``abort_reason`` set
         """
         from .reporter import Reporter
 
@@ -884,7 +919,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             total_tokens_used=doc_stats.get("total_tokens", 0),
         )
 
-        return reporter.build_json_result(
+        result = reporter.build_json_result(
             included_papers=[],
             excluded_papers=[],
             uncertain_papers=[],
@@ -892,6 +927,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             executed_queries=self._executed_queries,
             statistics=statistics,
         )
+        result.abort_reason = reason
+        return result
 
     # =========================================================================
     # Checkpoint Handling
@@ -925,15 +962,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         # Log checkpoint
         checkpoint = self.documenter.log_checkpoint(
             checkpoint_type=checkpoint_type,
-            phase=self.documenter._current_phase,
+            phase=self.documenter.current_phase,
             state_snapshot=state,
         )
 
         # Save checkpoint file for resumability (before getting user decision)
         if output_dir:
-            checkpoint_path = self._save_checkpoint_file(checkpoint_type, output_dir)
-            if checkpoint_path:
-                logger.info(f"Checkpoint saved for resume: {checkpoint_path}")
+            self._save_checkpoint_file(checkpoint_type, output_dir)
 
         # If callback provided, use it
         if checkpoint_callback:
@@ -965,13 +1000,17 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         Saves all state needed to resume the review from this checkpoint:
         - Search criteria and weights
-        - Search plan and executed queries
+        - Search plan and executed queries (and the phased-search baseline)
         - All paper document IDs (papers are re-fetched on resume)
         - Documenter state
 
+        A failed save does not stop the review, but the user is warned that
+        the review cannot be resumed from this checkpoint.
+
         Args:
             checkpoint_type: Type of checkpoint being saved
-            output_dir: Directory to save checkpoint files
+            output_dir: Base directory; files go in its ``checkpoints/``
+                subdirectory
 
         Returns:
             Path to saved checkpoint file, or None if save failed
@@ -1002,8 +1041,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     {"document_id": paper.document_id, "reason": reason}
                     for paper, reason in self._rejected_initial_filter
                 ],
+                # Thresholds in force (a CLI resume keeps them by default)
+                "relevance_threshold": self.config.relevance_threshold,
+                "quality_threshold": self.config.quality_threshold,
+                # Phase-1 results of a phased search (query feedback baseline)
+                "semantic_baseline_ids": sorted(self._semantic_baseline_ids),
                 # Documenter state
-                "documenter_phase": self.documenter._current_phase,
+                "documenter_phase": self.documenter.current_phase,
             }
 
             # Create checkpoint directory
@@ -1017,11 +1061,25 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(resume_state, f, indent=2, ensure_ascii=False)
 
-            logger.info(f"Checkpoint saved to: {filepath}")
+            logger.info(f"Checkpoint saved for resume: {filepath}")
             return str(filepath)
 
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint file: {e}")
+        except (OSError, TypeError, ValueError) as e:
+            # OSError: the directory or file cannot be written; TypeError /
+            # ValueError: the state is not JSON-serialisable.
+            logger.exception(f"Failed to save the {checkpoint_type} checkpoint file")
+            self._warn(
+                f"The {checkpoint_type} checkpoint file could not be saved ({e}); "
+                "the review cannot be resumed from this checkpoint."
+            )
+            self.documenter.log_step(
+                action="checkpoint_save_failed",
+                tool=None,
+                input_summary=f"Save {checkpoint_type} checkpoint to {output_dir}",
+                output_summary="Checkpoint file not saved",
+                decision_rationale="The review continues; only resumability is lost",
+                error=str(e),
+            )
             return None
 
     # =========================================================================
@@ -1223,10 +1281,18 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         Clears all papers, scores, and creates new documenter.
         Does not reset configuration.
+
+        A run still in progress (a review abandoned midway) is marked failed;
+        a completed, failed or paused run keeps its status (a paused run can
+        still be resumed from its checkpoint file).
         """
-        # Complete any existing evaluation run as aborted
+        from bmlibrarian.evaluations import RunStatus
+
         if self._evaluation_run:
-            self._complete_evaluation_run(success=False, error_message="Review aborted by reset")
+            if self._evaluation_run.status == RunStatus.IN_PROGRESS.value:
+                self._complete_evaluation_run(
+                    success=False, error_message="Review abandoned by reset"
+                )
             self._evaluation_run = None
 
         self._criteria = None

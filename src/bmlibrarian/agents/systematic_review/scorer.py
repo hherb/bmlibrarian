@@ -44,6 +44,7 @@ from .config import (
     DEFAULT_QUALITY_THRESHOLD,
     DEFAULT_BATCH_SIZE,
 )
+from .exceptions import EvaluationSaveError, ScoringError
 from .filters import InclusionEvaluator
 
 if TYPE_CHECKING:
@@ -277,6 +278,11 @@ class RelevanceScorer:
         """
         Score a single paper for relevance.
 
+        A scoring failure does not raise: it returns a zero-score paper with
+        an UNCERTAIN decision. Batch scoring (``score_batch``) uses
+        ``_score_paper_strict`` instead, so a failure is never mistaken for a
+        real score and saved.
+
         Args:
             paper: Paper to score
             evaluate_inclusion: Whether to run inclusion/exclusion evaluation
@@ -285,6 +291,41 @@ class RelevanceScorer:
             ScoredPaper with relevance score and inclusion decision
 
         Raises:
+            ValueError: If paper data is invalid
+        """
+        try:
+            return self._score_paper_strict(paper, evaluate_inclusion)
+        except ScoringError as e:
+            return ScoredPaper(
+                paper=paper,
+                relevance_score=0.0,
+                relevance_rationale=f"Scoring failed: {e}",
+                inclusion_decision=InclusionDecision(
+                    status=InclusionStatus.UNCERTAIN,
+                    stage=ExclusionStage.RELEVANCE_SCORING,
+                    reasons=[f"Scoring error: {e}"],
+                    rationale="Unable to score due to error",
+                    confidence=0.0,
+                ),
+            )
+
+    def _score_paper_strict(
+        self,
+        paper: PaperData,
+        evaluate_inclusion: bool,
+    ) -> ScoredPaper:
+        """
+        Score a single paper, raising if the scoring itself fails.
+
+        Args:
+            paper: Paper to score
+            evaluate_inclusion: Whether to run inclusion/exclusion evaluation
+
+        Returns:
+            ScoredPaper with relevance score and inclusion decision
+
+        Raises:
+            ScoringError: If the LLM evaluation or inclusion decision fails.
             ValueError: If paper data is invalid
         """
         self._call_callback(
@@ -323,42 +364,28 @@ class RelevanceScorer:
                     relevance_score=relevance_score,
                     threshold=self._config.relevance_threshold,
                 )
-
-            # Convert execution time to milliseconds
-            processing_time_ms = int(execution_time * 1000)
-
-            scored_paper = ScoredPaper(
-                paper=paper,
-                relevance_score=relevance_score,
-                relevance_rationale=rationale,
-                inclusion_decision=inclusion_decision,
-                processing_time_ms=processing_time_ms,
-            )
-
-            self._call_callback(
-                "scoring_completed",
-                f"Score: {relevance_score}/5"
-            )
-
-            return scored_paper
-
         except Exception as e:
             logger.error(f"Scoring failed for paper {paper.document_id}: {e}")
             self._call_callback("scoring_failed", str(e))
+            raise ScoringError(str(e)) from e
 
-            # Return paper with error score
-            return ScoredPaper(
-                paper=paper,
-                relevance_score=0.0,
-                relevance_rationale=f"Scoring failed: {e}",
-                inclusion_decision=InclusionDecision(
-                    status=InclusionStatus.UNCERTAIN,
-                    stage=ExclusionStage.RELEVANCE_SCORING,
-                    reasons=[f"Scoring error: {e}"],
-                    rationale="Unable to score due to error",
-                    confidence=0.0,
-                ),
-            )
+        # Convert execution time to milliseconds
+        processing_time_ms = int(execution_time * 1000)
+
+        scored_paper = ScoredPaper(
+            paper=paper,
+            relevance_score=relevance_score,
+            relevance_rationale=rationale,
+            inclusion_decision=inclusion_decision,
+            processing_time_ms=processing_time_ms,
+        )
+
+        self._call_callback(
+            "scoring_completed",
+            f"Score: {relevance_score}/5"
+        )
+
+        return scored_paper
 
     def score_batch(
         self,
@@ -379,10 +406,15 @@ class RelevanceScorer:
             save_callback: Optional callback to save each scored paper immediately.
                           Called with each ScoredPaper right after evaluation.
                           This ensures evaluations are persisted even if the
-                          process is interrupted.
+                          process is interrupted. Papers whose scoring
+                          failed are listed in ``failed_papers`` and are
+                          not passed to it.
 
         Returns:
             BatchScoringResult with all scored papers
+
+        Raises:
+            EvaluationSaveError: If save_callback fails for a scored paper.
         """
         self._call_callback(
             "batch_scoring_started",
@@ -395,14 +427,22 @@ class RelevanceScorer:
         total_score = 0.0
 
         for i, paper in enumerate(papers):
+            scored_paper: Optional[ScoredPaper] = None
             try:
-                scored_paper = self.score_paper(paper, evaluate_inclusion)
-
+                scored_paper = self._score_paper_strict(paper, evaluate_inclusion)
+            except Exception as e:
+                # A failed score is reported, never saved: a saved placeholder
+                # would be reused as a real score by every later resume.
+                logger.error(f"Failed to score paper {paper.document_id}: {e}")
+                failed_papers.append((paper, str(e)))
+            else:
                 # Add source provenance if available
                 if paper_sources and paper.document_id in paper_sources:
                     scored_paper.search_provenance = paper_sources[paper.document_id]
 
-                # Save immediately after evaluation to persist progress
+                # Save immediately after evaluation to persist progress. A
+                # save failure ends the batch: later stages read papers back
+                # from the store, so an unsaved score would drop the paper.
                 if save_callback:
                     try:
                         save_callback(scored_paper)
@@ -411,26 +451,23 @@ class RelevanceScorer:
                             f"Failed to save scored paper {paper.document_id}: {save_error}",
                             exc_info=True
                         )
-                        # Re-raise so caller knows save failed - data integrity is critical
-                        raise
+                        raise EvaluationSaveError(
+                            f"Failed to save the relevance score of paper "
+                            f"{paper.document_id}: {save_error}"
+                        ) from save_error
 
                 scored_papers.append(scored_paper)
                 total_score += scored_paper.relevance_score
 
-            except Exception as e:
-                logger.error(f"Failed to score paper {paper.document_id}: {e}")
-                failed_papers.append((paper, str(e)))
-
             # Emit progress via callback system for GUI updates
             # Format: "X/Y | Score S/5 for <title>" - X/Y is parsed for progress bar
-            if scored_papers:
-                last_scored = scored_papers[-1]
-                title_truncated = last_scored.paper.title[:60]
-                if len(last_scored.paper.title) > 60:
+            if scored_paper is not None:
+                title_truncated = paper.title[:60]
+                if len(paper.title) > 60:
                     title_truncated += "..."
                 self._call_callback(
                     "scoring_progress",
-                    f"{i + 1}/{len(papers)} | Score {last_scored.relevance_score:.1f}/5 for {title_truncated}"
+                    f"{i + 1}/{len(papers)} | Score {scored_paper.relevance_score:.1f}/5 for {title_truncated}"
                 )
             else:
                 # Failed to score - still emit progress

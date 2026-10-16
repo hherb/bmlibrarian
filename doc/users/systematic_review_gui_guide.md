@@ -66,6 +66,8 @@ The systematic review workflow creates checkpoints at key phases:
 
 When you resume from a checkpoint, all work completed up to that point is preserved, and only subsequent phases are re-executed. Papers that were already scored or assessed before an interruption are reused rather than evaluated again, and the current relevance and quality thresholds are applied to the saved scores. If the checkpoint's saved evaluations cannot be found (for example, because the application is connected to a different database), the resume stops with an error instead of producing an empty report. See [Resuming a Review](systematic_review_guide.md#resuming-a-review) for details.
 
+Problems the review carries on despite are shown in the activity log as **⚠️ Warning** entries: papers whose scoring or quality assessment failed (they are listed for manual review and retried when you resume), checkpoint papers missing from the database, a checkpoint file that could not be saved, or a failed evidence synthesis.
+
 ## Parameters
 
 You can modify these parameters before starting a new review or resuming:

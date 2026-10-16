@@ -27,6 +27,17 @@ off new work. Longer-term structural items live in
   statistics double-counting, `systematic_review_cli.py` never passing
   `db_manager`. Agent-level tests: `tests/test_systematic_review_pipeline.py`;
   docs: `doc/developers/systematic_review_pipeline.md`.
+  Review follow-up (same PR #284): failed LLM evaluations are no longer
+  saved as real scores (flagged *uncertain*, retried on resume); a failed
+  save stops the review (`EvaluationSaveError`); a rejected checkpoint returns
+  `result.aborted`/`abort_reason` (CLI prints REVIEW STOPPED, writes no
+  report); resume validates the whole checkpoint (`parse_checkpoint`) before
+  touching agent state; `reopen_run` returns the refreshed run; `reset()` only
+  fails in-progress runs; CLI `--resume` honours the threshold flags (default:
+  the checkpoint's) and no longer crashes on `result.criteria`; warnings reach
+  the GUI activity log (`EVENT_REVIEW_WARNING`). Deferred: #285 (agent's
+  `db_manager` ignored by fetches/searches), #286 (legacy runs holding saved
+  failure placeholders), #287 (DB-backed run-lifecycle test).
 - **PMC discovery moved to the PMC Cloud Service** (2026-10-16, PR #282):
   PMC removed the FTP `oa_package`/`oa_pdf` trees **and** the OA Web
   Service (`oa.fcgi`, now 404) in August 2026, so `PMCResolver`'s main path
@@ -181,8 +192,11 @@ have drifted since the 2026-07-19 review. Full details, including the
   requires_database and not requires_ollama and not slow"
   --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
   after PR #282 **156 failed, 3492 passed, 19 errors**;
-  `fix/systematic-review-resume` the same 175 failing nodes, 3527 passed
-  (new pipeline tests; 0 regressions). Most failures are Qt test files that
+  `fix/systematic-review-resume` the same 156 failed + 19 errors nodes,
+  3527 passed (new pipeline tests; 0 regressions). An unfiltered run
+  (`pytest tests/ --continue-on-collection-errors`, ~13 min) after the review
+  follow-up: 162 failed + 19 errors, identical node set to the PR's first
+  commit, 3647 passed. Most failures are Qt test files that
   died at collection before the Flet removal and are stale against the
   current API (e.g.
   `test_qt_research_tab.py` targets `_update_citations_tab`, `query_input`;

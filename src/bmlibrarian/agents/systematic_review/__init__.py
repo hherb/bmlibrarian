@@ -112,10 +112,14 @@ from .exceptions import (
     DatabaseConnectionError,
     CheckpointError,
     ResumeError,
+    EvaluationSaveError,
 )
 
 # Resume mixin (for advanced usage)
 from .resume_mixin import CheckpointResumeMixin
+
+# Progress event for problems a review continues despite
+from .pipeline import EVENT_REVIEW_WARNING
 
 from .config import (
     SystematicReviewConfig,
@@ -296,6 +300,7 @@ __all__ = [
     "SystematicReviewAgent",
     # Mixin (for advanced usage)
     "CheckpointResumeMixin",
+    "EVENT_REVIEW_WARNING",
     # Exceptions
     "SystematicReviewError",
     "SearchPlanningError",
@@ -307,6 +312,7 @@ __all__ = [
     "DatabaseConnectionError",
     "CheckpointError",
     "ResumeError",
+    "EvaluationSaveError",
     # Configuration
     "SystematicReviewConfig",
     "get_systematic_review_config",

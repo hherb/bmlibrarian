@@ -64,3 +64,14 @@ class ResumeError(SystematicReviewError):
     """Exception raised when resuming from checkpoint fails."""
 
     pass
+
+
+class EvaluationSaveError(SystematicReviewError):
+    """
+    Exception raised when a finished evaluation cannot be saved.
+
+    Every stage after search reads its papers back from the evaluation
+    store, so an evaluation that was made but not saved would silently drop
+    its paper from the review. Batch scorers let this error escape instead
+    of recording the paper as one failed item.
+    """

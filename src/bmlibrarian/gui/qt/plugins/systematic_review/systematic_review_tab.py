@@ -54,6 +54,7 @@ from bmlibrarian.agents.systematic_review.config import (
     DEFAULT_RELEVANCE_THRESHOLD,
     DEFAULT_QUALITY_THRESHOLD,
 )
+from bmlibrarian.agents.systematic_review.pipeline import EVENT_REVIEW_WARNING
 from bmlibrarian.database import get_db_manager, DatabaseManager
 from .report_preview_widget import ReportPreviewWidget
 
@@ -130,6 +131,8 @@ class ReviewWorker(QThread):
         self.config_overrides = config_overrides or {}
         self.output_path = output_path
         self._cancelled = False
+        # Last overall progress; events without a mapped percentage keep it
+        self._last_progress_percentage = 0
         # Accumulated state for Details tab
         self._accumulated_state: Dict[str, Any] = {
             "mode": mode,
@@ -257,7 +260,8 @@ class ReviewWorker(QThread):
             "reporting_complete": 95,
         }
 
-        percentage = progress_map.get(event, 50)
+        percentage = progress_map.get(event, self._last_progress_percentage)
+        self._last_progress_percentage = percentage
         self.progress_update.emit(f"{event}: {data}", percentage)
 
         # Generate activity log entries based on event type
@@ -294,6 +298,8 @@ class ReviewWorker(QThread):
 
         if event == "checkpoint_restored":
             return f"\n**[{timestamp}]** 📂 **Checkpoint Restored**\n{data}\n\n---\n"
+        elif event in (EVENT_REVIEW_WARNING, "synthesis_failed"):
+            return f"**[{timestamp}]** ⚠️ **Warning:** {data}\n"
         elif event == "execution_started":
             return f"**[{timestamp}]** Starting search execution...\n"
         elif event == "query_started":

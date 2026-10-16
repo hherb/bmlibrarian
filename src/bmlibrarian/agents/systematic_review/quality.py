@@ -30,6 +30,7 @@ from .config import (
     DEFAULT_BATCH_SIZE,
 )
 from .cache_manager import ResultsCacheManager
+from .exceptions import EvaluationSaveError
 
 if TYPE_CHECKING:
     from ..study_assessment_agent import StudyAssessmentAgent
@@ -48,6 +49,39 @@ logger = logging.getLogger(__name__)
 # NOTE: Study type determination is now delegated to LLM-based suitability checks
 # in PICOAgent.check_suitability() and PRISMA2020Agent.check_suitability().
 # This follows BMLibrarian's AI-first approach and avoids unreliable keyword matching.
+
+# Key the required-assessment runners set on the placeholder they return when
+# the assessment failed (see "Individual Assessment Runners" below).
+ASSESSMENT_ERROR_KEY = "error"
+
+
+# =============================================================================
+# Pure helpers
+# =============================================================================
+
+def assessment_error(assessed_paper: AssessedPaper) -> Optional[str]:
+    """
+    Why a quality assessment failed, if it did.
+
+    The study and paper-weight runners return a placeholder with a neutral
+    mid-range score and an ``error`` entry when their LLM call fails. Such a
+    placeholder is not a real assessment and must not be saved as one.
+
+    Args:
+        assessed_paper: The assessment to check.
+
+    Returns:
+        The error message(s), or None if both required assessments succeeded.
+    """
+    errors = [
+        f"{name}: {part[ASSESSMENT_ERROR_KEY]}"
+        for name, part in (
+            ("study assessment", assessed_paper.study_assessment),
+            ("paper weight", assessed_paper.paper_weight),
+        )
+        if isinstance(part, dict) and part.get(ASSESSMENT_ERROR_KEY)
+    ]
+    return "; ".join(errors) if errors else None
 
 
 # =============================================================================
@@ -405,10 +439,15 @@ class QualityAssessor:
             save_callback: Optional callback to save each assessed paper immediately.
                           Called with each AssessedPaper right after evaluation.
                           This ensures assessments are persisted even if the
-                          process is interrupted.
+                          process is interrupted. Papers whose assessment
+                          failed (see ``assessment_error``) are listed in
+                          ``failed_papers`` and are not passed to it.
 
         Returns:
             QualityAssessmentResult with all assessed papers
+
+        Raises:
+            EvaluationSaveError: If save_callback fails for an assessed paper.
         """
         self._call_callback(
             "quality_assessment_started",
@@ -428,10 +467,24 @@ class QualityAssessor:
         }
 
         for i, paper in enumerate(papers):
+            assessed_paper: Optional[AssessedPaper] = None
             try:
                 assessed_paper = self._assess_single(paper)
+                error = assessment_error(assessed_paper)
+            except Exception as e:
+                error = str(e)
 
-                # Save immediately after evaluation to persist progress
+            if error:
+                # A failed assessment is reported, never saved: a saved
+                # placeholder would be reused as a real assessment by every
+                # later resume.
+                logger.error(f"Failed to assess paper {paper.paper.document_id}: {error}")
+                failed_papers.append((paper, error))
+                assessed_paper = None
+            elif assessed_paper is not None:
+                # Save immediately after evaluation to persist progress. A
+                # save failure ends the batch: later stages read papers back
+                # from the store, so an unsaved assessment would drop the paper.
                 if save_callback:
                     try:
                         save_callback(assessed_paper)
@@ -440,8 +493,10 @@ class QualityAssessor:
                             f"Failed to save assessed paper {paper.paper.document_id}: {save_error}",
                             exc_info=True
                         )
-                        # Re-raise so caller knows save failed - data integrity is critical
-                        raise
+                        raise EvaluationSaveError(
+                            f"Failed to save the quality assessment of paper "
+                            f"{paper.paper.document_id}: {save_error}"
+                        ) from save_error
 
                 assessed_papers.append(assessed_paper)
 
@@ -453,18 +508,13 @@ class QualityAssessor:
                 if assessed_paper.prisma_assessment is not None:
                     stats["prisma_assessments"] += 1
 
-            except Exception as e:
-                logger.error(f"Failed to assess paper {paper.paper.document_id}: {e}")
-                failed_papers.append((paper, str(e)))
-
             # Emit progress via callback system for GUI updates
             # Format: "X/Y | <title>" - X/Y is parsed for progress bar
             title_truncated = paper.paper.title[:60]
             if len(paper.paper.title) > 60:
                 title_truncated += "..."
-            if assessed_papers:
-                last_assessed = assessed_papers[-1]
-                quality_score = last_assessed.study_assessment.get("quality_score", "N/A")
+            if assessed_paper is not None:
+                quality_score = assessed_paper.study_assessment.get("quality_score", "N/A")
                 self._call_callback(
                     "quality_progress",
                     f"{i + 1}/{len(papers)} | Quality {quality_score}/10 for {title_truncated}"
