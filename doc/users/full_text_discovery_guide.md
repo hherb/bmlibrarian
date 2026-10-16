@@ -6,7 +6,12 @@ BMLibrarian includes a full-text discovery system that finds and downloads PDF v
 
 The discovery system searches multiple sources in order of preference:
 
-1. **PubMed Central (PMC)** - Verified open access repository
+1. **PubMed Central (PMC)** - Verified open access repository, via the
+   PMC Cloud Service (HTTPS). Besides the PDF, this also saves the article's
+   JATS XML next to your PDF folder (`fulltext/<year>/<name>.nxml`) and
+   returns its text as `result.full_text`. Both files are checked against
+   PMC's published MD5 checksums. (PMC retired its FTP packages and OA Web
+   Service in August 2026; older BMLibrarian versions find nothing in PMC.)
 2. **Unpaywall** - Open access aggregator covering millions of papers
 3. **DOI Resolution** - CrossRef and doi.org content negotiation
 4. **Direct URL** - Existing PDF URLs from the database
@@ -180,7 +185,8 @@ for resolution in result.resolution_results:
 
 | Type | Description | Typical Priority |
 |------|-------------|------------------|
-| `pmc` | PubMed Central | 5-6 (highest) |
+| `pmc_cloud` | PubMed Central Cloud Service (PDF + full-text XML) | 5 (highest) |
+| `pmc` | PubMed Central article page (fallback) | 6 |
 | `unpaywall` | Unpaywall OA | 1-3 |
 | `doi_redirect` | DOI resolution | 15-20 |
 | `direct_url` | Database URL | 10 |
@@ -252,12 +258,24 @@ for doc in documents:
 
 Always provide a real email address for the Unpaywall API. This is required by their terms of service and helps them contact you if there are issues.
 
-### 2. Respect Rate Limits
+### 2. Rate Limits Are Handled for You
 
-The system includes exponential backoff for retries, but you should still:
-- Add delays between batch requests
-- Avoid hammering servers with rapid requests
-- Use caching where possible
+All discovery and download requests in one process share a per-host rate
+limiter (since October 2026), so batch loops like the one above need no
+manual `sleep()`:
+
+- Requests to the same host are spaced out: NCBI ~3/s, Unpaywall ~10/s,
+  CrossRef and doi.org ~5/s, and any other host (publisher sites) at most
+  1/s. Different hosts don't wait for each other.
+- When a server answers **HTTP 429 Too Many Requests** (or 503 with a
+  `Retry-After` header), the request waits as long as the server asks
+  (up to 60 s) and is retried up to 3 times. Every other request to that
+  host waits too.
+- If the server keeps throttling, the download fails with
+  "Rate limited by server (HTTP 429)" instead of retrying further. Wait a
+  while and re-run those documents.
+
+Caching results where possible still reduces load.
 
 ### 3. Use Multiple Identifiers
 

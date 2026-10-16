@@ -10,56 +10,51 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Flet GUI retired** (2026-10-16, branch `refactor/retire-flet`, stacked
-  on `fix/p1-gui-correctness`): flet 1.0 runs sync handlers on the event
-  loop (0.28 used a thread pool), makes dialogs/FilePicker async services
-  and splits Tabs — a behavioural rewrite of ~25k lines, while every Flet
-  app except the Citation lab had a Qt plugin equivalent. Owner chose to retire Flet. Deleted
-  `gui/flet/`, `factchecker/gui/`, the `gui/*.py` shims, the Flet labs and
-  `bmlibrarian_research_gui.py`; dropped `flet` (24 packages, incl.
-  oauthlib). Kept/relocated: `gui/document_card_factory_base.py`,
-  `agents/lifecycle.py` (agent init/cleanup), research
-  `report_builder.py`. `fact_checker_review_gui.py` is now a Qt launcher
-  (`--user/--blind/--incremental/--db-file`, SQLite review packages work);
-  `scripts/{query,pico,prisma2020,study_assessment}_lab.py` open the Qt
-  plugins via `gui/qt/core/standalone.py`. `lab/__init__` is lazy (it
-  eagerly imported the Flet query lab, so **every Qt lab** was broken).
-  `paper_weight_lab` "find full text" now runs on `PDFDiscoveryWorker`
-  too. Remaining Flet-only features → ROADMAP §1 — notably multi-model
-  query generation, whose only caller was the Flet workflow, is now unwired.
-  Review follow-ups (PR #277): `--blind` really hides the AI/original
-  columns (they were only greyed out — rerun any blind annotation done with
-  the Qt tab before this fix); incremental "all annotated" is a finished
-  state; "n/a" is never written (it violated the CHECK constraint); unknown
-  `--user` names must be confirmed; "unclear" option added;
-  `standalone.py` runs plugin `cleanup()` on quit; `tests/test_no_flet.py`
-  guards against flet or deleted-module imports coming back.
-- **P1 GUI batch + Qt/Flet decoupling** (2026-10-16, branch
-  `fix/p1-gui-correctness`): dependabot's oauthlib 4 bump (#267) dragged
-  `flet` 0.28.3 → 1.0.3, and `bmlibrarian/gui/__init__.py` eagerly imported
-  the Flet GUI, so **every Qt GUI import crashed** on master. `gui/__init__`
-  and `gui/flet/__init__` now resolve their Flet re-exports lazily (PEP 562),
-  so Qt never imports `flet`. "Find PDF" no longer freezes the UI: discovery
-  runs on `PDFDiscoveryWorker` (QThread) via `_discover_and_download()`, and
-  a GUI-thread `FindPDFSession` delivers the result to
-  `_finalize_discovery_result()` (modal verification prompt stays on the GUI
-  thread); also fixed the latent `card_data.publication_date` AttributeError
-  in its MANUAL_UPLOAD branch. The research tab no longer wires executor
-  step signals that `WorkflowThread` re-emits (handlers ran twice per
-  search). `citation_widget` enrichment uses the new
-  `AbstractFactCheckerDB.get_document_details()` (PG delegates to the
-  canonical `database.get_document_details`; the SQLite review-package one
-  replaces a query on a non-existent `pdf_filename` column), and
-  `database.get_document_details` derives `pmid` via the pure
-  `extract_pmid(external_id, source_name)` — numeric ids from non-PubMed
-  sources are no longer reported as PMIDs. Review follow-ups (PR #276):
-  `_finalize_discovery_result` returns a `FindPdfOutcome` (real reason
-  shown; failed DB write → "Not Saved"); `QtDocumentCardFactory.shutdown()`
-  stops discovery threads on quit; `fetch_document_details()` raises on DB
-  errors so citation enrichment can report an outage. Pre-existing issues
-  filed: #278 (FETCH verification prompt on a worker thread), #279
-  (CrossRef DOI written before verification), #280 (review packages assume
-  PubMed is source id 1).
+- **PMC discovery moved to the PMC Cloud Service** (2026-10-16, PR #282):
+  PMC removed the FTP `oa_package`/`oa_pdf` trees **and** the OA Web
+  Service (`oa.fcgi`, now 404) in August 2026, so `PMCResolver`'s main path
+  had silently found nothing since. New `discovery/pmc_cloud.py` looks the
+  PMCID up in the `pmc-oa-opendata` bucket over HTTPS (S3 listing →
+  per-version metadata JSON → prefer non-retracted, published over
+  manuscript, highest version) and emits a `SourceType.PMC_CLOUD` source
+  (replaces `PMC_PACKAGE`); `PMCCloudDownloader` fetches the PDF and the
+  JATS XML (saved as `fulltext/<year>/<stem>.nxml`, parsed into
+  `DownloadResult.full_text`) with MD5 verification and one retry loop per
+  file. The tar.gz/FTP package code is gone; `NXMLParser` moved to
+  `discovery/nxml_parser.py` (importers updated). Remaining
+  `ftp://ftp.ncbi.nlm.nih.gov` URLs are rewritten to HTTPS. Verified live
+  (PMC5334499: PDF + 31.7 k chars of full text). **`pmc_bulk_cli`
+  list/download/sync are broken for the same reason → #283** (structural;
+  rebuild on the S3 inventory).
+- **Discovery rate limiting** (2026-10-16, same PR #282): new `utils/rate_limit.py` —
+  process-wide per-host `HostRateLimiter` (NCBI 0.34 s, Unpaywall 0.1 s,
+  CrossRef/doi.org 0.2 s, other hosts 1 s) and `RateLimitedSession`, which
+  retries 429 / 503+Retry-After honouring the server delay (≤ 60 s, 3
+  retries) and defers the host for every caller. All resolvers, the
+  finder's download session, both FTP paths and PMC's `curl` fallback are
+  paced; `_download_from_source` no longer re-retries a throttled
+  response and uses jittered backoff. Also fixed: `OpenAthensResolver`
+  rewrote EZproxy-style URLs (`https://proxy.example.com`) into Redirector
+  URLs although `FullTextFinder` admitted them as proxies — both now share
+  `is_traditional_proxy_url()`; four stale browser-fallback tests in
+  `test_pdf_discovery_download.py` patched a non-existent module attribute.
+- **Flet GUI retired** (2026-10-16, PR #277, merged): Flet 1.0 would have
+  needed a ~25k-line behavioural rewrite, and every Flet app except the
+  Citation lab had a Qt equivalent. `fact_checker_review_gui.py` and
+  `scripts/{query,pico,prisma2020,study_assessment}_lab.py` now open Qt
+  plugins (`gui/qt/core/standalone.py`); `lab/__init__` is lazy;
+  `tests/test_no_flet.py` guards against Flet coming back. Remaining
+  Flet-only features (notably multi-model query generation, now unwired) →
+  ROADMAP §1. Note: `--blind` really hides AI/original columns only since
+  this PR — rerun any blind annotation done with the Qt tab before it.
+- **P1 GUI batch** (2026-10-16, PR #276, merged): "Find PDF" runs on
+  `PDFDiscoveryWorker` (`FindPdfOutcome` reports the real reason);
+  research-tab step handlers no longer run twice; `citation_widget` uses
+  `AbstractFactCheckerDB.get_document_details()`; `extract_pmid()` stops
+  reporting non-PubMed ids as PMIDs. Pre-existing issues filed: #278
+  (FETCH verification prompt on a worker thread), #279 (CrossRef DOI
+  written before verification), #280 (review packages assume PubMed is
+  source id 1).
 
 - **P1 backend correctness batch** (2026-10-15, PR #272): parameterised
   source filters, per-document guards in counterfactual + transparency
@@ -111,7 +106,6 @@ off new work. Longer-term structural items live in
   `TestEmbeddingGeneration` patches the removed `search_coordinator.ollama`;
   `tests/test_paper_weight_persistence.py::TestLLMJSONParsing` mocks the
   removed `PaperWeightAssessmentAgent._get_db_connection`;
-  `test_resolvers.py::test_construct_proxy_url`,
   `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
 
 ## Next up (imminent — from the 2026-07-19 review, P1)
@@ -119,12 +113,6 @@ off new work. Longer-term structural items live in
 Pick items in whichever order matches what you're touching; they're
 independent unless noted.
 
-- **No rate limiting / 429 handling in discovery** —
-  `discovery/resolvers.py` + `full_text_finder.py`. Add a shared rate
-  limiter + Retry-After handling before running batch PDF discovery again.
-- **Multiplicative FTP retries** —
-  `discovery/pmc_package_downloader.py:1067-1105`: outer retry wraps an
-  inner retry, up to 9 attempts per package. Collapse to one level.
 - **Citation fuzzy-match hotspot** — `agents/citation_agent.py:156-225`:
   O(passage×abstract) `SequenceMatcher` × retries × every doc above
   threshold. Cap lengths or bound the approximate match.
@@ -178,14 +166,15 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - The suite has a **large pre-existing failure baseline**, not "two". Measured
-  2026-10-16 on `fix/p1-gui-correctness` with DB/Ollama/GUI-free markers
-  deselected (`.venv/bin/python -m pytest tests/ -m "not integration and not
+  2026-10-16 with DB/Ollama/GUI-free markers deselected
+  (`.venv/bin/python -m pytest tests/ -m "not integration and not
   requires_database and not requires_ollama and not slow"
-  --continue-on-collection-errors -p no:cacheprovider --no-cov`): **166
-  failed, 3312 passed, 19 errors** (master before it: 98 failed, 2872
-  passed, 38 errors). The rise in "failed" is not a regression: ~20 Qt test
-  files that previously died at collection (Flet import crash) now run, and
-  ~80 of their tests are stale against the current API (e.g.
+  --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
+  after PR #277 **161 failed, 3391 passed, 19 errors**;
+  `fix/discovery-rate-limiting` **156 failed, 3483 passed, 19 errors** (5
+  stale discovery tests fixed, 0 new). Most failures are Qt test files that
+  died at collection before the Flet removal and are stale against the
+  current API (e.g.
   `test_qt_research_tab.py` targets `_update_citations_tab`, `query_input`;
   `test_prisma2020_lab_plugin.py`, `test_qt_workflow_thread.py`,
   `test_ollama_migration.py`). Compare against a `git worktree` of master run

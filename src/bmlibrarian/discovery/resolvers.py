@@ -7,11 +7,13 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urlparse, quote
 
 import requests
 
+from ..utils.rate_limit import HostRateLimiter, RateLimitedSession
+from .pmc_cloud import PMCCloudClient
 from .data_types import (
     PDFSource, ResolutionResult, ResolutionStatus,
     SourceType, AccessType, DocumentIdentifiers
@@ -29,18 +31,51 @@ USER_AGENT = (
     'Chrome/131.0.0.0 Safari/537.36'
 )
 
+# Substrings marking a traditional (EZproxy-style) institutional proxy host,
+# as opposed to a bare institution domain for the OpenAthens Redirector.
+TRADITIONAL_PROXY_MARKERS = ('ezproxy', 'proxy.')
+
+# Host of the OpenAthens Redirector / authentication services.
+OPENATHENS_HOST = 'go.openathens.net'
+
+
+def is_traditional_proxy_url(url: str) -> bool:
+    """Return True if ``url`` names a traditional institutional proxy.
+
+    Such proxies take ``<base>/login?url=<target>``; anything else that is a
+    bare domain is treated as an OpenAthens Redirector institution.
+
+    Args:
+        url: Proxy base URL or domain as configured by the user.
+
+    Returns:
+        True for EZproxy-style proxy hosts.
+    """
+    lowered = url.lower()
+    if OPENATHENS_HOST in lowered:
+        # e.g. go.openathens.net/redirector/proxy.example.edu is a Redirector
+        return False
+    return any(marker in lowered for marker in TRADITIONAL_PROXY_MARKERS)
+
 
 class BaseResolver(ABC):
     """Abstract base class for PDF source resolvers."""
 
-    def __init__(self, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
         """Initialize resolver.
 
         Args:
             timeout: HTTP request timeout in seconds
+            rate_limiter: Per-host limiter pacing this resolver's requests;
+                defaults to the process-wide shared limiter so pacing holds
+                across all resolver and finder instances.
         """
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = RateLimitedSession(rate_limiter)
         self.session.headers.update({
             'User-Agent': USER_AGENT,
             'Accept': 'application/json, text/html, application/pdf, */*'
@@ -268,9 +303,22 @@ class DOIResolver(BaseResolver):
 class PMCResolver(BaseResolver):
     """Resolver for PubMed Central open access PDFs."""
 
-    PMC_API_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi"
     PMC_ARTICLE_BASE = "https://pmc.ncbi.nlm.nih.gov/articles"
     EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+    def __init__(
+        self,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
+        """Initialize PMC resolver.
+
+        Args:
+            timeout: HTTP request timeout in seconds
+            rate_limiter: Per-host limiter (defaults to the shared one)
+        """
+        super().__init__(timeout, rate_limiter)
+        self._cloud_client = PMCCloudClient(session=self.session, timeout=timeout)
 
     @property
     def name(self) -> str:
@@ -285,25 +333,34 @@ class PMCResolver(BaseResolver):
         pmid = identifiers.pmid
         doi = identifiers.doi
 
-        sources = []
+        sources: List[PDFSource] = []
+        lookup_error: Optional[str] = None
 
         # If we have PMCID, use it directly
         if pmcid:
-            sources.extend(self._resolve_by_pmcid(pmcid))
+            sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         # If we have PMID but no PMCID, try to find PMCID
         if not pmcid and pmid:
             pmcid = self._pmid_to_pmcid(pmid)
             if pmcid:
-                sources.extend(self._resolve_by_pmcid(pmcid))
+                sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         # Try DOI lookup in PMC
         if not sources and doi:
-            pmcid = self._doi_to_pmcid(doi)
-            if pmcid:
-                sources.extend(self._resolve_by_pmcid(pmcid))
+            doi_pmcid = self._doi_to_pmcid(doi)
+            if doi_pmcid:
+                pmcid = doi_pmcid
+                sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         if not sources:
+            # An unreachable PMC Cloud must not masquerade as "not in PMC"
+            if lookup_error:
+                return self._create_result(
+                    ResolutionStatus.ERROR,
+                    error_message=lookup_error,
+                    duration_ms=(time.time() - start_time) * 1000
+                )
             return self._create_result(
                 ResolutionStatus.NOT_FOUND,
                 duration_ms=(time.time() - start_time) * 1000
@@ -323,59 +380,54 @@ class PMCResolver(BaseResolver):
             pmcid = f'PMC{pmcid}'
         return pmcid
 
-    def _resolve_by_pmcid(self, pmcid: str) -> List[PDFSource]:
-        """Get PDF URL for a PMCID."""
+    def _resolve_by_pmcid(self, pmcid: str) -> Tuple[List[PDFSource], Optional[str]]:
+        """Get PDF sources for a PMCID.
+
+        Looks the article up in the PMC Cloud Service (the OA Web Service and
+        the FTP packages it pointed at were retired in August 2026); falls
+        back to scraping the PDF link from the PMC article page.
+
+        Args:
+            pmcid: PMCID, with or without the ``PMC`` prefix.
+
+        Returns:
+            ``(sources, lookup_error)``: the error message is set when the
+            PMC Cloud lookup itself failed (network, HTTP, bad response), so
+            the caller can tell an outage apart from "not in PMC".
+        """
         pmcid = self._normalize_pmcid(pmcid)
-        sources = []
+        sources: List[PDFSource] = []
+        lookup_error: Optional[str] = None
 
-        # Try OA web service first (returns FTP URLs for .tar.gz or PDF)
         try:
-            params = {'id': pmcid}
-            response = self.session.get(
-                self.PMC_API_URL,
-                params=params,
-                timeout=self.timeout
-            )
+            article = self._cloud_client.find_article(pmcid)
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"PMC Cloud Service lookup failed for {pmcid}: {e}")
+            lookup_error = f"PMC Cloud Service lookup failed for {pmcid}: {e}"
+            article = None
 
-            if response.status_code == 200:
-                # Parse XML response
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(response.content)
-
-                for record in root.findall('.//record'):
-                    # Check for PDF link (some articles have direct PDF FTP links)
-                    for link in record.findall('.//link'):
-                        link_format = link.get('format')
-                        link_url = link.get('href')
-
-                        if link_format == 'pdf' and link_url:
-                            sources.append(PDFSource(
-                                url=link_url,
-                                source_type=SourceType.PMC,
-                                access_type=AccessType.OPEN,
-                                priority=5,  # High priority - verified OA
-                                is_best_oa=True,
-                                host_type='repository',
-                                metadata={'pmcid': pmcid}
-                            ))
-                        elif link_format == 'tgz' and link_url:
-                            # tar.gz package contains PDF + NXML full-text
-                            sources.append(PDFSource(
-                                url=link_url,
-                                source_type=SourceType.PMC_PACKAGE,
-                                access_type=AccessType.OPEN,
-                                priority=7,  # Lower priority than direct PDF
-                                is_best_oa=True,
-                                host_type='repository',
-                                metadata={
-                                    'pmcid': pmcid,
-                                    'package_format': 'tgz',
-                                    'has_nxml': True
-                                }
-                            ))
-
-        except Exception as e:
-            logger.debug(f"PMC OA service error for {pmcid}: {e}")
+        if article is not None and article.pdf_url:
+            if article.is_retracted:
+                logger.warning(f"{article.prefix} is marked as retracted in PMC")
+            sources.append(PDFSource(
+                url=article.pdf_url,
+                source_type=SourceType.PMC_CLOUD,
+                access_type=AccessType.OPEN,
+                priority=5,  # High priority - verified OA, MD5-checked
+                license=article.license_code,
+                version='acceptedVersion' if article.is_manuscript else 'publishedVersion',
+                is_best_oa=True,
+                host_type='repository',
+                metadata={
+                    'pmcid': pmcid,
+                    'pmc_version': article.version,
+                    'pdf_md5': article.pdf_md5,
+                    'xml_url': article.xml_url,
+                    'xml_md5': article.xml_md5,
+                    'is_manuscript': article.is_manuscript,
+                    'is_retracted': article.is_retracted,
+                }
+            ))
 
         # Fallback: fetch the article page to extract the actual PDF filename
         if not sources:
@@ -390,7 +442,7 @@ class PMCResolver(BaseResolver):
                     metadata={'pmcid': pmcid, 'extracted': True}
                 ))
 
-        return sources
+        return sources, lookup_error
 
     def _get_pdf_url_from_article_page(self, pmcid: str) -> Optional[str]:
         """Fetch the PMC article page and extract the actual PDF URL.
@@ -472,6 +524,8 @@ class PMCResolver(BaseResolver):
         """
         import subprocess
 
+        # curl bypasses the session, so pace it on the shared limiter by hand.
+        self.session.rate_limiter.acquire(article_url)
         try:
             result = subprocess.run(
                 [
@@ -566,14 +620,20 @@ class UnpaywallResolver(BaseResolver):
 
     API_URL = "https://api.unpaywall.org/v2"
 
-    def __init__(self, email: str, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        email: str,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
         """Initialize Unpaywall resolver.
 
         Args:
             email: Email address for Unpaywall API (required)
             timeout: HTTP request timeout
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.email = email
 
     @property
@@ -703,15 +763,17 @@ class CrossRefTitleResolver(BaseResolver):
     def __init__(
         self,
         timeout: int = DEFAULT_TIMEOUT,
-        min_similarity: float = 0.85
+        min_similarity: float = 0.85,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize CrossRef title resolver.
 
         Args:
             timeout: HTTP request timeout in seconds
             min_similarity: Minimum title similarity score to accept (0-1)
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.min_similarity = min_similarity
 
     @property
@@ -981,7 +1043,8 @@ class OpenAthensResolver(BaseResolver):
     def __init__(
         self,
         proxy_base_url: str,
-        timeout: int = DEFAULT_TIMEOUT
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize OpenAthens resolver.
 
@@ -991,8 +1054,9 @@ class OpenAthensResolver(BaseResolver):
                 - Proxy URL: "https://proxy.openathens.net"
                 - Domain only: "jcu.edu.au" (will use redirector)
             timeout: HTTP request timeout
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.proxy_base_url = self._normalize_url(proxy_base_url)
         self.is_redirector = self.REDIRECTOR_BASE in self.proxy_base_url.lower()
 
@@ -1011,6 +1075,13 @@ class OpenAthensResolver(BaseResolver):
             Normalized URL without trailing slash
         """
         url = url.strip().rstrip('/')
+
+        # Traditional proxies are used as-is (FullTextFinder admits them as
+        # such); only bare institution domains go through the Redirector.
+        if is_traditional_proxy_url(url):
+            if not url.lower().startswith('http'):
+                url = f"https://{url}"
+            return url
 
         # If it's just a domain (no slashes except protocol), assume redirector
         if '/' not in url or url.count('/') <= 2:

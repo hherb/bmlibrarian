@@ -70,10 +70,12 @@ from .full_text_finder import (
     download_pdf_for_document
 )
 
-from .pmc_package_downloader import (
-    PMCPackageDownloader,
-    NXMLParser,
-    download_pmc_package
+from .nxml_parser import NXMLParser
+
+from .pmc_cloud import (
+    PMCArticleVersion,
+    PMCCloudClient,
+    PMCCloudDownloader,
 )
 
 from .pdf_verifier import (
@@ -121,12 +123,13 @@ __all__ = [
     'CrossRefTitleResolver',
     # Main classes
     'FullTextFinder',
-    'PMCPackageDownloader',
+    'PMCCloudClient',
+    'PMCCloudDownloader',
+    'PMCArticleVersion',
     'NXMLParser',
     # Convenience functions
     'discover_full_text',
     'download_pdf_for_document',
-    'download_pmc_package',
     # PDF verification
     'PDFVerifier',
     'PDFIdentifiers',

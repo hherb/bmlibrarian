@@ -4,6 +4,7 @@ Tests the integrated workflow: discovery -> direct HTTP -> browser fallback
 """
 
 import pytest
+import requests
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime
@@ -18,6 +19,9 @@ from bmlibrarian.discovery import (
     AccessType,
     download_pdf_for_document
 )
+
+# _download_with_browser imports this lazily, so patch it at its source.
+BROWSER_DOWNLOAD_TARGET = 'bmlibrarian.utils.browser_downloader.download_pdf_with_browser'
 
 
 class TestFullTextFinderBrowserFallback:
@@ -59,40 +63,40 @@ class TestFullTextFinderBrowserFallback:
 
         assert finder._browser_fallback_config['enabled'] is False
 
-    @patch('bmlibrarian.discovery.full_text_finder.requests.Session')
-    def test_discover_and_download_tries_browser_on_http_failure(self, mock_session):
+    def test_discover_and_download_tries_browser_on_http_failure(self, tmp_path):
         """Test that browser download is tried when HTTP fails."""
-        # Setup mock HTTP session to always fail
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = Exception("HTTP failed")
-        mock_session.return_value.get.return_value = mock_response
-
         finder = FullTextFinder(unpaywall_email="test@example.com")
 
-        # Mock discover to return a source
         mock_source = PDFSource(
             url="https://example.com/paper.pdf",
             source_type=SourceType.UNPAYWALL,
             access_type=AccessType.OPEN,
             priority=1
         )
+        output_path = tmp_path / "paper.pdf"
 
-        with patch.object(finder, 'discover') as mock_discover:
+        def fake_browser_download(url, save_path, **kwargs):
+            Path(save_path).write_bytes(b"%PDF-1.4 browser")
+            return {'status': 'success', 'size': 16}
+
+        with patch.object(finder, 'discover') as mock_discover, \
+                patch.object(finder.session, 'get',
+                             side_effect=requests.ConnectionError("HTTP failed")) as mock_get, \
+                patch('bmlibrarian.discovery.full_text_finder.time.sleep'), \
+                patch(BROWSER_DOWNLOAD_TARGET, side_effect=fake_browser_download) as mock_browser:
             mock_discover.return_value = DiscoveryResult(
                 identifiers=DocumentIdentifiers(doi="10.1234/test"),
                 sources=[mock_source],
                 resolution_results=[]
             )
 
-            # Mock browser download
-            with patch('bmlibrarian.discovery.full_text_finder.download_pdf_with_browser') as mock_browser:
-                mock_browser.return_value = {'status': 'success', 'size': 1000}
+            result = finder.discover_and_download(
+                DocumentIdentifiers(doi="10.1234/test"), output_path, max_attempts=1
+            )
 
-                identifiers = DocumentIdentifiers(doi="10.1234/test")
-                output_path = Path("/tmp/test.pdf")
-
-                # This should try HTTP first, then browser
-                # We can't fully test without complex mocking, but structure is correct
+        assert mock_get.called
+        assert mock_browser.call_count == 1
+        assert result.success is True
 
 
 class TestDownloadForDocument:
@@ -252,15 +256,15 @@ class TestBrowserDownloadMethod:
             )
         ]
 
+        # A None entry in sys.modules makes the function-level import raise
+        # ImportError, as it would without playwright.
         with patch.dict('sys.modules', {'bmlibrarian.utils.browser_downloader': None}):
-            with patch('bmlibrarian.discovery.full_text_finder.download_pdf_with_browser') as mock_import:
-                # Simulate ImportError
-                mock_import.side_effect = ImportError("No module")
+            result = finder._download_with_browser(sources, Path("/tmp/test.pdf"))
 
-                # The method should handle import error gracefully
-                # (actual implementation catches ImportError at function level)
+        assert result.success is False
+        assert "not available" in result.error_message
 
-    @patch('bmlibrarian.discovery.full_text_finder.download_pdf_with_browser')
+    @patch(BROWSER_DOWNLOAD_TARGET)
     def test_download_with_browser_tries_all_sources(self, mock_browser):
         """Test that browser download tries all sources in order."""
         mock_browser.return_value = {'status': 'failed', 'error': 'Test error'}
@@ -278,7 +282,7 @@ class TestBrowserDownloadMethod:
         assert mock_browser.call_count == 2
         assert result.success is False
 
-    @patch('bmlibrarian.discovery.full_text_finder.download_pdf_with_browser')
+    @patch(BROWSER_DOWNLOAD_TARGET)
     def test_download_with_browser_returns_on_success(self, mock_browser):
         """Test that browser download returns immediately on success."""
         mock_browser.return_value = {'status': 'success', 'size': 5000}
@@ -307,3 +311,38 @@ class TestBrowserDownloadMethod:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestThrottledDownloadNotRetriedTwice:
+    """A throttled source is retried by the session only, not again by the download loop."""
+
+    @pytest.mark.parametrize("status", [429, 503])
+    def test_throttle_costs_only_session_retries(self, status, tmp_path):
+        """Persistent 429 / 503+Retry-After: 1 + session retries requests, then fail."""
+        import io
+        from bmlibrarian.utils.rate_limit import (
+            DEFAULT_MAX_RATE_LIMIT_RETRIES, HostRateLimiter,
+        )
+
+        limiter = HostRateLimiter(default_interval=0.0, host_intervals={},
+                                  sleep=lambda seconds: None)
+        finder = FullTextFinder(rate_limiter=limiter)
+        source = PDFSource(url="https://publisher.example/paper.pdf",
+                           source_type=SourceType.DOI_REDIRECT,
+                           access_type=AccessType.UNKNOWN, priority=10)
+
+        def throttled(*args, **kwargs):
+            response = requests.Response()
+            response.status_code = status
+            response.headers["Retry-After"] = "1"
+            response.raw = io.BytesIO(b"")
+            response.url = source.url
+            return response
+
+        with patch.object(requests.Session, "request", side_effect=throttled) as req, \
+                patch('bmlibrarian.discovery.full_text_finder.time.sleep'):
+            result = finder._download_from_source(source, tmp_path / "p.pdf", max_attempts=3)
+
+        assert req.call_count == DEFAULT_MAX_RATE_LIMIT_RETRIES + 1
+        assert result.success is False
+        assert f"HTTP {status}" in result.error_message

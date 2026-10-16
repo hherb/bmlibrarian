@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Iterator, Tuple
 
-from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.discovery.nxml_parser import NXMLParser
 from bmlibrarian.importers.transaction_utils import record_savepoint
 
 logger = logging.getLogger(__name__)

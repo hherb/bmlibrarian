@@ -29,7 +29,7 @@ import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
-from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.discovery.nxml_parser import NXMLParser
 
 logger = logging.getLogger(__name__)
 

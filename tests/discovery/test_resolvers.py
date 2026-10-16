@@ -161,6 +161,21 @@ class TestOpenAthensResolver:
         assert proxy_url.startswith("https://proxy.example.com/login?url=")
         assert "publisher.com" in proxy_url
 
+    @pytest.mark.parametrize("configured,expected_base", [
+        ("jcu.edu.au", "https://go.openathens.net/redirector/jcu.edu.au"),
+        ("https://go.openathens.net/redirector/jcu.edu.au",
+         "https://go.openathens.net/redirector/jcu.edu.au"),
+        ("https://go.openathens.net/redirector/proxy.example.edu",
+         "https://go.openathens.net/redirector/proxy.example.edu"),
+        ("https://proxy.example.com/", "https://proxy.example.com"),
+        ("ezproxy.library.example.edu", "https://ezproxy.library.example.edu"),
+    ])
+    def test_normalize_url_keeps_proxy_and_redirector_apart(self, configured, expected_base):
+        """Traditional proxies are not rewritten into Redirector URLs."""
+        resolver = OpenAthensResolver(proxy_base_url=configured)
+        assert resolver.proxy_base_url == expected_base
+        assert resolver.is_redirector == ("go.openathens.net/redirector" in expected_base)
+
     def test_resolve_with_doi(self):
         """Test resolving with DOI constructs proxy URL."""
         resolver = OpenAthensResolver(proxy_base_url="https://proxy.example.com")

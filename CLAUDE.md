@@ -121,6 +121,7 @@ Since this project uses `uv` for package management:
   - `uv run python pmc_bulk_cli.py status` - Show PMC bulk download progress
   - `uv run python pmc_bulk_cli.py estimate` - Estimate download time and storage requirements
   - **Note**: PMC bulk importer is designed for offline work with configurable rate limiting (default 2 min between files)
+  - **Broken since August 2026**: PMC removed the FTP `oa_bulk` packages; `list`/`download`/`sync` fail until ported to the PMC Cloud Service (issue #283). `import` still works on previously downloaded packages. Single-article PDF discovery already uses the cloud service (`discovery/pmc_cloud.py`).
   - `uv run python europe_pmc_bulk_cli.py list` - List available Europe PMC Open Access packages (~1000+ files, ~100 articles each)
   - `uv run python europe_pmc_bulk_cli.py download --output-dir ~/europepmc` - Download Europe PMC full-text XML with resumable progress
   - `uv run python europe_pmc_bulk_cli.py download --delay 120 --limit 10` - Download with 2-minute delay, limited to 10 packages

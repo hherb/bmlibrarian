@@ -31,11 +31,14 @@ src/bmlibrarian/discovery/
 ├── __init__.py          # Module exports
 ├── data_types.py        # Type-safe dataclasses and enums
 ├── resolvers.py         # Resolver implementations
+├── pmc_cloud.py         # PMC Cloud Service lookup + PDF/XML downloader
+├── nxml_parser.py       # JATS XML -> Markdown (also used by importers)
 └── full_text_finder.py  # Orchestrator
 
 tests/discovery/
 ├── __init__.py
 ├── test_data_types.py   # Data type tests
+├── test_pmc_cloud.py    # PMC Cloud Service tests
 └── test_resolvers.py    # Resolver tests
 ```
 
@@ -224,11 +227,58 @@ class MyResolver(BaseResolver):
 
 Queries PubMed Central for open access PDFs:
 
-- Uses PMC OA web service API
-- Converts PMID → PMCID if needed
-- Falls back to constructed URLs
+- Converts PMID / DOI → PMCID if needed (elink / esearch)
+- Looks the PMCID up in the **PMC Cloud Service** (`pmc_cloud.py`) and
+  emits one `SourceType.PMC_CLOUD` source for the preferred article version
+- Falls back to scraping the PDF link from the PMC article page
+  (`SourceType.PMC`)
 
-**Priority**: 5-6 (highest priority for OA)
+**Priority**: 5 (cloud) / 6 (article page) — highest priority for OA
+
+#### PMC Cloud Service (since August 2026)
+
+PMC removed its FTP `oa_package`/`oa_pdf` trees and the OA Web Service
+(`oa.fcgi`) in August 2026; article files now live only in the
+world-readable AWS bucket `pmc-oa-opendata`, fetched here over plain HTTPS
+(`https://pmc-oa-opendata.s3.amazonaws.com/`). There are no packages: each
+*article version* has its own prefix (`PMC5334499.1/`) holding
+`<prefix>.pdf` (only when licensing permits), `<prefix>.xml` (JATS),
+`<prefix>.txt` and `<prefix>.json`; `metadata/<prefix>.json` holds the same
+metadata. See the bucket's `README.txt`.
+
+- `PMCCloudClient.find_article(pmcid)`: S3 ListObjectsV2
+  (`?list-type=2&prefix=PMC5334499.&delimiter=/`) → one metadata GET per
+  version → `select_preferred_version()`: needs a PDF; prefers not
+  retracted, then published over author manuscript, then highest version.
+  Version 1 need not exist. Unreadable versions are skipped (logged).
+- Metadata is untrusted: `parse_version_metadata()` validates pmcid/version
+  and `s3_url_to_https()` only accepts files directly inside an article
+  version of this bucket, splitting off the `?md5=` digest.
+- The source's `metadata` carries `pdf_md5`, `xml_url`, `xml_md5`,
+  `pmc_version`, `is_manuscript`, `is_retracted`; `license` is the
+  metadata `license_code`.
+- `PMCCloudDownloader.download()` (dispatched by `FullTextFinder` for
+  `PMC_CLOUD` sources) streams the PDF to a `.part` file, verifies MD5 and
+  `%PDF-` magic, then promotes it; one retry loop per file (transient
+  errors — including a body cut off mid-stream — and MD5 mismatches; 4xx,
+  non-PDF content, already-retried throttling and local file errors such
+  as a failed rename are final). Every failure comes back as a failed
+  `DownloadResult`, never as an exception. The XML is best-effort: saved as
+  `fulltext/<year>/<stem>.nxml` (sibling of the `pdf/` tree) and parsed by
+  `NXMLParser` into `DownloadResult.full_text`; an XML download, rename or
+  parse failure never fails the PDF.
+- `PMC_CLOUD` sources are never handed to the browser fallback: they are
+  plain S3 objects, and the browser would save a file the downloader
+  rejected (MD5 mismatch, not a PDF) without checking it.
+- If the PMC Cloud lookup itself fails (network, HTTP 403/5xx, bad
+  response) and the article-page fallback finds nothing, `PMCResolver`
+  returns `ResolutionStatus.ERROR` with the lookup error rather than
+  `NOT_FOUND`. `discover_and_download()` appends such resolver errors to
+  its "No PDF sources found" message (`format_resolver_errors()`), so an
+  outage is distinguishable from an article that isn't available.
+- Any other `ftp://ftp.ncbi.nlm.nih.gov/...` URL is rewritten to the same
+  path over HTTPS (`ncbi_ftp_to_https`); only non-NCBI FTP hosts still use
+  `ftplib`.
 
 #### CRITICAL: NCBI elink API Link Types
 
@@ -333,6 +383,12 @@ Constructs proxy URLs for institutional access:
 - Works with OpenAthensAuth for authentication
 - Last resort for paywalled content
 - Requires institutional subscription
+- URL forms: a bare institution domain (`jcu.edu.au`) or a
+  `go.openathens.net/redirector/...` URL → Redirector
+  (`<base>?url=<target>`); an EZproxy-style host (`is_traditional_proxy_url()`:
+  contains `ezproxy` or `proxy.`, and is not on `go.openathens.net`) → used
+  as-is (`<base>/login?url=<target>`). `FullTextFinder` uses the same
+  predicate to decide whether to add the resolver at all.
 
 **Priority**: 50 (lowest - only when OA unavailable)
 
@@ -349,7 +405,8 @@ class FullTextFinder:
         openathens_auth: Optional[Any] = None,
         timeout: int = DEFAULT_TIMEOUT,
         prefer_open_access: bool = True,
-        skip_resolvers: Optional[List[str]] = None
+        skip_resolvers: Optional[List[str]] = None,
+        rate_limiter: Optional[HostRateLimiter] = None  # default: shared
     ): ...
 
     def discover(
@@ -388,10 +445,43 @@ class FullTextFinder:
 2. Try downloading from each source in priority order
 3. For each source:
    - Add OpenAthens cookies if needed
-   - Download with exponential backoff retry
+   - Download with jittered exponential backoff retry (401/403/404/429
+     are not retried at this level)
    - Verify content type (reject HTML)
    - Verify PDF magic bytes
 4. Return first successful download or failure
+
+### Rate Limiting and Throttling
+
+Every HTTP request made by the resolvers and by `FullTextFinder.session`
+goes through `RateLimitedSession` (`bmlibrarian/utils/rate_limit.py`) —
+including the PMC Cloud Service client and downloader, which reuse the
+resolver's / finder's session — while the remaining non-NCBI FTP fetch
+(`_download_via_ftp`) and PMC's `curl` fallback call
+`HostRateLimiter.acquire()` themselves.
+
+- **One limiter per process.** Resolvers and finders are created per
+  document in several call sites (GUI workers, CLI, labs), so the default
+  is `get_shared_rate_limiter()`; pass `rate_limiter=` only to isolate
+  pacing (tests). `FullTextFinder` hands its limiter to every resolver and
+  its session to the `PMCCloudDownloader`.
+- **Per-host minimum interval.** `DEFAULT_HOST_INTERVALS` holds the
+  documented API limits (NCBI 0.34 s, Unpaywall 0.1 s, CrossRef/doi.org
+  0.2 s, PMC Cloud bucket 0.1 s); other hosts use `DEFAULT_MIN_INTERVAL_SECONDS` (1 s). Slots are
+  reserved under a lock and slept outside it, so threads on different hosts
+  never block each other.
+- **429 / Retry-After.** A 429 (or a 503 *with* `Retry-After`) defers the
+  host on the shared limiter and is retried up to
+  `DEFAULT_MAX_RATE_LIMIT_RETRIES` (3) times, sleeping the server's
+  `Retry-After` (seconds or HTTP-date) or a jittered backoff. A requested
+  wait above `DEFAULT_MAX_RETRY_AFTER_SECONDS` (60 s) is not slept — the
+  429 is returned to the caller and the host is deferred.
+- **No stacked retry loops.** `_download_from_source` stops on a response
+  the session already retried as throttling (429, 503 + Retry-After), and
+  `PMCCloudDownloader` has exactly one loop per file (`max_attempts`) around
+  a single-shot `_fetch_once()`, which raises `PMCCloudError(retryable=…)`.
+- Only the initial URL's host is paced; redirects followed inside
+  `requests`, and Playwright browser downloads, are not.
 
 ## Configuration
 

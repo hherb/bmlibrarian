@@ -11,6 +11,7 @@ Supports a two-phase download approach:
 import logging
 import time
 import ftplib
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from urllib.parse import urlparse
@@ -19,11 +20,12 @@ import requests
 
 from .data_types import (
     PDFSource, DiscoveryResult, DownloadResult, DocumentIdentifiers,
-    ResolutionStatus, SourceType, AccessType
+    ResolutionResult, ResolutionStatus, SourceType, AccessType
 )
 from .resolvers import (
     BaseResolver, DirectURLResolver, DOIResolver,
-    PMCResolver, UnpaywallResolver, OpenAthensResolver
+    PMCResolver, UnpaywallResolver, OpenAthensResolver,
+    is_traditional_proxy_url
 )
 from ..utils.url_validation import get_validated_openathens_url
 from ..utils.pdf_validation import is_pdf_content
@@ -32,7 +34,14 @@ from ..utils.download_utils import (
     promote_partial_download,
     discard_partial_download,
 )
-from .pmc_package_downloader import PMCPackageDownloader
+from ..utils.rate_limit import (
+    HostRateLimiter,
+    RateLimitedSession,
+    backoff_delay,
+    get_shared_rate_limiter,
+    throttle_delay,
+)
+from .pmc_cloud import PMCCloudDownloader, ncbi_ftp_to_https
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,24 @@ DEFAULT_UNPAYWALL_EMAIL = "bmlibrarian@example.com"
 DEFAULT_BROWSER_TIMEOUT_MS = 60000
 DEFAULT_BROWSER_HEADLESS = True
 DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 3
+# Base delay (seconds) for the first download retry; doubles per retry.
+DOWNLOAD_RETRY_BASE_SECONDS = 2.0
+
+
+def format_resolver_errors(resolution_results: List[ResolutionResult]) -> str:
+    """Summarise the resolvers that failed (as opposed to found nothing).
+
+    Args:
+        resolution_results: Per-resolver results from discovery.
+
+    Returns:
+        ``"name: message; ..."`` for each resolver with status ERROR, or ``""``.
+    """
+    return "; ".join(
+        f"{r.resolver_name}: {r.error_message or 'unknown error'}"
+        for r in resolution_results
+        if r.status == ResolutionStatus.ERROR
+    )
 
 
 class FullTextFinder:
@@ -62,7 +89,8 @@ class FullTextFinder:
         openathens_auth: Optional[Any] = None,
         timeout: int = DEFAULT_TIMEOUT,
         prefer_open_access: bool = True,
-        skip_resolvers: Optional[List[str]] = None
+        skip_resolvers: Optional[List[str]] = None,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize FullTextFinder.
 
@@ -73,8 +101,12 @@ class FullTextFinder:
             timeout: HTTP request timeout in seconds
             prefer_open_access: If True, prioritize OA sources over others
             skip_resolvers: List of resolver names to skip
+            rate_limiter: Per-host limiter shared by all resolvers and
+                downloads; defaults to the process-wide shared limiter so
+                pacing holds across finder instances.
         """
         self.timeout = timeout
+        self.rate_limiter = rate_limiter or get_shared_rate_limiter()
         self.prefer_open_access = prefer_open_access
         self.openathens_auth = openathens_auth
         self.skip_resolvers = set(skip_resolvers or [])
@@ -84,20 +116,24 @@ class FullTextFinder:
 
         # PMC - highest priority for OA
         if 'pmc' not in self.skip_resolvers:
-            self.resolvers.append(PMCResolver(timeout=timeout))
+            self.resolvers.append(PMCResolver(timeout=timeout, rate_limiter=self.rate_limiter))
 
         # Unpaywall - excellent OA coverage
         if 'unpaywall' not in self.skip_resolvers:
             email = unpaywall_email or DEFAULT_UNPAYWALL_EMAIL
-            self.resolvers.append(UnpaywallResolver(email=email, timeout=timeout))
+            self.resolvers.append(UnpaywallResolver(
+                email=email, timeout=timeout, rate_limiter=self.rate_limiter
+            ))
 
         # DOI resolution
         if 'doi' not in self.skip_resolvers:
-            self.resolvers.append(DOIResolver(timeout=timeout))
+            self.resolvers.append(DOIResolver(timeout=timeout, rate_limiter=self.rate_limiter))
 
         # Direct URL from database
         if 'direct_url' not in self.skip_resolvers:
-            self.resolvers.append(DirectURLResolver(timeout=timeout))
+            self.resolvers.append(DirectURLResolver(
+                timeout=timeout, rate_limiter=self.rate_limiter
+            ))
 
         # OpenAthens proxy/redirector - detect the type of URL provided
         # Types:
@@ -115,7 +151,7 @@ class FullTextFinder:
             is_redirector = 'go.openathens.net/redirector' in url_lower
 
             # Check for traditional proxy URLs
-            is_traditional_proxy = any(x in url_lower for x in ['ezproxy', 'proxy.'])
+            is_traditional_proxy = is_traditional_proxy_url(openathens_proxy_url)
 
             # Check if it might be a domain that should use redirector
             # (contains a dot, doesn't look like a full URL)
@@ -137,7 +173,8 @@ class FullTextFinder:
                 # The OpenAthensResolver handles format detection internally
                 self.resolvers.append(OpenAthensResolver(
                     proxy_base_url=openathens_proxy_url,
-                    timeout=timeout
+                    timeout=timeout,
+                    rate_limiter=self.rate_limiter
                 ))
                 if is_redirector:
                     logger.info(f"OpenAthens Redirector configured: {openathens_proxy_url}")
@@ -146,8 +183,8 @@ class FullTextFinder:
                 else:
                     logger.info(f"Traditional proxy configured: {openathens_proxy_url}")
 
-        # HTTP session for downloads
-        self.session = requests.Session()
+        # HTTP session for downloads (paced, retries 429 / Retry-After)
+        self.session = RateLimitedSession(self.rate_limiter)
         self.session.headers.update({
             'User-Agent': (
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -157,8 +194,10 @@ class FullTextFinder:
             'Accept': 'application/pdf,*/*'
         })
 
-        # PMC package downloader for tar.gz files
-        self._pmc_package_downloader = PMCPackageDownloader(timeout=timeout)
+        # PMC Cloud Service downloader (PDF + JATS XML full text)
+        self._pmc_cloud_downloader = PMCCloudDownloader(
+            timeout=timeout, session=self.session
+        )
 
     def discover(
         self,
@@ -297,9 +336,13 @@ class FullTextFinder:
                 logger.info(f"No sources found, added DOI fallback: {doi_url}")
 
         if not discovery.sources:
+            error_message = "No PDF sources found and no DOI available for fallback"
+            resolver_errors = format_resolver_errors(discovery.resolution_results)
+            if resolver_errors:
+                error_message += f" (resolver errors: {resolver_errors})"
             return DownloadResult(
                 success=False,
-                error_message="No PDF sources found and no DOI available for fallback",
+                error_message=error_message,
                 duration_ms=(time.time() - start_time) * 1000
             )
 
@@ -319,8 +362,8 @@ class FullTextFinder:
 
         for source in discovery.sources:
             # Skip if this source type already failed verification
-            # (e.g., if pmc failed, skip pmc_package since they serve the same wrong file)
-            source_type_base = source.source_type.value.split('_')[0]  # 'pmc_package' -> 'pmc'
+            # (e.g., if pmc failed, skip pmc_cloud since they serve the same wrong file)
+            source_type_base = source.source_type.value.split('_')[0]  # 'pmc_cloud' -> 'pmc'
             if source_type_base in failed_source_types:
                 logger.info(f"Skipping {source.source_type.value} - {source_type_base} sources already failed verification")
                 continue
@@ -348,7 +391,7 @@ class FullTextFinder:
                         )
                         verification_failed_sources.append(source)
 
-                        # Track the source type base (e.g., 'pmc' for both 'pmc' and 'pmc_package')
+                        # Track the source type base (e.g., 'pmc' for both 'pmc' and 'pmc_cloud')
                         # so we don't try other variants of the same source
                         source_type_base = source.source_type.value.split('_')[0]
                         failed_source_types.add(source_type_base)
@@ -367,11 +410,14 @@ class FullTextFinder:
             logger.debug(f"HTTP download failed from {source.source_type.value}: {result.error_message}")
 
         # All HTTP attempts failed - try browser fallback
-        # Exclude sources that already failed verification or whose source type failed
+        # Exclude sources that already failed verification or whose source type failed.
+        # PMC Cloud files are plain S3 objects: the browser adds nothing, and it
+        # would save a file the cloud downloader rejected (MD5/not-a-PDF) unchecked.
         browser_sources = [
             s for s in discovery.sources
             if s not in verification_failed_sources
             and s.source_type.value.split('_')[0] not in failed_source_types
+            and s.source_type != SourceType.PMC_CLOUD
         ]
 
         if use_browser_fallback and browser_sources:
@@ -553,7 +599,7 @@ class FullTextFinder:
         """Download file via FTP protocol.
 
         Args:
-            url: FTP URL (e.g., ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/...)
+            url: FTP URL on a non-NCBI host (NCBI URLs are rewritten to HTTPS)
             output_path: Path to save file
             max_attempts: Maximum retry attempts
 
@@ -584,7 +630,9 @@ class FullTextFinder:
             try:
                 if attempt > 0:
                     logger.info(f"FTP retry attempt {attempt + 1}/{max_attempts}")
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(backoff_delay(attempt - 1, base=DOWNLOAD_RETRY_BASE_SECONDS))
+
+                self.rate_limiter.acquire(url)
 
                 # Connect to FTP server
                 ftp = ftplib.FTP()
@@ -674,22 +722,28 @@ class FullTextFinder:
             source: PDFSource to download from
             output_path: Path to save file
             max_attempts: Maximum retry attempts
-            fulltext_output_dir: Directory for full-text NXML (for PMC packages)
+            fulltext_output_dir: Directory for full-text XML (PMC Cloud sources)
 
         Returns:
             DownloadResult
         """
         start_time = time.time()
 
-        # Handle PMC package (tar.gz) sources
-        if source.source_type == SourceType.PMC_PACKAGE:
-            return self._download_pmc_package(
+        # PMC Cloud Service: MD5-verified PDF plus JATS XML full text
+        if source.source_type == SourceType.PMC_CLOUD:
+            return self._download_pmc_cloud(
                 source=source,
                 pdf_output_path=output_path,
                 fulltext_output_dir=fulltext_output_dir
             )
 
-        # Check if this is an FTP URL - use FTP download
+        # NCBI's FTP service is unreliable; it serves the same tree over HTTPS
+        https_url = ncbi_ftp_to_https(source.url)
+        if https_url:
+            logger.info(f"Using HTTPS instead of NCBI FTP: {https_url}")
+            source = replace(source, url=https_url)
+
+        # Other FTP hosts - use FTP download
         if self._is_ftp_url(source.url):
             result = self._download_via_ftp(source.url, output_path, max_attempts)
             if result.success:
@@ -724,7 +778,7 @@ class FullTextFinder:
             try:
                 if attempt > 0:
                     logger.info(f"Retry attempt {attempt + 1}/{max_attempts}")
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(backoff_delay(attempt - 1, base=DOWNLOAD_RETRY_BASE_SECONDS))
 
                 response = self.session.get(
                     source.url,
@@ -787,6 +841,12 @@ class FullTextFinder:
                     break  # Don't retry on auth errors
                 elif e.response.status_code == 404:
                     last_error = "PDF not found (HTTP 404)"
+                    break
+                elif throttle_delay(e.response, 0) is not None:
+                    # 429, or 503 with Retry-After: the session already
+                    # retried honouring the server's delay; another retry
+                    # layer here would only multiply requests.
+                    last_error = f"Rate limited by server (HTTP {e.response.status_code})"
                     break
                 else:
                     last_error = f"HTTP error: {e}"
@@ -923,40 +983,32 @@ class FullTextFinder:
 
         return download_result
 
-    def _download_pmc_package(
+    def _download_pmc_cloud(
         self,
         source: PDFSource,
         pdf_output_path: Path,
         fulltext_output_dir: Optional[Path] = None
     ) -> DownloadResult:
-        """Download and extract PMC tar.gz package.
-
-        Extracts both PDF and NXML full-text from the package.
+        """Download a PMC Cloud Service article: PDF plus JATS XML full text.
 
         Args:
-            source: PDFSource with PMC_PACKAGE type
-            pdf_output_path: Path to save extracted PDF
-            fulltext_output_dir: Directory to save NXML (optional)
+            source: PDFSource with PMC_CLOUD type
+            pdf_output_path: Path to save the PDF
+            fulltext_output_dir: Directory for the XML (optional)
 
         Returns:
-            DownloadResult with PDF path and full-text content
+            DownloadResult with PDF path and, when available, full text
         """
-        # Determine output directories
-        pdf_output_dir = pdf_output_path.parent
-        base_filename = pdf_output_path.stem
-
-        # Default fulltext directory: sibling to pdf directory
         if fulltext_output_dir is None:
-            # e.g., ~/knowledgebase/pdf/2024 -> ~/knowledgebase/fulltext/2024
-            base_dir = pdf_output_dir.parent
-            year_dir = pdf_output_dir.name
-            fulltext_output_dir = base_dir.parent / 'fulltext' / year_dir
+            # Sibling to the pdf tree, e.g.
+            # ~/knowledgebase/pdf/2024 -> ~/knowledgebase/fulltext/2024
+            pdf_output_dir = pdf_output_path.parent
+            fulltext_output_dir = pdf_output_dir.parent.parent / 'fulltext' / pdf_output_dir.name
 
-        return self._pmc_package_downloader.download_and_extract(
+        return self._pmc_cloud_downloader.download(
             source=source,
-            pdf_output_dir=pdf_output_dir,
-            fulltext_output_dir=fulltext_output_dir,
-            base_filename=base_filename
+            pdf_output_path=pdf_output_path,
+            fulltext_output_dir=fulltext_output_dir
         )
 
     def _is_duplicate_source(
