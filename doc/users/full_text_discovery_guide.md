@@ -252,12 +252,24 @@ for doc in documents:
 
 Always provide a real email address for the Unpaywall API. This is required by their terms of service and helps them contact you if there are issues.
 
-### 2. Respect Rate Limits
+### 2. Rate Limits Are Handled for You
 
-The system includes exponential backoff for retries, but you should still:
-- Add delays between batch requests
-- Avoid hammering servers with rapid requests
-- Use caching where possible
+All discovery and download requests in one process share a per-host rate
+limiter (since October 2026), so batch loops like the one above need no
+manual `sleep()`:
+
+- Requests to the same host are spaced out: NCBI ~3/s, Unpaywall ~10/s,
+  CrossRef and doi.org ~5/s, and any other host (publisher sites) at most
+  1/s. Different hosts don't wait for each other.
+- When a server answers **HTTP 429 Too Many Requests** (or 503 with a
+  `Retry-After` header), the request waits as long as the server asks
+  (up to 60 s) and is retried up to 3 times. Every other request to that
+  host waits too.
+- If the server keeps throttling, the download fails with
+  "Rate limited by server (HTTP 429)" instead of retrying further. Wait a
+  while and re-run those documents.
+
+Caching results where possible still reduces load.
 
 ### 3. Use Multiple Identifiers
 

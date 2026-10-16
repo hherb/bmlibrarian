@@ -23,7 +23,8 @@ from .data_types import (
 )
 from .resolvers import (
     BaseResolver, DirectURLResolver, DOIResolver,
-    PMCResolver, UnpaywallResolver, OpenAthensResolver
+    PMCResolver, UnpaywallResolver, OpenAthensResolver,
+    is_traditional_proxy_url
 )
 from ..utils.url_validation import get_validated_openathens_url
 from ..utils.pdf_validation import is_pdf_content
@@ -31,6 +32,13 @@ from ..utils.download_utils import (
     partial_download_path,
     promote_partial_download,
     discard_partial_download,
+)
+from ..utils.rate_limit import (
+    HostRateLimiter,
+    RateLimitedSession,
+    backoff_delay,
+    get_shared_rate_limiter,
+    throttle_delay,
 )
 from .pmc_package_downloader import PMCPackageDownloader
 
@@ -42,6 +50,8 @@ DEFAULT_UNPAYWALL_EMAIL = "bmlibrarian@example.com"
 DEFAULT_BROWSER_TIMEOUT_MS = 60000
 DEFAULT_BROWSER_HEADLESS = True
 DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 3
+# Base delay (seconds) for the first download retry; doubles per retry.
+DOWNLOAD_RETRY_BASE_SECONDS = 2.0
 
 
 class FullTextFinder:
@@ -62,7 +72,8 @@ class FullTextFinder:
         openathens_auth: Optional[Any] = None,
         timeout: int = DEFAULT_TIMEOUT,
         prefer_open_access: bool = True,
-        skip_resolvers: Optional[List[str]] = None
+        skip_resolvers: Optional[List[str]] = None,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize FullTextFinder.
 
@@ -73,8 +84,12 @@ class FullTextFinder:
             timeout: HTTP request timeout in seconds
             prefer_open_access: If True, prioritize OA sources over others
             skip_resolvers: List of resolver names to skip
+            rate_limiter: Per-host limiter shared by all resolvers and
+                downloads; defaults to the process-wide shared limiter so
+                pacing holds across finder instances.
         """
         self.timeout = timeout
+        self.rate_limiter = rate_limiter or get_shared_rate_limiter()
         self.prefer_open_access = prefer_open_access
         self.openathens_auth = openathens_auth
         self.skip_resolvers = set(skip_resolvers or [])
@@ -84,20 +99,24 @@ class FullTextFinder:
 
         # PMC - highest priority for OA
         if 'pmc' not in self.skip_resolvers:
-            self.resolvers.append(PMCResolver(timeout=timeout))
+            self.resolvers.append(PMCResolver(timeout=timeout, rate_limiter=self.rate_limiter))
 
         # Unpaywall - excellent OA coverage
         if 'unpaywall' not in self.skip_resolvers:
             email = unpaywall_email or DEFAULT_UNPAYWALL_EMAIL
-            self.resolvers.append(UnpaywallResolver(email=email, timeout=timeout))
+            self.resolvers.append(UnpaywallResolver(
+                email=email, timeout=timeout, rate_limiter=self.rate_limiter
+            ))
 
         # DOI resolution
         if 'doi' not in self.skip_resolvers:
-            self.resolvers.append(DOIResolver(timeout=timeout))
+            self.resolvers.append(DOIResolver(timeout=timeout, rate_limiter=self.rate_limiter))
 
         # Direct URL from database
         if 'direct_url' not in self.skip_resolvers:
-            self.resolvers.append(DirectURLResolver(timeout=timeout))
+            self.resolvers.append(DirectURLResolver(
+                timeout=timeout, rate_limiter=self.rate_limiter
+            ))
 
         # OpenAthens proxy/redirector - detect the type of URL provided
         # Types:
@@ -115,7 +134,7 @@ class FullTextFinder:
             is_redirector = 'go.openathens.net/redirector' in url_lower
 
             # Check for traditional proxy URLs
-            is_traditional_proxy = any(x in url_lower for x in ['ezproxy', 'proxy.'])
+            is_traditional_proxy = is_traditional_proxy_url(openathens_proxy_url)
 
             # Check if it might be a domain that should use redirector
             # (contains a dot, doesn't look like a full URL)
@@ -137,7 +156,8 @@ class FullTextFinder:
                 # The OpenAthensResolver handles format detection internally
                 self.resolvers.append(OpenAthensResolver(
                     proxy_base_url=openathens_proxy_url,
-                    timeout=timeout
+                    timeout=timeout,
+                    rate_limiter=self.rate_limiter
                 ))
                 if is_redirector:
                     logger.info(f"OpenAthens Redirector configured: {openathens_proxy_url}")
@@ -146,8 +166,8 @@ class FullTextFinder:
                 else:
                     logger.info(f"Traditional proxy configured: {openathens_proxy_url}")
 
-        # HTTP session for downloads
-        self.session = requests.Session()
+        # HTTP session for downloads (paced, retries 429 / Retry-After)
+        self.session = RateLimitedSession(self.rate_limiter)
         self.session.headers.update({
             'User-Agent': (
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -158,7 +178,9 @@ class FullTextFinder:
         })
 
         # PMC package downloader for tar.gz files
-        self._pmc_package_downloader = PMCPackageDownloader(timeout=timeout)
+        self._pmc_package_downloader = PMCPackageDownloader(
+            timeout=timeout, rate_limiter=self.rate_limiter
+        )
 
     def discover(
         self,
@@ -584,7 +606,9 @@ class FullTextFinder:
             try:
                 if attempt > 0:
                     logger.info(f"FTP retry attempt {attempt + 1}/{max_attempts}")
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(backoff_delay(attempt - 1, base=DOWNLOAD_RETRY_BASE_SECONDS))
+
+                self.rate_limiter.acquire(url)
 
                 # Connect to FTP server
                 ftp = ftplib.FTP()
@@ -724,7 +748,7 @@ class FullTextFinder:
             try:
                 if attempt > 0:
                     logger.info(f"Retry attempt {attempt + 1}/{max_attempts}")
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(backoff_delay(attempt - 1, base=DOWNLOAD_RETRY_BASE_SECONDS))
 
                 response = self.session.get(
                     source.url,
@@ -787,6 +811,12 @@ class FullTextFinder:
                     break  # Don't retry on auth errors
                 elif e.response.status_code == 404:
                     last_error = "PDF not found (HTTP 404)"
+                    break
+                elif throttle_delay(e.response, 0) is not None:
+                    # 429, or 503 with Retry-After: the session already
+                    # retried honouring the server's delay; another retry
+                    # layer here would only multiply requests.
+                    last_error = f"Rate limited by server (HTTP {e.response.status_code})"
                     break
                 else:
                     last_error = f"HTTP error: {e}"

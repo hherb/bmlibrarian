@@ -12,6 +12,7 @@ from urllib.parse import urlparse, quote
 
 import requests
 
+from ..utils.rate_limit import HostRateLimiter, RateLimitedSession
 from .data_types import (
     PDFSource, ResolutionResult, ResolutionStatus,
     SourceType, AccessType, DocumentIdentifiers
@@ -29,18 +30,51 @@ USER_AGENT = (
     'Chrome/131.0.0.0 Safari/537.36'
 )
 
+# Substrings marking a traditional (EZproxy-style) institutional proxy host,
+# as opposed to a bare institution domain for the OpenAthens Redirector.
+TRADITIONAL_PROXY_MARKERS = ('ezproxy', 'proxy.')
+
+# Host of the OpenAthens Redirector / authentication services.
+OPENATHENS_HOST = 'go.openathens.net'
+
+
+def is_traditional_proxy_url(url: str) -> bool:
+    """Return True if ``url`` names a traditional institutional proxy.
+
+    Such proxies take ``<base>/login?url=<target>``; anything else that is a
+    bare domain is treated as an OpenAthens Redirector institution.
+
+    Args:
+        url: Proxy base URL or domain as configured by the user.
+
+    Returns:
+        True for EZproxy-style proxy hosts.
+    """
+    lowered = url.lower()
+    if OPENATHENS_HOST in lowered:
+        # e.g. go.openathens.net/redirector/proxy.example.edu is a Redirector
+        return False
+    return any(marker in lowered for marker in TRADITIONAL_PROXY_MARKERS)
+
 
 class BaseResolver(ABC):
     """Abstract base class for PDF source resolvers."""
 
-    def __init__(self, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
         """Initialize resolver.
 
         Args:
             timeout: HTTP request timeout in seconds
+            rate_limiter: Per-host limiter pacing this resolver's requests;
+                defaults to the process-wide shared limiter so pacing holds
+                across all resolver and finder instances.
         """
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = RateLimitedSession(rate_limiter)
         self.session.headers.update({
             'User-Agent': USER_AGENT,
             'Accept': 'application/json, text/html, application/pdf, */*'
@@ -472,6 +506,8 @@ class PMCResolver(BaseResolver):
         """
         import subprocess
 
+        # curl bypasses the session, so pace it on the shared limiter by hand.
+        self.session.rate_limiter.acquire(article_url)
         try:
             result = subprocess.run(
                 [
@@ -566,14 +602,20 @@ class UnpaywallResolver(BaseResolver):
 
     API_URL = "https://api.unpaywall.org/v2"
 
-    def __init__(self, email: str, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        email: str,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
         """Initialize Unpaywall resolver.
 
         Args:
             email: Email address for Unpaywall API (required)
             timeout: HTTP request timeout
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.email = email
 
     @property
@@ -703,15 +745,17 @@ class CrossRefTitleResolver(BaseResolver):
     def __init__(
         self,
         timeout: int = DEFAULT_TIMEOUT,
-        min_similarity: float = 0.85
+        min_similarity: float = 0.85,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize CrossRef title resolver.
 
         Args:
             timeout: HTTP request timeout in seconds
             min_similarity: Minimum title similarity score to accept (0-1)
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.min_similarity = min_similarity
 
     @property
@@ -981,7 +1025,8 @@ class OpenAthensResolver(BaseResolver):
     def __init__(
         self,
         proxy_base_url: str,
-        timeout: int = DEFAULT_TIMEOUT
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize OpenAthens resolver.
 
@@ -991,8 +1036,9 @@ class OpenAthensResolver(BaseResolver):
                 - Proxy URL: "https://proxy.openathens.net"
                 - Domain only: "jcu.edu.au" (will use redirector)
             timeout: HTTP request timeout
+            rate_limiter: Per-host limiter (defaults to the shared one)
         """
-        super().__init__(timeout)
+        super().__init__(timeout, rate_limiter)
         self.proxy_base_url = self._normalize_url(proxy_base_url)
         self.is_redirector = self.REDIRECTOR_BASE in self.proxy_base_url.lower()
 
@@ -1011,6 +1057,13 @@ class OpenAthensResolver(BaseResolver):
             Normalized URL without trailing slash
         """
         url = url.strip().rstrip('/')
+
+        # Traditional proxies are used as-is (FullTextFinder admits them as
+        # such); only bare institution domains go through the Redirector.
+        if is_traditional_proxy_url(url):
+            if not url.lower().startswith('http'):
+                url = f"https://{url}"
+            return url
 
         # If it's just a domain (no slashes except protocol), assume redirector
         if '/' not in url or url.count('/') <= 2:

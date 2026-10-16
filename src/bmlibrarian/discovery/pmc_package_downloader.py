@@ -21,6 +21,7 @@ from typing import Optional, List, Tuple, Dict, Any
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
+from ..utils.rate_limit import HostRateLimiter, backoff_delay, get_shared_rate_limiter
 from .data_types import DownloadResult, PDFSource
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,51 @@ logger = logging.getLogger(__name__)
 # Default timeout for FTP operations (seconds)
 DEFAULT_FTP_TIMEOUT = 60
 
-# Maximum retries for FTP downloads
+# Maximum attempts per package (download + extraction), across all failure
+# kinds. This is the only retry loop - the FTP fetch itself is single-shot.
 DEFAULT_MAX_RETRIES = 3
+
+# Standard FTP control port, used when the URL names none
+FTP_DEFAULT_PORT = 21
+
+# Base delay (seconds) before the first retry; doubles per retry, with jitter.
+FTP_RETRY_BASE_SECONDS = 2.0
+
+# Substrings of extraction errors that indicate a truncated/corrupt download
+# (worth re-downloading) rather than a package that is genuinely unusable.
+CORRUPTION_ERROR_MARKERS = ("invalid", "corrupt", "gzip")
+
+
+class PackageFetchError(Exception):
+    """A single FTP fetch of a PMC package failed.
+
+    Attributes:
+        retryable: False for errors a retry cannot fix (bad URL, permission
+            denied / file not found); True for transient failures.
+    """
+
+    def __init__(self, message: str, retryable: bool) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable description of the failure.
+            retryable: Whether another attempt might succeed.
+        """
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def is_corruption_error(message: str) -> bool:
+    """Return True if an extraction error looks like a corrupt download.
+
+    Args:
+        message: Extraction error message.
+
+    Returns:
+        True if re-downloading the package might fix the error.
+    """
+    lowered = message.lower()
+    return any(marker in lowered for marker in CORRUPTION_ERROR_MARKERS)
 
 
 @dataclass
@@ -1017,16 +1061,20 @@ class PMCPackageDownloader:
     def __init__(
         self,
         timeout: int = DEFAULT_FTP_TIMEOUT,
-        max_retries: int = DEFAULT_MAX_RETRIES
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        rate_limiter: Optional[HostRateLimiter] = None
     ):
         """Initialize downloader.
 
         Args:
             timeout: FTP operation timeout in seconds
-            max_retries: Maximum retry attempts for FTP downloads
+            max_retries: Maximum attempts per package (download + extraction)
+            rate_limiter: Per-host limiter pacing FTP connections; defaults
+                to the process-wide shared limiter
         """
         self.timeout = timeout
-        self.max_retries = max_retries
+        self.max_retries = max(1, max_retries)
+        self.rate_limiter = rate_limiter or get_shared_rate_limiter()
         self.nxml_parser = NXMLParser()
 
     def download_and_extract(
@@ -1062,57 +1110,63 @@ class PMCPackageDownloader:
         if base_filename is None:
             base_filename = source.metadata.get('pmcid', 'unknown')
 
-        # Download and extract with retry on corruption
-        last_error = None
+        # One retry loop for the whole package: transient FTP failures and
+        # corrupt (truncated) downloads are retried with jittered backoff;
+        # permanent failures stop immediately.
+        last_error: Optional[str] = None
+        extracted: Optional[ExtractedPackage] = None
+        attempts = 0
         for attempt in range(1, self.max_retries + 1):
-            # Download tar.gz to memory
+            attempts = attempt
+            if attempt > 1:
+                delay = backoff_delay(attempt - 2, base=FTP_RETRY_BASE_SECONDS)
+                logger.info(f"Retrying PMC package download in {delay:.1f}s")
+                time.sleep(delay)
             logger.info(f"PMC package download attempt {attempt}/{self.max_retries}")
-            tar_data = self._download_ftp(source.url)
 
-            if tar_data is None:
-                last_error = "FTP download failed - could not retrieve file from server"
+            try:
+                tar_data = self._download_ftp(source.url)
+            except PackageFetchError as e:
+                last_error = str(e)
                 logger.warning(f"Attempt {attempt}: {last_error}")
-                continue
+                if e.retryable:
+                    continue
+                break
 
-            # Extract contents
             extracted = self._extract_package(
                 tar_data=tar_data,
                 pdf_output_dir=pdf_output_dir,
                 fulltext_output_dir=fulltext_output_dir,
                 base_filename=base_filename
             )
-
-            if extracted.error_message:
-                last_error = extracted.error_message
-                logger.warning(f"Attempt {attempt}: Extraction failed - {last_error}")
-                # Retry on corruption (likely incomplete download)
-                if "invalid" in last_error.lower() or "corrupt" in last_error.lower() or "gzip" in last_error.lower():
-                    logger.info(f"Retrying due to possible download corruption...")
-                    continue
-                # Non-recoverable error
+            if not extracted.error_message:
                 break
 
-            # Success - we have extracted content
-            break
-        else:
-            # All attempts failed
-            return DownloadResult(
-                success=False,
-                source=source,
-                error_message=f"PMC package download failed after {self.max_retries} attempts: {last_error}",
-                duration_ms=(time.time() - start_time) * 1000,
-                attempts=self.max_retries
-            )
+            last_error = extracted.error_message
+            logger.warning(f"Attempt {attempt}: Extraction failed - {last_error}")
+            if not is_corruption_error(last_error):
+                # Non-recoverable: re-downloading the same package won't help
+                return DownloadResult(
+                    success=False,
+                    source=source,
+                    error_message=f"PMC package extraction failed: {last_error}",
+                    duration_ms=(time.time() - start_time) * 1000,
+                    attempts=attempts,
+                    package_contents=extracted.package_contents
+                )
+            if attempt < self.max_retries:
+                logger.info("Retrying due to possible download corruption...")
 
-        # Check if extraction ultimately failed (non-recoverable error)
-        if extracted.error_message:
+        if extracted is None or extracted.error_message:
             return DownloadResult(
                 success=False,
                 source=source,
-                error_message=f"PMC package extraction failed: {extracted.error_message}",
+                error_message=(
+                    f"PMC package download failed after {attempts} "
+                    f"attempt{'s' if attempts != 1 else ''}: {last_error}"
+                ),
                 duration_ms=(time.time() - start_time) * 1000,
-                attempts=attempt,
-                package_contents=extracted.package_contents
+                attempts=attempts
             )
 
         # Must have at least a PDF
@@ -1133,71 +1187,63 @@ class PMCPackageDownloader:
             full_text=extracted.full_text,
             full_text_path=str(extracted.nxml_path) if extracted.nxml_path else None,
             package_contents=extracted.package_contents,
-            duration_ms=(time.time() - start_time) * 1000
+            duration_ms=(time.time() - start_time) * 1000,
+            attempts=attempts
         )
 
-    def _download_ftp(self, url: str) -> Optional[bytes]:
-        """Download file from FTP URL.
+    def _download_ftp(self, url: str) -> bytes:
+        """Fetch a file from an FTP URL in a single attempt.
+
+        Retrying is the caller's job (:meth:`download_and_extract`), so that
+        there is exactly one retry loop per package.
 
         Args:
             url: FTP URL (e.g., ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/...)
 
         Returns:
-            File contents as bytes, or None on failure
+            File contents as bytes.
+
+        Raises:
+            PackageFetchError: On any failure; ``retryable`` says whether
+                another attempt could succeed.
         """
         parsed = urlparse(url)
         host = parsed.hostname
-        port = parsed.port or 21
         path = parsed.path
+        try:
+            port = parsed.port or FTP_DEFAULT_PORT
+        except ValueError as e:  # non-numeric or out-of-range port
+            raise PackageFetchError(f"Invalid FTP URL: {url}", retryable=False) from e
 
         if not host or not path:
-            logger.error(f"Invalid FTP URL: {url}")
-            return None
+            raise PackageFetchError(f"Invalid FTP URL: {url}", retryable=False)
 
-        last_error = None
-        for attempt in range(self.max_retries):
-            try:
-                if attempt > 0:
-                    logger.info(f"FTP retry attempt {attempt + 1}/{self.max_retries}")
-                    time.sleep(2 ** attempt)  # Exponential backoff
+        self.rate_limiter.acquire(url)
+        ftp = ftplib.FTP()
+        try:
+            ftp.connect(host, port, timeout=self.timeout)
+            ftp.login()  # Anonymous login
+            buffer = io.BytesIO()
+            ftp.retrbinary(f'RETR {path}', buffer.write)
+        except ftplib.error_perm as e:
+            # 5xx: permission denied / no such file - a retry won't help
+            raise PackageFetchError(f"FTP permission error: {e}", retryable=False) from e
+        except ftplib.error_temp as e:
+            raise PackageFetchError(f"FTP temporary error: {e}", retryable=True) from e
+        except (OSError, EOFError, ftplib.Error) as e:
+            # OSError covers timeouts, refused/reset connections and DNS errors
+            raise PackageFetchError(f"FTP connection error: {e}", retryable=True) from e
+        finally:
+            # Just drop the socket: a polite QUIT on a dead or failed
+            # connection can block for another full timeout.
+            ftp.close()
 
-                # Connect to FTP server
-                ftp = ftplib.FTP()
-                ftp.connect(host, port, timeout=self.timeout)
-                ftp.login()  # Anonymous login
+        content = buffer.getvalue()
+        if not content:
+            raise PackageFetchError("Downloaded file is empty", retryable=True)
 
-                # Download to memory
-                buffer = io.BytesIO()
-                ftp.retrbinary(f'RETR {path}', buffer.write)
-                ftp.quit()
-
-                content = buffer.getvalue()
-                if len(content) == 0:
-                    last_error = "Downloaded file is empty"
-                    continue
-
-                logger.info(f"Downloaded {len(content)} bytes from FTP")
-                return content
-
-            except ftplib.error_perm as e:
-                last_error = f"FTP permission error: {e}"
-                logger.debug(f"FTP permission denied for {url}: {e}")
-                break  # Don't retry on permission errors
-
-            except ftplib.error_temp as e:
-                last_error = f"FTP temporary error: {e}"
-                logger.debug(f"FTP temporary error for {url}: {e}")
-
-            except (TimeoutError, ftplib.error_reply) as e:
-                last_error = f"FTP connection error: {e}"
-                logger.debug(f"FTP connection error for {url}: {e}")
-
-            except Exception as e:
-                last_error = f"FTP error: {e}"
-                logger.debug(f"FTP download error for {url}: {e}")
-
-        logger.error(f"FTP download failed after {self.max_retries} attempts: {last_error}")
-        return None
+        logger.info(f"Downloaded {len(content)} bytes from FTP")
+        return content
 
     def _extract_package(
         self,

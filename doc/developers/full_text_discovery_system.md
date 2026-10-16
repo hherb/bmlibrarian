@@ -333,6 +333,12 @@ Constructs proxy URLs for institutional access:
 - Works with OpenAthensAuth for authentication
 - Last resort for paywalled content
 - Requires institutional subscription
+- URL forms: a bare institution domain (`jcu.edu.au`) or a
+  `go.openathens.net/redirector/...` URL → Redirector
+  (`<base>?url=<target>`); an EZproxy-style host (`is_traditional_proxy_url()`:
+  contains `ezproxy` or `proxy.`, and is not on `go.openathens.net`) → used
+  as-is (`<base>/login?url=<target>`). `FullTextFinder` uses the same
+  predicate to decide whether to add the resolver at all.
 
 **Priority**: 50 (lowest - only when OA unavailable)
 
@@ -349,7 +355,8 @@ class FullTextFinder:
         openathens_auth: Optional[Any] = None,
         timeout: int = DEFAULT_TIMEOUT,
         prefer_open_access: bool = True,
-        skip_resolvers: Optional[List[str]] = None
+        skip_resolvers: Optional[List[str]] = None,
+        rate_limiter: Optional[HostRateLimiter] = None  # default: shared
     ): ...
 
     def discover(
@@ -388,10 +395,42 @@ class FullTextFinder:
 2. Try downloading from each source in priority order
 3. For each source:
    - Add OpenAthens cookies if needed
-   - Download with exponential backoff retry
+   - Download with jittered exponential backoff retry (401/403/404/429
+     are not retried at this level)
    - Verify content type (reject HTML)
    - Verify PDF magic bytes
 4. Return first successful download or failure
+
+### Rate Limiting and Throttling
+
+Every HTTP request made by the resolvers and by `FullTextFinder.session`
+goes through `RateLimitedSession` (`bmlibrarian/utils/rate_limit.py`), and
+the FTP fetches (`_download_via_ftp`, `PMCPackageDownloader`) and PMC's
+`curl` fallback call `HostRateLimiter.acquire()` themselves.
+
+- **One limiter per process.** Resolvers and finders are created per
+  document in several call sites (GUI workers, CLI, labs), so the default
+  is `get_shared_rate_limiter()`; pass `rate_limiter=` only to isolate
+  pacing (tests). `FullTextFinder` hands its limiter to every resolver and
+  to its `PMCPackageDownloader`.
+- **Per-host minimum interval.** `DEFAULT_HOST_INTERVALS` holds the
+  documented API limits (NCBI 0.34 s, Unpaywall 0.1 s, CrossRef/doi.org
+  0.2 s); other hosts use `DEFAULT_MIN_INTERVAL_SECONDS` (1 s). Slots are
+  reserved under a lock and slept outside it, so threads on different hosts
+  never block each other.
+- **429 / Retry-After.** A 429 (or a 503 *with* `Retry-After`) defers the
+  host on the shared limiter and is retried up to
+  `DEFAULT_MAX_RATE_LIMIT_RETRIES` (3) times, sleeping the server's
+  `Retry-After` (seconds or HTTP-date) or a jittered backoff. A requested
+  wait above `DEFAULT_MAX_RETRY_AFTER_SECONDS` (60 s) is not slept — the
+  429 is returned to the caller and the host is deferred.
+- **No stacked retry loops.** `_download_from_source` stops on 429 (the
+  session already retried), and `PMCPackageDownloader` has exactly one loop
+  per package (`max_retries` attempts total) around a single-shot
+  `_download_ftp()`, which raises `PackageFetchError(retryable=…)`;
+  permission errors and non-corruption extraction errors are not retried.
+- Only the initial URL's host is paced; redirects followed inside
+  `requests`, and Playwright browser downloads, are not.
 
 ## Configuration
 
