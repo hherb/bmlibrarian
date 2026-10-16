@@ -15,27 +15,22 @@ Key Features:
 - Quality assessment integration (PICO, PRISMA, paper weight)
 - Complete audit trail for reproducibility
 - Configurable scoring weights
-
-Phase 1 Implementation:
-- Agent skeleton with configuration and component initialization
-- Basic workflow structure with NotImplementedError stubs
-- Integration with BaseAgent patterns
+- Resumable from checkpoint files (resume_mixin.py), sharing one review
+  pipeline (pipeline.py) with fresh runs
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from ..base import BaseAgent, PerformanceMetrics
+from ..base import BaseAgent
 
 from .config import (
+    AGENT_VERSION,
     SystematicReviewConfig,
     get_systematic_review_config,
-    AGENT_TYPE,
-    CHECKPOINT_TITLE_TRUNCATE_LENGTH,
-    CHECKPOINT_SAMPLE_TITLES_COUNT,
 )
 from .data_models import (
     SearchCriteria,
@@ -54,25 +49,16 @@ from .data_models import (
     validate_scoring_weights,
     QueryFeedback,
 )
-from .documenter import Documenter
-from .exceptions import (
-    SystematicReviewError,
-    SearchPlanningError,
-    SearchExecutionError,
-    ScoringError,
-    QualityAssessmentError,
-    ReportGenerationError,
-    LLMConnectionError,
-    DatabaseConnectionError,
+from .documenter import (
+    Documenter,
+    ACTION_GENERATE_SEARCH_PLAN,
+    CHECKPOINT_SEARCH_STRATEGY,
 )
+from .pipeline import ReviewRunOptions, ReviewStage
 from .resume_mixin import CheckpointResumeMixin
 
 if TYPE_CHECKING:
     from ..orchestrator import AgentOrchestrator
-    from .executor import AggregatedResults, PhasedSearchResults
-    from .scorer import RelevanceScorer, CompositeScorer
-    from .quality import QualityAssessor
-    from .reporter import Reporter
     from bmlibrarian.database import DatabaseManager
     from bmlibrarian.evaluations import EvaluationStore, EvaluationRun
 
@@ -83,25 +69,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # =============================================================================
 
-AGENT_VERSION = "1.0.0"
-
-# Action names for audit trail
-ACTION_GENERATE_SEARCH_PLAN = "generate_search_plan"
-ACTION_EXECUTE_SEARCH = "execute_search"
-ACTION_INITIAL_FILTER = "initial_filter"
-ACTION_SCORE_RELEVANCE = "score_relevance"
-ACTION_ASSESS_QUALITY = "assess_quality"
-ACTION_CALCULATE_COMPOSITE = "calculate_composite"
-ACTION_GENERATE_REPORT = "generate_report"
-
-# Checkpoint types
-CHECKPOINT_SEARCH_STRATEGY = "search_strategy"
-CHECKPOINT_INITIAL_RESULTS = "initial_results"
-CHECKPOINT_SCORING_COMPLETE = "scoring_complete"
-CHECKPOINT_QUALITY_ASSESSMENT = "quality_assessment"
-
-# Note: CHECKPOINT_TITLE_TRUNCATE_LENGTH and CHECKPOINT_SAMPLE_TITLES_COUNT
-# are imported from config.py to avoid duplication
+# AGENT_VERSION lives in config.py (shared with the checkpoint loader).
+# Action and checkpoint names live in documenter.py (single source of truth)
 
 
 # =============================================================================
@@ -120,17 +89,20 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
     1. Search Strategy: Generate diverse queries for comprehensive coverage
     2. Search Execution: Run queries and deduplicate results
     3. Initial Filtering: Fast heuristic-based paper filtering
-    4. Relevance Scoring: LLM-based relevance assessment
-    5. Inclusion Evaluation: Apply inclusion/exclusion criteria
-    6. Quality Assessment: Detailed quality and methodology evaluation
-    7. Final Ranking: Calculate composite scores and rank papers
+    4. Relevance Scoring: LLM-based relevance assessment, including the
+       inclusion/exclusion criteria decision
+    5. Quality Assessment: Detailed quality and methodology evaluation
+    6. Final Ranking: Calculate composite scores, rank papers and apply the
+       quality gate
+    7. Evidence Synthesis (optional): Extract citations and write a narrative
     8. Report Generation: Generate comprehensive output report
 
     Attributes:
         config: SystematicReviewConfig with agent settings
         documenter: Audit trail logging component
-        criteria: Current SearchCriteria (set when run_review is called)
-        weights: Current ScoringWeights (set when run_review is called)
+        criteria: Current SearchCriteria (set by run_review or restored by
+            run_review_from_checkpoint)
+        weights: Current ScoringWeights (likewise)
 
     Example:
         >>> agent = SystematicReviewAgent()
@@ -183,7 +155,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self._db_manager = db_manager
         self._init_evaluation_store()
 
-        # Current review state (set when run_review is called)
+        # Current review state (set by run_review, restored by
+        # run_review_from_checkpoint)
         self._criteria: Optional[SearchCriteria] = None
         self._weights: Optional[ScoringWeights] = None
         self._search_plan: Optional[SearchPlan] = None
@@ -191,6 +164,11 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self._all_papers: List[PaperData] = []
         # Track papers rejected at each stage for comprehensive reporting
         self._rejected_initial_filter: List[Tuple[PaperData, str]] = []
+        # Search provenance: document_id -> query_ids that found it
+        self._paper_sources: Dict[int, List[str]] = {}
+        # Phase-1 (semantic/HyDE/hybrid) results of a phased search
+        self._semantic_baseline_ids: Set[int] = set()
+        self._query_feedback: Optional[QueryFeedback] = None
 
         # Child agents (initialized lazily)
         self._query_agent = None
@@ -620,13 +598,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                 if eval_record.primary_score is None or eval_record.primary_score < min_composite_score:
                     continue
 
-            scored_paper = scored_map.get(eval_record.document_id)
-            if not scored_paper:
+            matched_paper = scored_map.get(eval_record.document_id)
+            if not matched_paper:
                 logger.warning(f"ScoredPaper not found for document_id={eval_record.document_id}")
                 continue
 
             assessed_paper = AssessedPaper(
-                scored_paper=scored_paper,
+                scored_paper=matched_paper,
                 study_assessment=eval_record.evaluation_data.get("study_assessment", {}),
                 paper_weight=eval_record.evaluation_data.get("paper_weight", {}),
                 pico_components=eval_record.evaluation_data.get("pico_components"),
@@ -659,7 +637,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         below_threshold = []
         for eval_record in all_evaluations:
-            if eval_record.primary_score and eval_record.primary_score < threshold:
+            if eval_record.primary_score is not None and eval_record.primary_score < threshold:
                 paper = paper_map.get(eval_record.document_id)
                 if paper:
                     scored_paper = ScoredPaper(
@@ -695,12 +673,66 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             return
 
         status = RunStatus.COMPLETED if success else RunStatus.FAILED
-        self._evaluation_store.complete_run(
-            run_id=self._evaluation_run.run_id,
-            status=status,
-            error_message=error_message,
+        run_id = self._evaluation_run.run_id
+        try:
+            self._evaluation_store.complete_run(
+                run_id=run_id,
+                status=status,
+                error_message=error_message,
+            )
+        except Exception as e:
+            # Never let a status update mask the review's own outcome, but
+            # tell the user: the run's recorded status is now wrong.
+            logger.exception(f"Failed to mark evaluation run {run_id} {status.value}")
+            self._report_run_status_failure(run_id, status.value, e)
+            return
+        self._evaluation_run.status = status.value
+        self._evaluation_run.error_message = error_message
+        logger.info(f"Completed evaluation run: id={run_id}, status={status.value}")
+
+    def _pause_evaluation_run(self) -> None:
+        """
+        Mark the current evaluation run paused (aborted or interrupted).
+
+        A paused run can be continued with ``run_review_from_checkpoint``.
+        """
+        if not self._evaluation_run:
+            return
+
+        from bmlibrarian.evaluations import RunStatus
+
+        run_id = self._evaluation_run.run_id
+        try:
+            self._evaluation_store.pause_run(run_id)
+        except Exception as e:
+            logger.exception(f"Failed to mark evaluation run {run_id} paused")
+            self._report_run_status_failure(run_id, RunStatus.PAUSED.value, e)
+            return
+        self._evaluation_run.status = RunStatus.PAUSED.value
+        logger.info(f"Paused evaluation run: id={run_id}")
+
+    def _report_run_status_failure(self, run_id: int, status: str, error: Exception) -> None:
+        """
+        Tell the user an evaluation run's status could not be recorded.
+
+        Args:
+            run_id: The run whose status update failed.
+            status: The status that could not be recorded.
+            error: The store error.
+        """
+        self._warn(
+            f"Evaluation run {run_id} could not be marked {status} in the database "
+            f"({error}); its recorded status is out of date. The review result is "
+            "not affected."
         )
-        logger.info(f"Completed evaluation run: id={self._evaluation_run.run_id}, status={status.value}")
+        self.documenter.log_step(
+            action="evaluation_run_status_failed",
+            tool=None,
+            input_summary=f"Mark evaluation run {run_id} {status}",
+            output_summary="Status update failed",
+            decision_rationale="A failed status update must not mask the review outcome",
+            error=str(error),
+        )
 
     # =========================================================================
     # Main Entry Point
@@ -719,7 +751,9 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         This is the main entry point for conducting a systematic review.
         The workflow proceeds through multiple phases, pausing at checkpoints
-        for human approval when in interactive mode.
+        for human approval when in interactive mode. After search planning,
+        the phases run in the review pipeline shared with
+        ``run_review_from_checkpoint``.
 
         Args:
             criteria: SearchCriteria defining what papers to find
@@ -733,11 +767,12 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                                True to continue or False to abort.
 
         Returns:
-            SystematicReviewResult with all papers and audit trail
+            SystematicReviewResult with all papers and audit trail (empty if
+            a checkpoint was rejected).
 
         Raises:
-            ValueError: If criteria validation fails
-            NotImplementedError: Phase 1 skeleton - full implementation in Phase 2-5
+            ValueError: If criteria or weights validation fails
+            SystematicReviewError: If the review fails
 
         Example:
             >>> result = agent.run_review(
@@ -747,12 +782,10 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             ...     output_path="results.json"
             ... )
         """
-        # Validate inputs
         criteria_errors = validate_search_criteria(criteria)
         if criteria_errors:
             raise ValueError(f"Invalid search criteria: {'; '.join(criteria_errors)}")
 
-        # Use provided weights or defaults
         if weights is None:
             weights = self.config.scoring_weights
         else:
@@ -760,21 +793,20 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             if weight_errors:
                 raise ValueError(f"Invalid scoring weights: {'; '.join(weight_errors)}")
 
-        # Extract output directory for checkpoint saving
-        from pathlib import Path
-        output_dir: Optional[str] = None
-        if output_path:
-            output_dir = str(Path(output_path).expanduser().parent)
-
-        # Store current review parameters
+        # Start from clean state: nothing from a previous review on this
+        # instance may leak into this one.
         self._criteria = criteria
         self._weights = weights
+        self._search_plan = None
+        self._executed_queries = []
+        self._all_papers = []
+        self._rejected_initial_filter = []
+        self._paper_sources = {}
+        self._semantic_baseline_ids = set()
+        self._query_feedback = None
 
-        # Initialize documenter for this review
         self.documenter = Documenter()
         self.documenter.start_review()
-
-        # Log initialization
         self.documenter.log_step(
             action="initialize_review",
             tool=None,
@@ -789,683 +821,64 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             }
         )
 
-        # Start evaluation run for database-backed tracking
-        # This enables saving evaluations and checking for cached results
-        self._start_evaluation_run(documents_total=0)  # Will be updated after search
-
-        # =====================================================================
-        # Phase 5: Complete Workflow Implementation
-        # =====================================================================
-
-        try:
-            # Import required components
-            from .planner import Planner
-            from .executor import SearchExecutor, PhasedSearchResults
-            from .filters import InitialFilter, InclusionEvaluator
-            from .scorer import RelevanceScorer, CompositeScorer
-            from .quality import QualityAssessor
-            from .reporter import Reporter
-
-            # Initialize components
-            planner = Planner(
-                model=self.config.model,
-                host=self.config.host,
-                config=self.config,
-                callback=self.callback,
-            )
-
-            executor = SearchExecutor(
-                config=self.config,
-                results_per_query=self.config.max_results_per_query,
-                callback=self.callback,
-            )
-
-            initial_filter = InitialFilter(
-                criteria=criteria,
-                callback=self.callback,
-            )
-
-            scorer = RelevanceScorer(
-                research_question=criteria.research_question,
-                config=self.config,
-                callback=self.callback,
-                orchestrator=self.orchestrator,
-                criteria=criteria,
-            )
-
-            quality_assessor = QualityAssessor(
-                config=self.config,
-                callback=self.callback,
-                orchestrator=self.orchestrator,
-            )
-
-            composite_scorer = CompositeScorer(weights=weights)
-
-            reporter = Reporter(
-                documenter=self.documenter,
-                criteria=criteria,
-                weights=weights,
-            )
-
-            # =================================================================
-            # Phase 1: Generate Search Plan
-            # =================================================================
-            self.documenter.set_phase("search_planning")
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_GENERATE_SEARCH_PLAN,
-                tool="Planner",
-                input_summary=f"Research question: {criteria.research_question[:100]}...",
-                decision_rationale="Generating diverse queries for comprehensive coverage",
-            ) as timer:
-                self._search_plan = planner.generate_search_plan(criteria)
-                timer.set_output(f"Generated {len(self._search_plan.queries)} queries")
-                timer.add_metrics({
-                    "queries_generated": len(self._search_plan.queries),
-                    "estimated_yield": self._search_plan.total_estimated_yield,
-                })
-
-            # Checkpoint: Review search strategy
-            if not self._checkpoint(
-                checkpoint_type=CHECKPOINT_SEARCH_STRATEGY,
-                state={
-                    "search_plan": self._search_plan.to_dict(),
-                    "queries_count": len(self._search_plan.queries),
-                },
-                interactive=interactive,
-                checkpoint_callback=checkpoint_callback,
-                output_dir=output_dir,
-            ):
-                logger.info("Review aborted at search strategy checkpoint")
-                self.documenter.end_review()
-                return self._build_empty_result(criteria, weights, "Aborted at search strategy")
-
-            # =================================================================
-            # Phase 2: Execute Search Plan
-            # =================================================================
-            self.documenter.set_phase("search_execution")
-
-            # Choose search strategy based on configuration
-            # Track common variables for both search modes
-            total_before_dedup = 0
-            paper_sources: Dict[int, List[str]] = {}
-
-            if self.config.use_phased_search:
-                # Phased search: semantic/HyDE first, then keyword
-                with self.documenter.log_step_with_timer(
-                    action=ACTION_EXECUTE_SEARCH,
-                    tool="SearchExecutor (Phased)",
-                    input_summary=f"Executing {len(self._search_plan.queries)} queries in two phases",
-                    decision_rationale="Running phased search: semantic/HyDE first for baseline, then keyword",
-                ) as timer:
-                    phased_results = executor.execute_phased_plan(
-                        self._search_plan,
-                        max_phase2_no_overlap=self.config.max_phase2_no_overlap,
-                    )
-                    self._executed_queries = phased_results.executed_queries
-                    self._all_papers = phased_results.all_papers
-                    # Store phased results for query feedback
-                    self._phased_results = phased_results
-                    self._semantic_baseline_ids = phased_results.phase1_document_ids
-                    paper_sources = phased_results.paper_sources
-
-                    # Calculate total before dedup from executed queries
-                    total_before_dedup = sum(
-                        len(eq.document_ids) for eq in phased_results.executed_queries
-                    )
-
-                    timer.set_output(
-                        f"Found {phased_results.total_count} unique papers "
-                        f"(Phase 1: {phased_results.phase1_count}, Phase 2 new: {phased_results.phase2_new_count})"
-                    )
-                    timer.add_metrics({
-                        "phase1_papers": phased_results.phase1_count,
-                        "phase2_new_papers": phased_results.phase2_new_count,
-                        "unique_papers": phased_results.total_count,
-                        "search_strategy": "phased",
-                    })
-            else:
-                # Standard search: all queries at once
-                with self.documenter.log_step_with_timer(
-                    action=ACTION_EXECUTE_SEARCH,
-                    tool="SearchExecutor",
-                    input_summary=f"Executing {len(self._search_plan.queries)} queries",
-                    decision_rationale="Running all planned queries to find candidate papers",
-                ) as timer:
-                    search_results = executor.execute_plan(self._search_plan)
-                    self._executed_queries = search_results.executed_queries
-                    self._all_papers = search_results.papers
-                    self._phased_results = None
-                    self._semantic_baseline_ids = set()
-                    total_before_dedup = search_results.total_before_dedup
-                    paper_sources = search_results.paper_sources
-
-                    timer.set_output(
-                        f"Found {search_results.count} unique papers "
-                        f"from {search_results.total_before_dedup} total"
-                    )
-                    timer.add_metrics({
-                        "total_papers_found": search_results.total_before_dedup,
-                        "unique_papers": search_results.count,
-                        "deduplication_rate": round(search_results.deduplication_rate * 100, 2),
-                        "search_strategy": "standard",
-                    })
-
-            # Track statistics
-            total_considered = len(self._all_papers)
-
-            # Checkpoint: Review initial results
-            if not self._checkpoint(
-                checkpoint_type=CHECKPOINT_INITIAL_RESULTS,
-                state={
-                    "unique_papers": len(self._all_papers),
-                    "total_before_dedup": total_before_dedup,
-                    "sample_titles": [
-                        p.title[:CHECKPOINT_TITLE_TRUNCATE_LENGTH]
-                        for p in self._all_papers[:CHECKPOINT_SAMPLE_TITLES_COUNT]
-                    ],
-                },
-                interactive=interactive,
-                checkpoint_callback=checkpoint_callback,
-                output_dir=output_dir,
-            ):
-                logger.info("Review aborted at initial results checkpoint")
-                self.documenter.end_review()
-                return self._build_empty_result(criteria, weights, "Aborted at initial results")
-
-            # =================================================================
-            # Phase 3: Initial Filtering
-            # =================================================================
-            self.documenter.set_phase("initial_filtering")
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_INITIAL_FILTER,
-                tool="InitialFilter",
-                input_summary=f"Filtering {len(self._all_papers)} papers with heuristics",
-                decision_rationale="Fast filtering before expensive LLM scoring",
-            ) as timer:
-                filter_result = initial_filter.filter_batch(self._all_papers)
-                passed_filter = filter_result.passed
-                rejected_filter = filter_result.rejected
-                # Store for comprehensive reporting
-                self._rejected_initial_filter = rejected_filter
-
-                timer.set_output(
-                    f"Passed: {len(passed_filter)}, Rejected: {len(rejected_filter)}"
-                )
-                timer.add_metrics({
-                    "passed": len(passed_filter),
-                    "rejected": len(rejected_filter),
-                    "pass_rate": round(len(passed_filter) / total_considered * 100, 2) if total_considered > 0 else 0,
-                })
-
-            passed_initial_filter = len(passed_filter)
-
-            # =================================================================
-            # Phase 4: Relevance Scoring
-            # =================================================================
-            self.documenter.set_phase("relevance_scoring")
-
-            # Check for already-evaluated documents to avoid redundant LLM calls
-            from bmlibrarian.evaluations import EvaluationType
-            all_doc_ids = [p.document_id for p in passed_filter]
-            already_evaluated_ids = set(
-                self._evaluation_store.get_evaluated_document_ids(
-                    run_id=self._evaluation_run.run_id,
-                    evaluation_type=EvaluationType.RELEVANCE_SCORE,
-                )
-            )
-            papers_to_score = [p for p in passed_filter if p.document_id not in already_evaluated_ids]
-            cached_count = len(passed_filter) - len(papers_to_score)
-
-            if cached_count > 0:
-                logger.info(
-                    f"Found {cached_count} already-evaluated documents, "
-                    f"scoring {len(papers_to_score)} new documents"
-                )
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_SCORE_RELEVANCE,
-                tool="RelevanceScorer",
-                input_summary=f"Scoring {len(papers_to_score)} papers for relevance ({cached_count} cached)",
-                decision_rationale="Assessing relevance to research question using LLM",
-            ) as timer:
-                if papers_to_score:
-                    # Pass save callback to persist each evaluation immediately
-                    # This ensures progress is saved even if the process is interrupted
-                    scoring_result = scorer.score_batch(
-                        papers=papers_to_score,
-                        evaluate_inclusion=True,
-                        paper_sources=paper_sources,
-                        save_callback=self._save_scored_paper,
-                    )
-
-                    timer.set_output(
-                        f"Scored {len(scoring_result.scored_papers)} papers, "
-                        f"avg score: {scoring_result.average_score:.2f} "
-                        f"({cached_count} cached)"
-                    )
-                    timer.add_metrics({
-                        "papers_scored": len(scoring_result.scored_papers),
-                        "papers_cached": cached_count,
-                        "average_score": round(scoring_result.average_score, 2),
-                        "failed_scoring": len(scoring_result.failed_papers),
-                    })
-                else:
-                    timer.set_output(f"All {cached_count} papers already evaluated (cached)")
-                    timer.add_metrics({
-                        "papers_scored": 0,
-                        "papers_cached": cached_count,
-                        "average_score": 0.0,
-                        "failed_scoring": 0,
-                    })
-
-            # Apply relevance threshold using database query
-            scored_papers = self.get_scored_papers()
-            above_threshold, below_threshold = scorer.apply_relevance_threshold(
-                scored_papers,
-                threshold=self.config.relevance_threshold,
-            )
-
-            passed_relevance = len(above_threshold)
-
-            # Log threshold application
-            self.documenter.log_step(
-                action="apply_relevance_threshold",
-                tool=None,
-                input_summary=f"Threshold: {self.config.relevance_threshold}",
-                output_summary=f"Above: {len(above_threshold)}, Below: {len(below_threshold)}",
-                decision_rationale=f"Filtering by relevance threshold {self.config.relevance_threshold}",
-                metrics={
-                    "above_threshold": len(above_threshold),
-                    "below_threshold": len(below_threshold),
-                    "threshold": self.config.relevance_threshold,
-                }
-            )
-
-            # =================================================================
-            # Phase 4b: Query Effectiveness Evaluation (if phased search used)
-            # =================================================================
-            self._query_feedback: Optional[QueryFeedback] = None
-
-            if self.config.use_phased_search and self.config.enable_query_feedback:
-                # Evaluate how effective each query was at finding relevant docs
-                query_feedback = scorer.evaluate_query_effectiveness(
-                    executed_queries=self._executed_queries,
-                    scored_papers=scored_papers,  # Use already-fetched scored_papers
-                    semantic_baseline_ids=self._semantic_baseline_ids,
-                    threshold=self.config.relevance_threshold,
-                )
-                self._query_feedback = query_feedback
-
-                # Log query effectiveness
-                self.documenter.log_step(
-                    action="evaluate_query_effectiveness",
-                    tool=None,
-                    input_summary=f"Evaluating {len(self._executed_queries)} queries",
-                    output_summary=f"{query_feedback.total_effective_queries}/{query_feedback.total_queries_executed} effective",
-                    decision_rationale="Tracking query effectiveness for feedback loop",
-                    metrics={
-                        "total_queries": query_feedback.total_queries_executed,
-                        "effective_queries": query_feedback.total_effective_queries,
-                        "effective_ratio": round(query_feedback.effective_ratio * 100, 2),
-                        "effective_patterns": len(query_feedback.effective_queries),
-                        "ineffective_patterns": len(query_feedback.ineffective_queries),
-                    }
-                )
-
-                # Log warning about ineffective queries
-                if query_feedback.ineffective_queries:
-                    logger.info(
-                        f"Identified {len(query_feedback.ineffective_queries)} ineffective queries "
-                        f"that will be used as negative examples for future query generation"
-                    )
-
-            # Checkpoint: Review scoring results
-            if not self._checkpoint(
-                checkpoint_type=CHECKPOINT_SCORING_COMPLETE,
-                state={
-                    "total_scored": len(scored_papers),
-                    "above_threshold": len(above_threshold),
-                    "below_threshold": len(below_threshold),
-                    "average_score": scoring_result.average_score,
-                },
-                interactive=interactive,
-                checkpoint_callback=checkpoint_callback,
-                output_dir=output_dir,
-            ):
-                logger.info("Review aborted at scoring checkpoint")
-                self.documenter.end_review()
-                return self._build_empty_result(criteria, weights, "Aborted at scoring")
-
-            # =================================================================
-            # Phase 5: Quality Assessment
-            # =================================================================
-            self.documenter.set_phase("quality_assessment")
-
-            # Check for already-assessed documents to avoid redundant LLM calls
-            already_assessed_ids = set(
-                self._evaluation_store.get_evaluated_document_ids(
-                    run_id=self._evaluation_run.run_id,
-                    evaluation_type=EvaluationType.QUALITY_ASSESSMENT,
-                )
-            )
-            papers_to_assess = [sp for sp in above_threshold if sp.paper.document_id not in already_assessed_ids]
-            cached_assessment_count = len(above_threshold) - len(papers_to_assess)
-
-            if cached_assessment_count > 0:
-                logger.info(
-                    f"Found {cached_assessment_count} already-assessed documents, "
-                    f"assessing {len(papers_to_assess)} new documents"
-                )
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_ASSESS_QUALITY,
-                tool="QualityAssessor",
-                input_summary=f"Assessing quality of {len(papers_to_assess)} papers ({cached_assessment_count} cached)",
-                decision_rationale="Evaluating study quality and methodology",
-            ) as timer:
-                if papers_to_assess:
-                    # Pass save callback to persist each assessment immediately
-                    # This ensures progress is saved even if the process is interrupted
-                    quality_result = quality_assessor.assess_batch(
-                        papers_to_assess,
-                        save_callback=self._save_assessed_paper,
-                    )
-
-                    timer.set_output(
-                        f"Assessed {len(quality_result.assessed_papers)} papers, "
-                        f"failed: {len(quality_result.failed_papers)} "
-                        f"({cached_assessment_count} cached)"
-                    )
-                    timer.add_metrics({
-                        "papers_assessed": len(quality_result.assessed_papers),
-                        "papers_cached": cached_assessment_count,
-                        "failed_assessment": len(quality_result.failed_papers),
-                        **quality_result.assessment_statistics,
-                    })
-                else:
-                    timer.set_output(f"All {cached_assessment_count} papers already assessed (cached)")
-                    timer.add_metrics({
-                        "papers_assessed": 0,
-                        "papers_cached": cached_assessment_count,
-                        "failed_assessment": 0,
-                    })
-
-            # Checkpoint: Review quality assessment
-            assessed_papers = self.get_assessed_papers()
-            if not self._checkpoint(
-                checkpoint_type=CHECKPOINT_QUALITY_ASSESSMENT,
-                state={
-                    "papers_assessed": len(assessed_papers),
-                    "assessment_stats": quality_result.assessment_statistics,
-                },
-                interactive=interactive,
-                checkpoint_callback=checkpoint_callback,
-                output_dir=output_dir,
-            ):
-                logger.info("Review aborted at quality assessment checkpoint")
-                self.documenter.end_review()
-                return self._build_empty_result(criteria, weights, "Aborted at quality assessment")
-
-            # =================================================================
-            # Phase 6: Composite Scoring and Ranking
-            # =================================================================
-            self.documenter.set_phase("ranking")
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_CALCULATE_COMPOSITE,
-                tool="CompositeScorer",
-                input_summary=f"Calculating composite scores for {len(assessed_papers)} papers",
-                decision_rationale="Combining scores using user-defined weights",
-            ) as timer:
-                ranked_papers = composite_scorer.score_and_rank(assessed_papers)
-
-                timer.set_output(f"Ranked {len(ranked_papers)} papers")
-                timer.add_metrics({
-                    "papers_ranked": len(ranked_papers),
-                })
-
-            # Apply quality gate
-            included_papers, failed_quality = composite_scorer.apply_quality_gate(
-                ranked_papers,
-                threshold=self.config.quality_threshold,
-            )
-
-            passed_quality_gate = len(included_papers)
-
-            self.documenter.log_step(
-                action="apply_quality_gate",
-                tool=None,
-                input_summary=f"Quality threshold: {self.config.quality_threshold}",
-                output_summary=f"Passed: {len(included_papers)}, Failed: {len(failed_quality)}",
-                decision_rationale=f"Final quality gate at threshold {self.config.quality_threshold}",
-                metrics={
-                    "passed": len(included_papers),
-                    "failed": len(failed_quality),
-                    "threshold": self.config.quality_threshold,
-                }
-            )
-
-            # =================================================================
-            # Phase 7: Separate papers by status
-            # =================================================================
-
-            # Collect all excluded papers
-            excluded_papers: List[ScoredPaper] = []
-
-            # From initial filter
-            for paper, reason in rejected_filter:
-                excluded_papers.append(ScoredPaper(
-                    paper=paper,
-                    relevance_score=0.0,
-                    relevance_rationale=reason,
-                    inclusion_decision=InclusionDecision.create_excluded(
-                        stage=ExclusionStage.INITIAL_FILTER,
-                        reasons=[reason],
-                        rationale=reason,
-                    ),
-                ))
-
-            # From below relevance threshold
-            excluded_papers.extend(below_threshold)
-
-            # From failed quality gate (convert back to ScoredPaper representation)
-            for assessed in failed_quality:
-                excluded_papers.append(assessed.scored_paper)
-
-            # Collect uncertain papers
-            uncertain_papers = [
-                p for p in scored_papers
-                if p.inclusion_decision and p.inclusion_decision.status == InclusionStatus.UNCERTAIN
-            ]
-
-            # =================================================================
-            # Phase 7a: Evidence Synthesis (Optional)
-            # =================================================================
-            evidence_synthesis = None
-            if self.config.enable_evidence_synthesis and included_papers:
-                self.documenter.set_phase("evidence_synthesis")
-
-                from .synthesizer import EvidenceSynthesizer
-
-                synthesizer = EvidenceSynthesizer(
-                    model=self.config.synthesis_model or self.config.model,
-                    citation_model=self.config.model,
-                    temperature=self.config.synthesis_temperature,
-                    citation_min_relevance=self.config.citation_min_relevance,
-                    max_citations_per_paper=self.config.max_citations_per_paper,
-                    progress_callback=self._make_synthesis_callback(),
-                )
-
-                with self.documenter.log_step_with_timer(
-                    action="synthesize_evidence",
-                    tool="EvidenceSynthesizer",
-                    input_summary=f"Synthesizing evidence from {len(included_papers)} included papers",
-                    decision_rationale="Extract citations and synthesize narrative answer to research question",
-                ) as timer:
-                    try:
-                        evidence_synthesis = synthesizer.synthesize(
-                            research_question=criteria.research_question,
-                            included_papers=included_papers,
-                        )
-
-                        synth_stats = synthesizer.get_statistics()
-                        timer.set_output(
-                            f"Extracted {synth_stats['citations_extracted']} citations, "
-                            f"evidence strength: {evidence_synthesis.evidence_strength}"
-                        )
-                        timer.add_metrics({
-                            "citations_extracted": synth_stats["citations_extracted"],
-                            "papers_with_citations": synth_stats["papers_processed"],
-                            "extraction_failures": synth_stats["extraction_failures"],
-                            "evidence_strength": evidence_synthesis.evidence_strength,
-                        })
-
-                        logger.info(
-                            f"Evidence synthesis complete: {synth_stats['citations_extracted']} citations, "
-                            f"strength={evidence_synthesis.evidence_strength}"
-                        )
-
-                    except Exception as e:
-                        logger.warning(f"Evidence synthesis failed, continuing without: {e}")
-                        timer.set_output(f"Evidence synthesis failed: {e}")
-
-            # =================================================================
-            # Phase 8: Generate Report
-            # =================================================================
-            self.documenter.set_phase("reporting")
-
-            with self.documenter.log_step_with_timer(
-                action=ACTION_GENERATE_REPORT,
-                tool="Reporter",
-                input_summary=f"Generating report: {len(included_papers)} included, {len(excluded_papers)} excluded",
-                decision_rationale="Creating comprehensive review report",
-            ) as timer:
-                # Build statistics (use public accessor for LLM metrics)
-                doc_stats = self.documenter.get_statistics()
-                statistics = ReviewStatistics(
-                    total_considered=total_considered,
-                    passed_initial_filter=passed_initial_filter,
-                    passed_relevance_threshold=passed_relevance,
-                    passed_quality_gate=passed_quality_gate,
-                    final_included=len(included_papers),
-                    final_excluded=len(excluded_papers),
-                    uncertain_for_review=len(uncertain_papers),
-                    processing_time_seconds=self.documenter.get_duration(),
-                    total_llm_calls=doc_stats.get("total_llm_calls", 0),
-                    total_tokens_used=doc_stats.get("total_tokens", 0),
-                )
-
-                # Build result
-                result = reporter.build_json_result(
-                    included_papers=included_papers,
-                    excluded_papers=excluded_papers,
-                    uncertain_papers=uncertain_papers,
-                    search_plan=self._search_plan,
-                    executed_queries=self._executed_queries,
-                    statistics=statistics,
-                    evidence_synthesis=evidence_synthesis,
-                )
-
-                timer.set_output(f"Report generated with {statistics.final_included} included papers")
-                timer.add_metrics(statistics.to_dict())
-
-            # Save to file if path provided
-            if output_path:
-                reporter.generate_json_report(result, output_path)
-                # Also generate markdown report
-                md_path = output_path.replace(".json", ".md") if output_path.endswith(".json") else output_path + ".md"
-                reporter.generate_markdown_report(result, md_path)
-
-            # End review
-            self.documenter.end_review()
-
-            logger.info(
-                f"Systematic review complete: {statistics.final_included} included, "
-                f"{statistics.final_excluded} excluded, "
-                f"{statistics.uncertain_for_review} uncertain"
-            )
-
-            return result
-
-        except SystematicReviewError:
-            # Re-raise our custom exceptions as-is
-            self.documenter.end_review()
-            raise
-        except ConnectionError as e:
-            # Database or network connectivity issues
-            error_msg = f"Connection error during systematic review: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.documenter.log_step(
-                action="review_failed",
-                tool=None,
-                input_summary="Review encountered connection error",
-                output_summary=error_msg,
-                decision_rationale="Database or network connectivity failure",
-                error=str(e),
-            )
-            self.documenter.end_review()
-            raise DatabaseConnectionError(error_msg) from e
-        except TimeoutError as e:
-            # Timeout during LLM or database operations
-            error_msg = f"Timeout during systematic review: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.documenter.log_step(
-                action="review_failed",
-                tool=None,
-                input_summary="Review timed out",
-                output_summary=error_msg,
-                decision_rationale="Operation timeout - consider increasing timeout settings",
-                error=str(e),
-            )
-            self.documenter.end_review()
-            raise LLMConnectionError(error_msg) from e
-        except ValueError as e:
-            # Data validation or configuration errors
-            error_msg = f"Validation error during systematic review: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.documenter.log_step(
-                action="review_failed",
-                tool=None,
-                input_summary="Review encountered validation error",
-                output_summary=error_msg,
-                decision_rationale="Data validation or configuration error",
-                error=str(e),
-            )
-            self.documenter.end_review()
-            raise SystematicReviewError(error_msg) from e
-        except KeyboardInterrupt:
-            # User interrupted the review
-            logger.info("Systematic review interrupted by user")
-            self.documenter.log_step(
-                action="review_interrupted",
-                tool=None,
-                input_summary="Review interrupted by user",
-                output_summary="Review was cancelled by user",
-                decision_rationale="User requested cancellation",
-            )
-            self.documenter.end_review()
-            raise
-        except Exception as e:
-            # Catch-all for unexpected errors with detailed context
-            error_type = type(e).__name__
-            error_msg = f"Unexpected error ({error_type}) during systematic review: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.documenter.log_step(
-                action="review_failed",
-                tool=None,
-                input_summary=f"Review encountered unexpected {error_type}",
-                output_summary=error_msg,
-                decision_rationale="Unexpected error - please report this issue",
-                error=str(e),
-                metrics={
-                    "error_type": error_type,
-                    "phase": self.documenter._current_phase,
-                }
-            )
-            self.documenter.end_review()
-            raise SystematicReviewError(error_msg) from e
+        # Database-backed run: every evaluation is saved as it is made, so an
+        # interrupted review can resume without re-scoring.
+        self._start_evaluation_run(documents_total=0)
+
+        options = ReviewRunOptions(
+            interactive=interactive,
+            output_path=output_path,
+            checkpoint_callback=checkpoint_callback,
+        )
+        return self._run_guarded(lambda: self._plan_and_execute(options))
+
+    def _plan_and_execute(self, options: ReviewRunOptions) -> SystematicReviewResult:
+        """
+        Generate the search plan, pass its checkpoint, then run the pipeline.
+
+        Args:
+            options: Caller options for checkpoints and output.
+
+        Returns:
+            The completed review result.
+
+        Raises:
+            ReviewAborted: If the user rejects a checkpoint.
+        """
+        from .planner import Planner
+
+        criteria = self._active_criteria()
+        planner = Planner(
+            model=self.config.model,
+            host=self.config.host,
+            config=self.config,
+            callback=self.callback,
+        )
+
+        self.documenter.set_phase("search_planning")
+        with self.documenter.log_step_with_timer(
+            action=ACTION_GENERATE_SEARCH_PLAN,
+            tool="Planner",
+            input_summary=f"Research question: {criteria.research_question[:100]}...",
+            decision_rationale="Generating diverse queries for comprehensive coverage",
+        ) as timer:
+            plan = planner.generate_search_plan(criteria)
+            self._search_plan = plan
+            timer.set_output(f"Generated {len(plan.queries)} queries")
+            timer.add_metrics({
+                "queries_generated": len(plan.queries),
+                "estimated_yield": plan.total_estimated_yield,
+            })
+
+        self._require_checkpoint(
+            CHECKPOINT_SEARCH_STRATEGY,
+            {
+                "search_plan": plan.to_dict(),
+                "queries_count": len(plan.queries),
+            },
+            options,
+        )
+        return self._execute_pipeline(ReviewStage.EXECUTE_SEARCH, options)
 
     def _build_empty_result(
         self,
@@ -1482,7 +895,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             reason: Why the review was aborted
 
         Returns:
-            SystematicReviewResult with zero papers and abort reason
+            SystematicReviewResult with zero papers and ``abort_reason`` set
         """
         from .reporter import Reporter
 
@@ -1506,7 +919,7 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             total_tokens_used=doc_stats.get("total_tokens", 0),
         )
 
-        return reporter.build_json_result(
+        result = reporter.build_json_result(
             included_papers=[],
             excluded_papers=[],
             uncertain_papers=[],
@@ -1514,172 +927,8 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             executed_queries=self._executed_queries,
             statistics=statistics,
         )
-
-    # =========================================================================
-    # Workflow Phase Methods (Stubs for Phase 1)
-    # =========================================================================
-
-    def _generate_search_plan(
-        self,
-        criteria: SearchCriteria,
-    ) -> SearchPlan:
-        """
-        Generate search strategy (Phase 2).
-
-        Uses LLM to analyze the research question and generate
-        diverse search queries for comprehensive coverage.
-
-        Args:
-            criteria: Search criteria to base plan on
-
-        Returns:
-            SearchPlan with queries to execute
-
-        Note:
-            Implementation in Phase 2
-        """
-        raise NotImplementedError("Implemented in Phase 2")
-
-    def _execute_search_plan(
-        self,
-        plan: SearchPlan,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> tuple[List[ExecutedQuery], List[PaperData]]:
-        """
-        Execute all queries in the search plan (Phase 2).
-
-        Runs each query and collects papers, deduplicating results.
-
-        Args:
-            plan: SearchPlan to execute
-            progress_callback: Optional callback(current, total) for progress
-
-        Returns:
-            Tuple of (executed_queries, unique_papers)
-
-        Note:
-            Implementation in Phase 2
-        """
-        raise NotImplementedError("Implemented in Phase 2")
-
-    def _apply_initial_filter(
-        self,
-        papers: List[PaperData],
-        criteria: SearchCriteria,
-    ) -> tuple[List[PaperData], List[tuple[PaperData, str]]]:
-        """
-        Apply fast heuristic filtering (Phase 3).
-
-        Quickly filters papers based on date range, keywords,
-        and other fast checks before expensive LLM scoring.
-
-        Args:
-            papers: Papers to filter
-            criteria: Criteria to apply
-
-        Returns:
-            Tuple of (passed_papers, rejected_with_reasons)
-
-        Note:
-            Implementation in Phase 3
-        """
-        raise NotImplementedError("Implemented in Phase 3")
-
-    def _score_papers(
-        self,
-        papers: List[PaperData],
-        criteria: SearchCriteria,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> List[ScoredPaper]:
-        """
-        Score papers for relevance (Phase 3).
-
-        Uses DocumentScoringAgent to evaluate relevance and
-        applies inclusion/exclusion criteria.
-
-        Args:
-            papers: Papers to score
-            criteria: Criteria for evaluation
-            progress_callback: Optional callback for progress
-
-        Returns:
-            List of ScoredPaper with relevance scores
-
-        Note:
-            Implementation in Phase 3
-        """
-        raise NotImplementedError("Implemented in Phase 3")
-
-    def _assess_quality(
-        self,
-        papers: List[ScoredPaper],
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> List[AssessedPaper]:
-        """
-        Perform quality assessment (Phase 4).
-
-        Runs study assessment, paper weight evaluation, and
-        optionally PICO/PRISMA assessment based on study type.
-
-        Args:
-            papers: Scored papers to assess
-            progress_callback: Optional callback for progress
-
-        Returns:
-            List of AssessedPaper with quality scores
-
-        Note:
-            Implementation in Phase 4
-        """
-        raise NotImplementedError("Implemented in Phase 4")
-
-    def _calculate_composite_scores(
-        self,
-        papers: List[AssessedPaper],
-        weights: ScoringWeights,
-    ) -> List[AssessedPaper]:
-        """
-        Calculate weighted composite scores (Phase 4).
-
-        Combines relevance, quality, and other scores using
-        user-defined weights.
-
-        Args:
-            papers: Assessed papers
-            weights: Weights for score combination
-
-        Returns:
-            Papers with composite_score set
-
-        Note:
-            Implementation in Phase 4
-        """
-        raise NotImplementedError("Implemented in Phase 4")
-
-    def _generate_report(
-        self,
-        included: List[AssessedPaper],
-        excluded: List[ScoredPaper],
-        uncertain: List[ScoredPaper],
-    ) -> SystematicReviewResult:
-        """
-        Generate final report (Phase 5).
-
-        Creates comprehensive output with all papers,
-        rationales, and audit trail.
-
-        Args:
-            included: Papers that passed all criteria
-            excluded: Papers that were rejected
-            uncertain: Papers needing human review
-
-        Returns:
-            Complete SystematicReviewResult
-
-        Note:
-            Implementation in Phase 5
-        """
-        raise NotImplementedError("Implemented in Phase 5")
+        result.abort_reason = reason
+        return result
 
     # =========================================================================
     # Checkpoint Handling
@@ -1713,15 +962,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         # Log checkpoint
         checkpoint = self.documenter.log_checkpoint(
             checkpoint_type=checkpoint_type,
-            phase=self.documenter._current_phase,
+            phase=self.documenter.current_phase,
             state_snapshot=state,
         )
 
         # Save checkpoint file for resumability (before getting user decision)
         if output_dir:
-            checkpoint_path = self._save_checkpoint_file(checkpoint_type, output_dir)
-            if checkpoint_path:
-                logger.info(f"Checkpoint saved for resume: {checkpoint_path}")
+            self._save_checkpoint_file(checkpoint_type, output_dir)
 
         # If callback provided, use it
         if checkpoint_callback:
@@ -1753,13 +1000,17 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         Saves all state needed to resume the review from this checkpoint:
         - Search criteria and weights
-        - Search plan and executed queries
+        - Search plan and executed queries (and the phased-search baseline)
         - All paper document IDs (papers are re-fetched on resume)
         - Documenter state
 
+        A failed save does not stop the review, but the user is warned that
+        the review cannot be resumed from this checkpoint.
+
         Args:
             checkpoint_type: Type of checkpoint being saved
-            output_dir: Directory to save checkpoint files
+            output_dir: Base directory; files go in its ``checkpoints/``
+                subdirectory
 
         Returns:
             Path to saved checkpoint file, or None if save failed
@@ -1790,8 +1041,13 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
                     {"document_id": paper.document_id, "reason": reason}
                     for paper, reason in self._rejected_initial_filter
                 ],
+                # Thresholds in force (a CLI resume keeps them by default)
+                "relevance_threshold": self.config.relevance_threshold,
+                "quality_threshold": self.config.quality_threshold,
+                # Phase-1 results of a phased search (query feedback baseline)
+                "semantic_baseline_ids": sorted(self._semantic_baseline_ids),
                 # Documenter state
-                "documenter_phase": self.documenter._current_phase,
+                "documenter_phase": self.documenter.current_phase,
             }
 
             # Create checkpoint directory
@@ -1805,11 +1061,25 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(resume_state, f, indent=2, ensure_ascii=False)
 
-            logger.info(f"Checkpoint saved to: {filepath}")
+            logger.info(f"Checkpoint saved for resume: {filepath}")
             return str(filepath)
 
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint file: {e}")
+        except (OSError, TypeError, ValueError) as e:
+            # OSError: the directory or file cannot be written; TypeError /
+            # ValueError: the state is not JSON-serialisable.
+            logger.exception(f"Failed to save the {checkpoint_type} checkpoint file")
+            self._warn(
+                f"The {checkpoint_type} checkpoint file could not be saved ({e}); "
+                "the review cannot be resumed from this checkpoint."
+            )
+            self.documenter.log_step(
+                action="checkpoint_save_failed",
+                tool=None,
+                input_summary=f"Save {checkpoint_type} checkpoint to {output_dir}",
+                output_summary="Checkpoint file not saved",
+                decision_rationale="The review continues; only resumability is lost",
+                error=str(e),
+            )
             return None
 
     # =========================================================================
@@ -2011,10 +1281,18 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
 
         Clears all papers, scores, and creates new documenter.
         Does not reset configuration.
+
+        A run still in progress (a review abandoned midway) is marked failed;
+        a completed, failed or paused run keeps its status (a paused run can
+        still be resumed from its checkpoint file).
         """
-        # Complete any existing evaluation run as aborted
+        from bmlibrarian.evaluations import RunStatus
+
         if self._evaluation_run:
-            self._complete_evaluation_run(success=False, error_message="Review aborted by reset")
+            if self._evaluation_run.status == RunStatus.IN_PROGRESS.value:
+                self._complete_evaluation_run(
+                    success=False, error_message="Review abandoned by reset"
+                )
             self._evaluation_run = None
 
         self._criteria = None
@@ -2024,6 +1302,9 @@ class SystematicReviewAgent(CheckpointResumeMixin, BaseAgent):
         self._all_papers = []
         # Clear excluded paper tracking (initial filter results not in database)
         self._rejected_initial_filter = []
+        self._paper_sources = {}
+        self._semantic_baseline_ids = set()
+        self._query_feedback = None
         self.documenter = Documenter()
         self.reset_metrics()
         logger.info("SystematicReviewAgent state reset")

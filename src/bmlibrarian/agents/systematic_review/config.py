@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # =============================================================================
 
+# Agent version, written into checkpoint files and checked on resume
+AGENT_VERSION = "1.0.0"
+
 # Agent name for configuration lookup
 AGENT_TYPE = "systematic_review"
 AGENT_MODEL_KEY = "systematic_review_agent"

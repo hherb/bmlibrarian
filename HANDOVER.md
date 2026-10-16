@@ -10,6 +10,34 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Systematic-review resume rebuilt on one shared pipeline** (2026-10-16,
+  branch `fix/systematic-review-resume`): the review phases after search
+  planning now exist once, in `agents/systematic_review/pipeline.py`;
+  `run_review()` enters at the search stage, `run_review_from_checkpoint()`
+  at the stage after the checkpoint (`RESUME_STAGE_BY_CHECKPOINT`). Stages
+  read evaluations back from the store and skip documents already evaluated
+  in the run, so resume no longer re-scores; resume runs the configured
+  (phased) search and applies the quality-gate threshold; runs end
+  `completed`/`paused`/`failed` and resume reopens them
+  (`EvaluationStore.reopen_run`); an unrestorable run raises `ResumeError`;
+  relevance thresholds changed between stop and resume are honoured (GUI
+  applies its overrides on resume).
+  Also fixed: fresh-run `UnboundLocalError` when everything was cached or
+  nothing passed relevance, 0.0 scores missing from exclusions, resume
+  statistics double-counting, `systematic_review_cli.py` never passing
+  `db_manager`. Agent-level tests: `tests/test_systematic_review_pipeline.py`;
+  docs: `doc/developers/systematic_review_pipeline.md`.
+  Review follow-up (same PR #284): failed LLM evaluations are no longer
+  saved as real scores (flagged *uncertain*, retried on resume); a failed
+  save stops the review (`EvaluationSaveError`); a rejected checkpoint returns
+  `result.aborted`/`abort_reason` (CLI prints REVIEW STOPPED, writes no
+  report); resume validates the whole checkpoint (`parse_checkpoint`) before
+  touching agent state; `reopen_run` returns the refreshed run; `reset()` only
+  fails in-progress runs; CLI `--resume` honours the threshold flags (default:
+  the checkpoint's) and no longer crashes on `result.criteria`; warnings reach
+  the GUI activity log (`EVENT_REVIEW_WARNING`). Deferred: #285 (agent's
+  `db_manager` ignored by fetches/searches), #286 (legacy runs holding saved
+  failure placeholders), #287 (DB-backed run-lifecycle test).
 - **PMC discovery moved to the PMC Cloud Service** (2026-10-16, PR #282):
   PMC removed the FTP `oa_package`/`oa_pdf` trees **and** the OA Web
   Service (`oa.fcgi`, now 404) in August 2026, so `PMCResolver`'s main path
@@ -116,13 +144,6 @@ independent unless noted.
 - **Citation fuzzy-match hotspot** — `agents/citation_agent.py:156-225`:
   O(passage×abstract) `SequenceMatcher` × retries × every doc above
   threshold. Cap lengths or bound the approximate match.
-- **Systematic-review resume correctness**: resume paths skip
-  `already_evaluated_ids` filtering (`resume_mixin.py:1197-1214,719-731`),
-  ignore `use_phased_search` (`:487-546`), never mark evaluation runs
-  complete (`agent.py:680-703`), and silently return empty results if a run
-  can't be restored (`resume_mixin.py:471-485` — raise instead of warn).
-  There's also a dead legacy checkpoint branch reading `"scored_papers"`
-  (`:451-469`) to remove or document.
 - **Orchestrator / importer leftovers**: old `agents/orchestrator.py`
   `Workflow.execute_workflow` wedges forever on a failed dependency
   (superseded by `cli/workflow_steps.py` but still exported/documented — fix
@@ -170,9 +191,12 @@ have drifted since the 2026-07-19 review. Full details, including the
   (`.venv/bin/python -m pytest tests/ -m "not integration and not
   requires_database and not requires_ollama and not slow"
   --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
-  after PR #277 **161 failed, 3391 passed, 19 errors**;
-  `fix/discovery-rate-limiting` **156 failed, 3483 passed, 19 errors** (5
-  stale discovery tests fixed, 0 new). Most failures are Qt test files that
+  after PR #282 **156 failed, 3492 passed, 19 errors**;
+  `fix/systematic-review-resume` the same 156 failed + 19 errors nodes,
+  3527 passed (new pipeline tests; 0 regressions). An unfiltered run
+  (`pytest tests/ --continue-on-collection-errors`, ~13 min) after the review
+  follow-up: 162 failed + 19 errors, identical node set to the PR's first
+  commit, 3647 passed. Most failures are Qt test files that
   died at collection before the Flet removal and are stale against the
   current API (e.g.
   `test_qt_research_tab.py` targets `_update_citations_tab`, `query_input`;

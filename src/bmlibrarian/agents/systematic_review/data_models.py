@@ -1658,6 +1658,9 @@ class SystematicReviewResult:
         process_log: Complete audit trail
         statistics: Summary statistics
         evidence_synthesis: Optional evidence synthesis with citations and narrative
+        abort_reason: Why the review stopped early (a checkpoint was
+            rejected), or None for a review that ran to completion. An
+            aborted review has no papers; it is not an empty finding.
 
     Example:
         >>> result = SystematicReviewResult(...)
@@ -1673,6 +1676,12 @@ class SystematicReviewResult:
     process_log: List[Dict[str, Any]]
     statistics: ReviewStatistics
     evidence_synthesis: Optional[Dict[str, Any]] = None
+    abort_reason: Optional[str] = None
+
+    @property
+    def aborted(self) -> bool:
+        """Whether the review stopped at a rejected checkpoint."""
+        return self.abort_reason is not None
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -1693,6 +1702,8 @@ class SystematicReviewResult:
         }
         if self.evidence_synthesis:
             result["evidence_synthesis"] = self.evidence_synthesis
+        if self.abort_reason is not None:
+            result["abort_reason"] = self.abort_reason
         return result
 
     @classmethod
@@ -1716,6 +1727,9 @@ class SystematicReviewResult:
             process_log=data["process_log"],
             statistics=ReviewStatistics.from_dict(data["statistics"]),
             evidence_synthesis=data.get("evidence_synthesis"),
+            abort_reason=(
+                str(data["abort_reason"]) if data.get("abort_reason") is not None else None
+            ),
         )
 
     def to_json(self, indent: int = 2) -> str:

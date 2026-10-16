@@ -165,6 +165,11 @@ class Documenter:
         """
         self._current_phase = phase
 
+    @property
+    def current_phase(self) -> str:
+        """Name of the current workflow phase."""
+        return self._current_phase
+
     # =========================================================================
     # Step Logging
     # =========================================================================

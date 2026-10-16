@@ -59,6 +59,52 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.3
 MAX_QUERY_RETRIES = 3
 RETRY_DELAY_SECONDS = 1.0
 
+# Query types run in phase 1 of a phased search; their results form the
+# semantic baseline that keyword (phase 2) queries are compared against.
+PHASE1_QUERY_TYPES = frozenset({QueryType.SEMANTIC, QueryType.HYDE, QueryType.HYBRID})
+
+
+# =============================================================================
+# Pure helpers over executed queries
+# =============================================================================
+
+def build_paper_sources(executed_queries: List[ExecutedQuery]) -> Dict[int, List[str]]:
+    """
+    Map each document ID to the IDs of the queries that returned it.
+
+    Produces the same mapping the executor builds while searching, so it can
+    be reconstructed from a checkpoint's executed queries.
+
+    Args:
+        executed_queries: Queries in execution order.
+
+    Returns:
+        Dict of document_id -> query_ids, in execution order.
+    """
+    paper_sources: Dict[int, List[str]] = {}
+    for executed in executed_queries:
+        query_id = executed.planned_query.query_id
+        for doc_id in executed.document_ids:
+            paper_sources.setdefault(doc_id, []).append(query_id)
+    return paper_sources
+
+
+def collect_phase1_document_ids(executed_queries: List[ExecutedQuery]) -> Set[int]:
+    """
+    Collect the semantic baseline: documents returned by phase-1 query types.
+
+    Args:
+        executed_queries: Executed queries (any order).
+
+    Returns:
+        Set of document IDs returned by semantic, HyDE or hybrid queries.
+    """
+    baseline: Set[int] = set()
+    for executed in executed_queries:
+        if executed.planned_query.query_type in PHASE1_QUERY_TYPES:
+            baseline.update(executed.document_ids)
+    return baseline
+
 
 # =============================================================================
 # Data Types
@@ -449,10 +495,9 @@ class SearchExecutor:
         start_time = time.time()
 
         # Separate queries by type
-        phase1_types = {QueryType.SEMANTIC, QueryType.HYDE, QueryType.HYBRID}
         phase2_types = {QueryType.KEYWORD}
 
-        phase1_queries = [q for q in plan.queries if q.query_type in phase1_types]
+        phase1_queries = [q for q in plan.queries if q.query_type in PHASE1_QUERY_TYPES]
         phase2_queries = [q for q in plan.queries if q.query_type in phase2_types]
 
         logger.info(

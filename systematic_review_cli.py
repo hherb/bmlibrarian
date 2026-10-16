@@ -51,6 +51,7 @@ Requirements:
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -61,13 +62,18 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from bmlibrarian.agents.systematic_review import (
+    ResumeError,
     SystematicReviewAgent,
+    SystematicReviewResult,
     SearchCriteria,
     ScoringWeights,
     StudyTypeFilter,
     SystematicReviewConfig,
     get_systematic_review_config,
 )
+from bmlibrarian.agents.systematic_review.pipeline import RESUME_STAGE_BY_CHECKPOINT
+from bmlibrarian.agents.systematic_review.resume_mixin import load_checkpoint_file
+from bmlibrarian.database import get_db_manager
 
 
 # =============================================================================
@@ -75,6 +81,11 @@ from bmlibrarian.agents.systematic_review import (
 # =============================================================================
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Thresholds a new review uses when the flags are not given. A resumed review
+# instead keeps the thresholds recorded in its checkpoint.
+CLI_DEFAULT_RELEVANCE_THRESHOLD = 3.0
+CLI_DEFAULT_QUALITY_THRESHOLD = 5.0
 
 # Default scoring weights (sum to 1.0)
 # This comprehensive weight set supports both Cochrane-style systematic review
@@ -238,15 +249,21 @@ Examples:
     parser.add_argument(
         "--relevance-threshold",
         type=float,
-        default=3.0,
-        help="Minimum relevance score (1-5, default: 3.0)",
+        default=None,
+        help=(
+            f"Minimum relevance score (1-5, default: {CLI_DEFAULT_RELEVANCE_THRESHOLD}; "
+            "with --resume, default: the checkpoint's threshold)"
+        ),
     )
 
     parser.add_argument(
         "--quality-threshold",
         type=float,
-        default=5.0,
-        help="Minimum quality threshold (0-10, default: 5.0)",
+        default=None,
+        help=(
+            f"Minimum quality threshold (0-10, default: {CLI_DEFAULT_QUALITY_THRESHOLD}; "
+            "with --resume, default: the checkpoint's threshold)"
+        ),
     )
 
     # Output options
@@ -681,11 +698,14 @@ def run_review(args: argparse.Namespace) -> int:
         print(f"Output will be saved to: {output_dir}")
         print()
 
-        if args.relevance_threshold:
-            config.relevance_threshold = args.relevance_threshold
-
-        if args.quality_threshold:
-            config.quality_threshold = args.quality_threshold
+        config.relevance_threshold = (
+            args.relevance_threshold if args.relevance_threshold is not None
+            else CLI_DEFAULT_RELEVANCE_THRESHOLD
+        )
+        config.quality_threshold = (
+            args.quality_threshold if args.quality_threshold is not None
+            else CLI_DEFAULT_QUALITY_THRESHOLD
+        )
 
         if args.quick:
             config.max_results_per_query = 50
@@ -698,6 +718,7 @@ def run_review(args: argparse.Namespace) -> int:
 
         # Initialize agent
         agent = SystematicReviewAgent(
+            db_manager=get_db_manager(),
             config=config,
             callback=progress_callback,
         )
@@ -716,6 +737,10 @@ def run_review(args: argparse.Namespace) -> int:
             output_path=str(output_path) if not args.auto else None,
             checkpoint_callback=checkpoint_callback if interactive else None,
         )
+
+        if result.aborted:
+            print_review_stopped(result)
+            return 0
 
         # Save results if not already saved
         if args.auto or args.format != "json":
@@ -824,12 +849,11 @@ def resume_review(args: argparse.Namespace) -> int:
         print(f"Resuming from checkpoint: {checkpoint_path}")
         print()
 
-        # Load checkpoint to display info
-        with open(checkpoint_path, "r", encoding="utf-8") as f:
-            checkpoint_data = json.load(f)
+        # Load (and validate) the checkpoint to display info
+        checkpoint_data = load_checkpoint_file(str(checkpoint_path))
 
-        review_id = checkpoint_data.get("review_id", "unknown")
-        checkpoint_type = checkpoint_data.get("checkpoint_type", "unknown")
+        review_id = str(checkpoint_data.get("review_id") or "unknown")
+        checkpoint_type = checkpoint_data["checkpoint_type"]
         paper_count = checkpoint_data.get("paper_count", 0)
         timestamp = checkpoint_data.get("timestamp", "unknown")
 
@@ -840,12 +864,28 @@ def resume_review(args: argparse.Namespace) -> int:
         print(f"  Created: {timestamp}")
         print()
 
-        # Get config
+        # Get config; thresholds: flag, else the checkpoint's, else config
         config = get_systematic_review_config()
+        config.relevance_threshold = resolve_threshold(
+            args.relevance_threshold,
+            checkpoint_data.get("relevance_threshold"),
+            config.relevance_threshold,
+        )
+        config.quality_threshold = resolve_threshold(
+            args.quality_threshold,
+            checkpoint_data.get("quality_threshold"),
+            config.quality_threshold,
+        )
+        print(
+            f"Thresholds: relevance {config.relevance_threshold}, "
+            f"quality {config.quality_threshold}"
+        )
+        print()
         output_dir = get_output_dir(args, config)
 
         # Initialize agent
         agent = SystematicReviewAgent(
+            db_manager=get_db_manager(),
             config=config,
             callback=progress_callback,
         )
@@ -861,7 +901,7 @@ def resume_review(args: argparse.Namespace) -> int:
             print("Running in automatic mode (no checkpoints)")
             print()
 
-        # Resume the review
+        # Resume the review (the agent writes the JSON and Markdown reports)
         result = agent.run_review_from_checkpoint(
             checkpoint_path=str(checkpoint_path),
             interactive=interactive,
@@ -869,29 +909,22 @@ def resume_review(args: argparse.Namespace) -> int:
             checkpoint_callback=checkpoint_callback if interactive else None,
         )
 
-        # Save results
+        if result.aborted:
+            print_review_stopped(result)
+            return 0
+
+        from bmlibrarian.agents.systematic_review.pipeline import markdown_report_path
         from bmlibrarian.agents.systematic_review.reporter import Reporter
-        from bmlibrarian.agents.systematic_review.data_models import SearchCriteria, ScoringWeights
 
-        criteria = result.criteria
-        weights = result.weights
-
-        reporter = Reporter(
-            documenter=agent.documenter,
-            criteria=criteria,
-            weights=weights,
-        )
-
-        # Save JSON report
-        reporter.generate_json_report(result, str(output_path))
         print(f"\nJSON report saved: {output_path}")
-
-        # Save Markdown report
-        md_path = output_dir / f"{output_name}.md"
-        reporter.generate_markdown_report(result, str(md_path))
-        print(f"Markdown report saved: {md_path}")
+        print(f"Markdown report saved: {markdown_report_path(str(output_path))}")
 
         # PRISMA flow diagram
+        reporter = Reporter(
+            documenter=agent.documenter,
+            criteria=agent.criteria,
+            weights=agent.weights,
+        )
         prisma_path = output_dir / f"{output_name}_prisma.json"
         reporter.generate_prisma_flowchart(result.statistics, str(prisma_path))
         print(f"PRISMA flow diagram data saved: {prisma_path}")
@@ -908,6 +941,7 @@ def resume_review(args: argparse.Namespace) -> int:
         print(f"  Passed relevance threshold: {stats['passed_relevance_threshold']}")
         print(f"  Final included: {stats['final_included']}")
         print(f"  Final excluded: {stats['final_excluded']}")
+        print(f"  Uncertain (human review): {stats['uncertain_for_review']}")
         print(f"  Processing time: {stats['processing_time_seconds']:.2f}s")
         print()
 
@@ -919,6 +953,9 @@ def resume_review(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(f"\nInvalid checkpoint: {e}", file=sys.stderr)
         return 1
+    except ResumeError as e:
+        print(f"\nCannot resume: {e}", file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("\n\nResume interrupted by user.")
         return 130
@@ -926,6 +963,50 @@ def resume_review(args: argparse.Namespace) -> int:
         logging.exception("Unexpected error during resume")
         print(f"\nError: {e}", file=sys.stderr)
         return 1
+
+
+def resolve_threshold(
+    flag_value: Optional[float],
+    recorded_value: Any,
+    configured_value: float,
+) -> float:
+    """
+    Pick the threshold a resumed review uses.
+
+    Args:
+        flag_value: The command-line flag's value, or None if not given.
+        recorded_value: The threshold recorded in the checkpoint file
+            (untrusted; ignored unless it is a finite number).
+        configured_value: The configured threshold.
+
+    Returns:
+        The flag value, else the recorded value, else the configured value.
+    """
+    if flag_value is not None:
+        return flag_value
+    if (
+        isinstance(recorded_value, (int, float))
+        and not isinstance(recorded_value, bool)
+        and math.isfinite(recorded_value)
+    ):
+        return float(recorded_value)
+    return configured_value
+
+
+def print_review_stopped(result: SystematicReviewResult) -> None:
+    """
+    Tell the user a review stopped at a rejected checkpoint (no report written).
+
+    Args:
+        result: The aborted review result.
+    """
+    print()
+    print("=" * 50)
+    print("REVIEW STOPPED")
+    print("=" * 50)
+    print(f"  {result.abort_reason}")
+    print("  No report was written. Resume with --resume <checkpoint file>.")
+    print()
 
 
 def find_checkpoint_file(resume_arg: str) -> Optional[Path]:
@@ -964,19 +1045,13 @@ def find_checkpoint_file(resume_arg: str) -> Optional[Path]:
     if not matches:
         return None
 
-    # If multiple matches, prefer the most recent checkpoint type
-    # Order: initial_results > search_strategy (resume from later is better)
-    checkpoint_priority = {
-        "initial_results": 2,
-        "scoring_complete": 3,
-        "quality_assessment": 4,
-        "search_strategy": 1,
-    }
-
+    # If multiple matches, prefer the latest checkpoint (resuming from a
+    # later one repeats less work): the stage a checkpoint resumes at orders them.
     def get_priority(path: Path) -> int:
-        for cp_type, priority in checkpoint_priority.items():
-            if cp_type in path.name:
-                return priority
+        """Order of the checkpoint type in a checkpoint file name (0 if none)."""
+        for cp_type, stage in RESUME_STAGE_BY_CHECKPOINT.items():
+            if path.stem.endswith(f"_{cp_type}"):
+                return int(stage)
         return 0
 
     matches.sort(key=get_priority, reverse=True)

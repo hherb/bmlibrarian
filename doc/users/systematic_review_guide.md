@@ -284,7 +284,88 @@ Review quality assessment results:
 At each checkpoint, enter:
 
 - `Y` or Enter: Continue
-- `N` or `Q`: Abort review
+- `N` or `Q`: Stop the review here
+
+A stopped review writes no report. The CLI prints **REVIEW STOPPED** with the
+checkpoint it stopped at, and from Python the result has `aborted == True`
+and an `abort_reason` (an aborted result has no papers; it is not an empty
+finding). Resume it later from its checkpoint file.
+
+## Resuming a Review
+
+When an output directory is set, the agent saves a checkpoint file at each
+checkpoint (`<output-dir>/checkpoints/<review_id>_<checkpoint>.json`).
+Every relevance score and quality assessment is also saved to the database
+the moment it is made, in the review's *evaluation run*.
+
+Resume an aborted, interrupted or failed review with:
+
+```bash
+uv run python systematic_review_cli.py --resume <review_id or checkpoint path>
+```
+
+or, from Python, `agent.run_review_from_checkpoint("path/to/checkpoint.json")`.
+
+The review continues from the phase after the checkpoint:
+
+| Resume from | Runs again |
+|-------------|------------|
+| Search Strategy | Search (phased or standard, as configured), then everything after |
+| Initial Results | Initial filter, scoring, quality assessment, report |
+| Scoring Complete | Quality assessment and report |
+| Quality Assessment | Ranking, quality gate, synthesis and report |
+
+Papers already scored or assessed in the evaluation run are **reused, not
+re-evaluated** — a review that crashed half-way through scoring only scores
+the remaining papers.
+
+The relevance and quality thresholds are re-applied to the saved scores, so
+you can change them when resuming: papers that fall below a raised relevance
+threshold are excluded (even if they were already assessed), and papers
+admitted by a lowered threshold are assessed before the report is written.
+
+- **CLI**: a resume keeps the thresholds recorded in the checkpoint;
+  `--relevance-threshold` / `--quality-threshold` replace them.
+- **GUI**: the threshold fields of the resume form apply.
+- **Python**: the agent's configuration applies.
+
+### Papers whose evaluation failed
+
+If the language model fails on a paper (for example, the model server goes
+down mid-review), that paper's score or assessment is **not** saved. The
+review continues, and the paper appears in the report's *uncertain* list
+("Relevance scoring failed" or "Quality assessment failed") so it is
+reviewed by hand rather than lost. You are warned how many papers this
+affected. Because nothing was saved for them, resuming retries them:
+
+- failed **scoring**: resume from the Search Strategy or Initial Results
+  checkpoint;
+- failed **quality assessment**: resume from the Scoring Complete or Quality
+  Assessment checkpoint.
+
+If a score or assessment cannot be *saved* to the database, the review stops
+with an error instead of continuing without that paper.
+
+### When resuming fails
+
+Resuming fails with an error explaining why (the CLI prefixes it with
+"Cannot resume" or "Invalid checkpoint"), rather than producing an empty
+report, when:
+
+- the checkpoint file is malformed or incomplete;
+- none of the checkpoint's papers are in the database, or the checkpoint's
+  evaluation run is not (for example, the application is connected to a
+  different database than the review used);
+- the evaluation run belongs to a different research question;
+- a Scoring Complete or Quality Assessment checkpoint has no evaluation run
+  at all — resume from Search Strategy or Initial Results instead.
+
+If only *some* of the checkpoint's papers are missing from the database, the
+resume continues without them and warns you, naming their document IDs.
+
+A finished review's evaluation run is marked *completed*; a stopped or
+interrupted one *paused*; a failed one *failed*. Resuming puts the run back
+in progress.
 
 ## Output Formats
 
@@ -409,8 +490,10 @@ Options:
   --mesh-terms TERM         MeSH terms (multiple allowed)
   --criteria-file PATH      Load criteria from JSON file
   --weights-file PATH       Load weights from JSON file
-  --relevance-threshold N   Minimum relevance score (1-5)
-  --quality-threshold N     Minimum quality score (0-10)
+  --relevance-threshold N   Minimum relevance score (1-5, default 3.0;
+                            with --resume, default: the checkpoint's)
+  --quality-threshold N     Minimum quality score (0-10, default 5.0;
+                            with --resume, default: the checkpoint's)
   -o, --output-dir PATH     Output directory
   --output-name NAME        Base name for output files
   --format FORMAT           Output format (json/markdown/csv/all)

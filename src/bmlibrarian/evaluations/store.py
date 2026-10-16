@@ -81,6 +81,40 @@ class EvaluationRun:
         return self.status in (RunStatus.IN_PROGRESS.value, RunStatus.PAUSED.value)
 
 
+# Columns selected for an EvaluationRun, in the order _run_from_row reads them.
+_RUN_COLUMNS = (
+    "run_id, run_type, research_question_id, research_question_text, "
+    "evaluator_id, status, config_snapshot, documents_total, "
+    "documents_processed, started_at, completed_at, error_message"
+)
+
+
+def _run_from_row(row: Tuple[Any, ...]) -> EvaluationRun:
+    """
+    Build an EvaluationRun from a row selected with ``_RUN_COLUMNS``.
+
+    Args:
+        row: The database row.
+
+    Returns:
+        The EvaluationRun.
+    """
+    return EvaluationRun(
+        run_id=row[0],
+        run_type=row[1],
+        research_question_id=row[2],
+        research_question_text=row[3],
+        evaluator_id=row[4],
+        status=row[5],
+        config_snapshot=row[6],
+        documents_total=row[7],
+        documents_processed=row[8],
+        started_at=row[9],
+        completed_at=row[10],
+        error_message=row[11],
+    )
+
+
 @dataclass
 class DocumentEvaluation:
     """Represents a single document evaluation result."""
@@ -262,10 +296,8 @@ class EvaluationStore:
         Raises:
             RuntimeError: If database operation fails
         """
-        query = """
-            SELECT run_id, run_type, research_question_id, research_question_text,
-                   evaluator_id, status, config_snapshot, documents_total,
-                   documents_processed, started_at, completed_at, error_message
+        query = f"""
+            SELECT {_RUN_COLUMNS}
             FROM evaluations.evaluation_runs
             WHERE run_id = %s
         """
@@ -281,21 +313,7 @@ class EvaluationStore:
 
         if row is None:
             return None
-
-        return EvaluationRun(
-            run_id=row[0],
-            run_type=row[1],
-            research_question_id=row[2],
-            research_question_text=row[3],
-            evaluator_id=row[4],
-            status=row[5],
-            config_snapshot=row[6],
-            documents_total=row[7],
-            documents_processed=row[8],
-            started_at=row[9],
-            completed_at=row[10],
-            error_message=row[11],
-        )
+        return _run_from_row(row)
 
     def get_or_resume_run(
         self,
@@ -460,6 +478,51 @@ class EvaluationStore:
             conn.commit()
 
         logger.info(f"Resumed run {run_id}")
+
+    def reopen_run(self, run_id: int) -> Optional[EvaluationRun]:
+        """
+        Put a run back in progress, whatever its current status.
+
+        Unlike ``resume_run`` (paused runs only), this also reopens failed,
+        cancelled and completed runs and clears their completion time and
+        error message. Used when a review is resumed from a checkpoint file:
+        the run may have failed or been completed after that checkpoint, and
+        its saved evaluations are reused as a cache.
+
+        Args:
+            run_id: Run ID to reopen
+
+        Returns:
+            The reopened run as it now is in the database, or None if no run
+            has this ID.
+
+        Raises:
+            RuntimeError: If database operation fails
+        """
+        query = f"""
+            UPDATE evaluations.evaluation_runs
+            SET status = 'in_progress', completed_at = NULL,
+                error_message = NULL, updated_at = NOW()
+            WHERE run_id = %s
+            RETURNING {_RUN_COLUMNS}
+        """
+
+        try:
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (run_id,))
+                    row = cur.fetchone()
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to reopen run id={run_id}: {e}")
+            raise RuntimeError(f"Database error reopening run: {e}") from e
+
+        if row is None:
+            logger.warning(f"Cannot reopen run {run_id}: no such run")
+            return None
+
+        logger.info(f"Reopened run {run_id}")
+        return _run_from_row(row)
 
     # =========================================================================
     # Document Evaluations
