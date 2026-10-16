@@ -465,8 +465,8 @@ class PMCCloudDownloader:
             fulltext_output_dir: Directory for the ``.nxml`` file.
 
         Returns:
-            DownloadResult with the PDF path and, if the XML could be fetched
-            and parsed, ``full_text`` / ``full_text_path``.
+            DownloadResult with the PDF path, ``full_text_path`` if the XML
+            was fetched, and ``full_text`` if it also parsed.
         """
         start_time = time.time()
         meta = source.metadata or {}
@@ -519,6 +519,11 @@ class PMCCloudDownloader:
             text = self.nxml_parser.parse(xml_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as e:
             logger.warning(f"Could not read PMC XML {xml_path}: {e}")
+            return None
+        except Exception as e:
+            # Full text is best-effort: a parser crash on untrusted XML (e.g.
+            # RecursionError on deep nesting) must not lose the saved PDF.
+            logger.warning(f"Could not parse PMC XML {xml_path}: {type(e).__name__}: {e}")
             return None
         if text:
             logger.info(f"Extracted {len(text)} chars of full text from {xml_path.name}")
@@ -605,7 +610,13 @@ class PMCCloudDownloader:
             raise PMCCloudError(
                 f"HTTP {status}", retryable=classify_http_error(status, e.response)
             ) from e
-        except (requests.ConnectionError, requests.Timeout) as e:
+        except (
+            requests.ConnectionError,
+            requests.Timeout,
+            # Raised by iter_content when the body is cut off or garbled mid-stream
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ContentDecodingError,
+        ) as e:
             discard_partial_download(part)
             raise PMCCloudError(f"Network error: {e}", retryable=True) from e
         except requests.RequestException as e:
@@ -625,6 +636,10 @@ class PMCCloudDownloader:
             discard_partial_download(part)
             raise PMCCloudError("Downloaded file is not a PDF", retryable=False)
 
-        promote_partial_download(part, dest)
+        try:
+            promote_partial_download(part, dest)
+        except OSError as e:
+            discard_partial_download(part)
+            raise PMCCloudError(f"Could not move download into {dest}: {e}", retryable=False) from e
         logger.info(f"Downloaded {total} bytes from {url}")
         return total

@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urlparse, quote
 
 import requests
@@ -333,25 +333,34 @@ class PMCResolver(BaseResolver):
         pmid = identifiers.pmid
         doi = identifiers.doi
 
-        sources = []
+        sources: List[PDFSource] = []
+        lookup_error: Optional[str] = None
 
         # If we have PMCID, use it directly
         if pmcid:
-            sources.extend(self._resolve_by_pmcid(pmcid))
+            sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         # If we have PMID but no PMCID, try to find PMCID
         if not pmcid and pmid:
             pmcid = self._pmid_to_pmcid(pmid)
             if pmcid:
-                sources.extend(self._resolve_by_pmcid(pmcid))
+                sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         # Try DOI lookup in PMC
         if not sources and doi:
-            pmcid = self._doi_to_pmcid(doi)
-            if pmcid:
-                sources.extend(self._resolve_by_pmcid(pmcid))
+            doi_pmcid = self._doi_to_pmcid(doi)
+            if doi_pmcid:
+                pmcid = doi_pmcid
+                sources, lookup_error = self._resolve_by_pmcid(pmcid)
 
         if not sources:
+            # An unreachable PMC Cloud must not masquerade as "not in PMC"
+            if lookup_error:
+                return self._create_result(
+                    ResolutionStatus.ERROR,
+                    error_message=lookup_error,
+                    duration_ms=(time.time() - start_time) * 1000
+                )
             return self._create_result(
                 ResolutionStatus.NOT_FOUND,
                 duration_ms=(time.time() - start_time) * 1000
@@ -371,20 +380,30 @@ class PMCResolver(BaseResolver):
             pmcid = f'PMC{pmcid}'
         return pmcid
 
-    def _resolve_by_pmcid(self, pmcid: str) -> List[PDFSource]:
+    def _resolve_by_pmcid(self, pmcid: str) -> Tuple[List[PDFSource], Optional[str]]:
         """Get PDF sources for a PMCID.
 
         Looks the article up in the PMC Cloud Service (the OA Web Service and
         the FTP packages it pointed at were retired in August 2026); falls
         back to scraping the PDF link from the PMC article page.
+
+        Args:
+            pmcid: PMCID, with or without the ``PMC`` prefix.
+
+        Returns:
+            ``(sources, lookup_error)``: the error message is set when the
+            PMC Cloud lookup itself failed (network, HTTP, bad response), so
+            the caller can tell an outage apart from "not in PMC".
         """
         pmcid = self._normalize_pmcid(pmcid)
-        sources = []
+        sources: List[PDFSource] = []
+        lookup_error: Optional[str] = None
 
         try:
             article = self._cloud_client.find_article(pmcid)
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"PMC Cloud Service lookup failed for {pmcid}: {e}")
+            lookup_error = f"PMC Cloud Service lookup failed for {pmcid}: {e}"
             article = None
 
         if article is not None and article.pdf_url:
@@ -423,7 +442,7 @@ class PMCResolver(BaseResolver):
                     metadata={'pmcid': pmcid, 'extracted': True}
                 ))
 
-        return sources
+        return sources, lookup_error
 
     def _get_pdf_url_from_article_page(self, pmcid: str) -> Optional[str]:
         """Fetch the PMC article page and extract the actual PDF URL.

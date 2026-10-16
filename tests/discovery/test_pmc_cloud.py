@@ -15,8 +15,11 @@ import requests
 
 from bmlibrarian.discovery.data_types import (
     AccessType,
+    DiscoveryResult,
     DocumentIdentifiers,
+    DownloadResult,
     PDFSource,
+    ResolutionResult,
     ResolutionStatus,
     SourceType,
 )
@@ -391,6 +394,77 @@ class TestPMCCloudDownloader:
         assert dl.download(cloud_source(xml=False), target, tmp_path).success is False
         assert target.read_bytes() == b"%PDF-old"
 
+    @pytest.mark.parametrize("error", [
+        requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead"),
+        requests.exceptions.ContentDecodingError("bad gzip"),
+    ])
+    def test_truncated_stream_retried(self, tmp_path: Path, error: Exception) -> None:
+        """A body cut off mid-stream is transient: retried, no .part left behind."""
+        def truncated() -> requests.Response:
+            response = make_response(200)
+
+            def iter_content(chunk_size: int = 1):
+                yield PDF_BYTES[:4]
+                raise error
+
+            response.iter_content = iter_content  # type: ignore[method-assign]
+            return response
+
+        responses = iter([truncated(), make_response(200, PDF_BYTES)])
+        dl, bucket = self.downloader({
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.pdf": lambda: next(responses),
+        })
+        result = dl.download(cloud_source(xml=False), tmp_path / "a.pdf", tmp_path)
+        assert result.success is True
+        assert result.attempts == 2
+        assert (tmp_path / "a.pdf").read_bytes() == PDF_BYTES
+        assert [p.name for p in tmp_path.iterdir()] == ["a.pdf"]
+
+    def test_pdf_promote_failure_is_a_failed_result(self, tmp_path: Path) -> None:
+        """A failed rename becomes success=False (not an exception); .part removed."""
+        dl, bucket = self.downloader({
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.pdf": lambda: make_response(200, PDF_BYTES),
+        })
+        with patch("bmlibrarian.discovery.pmc_cloud.promote_partial_download",
+                   side_effect=PermissionError("file in use")):
+            result = dl.download(cloud_source(xml=False), tmp_path / "a.pdf", tmp_path)
+        assert result.success is False
+        assert "file in use" in result.error_message
+        assert len(bucket.calls) == 1  # not retried: a local, permanent failure
+        assert list(tmp_path.iterdir()) == []
+
+    def test_xml_promote_failure_keeps_pdf(self, tmp_path: Path) -> None:
+        """A failed rename of the XML doesn't lose the already-saved PDF."""
+        from bmlibrarian.utils.download_utils import promote_partial_download as real_promote
+
+        def promote(part: Path, dest: Path) -> None:
+            if dest.suffix == ".nxml":
+                raise PermissionError("read-only fulltext dir")
+            real_promote(part, dest)
+
+        dl, _ = self.downloader({
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.pdf": lambda: make_response(200, PDF_BYTES),
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.xml": lambda: make_response(200, XML_BYTES),
+        })
+        with patch("bmlibrarian.discovery.pmc_cloud.promote_partial_download", side_effect=promote):
+            result = dl.download(cloud_source(), tmp_path / "a.pdf", tmp_path / "ft")
+        assert result.success is True
+        assert (tmp_path / "a.pdf").read_bytes() == PDF_BYTES
+        assert result.full_text is None and result.full_text_path is None
+        assert not list((tmp_path / "ft").glob("*.part"))
+
+    def test_parser_crash_keeps_pdf(self, tmp_path: Path) -> None:
+        """An unexpected parser exception doesn't lose the downloaded PDF."""
+        dl, _ = self.downloader({
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.pdf": lambda: make_response(200, PDF_BYTES),
+            f"{PMC_CLOUD_HTTPS_BASE}/PMC1.1/PMC1.1.xml": lambda: make_response(200, XML_BYTES),
+        })
+        with patch.object(dl.nxml_parser, "parse", side_effect=RecursionError("too deep")):
+            result = dl.download(cloud_source(), tmp_path / "a.pdf", tmp_path / "ft")
+        assert result.success is True
+        assert result.full_text is None
+        assert result.full_text_path == str(tmp_path / "ft" / "a.nxml")
+
 
 # --- integration with resolver / finder ------------------------------------
 
@@ -422,6 +496,25 @@ class TestPMCResolverCloud:
             result = resolver.resolve(DocumentIdentifiers(pmcid="PMC1"))
         assert result.sources[0].source_type == SourceType.PMC
 
+    def test_cloud_outage_without_fallback_is_an_error(self) -> None:
+        """An unreachable PMC Cloud is reported as ERROR, not NOT_FOUND."""
+        resolver = PMCResolver()
+        with patch.object(resolver._cloud_client, "find_article",
+                          side_effect=requests.HTTPError("403 Forbidden")), \
+                patch.object(resolver, "_get_pdf_url_from_article_page", return_value=None):
+            result = resolver.resolve(DocumentIdentifiers(pmcid="PMC1"))
+        assert result.status == ResolutionStatus.ERROR
+        assert "403 Forbidden" in result.error_message
+
+    def test_article_absent_is_not_found(self) -> None:
+        """An article that simply isn't in PMC stays NOT_FOUND."""
+        resolver = PMCResolver()
+        with patch.object(resolver._cloud_client, "find_article", return_value=None), \
+                patch.object(resolver, "_get_pdf_url_from_article_page", return_value=None):
+            result = resolver.resolve(DocumentIdentifiers(pmcid="PMC1"))
+        assert result.status == ResolutionStatus.NOT_FOUND
+        assert result.error_message is None
+
 
 class TestFullTextFinderRouting:
     """FullTextFinder dispatch for PMC Cloud and NCBI FTP URLs."""
@@ -448,3 +541,39 @@ class TestFullTextFinderRouting:
         assert get.call_args.args[0] == "https://ftp.ncbi.nlm.nih.gov/pub/x/paper.pdf"
         assert result.success is True
         assert result.source.url.startswith("https://")
+
+
+class TestFullTextFinderPMCCloudFailures:
+    """How discover_and_download reports and handles PMC Cloud failures."""
+
+    def test_failed_cloud_source_not_retried_in_browser(self, tmp_path: Path) -> None:
+        """A PMC Cloud file rejected (e.g. MD5) is never re-fetched unchecked by the browser."""
+        finder = FullTextFinder()
+        discovery = DiscoveryResult(identifiers=DocumentIdentifiers(pmcid="PMC1"),
+                                    sources=[cloud_source()])
+        failed = DownloadResult(success=False, source=cloud_source(),
+                                error_message="PMC Cloud PDF download failed: MD5 mismatch")
+        with patch.object(finder, "discover", return_value=discovery), \
+                patch.object(finder._pmc_cloud_downloader, "download", return_value=failed), \
+                patch.object(finder, "_download_with_browser") as browser:
+            result = finder.discover_and_download(
+                DocumentIdentifiers(pmcid="PMC1"), tmp_path / "a.pdf", use_browser_fallback=True)
+        browser.assert_not_called()
+        assert result.success is False
+        assert "MD5 mismatch" in result.error_message
+
+    def test_no_sources_message_includes_resolver_errors(self, tmp_path: Path) -> None:
+        """An outage is distinguishable from 'not in any source'."""
+        finder = FullTextFinder()
+        discovery = DiscoveryResult(
+            identifiers=DocumentIdentifiers(pmcid="PMC1"),
+            resolution_results=[ResolutionResult(
+                resolver_name="pmc", status=ResolutionStatus.ERROR,
+                error_message="PMC Cloud Service lookup failed: 403 Forbidden")],
+        )
+        with patch.object(finder, "discover", return_value=discovery):
+            result = finder.discover_and_download(DocumentIdentifiers(pmcid="PMC1"),
+                                                  tmp_path / "a.pdf")
+        assert result.success is False
+        assert result.error_message.startswith("No PDF sources found")
+        assert "pmc: PMC Cloud Service lookup failed: 403 Forbidden" in result.error_message

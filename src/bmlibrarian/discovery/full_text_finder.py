@@ -20,7 +20,7 @@ import requests
 
 from .data_types import (
     PDFSource, DiscoveryResult, DownloadResult, DocumentIdentifiers,
-    ResolutionStatus, SourceType, AccessType
+    ResolutionResult, ResolutionStatus, SourceType, AccessType
 )
 from .resolvers import (
     BaseResolver, DirectURLResolver, DOIResolver,
@@ -53,6 +53,22 @@ DEFAULT_BROWSER_HEADLESS = True
 DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 3
 # Base delay (seconds) for the first download retry; doubles per retry.
 DOWNLOAD_RETRY_BASE_SECONDS = 2.0
+
+
+def format_resolver_errors(resolution_results: List[ResolutionResult]) -> str:
+    """Summarise the resolvers that failed (as opposed to found nothing).
+
+    Args:
+        resolution_results: Per-resolver results from discovery.
+
+    Returns:
+        ``"name: message; ..."`` for each resolver with status ERROR, or ``""``.
+    """
+    return "; ".join(
+        f"{r.resolver_name}: {r.error_message or 'unknown error'}"
+        for r in resolution_results
+        if r.status == ResolutionStatus.ERROR
+    )
 
 
 class FullTextFinder:
@@ -320,9 +336,13 @@ class FullTextFinder:
                 logger.info(f"No sources found, added DOI fallback: {doi_url}")
 
         if not discovery.sources:
+            error_message = "No PDF sources found and no DOI available for fallback"
+            resolver_errors = format_resolver_errors(discovery.resolution_results)
+            if resolver_errors:
+                error_message += f" (resolver errors: {resolver_errors})"
             return DownloadResult(
                 success=False,
-                error_message="No PDF sources found and no DOI available for fallback",
+                error_message=error_message,
                 duration_ms=(time.time() - start_time) * 1000
             )
 
@@ -390,11 +410,14 @@ class FullTextFinder:
             logger.debug(f"HTTP download failed from {source.source_type.value}: {result.error_message}")
 
         # All HTTP attempts failed - try browser fallback
-        # Exclude sources that already failed verification or whose source type failed
+        # Exclude sources that already failed verification or whose source type failed.
+        # PMC Cloud files are plain S3 objects: the browser adds nothing, and it
+        # would save a file the cloud downloader rejected (MD5/not-a-PDF) unchecked.
         browser_sources = [
             s for s in discovery.sources
             if s not in verification_failed_sources
             and s.source_type.value.split('_')[0] not in failed_source_types
+            and s.source_type != SourceType.PMC_CLOUD
         ]
 
         if use_browser_fallback and browser_sources:

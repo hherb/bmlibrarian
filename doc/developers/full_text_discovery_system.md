@@ -260,11 +260,22 @@ metadata. See the bucket's `README.txt`.
 - `PMCCloudDownloader.download()` (dispatched by `FullTextFinder` for
   `PMC_CLOUD` sources) streams the PDF to a `.part` file, verifies MD5 and
   `%PDF-` magic, then promotes it; one retry loop per file (transient
-  errors and MD5 mismatches; 4xx, non-PDF content and already-retried
-  throttling are final). The XML is best-effort: saved as
+  errors — including a body cut off mid-stream — and MD5 mismatches; 4xx,
+  non-PDF content, already-retried throttling and local file errors such
+  as a failed rename are final). Every failure comes back as a failed
+  `DownloadResult`, never as an exception. The XML is best-effort: saved as
   `fulltext/<year>/<stem>.nxml` (sibling of the `pdf/` tree) and parsed by
-  `NXMLParser` into `DownloadResult.full_text`; an XML failure never fails
-  the PDF.
+  `NXMLParser` into `DownloadResult.full_text`; an XML download, rename or
+  parse failure never fails the PDF.
+- `PMC_CLOUD` sources are never handed to the browser fallback: they are
+  plain S3 objects, and the browser would save a file the downloader
+  rejected (MD5 mismatch, not a PDF) without checking it.
+- If the PMC Cloud lookup itself fails (network, HTTP 403/5xx, bad
+  response) and the article-page fallback finds nothing, `PMCResolver`
+  returns `ResolutionStatus.ERROR` with the lookup error rather than
+  `NOT_FOUND`. `discover_and_download()` appends such resolver errors to
+  its "No PDF sources found" message (`format_resolver_errors()`), so an
+  outage is distinguishable from an article that isn't available.
 - Any other `ftp://ftp.ncbi.nlm.nih.gov/...` URL is rewritten to the same
   path over HTTPS (`ncbi_ftp_to_https`); only non-NCBI FTP hosts still use
   `ftplib`.
