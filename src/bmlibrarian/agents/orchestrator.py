@@ -5,10 +5,8 @@ Provides coordination between agents, handover management, and workflow executio
 with progress tracking and error recovery.
 """
 
-from typing import Dict, Any, List, Optional, Callable, Iterator
+from typing import Dict, Any, List, Optional, Callable, Set
 import logging
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
 
@@ -45,40 +43,159 @@ class WorkflowStep:
         self.depends_on = depends_on or []
 
 
+class WorkflowTimeoutError(TimeoutError):
+    """Raised when ``execute_workflow`` hits its deadline before finishing.
+
+    Steps still queued or running keep their queue tasks: the orchestrator
+    does not cancel them, since the queue offers no per-task cancellation.
+    """
+
+    def __init__(self, workflow_name: str, unfinished_steps: List[str],
+                 results: Dict[str, Any]):
+        """
+        Initialize the error.
+
+        Args:
+            workflow_name: Name of the workflow that timed out
+            unfinished_steps: Steps not yet completed, failed or skipped
+            results: Results of the steps that did complete
+        """
+        super().__init__(
+            f"Workflow {workflow_name} timed out with unfinished steps: "
+            f"{', '.join(unfinished_steps)}"
+        )
+        self.workflow_name = workflow_name
+        self.unfinished_steps = unfinished_steps
+        self.results = results
+
+
 class Workflow:
-    """Defines a multi-step workflow with dependencies."""
-    
+    """Defines a multi-step workflow with dependencies.
+
+    Each step ends in exactly one of three states: completed, failed, or
+    skipped (a dependency failed or was skipped). Steps handed to the queue
+    but not yet finished are *submitted*; they are never handed out again.
+    """
+
     def __init__(self, name: str):
+        """
+        Initialize an empty workflow.
+
+        Args:
+            name: Workflow name (the key used by ``execute_workflow``)
+        """
         self.name = name
         self.steps: Dict[str, WorkflowStep] = {}
-        self.completed_steps: set = set()
-        self.failed_steps: set = set()
-    
-    def add_step(self, name: str, step: WorkflowStep):
+        self.completed_steps: Set[str] = set()
+        self.failed_steps: Set[str] = set()
+        self.skipped_steps: Set[str] = set()
+        self.submitted_steps: Set[str] = set()
+
+    def add_step(self, name: str, step: WorkflowStep) -> None:
         """Add a step to the workflow."""
         self.steps[name] = step
-    
+
+    def reset(self) -> None:
+        """Forget all progress so the workflow can be executed again."""
+        self.completed_steps.clear()
+        self.failed_steps.clear()
+        self.skipped_steps.clear()
+        self.submitted_steps.clear()
+
+    def validate(self) -> None:
+        """
+        Check that every step can eventually become ready.
+
+        Raises:
+            ValueError: A step depends on an unknown step, or the
+                dependencies contain a cycle.
+        """
+        for name, step in self.steps.items():
+            unknown = [dep for dep in step.depends_on if dep not in self.steps]
+            if unknown:
+                raise ValueError(
+                    f"Workflow {self.name}: step {name} depends on unknown "
+                    f"step(s): {', '.join(unknown)}"
+                )
+
+        # Kahn's algorithm: whatever cannot be ordered lies on or behind a cycle.
+        remaining = {name: set(step.depends_on) for name, step in self.steps.items()}
+        while remaining:
+            free = [name for name, deps in remaining.items() if not deps]
+            if not free:
+                raise ValueError(
+                    f"Workflow {self.name}: dependency cycle among steps: "
+                    f"{', '.join(sorted(remaining))}"
+                )
+            for name in free:
+                del remaining[name]
+            for deps in remaining.values():
+                deps.difference_update(free)
+
+    def _is_finished(self, step_name: str) -> bool:
+        """Return True if the step has reached a terminal state."""
+        return (step_name in self.completed_steps
+                or step_name in self.failed_steps
+                or step_name in self.skipped_steps)
+
     def get_ready_steps(self) -> List[str]:
-        """Get steps that are ready to execute (dependencies satisfied)."""
+        """Get steps that are ready to execute (dependencies satisfied).
+
+        Steps already submitted or finished are excluded.
+        """
         ready = []
         for name, step in self.steps.items():
-            if (name not in self.completed_steps and 
-                name not in self.failed_steps and
-                all(dep in self.completed_steps for dep in step.depends_on)):
+            if (name not in self.submitted_steps
+                    and not self._is_finished(name)
+                    and all(dep in self.completed_steps for dep in step.depends_on)):
                 ready.append(name)
         return ready
-    
-    def mark_completed(self, step_name: str):
+
+    def get_unfinished_steps(self) -> List[str]:
+        """Get steps that are neither completed, failed nor skipped."""
+        return [name for name in self.steps if not self._is_finished(name)]
+
+    def mark_submitted(self, step_name: str) -> None:
+        """Mark a step as handed to the queue."""
+        self.submitted_steps.add(step_name)
+
+    def mark_completed(self, step_name: str) -> None:
         """Mark a step as completed."""
+        self.submitted_steps.discard(step_name)
         self.completed_steps.add(step_name)
-    
-    def mark_failed(self, step_name: str):
-        """Mark a step as failed."""
+
+    def mark_failed(self, step_name: str) -> List[str]:
+        """
+        Mark a step as failed and skip every step that depends on it.
+
+        Args:
+            step_name: The failed step
+
+        Returns:
+            Names of the steps newly skipped because of this failure,
+            including indirect dependents.
+        """
+        self.submitted_steps.discard(step_name)
         self.failed_steps.add(step_name)
-    
+
+        skipped: List[str] = []
+        blocked = {step_name}
+        changed = True
+        while changed:
+            changed = False
+            for name, step in self.steps.items():
+                if self._is_finished(name) or name in self.submitted_steps:
+                    continue
+                if blocked.intersection(step.depends_on):
+                    self.skipped_steps.add(name)
+                    blocked.add(name)
+                    skipped.append(name)
+                    changed = True
+        return skipped
+
     def is_complete(self) -> bool:
-        """Check if workflow is complete."""
-        return len(self.completed_steps) + len(self.failed_steps) == len(self.steps)
+        """Check if every step has reached a terminal state."""
+        return not self.get_unfinished_steps()
 
 
 class AgentOrchestrator:
@@ -208,111 +325,169 @@ class AgentOrchestrator:
         self.active_workflows[name] = workflow
         return workflow
     
-    def execute_workflow(self, workflow_name: str, initial_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _submit_workflow_step(self, workflow: Workflow, step_name: str,
+                              initial_data: Dict[str, Any],
+                              results: Dict[str, Any]) -> str:
+        """
+        Submit one workflow step to the queue.
+
+        The step receives the initial data plus each dependency's result
+        under ``<dependency>_result``.
+
+        Returns:
+            The queue task ID
+        """
+        step = workflow.steps[step_name]
+        step_data = {**initial_data}
+        for dep in step.depends_on:
+            if dep in results:
+                step_data[f"{dep}_result"] = results[dep]
+
+        task_id = self.submit_task(
+            target_agent=step.agent_type,
+            method_name=step.method_name,
+            data=step_data,
+            source_agent="orchestrator",
+            priority=step.priority,
+            max_retries=step.max_retries
+        )
+        workflow.mark_submitted(step_name)
+        return task_id
+
+    def _fail_workflow_step(self, workflow: Workflow, step_name: str,
+                            error: str) -> None:
+        """Mark a step failed, skip its dependents and report both."""
+        logger.error(f"Workflow {workflow.name}: step {step_name} failed: {error}")
+        self._notify_progress("workflow_step_failed",
+                              f"Step {step_name} failed: {error}", {
+            "workflow_name": workflow.name,
+            "step_name": step_name,
+            "error": error
+        })
+        for skipped in workflow.mark_failed(step_name):
+            logger.warning(
+                f"Workflow {workflow.name}: skipping step {skipped} "
+                f"(dependency {step_name} did not complete)"
+            )
+            self._notify_progress("workflow_step_skipped",
+                                  f"Step {skipped} skipped: dependency {step_name} failed", {
+                "workflow_name": workflow.name,
+                "step_name": skipped,
+                "failed_dependency": step_name
+            })
+
+    def execute_workflow(self, workflow_name: str, initial_data: Dict[str, Any],
+                         timeout: Optional[float] = None) -> Dict[str, Any]:
         """
         Execute a workflow with dependency management.
-        
+
+        Blocks, polling the queue, until every step has completed, failed or
+        been skipped. Agents must be processing the queue (see
+        ``start_processing``). A step whose task fails, is cancelled or
+        disappears from the queue counts as failed, and every step depending
+        on it (directly or indirectly) is skipped. Each execution starts from
+        a clean state, so a workflow can be executed repeatedly.
+
         Args:
             workflow_name: Name of workflow to execute
             initial_data: Initial data for workflow steps
-            
+            timeout: Maximum time to wait in seconds (None waits indefinitely)
+
         Returns:
-            Dictionary of step results
+            Dictionary of results of the completed steps; failed and skipped
+            steps are absent (see the workflow's ``failed_steps`` and
+            ``skipped_steps``)
+
+        Raises:
+            ValueError: Unknown workflow, a dependency on an unknown step, a
+                dependency cycle, or a step for an unregistered agent type
+            WorkflowTimeoutError: The timeout passed before the workflow
+                finished
         """
         workflow = self.active_workflows.get(workflow_name)
         if not workflow:
             raise ValueError(f"Workflow {workflow_name} not found")
-        
+
+        workflow.validate()
+        unregistered = sorted({step.agent_type for step in workflow.steps.values()
+                               if step.agent_type not in self.agents})
+        if unregistered:
+            raise ValueError(
+                f"Workflow {workflow_name} uses unregistered agent type(s): "
+                f"{', '.join(unregistered)}"
+            )
+        if not self._processing_threads:
+            logger.warning(
+                f"Workflow {workflow_name} started without agent processing "
+                f"threads; call start_processing() or the steps will not run"
+            )
+        workflow.reset()
+
         self._notify_progress("workflow_started", f"Starting workflow: {workflow_name}", {
             "workflow_name": workflow_name,
             "steps": list(workflow.steps.keys())
         })
-        
-        results = {}
-        task_step_map = {}  # Maps task_id to step_name
-        
-        # Submit initial ready steps
-        ready_steps = workflow.get_ready_steps()
-        for step_name in ready_steps:
-            step = workflow.steps[step_name]
-            
-            # Prepare step data (combine initial data with previous results)
-            step_data = {**initial_data}
-            for dep in step.depends_on:
-                if dep in results:
-                    step_data[f"{dep}_result"] = results[dep]
-            
-            task_id = self.submit_task(
-                target_agent=step.agent_type,
-                method_name=step.method_name,
-                data=step_data,
-                source_agent="orchestrator",
-                priority=step.priority,
-                max_retries=step.max_retries
-            )
-            task_step_map[task_id] = step_name
-        
-        # Wait for completion and submit dependent steps
-        while not workflow.is_complete():
+
+        results: Dict[str, Any] = {}
+        task_step_map: Dict[str, str] = {}  # Maps task_id to step_name
+        deadline = time.monotonic() + timeout if timeout is not None else None
+
+        while True:
+            if workflow.is_complete():
+                break
+
+            # Check the deadline before submitting so no new work is queued
+            # once the caller has stopped waiting for it.
+            if deadline is not None and time.monotonic() >= deadline:
+                unfinished = workflow.get_unfinished_steps()
+                logger.error(
+                    f"Workflow {workflow_name} timed out; unfinished steps: {unfinished}"
+                )
+                self._notify_progress("workflow_timed_out",
+                                      f"Workflow {workflow_name} timed out", {
+                    "workflow_name": workflow_name,
+                    "unfinished_steps": unfinished,
+                    "results": results
+                })
+                raise WorkflowTimeoutError(workflow_name, unfinished, results)
+
+            for step_name in workflow.get_ready_steps():
+                task_id = self._submit_workflow_step(workflow, step_name, initial_data, results)
+                task_step_map[task_id] = step_name
+
             time.sleep(self.polling_interval)
-            
-            # Check completed tasks
-            completed_tasks = []
-            for task_id, step_name in task_step_map.items():
+
+            for task_id, step_name in list(task_step_map.items()):
                 task_status = self.queue.get_task_status(task_id)
-                if task_status and task_status.status == TaskStatus.COMPLETED:
+                if task_status is None:
+                    del task_step_map[task_id]
+                    self._fail_workflow_step(workflow, step_name,
+                                             f"task {task_id} disappeared from the queue")
+                elif task_status.status == TaskStatus.COMPLETED:
+                    del task_step_map[task_id]
                     results[step_name] = task_status.result
                     workflow.mark_completed(step_name)
-                    completed_tasks.append(task_id)
-                    self._notify_progress("workflow_step_completed", 
-                                        f"Step {step_name} completed", {
+                    self._notify_progress("workflow_step_completed",
+                                          f"Step {step_name} completed", {
                         "workflow_name": workflow_name,
                         "step_name": step_name,
                         "result": task_status.result
                     })
-                elif task_status and task_status.status == TaskStatus.FAILED:
-                    workflow.mark_failed(step_name)
-                    completed_tasks.append(task_id)
-                    self._notify_progress("workflow_step_failed", 
-                                        f"Step {step_name} failed: {task_status.error_message}", {
-                        "workflow_name": workflow_name,
-                        "step_name": step_name,
-                        "error": task_status.error_message
-                    })
-            
-            # Remove completed tasks from tracking
-            for task_id in completed_tasks:
-                del task_step_map[task_id]
-            
-            # Submit newly ready steps
-            ready_steps = workflow.get_ready_steps()
-            for step_name in ready_steps:
-                step = workflow.steps[step_name]
-                
-                step_data = {**initial_data}
-                for dep in step.depends_on:
-                    if dep in results:
-                        step_data[f"{dep}_result"] = results[dep]
-                
-                task_id = self.submit_task(
-                    target_agent=step.agent_type,
-                    method_name=step.method_name,
-                    data=step_data,
-                    source_agent="orchestrator",
-                    priority=step.priority,
-                    max_retries=step.max_retries
-                )
-                task_step_map[task_id] = step_name
-        
+                elif task_status.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+                    del task_step_map[task_id]
+                    error = task_status.error_message or f"task {task_status.status.value}"
+                    self._fail_workflow_step(workflow, step_name, error)
+
         self._notify_progress("workflow_completed", f"Workflow {workflow_name} completed", {
             "workflow_name": workflow_name,
             "completed_steps": list(workflow.completed_steps),
             "failed_steps": list(workflow.failed_steps),
+            "skipped_steps": list(workflow.skipped_steps),
             "results": results
         })
-        
+
         return results
-    
+
     def start_processing(self):
         """Start background processing threads for all registered agents."""
         if self._processing_threads:

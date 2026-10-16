@@ -67,7 +67,7 @@ from .semantic_query_agent import (
 )
 from .text_chunking import TextChunker, TextChunk, chunk_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .queue_manager import QueueManager, TaskStatus, TaskPriority
-from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep
+from .orchestrator import AgentOrchestrator, Workflow, WorkflowStep, WorkflowTimeoutError
 from .human_edit_logger import HumanEditLogger, get_human_edit_logger
 from .factory import AgentFactory
 from .transparency_agent import TransparencyAgent
@@ -136,6 +136,7 @@ __all__ = [
     "AgentOrchestrator",
     "Workflow",
     "WorkflowStep",
+    "WorkflowTimeoutError",
     "HumanEditLogger",
     "get_human_edit_logger",
     "AgentFactory",

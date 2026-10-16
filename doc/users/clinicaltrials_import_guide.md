@@ -66,6 +66,14 @@ The importer matches trials to documents by:
 
 This means documents must have the NCT ID mentioned in their text to be matched. Most clinical trial publications include their registry ID in the methods section.
 
+**Limitations (current version)**:
+- Each trial is matched by a full-text scan of every document, so a complete
+  run is only practical on small or medium databases. On a full PubMed
+  mirror (tens of millions of records) use `--limit`. An indexed matcher is
+  planned.
+- Each trial is linked to at most one document, even when several
+  publications report the same trial.
+
 ## Data Storage
 
 Imported data is stored in `transparency.document_metadata`:

@@ -271,6 +271,44 @@ search_results = results.get("search")
 scoring_results = results.get("score")
 ```
 
+`execute_workflow` blocks until every step has finished, so the agents must
+be processing the queue (`orchestrator.start_processing()`). Each step
+receives the initial data plus each dependency's result as
+`<dependency>_result`.
+
+**When a step fails**: a step whose task fails (after its retries), is
+cancelled or disappears from the queue counts as failed, and every step that
+depends on it, directly or indirectly, is **skipped**. The workflow still
+finishes; failed and skipped steps are missing from `results`:
+
+```python
+from bmlibrarian.agents import WorkflowTimeoutError
+
+workflow = orchestrator.active_workflows["research_analysis"]
+try:
+    results = orchestrator.execute_workflow(
+        "research_analysis", {"question": "..."}, timeout=600  # seconds
+    )
+except WorkflowTimeoutError as e:
+    print(f"Still running: {e.unfinished_steps}; done so far: {list(e.results)}")
+else:
+    print("Failed:", workflow.failed_steps, "Skipped:", workflow.skipped_steps)
+```
+
+- `timeout` is optional (default: wait indefinitely). On timeout, tasks
+  already queued are **not** cancelled and may still run later; no new
+  steps are submitted after the deadline.
+- A dependency on a step name that doesn't exist, a dependency cycle, or a
+  step whose `agent_type` has no registered agent raises `ValueError` before
+  anything is submitted.
+- Progress callbacks receive `workflow_step_failed`, `workflow_step_skipped`,
+  `workflow_timed_out` and `workflow_completed` (which lists completed,
+  failed and skipped steps).
+- A workflow can be executed again; each run starts from a clean state.
+
+> The interactive research workflow (CLI and Qt research tab) does not use
+> this class: it runs on the enum-based `cli/workflow_steps.py` system.
+
 ## Best Practices
 
 ### Memory Management

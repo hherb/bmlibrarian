@@ -14,8 +14,12 @@ Usage:
 
     importer = ClinicalTrialsBulkImporter(data_dir=Path('~/clinicaltrials'))
     importer.download()
-    stats = importer.import_trials()
-    importer.match_to_documents(limit=1000)
+    stats = importer.import_trials()  # parses and matches in one pass
+
+Matching runs one unindexed ``LIKE '%NCT…%'`` scan of every abstract and
+full text per trial, so a full run does not scale to a complete PubMed
+mirror; use ``limit`` on large databases. The indexed redesign is tracked
+in ROADMAP.md §5.
 """
 
 import json

@@ -151,23 +151,31 @@ def _process_agent_tasks(self, agent_type: str, agent: BaseAgent):
 ```
 
 #### Workflow Management
-```python
-class Workflow:
-    def __init__(self, name: str):
-        self.steps: Dict[str, WorkflowStep] = {}
-        self.completed_steps: set = set()
-        self.failed_steps: set = set()
-    
-    def get_ready_steps(self) -> List[str]:
-        """Get steps ready to execute (dependencies satisfied)."""
-        ready = []
-        for name, step in self.steps.items():
-            if (name not in self.completed_steps and 
-                name not in self.failed_steps and
-                all(dep in self.completed_steps for dep in step.depends_on)):
-                ready.append(name)
-        return ready
-```
+
+`Workflow` tracks each step through *submitted* (handed to the queue) to
+exactly one terminal state: **completed**, **failed** or **skipped**.
+
+- `get_ready_steps()` returns steps that are neither submitted nor finished
+  and whose dependencies all completed — an in-flight step is never handed
+  out twice.
+- `mark_failed(step)` also skips every transitive dependent and returns their
+  names, so a failure can never leave dependents waiting forever.
+- `validate()` rejects unknown dependency names and cycles (Kahn's
+  algorithm); `reset()` clears progress.
+- `is_complete()` is true once no step is unfinished.
+
+`AgentOrchestrator.execute_workflow(name, initial_data, timeout=None)`
+validates the workflow (and that every step's `agent_type` is registered —
+a step no agent can run would never finish), resets it, then loops: stop if
+complete, raise `WorkflowTimeoutError` (carrying `unfinished_steps` and
+partial `results`) past the deadline, submit ready steps, sleep
+`polling_interval`, and poll the status of each in-flight task. The deadline
+is checked before submitting so no new task is queued after it. `COMPLETED` records the result; `FAILED`,
+`CANCELLED` or a task missing from the queue fails the step and skips its
+dependents. Timed-out tasks are not cancelled: `QueueManager` only cancels
+by agent, which would hit other workflows' tasks.
+
+Tests: `tests/test_orchestrator_workflow.py`.
 
 ### BaseAgent Integration (`base.py`)
 
