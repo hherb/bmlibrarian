@@ -10,27 +10,31 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **P1 backend correctness batch** (2026-10-15, PR #272, branch
-  `fix/p1-backend-correctness`): six items from the 2026-07-19 review.
-  `database.py` BM25/fulltext search now bind source ids via the pure
-  `build_source_filter_clause()` (one `ANY(%s)` array param);
-  `CounterfactualAgent.find_contradictory_literature` guards each document's
-  scoring (`scoring_error` callback) so one bad doc no longer aborts the
-  search, while an all-failed run reports `revised_confidence: UNVERIFIED`;
-  `factchecker/agent/fact_checker_agent.py` no longer swallows explicit
-  `0`/`0.0` overrides (`max_documents=0` = no limit; the threshold override
-  now also reaches citation extraction); `paper_weight/db.py` labels
-  `external_id` as `pmid` only for PubMed rows (`pmid_select_expr()`, PubMed
-  id from the per-DB source cache, `NULL` if unknown) and numeric PMID search
-  is restricted to PubMed; `TransparencyAgent` validates LLM output
-  (`_validate_assessment_data()` + pure coercion helpers in
-  `transparency_data.py` for numbers, booleans, data availability, lists and
-  registry IDs), guards each document in `assess_batch`, and its score
-  buckets now share `classify_risk()`'s thresholds (labels
-  `0-<3`/`3-<6`/`6-10`). Deleted the dead legacy `agents/fact_checker_agent.py`
-  + `agents/fact_checker_db.py`, and fixed the 7 red
-  `tests/test_fact_checker_agent.py` tests that still targeted the legacy API
-  (6 rewritten; `_generate_summary` had no live equivalent and was dropped).
+- **P1 GUI batch + Qt/Flet decoupling** (2026-10-16, branch
+  `fix/p1-gui-correctness`): dependabot's oauthlib 4 bump (#267) dragged
+  `flet` 0.28.3 → 1.0.3, and `bmlibrarian/gui/__init__.py` eagerly imported
+  the Flet GUI, so **every Qt GUI import crashed** on master. `gui/__init__`
+  and `gui/flet/__init__` now resolve their Flet re-exports lazily (PEP 562),
+  so Qt never imports `flet`. "Find PDF" no longer freezes the UI: discovery
+  runs on `PDFDiscoveryWorker` (QThread) via `_discover_and_download()`, and
+  a GUI-thread `FindPDFSession` delivers the result to
+  `_finalize_discovery_result()` (modal verification prompt stays on the GUI
+  thread); also fixed the latent `card_data.publication_date` AttributeError
+  in its MANUAL_UPLOAD branch. The research tab no longer wires executor
+  step signals that `WorkflowThread` re-emits (handlers ran twice per
+  search). `citation_widget` enrichment uses the new
+  `AbstractFactCheckerDB.get_document_details()` (PG delegates to the
+  canonical `database.get_document_details`; the SQLite review-package one
+  replaces a query on a non-existent `pdf_filename` column), and
+  `database.get_document_details` derives `pmid` via the pure
+  `extract_pmid(external_id, source_name)` — numeric ids from non-PubMed
+  sources are no longer reported as PMIDs.
+
+- **P1 backend correctness batch** (2026-10-15, PR #272): parameterised
+  source filters, per-document guards in counterfactual + transparency
+  batches, explicit `0` overrides honoured in the fact-checker, PubMed-only
+  PMIDs in `paper_weight`, validated TransparencyAgent LLM output; dead
+  legacy `agents/fact_checker_*` deleted.
 
 - **Database state and embedding decision** (2026-10-15): the clean Phase A
   PubMed import (HTTPS + MD5, 41.2 M records, ledger, withdrawals) lives in
@@ -79,22 +83,30 @@ off new work. Longer-term structural items live in
   `test_resolvers.py::test_construct_proxy_url`,
   `test_medrxiv_importer.py::test_initialization_with_custom_pdf_dir`.
 
+## In progress: port the Flet GUIs to flet 1.0
+
+Owner decision (2026-10-16): keep oauthlib 4 / flet 1.0.3 and port, rather
+than pin `flet<0.29` (which forces oauthlib back to 3.3.1). Affected: the
+Flet research GUI (`bmlibrarian_research_gui.py`, `gui/flet/`), the Flet
+fact-checker review GUI (`fact_checker_review_gui.py`, `factchecker/gui/`),
+the Flet labs in `lab/`, plus the top-level `gui/*.py` Flet shims — 54 files.
+Scope from static scans (scripts in the PR description): ~400 renamed
+attributes (`ft.padding.*`/`border.*`/`margin.*`/`alignment.*` →
+`ft.Padding`/`Border`/`Margin`/`Alignment.CENTER`, `ElevatedButton` →
+`Button(content=…)`, `ft.app` → `ft.run`, `FLET_APP` → `AppView.FLET_APP`,
+`ImageFit` → `BoxFit`) and ~75 constructor-keyword breaks (`Tab(text,
+content)` + `Tabs(tabs=…)` → `Tabs(content=Column[TabBar, TabBarView],
+length=…)`, `Dropdown(on_change)` → `on_select`, `TextField(helper_text)` →
+`helper`, `ExpansionTile(initially_expanded)` → `expanded`,
+`Icon(name)` → `icon`, `Container(max_width)`), plus runtime-only changes
+(dialogs via `page.show_dialog`, FilePicker as a service) found by
+launching each app.
+
 ## Next up (imminent — from the 2026-07-19 review, P1)
 
 Pick items in whichever order matches what you're touching; they're
 independent unless noted.
 
-- **"Find PDF" freezes the UI** —
-  `gui/qt/qt_document_card_factory.py:1053-1177`: synchronous network
-  discovery in the click slot. The `PDFFetchWorker` QThread pattern already
-  exists in the same file — use it here too.
-- **Duplicate signal wiring** —
-  `gui/qt/plugins/research/research_tab.py:150-164` vs.
-  `workflow_handlers.py:175-208`: fires twice per search. Remove one
-  connection site.
-- **`citation_widget` hand-rolled document SQL** —
-  `gui/qt/plugins/fact_checker/citation_widget.py:224-297`: violates golden
-  rule 18. Replace with `get_document_details()`.
 - **No rate limiting / 429 handling in discovery** —
   `discovery/resolvers.py` + `full_text_finder.py`. Add a shared rate
   limiter + Retry-After handling before running batch PDF discovery again.
@@ -154,11 +166,19 @@ have drifted since the 2026-07-19 review. Full details, including the
 ### Verify
 
 - The suite has a **large pre-existing failure baseline**, not "two". Measured
-  2026-10-15 on `fix/p1-backend-correctness` with DB/Ollama/GUI-free markers
+  2026-10-16 on `fix/p1-gui-correctness` with DB/Ollama/GUI-free markers
   deselected (`.venv/bin/python -m pytest tests/ -m "not integration and not
   requires_database and not requires_ollama and not slow"
-  --continue-on-collection-errors -p no:cacheprovider --no-cov`): **98
-  failed, 2818 passed, 38 errors** (master before it: 105 failed).
+  --continue-on-collection-errors -p no:cacheprovider --no-cov`): **166
+  failed, 3312 passed, 19 errors** (master before it: 98 failed, 2872
+  passed, 38 errors). The rise in "failed" is not a regression: ~20 Qt test
+  files that previously died at collection (Flet import crash) now run, and
+  ~80 of their tests are stale against the current API (e.g.
+  `test_qt_research_tab.py` targets `_update_citations_tab`, `query_input`;
+  `test_prisma2020_lab_plugin.py`, `test_qt_workflow_thread.py`,
+  `test_ollama_migration.py`). Compare against a `git worktree` of master run
+  with `PYTHONPATH=<worktree>/src` (the editable install otherwise imports
+  your tree).
   Do NOT eyeball the count — it's meaningless against that baseline. To check
   for regressions, capture the failing node-ID set (`grep -E '^(FAILED|ERROR)
   tests/'`), `git stash`, re-run, and `diff` the two sets: the gate is **zero

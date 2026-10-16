@@ -43,7 +43,9 @@ This function fetches comprehensive document details by database ID and returns 
 
 1. **Pre-formatted Authors**: The `authors` field is always a formatted string, not a list. If there are more than 3 authors, it's truncated with "et al."
 
-2. **PMID Extraction**: The function automatically extracts PMID from `external_id` for PubMed sources (source_id=1) or from various PMID formats.
+2. **PMID Extraction**: via the pure `extract_pmid(external_id, source_name)`. A numeric `external_id` counts as a PMID only when the source name contains "pubmed"; a `PMID:<digits>` marker counts for any source.
+
+   `fetch_document_details(document_id, db_manager=None)` returns the same dictionary but raises on database errors, for callers that must tell a missing document from an unreachable database (e.g. the fact-checker's citation enrichment). `get_document_details` logs the error and returns None.
 
 3. **Date Conversion**: `publication_date` is converted to ISO string format.
 

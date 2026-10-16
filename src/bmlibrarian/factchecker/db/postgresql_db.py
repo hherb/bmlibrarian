@@ -121,6 +121,26 @@ class PostgreSQLFactCheckerDB(AbstractFactCheckerDB):
                 result = cursor.fetchone()
                 return result[0] if result else None
 
+    def get_document_details(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get full display metadata for a document.
+
+        Uses the canonical document query (golden rule 18) on this
+        backend's own database connection.
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            Document details dictionary or None if not found
+
+        Raises:
+            Exception: On database errors, so they are not mistaken for a
+                missing document.
+        """
+        from bmlibrarian.database import fetch_document_details
+        return fetch_document_details(document_id, self.db.db_manager)
+
     def get_document_metadata(self, document_id: int) -> Optional[Dict[str, Any]]:
         """
         Get document metadata (title, pmid, doi, etc.).

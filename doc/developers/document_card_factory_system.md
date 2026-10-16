@@ -336,6 +336,36 @@ class PDFButtonWidget(QPushButton):
         self._update_button_appearance()
 ```
 
+### Threading: never block the GUI thread
+
+PDF discovery and downloads are network-bound and can take tens of seconds.
+Both button paths run them on a `QThread`:
+
+- **FETCH** (`PDFButtonWidget._handle_fetch`): `PDFFetchWorker` runs the
+  `on_fetch` handler.
+- **Find PDF** (`QtDocumentCardFactory._handle_find_pdf_click`):
+  `PDFDiscoveryWorker` runs `_discover_and_download()` (CrossRef title search,
+  resolvers, HTTP/browser download). A `FindPDFSession` — a `QObject` living on
+  the GUI thread — receives the worker's signals, so its slots (progress
+  dialog updates, `_finalize_discovery_result()` with its modal verification
+  prompt, button/DB/cache updates) all run on the GUI thread. The factory keeps
+  each session referenced until its thread finishes, and `shutdown()` (also
+  connected to `QCoreApplication.aboutToQuit`) stops running sessions, since
+  destroying a running `QThread` aborts the process. Each click ends in a
+  `FindPdfOutcome`: the Find button shows its label and the reason as a
+  tooltip; a failed database write is reported as "⚠ Not Saved" rather than
+  "✓ Found".
+
+Note: the default FETCH handler still passes `prompt_on_mismatch=True` from
+the worker thread; see the known issue in `pdf_verification_system.md`.
+
+Rules for new code: worker callables must not touch widgets; receive worker
+signals on methods of a `QObject` that lives on the GUI thread, so the
+delivery thread is explicit rather than left to PySide's handling of bare
+lambdas; remember that cross-thread signals are *queued*, so tests must pump
+the event loop before asserting on them; and check `shiboken6.isValid()` before touching a widget
+that may have been deleted while the worker ran.
+
 ## Extending the Factory System
 
 ### Creating a New Card Context

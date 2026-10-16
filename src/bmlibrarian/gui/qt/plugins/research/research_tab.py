@@ -155,13 +155,14 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
         self.workflow_executor.workflow_error.connect(self._on_workflow_error)
         self.workflow_executor.status_message.connect(self._on_workflow_status)
 
-        # Connect step-specific signals
-        self.workflow_executor.query_generated.connect(self._on_query_generated)
-        self.workflow_executor.documents_found.connect(self._on_documents_found)
-        self.workflow_executor.scoring_progress.connect(self._on_scoring_progress)
-        self.workflow_executor.documents_scored.connect(self._on_documents_scored)
-        self.workflow_executor.citations_extracted.connect(self._on_citations_extracted)
-        self.workflow_executor.preliminary_report_generated.connect(self._on_preliminary_report_generated)
+        # Step-data signals are NOT connected here: WorkflowThread re-emits
+        # query_generated/documents_found/documents_scored/citations_extracted/
+        # preliminary_report_generated itself (see
+        # _connect_workflow_thread_signals), and per-document scoring progress
+        # comes from its document_scored signal. Some executor helpers it calls
+        # also emit these, so connecting both would run handlers twice.
+        # (QtWorkflowExecutor.start_workflow() is unused; reviving it would
+        # need its own wiring.)
 
         self.logger.info("Workflow executor initialized with agents")
 
@@ -651,12 +652,6 @@ class ResearchTabWidget(WorkflowHandlersMixin, QWidget):
                 self._safe_disconnect(self.workflow_executor.workflow_completed, self._on_workflow_completed)
                 self._safe_disconnect(self.workflow_executor.workflow_error, self._on_workflow_error)
                 self._safe_disconnect(self.workflow_executor.status_message, self._on_workflow_status)
-                self._safe_disconnect(self.workflow_executor.query_generated, self._on_query_generated)
-                self._safe_disconnect(self.workflow_executor.documents_found, self._on_documents_found)
-                self._safe_disconnect(self.workflow_executor.scoring_progress, self._on_scoring_progress)
-                self._safe_disconnect(self.workflow_executor.documents_scored, self._on_documents_scored)
-                self._safe_disconnect(self.workflow_executor.citations_extracted, self._on_citations_extracted)
-                self._safe_disconnect(self.workflow_executor.preliminary_report_generated, self._on_preliminary_report_generated)
 
                 if hasattr(self.workflow_executor, 'cleanup'):
                     self.workflow_executor.cleanup()

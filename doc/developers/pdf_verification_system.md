@@ -185,11 +185,25 @@ else:  # 'reject'
 
 #### QtDocumentCardFactory (`gui/qt/qt_document_card_factory.py`)
 
-Integrates with the FETCH button workflow in document cards:
+Document cards verify downloads on two paths:
+
+- **FETCH** (`_create_fetch_handler`): `PDFManager.download_pdf_with_discovery(...,
+  prompt_on_mismatch=True)` runs inside `PDFFetchWorker`, on the worker thread.
+  **Known issue (pre-existing):** the factory never sets `_parent`, so
+  `parent_widget` is None there and a mismatch falls back to the CLI prompt,
+  which reads stdin on the worker thread.
+- **Find PDF**: split across threads. `_discover_and_download()` runs the
+  network-bound CrossRef/resolver/download work on a `PDFDiscoveryWorker`
+  (QThread) and must not touch widgets (it does persist a CrossRef-discovered
+  DOI). Its result is delivered (via `FindPDFSession`, a GUI-thread QObject)
+  to `_finalize_discovery_result()`, which shows the modal verification prompt
+  on the GUI thread and returns a `FindPdfOutcome` (ATTACHED, UNSAVED,
+  REASSIGNED, SAVED_COPY, DECLINED, NOT_FOUND) with a user-facing message, so
+  a reassigned or rejected PDF is not reported as "not found":
 
 ```python
-def _execute_pdf_discovery(self, card_data, progress_callback):
-    # ... download and verify ...
+def _finalize_discovery_result(self, card_data, result):
+    # GUI thread: result comes from _discover_and_download() on the worker
 
     if result.verified is False:
         # Build VerificationPromptData with source_url

@@ -4,7 +4,8 @@ Citation Widget for Fact-Checker Review.
 Displays citation cards using the standard CitationCard widget with data conversion.
 """
 
-from typing import Optional, List, Dict, Any
+import logging
+from typing import TYPE_CHECKING, Optional, List, Dict, Any, Tuple
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt
 from pathlib import Path
@@ -19,6 +20,98 @@ from bmlibrarian.utils.pdf_manager import PDFManager
 
 # Import DPI-aware styling
 from ...resources.styles import get_font_scale
+from ...resources.styles.stylesheet_generator import get_stylesheet_generator
+from ...resources.styles.theme_colors import MaterialColors
+
+if TYPE_CHECKING:
+    from bmlibrarian.factchecker.db.abstract_db import AbstractFactCheckerDB
+
+logger = logging.getLogger(__name__)
+
+# Placeholder strings written for missing citation fields (by
+# merge_document_details below, and possibly present in older data); a field
+# holding one of these is treated as missing and enriched from the DB.
+CITATION_PLACEHOLDERS: Dict[str, Tuple[str, ...]] = {
+    'abstract': ('No abstract', 'No abstract available'),
+    'pmid': ('N/A',),
+    'title': ('No title',),
+    'authors': ('Unknown', 'Unknown authors'),
+    'journal': ('Unknown', 'Unknown journal'),
+    'pub_year': ('N/A', 'Unknown'),
+}
+
+
+def _is_missing(citation: Dict[str, Any], field: str) -> bool:
+    """Return True if a citation field is empty or holds a placeholder."""
+    value = citation.get(field)
+    return not value or value in CITATION_PLACEHOLDERS.get(field, ())
+
+
+def citation_needs_enrichment(citation: Dict[str, Any]) -> bool:
+    """Return True if any field in CITATION_PLACEHOLDERS is empty or a placeholder.
+
+    Args:
+        citation: Citation in fact-checker format
+
+    Returns:
+        Whether a database lookup is worth attempting
+    """
+    return any(_is_missing(citation, field) for field in CITATION_PLACEHOLDERS)
+
+
+def identifier_or_none(citation: Dict[str, Any], field: str) -> Optional[str]:
+    """Return a citation identifier field, or None if it is missing.
+
+    Placeholders such as ``'N/A'`` are display text, not identifiers; passing
+    them on would make discovery resolve, and verification compare against, a
+    PMID or title that does not exist.
+
+    Args:
+        citation: Citation in fact-checker format
+        field: Field name (e.g. 'pmid', 'title', 'doi')
+
+    Returns:
+        The field's value as a string, or None if empty or a placeholder
+    """
+    if _is_missing(citation, field):
+        return None
+    return str(citation[field])
+
+
+def merge_document_details(
+    citation: Dict[str, Any],
+    details: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Fill a citation's missing fields from document details.
+
+    Fields the citation already has are kept; only missing or placeholder
+    values are replaced.
+
+    Args:
+        citation: Citation in fact-checker format
+        details: Document details as returned by ``get_document_details``
+
+    Returns:
+        A new, enriched citation dictionary
+    """
+    authors_list = details.get('authors_list') or []
+    year = details.get('year')
+    fills = {
+        'abstract': details.get('abstract') or 'No abstract available',
+        'pmid': details.get('pmid') or 'N/A',
+        'doi': details.get('doi') or '',
+        'pdf_url': details.get('pdf_url') or '',
+        'pdf_filename': details.get('pdf_filename') or '',
+        'title': details.get('title') or 'No title',
+        'authors': ', '.join(authors_list) if authors_list else 'Unknown authors',
+        'journal': details.get('journal') or 'Unknown journal',
+        'pub_year': year if year else 'N/A',
+    }
+    enriched = citation.copy()
+    for field, value in fills.items():
+        if _is_missing(enriched, field):
+            enriched[field] = value
+    return enriched
 
 
 class CitationListWidget(QWidget):
@@ -72,13 +165,18 @@ class CitationListWidget(QWidget):
         )
         self.layout.addWidget(self.empty_label)
 
-    def set_citations(self, citations: List[Dict[str, Any]], db=None):
+    def set_citations(
+        self,
+        citations: List[Dict[str, Any]],
+        db: Optional["AbstractFactCheckerDB"] = None
+    ) -> None:
         """
         Set the list of citations to display.
 
         Args:
             citations: List of citation dictionaries (fact-checker format)
-            db: Optional database connection for enriching citation data
+            db: Fact-checker database (AbstractFactCheckerDB) used to fill in
+                missing citation fields, or None
         """
         s = self.scale
 
@@ -100,20 +198,52 @@ class CitationListWidget(QWidget):
             )
             self.layout.addWidget(self.empty_label)
         else:
+            # Enrich first so a database problem can be reported above the cards
+            enrichment_failures = 0
+            enriched_citations = []
+            for citation in citations:
+                enriched, failed = self._enrich_citation(citation, db)
+                enriched_citations.append(enriched)
+                enrichment_failures += failed
+
+            if enrichment_failures:
+                self.layout.addWidget(
+                    self._create_enrichment_warning(enrichment_failures)
+                )
+
             # Create citation cards using document card factory
-            for index, citation in enumerate(citations, start=1):
-                # Enrich citation with database data if needed
-                enriched_citation = self._enrich_citation(citation, db)
-
-                # Convert to DocumentCardData format
+            for enriched_citation in enriched_citations:
                 card_data = self._convert_to_card_data(enriched_citation)
-
-                # Create and add card using factory
                 card = self.card_factory.create_card(card_data)
                 self.layout.addWidget(card)
 
             # Add stretch at the end
             self.layout.addStretch()
+
+    def _create_enrichment_warning(self, failure_count: int) -> QLabel:
+        """Create the notice shown when document details could not be loaded.
+
+        Without it, a database outage looks exactly like citations whose
+        documents have no abstract or authors.
+
+        Args:
+            failure_count: Number of citations whose details failed to load
+
+        Returns:
+            A word-wrapped warning label
+        """
+        label = QLabel(
+            f"⚠ Could not load document details for {failure_count} "
+            f"citation(s) from the database; showing the stored citation "
+            f"values. See the log for details."
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            get_stylesheet_generator().label_stylesheet(
+                color=MaterialColors.WARNING_800, bold=True
+            )
+        )
+        return label
 
     def _convert_to_card_data(self, citation: Dict[str, Any]) -> DocumentCardData:
         """
@@ -172,6 +302,8 @@ class CitationListWidget(QWidget):
         # Get PDF URL for download capability
         pdf_url = citation.get('pdf_url', '')
 
+        # Identifier fields feed PDF discovery and verification, so display
+        # placeholders such as 'N/A' must not reach them as data
         return DocumentCardData(
             doc_id=doc_id,
             title=citation.get('title', 'Untitled'),
@@ -179,160 +311,54 @@ class CitationListWidget(QWidget):
             journal=citation.get('journal', 'Unknown journal'),
             year=year,
             abstract=citation.get('abstract', 'No abstract available'),
-            pmid=citation.get('pmid', ''),
-            doi=citation.get('doi', ''),
+            pmid=identifier_or_none(citation, 'pmid'),
+            doi=identifier_or_none(citation, 'doi'),
             pdf_path=pdf_path,
             pdf_url=pdf_url,
             pdf_filename=citation.get('pdf_filename'),  # Relative path from database (e.g., "2022/paper.pdf")
             show_pdf_button=True  # Show PDF button if available
         )
 
-    def _enrich_citation(self, citation: Dict[str, Any], db) -> Dict[str, Any]:
+    def _enrich_citation(
+        self,
+        citation: Dict[str, Any],
+        db: Optional["AbstractFactCheckerDB"]
+    ) -> Tuple[Dict[str, Any], bool]:
         """
         Enrich citation with data from database if fields are missing.
 
+        Document metadata comes from the fact-checker DB backend's
+        ``get_document_details`` (the canonical
+        ``bmlibrarian.database.get_document_details`` for PostgreSQL, the
+        review package for SQLite) — no inline SQL here (golden rule 18).
+
         Args:
             citation: Citation dictionary
-            db: Database connection
+            db: Fact-checker database (AbstractFactCheckerDB) or None
 
         Returns:
-            Enriched citation dictionary
+            ``(citation, failed)``: the enriched citation (the input unchanged
+            if nothing could be loaded) and whether the database lookup raised
         """
-        # If no database or document_id, return as-is
-        if not db or 'document_id' not in citation:
-            return citation
-
-        # Check if we need to enrich (missing any important fields)
-        needs_enrichment = (
-            not citation.get('abstract') or
-            citation.get('abstract') in ('No abstract', 'No abstract available', None) or
-            not citation.get('pmid') or
-            citation.get('pmid') in ('N/A', None) or
-            not citation.get('title') or
-            citation.get('title') in ('No title', None) or
-            not citation.get('authors') or
-            citation.get('authors') in ('Unknown', 'Unknown authors', None) or
-            not citation.get('journal') or
-            citation.get('journal') in ('Unknown', 'Unknown journal', None) or
-            not citation.get('pub_year') or
-            citation.get('pub_year') in ('N/A', None, 'Unknown')
-        )
-
-        if not needs_enrichment:
-            return citation
+        doc_id = citation.get('document_id')
+        if not db or doc_id is None or not citation_needs_enrichment(citation):
+            return citation, False
 
         try:
-            # Determine if we're using PostgreSQL or SQLite
-            is_sqlite = hasattr(db, 'conn') and hasattr(db.conn, 'cursor')
-
-            if is_sqlite:
-                # SQLite: Query from the local documents table
-                cursor = db.conn.cursor()
-                cursor.execute("""
-                    SELECT
-                        id, title, abstract, authors,
-                        publication, publication_date, external_id, doi, pdf_url, pdf_filename
-                    FROM documents
-                    WHERE id = ?
-                """, (citation.get('document_id'),))
-                row = cursor.fetchone()
-            else:
-                # PostgreSQL: Query from the main document table
-                from bmlibrarian.database import get_db_manager
-                db_manager = get_db_manager()
-
-                with db_manager.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT
-                                d.id, d.title, d.abstract, d.authors,
-                                d.publication, d.publication_date, d.external_id, d.doi, d.pdf_url, d.pdf_filename
-                            FROM document d
-                            WHERE d.id = %s
-                        """, (citation.get('document_id'),))
-                        row = cur.fetchone()
-
-            if row:
-                # Handle both SQLite (dict-like) and PostgreSQL (tuple) rows
-                if is_sqlite:
-                    # SQLite returns dict-like rows
-                    doc_id = row['id']
-                    title = row['title']
-                    abstract = row['abstract']
-                    authors_data = row['authors']
-                    publication = row['publication']
-                    pub_date = row['publication_date']
-                    external_id = row['external_id']
-                    doi = row['doi']
-                    pdf_url = row['pdf_url']
-                    pdf_filename = row['pdf_filename']
-
-                    # Parse JSON authors if it's a string
-                    import json
-                    if authors_data and isinstance(authors_data, str):
-                        try:
-                            authors_list = json.loads(authors_data)
-                            authors = ', '.join(authors_list) if isinstance(authors_list, list) else authors_data
-                        except json.JSONDecodeError:
-                            authors = authors_data
-                    else:
-                        authors = authors_data
-                else:
-                    # PostgreSQL returns tuple rows
-                    doc_id = row[0]
-                    title = row[1]
-                    abstract = row[2]
-                    authors_data = row[3]
-                    publication = row[4]
-                    pub_date = row[5]
-                    external_id = row[6]
-                    doi = row[7]
-                    pdf_url = row[8]
-                    pdf_filename = row[9]
-
-                    # Convert array to string if needed
-                    if isinstance(authors_data, list):
-                        authors = ', '.join(authors_data) if authors_data else 'Unknown authors'
-                    else:
-                        authors = authors_data or 'Unknown authors'
-
-                # Update missing fields
-                enriched = citation.copy()
-                if not enriched.get('abstract') or enriched.get('abstract') in ('No abstract', None):
-                    enriched['abstract'] = abstract or 'No abstract available'
-                if not enriched.get('pmid') or enriched.get('pmid') in ('N/A', None):
-                    enriched['pmid'] = external_id or 'N/A'
-                if not enriched.get('doi') or enriched.get('doi') is None:
-                    enriched['doi'] = doi or ''
-                if not enriched.get('pdf_url') or enriched.get('pdf_url') is None:
-                    enriched['pdf_url'] = pdf_url or ''
-                if not enriched.get('pdf_filename') or enriched.get('pdf_filename') is None:
-                    enriched['pdf_filename'] = pdf_filename or ''
-                if not enriched.get('title') or enriched.get('title') in ('No title', None):
-                    enriched['title'] = title or 'No title'
-                if not enriched.get('authors') or enriched.get('authors') in ('Unknown', None):
-                    enriched['authors'] = authors or 'Unknown authors'
-                if not enriched.get('journal') or enriched.get('journal') in ('Unknown', None):
-                    enriched['journal'] = publication or 'Unknown journal'
-                if not enriched.get('pub_year') or enriched.get('pub_year') in ('N/A', None):
-                    # Extract year from publication_date
-                    if pub_date:
-                        # Handle both datetime objects and ISO date strings
-                        if hasattr(pub_date, 'year'):
-                            enriched['pub_year'] = pub_date.year
-                        else:
-                            enriched['pub_year'] = str(pub_date)[:4]
-                    else:
-                        enriched['pub_year'] = 'N/A'
-
-                return enriched
-
+            details = db.get_document_details(doc_id)
         except Exception as e:
-            print(f"Warning: Failed to enrich citation from database: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(
+                f"Failed to enrich citation for document {doc_id} from database: {e}",
+                exc_info=True
+            )
+            return citation, True
 
-        return citation
+        if not details:
+            # A citation pointing at a nonexistent document is a data-integrity
+            # problem, not routine
+            logger.warning(f"Document {doc_id} not found while enriching citation")
+            return citation, False
+        return merge_document_details(citation, details), False
 
     def clear(self):
         """Clear all citations."""
