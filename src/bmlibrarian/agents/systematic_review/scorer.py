@@ -366,7 +366,7 @@ class RelevanceScorer:
         evaluate_inclusion: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         paper_sources: Optional[Dict[int, List[str]]] = None,
-        save_callback: Optional[Callable[["ScoredPaper"], None]] = None,
+        save_callback: Optional[Callable[["ScoredPaper"], Any]] = None,
     ) -> BatchScoringResult:
         """
         Score a batch of papers for relevance.

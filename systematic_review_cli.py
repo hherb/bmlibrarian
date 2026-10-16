@@ -61,6 +61,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from bmlibrarian.agents.systematic_review import (
+    ResumeError,
     SystematicReviewAgent,
     SearchCriteria,
     ScoringWeights,
@@ -68,6 +69,7 @@ from bmlibrarian.agents.systematic_review import (
     SystematicReviewConfig,
     get_systematic_review_config,
 )
+from bmlibrarian.database import get_db_manager
 
 
 # =============================================================================
@@ -698,6 +700,7 @@ def run_review(args: argparse.Namespace) -> int:
 
         # Initialize agent
         agent = SystematicReviewAgent(
+            db_manager=get_db_manager(),
             config=config,
             callback=progress_callback,
         )
@@ -846,6 +849,7 @@ def resume_review(args: argparse.Namespace) -> int:
 
         # Initialize agent
         agent = SystematicReviewAgent(
+            db_manager=get_db_manager(),
             config=config,
             callback=progress_callback,
         )
@@ -918,6 +922,9 @@ def resume_review(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print(f"\nInvalid checkpoint: {e}", file=sys.stderr)
+        return 1
+    except ResumeError as e:
+        print(f"\nCannot resume: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n\nResume interrupted by user.")

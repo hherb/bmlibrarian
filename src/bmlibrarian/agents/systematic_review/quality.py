@@ -392,7 +392,7 @@ class QualityAssessor:
         self,
         papers: List[ScoredPaper],
         progress_callback: Optional[Callable[[int, int], None]] = None,
-        save_callback: Optional[Callable[["AssessedPaper"], None]] = None,
+        save_callback: Optional[Callable[["AssessedPaper"], Any]] = None,
     ) -> QualityAssessmentResult:
         """
         Run quality assessments on all papers.

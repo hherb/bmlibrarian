@@ -286,6 +286,51 @@ At each checkpoint, enter:
 - `Y` or Enter: Continue
 - `N` or `Q`: Abort review
 
+## Resuming a Review
+
+When an output directory is set, the agent saves a checkpoint file at each
+checkpoint (`<output-dir>/checkpoints/<review_id>_<checkpoint>.json`).
+Every relevance score and quality assessment is also saved to the database
+the moment it is made, in the review's *evaluation run*.
+
+Resume an aborted, interrupted or failed review with:
+
+```bash
+uv run python systematic_review_cli.py --resume <review_id or checkpoint path>
+```
+
+or, from Python, `agent.run_review_from_checkpoint("path/to/checkpoint.json")`.
+
+The review continues from the phase after the checkpoint:
+
+| Resume from | Runs again |
+|-------------|------------|
+| Search Strategy | Search (phased or standard, as configured), then everything after |
+| Initial Results | Initial filter, scoring, quality assessment, report |
+| Scoring Complete | Quality assessment and report |
+| Quality Assessment | Ranking, quality gate, synthesis and report |
+
+Papers already scored or assessed in the evaluation run are **reused, not
+re-evaluated** — a review that crashed half-way through scoring only scores
+the remaining papers. The relevance and quality thresholds are re-applied to
+the saved scores, so you can change them when resuming: papers that fall
+below a raised relevance threshold are excluded (even if they were already
+assessed), and papers admitted by a lowered threshold are assessed before
+the report is written.
+
+Resuming fails with a clear "Cannot resume" error, rather than producing an
+empty report, when:
+
+- the checkpoint's evaluation run is not in the database (for example, the
+  application is connected to a different database than the review used);
+- the evaluation run belongs to a different research question;
+- a Scoring Complete or Quality Assessment checkpoint has no evaluation run
+  at all — resume from Search Strategy or Initial Results instead.
+
+A finished review's evaluation run is marked *completed*; an aborted or
+interrupted one *paused*; a failed one *failed*. Resuming puts the run back
+in progress.
+
 ## Output Formats
 
 ### JSON Report

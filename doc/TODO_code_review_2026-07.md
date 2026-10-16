@@ -30,11 +30,15 @@ review; re-verify line numbers before fixing, they will drift.
 - [ ] **Citation fuzzy-match hotspot** — `agents/citation_agent.py:156-225`: sliding-window `SequenceMatcher` is O(passage×abstract) × up to 4 retries × every doc above threshold. Cap lengths or use a bounded approximate-matching approach.
 
 ### Systematic-review resume correctness (beyond the fixed scorer)
-- [ ] **Resume re-runs LLM scoring/quality from scratch** — `agents/systematic_review/resume_mixin.py:1197-1214, 719-731`: `_continue_from_*` paths skip the `already_evaluated_ids` filtering `run_review()` does; with temperature 0.2 inclusion decisions can change across a crash/resume.
-- [ ] **Resume ignores `use_phased_search`** — `resume_mixin.py:487-546`: always calls `execute_plan()`; phased search + query-effectiveness feedback silently dropped for every resumed run.
-- [ ] **Evaluation runs never marked complete** — `agent.py:680-703`: `_complete_evaluation_run()` only called from `reset()`; every run row stays `in_progress` forever. Call it on success and in the failure handlers.
-- [ ] **Silent empty result when evaluation run can't be restored** — `resume_mixin.py:471-485`: missing run only logs a warning; all getters then return `[]` and the review "succeeds" empty. Raise a clear resume error instead.
-- [ ] Dead legacy checkpoint branch reading `"scored_papers"` — `resume_mixin.py:451-469`; remove or document.
+All fixed 2026-10-16 by moving the review phases into one shared pipeline
+(`agents/systematic_review/pipeline.py`, see
+`doc/developers/systematic_review_pipeline.md`):
+- [x] **Resume re-runs LLM scoring/quality from scratch** — resume now skips papers already evaluated in the run.
+- [x] **Resume ignores `use_phased_search`** — resume runs the configured search and query feedback.
+- [x] **Evaluation runs never marked complete** — runs end `completed` / `paused` / `failed`; resume reopens them.
+- [x] **Silent empty result when evaluation run can't be restored** — raises `ResumeError`.
+- [x] Dead legacy checkpoint branch reading `"scored_papers"` — removed.
+- [x] Also found and fixed: resume ignored the quality-gate threshold (used screening decisions), mis-counted `total_considered`, dropped uncertain papers; fresh runs crashed (`UnboundLocalError`) when every paper was cached or none passed the relevance threshold; 0.0 scores fell out of the below-threshold list; `systematic_review_cli.py` never passed the required `db_manager`.
 
 ### Fact-checker / assessment agents
 - [x] **Falsy-default bug** — `agents/fact_checker_agent.py:253-255`: `max_documents or …` / `score_threshold or …` ignores explicit `0`/`0.0`; use `is not None`. **Done 2026-10-15:** fixed in the live `factchecker/agent/fact_checker_agent.py` (`is None`); the legacy `agents/` copy was deleted.

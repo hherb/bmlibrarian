@@ -461,6 +461,33 @@ class EvaluationStore:
 
         logger.info(f"Resumed run {run_id}")
 
+    def reopen_run(self, run_id: int) -> None:
+        """
+        Put a run back in progress, whatever its current status.
+
+        Unlike ``resume_run`` (paused runs only), this also reopens failed,
+        cancelled and completed runs and clears their completion time and
+        error message. Used when a review is resumed from a checkpoint file:
+        the run may have failed or been completed after that checkpoint, and
+        its saved evaluations are reused as a cache.
+
+        Args:
+            run_id: Run ID to reopen
+        """
+        query = """
+            UPDATE evaluations.evaluation_runs
+            SET status = 'in_progress', completed_at = NULL,
+                error_message = NULL, updated_at = NOW()
+            WHERE run_id = %s
+        """
+
+        with self.db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (run_id,))
+            conn.commit()
+
+        logger.info(f"Reopened run {run_id}")
+
     # =========================================================================
     # Document Evaluations
     # =========================================================================
