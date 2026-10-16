@@ -139,6 +139,26 @@ citation.publication_date # When published
 citation.pmid             # PubMed ID (if available)
 ```
 
+### Verbatim Passages
+
+`citation.passage` is always text copied from the document's abstract, never
+the model's own wording. Language models often change a comma, the
+capitalisation or the spacing when asked to quote. The Citation Finder
+locates the passage in the abstract and stores the abstract's original text
+for that span. A passage whose similarity to the closest span of the
+abstract is below 95% (a paraphrase or an invented sentence) is rejected.
+So is a response with a missing or empty passage or summary. The model is
+then asked again, up to `max_retries` times, before the document is skipped.
+
+When a batch finishes, the log (and the agent's
+`citation_extraction_completed` progress callback) says how many documents
+were skipped this way, for example "Extracted 12 citations from 20 documents (3
+rejected: passage could not be verified in the abstract)". From Python,
+`agent.get_validation_stats()['failed_citations']` lists one entry per
+skipped document: the reason, the similarity score, and the first 200
+characters of the model's last rejected passage. Earlier failed attempts for
+the same document are not recorded.
+
 ### Quality Indicators
 
 **High Quality Citations:**

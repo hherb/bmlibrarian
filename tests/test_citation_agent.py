@@ -6,16 +6,16 @@ Tests citation extraction, queue processing, and document verification.
 
 import json
 import unittest
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime, timezone
-from typing import Dict, Any
+from unittest.mock import Mock, patch
+from datetime import datetime
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from bmlibrarian.agents.citation_agent import CitationFinderAgent, Citation
-from bmlibrarian.agents.queue_manager import TaskPriority, TaskStatus
+
+from llm_test_support import patch_llm
 
 
 class TestCitationFinderAgent(unittest.TestCase):
@@ -57,45 +57,43 @@ class TestCitationFinderAgent(unittest.TestCase):
         
         self.assertEqual(citation.passage, "COVID-19 vaccines are 95% effective in preventing severe disease")
         self.assertEqual(citation.relevance_score, 0.9)
-        self.assertEqual(citation.document_id, "12345678")
+        self.assertEqual(citation.document_id, "test_doc_001")
         self.assertIsNotNone(citation.created_at)
         self.assertIsInstance(citation.created_at, datetime)
     
-    @patch('requests.get')
-    def test_connection_success(self, mock_get):
-        """Test successful connection to Ollama."""
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
-        
-        result = self.agent.test_connection()
-        self.assertTrue(result)
-        mock_get.assert_called_once_with("http://test:11434/api/tags", timeout=5)
-    
-    @patch('requests.get')
-    def test_connection_failure(self, mock_get):
+    def test_connection_success(self):
+        """Test successful connection to Ollama with the model available."""
+        with patch.object(self.agent._llm_client, 'test_provider', return_value=True), \
+             patch.object(self.agent._llm_client, 'list_models',
+                          return_value={'ollama': ['test-model']}):
+            self.assertTrue(self.agent.test_connection())
+
+    def test_connection_model_missing(self):
+        """Test connection check fails when the model is not installed."""
+        with patch.object(self.agent._llm_client, 'test_provider', return_value=True), \
+             patch.object(self.agent._llm_client, 'list_models',
+                          return_value={'ollama': ['other-model']}):
+            self.assertFalse(self.agent.test_connection())
+
+    def test_connection_failure(self):
         """Test failed connection to Ollama."""
-        mock_get.side_effect = Exception("Connection error")
-        
-        result = self.agent.test_connection()
-        self.assertFalse(result)
+        with patch.object(self.agent._llm_client, 'test_provider',
+                          side_effect=Exception("Connection error")):
+            self.assertFalse(self.agent.test_connection())
     
     def test_extract_citation_success(self):
         """Test successful citation extraction."""
         # Mock connection and Ollama client response
+        # Model response with EXACT text from abstract
+        # Abstract: 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease. We studied 10,000 participants over 6 months.'
+        response = json.dumps({
+            'relevant_passage': 'COVID-19 vaccines are 95% effective in preventing severe disease.',
+            'summary': 'Study demonstrates high vaccine effectiveness',
+            'relevance_score': 0.9,
+            'has_relevant_content': True
+        })
         with patch.object(self.agent, 'test_connection', return_value=True), \
-             patch.object(self.agent.client, 'generate') as mock_generate:
-
-            # Mock Ollama response with EXACT text from abstract
-            # Abstract: 'This study shows that COVID-19 vaccines are 95% effective in preventing severe disease. We studied 10,000 participants over 6 months.'
-            mock_generate.return_value = {
-                'response': json.dumps({
-                    'relevant_passage': 'COVID-19 vaccines are 95% effective in preventing severe disease.',
-                    'summary': 'Study demonstrates high vaccine effectiveness',
-                    'relevance_score': 0.9,
-                    'has_relevant_content': True
-                })
-            }
+             patch_llm(response):
 
             result = self.agent.extract_citation_from_document(
                 self.sample_question,
@@ -111,54 +109,40 @@ class TestCitationFinderAgent(unittest.TestCase):
             self.assertEqual(result.document_id, '12345678')
             self.assertEqual(result.document_title, self.sample_document['title'])
     
-    @patch('requests.post')
-    @patch('requests.get')
-    def test_extract_citation_low_relevance(self, mock_get, mock_post):
+    def test_extract_citation_low_relevance(self):
         """Test citation extraction with low relevance score."""
-        mock_get.return_value.status_code = 200
-        
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'relevant_passage': 'Some content',
-                'summary': 'Not very relevant',
-                'relevance_score': 0.5,
-                'has_relevant_content': True
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        result = self.agent.extract_citation_from_document(
-            self.sample_question, 
-            self.sample_document,
-            min_relevance=0.7  # Higher than returned score
-        )
-        
+        response = json.dumps({
+            'relevant_passage': 'We studied 10,000 participants over 6 months.',
+            'summary': 'Not very relevant',
+            'relevance_score': 0.5,
+            'has_relevant_content': True
+        })
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch_llm(response) as mock_chat:
+            result = self.agent.extract_citation_from_document(
+                self.sample_question,
+                self.sample_document,
+                min_relevance=0.7  # Higher than returned score
+            )
+
         self.assertIsNone(result)
-    
-    @patch('requests.post')
-    @patch('requests.get') 
-    def test_extract_citation_no_relevant_content(self, mock_get, mock_post):
+        mock_chat.assert_called_once()
+
+    def test_extract_citation_no_relevant_content(self):
         """Test citation extraction when no relevant content found."""
-        mock_get.return_value.status_code = 200
-        
-        mock_post_response = Mock()
-        mock_post_response.status_code = 200
-        mock_post_response.json.return_value = {
-            'response': json.dumps({
-                'has_relevant_content': False,
-                'relevance_score': 0.0
-            })
-        }
-        mock_post.return_value = mock_post_response
-        
-        result = self.agent.extract_citation_from_document(
-            self.sample_question,
-            self.sample_document
-        )
-        
+        response = json.dumps({
+            'has_relevant_content': False,
+            'relevance_score': 0.0
+        })
+        with patch.object(self.agent, 'test_connection', return_value=True), \
+             patch_llm(response) as mock_chat:
+            result = self.agent.extract_citation_from_document(
+                self.sample_question,
+                self.sample_document
+            )
+
         self.assertIsNone(result)
+        mock_chat.assert_called_once()
     
     def test_extract_citation_no_abstract(self):
         """Test citation extraction from document without abstract."""
@@ -172,17 +156,18 @@ class TestCitationFinderAgent(unittest.TestCase):
         
         self.assertIsNone(result)
     
-    @patch('requests.get')
-    def test_extract_citation_no_connection(self, mock_get):
+    def test_extract_citation_no_connection(self):
         """Test citation extraction without Ollama connection."""
-        mock_get.side_effect = Exception("Connection failed")
-        
-        result = self.agent.extract_citation_from_document(
-            self.sample_question,
-            self.sample_document
-        )
-        
+        with patch.object(self.agent._llm_client, 'test_provider',
+                          side_effect=Exception("Connection failed")), \
+             patch_llm('{}') as mock_chat:
+            result = self.agent.extract_citation_from_document(
+                self.sample_question,
+                self.sample_document
+            )
+
         self.assertIsNone(result)
+        mock_chat.assert_not_called()
     
     def test_process_scored_documents_filtering(self):
         """Test filtering of scored documents by threshold."""
@@ -203,6 +188,8 @@ class TestCitationFinderAgent(unittest.TestCase):
             # Should process only 2 documents above threshold 3.0
             # extract_citation_from_document should be called twice
             self.assertEqual(self.agent.extract_citation_from_document.call_count, 2)
+            # Every extraction returned None, so no citations are collected
+            self.assertEqual(citations, [])
     
     def test_submit_citation_extraction_tasks(self):
         """Test submitting citation tasks to queue."""
@@ -258,18 +245,15 @@ class TestCitationFinderAgent(unittest.TestCase):
     def test_extract_citation_from_queue(self):
         """Test queue-compatible citation extraction method."""
         # Mock connection and Ollama client response
+        # Model response with EXACT text from abstract
+        response = json.dumps({
+            'relevant_passage': 'We studied 10,000 participants over 6 months.',
+            'summary': 'Large study with long follow-up',
+            'relevance_score': 0.8,
+            'has_relevant_content': True
+        })
         with patch.object(self.agent, 'test_connection', return_value=True), \
-             patch.object(self.agent.client, 'generate') as mock_generate:
-
-            # Mock Ollama response with EXACT text from abstract
-            mock_generate.return_value = {
-                'response': json.dumps({
-                    'relevant_passage': 'We studied 10,000 participants over 6 months.',
-                    'summary': 'Large study with long follow-up',
-                    'relevance_score': 0.8,
-                    'has_relevant_content': True
-                })
-            }
+             patch_llm(response):
 
             result = self.agent.extract_citation_from_queue(
                 user_question=self.sample_question,

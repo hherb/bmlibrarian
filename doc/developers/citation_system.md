@@ -285,6 +285,76 @@ Citations undergo multiple quality checks:
 3. **Minimum Threshold**: Only citations above threshold accepted
 4. **Passage Validation**: Extracted text must exist in source document
 
+### Passage Validation (exact source text)
+
+`CitationFinderAgent._validate_and_extract_exact_match()` delegates to
+`bmlibrarian.utils.passage_match.find_passage(passage, abstract,
+CITATION_MIN_SIMILARITY)` (threshold 0.95) and returns its `PassageMatch`.
+The citation stores only `PassageMatch.text`, the matched span of the
+**original** abstract, so it never holds the LLM's copy of the text (the
+`start`/`end` offsets are not kept on the `Citation`):
+
+1. Both texts are normalised (lowercase, whitespace runs collapsed) by
+   `normalize_with_offsets()`, which keeps an index map back to the original.
+2. Exact substring of the normalised passage → similarity 1.0 and
+   `PassageMatch.exact` (counted in `exact_matches`). The span may start or
+   end mid-word.
+3. A passage longer than `len(text) * (2-s)/s` cannot reach threshold `s`
+   against any window (`fits_text()`), so it is rejected without a search.
+4. Otherwise **seed voting**: the passage is cut into seeds of length
+   `len(P) // (max_edit_points + 1)` (minimum 4). A window scoring ≥ s can
+   hold at most `2P(1-s)/s` edit points, so at least one seed survives
+   intact and votes (via `str.find`) for the true alignment offset. Seeds
+   occurring more than 64 times are ignored, and only the five best-supported
+   offsets are examined, so very repetitive text can hide the true location.
+5. For each offset, one `SequenceMatcher(autojunk=False)` alignment against
+   the surrounding text estimates where the passage starts and ends. Offsets
+   whose alignment matches too few characters to reach `s` are not refined.
+   The others are refined by moving the window start, then the end, over
+   the word boundaries near those estimates. Fuzzy matches therefore start
+   and end on word boundaries: a quote of "3% per year" is not matched
+   inside "2.13% per year", which would misquote the number. The search is
+   local, so the result is the best window found, not a proven optimum.
+
+Measured on prose at threshold 0.95, a fuzzy quote of one or two sentences
+takes 2–10 ms, a 1 kB quote about 0.1 s and a 2 kB quote up to about 2 s.
+A quote that does not match costs about the same or less. The cost hardly
+depends on the abstract length. The previous sliding-window search took 31 s
+on a 1 kB abstract, mapped the match start back with a per-word drift, and
+appended whole extra sentences to the result.
+
+`tests/test_passage_match.py` compares `find_passage()` with an exhaustive
+search over every word-boundary window on 60 seeded random edits
+(`test_matches_exhaustive_search_on_random_edits`).
+
+#### Rejections and errors
+
+Each LLM response goes through `_check_response()`. A response that cannot
+be verified is retried (up to `max_retries` times) and, on the final attempt,
+recorded in `get_validation_stats()['failed_citations']` with a `reason`
+(`REJECT_*` constants in `citation_agent.py`):
+
+| Reason | Cause |
+|---|---|
+| `response is not a JSON object` | The parsed JSON is a list, string, … |
+| `relevance_score is not a number` | Missing numbers default to 0.0 (not relevant); text such as `"high"` is rejected |
+| `passage is missing or not text` | `relevant_passage` is absent, null or not a string |
+| `passage is empty` | Only whitespace |
+| `passage not found in abstract` | No candidate span at all (similarity 0.0), including a passage too long for the abstract |
+| `passage similarity below threshold` | A paraphrase or near miss |
+| `summary is missing or not text` | The passage matched but `summary` is unusable |
+
+A response with `has_relevant_content: false`, or a relevance score below
+`min_relevance`, ends extraction for that document without a retry. A
+document whose abstract is missing or only whitespace is skipped before any
+LLM call. Unexpected exceptions are logged with their traceback
+(`logger.exception`), counted in `get_validation_stats()['errors']`, and not
+retried. Both batch methods (`process_scored_documents_for_citations` and
+`extract_citations_with_audit`) end with a `citation_extraction_completed`
+callback whose message includes the number of rejected passages and errors.
+
+Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`.
+
 ### Document Verification
 
 Document IDs are verified to ensure:

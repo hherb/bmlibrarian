@@ -10,8 +10,28 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
+- **Citation passage matching rewritten** (2026-10-16, branch
+  `perf/citation-fuzzy-match`): `CitationFinderAgent` validated LLM
+  passages with a sliding-window `SequenceMatcher` (31 s on one 1 kB
+  abstract, × retries × every document). It now calls the pure
+  `utils/passage_match.find_passage()`: an exact match on normalised text,
+  then seed voting plus word-boundary refinement around a `SequenceMatcher`
+  alignment. A sentence-length fuzzy quote takes a few ms, a 1 kB quote
+  about 0.1 s, 2 kB up to ~2 s. A seeded test compares it with exhaustive
+  search (`test_matches_exhaustive_search_on_random_edits`); ad-hoc runs of
+  1,600 edits, a third on repetitive text, found no misses and no wrong
+  spans. Rejections now carry a `reason`, and unexpected errors are logged
+  with a traceback and counted. Review follow-ups: #289 (short or mid-word
+  exact matches), #290 (retry prompt feedback), #291 (Unicode folding),
+  #292 (show rejection counts in Qt/CLI). Also fixed: the matched span drifted one character per preceding
+  word, whole extra sentences were appended to fuzzy matches, and a
+  non-string `relevant_passage` aborted extraction without a retry. The
+  4 stale `test_citation_agent.py` tests (mocking the removed ollama dict
+  API) are fixed, and 2 tests that only passed because the connection was
+  missing now drive `patch_llm`. Docs: `doc/developers/citation_system.md`
+  "Passage Validation", `doc/llm/passage_match.md`.
 - **Systematic-review resume rebuilt on one shared pipeline** (2026-10-16,
-  branch `fix/systematic-review-resume`): the review phases after search
+  PR #284, merged): the review phases after search
   planning now exist once, in `agents/systematic_review/pipeline.py`;
   `run_review()` enters at the search stage, `run_review_from_checkpoint()`
   at the stage after the checkpoint (`RESUME_STAGE_BY_CHECKPOINT`). Stages
@@ -141,9 +161,6 @@ off new work. Longer-term structural items live in
 Pick items in whichever order matches what you're touching; they're
 independent unless noted.
 
-- **Citation fuzzy-match hotspot** — `agents/citation_agent.py:156-225`:
-  O(passage×abstract) `SequenceMatcher` × retries × every doc above
-  threshold. Cap lengths or bound the approximate match.
 - **Orchestrator / importer leftovers**: old `agents/orchestrator.py`
   `Workflow.execute_workflow` wedges forever on a failed dependency
   (superseded by `cli/workflow_steps.py` but still exported/documented — fix
@@ -191,9 +208,13 @@ have drifted since the 2026-07-19 review. Full details, including the
   (`.venv/bin/python -m pytest tests/ -m "not integration and not
   requires_database and not requires_ollama and not slow"
   --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
-  after PR #282 **156 failed, 3492 passed, 19 errors**;
-  `fix/systematic-review-resume` the same 156 failed + 19 errors nodes,
-  3527 passed (new pipeline tests; 0 regressions). An unfiltered run
+  after PR #284 **156 failed, 3598 passed, 19 errors**;
+  `perf/citation-fuzzy-match` **152 failed + 19 errors, 3629 passed**
+  (the 4 stale `test_citation_agent.py` tests fixed; 0 regressions). After
+  the PR #288 review fixes (2026-10-17, `pytest tests/ --no-cov`):
+  **160 failed + 19 errors, 3713 passed**; the same 179 nodes fail when run
+  against the branch's previous code, so the 8 extra failures are
+  environment drift, not regressions. An unfiltered run
   (`pytest tests/ --continue-on-collection-errors`, ~13 min) after the review
   follow-up: 162 failed + 19 errors, identical node set to the PR's first
   commit, 3647 passed. Most failures are Qt test files that
@@ -210,7 +231,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   nodes failing in your tree that pass on `master`**. (This is why ROADMAP §2
   "make the test suite protect you" matters — there is no CI and the baseline
   is badly broken.) Pre-existing clusters: `prisma2020_lab`, `paperchecker/
-  search_coordinator`, `paper_weight*`, `reporting_agent`, `citation_agent`,
+  search_coordinator`, `paper_weight*`, `reporting_agent`,
   `qt_*`, `ollama_migration`, `openathens_auth`,
   `europe_pmc_pdf_downloader`.
 - Full-tree runs need `--continue-on-collection-errors` (still ~6 collection

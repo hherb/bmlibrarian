@@ -5,8 +5,28 @@ Tests that the CitationFinderAgent properly validates citation passages
 against source abstracts and auto-corrects fuzzy matches.
 """
 
+import logging
+from unittest.mock import patch
+
 import pytest
-from bmlibrarian.agents.citation_agent import CitationFinderAgent
+
+from bmlibrarian.agents.citation_agent import (
+    REJECT_BAD_RELEVANCE,
+    REJECT_BELOW_THRESHOLD,
+    REJECT_MISSING_SUMMARY,
+    REJECT_NOT_JSON_OBJECT,
+    REJECT_PASSAGE_EMPTY,
+    REJECT_PASSAGE_NOT_FOUND,
+    REJECT_PASSAGE_NOT_TEXT,
+    CitationFinderAgent,
+)
+
+ABSTRACT = (
+    "Background: cardiovascular disease is common. Aspirin reduces the risk "
+    "of heart attack in patients with cardiovascular disease, however it may "
+    "increase bleeding risk. Conclusions: weigh benefits and harms."
+)
+GOOD_PASSAGE = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease"
 
 
 def test_exact_match():
@@ -16,13 +36,14 @@ def test_exact_match():
     abstract = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease. However, it may increase bleeding risk in some populations."
     llm_passage = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease."
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
-    assert is_valid is True
-    assert similarity == 1.0
-    assert exact_text == llm_passage
+    assert match.matched is True
+    assert match.similarity == 1.0
+    assert match.exact
+    assert match.text == llm_passage
 
 
 def test_fuzzy_match_with_autocorrection():
@@ -33,15 +54,15 @@ def test_fuzzy_match_with_autocorrection():
     # Minor punctuation difference (comma instead of period)
     llm_passage = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease; however it may increase bleeding risk."
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
     # Should find a match (fuzzy)
-    assert is_valid is True
-    assert similarity >= 0.95
+    assert match.matched is True
+    assert match.similarity >= 0.95
     # Should return text from original abstract, not LLM's version
-    assert "cardiovascular disease" in exact_text
+    assert "cardiovascular disease" in match.text
 
 
 def test_hallucination_rejected():
@@ -51,13 +72,13 @@ def test_hallucination_rejected():
     abstract = "Aspirin reduces the risk of heart attack in patients with cardiovascular disease."
     llm_passage = "Statins are the most effective treatment for lowering cholesterol levels."
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
-    assert is_valid is False
-    assert similarity < 0.95
-    assert exact_text is None
+    assert match.matched is False
+    assert match.similarity < 0.95
+    assert match.text is None
 
 
 def test_paraphrasing_rejected():
@@ -68,14 +89,14 @@ def test_paraphrasing_rejected():
     # Paraphrased: donor→donors, compensate for→address
     llm_passage = "Liver transplantation with living related donors has recently been developed to address the insufficient number of liver grafts for children"
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
     # Should reject paraphrases to ensure we only use exact text
-    assert is_valid is False
-    assert similarity < 0.95  # Similarity is ~0.90, below threshold
-    assert exact_text is None
+    assert match.matched is False
+    assert match.similarity < 0.95  # Similarity is ~0.90, below threshold
+    assert match.text is None
 
 
 def test_validation_stats_tracking():
@@ -103,6 +124,7 @@ def test_validation_stats_tracking():
     assert 'validations_failed' in stats
     assert 'exact_matches' in stats
     assert 'fuzzy_matches' in stats
+    assert 'errors' in stats
 
 
 def test_case_insensitive_matching():
@@ -112,14 +134,14 @@ def test_case_insensitive_matching():
     abstract = "The Mediterranean Diet has been shown to reduce cardiovascular risk."
     llm_passage = "the mediterranean diet has been shown to reduce cardiovascular risk"
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
-    assert is_valid is True
-    assert similarity == 1.0
+    assert match.matched is True
+    assert match.similarity == 1.0
     # Should preserve original capitalization
-    assert "Mediterranean Diet" in exact_text
+    assert "Mediterranean Diet" in match.text
 
 
 def test_whitespace_normalization():
@@ -129,12 +151,12 @@ def test_whitespace_normalization():
     abstract = "Type 2 diabetes   can often be   managed through lifestyle changes."
     llm_passage = "Type 2 diabetes can often be managed through lifestyle changes."
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
-    assert is_valid is True
-    assert similarity >= 0.95
+    assert match.matched is True
+    assert match.similarity >= 0.95
 
 
 def test_partial_match_rejection():
@@ -145,13 +167,181 @@ def test_partial_match_rejection():
     # Only first part matches
     llm_passage = "Aspirin reduces the risk of stroke and improves overall cardiovascular health."
 
-    is_valid, similarity, exact_text = agent._validate_and_extract_exact_match(
+    match = agent._validate_and_extract_exact_match(
         llm_passage, abstract
     )
 
     # Should reject - insufficient similarity
-    assert is_valid is False
+    assert match.matched is False
 
+
+
+def _extract_with_llm_responses(responses: list, abstract: object = ABSTRACT) -> tuple:
+    """Run extract_citation_from_document with mocked LLM JSON responses."""
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=2)
+    document = {"id": 42, "title": "Aspirin trial", "abstract": abstract}
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=responses
+    ) as llm:
+        citation = agent.extract_citation_from_document("Does aspirin help?", document)
+    return agent, citation, llm
+
+
+def _llm_response(passage: object) -> dict:
+    """A positive citation-extraction response carrying ``passage``."""
+    return {
+        "has_relevant_content": True,
+        "relevant_passage": passage,
+        "summary": "Aspirin lowers heart-attack risk.",
+        "relevance_score": 0.9,
+    }
+
+
+def test_extraction_stores_source_text_for_fuzzy_passage():
+    """A near-verbatim LLM passage is replaced by the abstract's own wording."""
+    llm_passage = (
+        "Aspirin reduces the risk of heart attack in patients with cardiovascular "
+        "disease; however it may increase bleeding risk."
+    )
+    agent, citation, _ = _extract_with_llm_responses([_llm_response(llm_passage)])
+
+    assert citation is not None
+    assert citation.passage == (
+        "Aspirin reduces the risk of heart attack in patients with cardiovascular "
+        "disease, however it may increase bleeding risk."
+    )
+    assert agent.get_validation_stats()["fuzzy_matches"] == 1
+
+
+def test_extraction_retries_non_string_passage():
+    """A missing/non-text passage is a validation failure that is retried."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [_llm_response(None), _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert llm.call_count == 2
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+    assert agent.get_validation_stats()["exact_matches"] == 1
+
+
+def test_extraction_rejects_after_exhausting_retries():
+    """Unmatchable passages are rejected once all attempts are used."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [_llm_response(["not", "text"])] * 3
+    )
+
+    assert citation is None
+    assert llm.call_count == 3
+    stats = agent.get_validation_stats()
+    assert stats["validations_failed"] == 1
+    assert stats["failed_citations"][0]["similarity"] == 0.0
+    assert stats["failed_citations"][0]["reason"] == REJECT_PASSAGE_NOT_TEXT
+
+
+def _with_summary(response: dict, summary: object) -> dict:
+    """``response`` with its summary replaced."""
+    return {**response, "summary": summary}
+
+
+@pytest.mark.parametrize(
+    ("bad_response", "reason"),
+    [
+        (["not", "an", "object"], REJECT_NOT_JSON_OBJECT),
+        ({**_llm_response(GOOD_PASSAGE), "relevance_score": "high"}, REJECT_BAD_RELEVANCE),
+        (_llm_response("   "), REJECT_PASSAGE_EMPTY),
+        (_llm_response("Statins lower cholesterol in most adults."), REJECT_PASSAGE_NOT_FOUND),
+        (
+            _llm_response("Aspirin lowers the risk of heart attacks in people with heart disease"),
+            REJECT_BELOW_THRESHOLD,
+        ),
+        (_with_summary(_llm_response(GOOD_PASSAGE), None), REJECT_MISSING_SUMMARY),
+    ],
+)
+def test_rejection_reason_is_recorded(bad_response: object, reason: str) -> None:
+    """Each malformed or unverifiable response is retried, then rejected with its reason."""
+    agent, citation, llm = _extract_with_llm_responses([bad_response] * 3)
+
+    assert citation is None
+    assert llm.call_count == 3
+    failed = agent.get_validation_stats()["failed_citations"]
+    assert [entry["reason"] for entry in failed] == [reason]
+
+
+def test_bad_response_then_good_response_succeeds() -> None:
+    """A malformed response does not end extraction; the retry can succeed."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [["not", "an", "object"], _llm_response(GOOD_PASSAGE)]
+    )
+
+    assert llm.call_count == 2
+    assert citation is not None
+    assert citation.passage == GOOD_PASSAGE
+    assert citation.summary == "Aspirin lowers heart-attack risk."
+
+
+def test_low_relevance_is_not_retried() -> None:
+    """A response below min_relevance ends extraction without a retry."""
+    agent, citation, llm = _extract_with_llm_responses(
+        [{**_llm_response(GOOD_PASSAGE), "relevance_score": 0.2}]
+    )
+
+    assert citation is None
+    assert llm.call_count == 1
+    assert agent.get_validation_stats()["validations_failed"] == 0
+
+
+@pytest.mark.parametrize("abstract", ["   \n ", None, {"text": "not a string"}])
+def test_blank_or_non_text_abstract_skips_llm(abstract: object) -> None:
+    """No LLM call is spent on a document without abstract text."""
+    _, citation, llm = _extract_with_llm_responses([], abstract=abstract)
+
+    assert citation is None
+    assert llm.call_count == 0
+
+
+def test_unexpected_error_is_counted_and_logged_with_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unexpected exception is logged with its traceback and counted."""
+    agent = CitationFinderAgent(model="gpt-oss:20b", show_model_info=False, max_retries=2)
+    document = {"id": 7, "title": "t", "abstract": ABSTRACT}
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", return_value=_llm_response(GOOD_PASSAGE)
+    ), patch.object(agent, "_check_response", side_effect=RuntimeError("boom")):
+        with caplog.at_level(logging.ERROR):
+            citation = agent.extract_citation_from_document("q", document)
+
+    assert citation is None
+    assert agent.get_validation_stats()["errors"] == 1
+    assert any(record.exc_info for record in caplog.records)
+
+
+def test_batch_summary_reports_rejections() -> None:
+    """The completion callback says how many passages were rejected."""
+    events = []
+    agent = CitationFinderAgent(
+        model="gpt-oss:20b",
+        show_model_info=False,
+        max_retries=0,
+        callback=lambda step, data: events.append((step, data)),
+    )
+    documents = [
+        ({"id": 1, "title": "a", "abstract": ABSTRACT}, {"score": 4}),
+        ({"id": 2, "title": "b", "abstract": ABSTRACT}, {"score": 4}),
+    ]
+    responses = [_llm_response(GOOD_PASSAGE), _llm_response("Statins lower cholesterol.")]
+    with patch.object(agent, "test_connection", return_value=True), patch.object(
+        agent, "_generate_and_parse_json", side_effect=responses
+    ):
+        citations = agent.process_scored_documents_for_citations("q", documents)
+
+    assert len(citations) == 1
+    completed = [data for step, data in events if step == "citation_extraction_completed"]
+    assert completed == [
+        "Extracted 1 citations from 2 documents "
+        "(1 rejected: passage could not be verified in the abstract)"
+    ]
 
 if __name__ == "__main__":
     # Run tests
