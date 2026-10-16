@@ -17,10 +17,17 @@ off new work. Longer-term structural items live in
   or vanished task fails its step and transitively skips its dependents
   (`Workflow.skipped_steps`, `workflow_step_skipped` event); unknown
   dependencies, cycles and unregistered agent types raise `ValueError`
-  before submitting; each
-  execution resets state; optional `timeout` raises `WorkflowTimeoutError`
-  (unfinished steps + partial results; queued tasks are not cancelled, no
-  new ones are submitted after the deadline).
+  before submitting; each execution resets state, and a concurrent second
+  run of the same workflow raises `RuntimeError`; optional `timeout` raises
+  `WorkflowTimeoutError` (unfinished steps, partial results, steps still
+  running); a timeout or queue error cancels the run's pending tasks
+  (`QueueManager.cancel_task`) and no new ones are submitted after the
+  deadline. `register_agent` after `start_processing()` now starts that
+  agent's thread (it used to hang the workflow silently).
+  `workflow_completed` carries `success`. The `mark_*` methods reject
+  unknown/finished steps. Follow-ups: ROADMAP §5 "Orchestrator `Workflow`:
+  one state map and a per-run result"; queue-worker robustness →
+  issue #294.
   No app calls it (the CLI/Qt use `cli/workflow_steps.py`); kept because it
   is exported and documented. Tests: `tests/test_orchestrator_workflow.py`.
   The other half of that "Next up" item, ClinicalTrials matching

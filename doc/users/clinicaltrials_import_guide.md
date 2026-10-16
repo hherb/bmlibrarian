@@ -67,12 +67,16 @@ The importer matches trials to documents by:
 This means documents must have the NCT ID mentioned in their text to be matched. Most clinical trial publications include their registry ID in the methods section.
 
 **Limitations (current version)**:
-- Each trial is matched by a full-text scan of every document, so a complete
-  run is only practical on small or medium databases. On a full PubMed
-  mirror (tens of millions of records) use `--limit`. An indexed matcher is
-  planned.
+- Each trial is matched by a text search over every document (a full scan
+  whenever the trial matches nothing), so a complete run is only practical
+  on small or medium databases, not on a full PubMed mirror (tens of
+  millions of records). `--limit N` only processes the first N trials in
+  the archive: useful for testing, but the remaining trials stay unmatched.
+  An indexed matcher is planned.
 - Each trial is linked to at most one document, even when several
-  publications report the same trial.
+  publications report the same trial, and which one is arbitrary.
+- A document holds one trial: when a document mentions several trials, the
+  last one processed overwrites the others.
 
 ## Data Storage
 

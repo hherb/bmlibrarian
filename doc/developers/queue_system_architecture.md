@@ -163,17 +163,39 @@ exactly one terminal state: **completed**, **failed** or **skipped**.
 - `validate()` rejects unknown dependency names and cycles (Kahn's
   algorithm); `reset()` clears progress.
 - `is_complete()` is true once no step is unfinished.
+- `mark_submitted` / `mark_completed` / `mark_failed` raise on an unknown
+  step (`KeyError`) or one already finished (`ValueError`), so a step can
+  never hold two states. The four state sets are still public attributes;
+  a single step-state map is a ROADMAP follow-up.
 
 `AgentOrchestrator.execute_workflow(name, initial_data, timeout=None)`
-validates the workflow (and that every step's `agent_type` is registered —
-a step no agent can run would never finish), resets it, then loops: stop if
-complete, raise `WorkflowTimeoutError` (carrying `unfinished_steps` and
-partial `results`) past the deadline, submit ready steps, sleep
-`polling_interval`, and poll the status of each in-flight task. The deadline
-is checked before submitting so no new task is queued after it. `COMPLETED` records the result; `FAILED`,
-`CANCELLED` or a task missing from the queue fails the step and skips its
-dependents. Timed-out tasks are not cancelled: `QueueManager` only cancels
-by agent, which would hit other workflows' tasks.
+validates the workflow and that every step's `agent_type` is registered,
+warns about agent types with no live processing thread, refuses a second
+concurrent run of the same workflow (`RuntimeError`), then `_run_workflow`
+resets it and loops:
+
+1. stop if complete — checked before the deadline, so a run finishing in
+   the poll that crosses the deadline still returns its results;
+2. past the deadline, cancel this run's pending tasks and raise
+   `WorkflowTimeoutError` (`unfinished_steps`, partial `results`, and
+   `running_steps` for tasks an agent had already started);
+3. submit ready steps (after the deadline check, so nothing is queued once
+   the caller has stopped waiting);
+4. sleep `polling_interval`, but not past the deadline;
+5. `_poll_workflow_tasks`: `COMPLETED` records the result; `FAILED`,
+   `CANCELLED` or a task missing from the queue fails the step (event
+   `status` `failed` / `cancelled` / `missing`) and skips its dependents.
+
+Any other exception (queue errors, `KeyboardInterrupt`) cancels the run's
+pending tasks, emits `workflow_aborted` and is re-raised. Cancellation uses
+`QueueManager.cancel_task(task_id)`, which only moves a `PENDING` task to
+`CANCELLED`; workers claim tasks with one atomic `UPDATE … WHERE status =
+'pending'`, so a task is either cancelled or run, never both.
+`workflow_completed` carries `success` (no failed or skipped steps).
+
+Processing threads are tracked per agent type (`_agent_threads`):
+`register_agent` starts a thread for a new agent type when processing is
+already running, so a late-registered agent's steps are not left pending.
 
 Tests: `tests/test_orchestrator_workflow.py`.
 

@@ -164,6 +164,19 @@ Qt review tab are done. Features that existed only in Flet and are now gone:
   `/api/legacy/public-xml` — consider moving to the API v2 JSON bulk export
   before the legacy endpoint goes.
 
+- **Orchestrator `Workflow`: one state map and a per-run result.**
+  `agents/orchestrator.py` keeps step state in four public sets
+  (`completed/failed/skipped/submitted_steps`) on the workflow *definition*;
+  the `mark_*` guards keep them disjoint, but outside code can still mutate
+  them, and `execute_workflow` must `reset()` the shared object each run
+  (hence the "not concurrently" guard). Callers read failures back from
+  that shared object, and only as names. Plan: a `StepState` enum in a
+  private `Dict[str, StepState]` behind read-only `frozenset` properties
+  (existing tests keep passing), then a `WorkflowRun` result (results,
+  failed step → error, skipped step → failed dependency, `succeeded`)
+  returned instead of the bare results dict. Only worth it once something
+  beyond the docs calls this API.
+
 ## Tracked separately on GitHub
 
 - [#230](https://github.com/hherb/bmlibrarian/issues/230) — Fact-checker

@@ -16,22 +16,21 @@ Usage:
     importer.download()
     stats = importer.import_trials()  # parses and matches in one pass
 
-Matching runs one unindexed ``LIKE '%NCT…%'`` scan of every abstract and
-full text per trial, so a full run does not scale to a complete PubMed
-mirror; use ``limit`` on large databases. The indexed redesign is tracked
-in ROADMAP.md §5.
+Matching runs one unindexed ``LIKE '%NCT…%'`` query over every abstract
+and full text per trial (a full scan whenever the trial matches nothing),
+so a complete run is not practical on a full PubMed mirror. ``limit`` only
+processes the first N trial files in the archive: useful for testing, but
+the remaining trials stay unmatched. The indexed redesign is tracked in
+ROADMAP.md, item "Indexed ClinicalTrials.gov ↔ document matching".
 """
 
-import json
 import logging
-import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from bmlibrarian.importers.transaction_utils import record_savepoint
 
@@ -228,12 +227,16 @@ class ClinicalTrialsBulkImporter:
     ) -> Dict[str, int]:
         """Import clinical trial metadata from the downloaded ZIP.
 
-        Streams through the ZIP file, parsing each trial XML and storing
-        the metadata in the transparency.document_metadata table.
+        Streams through the ZIP file, parsing each trial XML and, in the
+        same statement, linking it to the first document whose abstract or
+        full text mentions its NCT ID; the metadata is stored in the
+        transparency.document_metadata table. Trials matching no document
+        are not stored.
 
         Args:
             zip_path: Path to ZIP file. Defaults to data_dir/AllPublicXML.zip.
-            limit: Maximum number of trials to import (0 = unlimited).
+            limit: Maximum number of trial XML files to process, in archive
+                order, including unparsable and unmatched ones (0 = unlimited).
             progress_callback: Optional callback for progress messages.
 
         Returns:
@@ -293,9 +296,9 @@ class ClinicalTrialsBulkImporter:
                             # trial's write, not every trial already stored
                             # earlier in this run's transaction.
                             with record_savepoint(cur, CLINICALTRIALS_RECORD_SAVEPOINT):
-                                # Store in transparency.document_metadata
-                                # We don't know the document_id yet - that's done in match step
-                                # For now, store in a staging approach via the nct_id column
+                                # Match and store in one statement: link the trial to
+                                # the first document mentioning its NCT ID; a trial
+                                # with no match inserts nothing.
                                 cur.execute(
                                     """
                                     INSERT INTO transparency.document_metadata (
