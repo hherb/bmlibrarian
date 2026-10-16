@@ -13,9 +13,14 @@ from datetime import datetime, timezone
 import psycopg
 
 from .base import BaseAgent
-from .queue_manager import QueueManager, TaskPriority, TaskStatus
+from .queue_manager import TaskPriority, TaskStatus
+from ..utils.passage_match import find_passage
 
 logger = logging.getLogger(__name__)
+
+# Minimum similarity between the LLM's "verbatim" passage and the abstract
+# span it is matched to; below this the passage is treated as a paraphrase.
+CITATION_MIN_SIMILARITY = 0.95
 
 
 @dataclass
@@ -114,19 +119,20 @@ class CitationFinderAgent(BaseAgent):
         self,
         llm_passage: str,
         abstract: str,
-        min_similarity: float = 0.95
+        min_similarity: float = CITATION_MIN_SIMILARITY
     ) -> tuple[bool, float, Optional[str]]:
         """
         Verify citation passage exists in abstract and extract exact matching text.
 
-        If LLM paraphrased or slightly modified the text, this finds the closest
-        matching substring in the original abstract and returns it. This ensures
-        we always use EXACT text from the source, never LLM-generated paraphrases.
+        If the LLM changed whitespace, case or a few characters, this locates
+        the matching span of the original abstract and returns that text, so
+        citations always carry EXACT source text, never LLM-generated copies.
+        See ``bmlibrarian.utils.passage_match.find_passage``.
 
         Args:
             llm_passage: Text extracted by LLM (may be modified/paraphrased)
             abstract: Source abstract to search
-            min_similarity: Minimum similarity threshold (0.0-1.0, default 0.95)
+            min_similarity: Minimum similarity threshold (0.0-1.0]
 
         Returns:
             (is_valid, similarity_score, exact_text_from_abstract)
@@ -134,95 +140,15 @@ class CitationFinderAgent(BaseAgent):
             - similarity_score: Best match similarity (1.0 = perfect)
             - exact_text_from_abstract: The actual text from abstract (None if invalid)
         """
-        from difflib import SequenceMatcher
-
-        # Normalize whitespace for comparison
-        passage_norm = ' '.join(llm_passage.lower().split())
-        abstract_norm = ' '.join(abstract.lower().split())
-
-        # Check for exact substring match first (fastest path)
-        if passage_norm in abstract_norm:
-            # Find the original text with preserved formatting
-            # Search case-insensitively but preserve original case
-            abstract_lower = abstract.lower()
-            passage_lower = llm_passage.lower()
-            start_pos = abstract_lower.find(passage_lower)
-
-            if start_pos != -1:
-                exact_text = abstract[start_pos:start_pos + len(llm_passage)]
-                logger.debug(f"Found exact match in abstract (similarity=1.0)")
-                return True, 1.0, exact_text
-
-        # Fuzzy match with sliding window to find best matching substring
-        best_match_score = 0.0
-        best_match_start = 0
-        best_match_len = len(llm_passage)
-
-        passage_len_chars = len(passage_norm)
-
-        # Try different window sizes (±20% of passage length)
-        for window_len in range(
-            int(passage_len_chars * 0.8),
-            int(passage_len_chars * 1.2) + 1
-        ):
-            if window_len > len(abstract_norm):
-                continue
-
-            # Slide window across abstract
-            for i in range(len(abstract_norm) - window_len + 1):
-                window = abstract_norm[i:i + window_len]
-                similarity = SequenceMatcher(None, passage_norm, window).ratio()
-
-                if similarity > best_match_score:
-                    best_match_score = similarity
-                    best_match_start = i
-                    best_match_len = window_len
-
-        # If we found a good match, extract the original text from abstract
-        if best_match_score >= min_similarity:
-            # Map normalized position back to original abstract
-            # We need to find where character N in normalized text appears in original
-            char_count = 0
-            orig_start = 0
-
-            for orig_pos, char in enumerate(abstract):
-                if char.strip():  # Count non-whitespace characters
-                    if char_count == best_match_start:
-                        orig_start = orig_pos
-                        break
-                    char_count += 1
-
-            # Estimate length in original text (account for whitespace)
-            # Use a generous buffer to capture full sentences
-            extract_len = min(len(llm_passage) + 200, len(abstract) - orig_start)
-            candidate = abstract[orig_start:orig_start + extract_len]
-
-            # Find best sentence boundaries
-            # Try to extract complete sentences
-            sentences = candidate.split('. ')
-            if len(sentences) > 1:
-                # Take first N sentences that approximately match length
-                best_extract = sentences[0]
-                for sent in sentences[1:]:
-                    if len(best_extract) < len(llm_passage) * 1.3:
-                        best_extract += '. ' + sent
-                    else:
-                        break
-                # Clean up and ensure proper ending
-                exact_text = best_extract.strip()
-                if not exact_text.endswith('.') and len(sentences) > 1:
-                    exact_text += '.'
-            else:
-                exact_text = candidate.strip()
-
+        match = find_passage(llm_passage, abstract, min_similarity)
+        if match.text is not None:
             logger.debug(
-                f"Found fuzzy match in abstract (similarity={best_match_score:.3f}). "
-                f"Extracted exact text ({len(exact_text)} chars)"
+                f"Found {'exact' if match.similarity == 1.0 else 'fuzzy'} match in "
+                f"abstract (similarity={match.similarity:.3f}, {len(match.text)} chars)"
             )
-            return True, best_match_score, exact_text
-
-        logger.debug(f"No valid match found (best similarity={best_match_score:.3f})")
-        return False, best_match_score, None
+        else:
+            logger.debug(f"No valid match found (best similarity={match.similarity:.3f})")
+        return match.matched, match.similarity, match.text
 
     def get_validation_stats(self) -> Dict[str, Any]:
         """Get citation validation statistics."""
@@ -339,10 +265,17 @@ Respond only with valid JSON."""
                     return None
 
                 # VALIDATE citation text and extract exact match from abstract
-                is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
-                    citation_data['relevant_passage'],
-                    abstract
-                )
+                # A missing or non-text passage is a failed validation (retried),
+                # not an unexpected error.
+                llm_passage = citation_data.get('relevant_passage')
+                if isinstance(llm_passage, str):
+                    is_valid, similarity, exact_text = self._validate_and_extract_exact_match(
+                        llm_passage,
+                        abstract
+                    )
+                else:
+                    llm_passage = repr(llm_passage)
+                    is_valid, similarity, exact_text = False, 0.0, None
 
                 if not is_valid:
                     # Validation failed - check if we should retry
@@ -355,23 +288,23 @@ Respond only with valid JSON."""
                         self._validation_stats['failed_citations'].append({
                             'document_id': doc_id,
                             'similarity': similarity,
-                            'llm_passage': citation_data['relevant_passage'][:200],
+                            'llm_passage': llm_passage[:200],
                             'question': user_question,
                             'attempts': attempt + 1
                         })
 
                         logger.warning(
                             f"🚫 CITATION VALIDATION FAILED (document {doc_id}): "
-                            f"similarity={similarity:.3f} < threshold=0.95. "
+                            f"similarity={similarity:.3f} < threshold={CITATION_MIN_SIMILARITY}. "
                             f"All {self.max_retries + 1} attempts exhausted. REJECTING. "
-                            f"LLM output: {citation_data['relevant_passage'][:100]}..."
+                            f"LLM output: {llm_passage[:100]}..."
                         )
                         return None
                     else:
                         # Not final attempt - log and retry
                         logger.warning(
                             f"⚠️  CITATION VALIDATION FAILED (document {doc_id}, attempt {attempt + 1}): "
-                            f"similarity={similarity:.3f} < threshold=0.95. "
+                            f"similarity={similarity:.3f} < threshold={CITATION_MIN_SIMILARITY}. "
                             f"Will retry ({self.max_retries - attempt} attempts remaining)..."
                         )
                         continue  # Retry

@@ -139,6 +139,18 @@ citation.publication_date # When published
 citation.pmid             # PubMed ID (if available)
 ```
 
+### Verbatim Passages
+
+`citation.passage` is always text copied from the document's abstract, never
+the model's own wording. Language models often change a comma, the
+capitalisation or the spacing when asked to quote. The Citation Finder
+locates the passage in the abstract and stores the abstract's original text
+for that span. A passage that matches less than 95% of the source (a
+paraphrase or an invented sentence) is rejected. The model is then asked
+again, up to `max_retries` times, before the document is skipped. The skipped
+passages and their similarity scores are listed in
+`agent.get_validation_stats()['failed_citations']`.
+
 ### Quality Indicators
 
 **High Quality Citations:**

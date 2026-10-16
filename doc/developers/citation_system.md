@@ -285,6 +285,37 @@ Citations undergo multiple quality checks:
 3. **Minimum Threshold**: Only citations above threshold accepted
 4. **Passage Validation**: Extracted text must exist in source document
 
+### Passage Validation (exact source text)
+
+`CitationFinderAgent._validate_and_extract_exact_match()` delegates to
+`bmlibrarian.utils.passage_match.find_passage(passage, abstract,
+CITATION_MIN_SIMILARITY)` (threshold 0.95). It returns the matched span of the
+**original** abstract (`PassageMatch.text`/`start`/`end`), so a citation never
+stores the LLM's copy of the text:
+
+1. Both texts are normalised (lowercase, whitespace runs collapsed) by
+   `normalize_with_offsets()`, which keeps an index map back to the original.
+2. Exact substring of the normalised passage → similarity 1.0.
+3. Otherwise **seed voting**: the passage is cut into seeds of length
+   `len(P) // (max_edit_points + 1)` (minimum 4). A window scoring ≥ s can
+   hold at most `2P(1-s)/s` edit points, so at least one seed survives
+   intact and votes (via `str.find`) for the true alignment offset. Seeds
+   occurring more than 64 times are ignored.
+4. The best five offsets (clustered within the edit bound) are refined by
+   moving the window start, then the end, over nearby word boundaries,
+   scoring each with one cached `SequenceMatcher(autojunk=False)`.
+
+Cost grows about linearly with the abstract length and quadratically with
+the passage length. A one-sentence quote takes about 1 ms even against a
+20 kB text, a two-sentence quote at most about 150 ms, and a 1 kB quote about
+0.4 s. The previous
+sliding-window search took 31 s on a 1 kB abstract, mapped the match start
+back with a per-word drift, and appended whole extra sentences to the result.
+A missing or non-string `relevant_passage` counts as a failed validation and
+is retried, like a paraphrase.
+
+Tests: `tests/test_passage_match.py`, `tests/test_citation_validation.py`.
+
 ### Document Verification
 
 Document IDs are verified to ensure:
