@@ -11,6 +11,7 @@ Supports a two-phase download approach:
 import logging
 import time
 import ftplib
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from urllib.parse import urlparse
@@ -40,7 +41,7 @@ from ..utils.rate_limit import (
     get_shared_rate_limiter,
     throttle_delay,
 )
-from .pmc_package_downloader import PMCPackageDownloader
+from .pmc_cloud import PMCCloudDownloader, ncbi_ftp_to_https
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +178,9 @@ class FullTextFinder:
             'Accept': 'application/pdf,*/*'
         })
 
-        # PMC package downloader for tar.gz files
-        self._pmc_package_downloader = PMCPackageDownloader(
-            timeout=timeout, rate_limiter=self.rate_limiter
+        # PMC Cloud Service downloader (PDF + JATS XML full text)
+        self._pmc_cloud_downloader = PMCCloudDownloader(
+            timeout=timeout, session=self.session
         )
 
     def discover(
@@ -341,8 +342,8 @@ class FullTextFinder:
 
         for source in discovery.sources:
             # Skip if this source type already failed verification
-            # (e.g., if pmc failed, skip pmc_package since they serve the same wrong file)
-            source_type_base = source.source_type.value.split('_')[0]  # 'pmc_package' -> 'pmc'
+            # (e.g., if pmc failed, skip pmc_cloud since they serve the same wrong file)
+            source_type_base = source.source_type.value.split('_')[0]  # 'pmc_cloud' -> 'pmc'
             if source_type_base in failed_source_types:
                 logger.info(f"Skipping {source.source_type.value} - {source_type_base} sources already failed verification")
                 continue
@@ -370,7 +371,7 @@ class FullTextFinder:
                         )
                         verification_failed_sources.append(source)
 
-                        # Track the source type base (e.g., 'pmc' for both 'pmc' and 'pmc_package')
+                        # Track the source type base (e.g., 'pmc' for both 'pmc' and 'pmc_cloud')
                         # so we don't try other variants of the same source
                         source_type_base = source.source_type.value.split('_')[0]
                         failed_source_types.add(source_type_base)
@@ -575,7 +576,7 @@ class FullTextFinder:
         """Download file via FTP protocol.
 
         Args:
-            url: FTP URL (e.g., ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/...)
+            url: FTP URL on a non-NCBI host (NCBI URLs are rewritten to HTTPS)
             output_path: Path to save file
             max_attempts: Maximum retry attempts
 
@@ -698,22 +699,28 @@ class FullTextFinder:
             source: PDFSource to download from
             output_path: Path to save file
             max_attempts: Maximum retry attempts
-            fulltext_output_dir: Directory for full-text NXML (for PMC packages)
+            fulltext_output_dir: Directory for full-text XML (PMC Cloud sources)
 
         Returns:
             DownloadResult
         """
         start_time = time.time()
 
-        # Handle PMC package (tar.gz) sources
-        if source.source_type == SourceType.PMC_PACKAGE:
-            return self._download_pmc_package(
+        # PMC Cloud Service: MD5-verified PDF plus JATS XML full text
+        if source.source_type == SourceType.PMC_CLOUD:
+            return self._download_pmc_cloud(
                 source=source,
                 pdf_output_path=output_path,
                 fulltext_output_dir=fulltext_output_dir
             )
 
-        # Check if this is an FTP URL - use FTP download
+        # NCBI's FTP service is unreliable; it serves the same tree over HTTPS
+        https_url = ncbi_ftp_to_https(source.url)
+        if https_url:
+            logger.info(f"Using HTTPS instead of NCBI FTP: {https_url}")
+            source = replace(source, url=https_url)
+
+        # Other FTP hosts - use FTP download
         if self._is_ftp_url(source.url):
             result = self._download_via_ftp(source.url, output_path, max_attempts)
             if result.success:
@@ -953,40 +960,32 @@ class FullTextFinder:
 
         return download_result
 
-    def _download_pmc_package(
+    def _download_pmc_cloud(
         self,
         source: PDFSource,
         pdf_output_path: Path,
         fulltext_output_dir: Optional[Path] = None
     ) -> DownloadResult:
-        """Download and extract PMC tar.gz package.
-
-        Extracts both PDF and NXML full-text from the package.
+        """Download a PMC Cloud Service article: PDF plus JATS XML full text.
 
         Args:
-            source: PDFSource with PMC_PACKAGE type
-            pdf_output_path: Path to save extracted PDF
-            fulltext_output_dir: Directory to save NXML (optional)
+            source: PDFSource with PMC_CLOUD type
+            pdf_output_path: Path to save the PDF
+            fulltext_output_dir: Directory for the XML (optional)
 
         Returns:
-            DownloadResult with PDF path and full-text content
+            DownloadResult with PDF path and, when available, full text
         """
-        # Determine output directories
-        pdf_output_dir = pdf_output_path.parent
-        base_filename = pdf_output_path.stem
-
-        # Default fulltext directory: sibling to pdf directory
         if fulltext_output_dir is None:
-            # e.g., ~/knowledgebase/pdf/2024 -> ~/knowledgebase/fulltext/2024
-            base_dir = pdf_output_dir.parent
-            year_dir = pdf_output_dir.name
-            fulltext_output_dir = base_dir.parent / 'fulltext' / year_dir
+            # Sibling to the pdf tree, e.g.
+            # ~/knowledgebase/pdf/2024 -> ~/knowledgebase/fulltext/2024
+            pdf_output_dir = pdf_output_path.parent
+            fulltext_output_dir = pdf_output_dir.parent.parent / 'fulltext' / pdf_output_dir.name
 
-        return self._pmc_package_downloader.download_and_extract(
+        return self._pmc_cloud_downloader.download(
             source=source,
-            pdf_output_dir=pdf_output_dir,
-            fulltext_output_dir=fulltext_output_dir,
-            base_filename=base_filename
+            pdf_output_path=pdf_output_path,
+            fulltext_output_dir=fulltext_output_dir
         )
 
     def _is_duplicate_source(

@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Iterator
 from urllib.parse import urlparse
 
-from bmlibrarian.discovery.pmc_package_downloader import NXMLParser
+from bmlibrarian.discovery.nxml_parser import NXMLParser
 from bmlibrarian.utils.path_utils import is_safe_archive_member
 
 logger = logging.getLogger(__name__)

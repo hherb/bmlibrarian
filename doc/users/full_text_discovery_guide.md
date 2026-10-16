@@ -6,7 +6,12 @@ BMLibrarian includes a full-text discovery system that finds and downloads PDF v
 
 The discovery system searches multiple sources in order of preference:
 
-1. **PubMed Central (PMC)** - Verified open access repository
+1. **PubMed Central (PMC)** - Verified open access repository, via the
+   PMC Cloud Service (HTTPS). Besides the PDF, this also saves the article's
+   JATS XML next to your PDF folder (`fulltext/<year>/<name>.nxml`) and
+   returns its text as `result.full_text`. Both files are checked against
+   PMC's published MD5 checksums. (PMC retired its FTP packages and OA Web
+   Service in August 2026; older BMLibrarian versions find nothing in PMC.)
 2. **Unpaywall** - Open access aggregator covering millions of papers
 3. **DOI Resolution** - CrossRef and doi.org content negotiation
 4. **Direct URL** - Existing PDF URLs from the database
@@ -180,7 +185,8 @@ for resolution in result.resolution_results:
 
 | Type | Description | Typical Priority |
 |------|-------------|------------------|
-| `pmc` | PubMed Central | 5-6 (highest) |
+| `pmc_cloud` | PubMed Central Cloud Service (PDF + full-text XML) | 5 (highest) |
+| `pmc` | PubMed Central article page (fallback) | 6 |
 | `unpaywall` | Unpaywall OA | 1-3 |
 | `doi_redirect` | DOI resolution | 15-20 |
 | `direct_url` | Database URL | 10 |

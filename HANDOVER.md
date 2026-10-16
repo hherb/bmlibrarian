@@ -10,22 +10,34 @@ off new work. Longer-term structural items live in
 
 ## Recently landed (context)
 
-- **Discovery rate limiting + single-level PMC retries** (2026-10-16,
-  branch `fix/discovery-rate-limiting`): new `utils/rate_limit.py` —
+- **PMC discovery moved to the PMC Cloud Service** (2026-10-16, PR #282):
+  PMC removed the FTP `oa_package`/`oa_pdf` trees **and** the OA Web
+  Service (`oa.fcgi`, now 404) in August 2026, so `PMCResolver`'s main path
+  had silently found nothing since. New `discovery/pmc_cloud.py` looks the
+  PMCID up in the `pmc-oa-opendata` bucket over HTTPS (S3 listing →
+  per-version metadata JSON → prefer non-retracted, published over
+  manuscript, highest version) and emits a `SourceType.PMC_CLOUD` source
+  (replaces `PMC_PACKAGE`); `PMCCloudDownloader` fetches the PDF and the
+  JATS XML (saved as `fulltext/<year>/<stem>.nxml`, parsed into
+  `DownloadResult.full_text`) with MD5 verification and one retry loop per
+  file. The tar.gz/FTP package code is gone; `NXMLParser` moved to
+  `discovery/nxml_parser.py` (importers updated). Remaining
+  `ftp://ftp.ncbi.nlm.nih.gov` URLs are rewritten to HTTPS. Verified live
+  (PMC5334499: PDF + 31.7 k chars of full text). **`pmc_bulk_cli`
+  list/download/sync are broken for the same reason → #283** (structural;
+  rebuild on the S3 inventory).
+- **Discovery rate limiting** (2026-10-16, same PR #282): new `utils/rate_limit.py` —
   process-wide per-host `HostRateLimiter` (NCBI 0.34 s, Unpaywall 0.1 s,
   CrossRef/doi.org 0.2 s, other hosts 1 s) and `RateLimitedSession`, which
   retries 429 / 503+Retry-After honouring the server delay (≤ 60 s, 3
   retries) and defers the host for every caller. All resolvers, the
   finder's download session, both FTP paths and PMC's `curl` fallback are
-  paced; `_download_from_source` no longer re-retries a 429 and uses
-  jittered backoff. `PMCPackageDownloader._download_ftp()` is single-shot
-  (`PackageFetchError(retryable=…)`), so a package costs at most
-  `max_retries` fetches (was up to 9). Also fixed: `OpenAthensResolver`
+  paced; `_download_from_source` no longer re-retries a throttled
+  response and uses jittered backoff. Also fixed: `OpenAthensResolver`
   rewrote EZproxy-style URLs (`https://proxy.example.com`) into Redirector
   URLs although `FullTextFinder` admitted them as proxies — both now share
   `is_traditional_proxy_url()`; four stale browser-fallback tests in
   `test_pdf_discovery_download.py` patched a non-existent module attribute.
-  Follow-up: #281 (PMC packages over HTTPS instead of FTP).
 - **Flet GUI retired** (2026-10-16, PR #277, merged): Flet 1.0 would have
   needed a ~25k-line behavioural rewrite, and every Flet app except the
   Citation lab had a Qt equivalent. `fact_checker_review_gui.py` and
@@ -159,7 +171,7 @@ have drifted since the 2026-07-19 review. Full details, including the
   requires_database and not requires_ollama and not slow"
   --continue-on-collection-errors -p no:cacheprovider --no-cov`): master
   after PR #277 **161 failed, 3391 passed, 19 errors**;
-  `fix/discovery-rate-limiting` **156 failed, 3449 passed, 19 errors** (5
+  `fix/discovery-rate-limiting` **156 failed, 3483 passed, 19 errors** (5
   stale discovery tests fixed, 0 new). Most failures are Qt test files that
   died at collection before the Flet removal and are stale against the
   current API (e.g.

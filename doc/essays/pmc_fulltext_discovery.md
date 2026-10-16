@@ -1,5 +1,11 @@
 # The Journey to Full-Text: Discovering PMC's Hidden Treasures
 
+> **Update (October 2026):** the FTP packages and the OA Web Service
+> (`oa.fcgi`) described below were retired by PMC in August 2026. Discovery
+> now uses the PMC Cloud Service over HTTPS — see
+> `doc/developers/full_text_discovery_system.md` ("PMC Cloud Service").
+> This essay is kept as a historical record.
+
 *An essay on debugging PDF discovery and finding unexpected riches in biomedical literature archives*
 
 **November 2024**

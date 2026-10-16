@@ -13,6 +13,7 @@ from urllib.parse import urlparse, quote
 import requests
 
 from ..utils.rate_limit import HostRateLimiter, RateLimitedSession
+from .pmc_cloud import PMCCloudClient
 from .data_types import (
     PDFSource, ResolutionResult, ResolutionStatus,
     SourceType, AccessType, DocumentIdentifiers
@@ -302,9 +303,22 @@ class DOIResolver(BaseResolver):
 class PMCResolver(BaseResolver):
     """Resolver for PubMed Central open access PDFs."""
 
-    PMC_API_URL = "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi"
     PMC_ARTICLE_BASE = "https://pmc.ncbi.nlm.nih.gov/articles"
     EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+    def __init__(
+        self,
+        timeout: int = DEFAULT_TIMEOUT,
+        rate_limiter: Optional[HostRateLimiter] = None
+    ):
+        """Initialize PMC resolver.
+
+        Args:
+            timeout: HTTP request timeout in seconds
+            rate_limiter: Per-host limiter (defaults to the shared one)
+        """
+        super().__init__(timeout, rate_limiter)
+        self._cloud_client = PMCCloudClient(session=self.session, timeout=timeout)
 
     @property
     def name(self) -> str:
@@ -358,58 +372,43 @@ class PMCResolver(BaseResolver):
         return pmcid
 
     def _resolve_by_pmcid(self, pmcid: str) -> List[PDFSource]:
-        """Get PDF URL for a PMCID."""
+        """Get PDF sources for a PMCID.
+
+        Looks the article up in the PMC Cloud Service (the OA Web Service and
+        the FTP packages it pointed at were retired in August 2026); falls
+        back to scraping the PDF link from the PMC article page.
+        """
         pmcid = self._normalize_pmcid(pmcid)
         sources = []
 
-        # Try OA web service first (returns FTP URLs for .tar.gz or PDF)
         try:
-            params = {'id': pmcid}
-            response = self.session.get(
-                self.PMC_API_URL,
-                params=params,
-                timeout=self.timeout
-            )
+            article = self._cloud_client.find_article(pmcid)
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"PMC Cloud Service lookup failed for {pmcid}: {e}")
+            article = None
 
-            if response.status_code == 200:
-                # Parse XML response
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(response.content)
-
-                for record in root.findall('.//record'):
-                    # Check for PDF link (some articles have direct PDF FTP links)
-                    for link in record.findall('.//link'):
-                        link_format = link.get('format')
-                        link_url = link.get('href')
-
-                        if link_format == 'pdf' and link_url:
-                            sources.append(PDFSource(
-                                url=link_url,
-                                source_type=SourceType.PMC,
-                                access_type=AccessType.OPEN,
-                                priority=5,  # High priority - verified OA
-                                is_best_oa=True,
-                                host_type='repository',
-                                metadata={'pmcid': pmcid}
-                            ))
-                        elif link_format == 'tgz' and link_url:
-                            # tar.gz package contains PDF + NXML full-text
-                            sources.append(PDFSource(
-                                url=link_url,
-                                source_type=SourceType.PMC_PACKAGE,
-                                access_type=AccessType.OPEN,
-                                priority=7,  # Lower priority than direct PDF
-                                is_best_oa=True,
-                                host_type='repository',
-                                metadata={
-                                    'pmcid': pmcid,
-                                    'package_format': 'tgz',
-                                    'has_nxml': True
-                                }
-                            ))
-
-        except Exception as e:
-            logger.debug(f"PMC OA service error for {pmcid}: {e}")
+        if article is not None and article.pdf_url:
+            if article.is_retracted:
+                logger.warning(f"{article.prefix} is marked as retracted in PMC")
+            sources.append(PDFSource(
+                url=article.pdf_url,
+                source_type=SourceType.PMC_CLOUD,
+                access_type=AccessType.OPEN,
+                priority=5,  # High priority - verified OA, MD5-checked
+                license=article.license_code,
+                version='acceptedVersion' if article.is_manuscript else 'publishedVersion',
+                is_best_oa=True,
+                host_type='repository',
+                metadata={
+                    'pmcid': pmcid,
+                    'pmc_version': article.version,
+                    'pdf_md5': article.pdf_md5,
+                    'xml_url': article.xml_url,
+                    'xml_md5': article.xml_md5,
+                    'is_manuscript': article.is_manuscript,
+                    'is_retracted': article.is_retracted,
+                }
+            ))
 
         # Fallback: fetch the article page to extract the actual PDF filename
         if not sources:

@@ -45,6 +45,9 @@ UNPAYWALL_MIN_INTERVAL_SECONDS = 0.1
 # CrossRef's public pool is limited to ~5 requests/second.
 CROSSREF_MIN_INTERVAL_SECONDS = 0.2
 DOI_ORG_MIN_INTERVAL_SECONDS = 0.2
+# PMC Cloud Service (AWS Open Data S3 bucket): no published limit; a single
+# article needs ~4 requests (listing, metadata, PDF, XML).
+PMC_CLOUD_MIN_INTERVAL_SECONDS = 0.1
 
 # Per-host minimum intervals (seconds), keyed by lower-case hostname.
 DEFAULT_HOST_INTERVALS: Dict[str, float] = {
@@ -55,6 +58,7 @@ DEFAULT_HOST_INTERVALS: Dict[str, float] = {
     "api.unpaywall.org": UNPAYWALL_MIN_INTERVAL_SECONDS,
     "api.crossref.org": CROSSREF_MIN_INTERVAL_SECONDS,
     "doi.org": DOI_ORG_MIN_INTERVAL_SECONDS,
+    "pmc-oa-opendata.s3.amazonaws.com": PMC_CLOUD_MIN_INTERVAL_SECONDS,
 }
 
 # HTTP status codes that signal throttling.
